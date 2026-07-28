@@ -95,7 +95,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 ## 3. ScientificActResolver and ScientificThreadResolver
 
 ### T3.1 — Implement conservative scientific-act classification
-- [ ] T3.1 — Implement conservative scientific-act classification
+- [x] T3.1 — Implement conservative scientific-act classification
 - **Files/discovery:** `.pi/extensions/paper-proposal-v2/scientific-act-resolver.ts` (new), `types.ts`, global route request projection.
 - **Depends on:** T2.1.
 - **Implement:** classify the approved act vocabulary, require agreement between caller-supplied act and instruction, preserve direct/lifecycle precedence, and return clarification/block outcomes for ambiguity.
@@ -103,7 +103,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 - **Acceptance:** no ambiguous request is attached to a scientific act or thread; every resolved act is explicit and bounded.
 
 ### T3.2 — Resolve active thread ownership
-- [ ] T3.2 — Resolve active thread ownership
+- [x] T3.2 — Resolve active thread ownership
 - **Files/discovery:** `.pi/extensions/paper-proposal-v2/scientific-thread-resolver.ts` (new), `types.ts`, `scientific-state-store.ts` interface target.
 - **Depends on:** T3.1.
 - **Implement:** support deterministic create-from-seed, continue-active, explicit selection, direct-neighbor relation validation, and clarification/block outcomes against a read-only state-reader port. Never choose by recency, lexical order, revision identity, or model suggestion.
@@ -111,7 +111,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 - **Acceptance:** every scientific act has one validated active thread or a clarification/block result; resolver failures leave no partial scientific event or document mutation.
 
 ### T3.3 — Define thread transition intents and persistence boundary
-- [ ] T3.3 — Define thread transition intents and persistence boundary
+- [x] T3.3 — Define thread transition intents and persistence boundary
 - **Files/discovery:** `.pi/extensions/paper-proposal-v2/scientific-thread-resolver.ts`, `.pi/extensions/paper-proposal-v2/types.ts`, `ScientificStateStore` port.
 - **Depends on:** T3.2.
 - **Implement:** emit only the permitted thread creation, selection, activation, and explicit relation transition intents; preserve stable identities and bounded graph edges without embedding document behavior.

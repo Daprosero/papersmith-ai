@@ -158,6 +158,30 @@ export type ScientificAct = {
 	threadId?: ScientificThreadId;
 	relatedThreadIds: ScientificThreadId[];
 };
+export type ScientificActResolution =
+	| { status: 'resolved'; act: ScientificActKind; requestedThreadId?: ScientificThreadId; relatedThreadIds: ScientificThreadId[] }
+	| { status: 'needs_clarification'; question: string }
+	| { status: 'blocked'; code: string };
+export type BoundedScientificSeed = {
+	title: string;
+	summary: string;
+	actor: { kind: 'USER' };
+};
+export type ThreadTransitionIntent = {
+	type: Extract<ScientificEventType, 'THREAD_CREATED' | 'THREAD_SELECTED' | 'THREAD_ACTIVATED' | 'THREAD_RELATED'>;
+	eventId: ScientificEventId;
+	threadId: ScientificThreadId;
+	activeThreadId: ScientificThreadId;
+	causalEventIds: ScientificEventId[];
+	relatedThreadIds: ScientificThreadId[];
+	seed?: BoundedScientificSeed;
+};
+export type ThreadResolution =
+	| { status: 'created'; activeThread: ScientificThread; intents: ThreadTransitionIntent[] }
+	| { status: 'continued'; activeThread: ScientificThread; intents: [] }
+	| { status: 'selected'; activeThread: ScientificThread; intents: ThreadTransitionIntent[] }
+	| { status: 'needs_clarification'; code: 'THREAD_SELECTION_AMBIGUOUS' | 'THREAD_REQUIRED'; question: string }
+	| { status: 'blocked'; code: string; blockers: PublicBlocker[] };
 export type ScientificEvent = {
 	schemaVersion: 1;
 	eventId: ScientificEventId;

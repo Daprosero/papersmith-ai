@@ -412,3 +412,169 @@ The second command covers V2 lifecycle, direct-document source routing, and prod
 - [ ] T10.1 — Complete recovery and diagnostic outcomes
 - [ ] T10.2 — Run compatibility and full regression coverage
 ```
+
+## PR2 committed-range review limitation
+
+PR2 is committed as `c0cc6d2 feat(paper-proposal-v2): add conservative project entry resolution`; its base is `b8b64dd9e11eae9992ad23e7426414c51b49b318`.
+
+- `gentle_review inspect` succeeded on the clean workspace. Ordinary review start for the committed base range resumed lineage `review-11a054edad08b876` and selected the high-tier 4R review.
+- Each selected lens—`review-risk`, `review-resilience`, `review-readability`, and `review-reliability`—rejected the native candidate view before review with the exact error: `candidate view directory is unsafe or writable`.
+- No lens findings, finalization, or receipt were produced. No implementation was changed to work around this limitation.
+- PR2 must not be formally closed by equivalent evidence until the user explicitly decides after this documented limitation is reported. PR3 remains prohibited.
+
+## PR3 / T3.1–T3.3 — BLOCKED on first focused test failure
+
+### Structured status consumed
+
+```yaml
+schemaName: gentle-ai.sdd-status
+schemaVersion: 1
+changeName: scientific-reasoning-workflow
+artifactStore: openspec
+applyState: ready
+nextRecommended: apply
+actionContext:
+  mode: repo-local
+  workspaceRoot: /Users/diego/Desktop/Proyectos/papersmith-ai
+  allowedEditRoots: [/Users/diego/Desktop/Proyectos/papersmith-ai]
+delivery:
+  strategy: auto-chain
+  chainStrategy: stacked-to-main
+  boundary: PR3 / T3.1–T3.3 only
+strictTdd: false
+warnings: []
+```
+
+### Attempted scope and blocker
+
+- Added the isolated `ScientificActResolver`, canonical scientific act-resolution and thread-transition contracts, and a mandatory `ScientificThreadResolver` with read-only state and in-memory transition-intent ports only.
+- Added focused resolver tests for act vocabulary, caller/instruction agreement, lifecycle/direct/`DELIBERATE` precedence, create/continue/select/clarify/block behavior, direct-neighbor validation, and no-document/no-role paths.
+- **Blocker:** the first focused command failed in `ScientificActResolver classifies every approved bounded act`. `request materialization` returned `needs_clarification` instead of `REQUEST_MATERIALIZATION` because the current materialization classifier pattern did not match that instruction.
+- Per the assigned stop rule, no corrective edit, task-checkbox update, compatibility regression, or T4+ work was performed after that failure.
+
+### Persisted task status
+
+```text
+- [ ] T3.1 — Implement conservative scientific-act classification
+- [ ] T3.2 — Resolve active thread ownership
+- [ ] T3.3 — Define thread transition intents and persistence boundary
+```
+
+### Files changed before stop
+
+- `.pi/extensions/paper-proposal-v2/scientific-domain.ts`
+- `.pi/extensions/paper-proposal-v2/types.ts`
+- `.pi/extensions/paper-proposal-v2/exports.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-act-resolver.ts` (new)
+- `.pi/extensions/paper-proposal-v2/scientific-thread-resolver.ts` (new)
+- `tests/paper-proposal-v2-scientific-act.test.mjs` (new)
+- `tests/paper-proposal-v2-scientific-thread.test.mjs` (new)
+- `openspec/changes/scientific-reasoning-workflow/apply-progress.md`
+
+### Verification evidence
+
+```text
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-proposal-v2-scientific-domain-contract.test.mjs tests/paper-proposal-v2-scientific-act.test.mjs tests/paper-proposal-v2-scientific-thread.test.mjs
+# FAIL: 14 passed, 1 failed
+# Failed: ScientificActResolver classifies every approved bounded act
+# Expected: REQUEST_MATERIALIZATION for "request materialization"
+# Actual: needs_clarification
+```
+
+No later test command was run after the failure.
+
+### Deviations, risks, and boundary
+
+- **Design deviation:** unresolved classifier defect; no deliberate design departure was accepted.
+- **Risk/debt:** all PR3 edits are unverified as a complete work unit. The transition port is intentionally in-memory/read-only and is not durable persistence; T4.1–T4.4 remain out of scope.
+- **PR boundary:** stacked-to-main PR3, T3.1–T3.3 only. T4 and later were not started.
+- **Rollback boundary:** remove only the PR3 resolver/domain-export/type/test additions listed above. No proposal, managed revision, manifest, receipt, lifecycle inventory, or durable scientific-state file was changed.
+- **Conventional commit proposal:** none until focused and required V2 compatibility tests pass.
+
+## PR3 / T3.1–T3.3 — completed
+
+### Structured status consumed
+
+```yaml
+schemaName: gentle-ai.sdd-status
+schemaVersion: 1
+changeName: scientific-reasoning-workflow
+artifactStore: openspec
+applyState: ready
+nextRecommended: apply
+actionContext:
+  mode: repo-local
+  workspaceRoot: /Users/diego/Desktop/Proyectos/papersmith-ai
+  allowedEditRoots: [/Users/diego/Desktop/Proyectos/papersmith-ai]
+delivery:
+  strategy: auto-chain
+  chainStrategy: stacked-to-main
+  boundary: PR3 / T3.1–T3.3 only
+strictTdd: false
+warnings: ["CodeGraph MCP was unavailable; narrow known-path reads were used after the required CodeGraph attempt."]
+```
+
+### Completed tasks and persisted checkbox evidence
+
+- [x] T3.1 — Implement conservative scientific-act classification
+  - Corrected only the `REQUEST_MATERIALIZATION` classifier branch to recognize the explicit English `materialization` noun, while retaining lifecycle, direct-document, and `DELIBERATE` precedence plus conservative ambiguity handling.
+- [x] T3.2 — Resolve active thread ownership
+  - Verified the read-only/in-memory resolver creates only bounded user-originated idea threads, continues the validated active thread, selects eligible explicit threads, and clarifies or blocks every unresolved/invalid ownership case.
+- [x] T3.3 — Define thread transition intents and persistence boundary
+  - Verified only thread creation, selection, activation, and direct-relation transition intents are emitted through the in-memory transition port; unresolved or blocked paths emit no write intent.
+
+All three checkboxes were updated in `tasks.md` only after every applicable focused and V2 compatibility command passed.
+
+### Files changed in the PR3 work unit
+
+- `.pi/extensions/paper-proposal-v2/scientific-domain.ts`
+- `.pi/extensions/paper-proposal-v2/types.ts`
+- `.pi/extensions/paper-proposal-v2/exports.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-act-resolver.ts` (new; final correction is limited to explicit `materialization` classification)
+- `.pi/extensions/paper-proposal-v2/scientific-thread-resolver.ts` (new)
+- `tests/paper-proposal-v2-scientific-act.test.mjs` (new; unchanged during the correction)
+- `tests/paper-proposal-v2-scientific-thread.test.mjs` (new)
+- `openspec/changes/scientific-reasoning-workflow/tasks.md`
+- `openspec/changes/scientific-reasoning-workflow/apply-progress.md`
+
+### Verification evidence
+
+```text
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-proposal-v2-scientific-domain-contract.test.mjs tests/paper-proposal-v2-scientific-act.test.mjs tests/paper-proposal-v2-scientific-thread.test.mjs
+# PASS: 15 tests, 0 failures
+
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-proposal-v2-lifecycle.test.mjs tests/paper-proposal-v2-revision-lifecycle.test.mjs tests/paper-proposal-v2-source-routing.test.mjs tests/paper-proposal-v2-tutor-reviewer.test.mjs tests/paper-proposal-v2-production-role-metrics.test.mjs
+# PASS: 29 tests, 0 failures
+```
+
+The regression command covers lifecycle behavior, direct-document source routing, and production `DELIBERATE` read-only behavior. No materialization, proposal, managed revision, manifest, receipt, persistence, context, role, or decision behavior was added.
+
+### Deviations, risks, workload boundary, and rollback
+
+- **Design deviation:** none. The correction makes the existing explicit materialization request classifier recognize the tested vocabulary; it does not relax ambiguity handling or route precedence.
+- **Risk:** the scientific thread transition boundary remains intentionally in-memory/read-only until T4.4; no durable scientific persistence is implied by this PR3 work unit.
+- **Workload / PR boundary:** `auto-chain`, `stacked-to-main`; PR3 is T3.1–T3.3 only. T4 and later tasks were not started.
+- **Rollback boundary:** remove only the PR3 contract/type/export/resolver/test additions and this classifier correction. No document, proposal, managed revision, manifest, receipt, lifecycle inventory, or durable scientific record is affected.
+- **Conventional commit proposal (not created):** `feat(paper-proposal-v2): add scientific act and thread resolution`
+
+### Remaining tasks
+
+```text
+- [ ] T4.1 — Establish authoritative scientific storage contracts
+- [ ] T4.2 — Implement atomic transitions, locking, and replay validation
+- [ ] T4.3 — Add connected graph and scientific audit seams
+- [ ] T4.4 — Wire entry and thread resolvers to atomic scientific persistence
+- [ ] T5.1 — Build bounded active-thread context
+- [ ] T6.1 — Add advisory Tutor and Conceptual Reviewer orchestration
+- [ ] T6.2 — Implement bounded structured repair/recheck
+- [ ] T6.3 — Add synthesis modification/reopen flow
+- [ ] T7.1 — Implement explicit user decision lifecycle
+- [ ] T7.2 — Expose durable pending candidates on re-entry
+- [ ] T8.1 — Add frozen selection and materialization reservation
+- [ ] T8.2 — Plan only frozen accepted candidates with provenance
+- [ ] T9.1 — Implement non-writing MaterializationCandidateExecutor
+- [ ] T9.2 — Add Document Reviewer gate and guarded initial publication adapter
+- [ ] T9.3 — Commit materialization only after verified publication
+- [ ] T10.1 — Complete recovery and diagnostic outcomes
+- [ ] T10.2 — Run compatibility and full regression coverage
+```
