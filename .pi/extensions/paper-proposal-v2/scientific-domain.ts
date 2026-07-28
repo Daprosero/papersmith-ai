@@ -62,6 +62,8 @@ export type ScientificEventType =
 	| 'DECISION_RETRACTED'
 	| 'MATERIALIZATION_RESERVED'
 	| 'MATERIALIZATION_PLANNED'
+	| 'MATERIALIZATION_DOCUMENT_REVIEWED'
+	| 'MATERIALIZATION_BLOCKED'
 	| 'MATERIALIZATION_COMMITTED';
 export type ThreadRelationKind = 'RELATED' | 'SUPPORTS' | 'CHALLENGES' | 'DEPENDS_ON';
 export type ThreadSynthesisStatus = 'DRAFT' | 'REVIEWED' | 'REPAIR_REQUIRED' | 'ACCEPTED' | 'REJECTED' | 'RETRACTED';
@@ -164,6 +166,20 @@ export type FrozenDecisionSelection = {
 export type MaterializationReservedDecision = Pick<ScientificDecision, 'decisionId' | 'threadId' | 'acceptedEventId' | 'acceptedSynthesisDigest' | 'sourceEventIds'> & {
 	revisionEvidence?: RevisionEvidence;
 };
+export type DocumentReviewEvidence = {
+	candidateDigest: string;
+	planDigest: string;
+	decision: 'APPROVE' | 'APPROVE_WITH_CHANGES' | 'BLOCK' | 'NEEDS_CLARIFICATION';
+};
+export type MaterializationCommitEvidence = {
+	candidateDigest: string;
+	planDigest: string;
+	targetFilename: string;
+	targetRevision: string;
+	publishedSha256: string;
+	receiptSha256: string;
+	threadIds: ScientificThreadId[];
+};
 export type MaterializationRecord = {
 	schemaVersion: 1;
 	materializationId: string;
@@ -172,6 +188,8 @@ export type MaterializationRecord = {
 	selectedDecisions: MaterializationReservedDecision[];
 	/** Absent only for reservations persisted before executable payload support. */
 	plan?: MaterializationPlan;
+	review?: DocumentReviewEvidence;
+	commit?: MaterializationCommitEvidence;
 };
 export type MaterializationClaimProvenance = {
 	claimId: string;

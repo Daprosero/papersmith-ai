@@ -236,7 +236,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 - **Acceptance:** executor is non-writing and cannot publish; all failures set materialization `BLOCKED` while preserving `ACCEPTED_UNMATERIALIZED`.
 
 ### T9.2 — Add Document Reviewer gate and guarded initial publication adapter
-- [ ] T9.2 — Add Document Reviewer gate and guarded initial publication adapter
+- [x] T9.2 — Add Document Reviewer gate and guarded initial publication adapter
 - **Files/discovery:** `materialization-candidate-executor.ts`, existing V2 Document Reviewer, `proposal-workspace-adapter.ts`, `.pi/extensions/proposal-workspace.ts:createInitialProposal`.
 - **Depends on:** T9.1.
 - **Implement:** require exact-candidate `APPROVE` before any guard/publication call; add backward-compatible guarded `publishInitial()` using `INITIAL_CREATE`/`createInitialProposal`; leave `publishSuccessor()` unchanged.
@@ -244,7 +244,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 - **Acceptance:** no proposal, manifest, receipt, or revision write occurs before exact review approval; initial and successor publication both use existing guarded V2 infrastructure.
 
 ### T9.3 — Commit materialization only after verified publication
-- [ ] T9.3 — Commit materialization only after verified publication
+- [x] T9.3 — Commit materialization only after verified publication
 - **Files/discovery:** `scientific-workflow-service.ts`, `proposal-workspace-adapter.ts`, `revision-receipt.ts`, `scientific-state-store.ts`.
 - **Depends on:** T9.2.
 - **Implement:** verify published bytes/hash, derived state, and receipt against the frozen record; then append `MATERIALIZATION_COMMITTED`, record revision/receipt/thread provenance, and mark selected decisions `MATERIALIZED` exactly once.

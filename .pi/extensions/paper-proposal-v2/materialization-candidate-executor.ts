@@ -2,7 +2,7 @@ import { rebuildDerivedState } from './derived-state-builder.js';
 import { validateMaterializationPlan } from './materialization-planner.js';
 import { compilePatches } from './patch-compiler.js';
 import { validateCandidate } from './candidate-validator.js';
-import { sha256, type DocumentState } from './types.js';
+import { sha256, type CompiledPatch, type DocumentState } from './types.js';
 import type { FrozenDecisionSelection, MaterializationClaimProvenance, MaterializationPlan, MaterializationRecord, RevisionEvidence } from './scientific-domain.js';
 
 export type ExactDocumentCandidate = {
@@ -10,6 +10,8 @@ export type ExactDocumentCandidate = {
 	revision: string;
 	bytes: Buffer;
 	digest: string;
+	/** Present only for successor publication; produced while executing frozen patches in memory. */
+	patches?: CompiledPatch[];
 };
 
 export type CandidateValidation = {
@@ -76,6 +78,7 @@ export class MaterializationCandidateExecutor {
 		if (!plan.source || !plan.expectedRevisionIdentity || !sameRevision(input.source, plan.source) || !sameRevision(input.source, plan.expectedRevisionIdentity) || !sameRevision(input.source, plan.payload.expectedBase)) return blocked(record, 'MATERIALIZATION_SOURCE_STALE', plan);
 		let state = input.source;
 		const patchIds: string[] = [];
+		const compiledPatches: CompiledPatch[] = [];
 		for (const patch of plan.payload.patches) {
 			const anchor = state.structuralIndex.byId[patch.preconditions.anchorEntryId];
 			if (!anchor || state.documentSha256 !== patch.preconditions.baseDocumentSha256 || !sameRevision(state, patch.preconditions.expectedRevision) || anchor.textSha256 !== patch.preconditions.anchorTextSha256) return blocked(record, 'MATERIALIZATION_PAYLOAD_PRECONDITION_FAILED', plan);
@@ -84,6 +87,7 @@ export class MaterializationCandidateExecutor {
 				const validation = await validateCandidate(state, patch.plan, compiled);
 				if (!validation.ok) return blocked(record, 'MATERIALIZATION_VALIDATION_FAILED', plan);
 				patchIds.push(...compiled.patchIds);
+				compiledPatches.push(...compiled.patches);
 				state = await rebuildDerivedState(state.filename, state.revision, state.lineage, Buffer.from(compiled.candidate, 'utf8'));
 			} catch {
 				return blocked(record, 'MATERIALIZATION_COMPILATION_FAILED', plan);
@@ -93,7 +97,7 @@ export class MaterializationCandidateExecutor {
 		const digest = sha256(bytes);
 		return {
 			status: 'ready',
-			candidate: { filename: state.filename, revision: state.revision, bytes, digest },
+			candidate: { filename: state.filename, revision: state.revision, bytes, digest, patches: compiledPatches },
 			provenance: structuredClone(plan.claimProvenance),
 			validation: { operation: plan.operation, planDigest: plan.digest, payloadVersion: 1, inputDocumentSha256: input.source.documentSha256, candidateDocumentSha256: digest, patchIds, validationResults: { frozenPayload: true, preconditions: true, compiler: true, validator: true } },
 		};

@@ -1569,3 +1569,98 @@ Verification passed:
 - `git diff --check`: passed.
 
 T9.2 and T9.3 remain out of scope and unchecked. No review receipt or commit is claimed.
+
+## PR11 / T9.2–T9.3 — completed
+
+### Structured status and action context consumed
+
+```yaml
+schemaName: gentle-ai.sdd-status
+schemaVersion: 1
+changeName: scientific-reasoning-workflow
+artifactStore: openspec
+applyState: ready
+nextRecommended: apply
+actionContext:
+  mode: repo-local
+  workspaceRoot: /Users/diego/Desktop/Proyectos/papersmith-ai
+  allowedEditRoots: [/Users/diego/Desktop/Proyectos/papersmith-ai]
+delivery:
+  strategy: auto-chain
+  chainStrategy: stacked-to-main
+  boundary: PR11 / T9.2–T9.3 only
+strictTdd: false
+warnings: ["CodeGraph MCP was unavailable; known-path reads followed the existing .codegraph check."]
+```
+
+### Completed tasks and persisted checkbox evidence
+
+- [x] T9.2 — Add Document Reviewer gate and guarded initial publication adapter
+  - Added a Document Reviewer gate that receives immutable exact candidate, frozen plan, validation, and provenance evidence. Only `APPROVE` creates a digest-bound approval; all non-pass decisions atomically block the materialization with no guard or proposal write.
+  - Added guarded `publishInitial()` using the existing `INITIAL_CREATE` / `createInitialProposal()` workspace path. It verifies approval binding, candidate identity, guarded reread bytes/hash, and the minimal `r01` target contract. Existing `publishSuccessor()` behavior remains unchanged; the new approved-successor wrapper delegates to it only after approval.
+- [x] T9.3 — Commit materialization only after verified publication
+  - Added the publication coordinator and atomic scientific-store transitions for reviewer evidence, `BLOCKED` / `RECOVERY_REQUIRED` outcomes, and `MATERIALIZATION_COMMITTED`.
+  - Only verified published bytes/hash, committed derived state, readable receipt, exact frozen plan/candidate digests, selected decision/thread provenance, and atomic scientific commit transition selected decisions to `MATERIALIZED`.
+
+Both task checkboxes were updated in `tasks.md` only after focused tests, relevant V2 regressions, and `git diff --check` passed.
+
+### Files changed
+
+- `.pi/extensions/paper-proposal-v2/document-reviewer-gate.ts` (new)
+- `.pi/extensions/paper-proposal-v2/materialization-publication-service.ts` (new)
+- `.pi/extensions/paper-proposal-v2/proposal-workspace-adapter.ts`
+- `.pi/extensions/paper-proposal-v2/materialization-candidate-executor.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-domain.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-state-store.ts`
+- `.pi/extensions/paper-proposal-v2/revision-receipt.ts`
+- `.pi/extensions/paper-proposal-v2/derived-state-store.ts`
+- `.pi/extensions/paper-proposal-v2/exports.ts`
+- `tests/paper-proposal-v2-scientific-publication.test.mjs` (new)
+- `openspec/changes/scientific-reasoning-workflow/tasks.md`
+- `openspec/changes/scientific-reasoning-workflow/apply-progress.md`
+
+### Verification evidence
+
+Focused PR11 tests were run before V2 regressions:
+
+```text
+node --test tests/paper-proposal-v2-scientific-materialization.test.mjs tests/paper-proposal-v2-scientific-candidate-executor.test.mjs tests/paper-proposal-v2-scientific-publication.test.mjs
+# PASS: 16 tests, 0 failures
+```
+
+```text
+node --test tests/paper-proposal-v2.test.mjs tests/paper-proposal-v2-publish-e2e.test.mjs tests/paper-proposal-v2-lifecycle.test.mjs tests/paper-proposal-v2-revision-lifecycle.test.mjs tests/paper-proposal-v2-source-routing.test.mjs tests/paper-proposal-v2-tutor-reviewer.test.mjs tests/paper-proposal-v2-production-role-metrics.test.mjs
+# PASS: 43 tests, 0 failures
+
+git diff --check
+# PASS: no output
+```
+
+Runtime harness: exercised through temporary-root guarded V2 workspace fixtures for `r01` and successor publication. The tests prove non-pass/no-write, changed-candidate invalidation, guarded initial and successor paths, pre-commit failure, publication ambiguity, incomplete evidence recovery, receipt/derived-state verification, and post-commit decision state.
+
+### Deviations, risks, and boundary
+
+- **Design deviation:** none.
+- **Risk:** publication that completes but lacks complete derived-state or receipt evidence is deliberately `RECOVERY_REQUIRED`; T10 owns user-facing recovery diagnostics and restart workflow completion.
+- **Workload / PR boundary:** `auto-chain`, `stacked-to-main`; PR11 is T9.2–T9.3 only. Current authored delta is 584 additions + 33 deletions (617 lines, including untracked paths), so a maintainer must accept `size:exception` or split the already-complete PR11 work unit before PR creation. T10/PR12 was not started.
+- **Rollback boundary:** revert only the PR11 reviewer/publication coordinator, adapter/domain/store/receipt wiring, focused publication test, and SDD artifact updates. This does not alter direct-document routing, lifecycle behavior, `DELIBERATE`, or the default-off feature gate.
+- **Conventional commit proposal (not created):** `feat(paper-proposal-v2): gate scientific materialization publication`
+
+### Remaining tasks
+
+```text
+- [ ] T10.1 — Complete recovery and diagnostic outcomes
+- [ ] T10.2 — Run compatibility and full regression coverage
+```
+
+## PR11 / T9.2–T9.3 — user-approved size exception
+
+PR11/T9.2–T9.3 totals 584 additions and 33 deletions (617 authored changed lines), exceeding the 400-line review budget. The user approved this as a size exception because Document Reviewer gating, guarded V2 publication, and verified `MATERIALIZED` commit form one cohesive fail-closed publication boundary.
+
+Verification passed:
+
+- Focused tests: 16/16.
+- V2 regressions: 43/43.
+- `git diff --check`: passed.
+
+T10/PR12 remains out of scope. No review receipt or commit is claimed.

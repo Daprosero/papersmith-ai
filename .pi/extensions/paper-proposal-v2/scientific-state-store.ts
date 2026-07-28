@@ -12,6 +12,8 @@ import type {
 	ScientificThreadId,
 	ThreadRelation,
 	MaterializationRecord,
+	MaterializationCommitEvidence,
+	DocumentReviewEvidence,
 	FrozenDecisionSelection,
 	ThreadTransitionIntent,
 } from './scientific-domain.js';
@@ -104,7 +106,7 @@ const defaultFs: ScientificFs = { link, lstat, mkdir, open, readdir, readFile, r
 const EVENT_FILE = /^(\d+)-([A-Za-z0-9_-]+)\.json$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const FORBIDDEN_PRIVATE_KEYS = /(?:chain.?of.?thought|hidden.?prompt|raw.?trace|private.?reasoning|transcript|\bprompt\b|\btrace\b|\bthought\b)/i;
-const ALLOWED_PAYLOAD_KEYS = new Set(['title', 'summary', 'status', 'decisionId', 'synthesisId', 'synthesisDigest', 'relationId', 'relatedThreadIds', 'activeThreadId', 'candidateIds', 'findingId', 'issueCategory', 'evidenceReferences', 'requiredCorrection', 'constraints', 'modificationCause', 'reason', 'code', 'materializationId', 'selectionKey', 'acceptedEventIds']);
+const ALLOWED_PAYLOAD_KEYS = new Set(['title', 'summary', 'status', 'decisionId', 'synthesisId', 'synthesisDigest', 'relationId', 'relatedThreadIds', 'activeThreadId', 'candidateIds', 'findingId', 'issueCategory', 'evidenceReferences', 'requiredCorrection', 'constraints', 'modificationCause', 'reason', 'code', 'materializationId', 'selectionKey', 'acceptedEventIds', 'candidateDigest', 'planDigest', 'decision', 'targetFilename', 'targetRevision', 'publishedSha256', 'receiptSha256', 'threadIds']);
 const ALLOWED_EVIDENCE_KINDS = /^[a-z][a-z0-9_-]{0,63}$/;
 const THREAD_RELATION_KINDS = new Set(['RELATED', 'SUPPORTS', 'CHALLENGES', 'DEPENDS_ON']);
 const DECISION_STATES = new Set(['ACCEPTED_UNMATERIALIZED', 'MATERIALIZED', 'RETRACTED']);
@@ -248,6 +250,23 @@ function validateFrozenSelection(selection: unknown, decisions: ScientificDecisi
 	});
 }
 
+function isDigest(value: unknown): value is string { return typeof value === 'string' && SHA256.test(value); }
+
+function validateDocumentReviewEvidence(value: unknown): value is DocumentReviewEvidence {
+	return isObject(value) && isDigest(value.candidateDigest) && isDigest(value.planDigest)
+		&& ['APPROVE', 'APPROVE_WITH_CHANGES', 'BLOCK', 'NEEDS_CLARIFICATION'].includes(value.decision as string);
+}
+
+function validateMaterializationCommitEvidence(value: unknown, selected: MaterializationRecord['selectedDecisions']): value is MaterializationCommitEvidence {
+	return isObject(value) && isDigest(value.candidateDigest) && isDigest(value.planDigest)
+		&& typeof value.targetFilename === 'string' && /^research-concept-(?:[a-z0-9]+(?:-[a-z0-9]+)*-)?r\d{2,}\.md$/.test(value.targetFilename)
+		&& typeof value.targetRevision === 'string' && /^r\d{2,}$/.test(value.targetRevision)
+		&& isDigest(value.publishedSha256) && isDigest(value.receiptSha256)
+		&& Array.isArray(value.threadIds) && value.threadIds.length > 0 && value.threadIds.every((id) => typeof id === 'string')
+		&& JSON.stringify([...new Set(value.threadIds)].sort()) === JSON.stringify(value.threadIds)
+		&& JSON.stringify([...new Set(selected.map((decision) => decision.threadId))].sort()) === JSON.stringify(value.threadIds);
+}
+
 function validateMaterializationRecord(record: unknown, snapshot: ScientificSnapshotRecord, events: ScientificEvent[]): record is MaterializationRecord {
 	if (!isObject(record) || record.schemaVersion !== 1 || typeof record.materializationId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(record.materializationId) || !['RESOLVING', 'PREPARED', 'PLANNING', 'EXECUTING_CANDIDATE', 'REVIEWING_DOCUMENT', 'PUBLISHING', 'COMMITTED', 'BLOCKED', 'RECOVERY_REQUIRED'].includes(record.state as string) || !validateFrozenSelection(record.frozenSelection, snapshot.decisions) || !Array.isArray(record.selectedDecisions) || record.selectedDecisions.length !== record.frozenSelection.decisionIds.length) return false;
 	const threads = new Map(snapshot.threads.map((thread) => [thread.threadId, thread]));
@@ -261,7 +280,13 @@ function validateMaterializationRecord(record: unknown, snapshot: ScientificSnap
 		if (selected.revisionEvidence !== undefined && (!isObject(selected.revisionEvidence) || digest(selected.revisionEvidence) !== digest(thread.revisionEvidence))) return false;
 		return true;
 	});
-	return selectedValid && (record.plan === undefined || validateMaterializationPlan(record.plan, record));
+	const planValid = record.plan === undefined || validateMaterializationPlan(record.plan, record);
+	const reviewValid = record.review === undefined || validateDocumentReviewEvidence(record.review);
+	const commitValid = record.commit === undefined || validateMaterializationCommitEvidence(record.commit, record.selectedDecisions);
+	if (!selectedValid || !planValid || !reviewValid || !commitValid) return false;
+	if (record.state === 'PUBLISHING' && (!record.review || record.review.decision !== 'APPROVE')) return false;
+	if (record.state === 'COMMITTED' && (!record.review || record.review.decision !== 'APPROVE' || !record.commit || record.commit.planDigest !== record.plan?.digest || record.commit.candidateDigest !== record.review.candidateDigest)) return false;
+	return true;
 }
 
 function emptyMaterializationIndex(): MaterializationIndexRecord {
@@ -333,6 +358,60 @@ export class ScientificStateStore {
 			const nextRecord: MaterializationRecord = { ...persisted, state: 'PREPARED', plan: structuredClone(plan) };
 			const event: ScientificEvent = { schemaVersion: 1, eventId: randomUUID(), sequence: current.events.length + 1, occurredAt: new Date().toISOString(), actor: { kind: 'PLANNER' }, type: 'MATERIALIZATION_PLANNED', causalEventIds: [...persisted.frozenSelection.acceptedEventIds], payload: { materializationId: persisted.materializationId, selectionKey: persisted.frozenSelection.selectionKey, status: 'PREPARED' }, evidence: [], privacy: { contentClass: 'PUBLIC_SUMMARY_ONLY', redactionVersion: 1 } };
 			await this.commitTransitionLocked({ events: [event], snapshot: structuredClone(current.snapshot), materialization: { record: nextRecord, index: structuredClone(index) } });
+			return { status: 'ready', record: nextRecord };
+		});
+	}
+
+	async recordDocumentReview(record: MaterializationRecord, review: DocumentReviewEvidence): Promise<MaterializationPlanPersistenceResult> {
+		return this.withLock(async () => {
+			const current = await this.readValidated(false);
+			if (!current) return { status: 'blocked', code: 'MATERIALIZATION_STATE_MISSING' };
+			const root = await this.safeProjectRoot();
+			const index = await this.readMaterializationIndex(root, current.snapshot, current.events);
+			if (!index.records[record.materializationId]) return { status: 'blocked', code: 'MATERIALIZATION_RESERVATION_MISSING' };
+			const persisted = await this.readMaterializationRecord(root, record.materializationId, current.snapshot, current.events);
+			if (persisted.state !== 'PREPARED' || !persisted.plan || persisted.plan.digest !== record.plan?.digest || persisted.frozenSelection.selectionKey !== record.frozenSelection.selectionKey || !validateDocumentReviewEvidence(review) || review.planDigest !== persisted.plan.digest) return { status: 'blocked', code: 'MATERIALIZATION_REVIEW_INPUT_INVALID' };
+			const nextRecord: MaterializationRecord = { ...persisted, state: review.decision === 'APPROVE' ? 'PUBLISHING' : 'BLOCKED', review: structuredClone(review) };
+			const event: ScientificEvent = { schemaVersion: 1, eventId: randomUUID(), sequence: current.events.length + 1, occurredAt: new Date().toISOString(), actor: { kind: 'DOCUMENT_REVIEWER' }, type: 'MATERIALIZATION_DOCUMENT_REVIEWED', causalEventIds: [...persisted.frozenSelection.acceptedEventIds], payload: { materializationId: persisted.materializationId, selectionKey: persisted.frozenSelection.selectionKey, status: nextRecord.state, candidateDigest: review.candidateDigest, planDigest: review.planDigest, decision: review.decision }, evidence: [], privacy: { contentClass: 'PUBLIC_SUMMARY_ONLY', redactionVersion: 1 } };
+			await this.commitTransitionLocked({ events: [event], snapshot: structuredClone(current.snapshot), materialization: { record: nextRecord, index: structuredClone(index) } });
+			return { status: 'ready', record: nextRecord };
+		});
+	}
+
+	async recordMaterializationOutcome(record: MaterializationRecord, state: Extract<MaterializationRecord['state'], 'BLOCKED' | 'RECOVERY_REQUIRED'>, code: string): Promise<MaterializationPlanPersistenceResult> {
+		return this.withLock(async () => {
+			const current = await this.readValidated(false);
+			if (!current) return { status: 'blocked', code: 'MATERIALIZATION_STATE_MISSING' };
+			const root = await this.safeProjectRoot();
+			const index = await this.readMaterializationIndex(root, current.snapshot, current.events);
+			if (!index.records[record.materializationId]) return { status: 'blocked', code: 'MATERIALIZATION_RESERVATION_MISSING' };
+			const persisted = await this.readMaterializationRecord(root, record.materializationId, current.snapshot, current.events);
+			if (persisted.state === 'COMMITTED' || persisted.frozenSelection.selectionKey !== record.frozenSelection.selectionKey) return { status: 'blocked', code: 'MATERIALIZATION_OUTCOME_INVALID' };
+			const nextRecord: MaterializationRecord = { ...persisted, state };
+			const event: ScientificEvent = { schemaVersion: 1, eventId: randomUUID(), sequence: current.events.length + 1, occurredAt: new Date().toISOString(), actor: { kind: 'SYSTEM' }, type: 'MATERIALIZATION_BLOCKED', causalEventIds: [...persisted.frozenSelection.acceptedEventIds], payload: { materializationId: persisted.materializationId, selectionKey: persisted.frozenSelection.selectionKey, status: state, code }, evidence: [], privacy: { contentClass: 'PUBLIC_SUMMARY_ONLY', redactionVersion: 1 } };
+			await this.commitTransitionLocked({ events: [event], snapshot: structuredClone(current.snapshot), materialization: { record: nextRecord, index: structuredClone(index) } });
+			return { status: 'ready', record: nextRecord };
+		});
+	}
+
+	async commitMaterialization(record: MaterializationRecord, commit: MaterializationCommitEvidence): Promise<MaterializationPlanPersistenceResult> {
+		return this.withLock(async () => {
+			const current = await this.readValidated(false);
+			if (!current) return { status: 'blocked', code: 'MATERIALIZATION_STATE_MISSING' };
+			const root = await this.safeProjectRoot();
+			const index = await this.readMaterializationIndex(root, current.snapshot, current.events);
+			if (!index.records[record.materializationId]) return { status: 'blocked', code: 'MATERIALIZATION_RESERVATION_MISSING' };
+			const persisted = await this.readMaterializationRecord(root, record.materializationId, current.snapshot, current.events);
+			if (persisted.state !== 'PUBLISHING' || !persisted.plan || !persisted.review || persisted.review.decision !== 'APPROVE' || persisted.plan.digest !== record.plan?.digest || persisted.review.candidateDigest !== commit.candidateDigest || commit.planDigest !== persisted.plan.digest || !validateMaterializationCommitEvidence(commit, persisted.selectedDecisions)) return { status: 'blocked', code: 'MATERIALIZATION_COMMIT_EVIDENCE_INVALID' };
+			const snapshot = structuredClone(current.snapshot);
+			for (const selected of persisted.selectedDecisions) {
+				const decision = snapshot.decisions.find((candidate) => candidate.decisionId === selected.decisionId);
+				if (!decision || decision.state !== 'ACCEPTED_UNMATERIALIZED' || decision.acceptedEventId !== selected.acceptedEventId) return { status: 'blocked', code: 'MATERIALIZATION_DECISION_INELIGIBLE' };
+				decision.state = 'MATERIALIZED';
+			}
+			const nextRecord: MaterializationRecord = { ...persisted, state: 'COMMITTED', commit: structuredClone(commit) };
+			const event: ScientificEvent = { schemaVersion: 1, eventId: randomUUID(), sequence: current.events.length + 1, occurredAt: new Date().toISOString(), actor: { kind: 'SYSTEM' }, type: 'MATERIALIZATION_COMMITTED', causalEventIds: [...persisted.frozenSelection.acceptedEventIds], payload: { materializationId: persisted.materializationId, selectionKey: persisted.frozenSelection.selectionKey, status: 'COMMITTED', candidateDigest: commit.candidateDigest, planDigest: commit.planDigest, targetFilename: commit.targetFilename, targetRevision: commit.targetRevision, publishedSha256: commit.publishedSha256, receiptSha256: commit.receiptSha256, threadIds: commit.threadIds }, evidence: [], privacy: { contentClass: 'PUBLIC_SUMMARY_ONLY', redactionVersion: 1 } };
+			await this.commitTransitionLocked({ events: [event], snapshot, materialization: { record: nextRecord, index: structuredClone(index) } });
 			return { status: 'ready', record: nextRecord };
 		});
 	}
