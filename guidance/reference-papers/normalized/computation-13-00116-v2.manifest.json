@@ -1,0 +1,2828 @@
+{
+  "$schema": "https://papersmith.ai/schemas/papersmith-manifest-v1.1.schema.json",
+  "schema_version": "1.1",
+  "source_pdf": "/Users/diego/Desktop/Proyectos/papersmith-ai/guidance/reference-papers/source/computation-13-00116-v2.pdf",
+  "source_sha256": "9c08e20f18c788a8037e610c2dc72741db01002e3335bfb99e78bdf6e75df332",
+  "processed_at": "2026-07-17T15:37:26.026156+00:00",
+  "renderer": "PyMuPDF",
+  "render_dpi": 200,
+  "page_count": 28,
+  "pages": [
+    {
+      "page": 1,
+      "image": "computation-13-00116-v2-assets/page-001.png",
+      "raw_text": "Academic Editor: Shengkun Xie\nReceived: 13 April 2025\nRevised: 6 May 2025\nAccepted: 8 May 2025\nPublished: 10 May 2025\nCitation:\nPérez-Rosero, D.A.;\nManrique-Cabezas, D.A.;\nTriana-Martinez, J.C.; Álvarez-Meza,\nA.M.; Castellanos-Dominguez, G. An\nExplainable Framework Integrating\nLocal Biplots and Gaussian Processes\nfor Unemployment Rate Prediction in\nColombia. Computation 2025, 13, 116.\nhttps://doi.org/10.3390/\ncomputation13050116\nCopyright: © 2025 by the authors.\nLicensee MDPI, Basel, Switzerland.\nThis article is an open access article\ndistributed under the terms and\nconditions of the Creative Commons\nAttribution (CC BY) license\n(https://creativecommons.org/\nlicenses/by/4.0/).\nArticle\nAn Explainable Framework Integrating Local Biplots and\nGaussian Processes for Unemployment Rate Prediction\nin Colombia\nDiego Armando Pérez-Rosero\n, Diego Alejandro Manrique-Cabezas *\n, Jennifer Carolina Triana-Martinez\n,\nAndrés Marino Álvarez-Meza\nand German Castellanos-Dominguez\nSignal Processing and Recognition Group, Universidad Nacional de Colombia, Manizales 170003, Colombia;\ndieaperezros@unal.edu.co (D.A.P.-R.); jectrianama@unal.edu.co (J.C.T.-M.);\namalvarezme@unal.edu.co (A.M.Á.-M.); cgcastellanosd@unal.edu.co (G.C.-D.)\n* Correspondence: dimanriquec@unal.edu.co\nAbstract: Addressing unemployment is essential for formulating effective public policies.\nIn particular, socioeconomic and monetary variables serve as essential indicators for antic-\nipating labor market trends, given their strong influence on employment dynamics and\neconomic stability. However, effective unemployment rate prediction requires addressing\nthe non-stationary and non-linear characteristics of labor data. Equally important is the\npreservation of interpretability in both samples and features to ensure that forecasts can\nmeaningfully inform public decision-making. Here, we provide an explainable framework\nintegrating unsupervised and supervised machine learning to enhance unemployment\nrate prediction and interpretability. Our approach is threefold: (i) we gather a dataset\nfor Colombian unemployment rate prediction including monetary and socioeconomic\nvariables. (ii) Then, we used a Local Biplot technique from the widely recognized Uniform\nManifold Approximation and Projection (UMAP) method along with local affine transfor-\nmations as an unsupervised representation of non-stationary and non-linear data patterns\nin a simplified and comprehensible manner. (iii) A Gaussian Processes regressor with\nkernel-based feature relevance analysis is coupled as a supervised counterpart for both un-\nemployment rate prediction and input feature importance analysis. We demonstrated the\neffectiveness of our proposed approach through a series of experiments conducted on our\ncustomized database focused on unemployment indicators in Colombia. Furthermore, we\ncarried out a comparative analysis between traditional statistical techniques and modern\nmachine learning methods. The results revealed that our framework significantly enhances\nboth clustering and predictive performance, while also emphasizing the importance of\ninput samples and feature selection in driving accurate outcomes.\nKeywords: explainability; unemployment rate; regression; local biplot; UMAP; Gaussian\nProcesses\n1. Introduction\nUnemployment persists as a deep-rooted structural challenge in economies world-\nwide, with its impact especially acute in emerging markets [1]. From a macroeconomic\nperspective, elevated unemployment rates lead to substantial production losses, often\nreflected in a negative output gap—where actual output lags behind potential, even amid\nperiods of economic growth [2]. This persistent underutilization of resources can trigger\na cycle of economic contraction, leading to deeper recessions and potentially prolonged\nComputation 2025, 13, 116\nhttps://doi.org/10.3390/computation13050116\n",
+      "text_characters": 3869,
+      "confidence": 0.95,
+      "confidence_status": "acceptable",
+      "confidence_notes": "Machine-readable text was preserved with page-image provenance.",
+      "textual_figure_captions": [],
+      "equation_ids": [],
+      "figure_ids": []
+    },
+    {
+      "page": 2,
+      "image": "computation-13-00116-v2-assets/page-002.png",
+      "raw_text": "Computation 2025, 13, 116\n2 of 28\ndepressions, especially in vulnerable emerging economies [3]. Furthermore, rising un-\nemployment exacerbates socio-economic challenges by diminishing both individual and\ncollective incomes, thereby escalating poverty rates and worsening financial inequality [4].\nFor instance, in response to the unfavorable economic climate of 2023, central banks world-\nwide implemented aggressive monetary policies, marking the most rapid escalation of\nintervention interest rates since the 1980s [5].\nSpecifically for Colombia, the unemployment rate has reached alarming levels, peak-\ning at a historical high of 26% during the 1999 financial crisis and remaining elevated at\n13.25% throughout 2023. This contrasts sharply with the global unemployment rate, which\nwas 5.1% in 2023, revealing a stark employment dissatisfaction gap that affected nearly\n435 million people worldwide [6]. Despite numerous policy initiatives, Colombia’s unem-\nployment rate has consistently remained near 10%, underscoring the limited effectiveness\nof existing employment generation strategies in fostering meaningful improvements in\nnational labor market outcomes. This sustained high level of unemployment points to\ndeeper structural deficiencies, where prevailing policies have failed to disrupt the cycle of\njoblessness. As a result, a substantial segment of the population continues to be excluded\nfrom formal labor market participation, reinforcing patterns of economic marginalization\nand social inequality [7].\nHence, accurately predicting unemployment rates is essential for governments to\nformulate effective policies that enhance well-being and foster sustainable development.\nPrecise forecasts enable policymakers to foresee economic difficulties and formulate ways to\nalleviate the detrimental impacts on society and economy [8]. Such information is especially\ncritical in countries characterized by diverse and rapidly changing socio-economic condi-\ntions, i.e., Colombia, where reliable forecasting plays a central role in shaping responsive\nand effective policy interventions [9]. The success of these policies is intrinsically linked\nto the accuracy of unemployment projections, as robust forecasts enable more informed\ndecision-making and efficient allocation of public resources [10]. Therefore, enhancing the\nprecision of unemployment forecasting is not merely a technical endeavor but a strategic\nimperative for sound economic planning and policy design [11].\nNevertheless, accurate unemployment forecasting necessitates the integration of both\nmonetary and socioeconomic variables, as these indicators capture key labor market dynam-\nics and the broader impact of economic policies [12]. Moreover, incorporating data from\nmultiple, heterogeneous sources is essential, as it provides critical insights into economic\nactivity, inflation, interest rates, and employment conditions. To ensure the robustness\nand reliability of predictive models, it is also vital to harmonize data both spatially and\ntemporally—aligning measurements across consistent geographic regions and timeframes\nto preserve coherence and comparability [13]. The quality and accessibility of these data\nsources are pivotal for building comprehensive and representative datasets to support the\ndevelopment of more targeted and effective policy responses [14].\nIn Colombia, the Departamento Administrativo Nacional de Estadística (DANE)\nproduces official labor market statistics using methodologies aligned with international\nstandards, thereby ensuring consistency and cross-national comparability [15]. However,\nthe absence of binding regulations mandating the synchronization of statistical data across\ngovernmental entities poses a risk to the reliability and coherence of unemployment rate\npredictive models. As the principal authority of the Sistema Estadístico Nacional (SEN),\nDANE is entrusted with coordinating, regulating, and modernizing national statistical\nprocesses. While it holds the mandate to oversee data review and methodological updates,\nthe lack of explicit institutional requirements for inter-agency data harmonization continues\nto hinder the consistency and integration of labor market information [16].\n",
+      "text_characters": 4218,
+      "confidence": 0.95,
+      "confidence_status": "acceptable",
+      "confidence_notes": "Machine-readable text was preserved with page-image provenance.",
+      "textual_figure_captions": [],
+      "equation_ids": [],
+      "figure_ids": []
+    },
+    {
+      "page": 3,
+      "image": "computation-13-00116-v2-assets/page-003.png",
+      "raw_text": "Computation 2025, 13, 116\n3 of 28\nOn the other hand, unemployment forecasting is inherently challenged by the non-\nstationary and non-linear nature of economic data [17,18]. Non-stationarity implies that key\nstatistical properties—such as the mean and variance of the unemployment rate—vary over\ntime, making it difficult to develop stable and consistently reliable predictive models [19].\nAs a result, forecasting models may perform well during certain periods but lose accuracy\nunder different economic conditions [20]. Additionally, the presence of linear and non-linear\ndata behaviors indicates that the relationships between unemployment and its driving\nfactors are not fixed, but instead adapt over time in response to shifting macroeconomic\nconditions [21,22]. This complexity underscores the need for adaptive and explainable\nmodeling approaches that can capture such temporal and structural variations. Therefore,\ncomprehending and surmounting these obstacles is crucial for formulating effective policies\nintended to decrease unemployment and mitigate its socio-economic effects [23].\nIn economic science, classical statistical methods for unemployment prediction pri-\nmarily involve time series models and econometric techniques that have been fundamental\nin economic forecasting [24]. Traditional approaches, such as the Autoregressive Inte-\ngrated Moving Average (ARIMA) and its variants, have been widely used to predict\nunemployment data due to their ability to capture trends and seasonality [25]. Likewise,\nVector Autoregression (VAR) and structural equation models provide insights into the\nrelationships between unemployment and macroeconomic variables [26]. Despite their\nwidespread use, these techniques often face limitations in handling the non-stationarity\nand non-linearity issues [27]. Then, recent advancements have focused on improving these\nclassical models by incorporating techniques such as unit root tests to assess stationary and\nco-integration strategies to explore long-term equilibrium relationships [28]. While these\nalgorithms remain valuable for their interpretability and simplicity, they are increasingly\nbeing integrated with modern computational techniques to enhance predictive performance\nin complex economic environments.\nThe increasing demand to simulate intricate and dynamic economic phenomena\nhas hastened the implementation of machine learning methodologies for predictive en-\ndeavors [29]. These methodologies have demonstrated significant efficacy in identifying\nnon-linear correlations, accommodating structural shifts in labor markets, and improving\nforecasting accuracy across various geographies and temporal spans [30]. Furthermore,\nincorporating various economic indicators into machine learning frameworks has enhanced\nthe capacity to discern causal links and augment the interpretability of predictions [31].\nTherefore, Support Vector Machines (SVM), Random Forest (RF), and Gaussian Processes\n(GP), have been extensively utilized in predictive modeling due to their solid theoretical\nfoundations and adaptability to diverse data structures [32]. SVMs determine an optimal\nhyperplane in a reproducing kernel Hilbert space; however, their effectiveness may decline\nwith large datasets due to increased computational complexity and sensitivity to kernel\nhyperparameter selection [33]. Furthermore, RF, as an ensemble method that mitigates\noverfitting through the aggregation of multiple decision trees, enhances both robustness\nand interpretability [34]. However, its efficacy often diminishes in high-dimensional set-\ntings, and it may face generalization challenges with limited datasets [35]. Moreover, GPs\nfurnish a probabilistic framework that not only provides flexibility but also quantifies\nuncertainty, making them especially advantageous in contexts where model interpretability\nis essential and data are limited; nonetheless, their computational cost escalates cubically\nwith the number of samples, significantly constraining their applicability to large-scale\nissues [36]. Although these methods exhibit considerable benefits, they encounter obstacles\nin feature selection, hyperparameter optimization, and scalability, frequently necessitating\nextensive preprocessing and carefully designed optimization strategies [37].\n",
+      "text_characters": 4294,
+      "confidence": 0.95,
+      "confidence_status": "acceptable",
+      "confidence_notes": "Machine-readable text was preserved with page-image provenance.",
+      "textual_figure_captions": [],
+      "equation_ids": [],
+      "figure_ids": []
+    },
+    {
+      "page": 4,
+      "image": "computation-13-00116-v2-assets/page-004.png",
+      "raw_text": "Computation 2025, 13, 116\n4 of 28\nRecently, Deep Learning models have been proposed to improve the accuracy of\nforecasts [38]. Namely, Long Short-Term Memory (LSTM) networks have shown promise\nin capturing complex patterns and dependencies in unemployment data due to their ability\nto handle large datasets and non-linear relationships [39]. Additionally, hybrid models,\nwhich combine ARIMA with machine learning techniques like GARCH corrections or\nMarkov chains, address issues like heteroscedasticity and non-stationarity [40]. Recent\nstudies demonstrate that hybrid models outperform traditional approaches in managing\nthe dynamic nature of unemployment trends across different economic contexts and specific\ngeographic regions [41]. This progress indicates a growing recognition of the importance\nof advanced analytical tools in informing economic policies and strategies to mitigate\nunemployment [42]. Nevertheless, Deep Learning approaches are often prone to overfitting\nand suffer from a lack of transparent interpretability, which can hinder their applicability\nin policy-driven contexts where model explainability is crucial [43].\nIn this work, we propose an explainable and integrative machine learning framework\nthat combines both unsupervised and supervised approaches to improve the prediction\nand interpretability of unemployment rates in Colombia. Our methodology unfolds in\nthree main stages:\n•\nWe construct a comprehensive dataset tailored for unemployment rate prediction in\nColombia, incorporating monetary and socioeconomic indicators.\n•\nWe apply a local biplot technique based on the widely adopted unsuperviseed\nnon-linear dimensionality reduction method, the Uniform Manifold Approximation\nand Projection (UMAP), enriched with local affine transformations, to capture non-\nstationary and non-linear data patterns in a low-dimensional and interpretable space.\n•\nWe deploy a Gaussian Process regressor enhanced with kernel-based relevance analy-\nsis to perform accurate predictions and assess feature importance within the super-\nvised learning component.\nOur framework is evaluated through extensive experiments on a curated database of\nColombian unemployment indicators. We also conduct a comparative analysis between\nconventional statistical models and modern machine learning techniques. Results show\nthat our approach not only outperforms traditional methods in terms of clustering quality\nand predictive error but also provides valuable insights into the contribution of individual\nfeatures and data samples, fostering transparency and informed decision-making.\nThe remainder of this paper is organized as follows: Section 2 introduces the materials\nand methods. Sections 3 and 4 discuss the experiments and results. Finally, Section 5\noutlines the concluding remarks.\n2. Materials and Methods\n2.1. Colombian Unemployment Rate Prediction Dataset\nWe constructed a comprehensive database comprising statistical records from January\n2005 to December 2023, aimed at predicting unemployment rates in Colombia by integrating\nboth monetary and socioeconomic variables. Monetary indicators, such as interest rates\nand inflation, play a pivotal role in shaping economic cycles and influencing labor market\ndemand, making them essential components for forecasting unemployment trends [44].\nIn parallel, socioeconomic factors—including educational attainment, household income,\nand other structural indicators—offer valuable insights into the long-term dynamics of\nlabor market participation and worker mobility [45]. Despite the acknowledged relevance\nof these variables, their joint inclusion in predictive unemployment models remains limited\nin the literature. Our methodology addresses this gap by combining macroeconomic and\nsocial dimensions, enabling a more holistic understanding of the multifaceted drivers of\nunemployment [46].\n",
+      "text_characters": 3855,
+      "confidence": 0.95,
+      "confidence_status": "acceptable",
+      "confidence_notes": "Machine-readable text was preserved with page-image provenance.",
+      "textual_figure_captions": [],
+      "equation_ids": [],
+      "figure_ids": []
+    },
+    {
+      "page": 5,
+      "image": "computation-13-00116-v2-assets/page-005.png",
+      "raw_text": "Computation 2025, 13, 116\n5 of 28\nFirst, we include two principal labor market indicators—the Unemployment Rate\n(UR) and the General Participation Rate (GPR)—which are released monthly by the Labor\nMarket Statistics of DANE and are publicly accessible [25,47]. Second, additional economic\nindicators are incorporated: the Real Salary (RS), as reported by the Ministerio de Trabajo;\nthe Economic Monitoring Index (EMI), supplied by DANE to evaluate national economic\ngrowth; and the Monetary Policy Intervention Rate (MPIR), used as a price regulation\nmechanism in the national market. In accordance with its constitutional mandate, the Banco\nde la República serves as the sole institution responsible for formulating and executing\nmonetary policy, ensuring price stability, and overseeing fiscal instruments such as income\ntaxation. Third, time series related to Real Income Tax (RIT) and Real Value-Added Tax\n(RVT) are constructed using official data sourced from the Departamento Administrativo\nNacional de Planeación (DNP) [48].\nNotably, the selection of monetary and socioeconomic variables for unemployment\nforecasting is supported by a growing body of literature emphasizing the importance of\nincorporating multiple economic indicators to enhance predictive accuracy [49,50]. Specif-\nically, variables associated with the labor market, macroeconomic stability, and fiscal\nconditions have exhibited significant predictive capability across several methodological\nframeworks [51,52]. Research comparing classic econometric methods and hybrid ma-\nchine learning techniques continually emphasizes the importance of incorporating both\ncyclical and structural elements to accurately represent the complex dynamics affecting\nunemployment rates [53]. As a result, our Colombian Unemployment Rate Prediction\nDataset comprises seven key variables distributed across 228 records. These include two\nlabor market indicators, one economic monitoring metric, and four monetary variables\n(see Figure 1). These indicators were selected based on their demonstrated relevance in\ninfluencing labor market dynamics, either directly or indirectly, and their measurable\nimpact on unemployment trends. Furthermore, this variable set offers the potential to\nyield deeper insights into the perceived effects of governmental policies on employment\noutcomes [54,55].\nThe primary values of RS, RIT, and RVT are deflated based on the 2018 level, as recom-\nmended by DANE. No missing values were found in the dataset. A detailed summary of\nthe variable notation and their respective data sources is provided in Table 1.\n(UR) - (GPR) - (GMI)\n(RVT) - (RIT)\n(RS)\n(MPIR)\nDepartamento Administrativo Nacional de Estadística\nDepartamento Nacional de Planeación\nMinisterio del Trabajo\nBanco de la República\nColombian Unemployment \nRate Prediction Dataset\nSource\nVariables\nFigure 1. The Colombian Unemployment Rate Prediction Dataset, which includes Real Salary (RS),\nReal Income Tax (RIT), Real Value-Added Tax (RVT), Monetary Policy Intervention Rate (MPIR),\nGeneral Participation Rate (GPR), Economic Monitor Index (EMI), and Unemployment Rate (UR).\n",
+      "text_characters": 3120,
+      "confidence": 0.95,
+      "confidence_status": "acceptable",
+      "confidence_notes": "Machine-readable text was preserved with page-image provenance.",
+      "textual_figure_captions": [
+        "Figure 1. The Colombian Unemployment Rate Prediction Dataset, which includes Real Salary (RS),"
+      ],
+      "equation_ids": [],
+      "figure_ids": []
+    },
+    {
+      "page": 6,
+      "image": "computation-13-00116-v2-assets/page-006.png",
+      "raw_text": "Computation 2025, 13, 116\n6 of 28\nTable 1. Colombian Unemployment Rate Prediction Dataset notation and sources.\nSource\nVariable\nAcronym\nType\n-\nYear\n-\n-\n-\nMonth\n-\n-\nMinisterio de Trabajo\nReal Salary\nRS\nMonetary\nDANP\nReal Income Tax\nRIT\nMonetary\nDANP\nReal Value-Added Tax\nRVT\nMonetary\nBanco de la República\nMonetary Policy Intervention Rate\nMPIR\nMonetary\nDANE\nGeneral Participation Rate\nGPR\nSocioeconomic\nDANE\nEconomic Monitor Index\nEMI\nSocioeconomic\nDANE\nUnemployment Rate\nUR\nSocioeconomic\nAn exploratory description of the dataset has been incorporated to enhance the analy-\nsis. The dataset descriptive statistics are presented in Table 2, which enables the charac-\nterization of their magnitude, dispersion, and central tendency over the 2005–2023 period.\nHeterogeneous economic dynamics and the potential presence of structural effects are\nsuggested by the high variance of variables such as RS, RIT, and RVT. In contrast, UR\nmaintains an average of 11.0% and a moderate standard deviation, which indicates that the\neconomy is susceptible to economic disruptions and that unemployment is persistent.\nTable 2. Colombian Unemployment Rate Prediction Dataset descriptive statistics.\nStatistic\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\nUR\nmean\n62.44\n778,225.30\n93.44\n5,047,453.00\n2,752,444.00\n5.69\n11.00\nstd\n2.48\n116,923.60\n17.55\n2,520,542.00\n2,033,169.00\n2.80\n2.11\nmin\n51.84\n649,914.80\n59.87\n621,398.80\n622,713.70\n1.75\n7.27\n25%\n60.98\n701,624.30\n78.48\n3,495,737.00\n953,138.40\n4.00\n9.50\n50%\n63.32\n745,448.20\n95.26\n4,602,006.00\n2,138,924.00\n4.63\n10.80\n75%\n64.18\n801,263.50\n105.90\n5,713,156.00\n4,271,658.00\n7.06\n11.99\nmax\n66.89\n1,107,656.00\n132.62\n15,423,130.00\n8,698,995.00\n13.25\n21.38\nFinally, the scatterplot matrix among the studied variables is illustrated in Figure 2,\nwhich facilitates the identification of bivariate relationships and marginal distributions.\nVariables such as GPR and EMI are known to concentrate within specific ranges along the\ndiagonals, while others, such as RIT and RVT, exhibit asymmetries or the prevalence of\nlong tails. Additionally, the bivariate analysis demonstrates positive correlations between\nRS and EMI, as well as between RIT and RVT, which are in accordance with the interaction\nbetween fiscal revenue and economic activity. In contrast, variables such as RS or EMI are\nassociated with an inverse relationship with UR.\n2.2. Nonlinear Unsupervised Relevance Analysis Using UMAP-Based Local Biplots\nGiven an input feature matrix, X={xn∈RP:n∈N} (with X∈RN×P, P-dimensional\nfeatures and N samples), a lower-dimensional UMAP-based embedding, Z∈RN×P′,\nwith P′<P, is performed in the following two steps: (i) Constructing a weighted k-nearest\nneighbor (k-NN) graph from a given pairwise Euclidean distance matrix, d(xn, xn′)∈R,\nto measure the relationships between instances xn, xn′∈X. (ii) Estimating a low-dimensional\nembedding that preserves the input data structure. Namely, the k-NN graph is initially\nbuilt from X, holding edges defined by a local connectivity through the following weight\nmatrix W∈[0, 1]N×N with elements:\nwnn′ = exp\n\u0012\n−max\n\u0012\n0, d(xn, xn′) −˜ρn\nσn\n\u0013\u0013\n,\n(1)\n",
+      "text_characters": 3096,
+      "confidence": 0.65,
+      "confidence_status": "review_required",
+      "confidence_notes": "One or more equation candidates are ambiguous in raw extraction.",
+      "textual_figure_captions": [],
+      "equation_ids": [
+        "page-006-equation-001",
+        "page-006-equation-002",
+        "page-006-equation-003",
+        "page-006-equation-004",
+        "page-006-equation-005",
+        "page-006-equation-006"
+      ],
+      "figure_ids": []
+    },
+    {
+      "page": 7,
+      "image": "computation-13-00116-v2-assets/page-007.png",
+      "raw_text": "Computation 2025, 13, 116\n7 of 28\nwhere σn∈R+ serves as a normalization factor to define a local measure at point xn,\nand ˜ρn∈R+ rules outlier distances within the n-th neighborhood. To ensure a symmetric\ndiffuse measure, the weights in Equation (1) are normalized as:\n˘wnn′ = wnn′ −wn′n −wnn′wn′n.\n(2)\n4 × 10\n2\n1 × 10\n1\n2 × 10\n1\nGPR\n8 × 105\n1 × 106\nRS\n6 × 101\n8 × 101\n1 × 102\n1 × 102\nEMI\n5 × 106\n1 × 107\n2 × 107\nRIT\n2 × 106\n5 × 106\n8 × 106\nRVT\n5 × 100\n1 × 101\nMPIR\n6 × 101\n6 × 101\n6 × 101\nGPR\n1 × 101\n2 × 101\n2 × 101\nUR\n8 × 105\n1 × 106\nRS\n8 × 101\n1 × 102\n1 × 102\nEMI\n5 × 106\n1 × 107\n2 × 107\nRIT\n2 × 106\n5 × 106\n8 × 106\nRVT\n5 × 100\n1 × 101\nMPIR\n1 × 101\n2 × 101\n2 × 101\nUR\nFigure 2. Pairwise relationships between the socioeconomic and monetary variables (Colombian\nUnemployment Rate Prediction Dataset). Diagonal elements show univariate distributions, while\noff-diagonal elements display bivariate scatter plots.\nIn turn, a low-dimensional weight matrix ˜W(Z) ∈[0, 1]N×N is computed as:\n˜wnn′(Z) =\n\u0010\n1 + ˜αd(zn, zn′)2\u0011−ι\n,\n(3)\nwhere zn, zn′ ∈Z denote points in the low-dimensional embedding space, and ˜α, ι ∈R+\nare hyperparameters—typically set to 1—that control the trade-off between preserving\nlocal and global structures. The UMAP optimization objective can then be formulated as a\ncross-entropy loss function:\nZ = arg min\nzn∈Z −∑\nn∈N\nn̸=n′\n˘wnn′ log( ˜wnn′(Z)) + (1 −˘wnn′) log(1 −˜wnn′(Z)).\n(4)\n",
+      "text_characters": 1402,
+      "confidence": 0.65,
+      "confidence_status": "review_required",
+      "confidence_notes": "One or more equation candidates are ambiguous in raw extraction.",
+      "textual_figure_captions": [
+        "Figure 2. Pairwise relationships between the socioeconomic and monetary variables (Colombian"
+      ],
+      "equation_ids": [
+        "page-007-equation-001",
+        "page-007-equation-002",
+        "page-007-equation-003",
+        "page-007-equation-004",
+        "page-007-equation-005",
+        "page-007-equation-006",
+        "page-007-equation-007",
+        "page-007-equation-008",
+        "page-007-equation-009",
+        "page-007-equation-010",
+        "page-007-equation-011",
+        "page-007-equation-012",
+        "page-007-equation-013",
+        "page-007-equation-014",
+        "page-007-equation-015",
+        "page-007-equation-016",
+        "page-007-equation-017",
+        "page-007-equation-018",
+        "page-007-equation-019",
+        "page-007-equation-020",
+        "page-007-equation-021",
+        "page-007-equation-022",
+        "page-007-equation-023",
+        "page-007-equation-024",
+        "page-007-equation-025",
+        "page-007-equation-026",
+        "page-007-equation-027",
+        "page-007-equation-028",
+        "page-007-equation-029",
+        "page-007-equation-030",
+        "page-007-equation-031",
+        "page-007-equation-032",
+        "page-007-equation-033",
+        "page-007-equation-034",
+        "page-007-equation-035",
+        "page-007-equation-036",
+        "page-007-equation-037",
+        "page-007-equation-038",
+        "page-007-equation-039",
+        "page-007-equation-040",
+        "page-007-equation-041",
+        "page-007-equation-042",
+        "page-007-equation-043",
+        "page-007-equation-044",
+        "page-007-equation-045",
+        "page-007-equation-046",
+        "page-007-equation-047",
+        "page-007-equation-048",
+        "page-007-equation-049"
+      ],
+      "figure_ids": []
+    },
+    {
+      "page": 8,
+      "image": "computation-13-00116-v2-assets/page-008.png",
+      "raw_text": "Computation 2025, 13, 116\n8 of 28\nUMAP allows clustering in the lower-dimensional latent variable space, where clusters\nmay be more apparent, particularly through the K-means clustering algorithm [43]:\n˜µ∗\nd = arg min\nµd, ˜Zd\nN\n∑\nn=1\n˜D\n∑\nd′=1\n∥zn −µd′∥2\n2;\ns.t.\n˜Zd ∩˜Zd′ = ∅,\n∀d, d′ ∈˜D,\nd ̸= d′.\n(5)\nwhere ˜D is the number of disjoint sets { ˜Zd∈RNd×2} ˜D\nd=1, with ∑\n˜D\nd=1 Nd = N, ˜D ≤N, and\nµd∈R2 is d-th partition center.\nFor enabling a better understanding of UMAP clustering, the SVD biplots are em-\nployed in this study to combine the partition set { ˜Zd} with a reduced representation of the\nhigh-dimensional original feature matrix, linearly projecting a d-th cluster as:\n˜Zd = ˜XdBd,\nwhere ˜Xd ∈RNd×P is the low-dimensional representation computed by the 2D singular\nvalue decomposition, as follows:\n˘X∗\nd = arg min\n˘Xd\n∥˘Xd −˜Xd∥2\nF\n=⇒\n˘Xd = ˘Ud ˘Sd ˘V⊤\nd , ˘Ud ∈RNd×2, ˘Vd ∈RP×2,\nwhere notation ∥· ∥F stands for the Frobenius norm. So, the projection term is computed\nas Bd= ˘Vd ˘S0.5\nd ∈RP×2, where ˘Sd∈R2×2 is the diagonal matrix holding the singular value\ndecomposition. Nonetheless, we ensure that the non-linear UMAP technique preserves the\nfeature structure during the reduction process using an affine-like transformation [56]:\nγ∗\nd, ν∗\nd = arg min\nγd,νd ∥˜Bd −Bd∥F,\n∀d ∈D.\n(6)\nwhere ˜Bd=γdBd + νd, and the terms γd, νd ∈R encode a composition of rotation, dilation,\nshears, and translation-based linear functions. Lastly, a localized feature ranking vector\nλd∈RP can be computed as:\nλd = Bd1,\n1 – all-ones vector.\n(7)\n2.3. Autoregressive Models and Machine Learning Regression\nA range of autoregressive and machine learning approaches are employed to investi-\ngate the relationships between dependent variables and their corresponding independent\nindicators. The most commonly used models include:\n•\nAutoregressive Integrated Moving Average (ARIMA): An ARIMA model is utilized to\ndetect stationary correlations within time series data. The mathematical representation\nis articulated by the subsequent equation, wherein, for simplicity, it is presumed that\nboth the autoregressive and moving average components possess identical lags:\nyt = η +\nP′\n∑\np=1\n¯θp′yt−p′ +\nP′\n∑\np′=1\nθ′\np′ξt−p′\n(8)\nIn this formulation, yt ∈R represents the time series at time t, whereas η ∈R\nsignifies a constant. The collection of observations encompassing the pertinent delays\nis denoted by y = {yt ∈R : t ∈N}. Furthermore, the series’ lags are represented\nby ¯X = {yt−p′ ∈R : t ∈N, p′ ∈P′}, while the associated coefficients of the\n",
+      "text_characters": 2533,
+      "confidence": 0.65,
+      "confidence_status": "review_required",
+      "confidence_notes": "One or more equation candidates are ambiguous in raw extraction.",
+      "textual_figure_captions": [],
+      "equation_ids": [
+        "page-008-equation-001",
+        "page-008-equation-002",
+        "page-008-equation-003",
+        "page-008-equation-004",
+        "page-008-equation-005",
+        "page-008-equation-006",
+        "page-008-equation-007",
+        "page-008-equation-008",
+        "page-008-equation-009",
+        "page-008-equation-010",
+        "page-008-equation-011",
+        "page-008-equation-012",
+        "page-008-equation-013",
+        "page-008-equation-014",
+        "page-008-equation-015",
+        "page-008-equation-016",
+        "page-008-equation-017",
+        "page-008-equation-018",
+        "page-008-equation-019",
+        "page-008-equation-020",
+        "page-008-equation-021",
+        "page-008-equation-022",
+        "page-008-equation-023",
+        "page-008-equation-024",
+        "page-008-equation-025",
+        "page-008-equation-026",
+        "page-008-equation-027",
+        "page-008-equation-028",
+        "page-008-equation-029",
+        "page-008-equation-030",
+        "page-008-equation-031",
+        "page-008-equation-032",
+        "page-008-equation-033"
+      ],
+      "figure_ids": []
+    },
+    {
+      "page": 9,
+      "image": "computation-13-00116-v2-assets/page-009.png",
+      "raw_text": "Computation 2025, 13, 116\n9 of 28\nautoregressive component are organized in ¯θ = { ¯θp′ ∈R : p′ ∈P′}, where P′ ∈N\nsignifies the quantity of lags under consideration.\nConversely, X′ = {ξt−p′ ∼N (0, ˜σ2\nt,p′) : t ∈N, p′ ∈P′} denotes a white noise process\nand θ′ = {θ′\np′ ∈R : p′ ∈P′} gathers the moving average coefficients.\nThe ARIMA model can be expressed in matrix notation as follows:\ny = ¯X ¯θ + X′θ′ + 1η = Xθ,\n(9)\nwhere X = [ ¯X, X′, 1] and X ∈RN×P. The model coefficients are represented as\nθ = [¯θ,θ′, η]⊤, where θ ∈RP.\nWhen the aforementioned approach is adapted to encompass seasonal patterns,\nthe ARIMA model is converted into a Seasonal Autoregressive Integrated Moving\nAverage (SARIMA). This comprehensive approach encompasses both stationary corre-\nlations and seasonal changes within the data. The general form, assuming that the\nseasonal components display the same lag as the non-seasonal components, yields:\nyt = η +\nP′\n∑\np′=1\n¯θp′yt−p′ +\nP′\n∑\np′=1\nθ′\np′ξt−p′ +\nP′\n∑\ns=1\nˇθsyt−s +\nR′\n∑\ns=1\nˆθs ˆξt−s\n(10)\nNext, the matrix-based representation is as follows:\ny = ¯X ¯θ + X′θ′ + ˇX ˇθ + ˆX ˆθ + 1η,\n(11)\nwhere ˇX = {yt−s ∈R : t ∈N, s ∈P′} and ˇθ = { ˇθs ∈R : s ∈P′} signify the seasonal\nautoregressive component, with P′ ∈N indicating the number of lags. Likewise,\nˆX = { ˆξt−s ∈R : t ∈N, s ∈R′} and ˆθ = { ˆθs ∈R : s ∈R′} represent the seasonal\nmoving average white noise process and its corresponding coefficients. In both\ninstances, s ∈N denotes the quantity of periods employed to illustrate seasonality.\nAlso, the SARIMA model can be represented in its concise version as: y = Xθ,\nwith X = [ ¯X, X′, ˇX, ˆX, 1], where X ∈RN×P. Simultaneously, the parameter vector\nyields: θ = [¯θ,θ′, ˇθ, ˆθ, η]⊤, where θ ∈RP.\nNotably, ARIMA and SARIMA models are typically optimized using Maximum\nLikelihood Estimation (MLE), where the parameter estimation process is often carried\nout via the Limited-memory Broyden–Fletcher–Goldfarb–Shanno with Box constraints\n(L-BFGS-B) algorithm—a quasi-Newton method well-suited for high-dimensional\nproblems with bound constraints [57].\n•\nOrdinary Least Squares (OLS): This methodology presupposes a linear correlation\nbetween the exogenous variables X = {xn ∈RP : n ∈N}, consisting of N samples\nand P features, and a target variable y = {yn ∈R : n ∈N}. Then, a linear relationship\nis fixed as y = Xθ, where the coefficient vector θ = {θp ∈R : p ∈P} represents\nthe parameters that characterize the linear influence of each feature on the target\nvariable. A commonly employed method for estimating the OLS coefficients involves\nthe Moore–Penrose pseudoinverse, leading to the closed-form solution:\nθ =\n\u0010\nX⊤X\n\u0011−1\nX−1y.\n(12)\nA regularized extension of the OLS method can be derived by solving the following\noptimization problem:\nθ∗= arg min\nθ\n∥y −Xθ∥2\n2 + ˜λ1∥θ∥1 + ˜λ2∥θ∥2\n2.\n(13)\n",
+      "text_characters": 2823,
+      "confidence": 0.65,
+      "confidence_status": "review_required",
+      "confidence_notes": "One or more equation candidates are ambiguous in raw extraction.",
+      "textual_figure_captions": [],
+      "equation_ids": [
+        "page-009-equation-001",
+        "page-009-equation-002",
+        "page-009-equation-003",
+        "page-009-equation-004",
+        "page-009-equation-005",
+        "page-009-equation-006",
+        "page-009-equation-007",
+        "page-009-equation-008",
+        "page-009-equation-009",
+        "page-009-equation-010",
+        "page-009-equation-011",
+        "page-009-equation-012",
+        "page-009-equation-013",
+        "page-009-equation-014",
+        "page-009-equation-015",
+        "page-009-equation-016",
+        "page-009-equation-017",
+        "page-009-equation-018",
+        "page-009-equation-019",
+        "page-009-equation-020",
+        "page-009-equation-021",
+        "page-009-equation-022",
+        "page-009-equation-023",
+        "page-009-equation-024",
+        "page-009-equation-025",
+        "page-009-equation-026",
+        "page-009-equation-027",
+        "page-009-equation-028",
+        "page-009-equation-029",
+        "page-009-equation-030"
+      ],
+      "figure_ids": []
+    },
+    {
+      "page": 10,
+      "image": "computation-13-00116-v2-assets/page-010.png",
+      "raw_text": "Computation 2025, 13, 116\n10 of 28\nNotably, when ˜λ1 ∈R+ and ˜λ2 = 0, OLS yields to L1 regularization, or Least\nAbsolute Shrinkage and Selection Operator (LASSO). Likewise, when ˜λ1, ˜λ2 ∈R+\nthe combination of L1 and L2 regularization—commonly referred to as Elastic Net\nregression—emerges as the resulting formulation [43].\n•\nRandom Forests (RF): Let y ∈RN be the target vector and X ∈RN×P denote the\nexogenous input feature matrix. An RF-based non-linear prediction is defined as:\nyn = 1\nJ\nJ\n∑\nj=1\nϕ(j)(X, Θ(j))θ(j),\n(14)\nwhere the j-th tree ϕ(j)(X, Θ(j)) = {ϕ(j)\nn,l(xn, Θ(j)) ∈{0, 1} : n ∈N, l ∈Lj} codes\nwhether the observation xn is associated with a node l and tree j. Conversely, the pa-\nrameters linked to each node are denoted as θ(t) = {θ(t)\nl\n∈R : l ∈Lt}, representing the\ncoefficients connected with each node in the respective trees. Then: y = 1\nJΦ(X,Θ)θ\nholds the set Θ = {Θ(j) ∈R(Lj−1)×P : j ∈J}, delineating the input space partitions\ncreated by each tree. The matrix Φ(X,Θ) consolidates the indicator functions of all\ntrees Φ(X,Θ) = {ϕ(j)(X, Θ(j))}J\nj=1 and θ = {θ(j)}J\nj=1 represents the aggregation of\nthe coefficients.\nRF determines the optimal split criteria and decision thresholds by leveraging the\nClassification and Regression Trees (CART) algorithm, which iteratively partitions the\ndata to minimize the following classification or regression error [58]:\nθ∗,Θ∗= arg min\nθ,Θ ∥y −1\nJΦ(X,Θ)θ∥2\n2.\n(15)\n•\nSupport Vector Regression (SVR): Given an input sample xn ∈RP, the non-linear SVR’s\npredictive function is formulated as follows:\nf (xn) = ϕ(xn)w,\n(16)\nwhere w = {wq ∈R : q ∈Q} is a coefficients vector and ϕ : RP →RQ denotes the\nfunction that transforms the data into a higher-dimensional space, with Q →∞. This\ntransformation presents a computational burden, which is mitigated by the kernel\ntrick, allowing the computation of the inner product in the transformed space without\ndirect evaluation [59]. Thus, for two samples, the kernel function is delineated as:\nκ(xn, xn′) = ⟨ϕ(xn), ϕ(xn′)⟩H = ϕ(xn)ϕ(xn′)⊤∈R.\n(17)\nThe resultant matrix is represented as KXX = {κ(xn, xn′) : n, n′ ∈N}. Subsequently,\na dual optimization formulation is employed to derive the SVR prediction function,\nenabling efficient computation in high-dimensional feature spaces:\ny = KXX(α −α′)\n(18)\nIn this context, α = {αn ∈R : n ∈N} and α′ = {α′\nn ∈R : n ∈N} represent\nthe support coefficients. SVR employs the Sequential Minimal Optimization (SMO)\napproach to tackle a quadratic programming optimization, articulated as follows [60]:\n",
+      "text_characters": 2537,
+      "confidence": 0.65,
+      "confidence_status": "review_required",
+      "confidence_notes": "One or more equation candidates are ambiguous in raw extraction.",
+      "textual_figure_captions": [],
+      "equation_ids": [
+        "page-010-equation-001",
+        "page-010-equation-002",
+        "page-010-equation-003",
+        "page-010-equation-004",
+        "page-010-equation-005",
+        "page-010-equation-006",
+        "page-010-equation-007",
+        "page-010-equation-008",
+        "page-010-equation-009",
+        "page-010-equation-010",
+        "page-010-equation-011",
+        "page-010-equation-012",
+        "page-010-equation-013",
+        "page-010-equation-014",
+        "page-010-equation-015",
+        "page-010-equation-016",
+        "page-010-equation-017",
+        "page-010-equation-018",
+        "page-010-equation-019",
+        "page-010-equation-020",
+        "page-010-equation-021",
+        "page-010-equation-022",
+        "page-010-equation-023",
+        "page-010-equation-024",
+        "page-010-equation-025"
+      ],
+      "figure_ids": []
+    },
+    {
+      "page": 11,
+      "image": "computation-13-00116-v2-assets/page-011.png",
+      "raw_text": "Computation 2025, 13, 116\n11 of 28\nα∗,α′∗= arg max\nα,α′ −1\n2(α −α′)⊤KXX(α −α′)\n−ε1⊤(α + α′) + y⊤(α −α′)\ns.t.\n1⊤(α −α′) = 0,\n0 ≤α,α′ ≤C.\n(19)\nwhere ϵ, C ∈R+.\nConsequently, the formulation of the minimization problem associated with each\nregression varies depending on the selected modeling strategy, e.g., linear vs. non-linear,\nand the type of regularization applied. These elements significantly influence both the\ncomputational complexity of the solution and the model’s capacity to generalize when\nexposed to unseen data. Moreover, the relevance of each input feature is typically reflected\nin the model parameters, whose interpretation depends on the specific supervised frame-\nwork employed. In the case of ARIMA and SARIMA linear models, feature relevance is\ninferred from the seasonal and non-seasonal autoregressive coefficients, which encapsulate\nthe influence of past observations on the temporal dynamics of the series.\nIn contrast, OLS regression provides an explicit quantification of the influence that\neach exogenous variable exerts on the dependent variable through the estimated coef-\nficients. This approach stands in opposition to autoregressive models, which primarily\ncapture the intrinsic temporal dependencies within the series itself. In the case of RF,\ninterpretability is achieved through the analysis of variable importance, typically measured\nby either the reduction in node impurity or the change in predictive accuracy resulting\nfrom the inclusion or exclusion of each feature [61]. Conversely, SVR does not inherently\noffer a straightforward mechanism for evaluating variable importance due to its reliance\non margin-based optimization and kernel functions [62]. As a result, auxiliary interpretabil-\nity techniques—such as Shapley value decomposition or sensitivity analysis—are often\nrequired to estimate the individual contribution of each feature [63].\n2.4. Supervised Kernel-Based Relevance Analysis Using Gaussian Processes\nConsidering an input involving exogenous variables X ∈RN×P and a target variable\ny ∈RN, a Gaussian Process (GP) regression fixes a prior on the coefficient vector w =\n{wq ∼N (wq|0, Σq,q) : q ∈Q}, where Σ = {Σq,q′ ∈R : q, q′ ∈Q} represents a covariance\nmatrix. The mean and variance of the prediction function f (X) are calculated as:\nm(xn) = Ew[ f (xn)] = ϕ(xn)Ew[w] = 0\n(20)\nand:\nκ(xn, x′\nn) = cov( f (xn), f (xn′)) = Ew[ f (xn) f (xn′)⊤] = ϕ(xn)Σϕ(xn′)⊤.\n(21)\nAs a result:\np( f (X)) = N ( f (X)|0, KXX).\n(22)\nwhere notation N (·|·, ·) stands for a Gaussian-based probability function.\nIn GP-based regression, the observed outputs are modeled as noisy realizations of\nan underlying latent function. Assuming additive Gaussian noise, the model is expressed\nas: yn = f (xn) + ϵn, where ϵn ∼N (ϵn|0, σ2\nϵ ) represents independent and identically\ndistributed Gaussian noise. Consequently, the marginal likelihood of the observed outputs\ny, conditioned on the input matrix X, follows a multivariate normal distribution:\np(y) = N (y|0, KXX + σ2\nϵ I),\n(23)\n",
+      "text_characters": 3012,
+      "confidence": 0.65,
+      "confidence_status": "review_required",
+      "confidence_notes": "One or more equation candidates are ambiguous in raw extraction.",
+      "textual_figure_captions": [],
+      "equation_ids": [
+        "page-011-equation-001",
+        "page-011-equation-002",
+        "page-011-equation-003",
+        "page-011-equation-004",
+        "page-011-equation-005",
+        "page-011-equation-006",
+        "page-011-equation-007",
+        "page-011-equation-008",
+        "page-011-equation-009",
+        "page-011-equation-010",
+        "page-011-equation-011",
+        "page-011-equation-012"
+      ],
+      "figure_ids": []
+    },
+    {
+      "page": 12,
+      "image": "computation-13-00116-v2-assets/page-012.png",
+      "raw_text": "Computation 2025, 13, 116\n12 of 28\nwhere KXX is the covariance matrix defined by the GP kernel, and σ2\nϵ I accounts for the\nobservation noise covariance.\nGiven a new input x∗, GP regression computes the predictive probability distribution\nby conditioning the joint Gaussian prior on the observed data. This results in a closed-\nform expression: p(y∗| x∗, X, y) = N (y∗| µ∗, σ2∗), with predictive mean and variance\nas follows:\nµ∗=k⊤\n∗\n\u0010\nKXX + σ2\nϵ I\n\u0011−1\ny,\n(24)\nσ2\n∗=κ(x∗, x∗) −k⊤\n∗\n\u0010\nKXX + σ2\nϵ I\n\u0011−1\nk∗;\n(25)\nwhere k∗= {κ(x∗.xn) : n ∈N}.\nOf note, the GP regression typically finds the kernel hyperparameters by maximizing\nthe marginal likelihood (also called the evidence) of the observed data. This process\nbalances model fit and complexity in a principled, probabilistic way. Thereby, the L-BFGS-B\nalgorithm is used to solve the following optimization problem:\nν∗= arg min\nν\n\u00141\n2 log\n\u0010\n|KXX(ν) + σ2\nϵ I|\n\u0011\n+ 1\n2y⊤\u0010\nKXX(ν) + σ2\nϵ I\n\u0011−1\ny\n\u0015\n,\n(26)\nwhere notation KXX(ν) highlights the kernel dependency on the hyperparameter set ν.\nTo enable non-linear and supervised regression within a probabilistic framework that\nleverages kernel-based mappings and prior-informed weight regularization, we enhance\ninput feature relevance analysis to improve a GP-based model’s interpretability. Specifically,\nwe employ a squared exponential kernel—a.k.a. radial basis function (RBF)—with distinct\nlengthscales assigned to each input dimension:\nκ\n\u0010\nxn, xn′|˜σ2\nf , {˜σ2\np}P\np=1\n\u0011\n= ˜σ2\nf exp\n \nP\n∑\np=1\n−(xnp −xn′p)2\n2˜σ2p\n!\n,\n(27)\nwhere xnp ∈xn and ˜σ2\nf , ˜σ2\np ∈R+.\nThen, each lengthscale can be optimized as in\nEquation (26) to quantify the p-th feature relevance regarding the GP’ predictions. In this\ncontext, the p-th feature supervised relevance value ˜λp ∈R+ is defined as the reciprocal of\n˜σp, yielding:\n˜λp =\n˜σ−1\np\nmax(˜σ−1\nq )\n(28)\nwhere a reduced value of ˜σp indicates the model’s enhanced capacity to detect local fluctua-\ntions in the associated feature. Conversely, a bigger value indicates a more diffuse effect,\nsignifying diminished influence on the forecast.\nFigure 3 depicts the key principles discussed in this section. This graphic repre-\nsentation highlights both unsupervised (UMAP-based local biplots) and supervised (GP-\nbased regression) approaches for explainable unemployment rate prediction. Notably,\nthe UMAP-Base Local Biplot (UL-Biplot) method is utilized during the unsupervised phase,\nwhereas GP-based regression with kernel relevance analysis is employed in the super-\nvised stage. This strategy facilitates a comparative assessment of interpretability across\nboth paradigms: UL-Biplot uncovers latent patterns and underlying structures without\nsupervised constraints, while GP offers an interpretation grounded in the target variable,\nthe unemployment rate.\n",
+      "text_characters": 2786,
+      "confidence": 0.65,
+      "confidence_status": "review_required",
+      "confidence_notes": "One or more equation candidates are ambiguous in raw extraction.",
+      "textual_figure_captions": [],
+      "equation_ids": [
+        "page-012-equation-001",
+        "page-012-equation-002",
+        "page-012-equation-003",
+        "page-012-equation-004",
+        "page-012-equation-005",
+        "page-012-equation-006",
+        "page-012-equation-007",
+        "page-012-equation-008",
+        "page-012-equation-009",
+        "page-012-equation-010",
+        "page-012-equation-011",
+        "page-012-equation-012",
+        "page-012-equation-013"
+      ],
+      "figure_ids": []
+    },
+    {
+      "page": 13,
+      "image": "computation-13-00116-v2-assets/page-013.png",
+      "raw_text": "Computation 2025, 13, 116\n13 of 28\nColombian Unemployment\n Rate Prediction Dataset\nExplainable \nUnemployment\nRate\nGP-based Relevance\nAnalysis\nUMAP-based Local Biplots\nUnsupervised Approach\nSupervised Approach\nFigure 3. Explainable framework for unemployment rate prediction in Colombia. (Top): UMAP-\nbased Local Biplot (unsupervised). (Bottom): GP-based relevance analysis (supervised).\n3. Experimental Set-Up\n3.1. Assessment and Method Comparison\nTo test our dual framework for explainable unemployment rate prediction, we com-\npute the Pearson’s correlation coefficient to quantify feature relevance from UL-Biplot,\ndefined for two features, p and p′, as follows:\nρpp′ =\n⟨ϱp −¯ϱp 1, ϱp′ −¯ϱp′ 1⟩2\n∥ϱp −¯ϱp 1∥2 ∥ϱp′ −¯ϱp′ 1∥2\n,\n(29)\nwhere ϱp ∈RN denotes the p-th column of the data matrix X, while ϱp′ refers to the p′-th\nrow of the matrix ˜B, see Equation (6), which comprises features derived from the UL-Biplot.\nThe vector 1 ∈RN is utilized to center the data by subtracting the mean ¯ϱp.\nNow, in the supervised phase, a GP is utilized to forecast the unemployment rate,\nemphasizing the importance of the hyperparameter set {˜σ2\nf , {˜σ2\np}P\np=1} as a tool for in-\nterpretability. These lengthscale-related hyperparameters enable the assessment of each\nfeature’s relative contribution to the variability of the economic phenomenon. Then, to as-\nsess the efficacy of the supervised models, conventional measures are utilized, contrasting\nthe reference y with the prediction ˆy, defined as follows:\nR2(y, ˆy) = 1 −∥y −ˆy∥2\n2\n∥y −¯y∥2\n2\n,\n(30)\nMSE(y, ˆy) = 1\nN ∥y −ˆy∥2\n2,\n(31)\nRMSE(y, ˆy) =\nr\n1\nN ∥y −ˆy∥2\n2,\n(32)\nMAE(y, ˆy) = 1\nN ∥y −ˆy∥1,\n(33)\nMAPE(y, ˆy) = 100\nN\nN\n∑\ni=1\n\f\f\f\f\nyi −ˆyi\nyi\n\f\f\f\f.\n(34)\nSVD-based Biplot (SVD-Biplot) is incorporated as a method comparison for unsuper-\nvised explainablity [64]. This approach facilitates the visualization and examination of\nfeature significance within the latent framework of the data.\nFurthermore, to assess the efficacy of our GP-based unemployment prediction and\nsupervised relevance analysis, its outcomes are compared with the following techniques:\n•\nAutoregresive approaches: ARIMA and SARIMA decompose the series into trend, sea-\nsonality, and noise components to encapsulate temporal dynamics [65,66].\n",
+      "text_characters": 2260,
+      "confidence": 0.65,
+      "confidence_status": "review_required",
+      "confidence_notes": "One or more equation candidates are ambiguous in raw extraction.",
+      "textual_figure_captions": [
+        "Figure 3. Explainable framework for unemployment rate prediction in Colombia. (Top): UMAP-"
+      ],
+      "equation_ids": [
+        "page-013-equation-001",
+        "page-013-equation-002",
+        "page-013-equation-003",
+        "page-013-equation-004",
+        "page-013-equation-005",
+        "page-013-equation-006",
+        "page-013-equation-007",
+        "page-013-equation-008",
+        "page-013-equation-009",
+        "page-013-equation-010",
+        "page-013-equation-011"
+      ],
+      "figure_ids": []
+    },
+    {
+      "page": 14,
+      "image": "computation-13-00116-v2-assets/page-014.png",
+      "raw_text": "Computation 2025, 13, 116\n14 of 28\n•\nLinear Machine Learning: Lasso and ElasticNet utilize regularization to improve gener-\nalization and facilitate variable selection in high-dimensional contexts [67,68].\n•\nNonlinear Machine Learning: RF and SVR, which adeptly capture intricate interactions\nand non-linearities in the data using ensemble learning and kernel-based method-\nologies, respectively [69,70]. Also, a Multilayer Perceptron (MLP) is regarded as a\nsupplementary non-linear benchmark due to its proven ability to predict complex\ntemporal and economic patterns via deep and adaptable feature representations [71].\n3.2. Training Details\nRegarding the UL-Biplot, the dimensionality is reduced to two, with a minimum\ndistance of 0.75 and the number of neighbors defined as ⌊0.5\n√\nN⌉, where ⌊·⌉stands for\nthe round operator. Furthermore, a silhouette score-based analysis is carried out to fix\nthe number of clusters to improve the visualization of data distribution and evaluate the\nimpact of each variable on the UMAP-based latent representation, as follows:\ns(n) =\nb(n) −a(n)\nmax{a(n), b(n)} ∈[−1, 1],\n(35)\nwhere a(n) ∈R+ is the average distance between point n and all other points in the same\ncluster (intra-cluster distance) and b(n) ∈R+ is the minimum average distance from point\nn to all points in the nearest neighboring cluster (nearest-cluster distance).\nIn turn, to evaluate the unemployment rate prediction performance in a time-\ndependent setting, two cross-validation strategies are applied: Time Series Cross-Validation\n(TSCV) and Sliding Window Cross-Validation (SWCV) [72,73]. In the former, the training\nset incrementally enlarges in each iteration by integrating new observations. Conversely,\nthe latter employs a fixed-size window, wherein the oldest data points are eliminated as\nnew observations are incorporated. Both methodologies considered time-frames of 3 and\n12 months for the unemployment rate analysis [74]. For both study schmes, correspond-\ning to prediction steps of 3 and 6 months, distinct modeling methodologies are utilized\nbased on the task’s nature. In the unsupervised context, SVD-Biplot and UL-Biplot depend\nexclusively on the initial values of the seven principal variables (GPR, RS, EMI, RIT, RVT,\nMPIR, UR) in conjunction with temporal identifiers (Year and Month), omitting lagged\nfeatures. Conversely, ARIMA and SARIMA models are optimized through the auto_arima\nfunction employing a stepwise search, with the maximum lag order established at 3 and\nseasonal periodicity selected as either 12 or 3, contingent upon the temporal resolution\n(see to Equations (8) and (10)). These models are trained solely with the UR variable,\nutilizing internal optimization to capture temporal dependencies without supplementary\nexogenous inputs. In supervised models—RF, SVR, GP, MLP, Lasso, and ElasticNet—the\nfeature space is established by implementing a fixed 5-month lag window on each of\nthe seven variables, which offers a temporally enhanced representation that facilitates\nthe learning of short-term dynamics. This procedure increases the feature set from 7 to\n41 variables. The complete setup is encapsulated in Figure 4. Hyperparameters are refined\nby grid or randomized search methods. The Lasso penalty coefficient α is chosen from the\ninterval [1 × 10−3, 1 × 100], whereas ElasticNet adjusts both the L2 penalty and L1 ratio\nwithin the range [0.1, 1]. Random Forest optimizes max_depth and n_estimators within\nthe range of [1, 100]; Support Vector Regression assesses linear, polynomial, RBF, and sig-\nmoid kernels, adjusting C ∈[0.1, 1] and ϵ ∈[0.001, 0.1]; Gaussian Processes utilize RBF\nkernels with lengthscales spanning [1, 1000] and regularization parameters ranging from\n[1 × 10−5, 1 × 102]; Multi-Layer Perceptron configurations consist of one or two hidden\nlayers containing [1, 16] units (step 2), various activation functions (relu, tanh, sigmoid,\nselu, linear), and a solitary relu-activated output neuron. Optimization is performed\n",
+      "text_characters": 3995,
+      "confidence": 0.65,
+      "confidence_status": "review_required",
+      "confidence_notes": "One or more equation candidates are ambiguous in raw extraction.",
+      "textual_figure_captions": [],
+      "equation_ids": [
+        "page-014-equation-001",
+        "page-014-equation-002",
+        "page-014-equation-003",
+        "page-014-equation-004",
+        "page-014-equation-005",
+        "page-014-equation-006",
+        "page-014-equation-007",
+        "page-014-equation-008",
+        "page-014-equation-009",
+        "page-014-equation-010"
+      ],
+      "figure_ids": []
+    },
+    {
+      "page": 15,
+      "image": "computation-13-00116-v2-assets/page-015.png",
+      "raw_text": "Computation 2025, 13, 116\n15 of 28\nvia adam, rmsprop, sgd. The relevance analysis based on Gaussian Processes is further\nenhanced using KerasTuner (v1.4.7) [75,76].\n2006\n2008\n2010\n2012\n2014\n2016\n2018\n2020\n2022\n2024\nDate\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\nUR\nTrain\nTest (3 Months)\nTest (12 Months)\nFigure 4. Illustrative sketch of unemployment rate prediction using fixed lag structures applied to the\nselected input variables. Shaded regions indicate the training lag and the two forecasting horizons:\nlight blue for the 3-month test and light red for the 12-month test.\nAll experiments are conducted in Python 3.10.12 within the Google Colaboratory envi-\nronment, employing several libraries including scikit-learn (version 1.6.1), umap-learn\n(version 0.5.7), statsmodels (version 0.14.4), and pmdarima (version 2.0.4). A detailed depic-\ntion of the experimental configuration is illustrated in Figure 5 and our codes with the stud-\nied datasets are publicly available at https://github.com/UN-GCPDS/Unemployment-\nRate-Prediction.git, (accessed on 1 April 2025).\nColombian Unemployment\n Rate Prediction Dataset\nUL-Biplot\nSVD-Biplot\nARIMA\nSARIMA\nLasso\nElasticNet\nRF\nSVR\nMLP\nGP\nFeature-Target Split\nValidation Split\nTSCV\nSWCV\nSupervised\nRelevance Analysis\nUnsupervised\nRelevance Analysis\nModel Configuration\nVisual Inspection\n/Pearson's Correlation\nModel Comparison\nExplainable \nUnemployment\nRate Prediction\nHybrid Framework \nIntegrating UL-Biplot and GP-RA\nFigure 5. Explainable unemployment rate prediction pipeline. (Top): UMAP-based local biplots\n(unsupervised). (Bottom): GP-based relevance analysis (supervised). UL: UMAP Local Biplot.\n4. Results and Discussion\n4.1. Unsupervised Relevance Analysis\nFigure 6 presents the silhouette coefficients [43] (indicated by the vertical red line)\ncomputed for different clustering configurations within our UL-based approach, varying\nthe number of clusters from three to six. These plots serve as a diagnostic tool to evaluate\nclustering quality and guide the selection of an optimal partitioning scheme. Although the\nsilhouette profiles are relatively comparable across all configurations—none displaying\ncoefficients below the average threshold—cluster solutions with four and five groups yield\nmore balanced distributions in terms of the number of points per cluster. In contrast,\nconfigurations with three and six clusters exhibit greater heterogeneity in cluster shapes\nand sizes. Notably, the silhouette coefficient attains its maximum value at five clusters\n",
+      "text_characters": 2499,
+      "confidence": 0.95,
+      "confidence_status": "acceptable",
+      "confidence_notes": "Machine-readable text was preserved with page-image provenance.",
+      "textual_figure_captions": [
+        "Figure 4. Illustrative sketch of unemployment rate prediction using fixed lag structures applied to the",
+        "Figure 5. Explainable unemployment rate prediction pipeline. (Top): UMAP-based local biplots"
+      ],
+      "equation_ids": [],
+      "figure_ids": []
+    },
+    {
+      "page": 16,
+      "image": "computation-13-00116-v2-assets/page-016.png",
+      "raw_text": "Computation 2025, 13, 116\n16 of 28\nbut does not improve consistently with additional groupings. Consequently, a five-cluster\nsolution is recommended as it offers a compromise between cluster compactness, separation,\nand balance, ensuring a robust latent structure interpretation.\n0.0\n0.2\n0.4\n0.6\n0.8\n1.0\nSilhouette Coefficient\n0\n1\n2\n3\n4\n5\nCluster\nD = 3\n0.0\n0.2\n0.4\n0.6\n0.8\n1.0\nSilhouette Coefficient\n0\n1\n2\n3\n4\n5\nD = 4\n0.0\n0.2\n0.4\n0.6\n0.8\n1.0\nSilhouette Coefficient\n0\n1\n2\n3\n4\n5\nD = 5\n0.0\n0.2\n0.4\n0.6\n0.8\n1.0\nSilhouette Coefficient\n0\n1\n2\n3\n4\n5\nD = 6\nFigure 6. UL-based silhouette coefficient obtained for clustering results. Vertical dashed lines\nrepresent the silhouette scores for each group.\nNext, Figure 7 presents the unsupervised relevance analysis results of the visual\ninspection performed on the Colombian unemployment rate dataset. In each projection,\nthe basis vectors (represented as arrows) illustrate the contributions of the original variables.\nArrows are color-coded according to their associated socioeconomic and monetary variable\ncategories, enhancing interpretability. Additionally, 2D embeddings are displayed with\nUR values mapped to a color gradient, offering further insight into spatial distribution and\ndensity. The results reveal notable variability and structural complexity within the dataset.\nThe SVD-Biplot displays a wide dispersion of samples with substantial cluster overlap,\nindicating poor separation and reduced interpretability compared to the UL-Biplot, which\nreveals more defined group structures. Among the variables, Year and RS exhibit the longest\nvectors, both aligned with PC1, suggesting they are the dominant drivers of variance in the\nfirst principal component. In contrast, Month, UR, and RVT align with PC2, with Month\ncontributing the most prominently in that direction. The close alignment between Year\nand RS also points to a strong positive correlation between these variables. Meanwhile,\nthe relatively shorter arrows for UR and RVT indicate limited influence on the second\nprincipal component. Altogether, the structure unveiled by these projections suggests a\nnontrivial data arrangement, with significant internal variability likely reflecting latent\nsubgroups or non-stationary temporal dynamics embedded within the dataset.\nIn contrast, the UL-Biplot excels in preserving local structures, resulting in the forma-\ntion of tighter, well-defined clusters that effectively highlight latent subgroups within the\ndata. The corresponding 2D non-linear embedding, scaled to the range [−1, 1], captures\nnot only the broad global geometry of the dataset but also retains critical local relationships,\nyielding a configuration of compact and coherent clusters. The color-coded arrows offer\nfurther insight into variable contributions, indicating that socioeconomic variables (shaded\nin blue) play a more prominent role than monetary indicators in shaping the observed vari-\nability across clusters. Noteworthy correlations emerge, particularly between RS and RVT ,\nwhile EMI consistently exhibits strong positive and negative correlations with GPR and UR,\nrespectively, across all identified groups. Overall, our UL-based clustering consolidates\neconomic variables that affect the unemployment rate. Assessment of their importance\ndemonstrates that unemployment dynamics are closely associated with wage trends and\noverall economic activity. This finding aligns with macroeconomic theory, which highlights\nthe interrelationship between the labor market, business cycles, and monetary policy. In this\ncontext, both seasonality (months and periods of the year) and long-term trends (years)\nsubstantially impact fluctuations in unemployment.\nAdditionally, the embedding space reveals a temporal dimension, with distinct struc-\ntural contours aligning with different presidential administrations. This temporal stratifica-\n",
+      "text_characters": 3867,
+      "confidence": 0.95,
+      "confidence_status": "acceptable",
+      "confidence_notes": "Machine-readable text was preserved with page-image provenance.",
+      "textual_figure_captions": [
+        "Figure 6. UL-based silhouette coefficient obtained for clustering results. Vertical dashed lines"
+      ],
+      "equation_ids": [
+        "page-016-equation-001",
+        "page-016-equation-002",
+        "page-016-equation-003",
+        "page-016-equation-004"
+      ],
+      "figure_ids": []
+    },
+    {
+      "page": 17,
+      "image": "computation-13-00116-v2-assets/page-017.png",
+      "raw_text": "Computation 2025, 13, 116\n17 of 28\ntion underscores the dynamic nature of inter-variable relationships and provides crucial\ncontext for interpreting seasonal patterns, policy shifts, and other time-dependent socio-\neconomic dynamics affecting the Colombian labor market. Indeed, when generating the UL\nfor each cluster based on the government terms variable, the resulting projections showed\nsignificant overlap between clusters. This suggests that the chosen variable, does not pro-\nvide sufficient separation to distinguish the groups effectively. The difficulty in interpreting\nthese biplots is a direct consequence of the poor differentiation, as the projections from\ndifferent sets occupy similar regions of the biplot space, indicating that government terms\nmay not be the most suitable criterion for partitioning the data. Additionally, the dispersion\nof samples could be attributed to noise or variability in the data or shared contextual factors\nacross different government terms. This highlights the complexity of the dataset, where\ntemporal or policy similarities may lead to overlapping clusters.\nPC1\nPC2\nYear\nMonth\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\nUR\n(a) SVD-Biplot\nPC1\nPC2\nYear\nMonth\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\nUR\n(c) SVD-Biplot (terms)\nPC1\nYear\nMonth\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\nUR\nYear\nMonth\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\nUR\nYear\nMonth\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\nUR\nYear\nMonth\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\nUR\nYear\nMonth\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\nUR\n(b) UL-Biplot\nPC1\nMonth\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\nUR\nYear\nMonth\nGPR\nRS\nEMI\nRVT\nMPIR\nUR\nYear\nMonth\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\nUR\nYear\nMonth\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\nUR\nYear\nMonth\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\nUR\nYear\nMonth\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\nUR\n(d) UL-Biplot (terms)\nPC1\nIT\nGT 1\nGT 2\nGT 3\nGT 4\nFT\n8\n10\n12\n14\n16\n18\n20\nUnemployment rate (UR)\n(e) GT-based Kernel Density Estimation\nFigure 7. Different visual inspection results based on SVD-Biplot and UL-Biplot: (a,c) depict the\nSVD-Biplot colored by clustering label and Government terms, respectively. (b,d) showcase UL-Biplot\nmethod with colors representing the clustering label and Government terms, respectively. (e) Local\nBiplot and cluster-based probability boundaries. The plot’s color emphasizes the target variable (UR),\nwhile the Goverment Terms (GT) Initial (IT), GT 1-4, Final (FT), determine the color of the curves.\nMarkers indicate specific events: diamonds represent the crisis period of 2008, while squares denote\nthe COVID-19 pandemic period (2019–2023). PC: principal component (basis).\nThe local biplot framework enables a thorough examination of each cluster feature\nrelevance analysis, as illustrated in Figures 8 and 9. For cluster 1, MPIR exerts a significant\ninfluence on UR. Monetary policy theoretically affects credit availability and investment\nconditions, thereby influencing the business cycle and, consequently, employment levels.\nThe Pearson correlation-based assessment identifies GPR, EMI, and RVT as primary de-\nterminants; see Figure 9. The proposed approach posits that MPIR plays a crucial role,\n",
+      "text_characters": 3009,
+      "confidence": 0.75,
+      "confidence_status": "review_required",
+      "confidence_notes": "Embedded images require visual review; captions remain page-level text evidence only.",
+      "textual_figure_captions": [
+        "Figure 7. Different visual inspection results based on SVD-Biplot and UL-Biplot: (a,c) depict the"
+      ],
+      "equation_ids": [],
+      "figure_ids": [
+        "page-017-image-001"
+      ]
+    },
+    {
+      "page": 18,
+      "image": "computation-13-00116-v2-assets/page-018.png",
+      "raw_text": "Computation 2025, 13, 116\n18 of 28\nsupporting the hypothesis that variations in intervention rates can affect labor supply and,\nsubsequently, unemployment. Moreover, cluster 2 shows that fiscal impact is demonstrated\nthrough RVT, which reflects the interplay of tax revenue and its influence on the tax base\nand employment incentives. Also, RIT, RS, and EMI exhibit high relevance. The Pearson\ncorrelation emphasizes GPR, EMI, and MPIR, while the inclusion of RIT in the analysis\ndemonstrates that fiscal policy, through changes in direct taxation, can significantly affect\nthe labor market, particularly in terms of business profitability and job creation.\nCluster 3 exhibits a pronounced sensitivity of the unemployment rate to variations\nin MPIR and RS, as depicted in Figure 8. While the Pearson correlation analysis focuses\nsolely on EMI as an explanatory variable, the local biplot reveals a broader interaction that\nalso encompasses RS and RIT, as depicted in Figure 9. This result aligns with aggregate\ndemand theory, which posits the influence of wages and public expenditure on employment\nlevels. Cluster 4 concurrently emphasizes the interaction between fiscal variables (RIT\nand RVT) and economic factors (EMI and RS). The Pearson correlation for SVD-Biplot\nindicates a strong relationship with RS and EMI, while the proposed method broadens the\nscope of relevant factors by including GPR, MPIR, and RIT. This highlights the diverse\nmechanisms through which fiscal policies (direct and indirect taxation) and monetary\nmeasures (MPIR) affect labor supply and demand. Likewise, cluster 5 identifies EMI, RS,\nand RVT as significant variables, further demonstrating the influence of fiscal policy and\neconomic activity on the labor market. In alignment with Cluster 4, Pearson correlation\nvia SVD-Biplot supports these findings, while the local biplot provides a more nuanced\nview of the determinants affecting the unemployment rate. Remarkably, clusters 4 and\n5 share similar patterns in variable importance and inter-variable correlations, with key\ndistinctions emerging in the influence of fiscal (RVT, RIT) and monetary (MPIR) factors.\nA detailed analysis of these variables reveals their temporal relevance and explanatory\npower in understanding Colombian unemployment trends. So, the proposed UL-based\nframework effectively uncovers meaningful relationships among economic indicators,\noffering a refined lens for economic interpretation.\nYear\nMonth\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\nUR\nFeature\n0\n0.25\n0.5\n0.75\n1\nNormalized relevance\nYear\nMonth\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\nUR\nFeature\nYear\nMonth\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\nUR\nFeature\n0\n0.25\n0.5\n0.75\n1\nNormalized relevance\nYear\nMonth\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\nUR\nFeature\nFigure 8. Unsupervised feature relevance analysis. Left: SVD-Biplot. Right: UL (ours). First row:\nInput data feature relevance. Second row: Government terms-based results. The bar color in the\nsecond column stands for UL clusters labels (see Figure 7b,c).\nLastly, the KDE analysis (Figure 7e) highlights that major economic events—such as\nthe COVID-19 pandemic during Iván Duque’s presidency (GT4), the early term of Gustavo\nPetro (FT), and the 2008 global financial crisis under Álvaro Uribe—are distinctly mapped\ninto separate clusters. These periods align with specific economic signatures: for instance,\nRS, MPIR, Year, and Month characterize the green cluster, while Month, MPIR, and EMI\n",
+      "text_characters": 3407,
+      "confidence": 0.95,
+      "confidence_status": "acceptable",
+      "confidence_notes": "Machine-readable text was preserved with page-image provenance.",
+      "textual_figure_captions": [
+        "Figure 8. Unsupervised feature relevance analysis. Left: SVD-Biplot. Right: UL (ours). First row:"
+      ],
+      "equation_ids": [],
+      "figure_ids": []
+    },
+    {
+      "page": 19,
+      "image": "computation-13-00116-v2-assets/page-019.png",
+      "raw_text": "Computation 2025, 13, 116\n19 of 28\ndefine the dark blue cluster in the Local Biplot (Figure 7b). Consequently, our proposal\nallows capturing structural economic shifts and supporting the evidence-based design of\npublic policies, grounded in theoretical and data-driven insights.\nYear\nMonth\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\nFeature\nCluster 1\nCluster 2\nCluster 3\nCluster 4\nALL\nClusters\nYear\nMonth\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\nFeature\n0.0\n0.2\n0.4\n0.6\n0.8\n1.0\nFigure 9. Pearson correlation results. Left: SVD-Biplot, Right: UL (ours). We show the absolute\ncorrelation between the features and the unemployment rate (target) for each cluster separately and\nthroughout the dataset.\n4.2. Supervised Relevance Analysis\nFigure 10 presents the time series of the Colombian unemployment rate alongside the\nforecasts generated by various predictive models (ARIMA, Lasso, Elastic-Net, and GP),\nas well as their decomposition into trend, seasonality, and residual components, performed\nusing Equation (8). The results highlight that the effectiveness of a validation strategy is\ninherently tied to the selected temporal analysis window, underscoring the importance of\npreserving the chronological structure during model evaluation. The plots reveal significant\nstructural changes aligned with major economic events. Notable examples include the\nspike in unemployment during the 2007–2008 global financial crisis (first shaded region),\nthe sustained economic decline across Juan Manuel Santos’s administration (2010–2018),\nand the sharp rise during the COVID-19 pandemic (second shaded region). These findings\ndemonstrate the models’ ability to detect abrupt regime shifts and temporal discontinuities\nwhile reinforcing the critical need for validation techniques that respect the sequential\nnature of time series data, ensuring robust and context-aware forecasting performance.\nMoreover, the decomposition analysis reveals that the seasonal component exhibits a sta-\nble and recurring annual pattern, particularly pronounced toward the end of each year,\nwhen unemployment rates typically decline. This trend is attributed to increased labor\ndemand during the holiday season, driven by temporary employment opportunities, which\ncontribute to a short-term reduction in unemployment levels. Recognizing such seasonal\nregularities highlights the importance of integrating cyclical features into forecasting mod-\nels, allowing algorithms to more accurately capture and adapt to recurrent fluctuations\nwithin the time series.\nThe progression of inferences within each validation window enables a comparison\nbetween econometric models, such as ARIMA, and machine learning methods, including\nLasso, Elastic-Net, and GP. The findings demonstrate that ARIMA inadequately represents\nthe series’ dynamics, while Lasso yields results similar to traditional methods. Conversely,\nGP attains high accuracy in short-term predictions within the time series cross-validation\nframework; however, its efficacy declines under sliding window validation and in 12-month\nforecasting horizons, revealing considerable sensitivity to data availability. This contrast\nunderscores the significance of choosing both the suitable model and the most efficient\nvalidation method to guarantee consistent outcomes. Throughout the COVID-19 pandemic,\nall models demonstrated a reduction in accuracy, indicating the influence of abrupt changes\nin unemployment trends and the restricted data availability in this unparalleled situation.\nFigure 10 (second column, second shaded area) demonstrates how the escalation in both the\ntrend and residual components exposed the difficulties encountered by these methodolo-\n",
+      "text_characters": 3646,
+      "confidence": 0.75,
+      "confidence_status": "review_required",
+      "confidence_notes": "Embedded images require visual review; captions remain page-level text evidence only.",
+      "textual_figure_captions": [
+        "Figure 9. Pearson correlation results. Left: SVD-Biplot, Right: UL (ours). We show the absolute"
+      ],
+      "equation_ids": [],
+      "figure_ids": [
+        "page-019-image-001"
+      ]
+    },
+    {
+      "page": 20,
+      "image": "computation-13-00116-v2-assets/page-020.png",
+      "raw_text": "Computation 2025, 13, 116\n20 of 28\ngies. Nonetheless, the continuity of the annual seasonal cycle indicates that these patterns\npersistently affect unemployment trends, even during disruptive occurrences.\n2006-01\n2007-11\n2009-09\n2011-07\n2013-05\n2015-03\n2017-01\n2018-11\n2020-09\n2022-07\n10\n2\n10\n1\n100\nARIMA\nLasso\nElastic-Net\nGP\n2006-01\n2007-11\n2009-09\n2011-07\n2013-05\n2015-03\n2017-01\n2018-11\n2020-09\n2022-07\n10\n1\n100\nARIMA\nLasso\nElastic-Net\nGP\n2006-01\n2007-11\n2009-09\n2011-07\n2013-05\n2015-03\n2017-01\n2018-11\n2020-09\n2022-07\n0.2\n0.0\n0.2\n0.4\n0.6\nTrend\nSeasonality\nResidual\n2006-01\n2007-11\n2009-09\n2011-07\n2013-05\n2015-03\n2017-01\n2018-11\n2020-09\n2022-07\n10\n2\n10\n1\n100\nARIMA\nLasso\nElastic-Net\nGP\n2006-01\n2007-11\n2009-09\n2011-07\n2013-05\n2015-03\n2017-01\n2018-11\n2020-09\n2022-07\n10\n1\n100\nARIMA\nLasso\nElastic-Net\nGP\n2006-01\n2007-11\n2009-09\n2011-07\n2013-05\n2015-03\n2017-01\n2018-11\n2020-09\n2022-07\n0.1\n0.0\n0.1\n0.2\n0.3\nTrend\nSeasonality\nResidual\nDate\nUnemployment rate\nFigure 10. Unemployment rate prediction results. Comparison of the estimates from the best models\nagainst the original signal (in black): ARIMA, Lasso, Elastic-Net, and GP are tested. At the Top,\na 3-month prediction window is shown, while at the Bottom, a 12-month window is used. Left:\nresults obtained through TSCV. Middle: results with SWCV. Right: seasonal decomposition of the\nunemployment rate (trend in purple, seasonality in red, residuals in blue).\nFigure 11 illustrates the progression of two hyperparameters over three- and twelve-\nmonth intervals to evaluate model stability. The findings demonstrate significant discrep-\nancies in ARIMA and ElasticNet hyperparameters during model inference, suggesting a\npropensity for overfitting that limits generalization. Conversely, GP demonstrates supe-\nrior stability in its hyperparameters, indicating improved generalization capability and\nresilience. This attribute renders it a dependable choice in situations where adaptability\nand precision are crucial, especially in time series exhibiting considerable temporal variabil-\nity. Despite initial fluctuations, hyperparameters generally stabilize during the pandemic,\ncorresponding with the progression of the series’ patterns. This behavior can be attributed\nto economic contraction, heightened public expenditure, diminished tax burdens, and re-\nduced monetary policy intervention. These factors established a deflationary environment\nthat, according to economic theory, is associated with a moderate reduction in employ-\nment. The decrease in the volatility of essential indicators, including interest rates and\nproduction levels, streamlined the data structure, facilitating the recognition of more stable\npatterns. As a result, consumption-fueled economic recovery enabled employment levels\nto revert to pre-pandemic conditions [77]. The stabilization of the economic cycle aided in\npreserving consistency in the models’ learning processes, notwithstanding fluctuations in\nmacroeconomic conditions.\n",
+      "text_characters": 2968,
+      "confidence": 0.95,
+      "confidence_status": "acceptable",
+      "confidence_notes": "Machine-readable text was preserved with page-image provenance.",
+      "textual_figure_captions": [
+        "Figure 10. Unemployment rate prediction results. Comparison of the estimates from the best models"
+      ],
+      "equation_ids": [],
+      "figure_ids": []
+    },
+    {
+      "page": 21,
+      "image": "computation-13-00116-v2-assets/page-021.png",
+      "raw_text": "Computation 2025, 13, 116\n21 of 28\n2005-01\n2006-01\n2006-01\n2006-01\n2006-01\n2007-01\n2007-01\n2007-01\n2007-01\n2008-01\n2008-01\n2008-01\n2008-01\n2009-01\n2009-01\n2009-01\n2009-01\n2010-01\n2010-01\n2010-01\n2010-01\n2011-01\n2011-01\n2011-01\n2011-01\n2012-01\n2012-01\n2012-01\n2012-01\n2013-01\n2013-01\n2013-01\n2013-01\n2014-01\n2014-01\n2014-01\n2014-01\n2015-01\n2015-01\n2015-01\n2015-01\n2016-01\n2016-01\n2016-01\n2016-01\n2017-01\n2017-01\n2017-01\n2017-01\n2018-01\n2018-01\n2018-01\n2018-01\n2019-01\n2019-01\n2019-01\n2019-01\n2020-01\n2020-01\n2020-01\n2020-01\n2021-01\n2021-01\n2021-01\n2021-01\n2022-01\n2022-01\n2022-01\n2022-01\n2023-01\n0\n10\n2\n10\n1\n100\n2005-01\n2006-01\n2006-01\n2006-01\n2006-01\n2007-01\n2007-01\n2007-01\n2007-01\n2008-01\n2008-01\n2008-01\n2008-01\n2009-01\n2009-01\n2009-01\n2009-01\n2010-01\n2010-01\n2010-01\n2010-01\n2011-01\n2011-01\n2011-01\n2011-01\n2012-01\n2012-01\n2012-01\n2012-01\n2013-01\n2013-01\n2013-01\n2013-01\n2014-01\n2014-01\n2014-01\n2014-01\n2015-01\n2015-01\n2015-01\n2015-01\n2016-01\n2016-01\n2016-01\n2016-01\n2017-01\n2017-01\n2017-01\n2017-01\n2018-01\n2018-01\n2018-01\n2018-01\n2019-01\n2019-01\n2019-01\n2019-01\n2020-01\n2020-01\n2020-01\n2020-01\n2021-01\n2021-01\n2021-01\n2021-01\n2022-01\n2022-01\n2022-01\n2022-01\n2023-01\n10\n1\n100\n2005-01\n2006-01\n2006-01\n2007-01\n2007-01\n2008-01\n2008-01\n2009-01\n2009-01\n2010-01\n2010-01\n2011-01\n2011-01\n2012-01\n2012-01\n2013-01\n2013-01\n2014-01\n2014-01\n2015-01\n2015-01\n2016-01\n2016-01\n2017-01\n2017-01\n2018-01\n2018-01\n2019-01\n2019-01\n2020-01\n2020-01\n2021-01\n2021-01\n2022-01\n0\n10\n2\n10\n1\n100\n2005-01\n2006-01\n2006-01\n2007-01\n2007-01\n2008-01\n2008-01\n2009-01\n2009-01\n2010-01\n2010-01\n2011-01\n2011-01\n2012-01\n2012-01\n2013-01\n2013-01\n2014-01\n2014-01\n2015-01\n2015-01\n2016-01\n2016-01\n2017-01\n2017-01\n2018-01\n2018-01\n2019-01\n2019-01\n2020-01\n2020-01\n2021-01\n2021-01\n2022-01\n10\n1\n100\n0\n10\n2\n10\n1\n100\n10\n1\n100\n0\n10\n2\n10\n1\n100\n10\n1\n100\nDate\nHyperparameters values\nFigure 11. Hyperparameter analysis. The solid line represents the behavior with TSCV, while the\ndashed line shows the behavior with SWCV. At the top, a 3-month window is analyzed, while at the\nbottom, a 12-month window is used. Left: hyperparameters corresponding to the autoregressive\nlag order (in blue) and the moving average lag order (in black) of the ARIMA model are presented.\nRight: l1_ratio (in blue) and alpha (in black) for Elastic-Net are illustrated.\nTable 3 provides a comparative analysis of different regression models utilizing various\nmetrics and validation techniques applied in this study, focusing on two analysis windows.\nA three-month forecasting horizon is employed to evaluate model efficacy in the initial case.\nIn TSCV, training and test sets are developed cumulatively, progressing through the series\nwithout including future data in the training, thus maintaining the sequential integrity of\nthe problem. Conversely, SWCV utilizes a fixed-length window that advances prior to each\nprediction, enabling the elimination of outdated observations and accommodating possible\nalterations in the temporal distribution. This distinction is essential, as each method offers\nparticular advantages based on the historical development of the series or the necessity for\nadaptability to structural changes.\nThe findings indicate that traditional models, including ARIMA and SARIMA, dis-\nplay greater errors and markedly reduced R2 values in comparison to machine learning\napproaches. In contrast, methodologies such as Lasso,ElasticNet, SVR, and GP exhibit\nenhanced effectiveness owing to their capacity to discern intricate patterns and address data\nuncertainty. ARIMA and SARIMA often oversimplify temporal dynamics by presuming\nstationarity or consistent seasonality, while machine learning models provide enhanced\nflexibility and accuracy, especially in the context of non-linear relationships or structural\nalterations within the series. This comparison validates the superiority of contemporary\nmethods in encapsulating the intrinsic complexity of economic data.\nThen, As the forecasting horizon reaches 12 months, as illustrated in Table 4, the effi-\ncacy of all methodologies markedly diminishes. However, the previously observed trend\npersists: as the time horizon extends, the amount of relevant information for future pro-\njections decreases, impairing the model’s predictive performance. Despite this decline\nin precision, machine learning methods continue to outperform traditional econometric\napproaches, reaffirming their suitability for modeling time series with complex structures.\n",
+      "text_characters": 4442,
+      "confidence": 0.65,
+      "confidence_status": "review_required",
+      "confidence_notes": "One or more equation candidates are ambiguous in raw extraction.",
+      "textual_figure_captions": [
+        "Figure 11. Hyperparameter analysis. The solid line represents the behavior with TSCV, while the"
+      ],
+      "equation_ids": [
+        "page-021-equation-001"
+      ],
+      "figure_ids": []
+    },
+    {
+      "page": 22,
+      "image": "computation-13-00116-v2-assets/page-022.png",
+      "raw_text": "Computation 2025, 13, 116\n22 of 28\nTable 3. Unemployment rate prediction method comparison results (3-month prediction window).\nTSCV: Time Series Cross-Validation; SWCV: Sliding Window Cross-Validation.\nModel\nMSE (TSCV)\nMSE (SWCV)\nRMSE (TSCV)\nRMSE (SWCV)\nMAE (TSCV)\nMAE (SWCV)\nMAPE (TSCV)\nMAPE (SWCV)\nR2 (TSCV)\nR2 (SWCV)\nARIMA\n0.01\n0.01\n0.11\n0.11\n0.07\n0.07\n30.98\n29.55\n0.46\n0.52\nSARIMA\n0.01\n0.02\n0.11\n0.13\n0.07\n0.10\n31.16\n42.53\n0.45\n0.23\nRF\n0.01\n0.01\n0.10\n0.10\n0.06\n0.07\n25.56\n26.58\n0.55\n0.55\nLasso\n0.01\n0.01\n0.09\n0.10\n0.06\n0.06\n26.39\n27.21\n0.69\n0.68\nSVR\n0.01\n0.01\n0.08\n0.10\n0.05\n0.07\n25.07\n28.01\n0.71\n0.53\nElasticNet\n0.02\n0.01\n0.15\n0.11\n0.10\n0.07\n41.00\n29.12\n0.05\n0.49\nMLP\n0.03\n0.03\n0.18\n0.17\n0.13\n0.12\n64.45\n59.06\n−0.38\n−0.23\nGP\n0.01\n0.01\n0.07\n0.10\n0.05\n0.06\n24.15\n27.12\n0.80\n0.58\nTable 4. Unemployment rate prediction method comparison results (12-month prediction window).\nTSCV: Time Series Cross-Validation; SWCV: Sliding Window Cross-Validation.\nModel\nMSE (TSCV)\nMSE (SWCV)\nRMSE (TSCV)\nRMSE (SWCV)\nMAE (TSCV)\nMAE (SWCV)\nMAPE (TSCV)\nMAPE (SWCV)\nR2 (TSCV)\nR2 (SWCV)\nARIMA\n0.02\n0.02\n0.15\n0.14\n0.10\n0.09\n36.36\n6.30\n0.09\n0.13\nSARIMA\n0.03\n0.02\n0.16\n0.15\n0.10\n0.09\n35.27\n40.50\n−0.08\n0.12\nRF\n0.01\n0.02\n0.12\n0.13\n0.07\n0.08\n28.37\n30.37\n0.41\n0.32\nLasso\n0.01\n0.02\n0.10\n0.13\n0.07\n0.09\n29.84\n4.91\n0.57\n0.25\nSVR\n0.01\n0.02\n0.10\n0.12\n0.07\n0.08\n29.45\n32.55\n0.62\n0.35\nElasticNet\n0.03\n0.02\n0.16\n0.14\n0.11\n0.09\n43.02\n34.78\n−0.05\n0.22\nMLP\n0.04\n0.03\n0.22\n0.17\n0.15\n0.12\n69.33\n59.49\n−0.86\n−0.28\nGP\n0.01\n0.02\n0.09\n0.15\n0.06\n0.09\n31.32\n40.93\n0.67\n0.06\nSpecifically, in the comprehensive examination of the Lasso model (Figure 12, top\npanel), the variables with the highest weights are RS, indicative of household purchasing\npower and, by extension, consumption, and EMI, denoting the vigor of national economic\nactivity. RVT comes third in significance, reflecting the effect of indirect taxation on\nconsumer expenditure, whereas RIT encompasses the impact of direct taxes on disposable\nincome. Conversely, GPR and MPIR demonstrate a relatively less impact, as labor force\nparticipation and financing costs exert a less pronounced influence on unemployment\ndynamics within this linear model.\nMoreover, when analyzed by governmental administrations, the IT stage underscores\nthe significance of the monetary intervention rate, as fluctuations in credit costs swiftly\ninfluence investment and employment levels. Throughout GT1 and GT2, EMI and the\nprogression of UR dominate, acting as markers of the business cycle’s expansionary and\ncontractionary stages. In GT3 and GT4, the significance of RS and RVT highlights the\nimportance of real wages and VAT in influencing labor demand. Ultimately, in FT, the pro-\nportional increase in GPR indicates an augmentation in labor supply associated with\nmeasures designed to foster inclusion.\nIn addition, the RF algorithm (Figure 12, center panel) highlights the significant\nimportance of RVT and MPIR, underscoring the influence of non-linear effects arising\nfrom fiscal and monetary policy. Alterations in VAT and modifications to the intervention\nrate are crucial for understanding intricate relationships among consumption, investment,\nand employment. Nonetheless, RS and EMI maintain their significance by indicating\npurchasing power and the economic cycle. An analysis of governmental periods indicates\nthat IT and GT1 are significantly influenced by indirect taxation on UR. In GT2 and GT3,\nthis effect is counterbalanced by the influence of EMI and RS, whereas in GT4 and FT,\nMPIR becomes a crucial factor, underscoring the importance of capital costs in employment\ndynamics during transitional periods.\nSimilarly, the GP (Figure 12, bottom panel) demonstrates that shorter lengthscales in\nMPIR and RVT signify an increased sensitivity of UR to minor variations in the monetary\npolicy rate and consumption-related tax burden. RS and EMI exert a significant effect by\nmonitoring fluctuations in aggregate demand and business cycles. Besides, GPR assumes a\nsubordinate position, as labor supply reacts more slowly to macroeconomic disturbances.\nIT demonstrates a more pronounced reaction of UR to MPIR modifications; in GT1 and\nGT2, EMI and RS predominantly account for variability; in GT3 and GT4, RVT emerges\n",
+      "text_characters": 4236,
+      "confidence": 0.95,
+      "confidence_status": "acceptable",
+      "confidence_notes": "Machine-readable text was preserved with page-image provenance.",
+      "textual_figure_captions": [],
+      "equation_ids": [],
+      "figure_ids": []
+    },
+    {
+      "page": 23,
+      "image": "computation-13-00116-v2-assets/page-023.png",
+      "raw_text": "Computation 2025, 13, 116\n23 of 28\nas the primary factor; and in FT, the growing influence of RS indicates policy initiatives\nfocused on enhancing labor income in the latest phase of the cycle.\nUR\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\n0.0\n0.2\n0.4\n0.6\n0.8\n1.0\nUR\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\n0.0\n0.2\n0.4\n0.6\n0.8\n1.0\nUR\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\n0.0\n0.2\n0.4\n0.6\n0.8\n1.0\nUR\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\n0.0\n0.2\n0.4\n0.6\n0.8\n1.0\nUR\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\n0.0\n0.2\n0.4\n0.6\n0.8\n1.0\nUR\nGPR\nRS\nEMI\nRIT\nRVT\nMPIR\n0.0\n0.2\n0.4\n0.6\n0.8\n1.0\nFeature\nNormalized relevance\nFigure 12. Supervised feature relevance analysis across different models. Left: Normalized mean\nrelevance for each feature. Right: Normalized feature relevance by Government terms, with bar\ncolors indicating cluster labels (see Figure 7c). Each row corresponds to a different model: Lasso\n(top), RF (middle), and GP (bottom).\nFinally, the comparative analysis reveals that the upper quartiles of relevance for\nthe supervised strategy (GP) and the unsupervised method (UL), illustrated in Figure 13,\nexhibit a common set of variables: GPR, RIT, and RS. This convergence highlights their\nessential function in simulating the evolution of unemployment in Colombia. Notably,\nGPR, as an indicator of labor force participation, reflects the labor market’s sensitivity to\nmacroeconomic variations. Its significance in both methodologies affirms its structural\nimportance in economic adjustment processes. Simultaneously, RIT illustrates the effect\nof fiscal policy on disposable income and employment incentives, indicating that direct\ntaxation can affect labor market choices on both the supply and demand sides. Furthermore,\nRS signifies real wage circumstances, which directly influence income expectations and\nhousehold consumption ability. This connection creates a robust association between the\nlabor market and the aggregate demand.\n4.3. Limitations\nWhile the proposed framework demonstrates promising results in enhancing inter-\npretability and predictive accuracy for unemployment rate estimation, several limitations\nmust be acknowledged. First, the current approach is predominantly data-driven and does\nnot yet incorporate a structural economic model grounded in established macroeconomic\ntheory, such as the Phillips Curve or the concept of a Natural Rate of Unemployment\n(NAIRU). These frameworks offer essential insights into long-term labor market equilibria\nand the trade-off between inflation and unemployment, especially in dynamic policy envi-\nronments. Integrating structural modeling—such as the expectations-augmented Phillips\n",
+      "text_characters": 2573,
+      "confidence": 0.95,
+      "confidence_status": "acceptable",
+      "confidence_notes": "Machine-readable text was preserved with page-image provenance.",
+      "textual_figure_captions": [
+        "Figure 12. Supervised feature relevance analysis across different models. Left: Normalized mean"
+      ],
+      "equation_ids": [],
+      "figure_ids": []
+    },
+    {
+      "page": 24,
+      "image": "computation-13-00116-v2-assets/page-024.png",
+      "raw_text": "Computation 2025, 13, 116\n24 of 28\nCurve—would enhance the theoretical consistency of the forecasting framework and per-\nmit deeper causal analysis [78]. Second, the relatively small dataset (228 observations)\nconstrains the generalizability and scalability of the current model. Sample limitations\ncan lead to model variance inflation and reduced performance under unseen economic\nregimes regarding probabilistic modeling and data sufficiency. Third, the harmonization\nof unemployment-related variables across varying time and spatial resolutions remains\na critical challenge. Macroeconomic data often exhibit structural breaks due to shifts in\npolicy or measurement practices. Discrepancies in aggregation levels across variables (e.g.,\nmonthly inflation vs. quarterly GDP) and spatial granularity (e.g., national vs. depart-\nmental unemployment rates) complicate the direct inclusion of heterogeneous inputs [79].\nAddressing these limitations would not only improve the fidelity of the forecasts but also\nalign the modeling approach more closely with the economic mechanisms underlying\nunemployment.\nEMI\nMPIR\nRVT\nUR\nEMI\nMPIR\nRVT\nUR\nGPR\nRIT\nRS\nGP\nUL-Biplot\nFigure 13. Unsupervised (UL) and Unsupervised (GP) feature relevance comparison. Left: Supervised\nrelevance analysis (GP). Middle: Overlap showing features identified as relevant by both approaches.\nRight: Unsupervised relevance analysis (UL-Biplot).\n5. Conclusions\nWe introduced an explainable hybrid framework for forecasting the unemployment\nrate in Colombia, combining an unsupervised UMAP-based Local Biplot (UL-Biplot) tech-\nnique with a supervised Gaussian Process (GP) regression enriched by kernel-based rel-\nevance analysis. The unsupervised approach successfully uncovered latent structures\nwithin the dataset, revealing meaningful clusters aligned with temporal dynamics, such as\npresidential terms and major economic events, including the 2008 global financial crisis\nand the COVID-19 pandemic. It also highlighted the predominant role of socioeconomic\nvariables—particularly labor participation, real wages, and economic activity—in shaping\nunemployment patterns. In parallel, the supervised GP model achieved superior predic-\ntive performance over traditional models (e.g., ARIMA, Lasso, ElasticNet, and SVR) in\nshort-term forecasting under time series cross-validation, while maintaining robust fea-\nture relevance interpretation through individualized kernel lengthscales. The model also\ndemonstrated increased generalization and stability compared to other machine learning\napproaches, especially in handling non-linearities and uncertainty during periods of abrupt\n",
+      "text_characters": 2643,
+      "confidence": 0.95,
+      "confidence_status": "acceptable",
+      "confidence_notes": "Machine-readable text was preserved with page-image provenance.",
+      "textual_figure_captions": [
+        "Figure 13. Unsupervised (UL) and Unsupervised (GP) feature relevance comparison. Left: Supervised"
+      ],
+      "equation_ids": [],
+      "figure_ids": []
+    },
+    {
+      "page": 25,
+      "image": "computation-13-00116-v2-assets/page-025.png",
+      "raw_text": "Computation 2025, 13, 116\n25 of 28\neconomic change. Indeed, presidential terms exhibit a clear correlation with our findings,\noffering valuable context for interpreting the temporal dynamics and structural shifts in\nColombia’s unemployment rate. Of note, the recurrent appearance of RS, RIT, RVT, GPR,\nEMI, and MPIR across various methodological approaches—from traditional econometric\nmodels such as ARIMA and SARIMA to regularized machine learning algorithms like\nLasso and Elastic-Net, as well as the hybrid UL-Biplot and GP proposal—highlights their\ncrucial influence on the dynamics of Colombian unemployment.\nBeyond methodological advancements, the proposed integration of GP-based regres-\nsion and UL-based unsupervised relevance analysis offers substantial political value for\npublic decision-making. By generating interpretable predictions of unemployment levels,\npolicymakers are empowered to not only anticipate labor market stressors but also to\ntrace back the contributing socioeconomic and monetary factors in a transparent manner.\nThe predictions provided favor the formulation of risk-aware policies, while the UL frame-\nwork visually maps economic patterns and latent clusters, enabling the identification of\nvulnerable groups or periods of systemic fragility. Together, these tools support the design\nof targeted, evidence-driven interventions that can improve labor participation, stabilize\nemployment conditions, and reduce structural inequality—especially in policy contexts\nwhere responsiveness, fairness, and accountability are paramount.\nAs future work, we propose extending the dataset to include regional indicators, which\nmay uncover localized patterns and support the development of more targeted public\npolicies. Additionally, we suggest exploring probabilistic deep learning models, such as\nGP Deep Kernel Learning or interpretable attention-based architectures, to preserve model\nexplainability while improving generalization under high temporal variability [80,81]. Ad-\nditionally, key drivers of the predicted unemployment rate—such as government expendi-\nture, foreign investment, and manufacturing employment—will be incorporated for deeper\nanalysis of unemployment trends. Finally, incorporating qualitative information—such\nas regulatory changes, sociopolitical events, or labor market perception surveys—could\nenrich the proposed models and enhance their value as decision-making tools grounded in\ndata and economic theory.\nAuthor Contributions: Conceptualization, D.A.P.-R., D.A.M.-C. and A.M.Á.-M.; data curation,\nD.A.P.-R., D.A.M.-C. and J.C.T.-M.; methodology, A.M.Á.-M. and G.C.-D.; project administration,\nA.M.Á.-M.; supervision, A.M.Á.-M. and G.C.-D.; resources, D.A.P.-R., J.C.T.-M. and A.M.Á.-M. All\nauthors have read and agreed to the published version of the manuscript.\nFunding: Under grants provived by the project: Sistema de visión artificial para el monitoreo y\nseguimiento de efectos analgésicos y anestésicos administrados vía neuroaxial epidural en población\nobstétrica durante labores de parto para el fortalecimiento de servicios de salud materna del Hospital\nUniversitario de Caldas - SES HUC (funded by Universidad Nacional de Colombia, HERMES-57661).\nData Availability Statement: The publicly available dataset analyzed in this study can be found at\nhttps://github.com/UN-GCPDS/Unemployment-Rate-Prediction.git (accessed on 1 April 2025).\nConflicts of Interest: The authors declare no conflicts of interest.\nReferences\n1.\nZamanzadeh, A.; Chan, M.K.; Ehsani, M.A.; Ganjali, M. Unemployment duration, Fiscal and monetary policies, and the output\ngap: How do the quantile relationships look like? Econ. Model. 2020, 91, 613–632. [CrossRef]\n2.\nChodorow-Reich, G.; Coglianese, J.; Karabarbounis, L. The macro effects of unemployment benefit extensions: A measurement\nerror approach. Q. J. Econ. 2019, 134, 227–279. [CrossRef]\n3.\nOzili, P.; Oladipo, O. Impact of credit expansion and contraction on unemployment. Int. J. Soc. Econ. 2025, 52, 205–219. [CrossRef]\n4.\nSakamoto, T. Poverty, inequality, and redistribution: An analysis of the equalizing effects of social investment policy. Int. J. Comp.\nSociol. 2024, 65, 310–334. [CrossRef]\n",
+      "text_characters": 4194,
+      "confidence": 0.95,
+      "confidence_status": "acceptable",
+      "confidence_notes": "Machine-readable text was preserved with page-image provenance.",
+      "textual_figure_captions": [],
+      "equation_ids": [],
+      "figure_ids": []
+    },
+    {
+      "page": 26,
+      "image": "computation-13-00116-v2-assets/page-026.png",
+      "raw_text": "Computation 2025, 13, 116\n26 of 28\n5.\nHidalgo Villota, M.E. Business cycles in Colombia: Stylized facts. Tendencias 2024, 25, 26–56. [CrossRef]\n6.\nSullivan, M. Comprender y predecir la elección del marco de política monetaria en los países en desarrollo. Model. Econ. 2024,\n139, 106783. [CrossRef]\n7.\nMamo, D.K.; Ayele, E.A.; Teklu, S.W. Modelling and Analysis of the Impact of Corruption on Economic Growth and Unemploy-\nment. In Proceedings of the Operations Research Forum; Springer: Berlin/Heidelberg, Germany, 2024; Volume 5, p. 36.\n8.\nPatwa, P.; Bhardwaj, M.; Guptha, V.; Kumari, G.; Sharma, S.; Pykl, S.; Das, A.; Ekbal, A.; Akhtar, M.S.; Chakraborty, T. Overview\nof constraint 2021 shared tasks: Detecting english covid-19 fake news and hindi hostile posts. In Proceedings of the Combating\nOnline Hostile Posts in Regional Languages During Emergency Situation: First International Workshop, CONSTRAINT 2021,\nCollocated with AAAI 2021, Virtual Event, 8 February 2021; Revised Selected Papers 1; Springer: Berlin/Heidelberg, Germany,\n2021; pp. 42–53.\n9.\nPapi´c-Blagojevi´c, N.; Stankov, B. Analysis of Trends in Youth Unemployment in the European Union: The Role and Importance of\nYouth Entrepreneurship. In Entrepreneurship and Development for a Green Resilient Economy; Emerald Publishing Limited: Bingley,\nUK, 2024; pp. 181–204. [CrossRef]\n10.\nOlschewski, S.; Luckman, A.; Mason, A.; Ludvig, E.A.; Konstantinidis, E. The future of decisions from experience: Connecting\nreal-world decision problems to cognitive processes. Perspect. Psychol. Sci. 2024, 19, 82–102. [CrossRef]\n11.\nCarrino, L.; Farnia, L.; Giove, S. Measuring Social Inclusion in Europe: A non-additive approach with the expert-preferences of\npublic policy planners. J. R. Stat. Soc. Ser. A Stat. Soc. 2024, 187, 231–259. [CrossRef]\n12.\nMasoud, N. Artificial intelligence and unemployment dynamics: An econometric analysis in high-income economies. Technol.\nSustain. 2025, 4, 30–50. [CrossRef]\n13.\nDa Re, D.; Marini, G.; Bonannella, C.; Laurini, F.; Manica, M.; Anicic, N.; Albieri, A.; Angelini, P.; Arnoldi, D.; Bertola, F.; et al.\nModelling the seasonal dynamics of Aedes albopictus populations using a spatio-temporal stacked machine learning model. Sci.\nRep. 2025, 15, 3750. [CrossRef]\n14.\nChen, X.S.; Kim, M.G.; Lin, C.H.; Na, H.J. Development of per Capita GDP Forecasting Model Using Deep Learning: Including\nConsumer Goods Index and Unemployment Rate. Sustainability 2025, 17, 843.\n15.\nDepartamento Administrativo Nacional de Estadística (DANE). Metodología de Estadísticas Laborales. 2025. Available online:\nhttps://bibliotecadoctecnica.dane.gov.co/static/documentos/DIG/DEE/DEE_Metodolog (accessed on 1 April 2025).\n16.\nDepartamento Administrativo Nacional de Estadística (DANE). Metodología de Encuestas Económicas y de Empleo. 2025.\nAvailable online: https://bibliotecadoctecnica.dane.gov.co/static/documentos/DCD/EEVV/EEVV_Metodolog (accessed on 1\nApril 2025). [CrossRef]\n17.\nPigazo-López, F.; del Carmen Ruiz-Puente, M. Analysis of the Dynamic Relationships Between Industrial and Environmental\nFactors and Unemployment Rate. An Econometric Approach. Dyna. Energía Sostenibilidad 2024, 13, 1–13. [CrossRef]\n18.\nChakraborty, T.; Chakraborty, A.K.; Biswas, M.; Banerjee, S.; Bhattacharya, S. Unemployment rate forecasting: A hybrid approach.\nComput. Econ. 2021, 57, 183–201.\n19.\nWoan-Lin, B.; Hui-Mei, T. Economic Impact on Palm Oil Stock Returns in Malaysia, Singapore, and Indonesia: A Nardl Model\nAnalysis. J. Sustain. Sci. Manag. 2024, 19, 195–202. [CrossRef]\n20.\nShi, X.; Wang, J.; Zhang, B. A fuzzy time series forecasting model with both accuracy and interpretability is used to forecast wind\npower. Appl. Energy 2024, 353, 122015. [CrossRef]\n21.\nOnatunji, O.G.; Adeleke, O.K.; Adejumo, A.V. Non-linearity in the Phillips curve: Evidence from Nigeria. Afr. J. Econ. Manag.\nStud. 2024, 15, 132–144. [CrossRef]\n22.\nGallegati, M.; Gallegati, S. Why does economics need complexity? Soft Comput. 2025, 1–10. [CrossRef].\n23.\nNosike, C.J.; Ojobor, O.S.N. Effects of Government Policies on Recessions: Fiscal and Monetary Policy Impact on Unemployment,\nPoverty, and Inequality. Interdiscip. J. Afr. Asian Stud. (IJAAS) 2024, 10, 1–12.\n24.\nAdvani, B.; Sachan, A.; Sahu, U.K.; Pradhan, A.K. Forecasting Major Macroeconomic Variables of the Indian Economy. In\nModeling Economic Growth in Contemporary India; Emerald Publishing Limited: Bingley, UK, 2024; pp. 1–24. [CrossRef]\n25.\nMero, K.; Salgado, N.; Meza, J.; Pacheco-Delgado, J.; Ventura, S. Unemployment Rate Prediction Using a Hybrid Model of\nRecurrent Neural Networks and Genetic Algorithms. Appl. Sci. 2024, 14, 3174. [CrossRef]\n26.\nMohamed, A.A.; Abdi, A.H. Exploring the dynamics of inflation, unemployment, and economic growth in Somalia: A VECM\nanalysis. Cogent Econ. Financ. 2024, 12, 2385644. [CrossRef]\n27.\nSaâdaoui, F.; Rabbouch, H. Financial forecasting improvement with LSTM-ARFIMA hybrid models and non-Gaussian distribu-\ntions. Technol. Forecast. Soc. Change 2024, 206, 123539. [CrossRef]\n28.\nBoundi-Chraki, F.; Perrotini-Hernández, I. Revisiting the Classical Theory of Investment: An Empirical Assessment from the\nEuropean Union. J. Quant. Econ. 2024, 22, 63–89. [CrossRef]\n29.\nMutascu, M.; Hegerty, S.W. Predicting the contribution of artificial intelligence to unemployment rates: An artificial neural\nnetwork approach. J. Econ. Financ. 2023, 47, 400–416. [CrossRef]\n",
+      "text_characters": 5423,
+      "confidence": 0.65,
+      "confidence_status": "review_required",
+      "confidence_notes": "One or more equation candidates are ambiguous in raw extraction.",
+      "textual_figure_captions": [],
+      "equation_ids": [
+        "page-026-equation-001",
+        "page-026-equation-002"
+      ],
+      "figure_ids": []
+    },
+    {
+      "page": 27,
+      "image": "computation-13-00116-v2-assets/page-027.png",
+      "raw_text": "Computation 2025, 13, 116\n27 of 28\n30.\nCapello, R.; Caragliu, A.; Dellisanti, R. Integrating digital and global transformations in forecasting regional growth: The MASST5\nmodel. Spat. Econ. Anal. 2024, 19, 133–160.\n31.\nShavvalpour, S.; Mohseni, R.; Kordtabar Firouzjaei, H. Analysis of the Asymmetric impact of Oil prices, Exchange rates, and their\nUncertainty on Unemployment in Oil-Exporting countries. Macroecon. Res. Lett. 2024, 19. [CrossRef]\n32.\nSow, A.; Traore, I.; Diallo, T.; Traore, M.; Ba, A. Comparison of Gaussian process regression, partial least squares, random forest\nand support vector machines for a near infrared calibration of paracetamol samples. Results Chem. 2022, 4, 100508.\n33.\nShamsi, M.; Beheshti, S. Separability and scatteredness (S&S) ratio-based efficient SVM regularization parameter, kernel, and\nkernel parameter selection. Pattern Anal. Appl. 2025, 28, 33. [CrossRef]\n34.\nXu, B.; Huang, J.Z.; Williams, G.; Wang, Q.; Ye, Y. Classifying very high-dimensional data with random forests built from small\nsubspaces. Int. J. Data Warehous. Min. (IJDWM) 2012, 8, 44–63. [CrossRef]\n35.\nWang, Q.; Nguyen, T.T.; Huang, J.Z.; Nguyen, T.T. An efficient random forests algorithm for high dimensional data classification.\nAdv. Data Anal. Classif. 2018, 12, 953–972. [CrossRef]\n36.\nLiu, H.; Ong, Y.S.; Shen, X.; Cai, J. When Gaussian Process Meets Big Data: A Review of Scalable GPs. IEEE Trans. Neural Networks\nLearn. Syst. 2020, 31, 4405–4423. [CrossRef]\n37.\nAçıkkar, M.; Tokgöz, S. Improving multi-class classification: Scaled extensions of harmonic mean-based adaptive k-nearest\nneighbors. Appl. Intell. 2025, 55, 1–25.\n38.\nShaker, M.T.; El-Batanouny, H.; Abdelsalam, M.; Helmy, Y. Systematic Review of Machine Learning Approaches in Forecasting\nEconomic Growth and Enhancing Decent Work Opportunities: A Comprehensive Analysis. In Proceedings of the 2024 6th\nInternational Conference on Computing and Informatics (ICCI), Cairo, Egypt, 6–7 March 2024; pp. 377–392.\n39.\nAoujil, Z.; Hanine, M. A Review on Artificial Intelligence and Behavioral Macroeconomics. In Proceedings of the International\nConference on Smart City Applications, Kuala Lumpur, Malaysia, 17–19 May 2024; Springer: Berlin/Heidelberg, Germany, 2024;\npp. 332–341. [CrossRef]\n40.\nAlaminos, D.; Salas, M.B.; Partal-Ureña, A. Hybrid ARMA-GARCH-Neural Networks for intraday strategy exploration in\nhigh-frequency trading. Pattern Recognit. 2024, 148, 110139. [CrossRef]\n41.\nSoltani, A.; Lee, C.L. The non-linear dynamics of South Australian regional housing markets: A machine learning approach.\nAppl. Geogr. 2024, 166, 103248. [CrossRef]\n42.\nJung, J.; Wang, Y.; Sanchez Barrioluengo, M. A scoping review on graduate employability in an era of ‘Technological Unemploy-\nment’. High. Educ. Res. Dev. 2024, 43, 542–562.\n43.\nMurphy, K.P. Probabilistic Machine Learning: An Introduction; MIT Press: Cambridge, MA, USA, 2022. [CrossRef]\n44.\nSimionescu, M. Machine Learning vs. Econometric Models to Forecast Inflation Rate in Romania? The Role of Sentiment Analysis.\nMathematics 2025, 13, 168. [CrossRef]\n45.\nMutie, C.K.; Macharia, J.N. Gendered Analysis of the Effect of Displacement on Labor Market Outcomes: A Focus on Nairobi\nCounty, Kenya. Economies 2025, 13, 51. [CrossRef]\n46.\nOrozco-Castañeda, J.M.; Sierra-Suárez, L.P.; Vidal, P. Labor market forecasting in unprecedented times: A machine learning\napproach. Bull. Econ. Res. 2024, 76, 893–915.\n47.\nDepartamento Administrativo Nacional de Estadística (DANE). Estadísticas del Mercado Laboral. 2025. Available online:\nhttps://www.dane.gov.co/index.php/estadisticas-por-tema/mercado-laboral (accessed on 1 April 2025).\n48.\nDepartamento Nacional de Planeación (DNP). Información Fiscal y Tributaria. 2025. Available online: https://www.dnp.gov.co/\n(accessed on 1 April 2025). [CrossRef]\n49.\nGüler, M.; Kabakçı, A.; Koç, Ö.; Eraslan, E.; Derin, K.H.; Güler, M.; Ünlü, R.; Türkan, Y.S.; Namlı, E. Forecasting of the\nUnemployment Rate in Turkey: Comparison of the Machine Learning Models. Sustainability 2024, 16, 6509. [CrossRef]\n50.\nDavidescu, A.A.; Apostu, S.A.; Marin, A. Forecasting the romanian unemployment rate in time of health crisis—A univariate vs.\nmultivariate time series approach. Int. J. Environ. Res. Public Health 2021, 18, 11165. [CrossRef]\n51.\nNguyen, P.H.; Tsai, J.F.; Kayral, I.E.; Lin, M.H. Unemployment rates forecasting with grey-based models in the post-COVID-19\nperiod: A case study from Vietnam. Sustainability 2021, 13, 7879. [CrossRef]\n52.\nPopîrlan, C.I.; Tudor, I.V.; Dinu, C.C.; Stoian, G.; Popîrlan, C.; D˘anciulescu, D. Hybrid model for unemployment impact on social\nlife. Mathematics 2021, 9, 2278. [CrossRef] [PubMed]\n53.\nDavidescu, A.A.; Apostu, S.A.; Paul, A. Comparative analysis of different univariate forecasting methods in modelling and\npredicting the romanian unemployment rate for the period 2021–2022. Entropy 2021, 23, 325. [CrossRef]\n54.\nChappell, H.W., Jr.; Keech, W.R. The unemployment rate consequences of partisan monetary policies. South. Econ. J. 1988,\n55, 107–122.\n55.\nOnwuka, C.E. The impact of fiscal and monetary policy on unemployment rate in Nigeria.\nSSRN 2021. Available online:\nhttps://papers.ssrn.com/sol3/papers.cfm?abstract_id=3959996 (accessed on 1 April 2025).\n56.\nHouse, D.; Keyser, J.C. Foundations of Physically Based Modeling and Animation; AK Peters/CRC Press: Boca Raton, FL, USA, 2016.\n57.\nHyndman, R.J.; Athanasopoulos, G. Forecasting: Principles and Practice; OTexts: Melbourne, VIC, Australia, 2018. [CrossRef]\n",
+      "text_characters": 5520,
+      "confidence": 0.65,
+      "confidence_status": "review_required",
+      "confidence_notes": "One or more equation candidates are ambiguous in raw extraction.",
+      "textual_figure_captions": [],
+      "equation_ids": [
+        "page-027-equation-001"
+      ],
+      "figure_ids": []
+    },
+    {
+      "page": 28,
+      "image": "computation-13-00116-v2-assets/page-028.png",
+      "raw_text": "Computation 2025, 13, 116\n28 of 28\n58.\nOzcan, M.; Peker, S. A classification and regression tree algorithm for heart disease modeling and prediction. Healthc. Anal. 2023,\n3, 100130. [CrossRef]\n59.\nChen, X.; Li, L.; Li, Z.; Liu, M.; Li, Q.; Qi, H.; Ma, D.; Wen, Y.; Cao, G.; Yu, P.L. KD loss: Enhancing discriminability of features\nwith kernel trick for object detection in VHR remote sensing images. Eng. Appl. Artif. Intell. 2024, 129, 107641. [CrossRef]\n60.\nEl Mamoun, M. An effective combination of convolutional neural network and support vector machine classifier for Arabic\nhandwritten recognition. Autom. Control Comput. Sci. 2023, 57, 267–275.\n61.\nLi, X.; Wang, Y.; Basu, S.; Kumbier, K.; Yu, B. A debiased MDI feature importance measure for random forests. Adv. Neural Inf.\nProcess. Syst. 2019, 32, 8049–8059. [CrossRef]\n62.\nAlizamir, M.; Wang, M.; Adnan Ikram, R.M.; Kim, S.; Ahmed, K.O.; Heddam, S. Developing an efficient explainable artificial\nintelligence approach for accurate reverse osmosis desalination plant performance prediction: Application of SHAP analysis.\nEng. Appl. Comput. Fluid Mech. 2024, 18, 2422060.\n63.\nMolnar, C. Interpretable Machine Learning; Lulu: Morrisville, NC, USA, 2020. [CrossRef]\n64.\nFukuyama, J. Local biplots for multidimensional scaling, with application to the microbiome. J. Comput. Graph. Stat. 2022,\n31, 779–789.\n65.\nShumway, R.H.; Stoffer, D.S.; Shumway, R.H.; Stoffer, D.S. ARIMA models. Time Series Analysis and Its Applications: With R\nExamples; Springer Nature: Berlin, Germany, 2017; pp. 75–163. [CrossRef]\n66.\nDivisekara, R.W.; Jayasinghe, G.; Kumari, K. Forecasting the red lentils commodity market price using SARIMA models. SN Bus.\nEcon. 2020, 1, 20. [CrossRef]\n67.\nYang, X.; Wen, W. Ridge and lasso regression models for cross-version defect prediction. IEEE Trans. Reliab. 2018, 67, 885–896.\n[CrossRef]\n68.\nChamlal, H.; Benzmane, A.; Ouaderhman, T. Elastic net-based high dimensional data selection for regression. Expert Syst. Appl.\n2024, 244, 122958. [CrossRef] [PubMed]\n69.\nNachouki, M.; Mohamed, E.A.; Mehdi, R.; Abou Naaj, M. Student course grade prediction using the random forest algorithm:\nAnalysis of predictors’ importance. Trends Neurosci. Educ. 2023, 33, 100214. [CrossRef]\n70.\nDash, R.K.; Nguyen, T.N.; Cengiz, K.; Sharma, A. Fine-tuned support vector regression model for stock predictions. Neural\nComput. Appl. 2023, 35, 23295–23309. [CrossRef]\n71.\nAlzubaidi, L.; Mohammed, L. Short-Term Forecasting of Oil Prices Using Artificial Neural Networks. Sustainability 2024, 16, 6509.\n[CrossRef]\n72.\nSulandari, W.; Yudhanto, Y.; Subanti, S.; Zukhronah, E.; Subarkah, M.Z. Implementing Time Series Cross Validation to Evaluate\nthe Forecasting Model Performance. KnE Life Sci. 2024, 1, 229–238.\n73.\nKingphai, K.; Moshfeghi, Y. On time series cross-validation for deep learning classification model of mental workload levels\nbased on EEG signals. In Proceedings of the International Conference on Machine Learning, Optimization, and Data Science; Springer:\nBerlin/Heidelberg, Germany, 2022; pp. 402–416. [CrossRef]\n74.\nGabrikova, B.; Svabova, L.; Kramarova, K. Machine learning ensemble modelling for predicting unemployment duration. Appl.\nSci. 2023, 13, 10146.\n75.\nO’Malley, T.; Bursztein, E.; Long, J.; Chollet, F.; Jin, H.; Invernizzi, L. KerasTuner. 2019. Available online: https://github.com/\nkeras-team/keras-tuner (accessed on 1 April 2025).\n76.\nWu, J.; Chen, X.Y.; Zhang, H.; Xiong, L.D.; Lei, H.; Deng, S.H. Hyperparameter optimization for machine learning models based\non Bayesian optimization. J. Electron. Sci. Technol. 2019, 17, 26–40. [CrossRef]\n77.\nCardona-Arenas, C.D.; Sierra-Suárez, L.P. Impacto de la política monetaria en el equilibrio del mercado de trabajo: Países de la\nAlianza del Pacífico. Rev. Finanz. Y Política Económica 2020, 12, 491–521.\n78.\nRos,oiu, I.; Ros,oiu, A. The relation between unemployment rate and economic growth in USA. Int. J. Econ. Pract. Theor. 2014,\n4, 162–167. [CrossRef]\n79.\nWright, R.; Kircher, P.; Julien, B.; Guerrieri, V. Directed search and competitive search equilibrium: A guided tour. J. Econ. Lit.\n2021, 59, 90–148. [CrossRef]\n80.\nNoack, M.M.; Luo, H.; Risser, M.D. A unifying perspective on non-stationary kernels for deeper Gaussian processes. APL Mach.\nLearn. 2024, 2, 010902. [CrossRef] [PubMed]\n81.\nJahin, M.A.; Shovon, M.S.H.; Mridha, M.; Islam, M.R.; Watanobe, Y. A hybrid transformer and attention based recurrent neural\nnetwork for robust and interpretable sentiment analysis of tweets. Sci. Rep. 2024, 14, 24882.\nDisclaimer/Publisher’s Note: The statements, opinions and data contained in all publications are solely those of the individual\nauthor(s) and contributor(s) and not of MDPI and/or the editor(s). MDPI and/or the editor(s) disclaim responsibility for any injury to\npeople or property resulting from any ideas, methods, instructions or products referred to in the content.\n",
+      "text_characters": 4921,
+      "confidence": 0.95,
+      "confidence_status": "acceptable",
+      "confidence_notes": "Machine-readable text was preserved with page-image provenance.",
+      "textual_figure_captions": [],
+      "equation_ids": [],
+      "figure_ids": []
+    }
+  ],
+  "review_required_pages": [
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    17,
+    19,
+    21,
+    26,
+    27
+  ],
+  "confidence_threshold": 0.85,
+  "confidence_method": "Deterministic confidence from raw PyMuPDF text, equation-candidate ambiguity, and review-required embedded images; rendered page images retain provenance.",
+  "extraction_configuration": {
+    "text": true,
+    "figures": true,
+    "tables": true,
+    "equations": true
+  },
+  "configuration_path": "/Users/diego/Desktop/Proyectos/papersmith-ai/papersmith.yaml",
+  "equations": [
+    {
+      "id": "page-006-equation-001",
+      "raw_text": "Given an input feature matrix, X={xn∈RP:n∈N} (with X∈RN×P, P-dimensional",
+      "provenance": {
+        "page": 6,
+        "page_image": "computation-13-00116-v2-assets/page-006.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-006-equation-002",
+      "raw_text": "features and N samples), a lower-dimensional UMAP-based embedding, Z∈RN×P′,",
+      "provenance": {
+        "page": 6,
+        "page_image": "computation-13-00116-v2-assets/page-006.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-006-equation-003",
+      "raw_text": "neighbor (k-NN) graph from a given pairwise Euclidean distance matrix, d(xn, xn′)∈R,",
+      "provenance": {
+        "page": 6,
+        "page_image": "computation-13-00116-v2-assets/page-006.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-006-equation-004",
+      "raw_text": "to measure the relationships between instances xn, xn′∈X. (ii) Estimating a low-dimensional",
+      "provenance": {
+        "page": 6,
+        "page_image": "computation-13-00116-v2-assets/page-006.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-006-equation-005",
+      "raw_text": "matrix W∈[0, 1]N×N with elements:",
+      "provenance": {
+        "page": 6,
+        "page_image": "computation-13-00116-v2-assets/page-006.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-006-equation-006",
+      "raw_text": "wnn′ = exp",
+      "provenance": {
+        "page": 6,
+        "page_image": "computation-13-00116-v2-assets/page-006.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-001",
+      "raw_text": "where σn∈R+ serves as a normalization factor to define a local measure at point xn,",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-002",
+      "raw_text": "and ˜ρn∈R+ rules outlier distances within the n-th neighborhood. To ensure a symmetric",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-003",
+      "raw_text": "˘wnn′ = wnn′ −wn′n −wnn′wn′n.",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-004",
+      "raw_text": "4 × 10",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-005",
+      "raw_text": "1 × 10",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-006",
+      "raw_text": "2 × 10",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-007",
+      "raw_text": "8 × 105",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-008",
+      "raw_text": "1 × 106",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-009",
+      "raw_text": "6 × 101",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-010",
+      "raw_text": "8 × 101",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-011",
+      "raw_text": "1 × 102",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-012",
+      "raw_text": "1 × 102",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-013",
+      "raw_text": "5 × 106",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-014",
+      "raw_text": "1 × 107",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-015",
+      "raw_text": "2 × 107",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-016",
+      "raw_text": "2 × 106",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-017",
+      "raw_text": "5 × 106",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-018",
+      "raw_text": "8 × 106",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-019",
+      "raw_text": "5 × 100",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-020",
+      "raw_text": "1 × 101",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-021",
+      "raw_text": "6 × 101",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-022",
+      "raw_text": "6 × 101",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-023",
+      "raw_text": "6 × 101",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-024",
+      "raw_text": "1 × 101",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-025",
+      "raw_text": "2 × 101",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-026",
+      "raw_text": "2 × 101",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-027",
+      "raw_text": "8 × 105",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-028",
+      "raw_text": "1 × 106",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-029",
+      "raw_text": "8 × 101",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-030",
+      "raw_text": "1 × 102",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-031",
+      "raw_text": "1 × 102",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-032",
+      "raw_text": "5 × 106",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-033",
+      "raw_text": "1 × 107",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-034",
+      "raw_text": "2 × 107",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-035",
+      "raw_text": "2 × 106",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-036",
+      "raw_text": "5 × 106",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-037",
+      "raw_text": "8 × 106",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-038",
+      "raw_text": "5 × 100",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-039",
+      "raw_text": "1 × 101",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-040",
+      "raw_text": "1 × 101",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-041",
+      "raw_text": "2 × 101",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-042",
+      "raw_text": "2 × 101",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-043",
+      "raw_text": "In turn, a low-dimensional weight matrix ˜W(Z) ∈[0, 1]N×N is computed as:",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-044",
+      "raw_text": "˜wnn′(Z) =",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-045",
+      "raw_text": "where zn, zn′ ∈Z denote points in the low-dimensional embedding space, and ˜α, ι ∈R+",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-007-equation-046",
+      "raw_text": "Z = arg min",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-007-equation-047",
+      "raw_text": "zn∈Z −∑",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-007-equation-048",
+      "raw_text": "n∈N",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-007-equation-049",
+      "raw_text": "n̸=n′",
+      "provenance": {
+        "page": 7,
+        "page_image": "computation-13-00116-v2-assets/page-007.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-001",
+      "raw_text": "d = arg min",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-008-equation-002",
+      "raw_text": "∑",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-003",
+      "raw_text": "n=1",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-008-equation-004",
+      "raw_text": "∑",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-005",
+      "raw_text": "d′=1",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-006",
+      "raw_text": "˜Zd ∩˜Zd′ = ∅,",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-007",
+      "raw_text": "∀d, d′ ∈˜D,",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-008",
+      "raw_text": "d ̸= d′.",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-009",
+      "raw_text": "where ˜D is the number of disjoint sets { ˜Zd∈RNd×2} ˜D",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-010",
+      "raw_text": "d=1, with ∑",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-008-equation-011",
+      "raw_text": "d=1 Nd = N, ˜D ≤N, and",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-008-equation-012",
+      "raw_text": "µd∈R2 is d-th partition center.",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-013",
+      "raw_text": "˜Zd = ˜XdBd,",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-014",
+      "raw_text": "where ˜Xd ∈RNd×P is the low-dimensional representation computed by the 2D singular",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-015",
+      "raw_text": "d = arg min",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-008-equation-016",
+      "raw_text": "=⇒",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-017",
+      "raw_text": "˘Xd = ˘Ud ˘Sd ˘V⊤",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-018",
+      "raw_text": "d , ˘Ud ∈RNd×2, ˘Vd ∈RP×2,",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-019",
+      "raw_text": "as Bd= ˘Vd ˘S0.5",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-020",
+      "raw_text": "d ∈RP×2, where ˘Sd∈R2×2 is the diagonal matrix holding the singular value",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-008-equation-021",
+      "raw_text": "d = arg min",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-008-equation-022",
+      "raw_text": "∀d ∈D.",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-023",
+      "raw_text": "where ˜Bd=γdBd + νd, and the terms γd, νd ∈R encode a composition of rotation, dilation,",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-024",
+      "raw_text": "λd∈RP can be computed as:",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-008-equation-025",
+      "raw_text": "λd = Bd1,",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-026",
+      "raw_text": "yt = η +",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-027",
+      "raw_text": "∑",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-028",
+      "raw_text": "p=1",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-008-equation-029",
+      "raw_text": "∑",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-030",
+      "raw_text": "p′=1",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-031",
+      "raw_text": "In this formulation, yt ∈R represents the time series at time t, whereas η ∈R",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-032",
+      "raw_text": "is denoted by y = {yt ∈R : t ∈N}. Furthermore, the series’ lags are represented",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-008-equation-033",
+      "raw_text": "by ¯X = {yt−p′ ∈R : t ∈N, p′ ∈P′}, while the associated coefficients of the",
+      "provenance": {
+        "page": 8,
+        "page_image": "computation-13-00116-v2-assets/page-008.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-001",
+      "raw_text": "autoregressive component are organized in ¯θ = { ¯θp′ ∈R : p′ ∈P′}, where P′ ∈N",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-002",
+      "raw_text": "Conversely, X′ = {ξt−p′ ∼N (0, ˜σ2",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-003",
+      "raw_text": "t,p′) : t ∈N, p′ ∈P′} denotes a white noise process",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-004",
+      "raw_text": "and θ′ = {θ′",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-005",
+      "raw_text": "p′ ∈R : p′ ∈P′} gathers the moving average coefficients.",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-006",
+      "raw_text": "y = ¯X ¯θ + X′θ′ + 1η = Xθ,",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-007",
+      "raw_text": "where X = [ ¯X, X′, 1] and X ∈RN×P. The model coefficients are represented as",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-008",
+      "raw_text": "θ = [¯θ,θ′, η]⊤, where θ ∈RP.",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-009-equation-009",
+      "raw_text": "yt = η +",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-010",
+      "raw_text": "∑",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-011",
+      "raw_text": "p′=1",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-012",
+      "raw_text": "∑",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-013",
+      "raw_text": "p′=1",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-014",
+      "raw_text": "∑",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-015",
+      "raw_text": "s=1",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-009-equation-016",
+      "raw_text": "∑",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-017",
+      "raw_text": "s=1",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-009-equation-018",
+      "raw_text": "y = ¯X ¯θ + X′θ′ + ˇX ˇθ + ˆX ˆθ + 1η,",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-019",
+      "raw_text": "where ˇX = {yt−s ∈R : t ∈N, s ∈P′} and ˇθ = { ˇθs ∈R : s ∈P′} signify the seasonal",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-020",
+      "raw_text": "autoregressive component, with P′ ∈N indicating the number of lags. Likewise,",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-021",
+      "raw_text": "ˆX = { ˆξt−s ∈R : t ∈N, s ∈R′} and ˆθ = { ˆθs ∈R : s ∈R′} represent the seasonal",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-022",
+      "raw_text": "instances, s ∈N denotes the quantity of periods employed to illustrate seasonality.",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-023",
+      "raw_text": "Also, the SARIMA model can be represented in its concise version as: y = Xθ,",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-024",
+      "raw_text": "with X = [ ¯X, X′, ˇX, ˆX, 1], where X ∈RN×P. Simultaneously, the parameter vector",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-025",
+      "raw_text": "yields: θ = [¯θ,θ′, ˇθ, ˆθ, η]⊤, where θ ∈RP.",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-026",
+      "raw_text": "between the exogenous variables X = {xn ∈RP : n ∈N}, consisting of N samples",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-027",
+      "raw_text": "and P features, and a target variable y = {yn ∈R : n ∈N}. Then, a linear relationship",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-028",
+      "raw_text": "is fixed as y = Xθ, where the coefficient vector θ = {θp ∈R : p ∈P} represents",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-029",
+      "raw_text": "θ =",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-009-equation-030",
+      "raw_text": "θ∗= arg min",
+      "provenance": {
+        "page": 9,
+        "page_image": "computation-13-00116-v2-assets/page-009.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-010-equation-001",
+      "raw_text": "Notably, when ˜λ1 ∈R+ and ˜λ2 = 0, OLS yields to L1 regularization, or Least",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-010-equation-002",
+      "raw_text": "Absolute Shrinkage and Selection Operator (LASSO). Likewise, when ˜λ1, ˜λ2 ∈R+",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-010-equation-003",
+      "raw_text": "Random Forests (RF): Let y ∈RN be the target vector and X ∈RN×P denote the",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-010-equation-004",
+      "raw_text": "yn = 1",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-010-equation-005",
+      "raw_text": "∑",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-010-equation-006",
+      "raw_text": "j=1",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-010-equation-007",
+      "raw_text": "where the j-th tree ϕ(j)(X, Θ(j)) = {ϕ(j)",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-010-equation-008",
+      "raw_text": "n,l(xn, Θ(j)) ∈{0, 1} : n ∈N, l ∈Lj} codes",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-010-equation-009",
+      "raw_text": "rameters linked to each node are denoted as θ(t) = {θ(t)",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-010-equation-010",
+      "raw_text": "∈R : l ∈Lt}, representing the",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-010-equation-011",
+      "raw_text": "coefficients connected with each node in the respective trees. Then: y = 1",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-010-equation-012",
+      "raw_text": "holds the set Θ = {Θ(j) ∈R(Lj−1)×P : j ∈J}, delineating the input space partitions",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-010-equation-013",
+      "raw_text": "trees Φ(X,Θ) = {ϕ(j)(X, Θ(j))}J",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-010-equation-014",
+      "raw_text": "j=1 and θ = {θ(j)}J",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-010-equation-015",
+      "raw_text": "j=1 represents the aggregation of",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-010-equation-016",
+      "raw_text": "θ∗,Θ∗= arg min",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-010-equation-017",
+      "raw_text": "Support Vector Regression (SVR): Given an input sample xn ∈RP, the non-linear SVR’s",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-010-equation-018",
+      "raw_text": "f (xn) = ϕ(xn)w,",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-010-equation-019",
+      "raw_text": "where w = {wq ∈R : q ∈Q} is a coefficients vector and ϕ : RP →RQ denotes the",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-010-equation-020",
+      "raw_text": "function that transforms the data into a higher-dimensional space, with Q →∞. This",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-010-equation-021",
+      "raw_text": "κ(xn, xn′) = ⟨ϕ(xn), ϕ(xn′)⟩H = ϕ(xn)ϕ(xn′)⊤∈R.",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-010-equation-022",
+      "raw_text": "The resultant matrix is represented as KXX = {κ(xn, xn′) : n, n′ ∈N}. Subsequently,",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-010-equation-023",
+      "raw_text": "y = KXX(α −α′)",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-010-equation-024",
+      "raw_text": "In this context, α = {αn ∈R : n ∈N} and α′ = {α′",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-010-equation-025",
+      "raw_text": "n ∈R : n ∈N} represent",
+      "provenance": {
+        "page": 10,
+        "page_image": "computation-13-00116-v2-assets/page-010.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-011-equation-001",
+      "raw_text": "α∗,α′∗= arg max",
+      "provenance": {
+        "page": 11,
+        "page_image": "computation-13-00116-v2-assets/page-011.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-011-equation-002",
+      "raw_text": "1⊤(α −α′) = 0,",
+      "provenance": {
+        "page": 11,
+        "page_image": "computation-13-00116-v2-assets/page-011.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-011-equation-003",
+      "raw_text": "0 ≤α,α′ ≤C.",
+      "provenance": {
+        "page": 11,
+        "page_image": "computation-13-00116-v2-assets/page-011.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-011-equation-004",
+      "raw_text": "where ϵ, C ∈R+.",
+      "provenance": {
+        "page": 11,
+        "page_image": "computation-13-00116-v2-assets/page-011.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-011-equation-005",
+      "raw_text": "Considering an input involving exogenous variables X ∈RN×P and a target variable",
+      "provenance": {
+        "page": 11,
+        "page_image": "computation-13-00116-v2-assets/page-011.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-011-equation-006",
+      "raw_text": "y ∈RN, a Gaussian Process (GP) regression fixes a prior on the coefficient vector w =",
+      "provenance": {
+        "page": 11,
+        "page_image": "computation-13-00116-v2-assets/page-011.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-011-equation-007",
+      "raw_text": "{wq ∼N (wq|0, Σq,q) : q ∈Q}, where Σ = {Σq,q′ ∈R : q, q′ ∈Q} represents a covariance",
+      "provenance": {
+        "page": 11,
+        "page_image": "computation-13-00116-v2-assets/page-011.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-011-equation-008",
+      "raw_text": "m(xn) = Ew[ f (xn)] = ϕ(xn)Ew[w] = 0",
+      "provenance": {
+        "page": 11,
+        "page_image": "computation-13-00116-v2-assets/page-011.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-011-equation-009",
+      "raw_text": "n) = cov( f (xn), f (xn′)) = Ew[ f (xn) f (xn′)⊤] = ϕ(xn)Σϕ(xn′)⊤.",
+      "provenance": {
+        "page": 11,
+        "page_image": "computation-13-00116-v2-assets/page-011.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-011-equation-010",
+      "raw_text": "p( f (X)) = N ( f (X)|0, KXX).",
+      "provenance": {
+        "page": 11,
+        "page_image": "computation-13-00116-v2-assets/page-011.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-011-equation-011",
+      "raw_text": "as: yn = f (xn) + ϵn, where ϵn ∼N (ϵn|0, σ2",
+      "provenance": {
+        "page": 11,
+        "page_image": "computation-13-00116-v2-assets/page-011.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-011-equation-012",
+      "raw_text": "p(y) = N (y|0, KXX + σ2",
+      "provenance": {
+        "page": 11,
+        "page_image": "computation-13-00116-v2-assets/page-011.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-012-equation-001",
+      "raw_text": "form expression: p(y∗| x∗, X, y) = N (y∗| µ∗, σ2∗), with predictive mean and variance",
+      "provenance": {
+        "page": 12,
+        "page_image": "computation-13-00116-v2-assets/page-012.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-012-equation-002",
+      "raw_text": "µ∗=k⊤",
+      "provenance": {
+        "page": 12,
+        "page_image": "computation-13-00116-v2-assets/page-012.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-012-equation-003",
+      "raw_text": "∗=κ(x∗, x∗) −k⊤",
+      "provenance": {
+        "page": 12,
+        "page_image": "computation-13-00116-v2-assets/page-012.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-012-equation-004",
+      "raw_text": "where k∗= {κ(x∗.xn) : n ∈N}.",
+      "provenance": {
+        "page": 12,
+        "page_image": "computation-13-00116-v2-assets/page-012.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-012-equation-005",
+      "raw_text": "ν∗= arg min",
+      "provenance": {
+        "page": 12,
+        "page_image": "computation-13-00116-v2-assets/page-012.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-012-equation-006",
+      "raw_text": "p=1",
+      "provenance": {
+        "page": 12,
+        "page_image": "computation-13-00116-v2-assets/page-012.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-012-equation-007",
+      "raw_text": "= ˜σ2",
+      "provenance": {
+        "page": 12,
+        "page_image": "computation-13-00116-v2-assets/page-012.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-012-equation-008",
+      "raw_text": "∑",
+      "provenance": {
+        "page": 12,
+        "page_image": "computation-13-00116-v2-assets/page-012.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-012-equation-009",
+      "raw_text": "p=1",
+      "provenance": {
+        "page": 12,
+        "page_image": "computation-13-00116-v2-assets/page-012.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-012-equation-010",
+      "raw_text": "where xnp ∈xn and ˜σ2",
+      "provenance": {
+        "page": 12,
+        "page_image": "computation-13-00116-v2-assets/page-012.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-012-equation-011",
+      "raw_text": "p ∈R+.",
+      "provenance": {
+        "page": 12,
+        "page_image": "computation-13-00116-v2-assets/page-012.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-012-equation-012",
+      "raw_text": "context, the p-th feature supervised relevance value ˜λp ∈R+ is defined as the reciprocal of",
+      "provenance": {
+        "page": 12,
+        "page_image": "computation-13-00116-v2-assets/page-012.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-012-equation-013",
+      "raw_text": "˜λp =",
+      "provenance": {
+        "page": 12,
+        "page_image": "computation-13-00116-v2-assets/page-012.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-013-equation-001",
+      "raw_text": "ρpp′ =",
+      "provenance": {
+        "page": 13,
+        "page_image": "computation-13-00116-v2-assets/page-013.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-013-equation-002",
+      "raw_text": "where ϱp ∈RN denotes the p-th column of the data matrix X, while ϱp′ refers to the p′-th",
+      "provenance": {
+        "page": 13,
+        "page_image": "computation-13-00116-v2-assets/page-013.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-013-equation-003",
+      "raw_text": "The vector 1 ∈RN is utilized to center the data by subtracting the mean ¯ϱp.",
+      "provenance": {
+        "page": 13,
+        "page_image": "computation-13-00116-v2-assets/page-013.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-013-equation-004",
+      "raw_text": "p=1} as a tool for in-",
+      "provenance": {
+        "page": 13,
+        "page_image": "computation-13-00116-v2-assets/page-013.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-013-equation-005",
+      "raw_text": "R2(y, ˆy) = 1 −∥y −ˆy∥2",
+      "provenance": {
+        "page": 13,
+        "page_image": "computation-13-00116-v2-assets/page-013.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-013-equation-006",
+      "raw_text": "MSE(y, ˆy) = 1",
+      "provenance": {
+        "page": 13,
+        "page_image": "computation-13-00116-v2-assets/page-013.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-013-equation-007",
+      "raw_text": "RMSE(y, ˆy) =",
+      "provenance": {
+        "page": 13,
+        "page_image": "computation-13-00116-v2-assets/page-013.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-013-equation-008",
+      "raw_text": "MAE(y, ˆy) = 1",
+      "provenance": {
+        "page": 13,
+        "page_image": "computation-13-00116-v2-assets/page-013.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-013-equation-009",
+      "raw_text": "MAPE(y, ˆy) = 100",
+      "provenance": {
+        "page": 13,
+        "page_image": "computation-13-00116-v2-assets/page-013.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-013-equation-010",
+      "raw_text": "∑",
+      "provenance": {
+        "page": 13,
+        "page_image": "computation-13-00116-v2-assets/page-013.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-013-equation-011",
+      "raw_text": "i=1",
+      "provenance": {
+        "page": 13,
+        "page_image": "computation-13-00116-v2-assets/page-013.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-014-equation-001",
+      "raw_text": "√",
+      "provenance": {
+        "page": 14,
+        "page_image": "computation-13-00116-v2-assets/page-014.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-014-equation-002",
+      "raw_text": "s(n) =",
+      "provenance": {
+        "page": 14,
+        "page_image": "computation-13-00116-v2-assets/page-014.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-014-equation-003",
+      "raw_text": "max{a(n), b(n)} ∈[−1, 1],",
+      "provenance": {
+        "page": 14,
+        "page_image": "computation-13-00116-v2-assets/page-014.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-014-equation-004",
+      "raw_text": "where a(n) ∈R+ is the average distance between point n and all other points in the same",
+      "provenance": {
+        "page": 14,
+        "page_image": "computation-13-00116-v2-assets/page-014.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-014-equation-005",
+      "raw_text": "cluster (intra-cluster distance) and b(n) ∈R+ is the minimum average distance from point",
+      "provenance": {
+        "page": 14,
+        "page_image": "computation-13-00116-v2-assets/page-014.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-014-equation-006",
+      "raw_text": "features. Conversely, ARIMA and SARIMA models are optimized through the auto_arima",
+      "provenance": {
+        "page": 14,
+        "page_image": "computation-13-00116-v2-assets/page-014.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-014-equation-007",
+      "raw_text": "interval [1 × 10−3, 1 × 100], whereas ElasticNet adjusts both the L2 penalty and L1 ratio",
+      "provenance": {
+        "page": 14,
+        "page_image": "computation-13-00116-v2-assets/page-014.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-014-equation-008",
+      "raw_text": "within the range [0.1, 1]. Random Forest optimizes max_depth and n_estimators within",
+      "provenance": {
+        "page": 14,
+        "page_image": "computation-13-00116-v2-assets/page-014.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-014-equation-009",
+      "raw_text": "moid kernels, adjusting C ∈[0.1, 1] and ϵ ∈[0.001, 0.1]; Gaussian Processes utilize RBF",
+      "provenance": {
+        "page": 14,
+        "page_image": "computation-13-00116-v2-assets/page-014.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-014-equation-010",
+      "raw_text": "[1 × 10−5, 1 × 102]; Multi-Layer Perceptron configurations consist of one or two hidden",
+      "provenance": {
+        "page": 14,
+        "page_image": "computation-13-00116-v2-assets/page-014.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-016-equation-001",
+      "raw_text": "D = 3",
+      "provenance": {
+        "page": 16,
+        "page_image": "computation-13-00116-v2-assets/page-016.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-016-equation-002",
+      "raw_text": "D = 4",
+      "provenance": {
+        "page": 16,
+        "page_image": "computation-13-00116-v2-assets/page-016.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-016-equation-003",
+      "raw_text": "D = 5",
+      "provenance": {
+        "page": 16,
+        "page_image": "computation-13-00116-v2-assets/page-016.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-016-equation-004",
+      "raw_text": "D = 6",
+      "provenance": {
+        "page": 16,
+        "page_image": "computation-13-00116-v2-assets/page-016.png"
+      },
+      "confidence": 0.98,
+      "status": "raw_text_preserved",
+      "review_required": false
+    },
+    {
+      "id": "page-021-equation-001",
+      "raw_text": "Right: l1_ratio (in blue) and alpha (in black) for Elastic-Net are illustrated.",
+      "provenance": {
+        "page": 21,
+        "page_image": "computation-13-00116-v2-assets/page-021.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-026-equation-001",
+      "raw_text": "https://bibliotecadoctecnica.dane.gov.co/static/documentos/DIG/DEE/DEE_Metodolog (accessed on 1 April 2025).",
+      "provenance": {
+        "page": 26,
+        "page_image": "computation-13-00116-v2-assets/page-026.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-026-equation-002",
+      "raw_text": "Available online: https://bibliotecadoctecnica.dane.gov.co/static/documentos/DCD/EEVV/EEVV_Metodolog (accessed on 1",
+      "provenance": {
+        "page": 26,
+        "page_image": "computation-13-00116-v2-assets/page-026.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-027-equation-001",
+      "raw_text": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3959996 (accessed on 1 April 2025).",
+      "provenance": {
+        "page": 27,
+        "page_image": "computation-13-00116-v2-assets/page-027.png"
+      },
+      "confidence": 0.45,
+      "status": "review_required",
+      "review_required": true
+    }
+  ],
+  "figures": [
+    {
+      "id": "page-017-image-001",
+      "provenance": {
+        "page": 17,
+        "page_image": "computation-13-00116-v2-assets/page-017.png"
+      },
+      "metadata": {
+        "xref": 3484,
+        "smask": 0,
+        "width": 24,
+        "height": 462,
+        "bits_per_component": 8,
+        "colorspace": "DeviceRGB"
+      },
+      "confidence": 0.5,
+      "status": "review_required",
+      "review_required": true
+    },
+    {
+      "id": "page-019-image-001",
+      "provenance": {
+        "page": 19,
+        "page_image": "computation-13-00116-v2-assets/page-019.png"
+      },
+      "metadata": {
+        "xref": 5458,
+        "smask": 0,
+        "width": 9,
+        "height": 181,
+        "bits_per_component": 8,
+        "colorspace": "Indexed"
+      },
+      "confidence": 0.5,
+      "status": "review_required",
+      "review_required": true
+    }
+  ],
+  "tables": {
+    "enabled": true,
+    "mode": "lite_evidence_only",
+    "evidence": [
+      "exact_raw_page_text",
+      "rendered_page_images"
+    ],
+    "review_required": true
+  }
+}

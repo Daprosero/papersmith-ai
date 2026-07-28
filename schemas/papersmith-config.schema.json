@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "papersmith-config.schema.json",
+  "title": "Papersmith paper-ingestion configuration",
+  "$defs": {
+    "contentString": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "[^\\u0009-\\u000D\\u001C-\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028-\\u2029\\u202F\\u205F\\u3000\\uFEFF]"
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["paper_ingestion"],
+  "properties": {
+    "paper_ingestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "model_profile": {"$ref": "#/$defs/contentString"},
+        "page_render_dpi": {"type": "integer", "minimum": 1},
+        "confidence_threshold": {"type": "number", "minimum": 0, "maximum": 1},
+        "source_roots": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/contentString"}
+        },
+        "extract": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "text": {"type": "boolean"},
+            "figures": {"type": "boolean"},
+            "tables": {"type": "boolean"},
+            "equations": {"type": "boolean"}
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,77 @@
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import test from 'node:test';
+import { pathToFileURL } from 'node:url';
+
+const root = process.cwd();
+const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
+const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
+const jiti = createJiti(import.meta.url, {
+	alias: {
+		'@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),
+		'@earendil-works/pi-ai/compat': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/compat.js'),
+		'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
+		typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
+	},
+});
+
+const workspace = await jiti.import(path.join(root, '.pi/extensions/proposal-workspace.ts'));
+const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
+
+test('explicit scientific mode is an explicit global-route discriminant', () => {
+	const route = workspace.resolveGlobalRoute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'Explore an idea.' });
+	assert.equal(route.stage, 'SCIENTIFIC_WORKFLOW');
+});
+
+test('terminal routes retain lifecycle, direct-document, and DELIBERATE precedence', () => {
+	assert.equal(workspace.resolveGlobalRoute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'withdraw research-concept-r01.md' }).stage, 'LIFECYCLE');
+	assert.equal(workspace.resolveGlobalRoute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'inserta un párrafo' }).stage, 'DIRECT_DOCUMENT');
+	assert.equal(workspace.resolveGlobalRoute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'delibera sobre los supuestos' }).stage, 'DELIBERATE');
+	const scientific = workspace.resolveGlobalRoute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'Explore an idea.' });
+	assert.deepEqual(scientific, { stage: 'SCIENTIFIC_WORKFLOW', bypassedStages: ['LIFECYCLE', 'DIRECT_DOCUMENT', 'DELIBERATE'] });
+});
+
+test('route-stage and bypass metrics are privacy-safe and terminal routing does not construct scientific components', () => {
+	v2.resetRuntimeMetrics();
+	const privateMarker = 'private prompt/model output/raw trace/reasoning must never be recorded';
+	assert.equal(workspace.resolveGlobalRoute({ operation: 'WITHDRAW_REVISION', instruction: privateMarker }).stage, 'LIFECYCLE');
+	assert.equal(workspace.resolveGlobalRoute({ instruction: `inserta un párrafo ${privateMarker}` }).stage, 'DIRECT_DOCUMENT');
+	assert.equal(workspace.resolveGlobalRoute({ instruction: `delibera sobre los supuestos ${privateMarker}` }).stage, 'DELIBERATE');
+	assert.equal(workspace.resolveGlobalRoute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: privateMarker }).stage, 'SCIENTIFIC_WORKFLOW');
+	assert.equal(workspace.resolveGlobalRoute({ instruction: privateMarker }).stage, 'EXISTING_FALLBACK');
+
+	const metrics = v2.getRuntimeMetrics();
+	assert.deepEqual(metrics.routeMetrics, {
+		routeSelections: { LIFECYCLE: 1, DIRECT_DOCUMENT: 1, DELIBERATE: 1, SCIENTIFIC_WORKFLOW: 1, EXISTING_FALLBACK: 1 },
+		bypassedStageSelections: { LIFECYCLE: 4, DIRECT_DOCUMENT: 3, DELIBERATE: 2, SCIENTIFIC_WORKFLOW: 1, EXISTING_FALLBACK: 0 },
+	});
+	assert.equal(metrics.totalModelCalls, 0);
+	assert.equal(metrics.totalWrites, 0);
+	assert.doesNotMatch(JSON.stringify(metrics), /private prompt|model output|raw trace|reasoning|instruction/i);
+
+	metrics.routeMetrics.routeSelections.LIFECYCLE = 99;
+	assert.equal(v2.getRuntimeMetrics().routeMetrics.routeSelections.LIFECYCLE, 1);
+});
+
+test('scientific workflow remains disabled unless its exact flag is true', () => {
+	assert.equal(workspace.scientificWorkflowFeatureEnabled({}), false);
+	assert.equal(workspace.scientificWorkflowFeatureEnabled({ PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED: 'false' }), false);
+	assert.equal(workspace.scientificWorkflowFeatureEnabled({ PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED: 'true' }), true);
+});
+
+test('disabled scientific workflow returns a typed unavailable result without a document fallback', () => {
+	const result = workspace.unavailableScientificWorkflowResult();
+	assert.deepEqual(result, {
+		status: 'unavailable',
+		operation: 'SCIENTIFIC_WORKFLOW',
+		routeStage: 'SCIENTIFIC_WORKFLOW',
+		entryState: null,
+		relatedThreads: [],
+		candidates: [],
+		blockers: [{ code: 'SCIENTIFIC_WORKFLOW_DISABLED', message: 'Persistent scientific workflow is disabled.' }],
+		nextAction: 'enable_scientific_workflow',
+		auditStatus: 'NOT_RUN',
+		selfAuditStatus: 'NOT_RUN',
+		metrics: { routeStage: 'SCIENTIFIC_WORKFLOW', bypassedStages: ['LIFECYCLE', 'DIRECT_DOCUMENT', 'DELIBERATE'] },
+	});
+});

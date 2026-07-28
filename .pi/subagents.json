@@ -1,0 +1,29 @@
+{
+  "session_resources": "lean",
+  "model_profiles": {
+    "paper-ingestion": {
+      "model": "openai-codex/gpt-5.6-terra",
+      "effort": "high"
+    },
+    "paper-proposal": {
+      "model": "openai-codex/gpt-5.6-sol",
+      "effort": "low"
+    },
+    "paper-proposal-reviewer": {
+      "model": "openai-codex/gpt-5.6-sol",
+      "effort": "low"
+    },
+    "paper-proposal-tutor": {
+      "model": "openai-codex/gpt-5.6-terra",
+      "effort": "high"
+    },
+    "skill-author": {
+      "model": "openai-codex/gpt-5.6-sol",
+      "effort": "high"
+    },
+    "extension-author": {
+      "model": "openai-codex/gpt-5.6-sol",
+      "effort": "high"
+    }
+  }
+}
