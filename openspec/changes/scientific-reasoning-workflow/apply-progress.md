@@ -578,3 +578,147 @@ The regression command covers lifecycle behavior, direct-document source routing
 - [ ] T10.1 — Complete recovery and diagnostic outcomes
 - [ ] T10.2 — Run compatibility and full regression coverage
 ```
+
+## PR4 / T4.1–T4.2 — BLOCKED on first focused test failure
+
+### Structured status consumed
+
+```yaml
+schemaName: gentle-ai.sdd-status
+schemaVersion: 1
+changeName: scientific-reasoning-workflow
+artifactStore: openspec
+applyState: ready
+nextRecommended: apply
+actionContext:
+  mode: repo-local
+  workspaceRoot: /Users/diego/Desktop/Proyectos/papersmith-ai
+  allowedEditRoots: [/Users/diego/Desktop/Proyectos/papersmith-ai]
+delivery:
+  strategy: auto-chain
+  chainStrategy: stacked-to-main
+  boundary: PR4 / T4.1–T4.2 only
+strictTdd: false
+warnings: ["CodeGraph MCP was unavailable; narrow known-path reads were used only after that failure."]
+```
+
+### Attempted scope and blocker
+
+- Added the new storage-only `ScientificStateStore` and focused persistence fixtures. The store imports canonical domain contracts and implements the planned authoritative layout, immutable-event intent, WAL markers, sibling-renamed mutable records, fsync calls, regular-file/no-symlink checks, scientific locking, and fail-closed replay/recovery paths.
+- Added only the barrel export required for the isolated storage contract. `ProjectEntryResolver`, `ScientificThreadResolver`, audit seams, materialization behavior, and all T4.3+ work remain untouched.
+- **Blocker:** the first focused command failed before any V2 regression command was run. Every store fixture failed with `SCIENTIFIC_PROJECT_ROOT_UNSAFE` from `ScientificStateStore.safeProjectRoot()`. The temporary fixture root resolves through macOS's canonical `/private/var/...` path while its supplied `/var/...` spelling is a valid directory; the strict string-equivalence check rejects that valid root.
+- Per the assigned stop rule, no corrective source/test edit, task-checkbox update, V2 regression, commit, or PR5 work was performed after this failure.
+
+### Persisted task status
+
+```text
+- [ ] T4.1 — Establish authoritative scientific storage contracts
+- [ ] T4.2 — Implement atomic transitions, locking, and replay validation
+```
+
+### Files changed before stop
+
+- `.pi/extensions/paper-proposal-v2/scientific-state-store.ts` (new)
+- `.pi/extensions/paper-proposal-v2/exports.ts` (storage export only)
+- `tests/paper-proposal-v2-scientific-persistence.test.mjs` (new)
+- `openspec/changes/scientific-reasoning-workflow/apply-progress.md`
+
+### Verification evidence
+
+```text
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-proposal-v2-scientific-domain-contract.test.mjs tests/paper-proposal-v2-scientific-persistence.test.mjs
+# FAIL: 5 passed, 5 failed
+# First failure: ScientificStateStore persists only versioned authoritative records and rebuilds its projection
+# Error: SCIENTIFIC_PROJECT_ROOT_UNSAFE
+# Location: .pi/extensions/paper-proposal-v2/scientific-state-store.ts:279
+```
+
+No V2 regression command was run after the focused failure.
+
+### Deviations, risks, and rollback
+
+- **Design deviation:** unresolved safe-root validation defect; no accepted deviation.
+- **Risk:** T4.1/T4.2 storage behavior is incomplete and must not be wired into entry/thread resolution. The unverified files should not be committed or included in a PR.
+- **PR boundary:** stacked-to-main PR4, T4.1–T4.2 only. T4.3, T4.4, and later tasks were not started.
+- **Rollback boundary:** remove only the new state-store/test files and the storage export. No project proposal, managed revision, manifest, receipt, lifecycle inventory, audit, entry resolver, or thread resolver was changed.
+- **Conventional commit proposal:** none until the focused test passes and both task checkboxes can be evidenced.
+
+## PR4 / T4.1–T4.2 — completed
+
+### Structured status consumed
+
+```yaml
+schemaName: gentle-ai.sdd-status
+schemaVersion: 1
+changeName: scientific-reasoning-workflow
+artifactStore: both
+applyState: ready
+nextRecommended: apply
+actionContext:
+  mode: repo-local
+  workspaceRoot: /Users/diego/Desktop/Proyectos/papersmith-ai
+  allowedEditRoots: [/Users/diego/Desktop/Proyectos/papersmith-ai]
+delivery:
+  strategy: auto-chain
+  chainStrategy: stacked-to-main
+  boundary: PR4 / T4.1–T4.2 only
+strictTdd: false
+warnings: ["CodeGraph MCP was unavailable; narrow known-path reads were used after the required attempt."]
+```
+
+### Completed tasks and persisted checkbox evidence
+
+- [x] T4.1 — Establish authoritative scientific storage contracts
+- [x] T4.2 — Implement atomic transitions, locking, and replay validation
+
+Both checkboxes were updated only after the focused persistence and relevant V2 regression commands passed.
+
+### Correction and files changed
+
+- `.pi/extensions/paper-proposal-v2/scientific-state-store.ts`
+  - Corrected only `safeProjectRoot()`: both the approved project root and candidate root are canonicalized with `realpath()` before comparison. This accepts the valid macOS `/var/...` temporary-root alias when both canonicalize to `/private/var/...`.
+  - The root itself must still be a non-symlink directory. Non-canonicalizable roots, direct root symlinks, and paths that do not canonicalize to the approved root remain rejected; downstream directory/record checks continue to reject symlink traversal outside the canonical root.
+- `openspec/changes/scientific-reasoning-workflow/tasks.md`
+  - Marked T4.1 and T4.2 `[x]`.
+- `openspec/changes/scientific-reasoning-workflow/apply-progress.md`
+  - Merged this PR4 completion evidence.
+
+The existing PR4 storage module, barrel export, and focused persistence fixture remain the task implementation. No T4.3, T4.4, or later task was changed.
+
+### Verification evidence
+
+```text
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-proposal-v2-scientific-domain-contract.test.mjs tests/paper-proposal-v2-scientific-persistence.test.mjs
+# PASS: 10 tests, 0 failures
+
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-proposal-v2-lifecycle.test.mjs tests/paper-proposal-v2-revision-lifecycle.test.mjs tests/paper-proposal-v2-source-routing.test.mjs tests/paper-proposal-v2-tutor-reviewer.test.mjs tests/paper-proposal-v2-production-role-metrics.test.mjs
+# PASS: 29 tests, 0 failures
+```
+
+### Deviations, risks, workload boundary, and rollback
+
+- **Design deviation:** none. The correction normalizes the approved and candidate root identities; it does not widen the allowed-root policy.
+- **Risk:** no explicit fixture yet probes an ancestor alias escape beyond the canonical root. The implementation remains fail-closed for a symlinked root, non-canonicalizable root, and unsafe child records/directories; a later persistence-hardening task may add a targeted adversarial fixture without changing this completed PR4 scope.
+- **Workload / PR boundary:** `auto-chain`, `stacked-to-main`; PR4 is T4.1–T4.2 only. T4.3, T4.4, and PR5+ remain out of scope and unchecked.
+- **Rollback boundary:** revert the PR4 storage module, its barrel export, focused persistence test, and these task/progress updates. No proposal document, managed revision, manifest, receipt, lifecycle inventory, audit seam, entry resolver, or thread resolver was modified.
+- **Conventional commit proposal (not created):** `fix(paper-proposal-v2): canonicalize scientific state roots`
+
+### Remaining tasks
+
+```text
+- [ ] T4.3 — Add connected graph and scientific audit seams
+- [ ] T4.4 — Wire entry and thread resolvers to atomic scientific persistence
+- [ ] T5.1 — Build bounded active-thread context
+- [ ] T6.1 — Add advisory Tutor and Conceptual Reviewer orchestration
+- [ ] T6.2 — Implement bounded structured repair/recheck
+- [ ] T6.3 — Add synthesis modification/reopen flow
+- [ ] T7.1 — Implement explicit user decision lifecycle
+- [ ] T7.2 — Expose durable pending candidates on re-entry
+- [ ] T8.1 — Add frozen selection and materialization reservation
+- [ ] T8.2 — Plan only frozen accepted candidates with provenance
+- [ ] T9.1 — Implement non-writing MaterializationCandidateExecutor
+- [ ] T9.2 — Add Document Reviewer gate and guarded initial publication adapter
+- [ ] T9.3 — Commit materialization only after verified publication
+- [ ] T10.1 — Complete recovery and diagnostic outcomes
+- [ ] T10.2 — Run compatibility and full regression coverage
+```

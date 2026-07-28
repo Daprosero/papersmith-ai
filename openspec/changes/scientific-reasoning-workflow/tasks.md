@@ -121,7 +121,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 ## 4. Scientific persistence and thread graph
 
 ### T4.1 — Establish authoritative scientific storage contracts
-- [ ] T4.1 — Establish authoritative scientific storage contracts
+- [x] T4.1 — Establish authoritative scientific storage contracts
 - **Files/discovery:** `.pi/extensions/paper-proposal-v2/scientific-state-store.ts` (new), `.pi/extensions/paper-proposal-v2/scientific-domain.ts`, `types.ts`, `.paper-proposal-v2/scientific/manifest.json`, `snapshot.json`, `events/`, `materializations/`, `transactions/`, `projections/`.
 - **Depends on:** T1.0 and T1.1.
 - **Implement:** import the canonical thread, relation, event, decision, synthesis, act, status, and enum contracts from `scientific-domain.ts`; define only persistence-specific transaction/materialization/projection records that are not shared domain equivalents. Separate authoritative records from rebuildable projections and enforce allowlisted summaries/evidence and privacy metadata. Do not create a second storage-local version of any shared scientific contract.
@@ -129,7 +129,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 - **Acceptance:** authoritative identities, versions, causal references, graph endpoints, and public-summary limits are explicit; all shared domain values resolve to `scientific-domain.ts`; private reasoning and raw traces are rejected.
 
 ### T4.2 — Implement atomic transitions, locking, and replay validation
-- [ ] T4.2 — Implement atomic transitions, locking, and replay validation
+- [x] T4.2 — Implement atomic transitions, locking, and replay validation
 - **Files/discovery:** `scientific-state-store.ts`, existing mutation-lock/recovery conventions, `.paper-proposal-v2/scientific/transactions/`.
 - **Depends on:** T4.1.
 - **Implement:** implement recoverable write-ahead transitions with exclusive immutable event creation, atomic sibling rename, fsync/error handling, scientific locking, manifest/snapshot/index updates, and fail-closed replay validation.
