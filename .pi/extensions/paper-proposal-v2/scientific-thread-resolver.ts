@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { ScientificStateStore } from './scientific-state-store.js';
 import type {
 	BoundedScientificSeed,
 	ProjectEntry,
@@ -54,11 +55,26 @@ function sameRevision(left: ScientificThread['revisionEvidence'], right: Project
 }
 
 export class ScientificThreadResolver {
+	private readonly state: ReadOnlyScientificThreadStatePort;
+	private readonly transitions: ThreadTransitionIntentPort;
+	private readonly createId: ScientificThreadIdFactory;
+
 	constructor(
-		private readonly state: ReadOnlyScientificThreadStatePort,
-		private readonly transitions: ThreadTransitionIntentPort,
-		private readonly createId: ScientificThreadIdFactory = () => randomUUID(),
-	) {}
+		state: ReadOnlyScientificThreadStatePort | ScientificStateStore,
+		transitionsOrCreateId?: ThreadTransitionIntentPort | ScientificThreadIdFactory,
+		createId: ScientificThreadIdFactory = () => randomUUID(),
+	) {
+		if (state instanceof ScientificStateStore) {
+			this.state = { read: () => state.readThreadState() };
+			this.transitions = { commit: (intents) => state.commitThreadTransition(intents) };
+			this.createId = typeof transitionsOrCreateId === 'function' ? transitionsOrCreateId : createId;
+			return;
+		}
+		if (!transitionsOrCreateId || typeof transitionsOrCreateId === 'function') throw new Error('SCIENTIFIC_TRANSITION_PORT_REQUIRED');
+		this.state = state;
+		this.transitions = transitionsOrCreateId;
+		this.createId = createId;
+	}
 
 	async resolve(input: ScientificThreadResolverInput): Promise<ThreadResolution> {
 		const snapshot = await this.state.read();

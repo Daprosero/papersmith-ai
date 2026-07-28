@@ -3,6 +3,7 @@ import { isAbsolute, join, relative, sep } from 'node:path';
 import { derivedStatePath, receiptPath, validateStoredState } from './derived-state-store.js';
 import { validateWithdrawalMetadata } from './revision-lifecycle-store.js';
 import { withMutationLock } from './mutation-lock.js';
+import { runScientificConsistencyAudit } from './scientific-audit.js';
 import { PARSER_VERSION, PENDING_AUDIT_LEASE_MS, sha256, type PendingAuditArtifact, type PendingAuditContext, type RevisionLifecycleLockOwner } from './types.js';
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -282,7 +283,11 @@ export async function runConsistencyAudit(input:{projectRoot:string;auditContext
     } catch {}
   }
   await auditWithdrawals(root,input.auditContext,failures);
+  const scientific=await runScientificConsistencyAudit({projectRoot:root});
+  if (scientific.status==='FAIL') failures.push(...scientific.failures);
+  else if (scientific.status==='WARN') warnings.push(...scientific.warnings);
   const status=failures.length?'FAIL':warnings.length?'WARN':'PASS';
   checks.push(result(status,'revision-manifest-receipt','persistence',{revisions:revisions.length,failures,warnings},failures.concat(warnings).join(', ')));
-  return {status,checks,failures,warnings,summary:{passed:status==='PASS'?1:0,warned:status==='WARN'?1:0,failed:status==='FAIL'?1:0}};
+  checks.push(...scientific.checks);
+  return {status,checks,failures,warnings,scientific,summary:{passed:status==='PASS'?1:0,warned:status==='WARN'?1:0,failed:status==='FAIL'?1:0}};
 }

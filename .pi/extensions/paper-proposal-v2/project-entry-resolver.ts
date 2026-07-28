@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { ScientificStateStore, ScientificStateStoreError } from './scientific-state-store.js';
 import type {
 	ProjectEntry,
 	ProjectEntryBootstrap,
@@ -49,6 +50,7 @@ export type PresentScientificStateEvidence = {
 
 export type ScientificStateEvidence =
 	| { status: 'absent'; auditEvidence: string[] }
+	| { status: 'inconsistent'; code: string; auditEvidence: string[] }
 	| PresentScientificStateEvidence;
 
 export interface ReadOnlyRevisionInventoryPort {
@@ -163,14 +165,21 @@ function bootstrap(activeRevision: RevisionEvidence): ProjectEntryBootstrap {
 }
 
 export class ProjectEntryResolver {
+	private readonly scientificState: ReadOnlyScientificStateEvidencePort;
+
 	constructor(
 		private readonly revisions: ReadOnlyRevisionInventoryPort,
-		private readonly scientificState: ReadOnlyScientificStateEvidencePort,
-	) {}
+		scientificState: ReadOnlyScientificStateEvidencePort | ScientificStateStore,
+	) {
+		this.scientificState = scientificState instanceof ScientificStateStore
+			? { read: () => this.readAuthoritativeState(scientificState) }
+			: scientificState;
+	}
 
 	async resolve(options: ProjectEntryResolutionOptions = {}): Promise<ProjectEntry> {
 		const [revisionEvidence, scientificEvidence] = await Promise.all([this.revisions.read(), this.scientificState.read()]);
 		const auditEvidence = [...revisionEvidence.auditEvidence, ...scientificEvidence.auditEvidence];
+		if (scientificEvidence.status === 'inconsistent') return failure(scientificEvidence.code || 'SCIENTIFIC_AUTHORITATIVE_STATE_INVALID', auditEvidence);
 		const revisionFailure = validateRevisionInventory(revisionEvidence);
 		if (revisionFailure) return failure(revisionFailure, auditEvidence);
 		const activeRevisions = revisionEvidence.activeRevisions;
@@ -224,5 +233,23 @@ export class ProjectEntryResolver {
 			recovery: { required: false },
 			auditEvidence,
 		};
+	}
+
+	private async readAuthoritativeState(store: ScientificStateStore): Promise<ScientificStateEvidence> {
+		try {
+			const state = await store.read();
+			if (!state) return { status: 'absent', auditEvidence: ['scientific-state:authoritative-absent'] };
+			return {
+				status: 'present',
+				manifest: state.manifest,
+				snapshot: state.snapshot,
+				events: state.events,
+				transactionMarkers: [],
+				auditEvidence: ['scientific-state:authoritative-validated'],
+			};
+		} catch (error) {
+			const code = error instanceof ScientificStateStoreError ? error.code : error instanceof Error ? error.message : String(error);
+			return { status: 'inconsistent', code, auditEvidence: ['scientific-state:authoritative-blocked'] };
+		}
 	}
 }

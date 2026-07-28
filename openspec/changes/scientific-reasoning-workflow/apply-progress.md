@@ -722,3 +722,158 @@ cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-propo
 - [ ] T10.1 — Complete recovery and diagnostic outcomes
 - [ ] T10.2 — Run compatibility and full regression coverage
 ```
+
+## PR5 / T4.3–T4.4 — BLOCKED on first focused test failure
+
+### Structured status consumed
+
+```yaml
+schemaName: gentle-ai.sdd-status
+schemaVersion: 1
+changeName: scientific-reasoning-workflow
+artifactStore: openspec
+applyState: ready
+nextRecommended: apply
+actionContext:
+  mode: repo-local
+  workspaceRoot: /Users/diego/Desktop/Proyectos/papersmith-ai
+  allowedEditRoots: [/Users/diego/Desktop/Proyectos/papersmith-ai]
+delivery:
+  strategy: auto-chain
+  chainStrategy: stacked-to-main
+  boundary: PR5 / T4.3–T4.4 only
+strictTdd: false
+warnings: ["CodeGraph MCP was unavailable after the required index check; narrow known-path reads were used."]
+```
+
+### Attempted scope and blocker
+
+- Added an unverified `scientific-audit.ts` seam and provisional store-backed entry/thread resolver wiring, plus focused audit and resolver-store integration fixtures.
+- The first required focused command failed; per the PR5 stop rule, no corrective edit, V2 regression, task-checkbox update, commit, or PR6+ work followed.
+- Failure 1: `tests/paper-proposal-v2-scientific-audit.test.mjs` expected `runConsistencyAudit()` to return `PASS` for a temporary root without `proposals/`, but the existing V2 audit returned `FAIL`. This fixture expectation must be reconciled with the established V2 audit contract; do not weaken that contract.
+- Failure 2: the canonical contract ownership fixture requires every scientific implementation module, including the new `scientific-audit.ts`, to import `scientific-domain.js`.
+
+### Persisted task status
+
+Neither assigned task is complete; both persisted checkboxes were re-read and remain unchecked:
+
+```text
+- [ ] T4.3 — Add connected graph and scientific audit seams
+- [ ] T4.4 — Wire entry and thread resolvers to atomic scientific persistence
+```
+
+### Files changed before stop
+
+- `.pi/extensions/paper-proposal-v2/scientific-audit.ts` (new; unverified)
+- `.pi/extensions/paper-proposal-v2/scientific-state-store.ts` (provisional graph validation and atomic resolver-transition adapter)
+- `.pi/extensions/paper-proposal-v2/project-entry-resolver.ts` (provisional authoritative-store evidence adapter)
+- `.pi/extensions/paper-proposal-v2/scientific-thread-resolver.ts` (provisional authoritative-store constructor path)
+- `.pi/extensions/paper-proposal-v2/consistency-audit.ts`
+- `.pi/extensions/paper-proposal-v2/self-audit.ts`
+- `.pi/extensions/paper-proposal-v2/exports.ts`
+- `tests/paper-proposal-v2-scientific-audit.test.mjs` (new)
+- `tests/paper-proposal-v2-scientific-store-resolvers.test.mjs` (new)
+- `openspec/changes/scientific-reasoning-workflow/apply-progress.md`
+
+### Verification evidence
+
+```text
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-proposal-v2-scientific-domain-contract.test.mjs tests/paper-proposal-v2-scientific-persistence.test.mjs tests/paper-proposal-v2-scientific-entry.test.mjs tests/paper-proposal-v2-scientific-thread.test.mjs tests/paper-proposal-v2-scientific-audit.test.mjs tests/paper-proposal-v2-scientific-store-resolvers.test.mjs
+# FAIL: 25 passed, 2 failed
+# tests/paper-proposal-v2-scientific-audit.test.mjs: expected PASS, actual FAIL
+# tests/paper-proposal-v2-scientific-domain-contract.test.mjs: scientific-audit.ts must import scientific-domain.js
+```
+
+No V2 regression command was run after this first focused failure.
+
+### Deviations, risks, boundary, and rollback
+
+- **Design deviation:** none accepted; the current code is unverified and must not be treated as completion.
+- **Risk:** the provisional audit composition and resolver/store wiring may regress existing audit or lifecycle behavior until the focused failures are fixed and relevant V2 regressions pass.
+- **PR boundary:** stacked-to-main PR5, T4.3–T4.4 only. T5 and later were not started.
+- **Rollback boundary:** revert only the unverified PR5 source/test paths above and this progress entry; no proposal, managed revision, manifest, receipt, lifecycle inventory, or materialization behavior was intentionally changed.
+- **Conventional commit proposal:** none until focused tests and relevant V2 regressions pass.
+
+## PR5 / T4.3–T4.4 — completed
+
+### Structured status consumed
+
+```yaml
+schemaName: gentle-ai.sdd-status
+schemaVersion: 1
+changeName: scientific-reasoning-workflow
+artifactStore: openspec (session artifact mode: both)
+applyState: ready
+nextRecommended: apply
+actionContext:
+  mode: repo-local
+  workspaceRoot: /Users/diego/Desktop/Proyectos/papersmith-ai
+  allowedEditRoots: [/Users/diego/Desktop/Proyectos/papersmith-ai]
+delivery:
+  strategy: auto-chain
+  chainStrategy: stacked-to-main
+  boundary: PR5 / T4.3–T4.4 only
+strictTdd: false
+warnings: ["CodeGraph MCP was unavailable; narrow known-path reads followed the failed CodeGraph request."]
+```
+
+### Completed tasks and persisted checkbox evidence
+
+- [x] T4.3 — Add connected graph and scientific audit seams
+  - The audit fixture now creates the existing audit's required `proposals/` directory; `runConsistencyAudit()` remains unchanged.
+  - `scientific-audit.ts` imports and uses the canonical `ScientificAuditStatus` from `scientific-domain.js`; it does not redefine shared audit-status ownership.
+  - Scientific audit composition continues to preserve the three-artifact lifecycle inventory.
+- [x] T4.4 — Wire entry and thread resolvers to atomic scientific persistence
+  - Verified the existing authoritative-store create/select/activate/relation transition adapters, interrupted-commit recovery, replay, and no-document-write behavior through the resolver-to-store integration fixture.
+
+Both tasks were marked `[x]` in `tasks.md` only after the focused PR5 suite and relevant V2 regression suite passed.
+
+### Files changed in the PR5 work unit
+
+- `.pi/extensions/paper-proposal-v2/scientific-audit.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-state-store.ts`
+- `.pi/extensions/paper-proposal-v2/project-entry-resolver.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-thread-resolver.ts`
+- `.pi/extensions/paper-proposal-v2/consistency-audit.ts`
+- `.pi/extensions/paper-proposal-v2/self-audit.ts`
+- `.pi/extensions/paper-proposal-v2/exports.ts`
+- `tests/paper-proposal-v2-scientific-audit.test.mjs`
+- `tests/paper-proposal-v2-scientific-store-resolvers.test.mjs`
+- `openspec/changes/scientific-reasoning-workflow/tasks.md`
+- `openspec/changes/scientific-reasoning-workflow/apply-progress.md`
+
+### Verification evidence
+
+```text
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-proposal-v2-scientific-domain-contract.test.mjs tests/paper-proposal-v2-scientific-persistence.test.mjs tests/paper-proposal-v2-scientific-entry.test.mjs tests/paper-proposal-v2-scientific-thread.test.mjs tests/paper-proposal-v2-scientific-audit.test.mjs tests/paper-proposal-v2-scientific-store-resolvers.test.mjs
+# PASS: 27 tests, 0 failures
+
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-proposal-v2-lifecycle.test.mjs tests/paper-proposal-v2-revision-lifecycle.test.mjs tests/paper-proposal-v2-source-routing.test.mjs tests/paper-proposal-v2-tutor-reviewer.test.mjs tests/paper-proposal-v2-production-role-metrics.test.mjs
+# PASS: 29 tests, 0 failures
+```
+
+### Deviations, risks, workload boundary, and rollback
+
+- **Design deviation:** none. The fixture satisfies the unchanged V2 audit precondition; audit behavior was not broadened or weakened.
+- **Risk:** the PR5 additions remain uncommitted and need the normal bounded-review receipt before commit. No PR6/T5 behavior was started.
+- **Workload / PR boundary:** `auto-chain`, `stacked-to-main`; PR5 is T4.3–T4.4 only. PR6 begins at T5.1 and remains out of scope.
+- **Rollback boundary:** revert only the PR5 audit/store-resolver integration source and test paths above plus these task/progress updates; no proposal, managed revision, manifest, receipt, or lifecycle inventory behavior is removed.
+- **Conventional commit proposal (not created):** `feat(paper-proposal-v2): compose scientific persistence audits`
+
+### Remaining tasks
+
+```text
+- [ ] T5.1 — Build bounded active-thread context
+- [ ] T6.1 — Add advisory Tutor and Conceptual Reviewer orchestration
+- [ ] T6.2 — Implement bounded structured repair/recheck
+- [ ] T6.3 — Add synthesis modification/reopen flow
+- [ ] T7.1 — Implement explicit user decision lifecycle
+- [ ] T7.2 — Expose durable pending candidates on re-entry
+- [ ] T8.1 — Add frozen selection and materialization reservation
+- [ ] T8.2 — Plan only frozen accepted candidates with provenance
+- [ ] T9.1 — Implement non-writing MaterializationCandidateExecutor
+- [ ] T9.2 — Add Document Reviewer gate and guarded initial publication adapter
+- [ ] T9.3 — Commit materialization only after verified publication
+- [ ] T10.1 — Complete recovery and diagnostic outcomes
+- [ ] T10.2 — Run compatibility and full regression coverage
+```

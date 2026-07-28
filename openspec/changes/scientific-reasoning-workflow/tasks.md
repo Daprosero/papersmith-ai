@@ -137,7 +137,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 - **Acceptance:** restart exposes only validated committed state or explicit recovery; recovery never invents decisions, relations, revisions, receipts, or publication success.
 
 ### T4.3 — Add connected graph and scientific audit seams
-- [ ] T4.3 — Add connected graph and scientific audit seams
+- [x] T4.3 — Add connected graph and scientific audit seams
 - **Files/discovery:** `scientific-state-store.ts`, `scientific-audit.ts` (new), `consistency-audit.ts`, `self-audit.ts`.
 - **Depends on:** T4.2.
 - **Implement:** validate explicit bounded relationships, preserve thread identity across document lifecycle changes, and compose scientific consistency/self-audit without changing the existing three-artifact lifecycle inventory.
@@ -145,7 +145,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 - **Acceptance:** the graph is not reduced to a linear replay; scientific audit failures fail closed without weakening V2 lifecycle, manifest, receipt, lock, or recovery guarantees.
 
 ### T4.4 — Wire entry and thread resolvers to atomic scientific persistence
-- [ ] T4.4 — Wire entry and thread resolvers to atomic scientific persistence
+- [x] T4.4 — Wire entry and thread resolvers to atomic scientific persistence
 - **Files/discovery:** `project-entry-resolver.ts`, `scientific-thread-resolver.ts`, `scientific-state-store.ts`.
 - **Depends on:** T3.3 and T4.2.
 - **Implement:** replace the earlier read-only/in-memory ports with the validated authoritative store, commit thread transition intents atomically, and expose pending candidates and recovery markers to entry resolution.

@@ -10,6 +10,7 @@ import type {
 	ScientificThread,
 	ScientificThreadId,
 	ThreadRelation,
+	ThreadTransitionIntent,
 } from './scientific-domain.js';
 
 export type ScientificSnapshotRecord = {
@@ -86,6 +87,7 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const FORBIDDEN_PRIVATE_KEYS = /(?:chain.?of.?thought|hidden.?prompt|raw.?trace|private.?reasoning|transcript|\bprompt\b|\btrace\b|\bthought\b)/i;
 const ALLOWED_PAYLOAD_KEYS = new Set(['title', 'summary', 'status', 'decisionId', 'synthesisDigest', 'relationId', 'relatedThreadIds', 'activeThreadId', 'candidateIds', 'reason', 'code']);
 const ALLOWED_EVIDENCE_KINDS = /^[a-z][a-z0-9_-]{0,63}$/;
+const THREAD_RELATION_KINDS = new Set(['RELATED', 'SUPPORTS', 'CHALLENGES', 'DEPENDS_ON']);
 
 export class ScientificStateStoreError extends Error {
 	constructor(readonly code: string) {
@@ -169,8 +171,14 @@ function validateSnapshot(snapshot: unknown, events: ScientificEvent[]) {
 		threads.set(thread.threadId, thread as ScientificThread);
 	}
 	const relations = new Map<string, ThreadRelation>();
+	const relationEdges = new Set<string>();
 	for (const relation of snapshot.relations) {
-		if (!isObject(relation) || typeof relation.relationId !== 'string' || relations.has(relation.relationId) || typeof relation.fromThreadId !== 'string' || typeof relation.toThreadId !== 'string' || relation.fromThreadId === relation.toThreadId || !threads.has(relation.fromThreadId) || !threads.has(relation.toThreadId) || typeof relation.createdEventId !== 'string' || !eventsById.has(relation.createdEventId)) fail('SCIENTIFIC_GRAPH_REFERENCE_INVALID');
+		if (!isObject(relation) || typeof relation.relationId !== 'string' || relations.has(relation.relationId) || !THREAD_RELATION_KINDS.has(relation.kind as string) || typeof relation.fromThreadId !== 'string' || typeof relation.toThreadId !== 'string' || relation.fromThreadId === relation.toThreadId || !threads.has(relation.fromThreadId) || !threads.has(relation.toThreadId) || typeof relation.createdEventId !== 'string' || !eventsById.has(relation.createdEventId)) fail('SCIENTIFIC_GRAPH_REFERENCE_INVALID');
+		const created = eventsById.get(relation.createdEventId)!;
+		if (created.type !== 'THREAD_RELATED' || (created.threadId !== relation.fromThreadId && created.threadId !== relation.toThreadId)) fail('SCIENTIFIC_GRAPH_RELATION_EVENT_INVALID');
+		const edge = [relation.kind, ...[relation.fromThreadId, relation.toThreadId].sort()].join(':');
+		if (relationEdges.has(edge)) fail('SCIENTIFIC_GRAPH_RELATION_DUPLICATE');
+		relationEdges.add(edge);
 		relations.set(relation.relationId, relation as ThreadRelation);
 	}
 	for (const thread of threads.values()) {
@@ -215,35 +223,93 @@ export class ScientificStateStore {
 	}
 
 	async commitTransition(input: ScientificTransition): Promise<ScientificState> {
+		return this.withLock(() => this.commitTransitionLocked(input));
+	}
+
+	private async commitTransitionLocked(input: ScientificTransition): Promise<ScientificState> {
+		const root = await this.safeProjectRoot();
+		await this.ensureLayout(root);
+		const existing = await this.readValidated(false);
+		const transitionId = input.transitionId ?? this.newTransitionId();
+		if (!/^[A-Za-z0-9_-]{1,128}$/.test(transitionId)) fail('SCIENTIFIC_TRANSITION_ID_INVALID');
+		const markerPath = join(layout(root).transactions, `${transitionId}.json`);
+		if (await this.exists(markerPath)) fail('SCIENTIFIC_TRANSITION_EXISTS');
+		const allEvents = [...(existing?.events ?? []), ...input.events];
+		if (input.events.length === 0) fail('SCIENTIFIC_TRANSITION_EMPTY');
+		this.validateEvents(allEvents);
+		validateSnapshot(input.snapshot, allEvents);
+		const manifest: ScientificManifestRecord = {
+			schemaVersion: 1,
+			snapshotSha256: digest(input.snapshot),
+			eventsSha256: digest(allEvents),
+			eventCount: allEvents.length,
+			...(allEvents.at(-1) ? { headEventId: allEvents.at(-1)!.eventId } : {}),
+		};
+		const marker: ScientificTransitionMarker = { schemaVersion: 1, transitionId, state: 'PREPARED', eventIds: input.events.map((event) => event.eventId), snapshotSha256: manifest.snapshotSha256, manifestSha256: digest(manifest) };
+		await this.writeAtomic(markerPath, marker);
+		for (const event of input.events) await this.writeImmutableEvent(join(layout(root).events, `${event.sequence}-${event.eventId}.json`), event);
+		await this.writeAtomic(layout(root).snapshot, input.snapshot);
+		await this.writeAtomic(layout(root).manifest, manifest);
+		const projection = deriveProjection(input.snapshot);
+		await this.writeAtomic(layout(root).entryIndex, projection);
+		await this.writeAtomic(markerPath, { ...marker, state: 'COMMITTED' });
+		await this.removeRegularFile(markerPath);
+		return { manifest, snapshot: input.snapshot, events: allEvents, projection };
+	}
+
+	async readThreadState(): Promise<{ activeThreadId?: ScientificThreadId; threads: ScientificThread[]; relations: ThreadRelation[] }> {
+		const state = await this.read();
+		return state
+			? { ...(state.snapshot.activeThreadId ? { activeThreadId: state.snapshot.activeThreadId } : {}), threads: state.snapshot.threads, relations: state.snapshot.relations }
+			: { threads: [], relations: [] };
+	}
+
+	async commitThreadTransition(intents: ThreadTransitionIntent[]): Promise<void> {
+		if (intents.length === 0) return;
 		return this.withLock(async () => {
-			const root = await this.safeProjectRoot();
-			await this.ensureLayout(root);
-			const existing = await this.readValidated(true);
-			const transitionId = input.transitionId ?? this.newTransitionId();
-			if (!/^[A-Za-z0-9_-]{1,128}$/.test(transitionId)) fail('SCIENTIFIC_TRANSITION_ID_INVALID');
-			const markerPath = join(layout(root).transactions, `${transitionId}.json`);
-			if (await this.exists(markerPath)) fail('SCIENTIFIC_TRANSITION_EXISTS');
-			const allEvents = [...(existing?.events ?? []), ...input.events];
-			if (input.events.length === 0) fail('SCIENTIFIC_TRANSITION_EMPTY');
-			this.validateEvents(allEvents);
-			validateSnapshot(input.snapshot, allEvents);
-			const manifest: ScientificManifestRecord = {
+		const existing = await this.readValidated(false);
+		const snapshot: ScientificSnapshotRecord = existing
+			? structuredClone(existing.snapshot)
+			: { schemaVersion: 1, threads: [], relations: [], decisions: [] };
+		const existingEvents = existing?.events ?? [];
+		const threads = new Map(snapshot.threads.map((thread) => [thread.threadId, thread]));
+		const relations = new Map(snapshot.relations.map((relation) => [relation.relationId, relation]));
+		const events: ScientificEvent[] = [];
+		for (const [index, intent] of intents.entries()) {
+			if (!/^[A-Za-z0-9_-]{1,128}$/.test(intent.eventId) || existingEvents.some((event) => event.eventId === intent.eventId) || events.some((event) => event.eventId === intent.eventId)) fail('SCIENTIFIC_EVENT_ID_INVALID');
+			if (!threads.has(intent.threadId) && intent.type !== 'THREAD_CREATED') fail('SCIENTIFIC_THREAD_REFERENCE_INVALID');
+			if (intent.type === 'THREAD_CREATED') {
+				if (threads.has(intent.threadId) || !intent.seed || intent.seed.actor.kind !== 'USER') fail('SCIENTIFIC_THREAD_TRANSITION_INVALID');
+				const thread: ScientificThread = { threadId: intent.threadId, version: 1, status: 'OPEN', title: intent.seed.title, summary: intent.seed.summary, createdEventId: intent.eventId, headEventId: intent.eventId, relationIds: [], decisionIds: [] };
+				threads.set(thread.threadId, thread);
+				snapshot.threads.push(thread);
+			} else if (intent.type === 'THREAD_RELATED') {
+				for (const relatedThreadId of intent.relatedThreadIds) {
+					const direct = [...relations.values()].some((relation) => (relation.fromThreadId === intent.threadId && relation.toThreadId === relatedThreadId) || (relation.toThreadId === intent.threadId && relation.fromThreadId === relatedThreadId));
+					if (!direct) fail('SCIENTIFIC_THREAD_RELATION_NOT_DIRECT');
+				}
+			}
+			const thread = threads.get(intent.threadId)!;
+			const event: ScientificEvent = {
 				schemaVersion: 1,
-				snapshotSha256: digest(input.snapshot),
-				eventsSha256: digest(allEvents),
-				eventCount: allEvents.length,
-				...(allEvents.at(-1) ? { headEventId: allEvents.at(-1)!.eventId } : {}),
+				eventId: intent.eventId,
+				sequence: existingEvents.length + index + 1,
+				occurredAt: new Date().toISOString(),
+				actor: { kind: 'USER' },
+				type: intent.type,
+				threadId: intent.threadId,
+				causalEventIds: intent.causalEventIds,
+				payload: intent.type === 'THREAD_CREATED'
+					? { title: intent.seed!.title, summary: intent.seed!.summary, activeThreadId: intent.activeThreadId }
+					: { activeThreadId: intent.activeThreadId, relatedThreadIds: intent.relatedThreadIds },
+				evidence: [],
+				privacy: { contentClass: 'PUBLIC_SUMMARY_ONLY', redactionVersion: 1 },
 			};
-			const marker: ScientificTransitionMarker = { schemaVersion: 1, transitionId, state: 'PREPARED', eventIds: input.events.map((event) => event.eventId), snapshotSha256: manifest.snapshotSha256, manifestSha256: digest(manifest) };
-			await this.writeAtomic(markerPath, marker);
-			for (const event of input.events) await this.writeImmutableEvent(join(layout(root).events, `${event.sequence}-${event.eventId}.json`), event);
-			await this.writeAtomic(layout(root).snapshot, input.snapshot);
-			await this.writeAtomic(layout(root).manifest, manifest);
-			const projection = deriveProjection(input.snapshot);
-			await this.writeAtomic(layout(root).entryIndex, projection);
-			await this.writeAtomic(markerPath, { ...marker, state: 'COMMITTED' });
-			await this.removeRegularFile(markerPath);
-			return { manifest, snapshot: input.snapshot, events: allEvents, projection };
+			thread.headEventId = event.eventId;
+			snapshot.activeThreadId = intent.activeThreadId;
+			events.push(event);
+		}
+		await this.commitTransitionLocked({ events, snapshot });
 		});
 	}
 
