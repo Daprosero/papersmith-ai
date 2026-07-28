@@ -85,7 +85,7 @@ const defaultFs: ScientificFs = { link, lstat, mkdir, open, readdir, readFile, r
 const EVENT_FILE = /^(\d+)-([A-Za-z0-9_-]+)\.json$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const FORBIDDEN_PRIVATE_KEYS = /(?:chain.?of.?thought|hidden.?prompt|raw.?trace|private.?reasoning|transcript|\bprompt\b|\btrace\b|\bthought\b)/i;
-const ALLOWED_PAYLOAD_KEYS = new Set(['title', 'summary', 'status', 'decisionId', 'synthesisDigest', 'relationId', 'relatedThreadIds', 'activeThreadId', 'candidateIds', 'reason', 'code']);
+const ALLOWED_PAYLOAD_KEYS = new Set(['title', 'summary', 'status', 'decisionId', 'synthesisId', 'synthesisDigest', 'relationId', 'relatedThreadIds', 'activeThreadId', 'candidateIds', 'findingId', 'issueCategory', 'evidenceReferences', 'requiredCorrection', 'constraints', 'modificationCause', 'reason', 'code']);
 const ALLOWED_EVIDENCE_KINDS = /^[a-z][a-z0-9_-]{0,63}$/;
 const THREAD_RELATION_KINDS = new Set(['RELATED', 'SUPPORTS', 'CHALLENGES', 'DEPENDS_ON']);
 

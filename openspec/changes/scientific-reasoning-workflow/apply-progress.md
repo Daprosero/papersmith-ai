@@ -1022,3 +1022,81 @@ Runtime harness: N/A — T5.1 is an isolated, read-only context-construction bou
 - [ ] T10.1 — Complete recovery and diagnostic outcomes
 - [ ] T10.2 — Run compatibility and full regression coverage
 ```
+## PR7 / T6.1–T6.3 — completed
+
+### Structured status consumed
+
+```yaml
+schemaName: gentle-ai.sdd-status
+schemaVersion: 1
+changeName: scientific-reasoning-workflow
+artifactStore: both
+applyState: ready
+nextRecommended: apply
+actionContext:
+  mode: repo-local
+  workspaceRoot: /Users/diego/Desktop/Proyectos/papersmith-ai
+  allowedEditRoots: [/Users/diego/Desktop/Proyectos/papersmith-ai]
+delivery:
+  strategy: auto-chain
+  chainStrategy: stacked-to-main
+  boundary: PR7 / T6.1–T6.3 only
+strictTdd: false
+warnings: ["CodeGraph MCP initialization was unavailable; narrow known-path reads followed the failed MCP request."]
+```
+
+### Completed tasks and persisted checkbox evidence
+
+- [x] T6.1 — Added `ScientificWorkflowService`, which invokes the existing Tutor adapter before the existing Conceptual Reviewer adapter for every candidate. Production construction reuses `ProductionModelRuntime` through the existing production adapters. Only allowlisted `TUTOR_ASSESSED` and `CONCEPTUAL_REVIEW_RECORDED` events are persisted; role outputs with planning, publication, document-edit, lifecycle, materialization, or acceptance authority are rejected.
+- [x] T6.2 — Added structured `REPAIR_PROPOSED` findings with candidate identity/digest, category, evidence references, correction, and constraints. Each repair returns to Tutor and then rechecks with Reviewer; two repair/recheck cycles are permitted and a third requirement returns `REPAIR_LOOP_EXHAUSTED` without automatic acceptance or retry.
+- [x] T6.3 — Added immutable `SYNTHESIS_REOPENED` events. Reopen preserves prior event/snapshot history and forces a new Tutor → Reviewer sequence with a new synthesis identity. It creates no decision lifecycle, materialization, publication, proposal, manifest, receipt, or revision behavior.
+
+All three checkboxes were updated in `tasks.md` only after focused tests, relevant V2 regressions, and `git diff --check` passed.
+
+### Files changed
+
+- `.pi/extensions/paper-proposal-v2/scientific-domain.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-state-store.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-workflow-service.ts` (new)
+- `.pi/extensions/paper-proposal-v2/exports.ts`
+- `tests/paper-proposal-v2-scientific-synthesis.test.mjs` (new)
+- `openspec/changes/scientific-reasoning-workflow/tasks.md`
+- `openspec/changes/scientific-reasoning-workflow/apply-progress.md`
+
+### Verification evidence
+
+```text
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-proposal-v2-scientific-domain-contract.test.mjs tests/paper-proposal-v2-scientific-persistence.test.mjs tests/paper-proposal-v2-scientific-entry.test.mjs tests/paper-proposal-v2-scientific-thread.test.mjs tests/paper-proposal-v2-scientific-audit.test.mjs tests/paper-proposal-v2-scientific-store-resolvers.test.mjs tests/paper-proposal-v2-scientific-context.test.mjs tests/paper-proposal-v2-scientific-synthesis.test.mjs
+# PASS: 36 tests, 0 failures
+
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-proposal-v2-lifecycle.test.mjs tests/paper-proposal-v2-revision-lifecycle.test.mjs tests/paper-proposal-v2-source-routing.test.mjs tests/paper-proposal-v2-tutor-reviewer.test.mjs tests/paper-proposal-v2-production-role-metrics.test.mjs
+# PASS: 29 tests, 0 failures
+
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && git diff --check
+# PASS: no output
+```
+
+Runtime harness: N/A — PR7 adds an isolated scientific orchestration service; no public V2 scientific route is wired in this slice.
+
+### Deviations, risks, workload boundary, and rollback
+
+- **Design deviation:** none.
+- **Decision:** reviewer `APPROVE_WITH_CHANGES` maps to scientific `REPAIR_REQUIRED`; only `APPROVE` maps to `PASS`. Role approvals never become scientific acceptance.
+- **Risk:** the service is intentionally not connected to the public scientific route until later assigned integration work. Its persisted events use the existing authoritative scientific store and retain prior history, but no decision acceptance or materialization lifecycle exists in this PR.
+- **Workload / PR boundary:** `auto-chain`, `stacked-to-main`; PR7 is T6.1–T6.3 only. T7/PR8 and later tasks were not started.
+- **Rollback boundary:** revert only the PR7 service, canonical contract/payload allowlist/barrel updates, focused synthesis test, and these task/progress updates. No proposal, managed revision, manifest, receipt, lifecycle inventory, document route, or materialization record is affected.
+- **Conventional commit proposal (not created):** `feat(paper-proposal-v2): orchestrate scientific synthesis review`
+
+### Remaining tasks
+
+```text
+- [ ] T7.1 — Implement explicit user decision lifecycle
+- [ ] T7.2 — Expose durable pending candidates on re-entry
+- [ ] T8.1 — Add frozen selection and materialization reservation
+- [ ] T8.2 — Plan only frozen accepted candidates with provenance
+- [ ] T9.1 — Implement non-writing MaterializationCandidateExecutor
+- [ ] T9.2 — Add Document Reviewer gate and guarded initial publication adapter
+- [ ] T9.3 — Commit materialization only after verified publication
+- [ ] T10.1 — Complete recovery and diagnostic outcomes
+- [ ] T10.2 — Run compatibility and full regression coverage
+```

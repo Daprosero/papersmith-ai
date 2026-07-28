@@ -165,7 +165,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 ## 6. Tutor → Conceptual Reviewer → repair → synthesis loop
 
 ### T6.1 — Add advisory Tutor and Conceptual Reviewer orchestration
-- [ ] T6.1 — Add advisory Tutor and Conceptual Reviewer orchestration
+- [x] T6.1 — Add advisory Tutor and Conceptual Reviewer orchestration
 - **Files/discovery:** `.pi/extensions/paper-proposal-v2/scientific-workflow-service.ts` (new), existing Tutor/Reviewer adapters and `ProductionModelRuntime`, `scientific-context-builder.ts`.
 - **Depends on:** T5.1.
 - **Implement:** require Tutor first and Conceptual Reviewer second for every candidate synthesis; persist only allowlisted advisory/review events; prohibit both roles from acceptance, planning, editing, lifecycle, or publication authority.
@@ -173,7 +173,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 - **Acceptance:** no synthesis reaches user decision without conceptual review; favorable Tutor output never bypasses review or accepts a decision.
 
 ### T6.2 — Implement bounded structured repair/recheck
-- [ ] T6.2 — Implement bounded structured repair/recheck
+- [x] T6.2 — Implement bounded structured repair/recheck
 - **Files/discovery:** `scientific-workflow-service.ts`, `types.ts`, role adapter seams.
 - **Depends on:** T6.1.
 - **Implement:** persist structured findings, send finding ID/digest/category/evidence/constraints back to Tutor, re-review repaired candidates, and stop after two repair/recheck cycles with `REPAIR_LOOP_EXHAUSTED` or a specific block.
@@ -181,7 +181,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 - **Acceptance:** repair remains scientific-state-only, each candidate has a new digest and causal links, and there is no automatic acceptance or unbounded retry.
 
 ### T6.3 — Add synthesis modification/reopen flow
-- [ ] T6.3 — Add synthesis modification/reopen flow
+- [x] T6.3 — Add synthesis modification/reopen flow
 - **Files/discovery:** `scientific-workflow-service.ts`, `scientific-state-store.ts`.
 - **Depends on:** T6.2.
 - **Implement:** record `MODIFY_SYNTHESIS` as an immutable reopen event, preserve prior candidates/reviews/decisions, and require a new Tutor → Reviewer sequence for the revised synthesis.

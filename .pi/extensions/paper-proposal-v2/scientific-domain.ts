@@ -153,6 +153,18 @@ export type ThreadSynthesis = {
 	summary: string;
 	reviewEventId?: ScientificEventId;
 };
+export type ScientificSynthesisCandidate = ThreadSynthesis & {
+	tutorEventId: ScientificEventId;
+};
+export type StructuredConceptualFinding = {
+	findingId: string;
+	candidateSynthesisId: ThreadSynthesisId;
+	candidateSynthesisDigest: string;
+	category: 'COHERENCE' | 'SCOPE' | 'EVIDENCE' | 'NOTATION' | 'ASSUMPTION';
+	evidence: EvidenceReference[];
+	requiredCorrection: string;
+	constraints: string[];
+};
 export type ScientificAct = {
 	kind: ScientificActKind;
 	threadId?: ScientificThreadId;
