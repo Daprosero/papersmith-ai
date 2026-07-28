@@ -1,14 +1,17 @@
 import { createHash } from 'node:crypto';
 import { ScientificStateStore, ScientificStateStoreError } from './scientific-state-store.js';
 import type {
+	MaterializationCandidateSummary,
 	ProjectEntry,
 	ProjectEntryBootstrap,
 	ProjectEntryState,
+	PublicBlocker,
 	RevisionEvidence,
 	ScientificDecision,
 	ScientificEvent,
 	ScientificThread,
 	ThreadRelation,
+	ThreadSummary,
 } from './scientific-domain.js';
 
 type ValidRevisionInventory = {
@@ -164,6 +167,36 @@ function bootstrap(activeRevision: RevisionEvidence): ProjectEntryBootstrap {
 	};
 }
 
+function summary(thread: ScientificThread): ThreadSummary {
+	return { threadId: thread.threadId, status: thread.status, title: thread.title, summary: thread.summary };
+}
+
+function reentryProjection(snapshot: ScientificSnapshotEvidence): {
+	activeThread?: ThreadSummary;
+	relatedThreads: ThreadSummary[];
+	pendingCandidates: MaterializationCandidateSummary[];
+	blockers: PublicBlocker[];
+	nextAction: string | null;
+} {
+	const threads = new Map(snapshot.threads.map((thread) => [thread.threadId, thread]));
+	const active = snapshot.activeThreadId ? threads.get(snapshot.activeThreadId) : undefined;
+	const relatedThreadIds = active
+		? snapshot.relations
+			.filter((relation) => relation.fromThreadId === active.threadId || relation.toThreadId === active.threadId)
+			.map((relation) => relation.fromThreadId === active.threadId ? relation.toThreadId : relation.fromThreadId)
+		: [];
+	const pendingCandidates = snapshot.decisions
+		.filter((decision) => decision.state === 'ACCEPTED_UNMATERIALIZED')
+		.map((decision) => ({ decisionId: decision.decisionId, threadId: decision.threadId, state: decision.state, eligibility: 'eligible' as const, blockers: [] }));
+	return {
+		...(active ? { activeThread: summary(active) } : {}),
+		relatedThreads: relatedThreadIds.map((threadId) => summary(threads.get(threadId)!)),
+		pendingCandidates,
+		blockers: [],
+		nextAction: pendingCandidates.length > 0 ? 'request_materialization_with_explicit_candidate_ids' : null,
+	};
+}
+
 export class ProjectEntryResolver {
 	private readonly scientificState: ReadOnlyScientificStateEvidencePort;
 
@@ -193,7 +226,8 @@ export class ProjectEntryResolver {
 		if (scientificEvidence.status === 'present') {
 			const scientificFailure = validateScientificEvidence(scientificEvidence, activeRevisions);
 			if (scientificFailure) return failure(scientificFailure, auditEvidence);
-			const pendingCandidateIds = scientificEvidence.snapshot.decisions.filter((decision) => decision.state === 'ACCEPTED_UNMATERIALIZED').map((decision) => decision.decisionId);
+			const projection = reentryProjection(scientificEvidence.snapshot);
+			const pendingCandidateIds = projection.pendingCandidates.map((candidate) => candidate.decisionId);
 			return {
 				state: pendingCandidateIds.length
 					? 'MATERIALIZATION_PENDING'
@@ -202,7 +236,8 @@ export class ProjectEntryResolver {
 						: 'ACTIVE_SCIENTIFIC_PROJECT',
 				activeRevision: activeRevisions[0],
 				activeThreadId: scientificEvidence.snapshot.activeThreadId,
-				relatedThreadIds: [],
+				relatedThreadIds: projection.relatedThreads.map((thread) => thread.threadId),
+				...projection,
 				pendingCandidateIds,
 				recovery: { required: false },
 				auditEvidence,

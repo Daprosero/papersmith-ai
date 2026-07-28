@@ -88,6 +88,7 @@ const FORBIDDEN_PRIVATE_KEYS = /(?:chain.?of.?thought|hidden.?prompt|raw.?trace|
 const ALLOWED_PAYLOAD_KEYS = new Set(['title', 'summary', 'status', 'decisionId', 'synthesisId', 'synthesisDigest', 'relationId', 'relatedThreadIds', 'activeThreadId', 'candidateIds', 'findingId', 'issueCategory', 'evidenceReferences', 'requiredCorrection', 'constraints', 'modificationCause', 'reason', 'code']);
 const ALLOWED_EVIDENCE_KINDS = /^[a-z][a-z0-9_-]{0,63}$/;
 const THREAD_RELATION_KINDS = new Set(['RELATED', 'SUPPORTS', 'CHALLENGES', 'DEPENDS_ON']);
+const DECISION_STATES = new Set(['ACCEPTED_UNMATERIALIZED', 'MATERIALIZED', 'RETRACTED']);
 
 export class ScientificStateStoreError extends Error {
 	constructor(readonly code: string) {
@@ -191,9 +192,11 @@ function validateSnapshot(snapshot: unknown, events: ScientificEvent[]) {
 	for (const relation of relations.values()) if (!threads.get(relation.fromThreadId)!.relationIds.includes(relation.relationId) || !threads.get(relation.toThreadId)!.relationIds.includes(relation.relationId)) fail('SCIENTIFIC_GRAPH_REFERENCE_INVALID');
 	const decisions = new Map<string, ScientificDecision>();
 	for (const decision of snapshot.decisions) {
-		if (!isObject(decision) || typeof decision.decisionId !== 'string' || decisions.has(decision.decisionId) || typeof decision.threadId !== 'string' || !threads.has(decision.threadId) || typeof decision.acceptedEventId !== 'string' || !Array.isArray(decision.sourceEventIds)) fail('SCIENTIFIC_DECISION_REFERENCE_INVALID');
+		if (!isObject(decision) || typeof decision.decisionId !== 'string' || decisions.has(decision.decisionId) || typeof decision.threadId !== 'string' || !threads.has(decision.threadId) || typeof decision.acceptedEventId !== 'string' || typeof decision.acceptedSynthesisDigest !== 'string' || !SHA256.test(decision.acceptedSynthesisDigest) || !isObject(decision.acceptedBy) || decision.acceptedBy.kind !== 'USER' || !DECISION_STATES.has(decision.state as string) || !Array.isArray(decision.sourceEventIds)) fail('SCIENTIFIC_DECISION_REFERENCE_INVALID');
 		const acceptance = eventsById.get(decision.acceptedEventId);
-		if (!acceptance || acceptance.type !== 'DECISION_ACCEPTED' || acceptance.actor.kind !== 'USER' || !decision.sourceEventIds.every((id) => typeof id === 'string' && eventsById.has(id))) fail('SCIENTIFIC_DECISION_REFERENCE_INVALID');
+		if (!acceptance || acceptance.type !== 'DECISION_ACCEPTED' || acceptance.actor.kind !== 'USER' || acceptance.threadId !== decision.threadId || acceptance.payload.decisionId !== decision.decisionId || acceptance.payload.synthesisDigest !== decision.acceptedSynthesisDigest || acceptance.payload.status !== 'ACCEPTED_UNMATERIALIZED' || !decision.sourceEventIds.every((id) => typeof id === 'string' && eventsById.has(id))) fail('SCIENTIFIC_DECISION_REFERENCE_INVALID');
+		const retractions = events.filter((event) => event.type === 'DECISION_RETRACTED' && event.payload.decisionId === decision.decisionId);
+		if ((decision.state === 'RETRACTED') !== (retractions.length > 0) || retractions.some((event) => event.actor.kind !== 'USER' || !event.causalEventIds.includes(decision.acceptedEventId))) fail('SCIENTIFIC_DECISION_LIFECYCLE_INVALID');
 		decisions.set(decision.decisionId, decision as ScientificDecision);
 	}
 	for (const thread of threads.values()) if (new Set(thread.decisionIds).size !== thread.decisionIds.length || thread.decisionIds.some((id) => !decisions.has(id))) fail('SCIENTIFIC_THREAD_DECISION_ORPHANED');

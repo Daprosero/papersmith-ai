@@ -116,11 +116,9 @@ export async function discoverManagedRevision(input:{projectRoot:string;filename
  const documentPath=join(root,publicPaths[0]);
  const statePath=derivedStatePath(root,identity.filename);
  const storedReceiptPath=receiptPath(root,identity.filename);
- const [documentBytes,stateBytes,receiptBytes]=await Promise.all([
-  regularBytes(root,documentPath,'MANAGED_DOCUMENT_MISSING'),
-  regularBytes(root,statePath,'MANAGED_STATE_MISSING'),
-  regularBytes(root,storedReceiptPath,'MANAGED_RECEIPT_MISSING'),
- ]);
+ const documentBytes=await regularBytes(root,documentPath,'MANAGED_DOCUMENT_MISSING');
+ const stateBytes=await regularBytes(root,statePath,'MANAGED_STATE_MISSING');
+ const receiptBytes=await regularBytes(root,storedReceiptPath,'MANAGED_RECEIPT_MISSING');
  if (!documentBytes.subarray(0,MARKER.length).equals(MARKER)) block('UNMANAGED_REVISION');
  const documentSha256=sha256(documentBytes);
  const state=parseJson(stateBytes,'MALFORMED_MANAGED_STATE');

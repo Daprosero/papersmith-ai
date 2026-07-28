@@ -191,7 +191,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 ## 7. Decisions and ACCEPTED_UNMATERIALIZED
 
 ### T7.1 — Implement explicit user decision lifecycle
-- [ ] T7.1 — Implement explicit user decision lifecycle
+- [x] T7.1 — Implement explicit user decision lifecycle
 - **Files/discovery:** `scientific-workflow-service.ts`, `scientific-state-store.ts`, `types.ts`.
 - **Depends on:** T6.2.
 - **Implement:** require exact reviewed-synthesis digest and user-only `ACCEPT_DECISION`; persist rejection, retraction, and modification transitions while preserving immutable history.
@@ -199,7 +199,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 - **Acceptance:** acceptance creates an immutable `ACCEPTED_UNMATERIALIZED` decision; rejection/retraction are not eligible; no decision act creates `r01` or a successor.
 
 ### T7.2 — Expose durable pending candidates on re-entry
-- [ ] T7.2 — Expose durable pending candidates on re-entry
+- [x] T7.2 — Expose durable pending candidates on re-entry
 - **Files/discovery:** `project-entry-resolver.ts`, scientific public-result projection, `scientific-workflow-service.ts`.
 - **Depends on:** T7.1.
 - **Implement:** report pending candidate IDs, active/related thread summaries, eligibility/blockers, and next action as `MATERIALIZATION_PENDING` without claiming publication.

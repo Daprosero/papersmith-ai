@@ -1100,3 +1100,178 @@ Runtime harness: N/A — PR7 adds an isolated scientific orchestration service; 
 - [ ] T10.1 — Complete recovery and diagnostic outcomes
 - [ ] T10.2 — Run compatibility and full regression coverage
 ```
+
+## PR8 / T7.1–T7.2 — completed
+
+### Structured status and delivery context consumed
+
+```yaml
+schemaName: gentle-ai.sdd-status
+schemaVersion: 1
+changeName: scientific-reasoning-workflow
+artifactStore: openspec
+applyState: ready
+nextRecommended: apply
+actionContext:
+  mode: repo-local
+  workspaceRoot: /Users/diego/Desktop/Proyectos/papersmith-ai
+  allowedEditRoots: [/Users/diego/Desktop/Proyectos/papersmith-ai]
+delivery:
+  strategy: auto-chain
+  chainStrategy: stacked-to-main
+  boundary: PR8 / T7.1–T7.2 only
+strictTdd: false
+warnings: ["Native status supplied by the parent is authoritative."]
+```
+
+### Completed tasks and persisted checkbox evidence
+
+- [x] T7.1 — User-only decision lifecycle: `acceptDecision` admits only the exact persisted Tutor candidate and Conceptual Reviewer `PASS` digest, then appends an immutable `DECISION_ACCEPTED` event and persists an `ACCEPTED_UNMATERIALIZED` decision. Explicit user rejection, retraction, and modification preserve event history; rejected and retracted decisions are ineligible. Non-user, stale-digest, and missing-pass attempts block. No decision path writes a proposal, revision, manifest, or receipt.
+- [x] T7.2 — Re-entry now projects durable pending candidate identities, active/direct-related thread summaries, eligibility/blockers, and an explicit materialization request next action. `MATERIALIZATION_PENDING` is returned only for accepted-unmaterialized decisions; restart preserves it, while retraction removes eligibility and corrupt evidence remains recovery-required.
+
+The persisted `tasks.md` checkboxes were updated only after all focused tests, V2 regressions, and `git diff --check` passed.
+
+### Files changed
+
+- `.pi/extensions/paper-proposal-v2/scientific-domain.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-state-store.ts`
+- `.pi/extensions/paper-proposal-v2/project-entry-resolver.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-workflow-service.ts`
+- `tests/paper-proposal-v2-scientific-decisions.test.mjs` (new)
+- `openspec/changes/scientific-reasoning-workflow/tasks.md`
+- `openspec/changes/scientific-reasoning-workflow/apply-progress.md`
+
+### Verification evidence
+
+```text
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-proposal-v2-scientific-domain-contract.test.mjs tests/paper-proposal-v2-scientific-persistence.test.mjs tests/paper-proposal-v2-scientific-entry.test.mjs tests/paper-proposal-v2-scientific-synthesis.test.mjs tests/paper-proposal-v2-scientific-decisions.test.mjs
+# PASS: 26 tests, 0 failures
+
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-proposal-v2-lifecycle.test.mjs tests/paper-proposal-v2-revision-lifecycle.test.mjs tests/paper-proposal-v2-source-routing.test.mjs tests/paper-proposal-v2-tutor-reviewer.test.mjs tests/paper-proposal-v2-production-role-metrics.test.mjs
+# PASS: 29 tests, 0 failures
+
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && git diff --check
+# PASS: no output
+```
+
+Runtime harness: N/A — PR8 remains an isolated scientific state/service slice; the public scientific route and materialization pipeline are not wired in this work unit.
+
+### Deviations, risks, workload boundary, and rollback
+
+- **Design deviation:** none.
+- **Risk / decision:** decision snapshots are projections of immutable lifecycle events. `DECISION_RETRACTED` is required to move an accepted decision to `RETRACTED`; materialization selection, reservation, planning, execution, publication, `r01`, and successor behavior remain unimplemented and out of scope.
+- **Workload / PR boundary:** `auto-chain`, `stacked-to-main`; PR8 is T7.1–T7.2 only. PR9/T8 and later tasks were not started. The authored work unit is 172 tracked additions plus 123 new-test lines before SDD artifacts, under the 400-line review budget.
+- **Rollback boundary:** revert only the PR8 domain/state-store/entry-resolver/workflow-service changes, the focused decisions test, and these task/progress updates. No proposal, managed revision, manifest, receipt, lifecycle inventory, materialization record, or publication is affected.
+- **Conventional commit proposal (not created):** `feat(paper-proposal-v2): persist scientific decision lifecycle`
+
+### Remaining tasks
+
+```text
+- [ ] T8.1 — Add frozen selection and materialization reservation
+- [ ] T8.2 — Plan only frozen accepted candidates with provenance
+- [ ] T9.1 — Implement non-writing MaterializationCandidateExecutor
+- [ ] T9.2 — Add Document Reviewer gate and guarded initial publication adapter
+- [ ] T9.3 — Commit materialization only after verified publication
+- [ ] T10.1 — Complete recovery and diagnostic outcomes
+- [ ] T10.2 — Run compatibility and full regression coverage
+```
+
+## PR8 validation correction — BLOCKED on V2 regression
+
+The subsequent full validation run added the required missing-causal-review-pass assertion to the focused PR8 suite. The focused command passed **26/26**, but the relevant V2 regression command then failed at its first failure; no later command (including `git diff --check`) ran.
+
+```text
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-proposal-v2-scientific-domain-contract.test.mjs tests/paper-proposal-v2-scientific-persistence.test.mjs tests/paper-proposal-v2-scientific-entry.test.mjs tests/paper-proposal-v2-scientific-synthesis.test.mjs tests/paper-proposal-v2-scientific-decisions.test.mjs
+# PASS: 26 tests, 0 failures
+
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-proposal-v2-lifecycle.test.mjs tests/paper-proposal-v2-revision-lifecycle.test.mjs tests/paper-proposal-v2-source-routing.test.mjs tests/paper-proposal-v2-tutor-reviewer.test.mjs tests/paper-proposal-v2-production-role-metrics.test.mjs
+# FAIL: 28 passed, 1 failed
+# tests/paper-proposal-v2-revision-lifecycle.test.mjs:397
+# productive lifecycle negatives block safely while ambiguous revision deletion clarifies and content deletion stays DELETE
+# Expected /MANAGED_DOCUMENT_MISSING/; actual MANAGED_STATE_MISSING
+```
+
+This failure is in an unchanged lifecycle fixture/observable result, not a PR8 scientific decision path. Per the stop rule, no source correction, additional regression command, or diff check followed. T7.1 and T7.2 were reverted to persisted `- [ ]` because the full validation prerequisite is not satisfied. PR8 is not ready for verify or commit; T8/PR9 and later remain out of scope.
+
+## PR8 validation correction — completed
+
+### Structured status and delivery context consumed
+
+```yaml
+schemaName: gentle-ai.sdd-status
+schemaVersion: 1
+changeName: scientific-reasoning-workflow
+artifactStore: both
+applyState: ready
+nextRecommended: apply
+actionContext:
+  mode: repo-local
+  workspaceRoot: /Users/diego/Desktop/Proyectos/papersmith-ai
+  allowedEditRoots: [/Users/diego/Desktop/Proyectos/papersmith-ai]
+delivery:
+  strategy: auto-chain
+  chainStrategy: stacked-to-main
+  boundary: PR8 / T7.1–T7.2 only
+strictTdd: false
+warnings: ["CodeGraph MCP was unavailable; narrow known-path reads followed the required index check."]
+```
+
+### Completed tasks and checkbox evidence
+
+- [x] T7.1 — Implement explicit user decision lifecycle
+- [x] T7.2 — Expose durable pending candidates on re-entry
+
+Both persisted checkboxes were changed only after the lifecycle regression, focused PR8 suite, 29-test V2 regression suite, and `git diff --check` passed. The file was re-read after the update.
+
+### Minimum compatibility correction
+
+`.pi/extensions/paper-proposal-v2/revision-lifecycle-store.ts` now validates the requested managed document before derived state or receipt. A missing document therefore returns the existing `MANAGED_DOCUMENT_MISSING` immediately; `MANAGED_STATE_MISSING` is reached only after document existence succeeds. No error code, test, scientific decision semantics, materialization, or PR9 behavior changed.
+
+### Files changed
+
+- `.pi/extensions/paper-proposal-v2/revision-lifecycle-store.ts`
+- `.pi/extensions/paper-proposal-v2/project-entry-resolver.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-domain.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-state-store.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-workflow-service.ts`
+- `tests/paper-proposal-v2-scientific-decisions.test.mjs` (new)
+- `openspec/changes/scientific-reasoning-workflow/tasks.md`
+- `openspec/changes/scientific-reasoning-workflow/apply-progress.md`
+
+### Verification evidence
+
+```text
+node --test tests/paper-proposal-v2-revision-lifecycle.test.mjs
+# PASS: 18 tests, 0 failures
+
+node --test tests/paper-proposal-v2-scientific-domain-contract.test.mjs tests/paper-proposal-v2-scientific-persistence.test.mjs tests/paper-proposal-v2-scientific-entry.test.mjs tests/paper-proposal-v2-scientific-synthesis.test.mjs tests/paper-proposal-v2-scientific-decisions.test.mjs
+# PASS: 26 tests, 0 failures
+
+node --test tests/paper-proposal-v2-lifecycle.test.mjs tests/paper-proposal-v2-revision-lifecycle.test.mjs tests/paper-proposal-v2-source-routing.test.mjs tests/paper-proposal-v2-tutor-reviewer.test.mjs tests/paper-proposal-v2-production-role-metrics.test.mjs
+# PASS: 29 tests, 0 failures
+
+git diff --check
+# PASS: no output
+```
+
+Runtime harness: N/A — PR8 remains an isolated scientific state/service slice; no public route or materialization behavior is wired.
+
+### Deviations, risks, and PR boundary
+
+- **Design deviation:** none.
+- **Risk:** the lifecycle correction deliberately serializes three validation reads to make error precedence deterministic; this bounded lifecycle path prioritizes compatibility over parallel I/O.
+- **PR boundary:** `auto-chain`, `stacked-to-main`; PR8 ends at T7.1–T7.2. T8/PR9 and later were not started.
+- **Rollback boundary:** revert only the PR8 scientific decision files/test and the lifecycle validation-order correction plus these SDD artifacts. No proposal, managed revision, manifest, receipt, lifecycle inventory, materialization record, or publication behavior is affected.
+- **Conventional commit proposal (not created):** `feat(paper-proposal-v2): persist scientific decision lifecycle`
+
+### Remaining tasks
+
+```text
+- [ ] T8.1 — Add frozen selection and materialization reservation
+- [ ] T8.2 — Plan only frozen accepted candidates with provenance
+- [ ] T9.1 — Implement non-writing MaterializationCandidateExecutor
+- [ ] T9.2 — Add Document Reviewer gate and guarded initial publication adapter
+- [ ] T9.3 — Commit materialization only after verified publication
+- [ ] T10.1 — Complete recovery and diagnostic outcomes
+- [ ] T10.2 — Run compatibility and full regression coverage
+```

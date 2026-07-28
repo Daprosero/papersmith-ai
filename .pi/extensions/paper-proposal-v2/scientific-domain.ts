@@ -111,6 +111,12 @@ export type ProjectEntry = {
 	activeThreadId?: ScientificThreadId;
 	relatedThreadIds: ScientificThreadId[];
 	pendingCandidateIds: ScientificDecisionId[];
+	/** Present for validated pending entries; legacy resolver consumers may continue using IDs. */
+	activeThread?: ThreadSummary;
+	relatedThreads?: ThreadSummary[];
+	pendingCandidates?: MaterializationCandidateSummary[];
+	blockers?: PublicBlocker[];
+	nextAction?: string | null;
 	recovery: ProjectEntryRecovery;
 	auditEvidence: string[];
 	bootstrap?: ProjectEntryBootstrap;
@@ -247,6 +253,8 @@ export type MaterializationCandidateSummary = {
 	decisionId: ScientificDecisionId;
 	threadId: ScientificThreadId;
 	state: ScientificDecisionStatus;
+	eligibility: 'eligible' | 'blocked';
+	blockers: PublicBlocker[];
 };
 export type ScientificMetricsDelta = {
 	routeStage: ScientificWorkflowOperation;

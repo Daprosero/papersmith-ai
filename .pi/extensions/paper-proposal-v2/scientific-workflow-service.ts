@@ -12,10 +12,14 @@ import { validateTutorAssessment } from './tutor-adapter.js';
 import type {
 	ConceptualReviewOutcome,
 	EvidenceReference,
+	ProjectEntry,
+	ScientificActor,
+	ScientificDecision,
 	ScientificEvent,
 	ScientificEventId,
 	ScientificSynthesisCandidate,
 	ScientificThread,
+	ScientificWorkflowPublicResult,
 	StructuredConceptualFinding,
 	ThreadSynthesis,
 } from './scientific-domain.js';
@@ -27,6 +31,15 @@ export type ScientificSynthesisRequest = ScientificContextBuilderInput & {
 export type ScientificSynthesisResult =
 	| { status: 'reviewed'; candidate: ScientificSynthesisCandidate; reviewOutcome: 'PASS'; eventIds: ScientificEventId[] }
 	| { status: 'blocked'; code: string; eventIds: ScientificEventId[]; finding?: StructuredConceptualFinding };
+
+export type ScientificDecisionResult =
+	| { status: 'recorded'; eventId: ScientificEventId; decisionId?: string; state: 'ACCEPTED_UNMATERIALIZED' | 'REJECTED' | 'RETRACTED' }
+	| { status: 'blocked'; code: string };
+
+export type ScientificDecisionRequest = {
+	candidate: ScientificSynthesisCandidate;
+	actor: ScientificActor;
+};
 
 export type ScientificWorkflowServiceDependencies = {
 	store: ScientificStateStore;
@@ -110,6 +123,108 @@ export class ScientificWorkflowService {
 		const reopenEvent = await this.appendEvent(input.activeThread.threadId, 'SYNTHESIS_REOPENED', { status: 'DRAFT', synthesisId: input.priorSynthesis.synthesisId, synthesisDigest: input.priorSynthesis.digest, modificationCause: input.modificationCause }, [input.priorSynthesis.reviewEventId].filter((id): id is string => !!id));
 		if (!reopenEvent) return { status: 'blocked', code: 'SYNTHESIS_REOPEN_PERSISTENCE_FAILED', eventIds: [] };
 		return this.runSynthesis(input, [reopenEvent.eventId]);
+	}
+
+	async modifySynthesis(input: ScientificSynthesisRequest & { priorSynthesis: ThreadSynthesis; modificationCause: string; actor: ScientificActor }): Promise<ScientificSynthesisResult> {
+		if (input.actor.kind !== 'USER') return { status: 'blocked', code: 'SCIENTIFIC_DECISION_ACTOR_FORBIDDEN', eventIds: [] };
+		return this.reopen(input);
+	}
+
+	async acceptDecision(input: ScientificDecisionRequest): Promise<ScientificDecisionResult> {
+		if (input.actor.kind !== 'USER') return { status: 'blocked', code: 'SCIENTIFIC_ACCEPTANCE_REQUIRES_USER' };
+		return this.recordDecision(input.candidate, 'DECISION_ACCEPTED');
+	}
+
+	async rejectDecision(input: ScientificDecisionRequest): Promise<ScientificDecisionResult> {
+		if (input.actor.kind !== 'USER') return { status: 'blocked', code: 'SCIENTIFIC_DECISION_ACTOR_FORBIDDEN' };
+		return this.recordDecision(input.candidate, 'DECISION_REJECTED');
+	}
+
+	async retractDecision(input: { decisionId: string; actor: ScientificActor }): Promise<ScientificDecisionResult> {
+		if (input.actor.kind !== 'USER') return { status: 'blocked', code: 'SCIENTIFIC_DECISION_ACTOR_FORBIDDEN' };
+		try {
+			const current = await this.dependencies.store.read();
+			const snapshot = current ? clone(current.snapshot) as ScientificSnapshotRecord : undefined;
+			const decision = snapshot?.decisions.find((candidate) => candidate.decisionId === input.decisionId);
+			if (!current || !snapshot || !decision || decision.state !== 'ACCEPTED_UNMATERIALIZED') return { status: 'blocked', code: 'SCIENTIFIC_DECISION_RETRACTION_INVALID' };
+			const thread = snapshot.threads.find((candidate) => candidate.threadId === decision.threadId);
+			if (!thread) return { status: 'blocked', code: 'SCIENTIFIC_DECISION_RETRACTION_INVALID' };
+			const event = this.lifecycleEvent(current.events.length + 1, thread.threadId, 'DECISION_RETRACTED', { decisionId: decision.decisionId, status: 'RETRACTED' }, [decision.acceptedEventId]);
+			decision.state = 'RETRACTED';
+			thread.headEventId = event.eventId;
+			thread.status = snapshot.decisions.some((candidate) => candidate.threadId === thread.threadId && candidate.state === 'ACCEPTED_UNMATERIALIZED') ? 'ACCEPTED_UNMATERIALIZED' : 'RETRACTED';
+			await this.dependencies.store.commitTransition({ events: [event], snapshot });
+			return { status: 'recorded', eventId: event.eventId, decisionId: decision.decisionId, state: 'RETRACTED' };
+		} catch {
+			return { status: 'blocked', code: 'SCIENTIFIC_DECISION_PERSISTENCE_FAILED' };
+		}
+	}
+
+	projectReentry(entry: ProjectEntry): ScientificWorkflowPublicResult {
+		const candidates = entry.pendingCandidates ?? entry.pendingCandidateIds.map((decisionId) => ({ decisionId, threadId: entry.activeThreadId ?? 'unknown', state: 'ACCEPTED_UNMATERIALIZED' as const, eligibility: 'eligible' as const, blockers: [] }));
+		return {
+			status: entry.recovery.required ? 'recovery_required' : 'ready',
+			operation: 'SCIENTIFIC_WORKFLOW',
+			routeStage: 'SCIENTIFIC_WORKFLOW',
+			entryState: entry.state,
+			...(entry.activeThread ? { activeThread: entry.activeThread } : {}),
+			relatedThreads: entry.relatedThreads ?? [],
+			candidates,
+			blockers: entry.blockers ?? (entry.recovery.required && entry.recovery.code ? [{ code: entry.recovery.code, message: 'Scientific state requires recovery.', nextAction: entry.recovery.action }] : []),
+			nextAction: entry.nextAction ?? entry.recovery.action ?? null,
+			auditStatus: entry.recovery.required ? 'FAIL' : 'PASS',
+			selfAuditStatus: 'NOT_RUN',
+			metrics: { routeStage: 'SCIENTIFIC_WORKFLOW', bypassedStages: ['LIFECYCLE', 'DIRECT_DOCUMENT', 'DELIBERATE'] },
+		};
+	}
+
+	private async recordDecision(candidate: ScientificSynthesisCandidate, type: 'DECISION_ACCEPTED' | 'DECISION_REJECTED'): Promise<ScientificDecisionResult> {
+		try {
+			const current = await this.dependencies.store.read();
+			const snapshot = current ? clone(current.snapshot) as ScientificSnapshotRecord : undefined;
+			if (!current || !snapshot || !this.isReviewedCandidate(current.events, candidate)) return { status: 'blocked', code: 'SCIENTIFIC_REVIEWED_SYNTHESIS_REQUIRED' };
+			const thread = snapshot.threads.find((existing) => existing.threadId === candidate.threadId);
+			if (!thread) return { status: 'blocked', code: 'SCIENTIFIC_REVIEWED_SYNTHESIS_REQUIRED' };
+			const decisionId = type === 'DECISION_ACCEPTED' ? this.newId() : undefined;
+			const event = this.lifecycleEvent(current.events.length + 1, thread.threadId, type, {
+				...(decisionId ? { decisionId } : {}),
+				synthesisId: candidate.synthesisId,
+				synthesisDigest: candidate.digest,
+				status: type === 'DECISION_ACCEPTED' ? 'ACCEPTED_UNMATERIALIZED' : 'REJECTED',
+			}, [candidate.reviewEventId!]);
+			thread.headEventId = event.eventId;
+			thread.status = type === 'DECISION_ACCEPTED' ? 'ACCEPTED_UNMATERIALIZED' : 'REJECTED';
+			if (decisionId) {
+				const decision: ScientificDecision = { decisionId, threadId: thread.threadId, acceptedEventId: event.eventId, acceptedSynthesisDigest: candidate.digest, acceptedBy: { kind: 'USER' }, state: 'ACCEPTED_UNMATERIALIZED', sourceEventIds: [candidate.tutorEventId, candidate.reviewEventId!] };
+				snapshot.decisions.push(decision);
+				thread.decisionIds.push(decisionId);
+			}
+			await this.dependencies.store.commitTransition({ events: [event], snapshot });
+			return { status: 'recorded', eventId: event.eventId, ...(decisionId ? { decisionId } : {}), state: type === 'DECISION_ACCEPTED' ? 'ACCEPTED_UNMATERIALIZED' : 'REJECTED' };
+		} catch {
+			return { status: 'blocked', code: 'SCIENTIFIC_DECISION_PERSISTENCE_FAILED' };
+		}
+	}
+
+	private isReviewedCandidate(events: ScientificEvent[], candidate: ScientificSynthesisCandidate): boolean {
+		if (candidate.status !== 'REVIEWED' || !/^[0-9a-f]{64}$/.test(candidate.digest) || !candidate.reviewEventId || !candidate.tutorEventId) return false;
+		const tutor = events.find((event) => event.eventId === candidate.tutorEventId);
+		const review = events.find((event) => event.eventId === candidate.reviewEventId);
+		return tutor?.type === 'TUTOR_ASSESSED'
+			&& tutor.threadId === candidate.threadId
+			&& tutor.payload.synthesisId === candidate.synthesisId
+			&& tutor.payload.synthesisDigest === candidate.digest
+			&& review?.type === 'CONCEPTUAL_REVIEW_RECORDED'
+			&& review.actor.kind === 'CONCEPTUAL_REVIEWER'
+			&& review.threadId === candidate.threadId
+			&& review.payload.status === 'PASS'
+			&& review.payload.synthesisId === candidate.synthesisId
+			&& review.payload.synthesisDigest === candidate.digest
+			&& review.causalEventIds.includes(candidate.tutorEventId);
+	}
+
+	private lifecycleEvent(sequence: number, threadId: string, type: 'DECISION_ACCEPTED' | 'DECISION_REJECTED' | 'DECISION_RETRACTED', payload: Record<string, unknown>, causalEventIds: ScientificEventId[]): ScientificEvent {
+		return { schemaVersion: 1, eventId: this.newId(), sequence, occurredAt: this.now().toISOString(), actor: { kind: 'USER' }, type, threadId, causalEventIds, payload, evidence: [], privacy: { contentClass: 'PUBLIC_SUMMARY_ONLY', redactionVersion: 1 } };
 	}
 
 	private async runSynthesis(input: ScientificSynthesisRequest, causalEventIds: ScientificEventId[]): Promise<ScientificSynthesisResult> {
@@ -244,7 +359,13 @@ export class ScientificWorkflowService {
 				privacy: { contentClass: 'PUBLIC_SUMMARY_ONLY', redactionVersion: 1 },
 			};
 			thread.headEventId = event.eventId;
-			thread.status = type === 'REPAIR_PROPOSED' ? 'REPAIRED' : type === 'CONCEPTUAL_REVIEW_RECORDED' ? 'UNDER_REVIEW' : thread.status;
+			thread.status = type === 'REPAIR_PROPOSED'
+				? 'REPAIRED'
+				: type === 'CONCEPTUAL_REVIEW_RECORDED'
+					? 'UNDER_REVIEW'
+					: type === 'SYNTHESIS_REOPENED'
+						? 'OPEN'
+						: thread.status;
 			await this.dependencies.store.commitTransition({ events: [event], snapshot });
 			return event;
 		} catch {
