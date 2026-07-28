@@ -10,6 +10,8 @@ import type {
 	ScientificThread,
 	ScientificThreadId,
 	ThreadRelation,
+	MaterializationRecord,
+	FrozenDecisionSelection,
 	ThreadTransitionIntent,
 } from './scientific-domain.js';
 
@@ -45,6 +47,18 @@ export type ScientificEntryProjection = {
 	pendingCandidateIds: string[];
 };
 
+export type MaterializationIndexRecord = {
+	schemaVersion: 1;
+	records: Record<string, { selectionKey: string; decisionIds: string[] }>;
+	decisionClaims: Record<string, string>;
+};
+
+export type MaterializationReservationResult =
+	| { status: 'reserved'; record: MaterializationRecord }
+	| { status: 'existing'; record: MaterializationRecord }
+	| { status: 'conflict'; code: 'MATERIALIZATION_SELECTION_CONFLICT'; materializationId: string }
+	| { status: 'blocked'; code: string };
+
 export type ScientificState = {
 	manifest: ScientificManifestRecord;
 	snapshot: ScientificSnapshotRecord;
@@ -56,6 +70,7 @@ export type ScientificTransition = {
 	transitionId?: string;
 	events: ScientificEvent[];
 	snapshot: ScientificSnapshotRecord;
+	materialization?: { record: MaterializationRecord; index: MaterializationIndexRecord };
 };
 
 export type ScientificRecoveryResult =
@@ -85,7 +100,7 @@ const defaultFs: ScientificFs = { link, lstat, mkdir, open, readdir, readFile, r
 const EVENT_FILE = /^(\d+)-([A-Za-z0-9_-]+)\.json$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const FORBIDDEN_PRIVATE_KEYS = /(?:chain.?of.?thought|hidden.?prompt|raw.?trace|private.?reasoning|transcript|\bprompt\b|\btrace\b|\bthought\b)/i;
-const ALLOWED_PAYLOAD_KEYS = new Set(['title', 'summary', 'status', 'decisionId', 'synthesisId', 'synthesisDigest', 'relationId', 'relatedThreadIds', 'activeThreadId', 'candidateIds', 'findingId', 'issueCategory', 'evidenceReferences', 'requiredCorrection', 'constraints', 'modificationCause', 'reason', 'code']);
+const ALLOWED_PAYLOAD_KEYS = new Set(['title', 'summary', 'status', 'decisionId', 'synthesisId', 'synthesisDigest', 'relationId', 'relatedThreadIds', 'activeThreadId', 'candidateIds', 'findingId', 'issueCategory', 'evidenceReferences', 'requiredCorrection', 'constraints', 'modificationCause', 'reason', 'code', 'materializationId', 'selectionKey', 'acceptedEventIds']);
 const ALLOWED_EVIDENCE_KINDS = /^[a-z][a-z0-9_-]{0,63}$/;
 const THREAD_RELATION_KINDS = new Set(['RELATED', 'SUPPORTS', 'CHALLENGES', 'DEPENDS_ON']);
 const DECISION_STATES = new Set(['ACCEPTED_UNMATERIALIZED', 'MATERIALIZED', 'RETRACTED']);
@@ -110,6 +125,7 @@ function layout(root: string) {
 		snapshot: join(scientific, 'snapshot.json'),
 		events: join(scientific, 'events'),
 		materializations: join(scientific, 'materializations'),
+		materializationIndex: join(scientific, 'materializations', 'index.json'),
 		transactions: join(scientific, 'transactions'),
 		projections: join(scientific, 'projections'),
 		entryIndex: join(scientific, 'projections', 'entry-index.json'),
@@ -212,6 +228,41 @@ function deriveProjection(snapshot: ScientificSnapshotRecord): ScientificEntryPr
 	};
 }
 
+function isSortedUniqueIds(ids: unknown): ids is string[] {
+	return Array.isArray(ids)
+		&& ids.length > 0
+		&& ids.every((id) => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id))
+		&& ids.every((id, index) => index === 0 || ids[index - 1] < id);
+}
+
+function validateFrozenSelection(selection: unknown, decisions: ScientificDecision[]): selection is FrozenDecisionSelection {
+	if (!isObject(selection) || selection.policyVersion !== 1 || !isSortedUniqueIds(selection.decisionIds) || !Array.isArray(selection.acceptedEventIds) || selection.acceptedEventIds.length !== selection.decisionIds.length || typeof selection.selectionKey !== 'string' || !SHA256.test(selection.selectionKey)) return false;
+	const byId = new Map(decisions.map((decision) => [decision.decisionId, decision]));
+	return selection.decisionIds.every((decisionId, index) => {
+		const decision = byId.get(decisionId);
+		return !!decision && decision.acceptedEventId === selection.acceptedEventIds[index];
+	});
+}
+
+function validateMaterializationRecord(record: unknown, snapshot: ScientificSnapshotRecord, events: ScientificEvent[]): record is MaterializationRecord {
+	if (!isObject(record) || record.schemaVersion !== 1 || typeof record.materializationId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(record.materializationId) || !['RESOLVING', 'PREPARED', 'PLANNING', 'EXECUTING_CANDIDATE', 'REVIEWING_DOCUMENT', 'PUBLISHING', 'COMMITTED', 'BLOCKED', 'RECOVERY_REQUIRED'].includes(record.state as string) || !validateFrozenSelection(record.frozenSelection, snapshot.decisions) || !Array.isArray(record.selectedDecisions) || record.selectedDecisions.length !== record.frozenSelection.decisionIds.length) return false;
+	const threads = new Map(snapshot.threads.map((thread) => [thread.threadId, thread]));
+	const decisions = new Map(snapshot.decisions.map((decision) => [decision.decisionId, decision]));
+	const eventIds = new Set(events.map((event) => event.eventId));
+	return record.selectedDecisions.every((selected, index) => {
+		if (!isObject(selected) || selected.decisionId !== record.frozenSelection.decisionIds[index] || selected.acceptedEventId !== record.frozenSelection.acceptedEventIds[index] || typeof selected.threadId !== 'string' || typeof selected.acceptedSynthesisDigest !== 'string' || !SHA256.test(selected.acceptedSynthesisDigest) || !Array.isArray(selected.sourceEventIds)) return false;
+		const decision = decisions.get(selected.decisionId);
+		const thread = threads.get(selected.threadId);
+		if (!decision || !thread || decision.threadId !== selected.threadId || decision.acceptedEventId !== selected.acceptedEventId || decision.acceptedSynthesisDigest !== selected.acceptedSynthesisDigest || !selected.sourceEventIds.every((eventId) => typeof eventId === 'string' && eventIds.has(eventId))) return false;
+		if (selected.revisionEvidence !== undefined && (!isObject(selected.revisionEvidence) || digest(selected.revisionEvidence) !== digest(thread.revisionEvidence))) return false;
+		return true;
+	});
+}
+
+function emptyMaterializationIndex(): MaterializationIndexRecord {
+	return { schemaVersion: 1, records: {}, decisionClaims: {} };
+}
+
 export class ScientificStateStore {
 	private readonly fs: ScientificFs;
 	private readonly newTransitionId: () => string;
@@ -223,6 +274,43 @@ export class ScientificStateStore {
 
 	async read(): Promise<ScientificState | undefined> {
 		return this.withLock(async () => this.readValidated(false));
+	}
+
+	async reserveMaterialization(candidateIds: string[]): Promise<MaterializationReservationResult> {
+		return this.withLock(async () => {
+			if (!isSortedUniqueIds(candidateIds)) return { status: 'blocked', code: 'MATERIALIZATION_SELECTION_INVALID' };
+			const current = await this.readValidated(false);
+			if (!current) return { status: 'blocked', code: 'MATERIALIZATION_STATE_MISSING' };
+			const root = await this.safeProjectRoot();
+			const index = await this.readMaterializationIndex(root, current.snapshot, current.events);
+			const decisions = new Map(current.snapshot.decisions.map((decision) => [decision.decisionId, decision]));
+			const selected = candidateIds.map((decisionId) => decisions.get(decisionId));
+			if (selected.some((decision) => !decision)) return { status: 'blocked', code: 'MATERIALIZATION_DECISION_UNKNOWN' };
+			const frozenSelection: FrozenDecisionSelection = {
+				policyVersion: 1,
+				decisionIds: [...candidateIds],
+				acceptedEventIds: selected.map((decision) => decision!.acceptedEventId),
+				selectionKey: digest({ projectRoot: root, decisions: selected.map((decision) => [decision!.decisionId, decision!.acceptedEventId]) }),
+			};
+			const existingId = Object.entries(index.records).find(([, value]) => value.selectionKey === frozenSelection.selectionKey)?.[0];
+			if (existingId) return { status: 'existing', record: await this.readMaterializationRecord(root, existingId, current.snapshot, current.events) };
+			const claimed = selected.map((decision) => index.decisionClaims[decision!.decisionId]).find((claim) => !!claim);
+			if (claimed) return { status: 'conflict', code: 'MATERIALIZATION_SELECTION_CONFLICT', materializationId: claimed };
+			if (selected.some((decision) => decision!.state !== 'ACCEPTED_UNMATERIALIZED' || decision!.acceptedBy.kind !== 'USER')) return { status: 'blocked', code: 'MATERIALIZATION_DECISION_INELIGIBLE' };
+			const materializationId = this.newTransitionId();
+			if (!/^[A-Za-z0-9_-]{1,128}$/.test(materializationId) || index.records[materializationId]) return { status: 'blocked', code: 'MATERIALIZATION_ID_INVALID' };
+			const selectedDecisions = selected.map((decision) => {
+				const thread = current.snapshot.threads.find((candidate) => candidate.threadId === decision!.threadId)!;
+				return { decisionId: decision!.decisionId, threadId: decision!.threadId, acceptedEventId: decision!.acceptedEventId, acceptedSynthesisDigest: decision!.acceptedSynthesisDigest, sourceEventIds: [...decision!.sourceEventIds], ...(thread.revisionEvidence ? { revisionEvidence: structuredClone(thread.revisionEvidence) } : {}) };
+			});
+			const record: MaterializationRecord = { schemaVersion: 1, materializationId, state: 'RESOLVING', frozenSelection, selectedDecisions };
+			const nextIndex = structuredClone(index);
+			nextIndex.records[materializationId] = { selectionKey: frozenSelection.selectionKey, decisionIds: [...candidateIds] };
+			for (const decisionId of candidateIds) nextIndex.decisionClaims[decisionId] = materializationId;
+			const event: ScientificEvent = { schemaVersion: 1, eventId: randomUUID(), sequence: current.events.length + 1, occurredAt: new Date().toISOString(), actor: { kind: 'SYSTEM' }, type: 'MATERIALIZATION_RESERVED', causalEventIds: [...frozenSelection.acceptedEventIds], payload: { materializationId, selectionKey: frozenSelection.selectionKey, candidateIds: [...candidateIds], acceptedEventIds: [...frozenSelection.acceptedEventIds], status: 'RESOLVING' }, evidence: [], privacy: { contentClass: 'PUBLIC_SUMMARY_ONLY', redactionVersion: 1 } };
+			await this.commitTransitionLocked({ events: [event], snapshot: structuredClone(current.snapshot), materialization: { record, index: nextIndex } });
+			return { status: 'reserved', record };
+		});
 	}
 
 	async commitTransition(input: ScientificTransition): Promise<ScientificState> {
@@ -248,9 +336,14 @@ export class ScientificStateStore {
 			eventCount: allEvents.length,
 			...(allEvents.at(-1) ? { headEventId: allEvents.at(-1)!.eventId } : {}),
 		};
+		if (input.materialization && !validateMaterializationRecord(input.materialization.record, input.snapshot, allEvents)) fail('SCIENTIFIC_MATERIALIZATION_RECORD_INVALID');
 		const marker: ScientificTransitionMarker = { schemaVersion: 1, transitionId, state: 'PREPARED', eventIds: input.events.map((event) => event.eventId), snapshotSha256: manifest.snapshotSha256, manifestSha256: digest(manifest) };
 		await this.writeAtomic(markerPath, marker);
 		for (const event of input.events) await this.writeImmutableEvent(join(layout(root).events, `${event.sequence}-${event.eventId}.json`), event);
+		if (input.materialization) {
+			await this.writeAtomic(join(layout(root).materializations, `${input.materialization.record.materializationId}.json`), input.materialization.record);
+			await this.writeAtomic(layout(root).materializationIndex, input.materialization.index);
+		}
 		await this.writeAtomic(layout(root).snapshot, input.snapshot);
 		await this.writeAtomic(layout(root).manifest, manifest);
 		const projection = deriveProjection(input.snapshot);
@@ -367,6 +460,37 @@ export class ScientificStateStore {
 		try { await this.fs.lstat(path); return true; } catch { return false; }
 	}
 
+	private async readMaterializationRecord(root: string, materializationId: string, snapshot: ScientificSnapshotRecord, events: ScientificEvent[]): Promise<MaterializationRecord> {
+		const record = await this.readJson<MaterializationRecord>(join(layout(root).materializations, `${materializationId}.json`));
+		if (!validateMaterializationRecord(record, snapshot, events)) fail('SCIENTIFIC_MATERIALIZATION_RECORD_INVALID');
+		return record;
+	}
+
+	private async readMaterializationIndex(root: string, snapshot: ScientificSnapshotRecord, events: ScientificEvent[]): Promise<MaterializationIndexRecord> {
+		const paths = layout(root);
+		const names = await this.fs.readdir(paths.materializations);
+		const recordNames = names.filter((name) => name !== 'index.json');
+		if (!await this.exists(paths.materializationIndex)) {
+			if (recordNames.length > 0) fail('SCIENTIFIC_MATERIALIZATION_INDEX_MISSING');
+			return emptyMaterializationIndex();
+		}
+		const index = await this.readJson<MaterializationIndexRecord>(paths.materializationIndex);
+		if (!isObject(index) || index.schemaVersion !== 1 || !isObject(index.records) || !isObject(index.decisionClaims)) fail('SCIENTIFIC_MATERIALIZATION_INDEX_INVALID');
+		const claimed = new Map<string, string>();
+		for (const [materializationId, value] of Object.entries(index.records)) {
+			if (!/^[A-Za-z0-9_-]{1,128}$/.test(materializationId) || !isObject(value) || typeof value.selectionKey !== 'string' || !SHA256.test(value.selectionKey) || !isSortedUniqueIds(value.decisionIds)) fail('SCIENTIFIC_MATERIALIZATION_INDEX_INVALID');
+			const record = await this.readMaterializationRecord(root, materializationId, snapshot, events);
+			if (record.frozenSelection.selectionKey !== value.selectionKey || JSON.stringify(record.frozenSelection.decisionIds) !== JSON.stringify(value.decisionIds)) fail('SCIENTIFIC_MATERIALIZATION_INDEX_INVALID');
+			for (const decisionId of value.decisionIds) {
+				if (claimed.has(decisionId)) fail('SCIENTIFIC_MATERIALIZATION_INDEX_INVALID');
+				claimed.set(decisionId, materializationId);
+			}
+		}
+		if (recordNames.length !== Object.keys(index.records).length || recordNames.some((name) => !/^[A-Za-z0-9_-]{1,128}\.json$/.test(name) || !index.records[basename(name, '.json')])) fail('SCIENTIFIC_MATERIALIZATION_INDEX_INVALID');
+		if (Object.keys(index.decisionClaims).length !== claimed.size || Object.entries(index.decisionClaims).some(([decisionId, materializationId]) => claimed.get(decisionId) !== materializationId)) fail('SCIENTIFIC_MATERIALIZATION_INDEX_INVALID');
+		return index as MaterializationIndexRecord;
+	}
+
 	private async readValidated(ignoreMarkers: boolean): Promise<ScientificState | undefined> {
 		const root = await this.safeProjectRoot();
 		const paths = layout(root);
@@ -394,6 +518,7 @@ export class ScientificStateStore {
 		this.validateEvents(events);
 		validateSnapshot(snapshot, events);
 		if (!isObject(manifest) || manifest.schemaVersion !== 1 || manifest.snapshotSha256 !== digest(snapshot) || manifest.eventsSha256 !== digest(events) || manifest.eventCount !== events.length || manifest.headEventId !== events.at(-1)?.eventId) fail('SCIENTIFIC_MANIFEST_INVALID');
+		await this.readMaterializationIndex(root, snapshot, events);
 		const projection = deriveProjection(snapshot);
 		if (await this.exists(paths.entryIndex)) {
 			const info = await this.fs.lstat(paths.entryIndex);

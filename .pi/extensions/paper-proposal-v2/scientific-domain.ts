@@ -72,6 +72,7 @@ export type MaterializationState =
 	| 'COMMITTED'
 	| 'BLOCKED'
 	| 'RECOVERY_REQUIRED';
+export type MaterializationPlanKind = 'CREATE_R01' | 'CREATE_SUCCESSOR';
 export type ScientificActorKind =
 	| 'USER'
 	| 'SYSTEM'
@@ -150,6 +151,38 @@ export type ScientificDecision = {
 	acceptedBy: { kind: 'USER' };
 	state: ScientificDecisionStatus;
 	sourceEventIds: ScientificEventId[];
+};
+export type FrozenDecisionSelection = {
+	policyVersion: 1;
+	decisionIds: ScientificDecisionId[];
+	acceptedEventIds: ScientificEventId[];
+	selectionKey: string;
+};
+export type MaterializationReservedDecision = Pick<ScientificDecision, 'decisionId' | 'threadId' | 'acceptedEventId' | 'acceptedSynthesisDigest' | 'sourceEventIds'> & {
+	revisionEvidence?: RevisionEvidence;
+};
+export type MaterializationRecord = {
+	schemaVersion: 1;
+	materializationId: string;
+	state: MaterializationState;
+	frozenSelection: FrozenDecisionSelection;
+	selectedDecisions: MaterializationReservedDecision[];
+};
+export type MaterializationClaimProvenance = {
+	claimId: string;
+	decisionId: ScientificDecisionId;
+	threadId: ScientificThreadId;
+	acceptedEventId: ScientificEventId;
+	acceptedSynthesisDigest: string;
+	summary: string;
+};
+export type MaterializationPlan = {
+	planVersion: 1;
+	kind: MaterializationPlanKind;
+	materializationId: string;
+	frozenSelection: FrozenDecisionSelection;
+	source?: RevisionEvidence;
+	claims: MaterializationClaimProvenance[];
 };
 export type ThreadSynthesis = {
 	synthesisId: ThreadSynthesisId;

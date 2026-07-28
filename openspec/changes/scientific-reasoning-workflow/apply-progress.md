@@ -1275,3 +1275,87 @@ Runtime harness: N/A — PR8 remains an isolated scientific state/service slice;
 - [ ] T10.1 — Complete recovery and diagnostic outcomes
 - [ ] T10.2 — Run compatibility and full regression coverage
 ```
+
+
+
+## PR9 / T8.1–T8.2 — completed
+
+### Structured status and delivery context consumed
+
+```yaml
+schemaName: gentle-ai.sdd-status
+schemaVersion: 1
+changeName: scientific-reasoning-workflow
+artifactStore: openspec
+applyState: ready
+nextRecommended: apply
+actionContext:
+  mode: repo-local
+  workspaceRoot: /Users/diego/Desktop/Proyectos/papersmith-ai
+  allowedEditRoots: [/Users/diego/Desktop/Proyectos/papersmith-ai]
+delivery:
+  strategy: auto-chain
+  chainStrategy: stacked-to-main
+  boundary: PR9 / T8.1–T8.2 only
+strictTdd: false
+warnings: ["Native status supplied by the parent is authoritative.", "CodeGraph MCP was unavailable; known-path reads followed the failed request."]
+```
+
+### Completed tasks and persisted checkbox evidence
+
+- [x] T8.1 — Added durable frozen-decision selection and reservation through `ScientificStateStore.reserveMaterialization()`.
+  - Only explicit, sorted, unique decision IDs are admitted.
+  - The exact decision/acceptance-event set derives a stable project-scoped selection key.
+  - Under the scientific lock, exact retries return the original record; subset, superset, and partial-overlap claims return `MATERIALIZATION_SELECTION_CONFLICT` before any new reservation.
+  - A reservation writes a validated materialization record and index in the existing recoverable transition boundary and appends `MATERIALIZATION_RESERVED`. Rejected, retracted, unknown, duplicate, and unsorted selections cannot reserve claims.
+- [x] T8.2 — Added the non-writing `MaterializationPlanner`.
+  - It accepts only a `RESOLVING` frozen record backed by current immutable user acceptance events and accepted-unmaterialized decisions.
+  - It emits bounded `CREATE_R01` or `CREATE_SUCCESSOR` plans only, with one exact provenance claim per selected decision and acceptance event.
+  - It excludes unselected threads and blocks source mismatch, stale/ineligible decisions, unmapped claims, and invalid/exhausted budgets. It has no candidate execution, review, guard, publication, receipt, manifest, or document-write authority.
+
+The persisted `tasks.md` checkboxes were changed only after the focused PR9 test, V2 regressions, and final `git diff --check` passed. The task artifact was re-read after the update.
+
+### Files changed
+
+- `.pi/extensions/paper-proposal-v2/scientific-domain.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-state-store.ts`
+- `.pi/extensions/paper-proposal-v2/materialization-planner.ts` (new)
+- `.pi/extensions/paper-proposal-v2/types.ts`
+- `.pi/extensions/paper-proposal-v2/exports.ts`
+- `tests/paper-proposal-v2-scientific-materialization.test.mjs` (new)
+- `openspec/changes/scientific-reasoning-workflow/tasks.md`
+- `openspec/changes/scientific-reasoning-workflow/apply-progress.md`
+
+### Verification evidence
+
+```text
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-proposal-v2-scientific-materialization.test.mjs
+# PASS: 5 tests, 0 failures
+
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-proposal-v2-lifecycle.test.mjs tests/paper-proposal-v2-revision-lifecycle.test.mjs tests/paper-proposal-v2-source-routing.test.mjs tests/paper-proposal-v2-tutor-reviewer.test.mjs tests/paper-proposal-v2-production-role-metrics.test.mjs
+# PASS: 29 tests, 0 failures
+
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && git diff --check
+# PASS: no output
+```
+
+The first `git diff --check` identified one trailing whitespace character in the new store result union. It was removed mechanically; the final command above passed. Runtime harness: N/A — PR9 is a state/planning-only slice and does not wire the public route, candidate executor, document review, guards, or publication.
+
+### Deviations, risks, workload boundary, and rollback
+
+- **Design deviation:** none. The reservation is durable and exact-set scoped, while planning remains non-writing and cannot reach T9 publication seams.
+- **Decision:** the selection key binds canonical decision/acceptance-event pairs to the canonical project root. This gives exact retry identity without treating a client idempotency key as authority.
+- **Risk:** materialization record/index consistency is fail-closed. An interrupted reservation remains recoverable through the existing transaction marker rather than allowing another claim. Lifecycle of later record states, candidate execution, document review, guarded publication, `r01`/successor writes, and decision materialization are intentionally unimplemented.
+- **Workload / PR boundary:** `auto-chain`, `stacked-to-main`; PR9 is T8.1–T8.2 only. No T9/PR10 task started. The tracked source diff is 161 additions and 3 deletions before the new planner and focused test; the complete PR9 work unit remains within the chained review slice.
+- **Rollback boundary:** revert only the PR9 domain/store/planner/barrel/type/test changes plus these SDD artifacts. This removes no proposal, revision, document manifest/receipt, candidate execution, document review, guard call, or publication behavior.
+- **Conventional commit proposal (not created):** `feat(paper-proposal-v2): reserve frozen materialization plans`
+
+### Remaining tasks
+
+```text
+- [ ] T9.1 — Implement non-writing MaterializationCandidateExecutor
+- [ ] T9.2 — Add Document Reviewer gate and guarded initial publication adapter
+- [ ] T9.3 — Commit materialization only after verified publication
+- [ ] T10.1 — Complete recovery and diagnostic outcomes
+- [ ] T10.2 — Run compatibility and full regression coverage
+```

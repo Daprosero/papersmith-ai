@@ -209,7 +209,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 ## 8. Idempotent materialization
 
 ### T8.1 — Add frozen selection and materialization reservation
-- [ ] T8.1 — Add frozen selection and materialization reservation
+- [x] T8.1 — Add frozen selection and materialization reservation
 - **Files/discovery:** `materialization-planner.ts` (new), `scientific-state-store.ts`, `.paper-proposal-v2/scientific/materializations/`.
 - **Depends on:** T7.2.
 - **Implement:** accept only explicit sorted unique accepted decision IDs, derive stable exact-set selection keys, reserve claims under the scientific lock before mutable-head checks, and return exact retries or selection conflicts deterministically.
@@ -217,7 +217,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 - **Acceptance:** one accepted decision cannot be claimed by a second selection; retry never allocates a second materialization record or revision.
 
 ### T8.2 — Plan only frozen accepted candidates with provenance
-- [ ] T8.2 — Plan only frozen accepted candidates with provenance
+- [x] T8.2 — Plan only frozen accepted candidates with provenance
 - **Files/discovery:** `materialization-planner.ts`, `types.ts`.
 - **Depends on:** T8.1.
 - **Implement:** map every materialized scientific claim to exactly one selected immutable user acceptance event and produce bounded `CREATE_R01` or `CREATE_SUCCESSOR` plans; reject unsupported, unmapped, stale, or budget-exceeding plans.
