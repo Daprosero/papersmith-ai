@@ -127,7 +127,28 @@ test('incomplete derived-state or receipt evidence requires recovery after publi
 	const { store, record, service } = await fixture({ adapter, derivedStore });
 	const result = await service.materialize({ record });
 	assert.equal(result.status, 'recovery_required');
-	assert.equal((await store.reserveMaterialization(['decision-a'])).record.state, 'RECOVERY_REQUIRED');
+	const persisted = (await store.reserveMaterialization(['decision-a'])).record;
+	assert.equal(persisted.state, 'RECOVERY_REQUIRED');
+	assert.deepEqual(persisted.outcome, {
+		code: 'MATERIALIZATION_PUBLICATION_EVIDENCE_INCOMPLETE',
+		phaseReached: 'PUBLISHING',
+		evidence: ['derived_state:absent'],
+		lastValidTransition: 'MATERIALIZATION_DOCUMENT_REVIEWED',
+		allowedRecoveryAction: 'reconcile_materialization_evidence',
+	});
+	assert.equal((await store.read()).snapshot.decisions[0].state, 'ACCEPTED_UNMATERIALIZED');
+});
+
+test('recovery-transition persistence failure remains distinct and never claims recovery was recorded', async () => {
+	const adapter = { publishInitial: async ({ candidate }) => {
+		const publishedBytes = Buffer.concat([Buffer.from('<!-- proposal-workspace:artifact:v1 -->\n'), candidate.bytes]);
+		return { operationId: 'fake-publication', targetFilename: 'research-concept-r01.md', targetRevision: 'r01', publishedSha256: createHash('sha256').update(publishedBytes).digest('hex'), publishedBytes, candidateDigest: candidate.digest, workspaceEvidence: {}, guardEvidence: {} };
+	} };
+	const derivedStore = { commitDerivedState: async () => undefined, markDerivedState: async () => undefined, saveRevisionReceipt: async () => undefined, loadDerivedState: async () => undefined };
+	const { store, record, service } = await fixture({ adapter, derivedStore });
+	store.recordMaterializationOutcome = async () => ({ status: 'blocked', code: 'INJECTED_RECOVERY_TRANSITION_FAILURE' });
+	assert.deepEqual(await service.materialize({ record }), { status: 'recovery_required', code: 'MATERIALIZATION_RECOVERY_TRANSITION_FAILED' });
+	assert.equal((await store.reserveMaterialization(['decision-a'])).record.state, 'PUBLISHING');
 	assert.equal((await store.read()).snapshot.decisions[0].state, 'ACCEPTED_UNMATERIALIZED');
 });
 

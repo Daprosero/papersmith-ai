@@ -1664,3 +1664,235 @@ Verification passed:
 - `git diff --check`: passed.
 
 T10/PR12 remains out of scope. No review receipt or commit is claimed.
+
+## PR12 / T10.1–T10.2 — BLOCKED on first focused test failure
+
+### Structured status and action context consumed
+
+```yaml
+schemaName: gentle-ai.sdd-status
+schemaVersion: 1
+changeName: scientific-reasoning-workflow
+artifactStore: openspec
+applyState: ready
+nextRecommended: apply
+actionContext:
+  mode: repo-local
+  workspaceRoot: /Users/diego/Desktop/Proyectos/papersmith-ai
+  allowedEditRoots: [/Users/diego/Desktop/Proyectos/papersmith-ai]
+delivery:
+  strategy: auto-chain
+  chainStrategy: stacked-to-main
+  boundary: PR12 / T10.1–T10.2 only
+strictTdd: false
+warnings: ["CodeGraph MCP was unavailable; known-path reads followed the existing .codegraph index check."]
+```
+
+### Attempted T10.1 scope
+
+- Added bounded, read-only scientific recovery diagnostics for `BLOCKED` and `RECOVERY_REQUIRED` materialization records and fail-closed authoritative-state failures.
+- Added a validated retry transition that permits only a frozen `BLOCKED` pre-commit materialization with unchanged accepted decisions to return to `PREPARED`; `RECOVERY_REQUIRED` remains reconciliation-only.
+- Added numeric-only scientific recovery/entry/materialization counters and a focused recovery fixture covering blocked retry, recovery-required non-retry, corrupt authoritative state, and disabled-feature read-only diagnostics.
+- No feature-gate behavior, direct-document route, lifecycle route, document publication path, or proposal bytes were intentionally changed.
+
+### Blocker and exact focused result
+
+The required focused PR12 command was run before full regression or diff checks and stopped at its first failure:
+
+```text
+node --test tests/paper-proposal-v2-scientific-recovery.test.mjs tests/paper-proposal-v2-scientific-publication.test.mjs
+# FAIL: 8 passed, 1 failed
+# Failed: incomplete derived-state or receipt evidence requires recovery after publication and preserves decision eligibility
+# Location: tests/paper-proposal-v2-scientific-publication.test.mjs:121
+# Expected persisted materialization state: RECOVERY_REQUIRED
+# Actual persisted materialization state: PUBLISHING
+```
+
+The new focused recovery fixtures passed, but the pre-existing PR11 incomplete-evidence regression did not persist the expected recovery state after the T10 diagnostic-record changes. Per the assigned stop-at-first-failure rule, no corrective edit, full regression suite, or `git diff --check` was run.
+
+### Persisted task status
+
+T10.1 and T10.2 remain unchecked; the persisted tasks artifact was re-read after the failure:
+
+```text
+- [ ] T10.1 — Complete recovery and diagnostic outcomes
+- [ ] T10.2 — Run compatibility and full regression coverage
+```
+
+### Changed paths before stop
+
+- `.pi/extensions/paper-proposal-v2/runtime-metrics.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-domain.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-state-store.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-workflow-service.ts`
+- `tests/paper-proposal-v2-scientific-recovery.test.mjs` (new)
+- `openspec/changes/scientific-reasoning-workflow/apply-progress.md`
+
+### Deviation, risk, and delivery boundary
+
+- **Design deviation:** none accepted. The required recovery record transition is not yet proven compatible with the established incomplete-publication recovery contract.
+- **Risk:** do not mark T10 complete or create a PR while an ambiguous/publication-evidence path can leave the persisted materialization record at `PUBLISHING` rather than `RECOVERY_REQUIRED`.
+- **Workload / PR boundary:** `auto-chain`, `stacked-to-main`; PR12 is T10.1–T10.2 only. No additional scope began.
+- **Rollback boundary:** revert only the PR12 diagnostic/metric/retry source changes, the new focused recovery fixture, and this progress entry. No proposal, managed revision, manifest, receipt, or lifecycle inventory was changed by the attempted work.
+- **Conventional commit proposal:** none until the focused failure is resolved and all required regression evidence passes.
+
+## PR12 / T10.1–T10.2 — recovery-transition correction, validation BLOCKED
+
+### Structured status and action context consumed
+
+```yaml
+schemaName: gentle-ai.sdd-status
+schemaVersion: 1
+changeName: scientific-reasoning-workflow
+artifactStore: openspec
+applyState: ready
+nextRecommended: apply
+actionContext:
+  mode: repo-local
+  workspaceRoot: /Users/diego/Desktop/Proyectos/papersmith-ai
+  allowedEditRoots: [/Users/diego/Desktop/Proyectos/papersmith-ai]
+delivery:
+  strategy: auto-chain
+  chainStrategy: stacked-to-main
+  boundary: PR12 / T10.1–T10.2 only
+strictTdd: false
+warnings: []
+```
+
+### Correction made
+
+- Publication verification now records a fail-closed `RECOVERY_REQUIRED` transition whenever publication has begun and published bytes, derived state, receipt, or equivalent confirmation is absent or inconsistent.
+- The persisted bounded outcome preserves the materialization ID (on the record and diagnostic), `PUBLISHING` phase reached, evidence category, `MATERIALIZATION_DOCUMENT_REVIEWED` as the last valid transition, and `reconcile_materialization_evidence` as the only allowed recovery action.
+- The recovery transition never promotes indexes or decisions, marks no revision complete, and cannot be retried silently. If its persistence fails, the public result is the distinct `MATERIALIZATION_RECOVERY_TRANSITION_FAILED` code and the record remains `PUBLISHING`; it does not claim recovery was recorded.
+- Existing V2 publication error precedence remains unchanged for pre-publication failure (`BLOCKED`) and proven publication ambiguity (`RECOVERY_REQUIRED`).
+
+### Verification evidence
+
+```text
+node --test tests/paper-proposal-v2-scientific-publication.test.mjs
+# PASS: 7 tests, 0 failures
+
+node --test tests/paper-proposal-v2-scientific-recovery.test.mjs tests/paper-proposal-v2-scientific-publication.test.mjs
+# PASS: 10 tests, 0 failures
+
+node --test tests/*.test.mjs
+# FAIL: 254 passed, 12 failed
+# All failures are pre-existing fixture setup failures in tests/paper-proposal-v2-production-modify.test.mjs:
+# ENOENT /Users/diego/Desktop/Proyectos/papersmith-ai/proposals/research-concept-r02.md
+# Scientific recovery/publication tests passed in this complete run.
+
+git diff --check
+# PASS: no output
+```
+
+### Persisted task status
+
+T10.1 and T10.2 remain unchecked because the complete available regression suite did not pass:
+
+```text
+- [ ] T10.1 — Complete recovery and diagnostic outcomes
+- [ ] T10.2 — Run compatibility and full regression coverage
+```
+
+### Files changed in the PR12 work unit
+
+- `.pi/extensions/paper-proposal-v2/materialization-publication-service.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-domain.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-state-store.ts`
+- `tests/paper-proposal-v2-scientific-publication.test.mjs`
+- `tests/paper-proposal-v2-scientific-recovery.test.mjs`
+- Existing PR12 diagnostics/metrics/workflow paths retained from the preceding blocked attempt:
+  - `.pi/extensions/paper-proposal-v2/runtime-metrics.ts`
+  - `.pi/extensions/paper-proposal-v2/scientific-workflow-service.ts`
+
+### Deviations, risks, and boundary
+
+- **Design deviation:** none. The correction implements the design's required recovery outcome for incomplete publication evidence.
+- **Validation blocker:** the available full suite is blocked by the missing repository fixture `proposals/research-concept-r02.md`; no fixture, lifecycle behavior, or test was changed to suppress that pre-existing failure.
+- **Remaining risk:** T10 cannot be completed until the 12 production-modify fixture failures are resolved externally and the complete regression suite passes.
+- **Workload / PR boundary:** `auto-chain`, `stacked-to-main`; PR12 is T10.1–T10.2 only. No additional task or PR was started.
+- **Rollback boundary:** revert only the PR12 diagnostics/recovery source and focused test paths listed above. This removes no published proposal, revision, manifest, receipt, lifecycle inventory, or promotion.
+- **Conventional commit proposal (not created):** `fix(paper-proposal-v2): persist incomplete publication recovery`
+
+## PR12 / T10.1–T10.2 — completed after historical fixture-debt correction
+
+### Structured status consumed
+
+```yaml
+schemaName: gentle-ai.sdd-status
+schemaVersion: 1
+changeName: scientific-reasoning-workflow
+artifactStore: openspec
+applyState: ready
+nextRecommended: apply
+actionContext:
+  mode: repo-local
+  workspaceRoot: /Users/diego/Desktop/Proyectos/papersmith-ai
+  allowedEditRoots: [/Users/diego/Desktop/Proyectos/papersmith-ai]
+delivery:
+  strategy: auto-chain
+  chainStrategy: stacked-to-main
+  boundary: PR12 / T10.1–T10.2 only
+strictTdd: false
+warnings: []
+```
+
+### Completed tasks and persisted checkbox evidence
+
+- [x] T10.1 — Complete recovery and diagnostic outcomes
+- [x] T10.2 — Run compatibility and full regression coverage
+
+Both checkboxes were updated only after every required command passed and were re-read from `tasks.md`.
+
+### Historical test-debt correction
+
+The only resumption edit is `tests/paper-proposal-v2-production-modify.test.mjs`:
+
+- it now asserts that repository `proposals/research-concept-r02.md` is absent instead of reading it as a repository fixture;
+- it retains byte and SHA assertions for repository `research-concept-r01.md`;
+- temporary setup starts without `r02`, and the successful production-publication case reads and validates the tool-created temporary `r02` successor.
+
+No repository `r02` was restored or created. No production, lifecycle, publication, or recovery behavior changed in this resumption; the correction removes a historical fixture precondition from the test setup only.
+
+### Design evidence
+
+The completed recovery/publication coverage demonstrates the design failure matrix: incomplete or ambiguous publication evidence becomes bounded `RECOVERY_REQUIRED`, preserves `ACCEPTED_UNMATERIALIZED` eligibility, allows only reconciliation rather than retry, and never fabricates a revision, receipt, or materialization success. The rollback-focused diagnostic test also confirms scientific history is available read-only after feature disablement without exposing private input.
+
+### Verification evidence
+
+```text
+node --test tests/paper-proposal-v2-production-modify.test.mjs
+# PASS: 13 tests, 0 failures
+
+node --test tests/*.test.mjs
+# PASS: 266 tests, 0 failures
+
+git diff --check
+# PASS: no output
+
+node --test tests/paper-proposal-v2-scientific-recovery.test.mjs tests/paper-proposal-v2-scientific-publication.test.mjs
+# PASS: 10 tests, 0 failures
+```
+
+### Files changed in PR12
+
+- `.pi/extensions/paper-proposal-v2/materialization-publication-service.ts`
+- `.pi/extensions/paper-proposal-v2/runtime-metrics.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-domain.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-state-store.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-workflow-service.ts`
+- `tests/paper-proposal-v2-scientific-publication.test.mjs`
+- `tests/paper-proposal-v2-scientific-recovery.test.mjs`
+- `tests/paper-proposal-v2-production-modify.test.mjs` (historical fixture-debt correction)
+- `openspec/changes/scientific-reasoning-workflow/tasks.md`
+- `openspec/changes/scientific-reasoning-workflow/apply-progress.md`
+
+### Deviations, risks, and delivery boundary
+
+- **Design deviation:** none.
+- **Task deviation:** the authorized test-only fixture correction recognizes repository `r02` absence rather than fabricating it; temporary successor behavior remains exercised through the guarded production tool.
+- **Remaining implementation tasks:** none; all 26 implementation checkboxes are `[x]`.
+- **Remaining risk:** normal independent verification and bounded-review receipt work remain outside this apply phase. No commit or additional PR was created.
+- **Workload / PR boundary:** `auto-chain`, `stacked-to-main`; final PR12 is limited to T10.1–T10.2.
+- **Rollback boundary:** revert the PR12 recovery/diagnostic/publication changes and their focused tests, including the isolated production-modify fixture setup correction. This does not restore an artificial repository successor or alter a published proposal.
+- **Conventional commit proposal (not created):** `fix(paper-proposal-v2): preserve incomplete publication recovery`

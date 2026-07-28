@@ -51,15 +51,15 @@ async function assertMissing(filename) {
  await assert.rejects(readFile(filename), { code: 'ENOENT' });
 }
 
-async function assertRepositoryUnchanged(expectedBytes, expectedSuccessorBytes) {
+async function assertRepositoryUnchanged(expectedBytes) {
  assert.deepEqual(await readFile(repositorySourcePath), expectedBytes);
  assert.equal(sha256(await readFile(repositorySourcePath)), sha256(expectedBytes));
- assert.deepEqual(await readFile(repositorySuccessorPath), expectedSuccessorBytes);
+ await assertMissing(repositorySuccessorPath);
 }
 
 async function executeThroughProductionTool(responseFactory, options = {}) {
  const repositorySourceBefore = await readFile(repositorySourcePath);
- const repositorySuccessorBefore = await readFile(repositorySuccessorPath);
+ await assertMissing(repositorySuccessorPath);
  const root = await mkdtemp(path.join(tmpdir(), 'paper-proposal-v2-production-modify-'));
  await mkdir(path.join(root, '.pi'), { recursive: true });
  await mkdir(path.join(root, 'proposals'), { recursive: true });
@@ -68,6 +68,7 @@ async function executeThroughProductionTool(responseFactory, options = {}) {
   filter: (source) => !source.endsWith('.before-v2-barrel-fix'),
  });
  await copyFile(repositorySourcePath, path.join(root, 'proposals/research-concept-r01.md'));
+ await assertMissing(path.join(root, 'proposals/research-concept-r02.md'));
 
  const workspaceModule = await jiti.import(path.join(root, '.pi/extensions/proposal-workspace.ts'));
  const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
@@ -122,7 +123,6 @@ async function executeThroughProductionTool(responseFactory, options = {}) {
   sourcePath: path.join(root, 'proposals/research-concept-r01.md'),
   successorPath: path.join(root, 'proposals/research-concept-r02.md'),
   repositorySourceBefore,
-  repositorySuccessorBefore,
   sourceBefore: repositorySourceBefore,
   request,
   payloads,
@@ -196,7 +196,7 @@ test('production tool publishes the P0 replacement from a byte-identical tempora
  assert.equal(sha256(run.sourceBefore), receipt.documentShaBefore);
  assert.equal(sha256(after), receipt.documentShaAfter);
  assert.equal(sha256(after), result.targetSha256);
- await assertRepositoryUnchanged(run.repositorySourceBefore, run.repositorySuccessorBefore);
+ await assertRepositoryUnchanged(run.repositorySourceBefore);
 });
 
 test('production tool preserves one valid action when clarification is required and does not publish', async () => {
@@ -224,7 +224,7 @@ test('production tool preserves one valid action when clarification is required 
  assert.equal(run.metrics.totalMutations, 0);
  assert.deepEqual(await readFile(run.sourcePath), run.sourceBefore);
  await assertMissing(run.successorPath);
- await assertRepositoryUnchanged(run.repositorySourceBefore, run.repositorySuccessorBefore);
+ await assertRepositoryUnchanged(run.repositorySourceBefore);
 });
 
 test('MODIFY UTF-8 budget accounting is deterministic at and above the boundary', () => {
@@ -254,7 +254,7 @@ test('production tool budget-blocks exact MODIFY before planner, model, mutation
  assert.ok(run.result.budget.effectiveBytes > 1);
  assert.deepEqual(await readFile(run.sourcePath), run.sourceBefore);
  await assertMissing(run.successorPath);
- await assertRepositoryUnchanged(run.repositorySourceBefore, run.repositorySuccessorBefore);
+ await assertRepositoryUnchanged(run.repositorySourceBefore);
 });
 
 const invalidResponses = [
@@ -345,6 +345,6 @@ for (const invalid of invalidResponses) {
   assert.deepEqual(await readFile(run.sourcePath), run.sourceBefore);
   assert.equal(sha256(await readFile(run.sourcePath)), sha256(run.sourceBefore));
   await assertMissing(run.successorPath);
-  await assertRepositoryUnchanged(run.repositorySourceBefore, run.repositorySuccessorBefore);
+  await assertRepositoryUnchanged(run.repositorySourceBefore);
  });
 }

@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { link, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { withMutationLock } from './mutation-lock.js';
+import { recordScientificMetric } from './runtime-metrics.js';
 import { validateMaterializationPlan } from './materialization-planner.js';
 import type {
 	ScientificDecision,
@@ -12,9 +13,12 @@ import type {
 	ScientificThreadId,
 	ThreadRelation,
 	MaterializationRecord,
+	MaterializationOutcome,
 	MaterializationCommitEvidence,
 	DocumentReviewEvidence,
 	FrozenDecisionSelection,
+	ScientificRecoveryDiagnostic,
+	ScientificRecoveryDiagnostics,
 	ThreadTransitionIntent,
 } from './scientific-domain.js';
 
@@ -64,6 +68,7 @@ export type MaterializationReservationResult =
 export type MaterializationPlanPersistenceResult =
 	| { status: 'ready'; record: MaterializationRecord }
 	| { status: 'blocked'; code: string };
+export type MaterializationRetryResult = MaterializationPlanPersistenceResult;
 
 export type ScientificState = {
 	manifest: ScientificManifestRecord;
@@ -283,7 +288,15 @@ function validateMaterializationRecord(record: unknown, snapshot: ScientificSnap
 	const planValid = record.plan === undefined || validateMaterializationPlan(record.plan, record);
 	const reviewValid = record.review === undefined || validateDocumentReviewEvidence(record.review);
 	const commitValid = record.commit === undefined || validateMaterializationCommitEvidence(record.commit, record.selectedDecisions);
-	if (!selectedValid || !planValid || !reviewValid || !commitValid) return false;
+	const outcomeValid = record.outcome === undefined || (isObject(record.outcome)
+		&& typeof record.outcome.code === 'string' && /^[A-Z0-9_]{1,128}$/.test(record.outcome.code)
+		&& (record.outcome.phaseReached === undefined || ['RESOLVING', 'PREPARED', 'PLANNING', 'EXECUTING_CANDIDATE', 'REVIEWING_DOCUMENT', 'PUBLISHING', 'COMMITTED', 'BLOCKED', 'RECOVERY_REQUIRED'].includes(record.outcome.phaseReached as string))
+		&& (record.outcome.evidence === undefined || (Array.isArray(record.outcome.evidence) && record.outcome.evidence.length <= 8 && record.outcome.evidence.every((item) => typeof item === 'string' && /^[a-z_]+:(?:absent|inconsistent|unavailable)$/.test(item))))
+		&& (record.outcome.lastValidTransition === undefined || typeof record.outcome.lastValidTransition === 'string')
+		&& (record.outcome.allowedRecoveryAction === undefined || record.outcome.allowedRecoveryAction === 'retry_materialization' || record.outcome.allowedRecoveryAction === 'reconcile_materialization_evidence'));
+	if (!selectedValid || !planValid || !reviewValid || !commitValid || !outcomeValid) return false;
+	if ((record.state === 'BLOCKED' || record.state === 'RECOVERY_REQUIRED') && !record.outcome) return false;
+	if (record.outcome && record.state !== 'BLOCKED' && record.state !== 'RECOVERY_REQUIRED') return false;
 	if (record.state === 'PUBLISHING' && (!record.review || record.review.decision !== 'APPROVE')) return false;
 	if (record.state === 'COMMITTED' && (!record.review || record.review.decision !== 'APPROVE' || !record.commit || record.commit.planDigest !== record.plan?.digest || record.commit.candidateDigest !== record.review.candidateDigest)) return false;
 	return true;
@@ -371,14 +384,15 @@ export class ScientificStateStore {
 			if (!index.records[record.materializationId]) return { status: 'blocked', code: 'MATERIALIZATION_RESERVATION_MISSING' };
 			const persisted = await this.readMaterializationRecord(root, record.materializationId, current.snapshot, current.events);
 			if (persisted.state !== 'PREPARED' || !persisted.plan || persisted.plan.digest !== record.plan?.digest || persisted.frozenSelection.selectionKey !== record.frozenSelection.selectionKey || !validateDocumentReviewEvidence(review) || review.planDigest !== persisted.plan.digest) return { status: 'blocked', code: 'MATERIALIZATION_REVIEW_INPUT_INVALID' };
-			const nextRecord: MaterializationRecord = { ...persisted, state: review.decision === 'APPROVE' ? 'PUBLISHING' : 'BLOCKED', review: structuredClone(review) };
+			const nextRecord: MaterializationRecord = { ...persisted, state: review.decision === 'APPROVE' ? 'PUBLISHING' : 'BLOCKED', review: structuredClone(review), ...(review.decision === 'APPROVE' ? {} : { outcome: { code: `DOCUMENT_REVIEW_${review.decision}` } }) };
 			const event: ScientificEvent = { schemaVersion: 1, eventId: randomUUID(), sequence: current.events.length + 1, occurredAt: new Date().toISOString(), actor: { kind: 'DOCUMENT_REVIEWER' }, type: 'MATERIALIZATION_DOCUMENT_REVIEWED', causalEventIds: [...persisted.frozenSelection.acceptedEventIds], payload: { materializationId: persisted.materializationId, selectionKey: persisted.frozenSelection.selectionKey, status: nextRecord.state, candidateDigest: review.candidateDigest, planDigest: review.planDigest, decision: review.decision }, evidence: [], privacy: { contentClass: 'PUBLIC_SUMMARY_ONLY', redactionVersion: 1 } };
 			await this.commitTransitionLocked({ events: [event], snapshot: structuredClone(current.snapshot), materialization: { record: nextRecord, index: structuredClone(index) } });
+			if (review.decision !== 'APPROVE') recordScientificMetric('materialization_blocked');
 			return { status: 'ready', record: nextRecord };
 		});
 	}
 
-	async recordMaterializationOutcome(record: MaterializationRecord, state: Extract<MaterializationRecord['state'], 'BLOCKED' | 'RECOVERY_REQUIRED'>, code: string): Promise<MaterializationPlanPersistenceResult> {
+	async recordMaterializationOutcome(record: MaterializationRecord, state: Extract<MaterializationRecord['state'], 'BLOCKED' | 'RECOVERY_REQUIRED'>, outcome: string | MaterializationOutcome): Promise<MaterializationPlanPersistenceResult> {
 		return this.withLock(async () => {
 			const current = await this.readValidated(false);
 			if (!current) return { status: 'blocked', code: 'MATERIALIZATION_STATE_MISSING' };
@@ -386,10 +400,76 @@ export class ScientificStateStore {
 			const index = await this.readMaterializationIndex(root, current.snapshot, current.events);
 			if (!index.records[record.materializationId]) return { status: 'blocked', code: 'MATERIALIZATION_RESERVATION_MISSING' };
 			const persisted = await this.readMaterializationRecord(root, record.materializationId, current.snapshot, current.events);
-			if (persisted.state === 'COMMITTED' || persisted.frozenSelection.selectionKey !== record.frozenSelection.selectionKey) return { status: 'blocked', code: 'MATERIALIZATION_OUTCOME_INVALID' };
-			const nextRecord: MaterializationRecord = { ...persisted, state };
+			const code = typeof outcome === 'string' ? outcome : outcome.code;
+			if (persisted.state === 'COMMITTED' || persisted.frozenSelection.selectionKey !== record.frozenSelection.selectionKey || !/^[A-Z0-9_]{1,128}$/.test(code)) return { status: 'blocked', code: 'MATERIALIZATION_OUTCOME_INVALID' };
+			const lastValidTransition = persisted.state === 'PUBLISHING' ? 'MATERIALIZATION_DOCUMENT_REVIEWED' : 'MATERIALIZATION_PLANNED';
+			const normalizedOutcome: MaterializationOutcome = {
+				code,
+				phaseReached: typeof outcome === 'string' ? persisted.state : outcome.phaseReached ?? persisted.state,
+				evidence: typeof outcome === 'string' ? [] : outcome.evidence ?? [],
+				lastValidTransition: typeof outcome === 'string' ? lastValidTransition : outcome.lastValidTransition ?? lastValidTransition,
+				allowedRecoveryAction: state === 'RECOVERY_REQUIRED' ? 'reconcile_materialization_evidence' : 'retry_materialization',
+			};
+			const nextRecord: MaterializationRecord = { ...persisted, state, outcome: normalizedOutcome };
 			const event: ScientificEvent = { schemaVersion: 1, eventId: randomUUID(), sequence: current.events.length + 1, occurredAt: new Date().toISOString(), actor: { kind: 'SYSTEM' }, type: 'MATERIALIZATION_BLOCKED', causalEventIds: [...persisted.frozenSelection.acceptedEventIds], payload: { materializationId: persisted.materializationId, selectionKey: persisted.frozenSelection.selectionKey, status: state, code }, evidence: [], privacy: { contentClass: 'PUBLIC_SUMMARY_ONLY', redactionVersion: 1 } };
 			await this.commitTransitionLocked({ events: [event], snapshot: structuredClone(current.snapshot), materialization: { record: nextRecord, index: structuredClone(index) } });
+			recordScientificMetric(state === 'BLOCKED' ? 'materialization_blocked' : 'materialization_recovery_required');
+			return { status: 'ready', record: nextRecord };
+		});
+	}
+
+	/** Returns bounded diagnostics only; this path never repairs, rewrites, or enables scientific entry. */
+	async recoveryDiagnostics(): Promise<ScientificRecoveryDiagnostics> {
+		try {
+			const result = await this.withLock(async () => {
+				const current = await this.readValidated(false);
+				if (!current) return { status: 'ready' as const, diagnostics: [] };
+				const root = await this.safeProjectRoot();
+				const index = await this.readMaterializationIndex(root, current.snapshot, current.events);
+				const diagnostics: ScientificRecoveryDiagnostic[] = [];
+				for (const materializationId of Object.keys(index.records).sort()) {
+					const record = await this.readMaterializationRecord(root, materializationId, current.snapshot, current.events);
+					if (record.state !== 'BLOCKED' && record.state !== 'RECOVERY_REQUIRED') continue;
+					diagnostics.push({
+						scope: 'MATERIALIZATION',
+						state: record.state,
+						code: record.outcome!.code,
+						phaseReached: record.outcome!.phaseReached ?? record.state,
+						evidence: record.outcome!.evidence ?? [],
+						lastValidTransition: record.outcome!.lastValidTransition ?? (record.state === 'RECOVERY_REQUIRED' ? 'MATERIALIZATION_DOCUMENT_REVIEWED' : 'MATERIALIZATION_PLANNED'),
+						nextAction: record.outcome!.allowedRecoveryAction ?? (record.state === 'BLOCKED' ? 'retry_materialization' : 'reconcile_materialization_evidence'),
+						materializationId: record.materializationId,
+					});
+				}
+				return { status: diagnostics.some((diagnostic) => diagnostic.state === 'RECOVERY_REQUIRED') ? 'recovery_required' as const : 'ready' as const, diagnostics };
+			});
+			recordScientificMetric('recovery_diagnostic');
+			return result;
+		} catch (error) {
+			recordScientificMetric('recovery_diagnostic');
+			return { status: 'recovery_required', diagnostics: [{ scope: 'SCIENTIFIC_STATE', state: 'RECOVERY_REQUIRED', code: errorCode(error).replace(/[^A-Z0-9_]/g, '_').slice(0, 128) || 'SCIENTIFIC_AUTHORITATIVE_STATE_INVALID', nextAction: 'reconcile_scientific_state' }] };
+		}
+	}
+
+	/** Resets only a validated pre-commit BLOCKED record to its frozen prepared state. */
+	async retryMaterialization(record: MaterializationRecord): Promise<MaterializationRetryResult> {
+		return this.withLock(async () => {
+			const current = await this.readValidated(false);
+			if (!current) return { status: 'blocked', code: 'MATERIALIZATION_STATE_MISSING' };
+			const root = await this.safeProjectRoot();
+			const index = await this.readMaterializationIndex(root, current.snapshot, current.events);
+			if (!index.records[record.materializationId]) return { status: 'blocked', code: 'MATERIALIZATION_RESERVATION_MISSING' };
+			const persisted = await this.readMaterializationRecord(root, record.materializationId, current.snapshot, current.events);
+			const decisions = new Map(current.snapshot.decisions.map((decision) => [decision.decisionId, decision]));
+			if (persisted.state !== 'BLOCKED' || !persisted.plan || persisted.frozenSelection.selectionKey !== record.frozenSelection.selectionKey || persisted.selectedDecisions.some((selected) => {
+				const decision = decisions.get(selected.decisionId);
+				return !decision || decision.state !== 'ACCEPTED_UNMATERIALIZED' || decision.acceptedEventId !== selected.acceptedEventId;
+			})) return { status: 'blocked', code: 'MATERIALIZATION_RETRY_NOT_ALLOWED' };
+			const { review: _review, outcome: _outcome, ...frozen } = persisted;
+			const nextRecord: MaterializationRecord = { ...frozen, state: 'PREPARED' };
+			const event: ScientificEvent = { schemaVersion: 1, eventId: randomUUID(), sequence: current.events.length + 1, occurredAt: new Date().toISOString(), actor: { kind: 'USER' }, type: 'MATERIALIZATION_RETRIED', causalEventIds: [...persisted.frozenSelection.acceptedEventIds], payload: { materializationId: persisted.materializationId, selectionKey: persisted.frozenSelection.selectionKey, status: 'PREPARED', code: persisted.outcome!.code }, evidence: [], privacy: { contentClass: 'PUBLIC_SUMMARY_ONLY', redactionVersion: 1 } };
+			await this.commitTransitionLocked({ events: [event], snapshot: structuredClone(current.snapshot), materialization: { record: nextRecord, index: structuredClone(index) } });
+			recordScientificMetric('materialization_retry');
 			return { status: 'ready', record: nextRecord };
 		});
 	}

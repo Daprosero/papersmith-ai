@@ -63,6 +63,7 @@ export type ScientificEventType =
 	| 'MATERIALIZATION_RESERVED'
 	| 'MATERIALIZATION_PLANNED'
 	| 'MATERIALIZATION_DOCUMENT_REVIEWED'
+	| 'MATERIALIZATION_RETRIED'
 	| 'MATERIALIZATION_BLOCKED'
 	| 'MATERIALIZATION_COMMITTED';
 export type ThreadRelationKind = 'RELATED' | 'SUPPORTS' | 'CHALLENGES' | 'DEPENDS_ON';
@@ -180,6 +181,14 @@ export type MaterializationCommitEvidence = {
 	receiptSha256: string;
 	threadIds: ScientificThreadId[];
 };
+/** Bounded failure evidence only; it never stores exception text, prompts, or model output. */
+export type MaterializationOutcome = {
+	code: string;
+	phaseReached?: MaterializationState;
+	evidence?: string[];
+	lastValidTransition?: ScientificEventType;
+	allowedRecoveryAction?: 'retry_materialization' | 'reconcile_materialization_evidence';
+};
 export type MaterializationRecord = {
 	schemaVersion: 1;
 	materializationId: string;
@@ -190,6 +199,7 @@ export type MaterializationRecord = {
 	plan?: MaterializationPlan;
 	review?: DocumentReviewEvidence;
 	commit?: MaterializationCommitEvidence;
+	outcome?: MaterializationOutcome;
 };
 export type MaterializationClaimProvenance = {
 	claimId: string;
@@ -348,6 +358,21 @@ export type MaterializationCandidateSummary = {
 export type ScientificMetricsDelta = {
 	routeStage: ScientificWorkflowOperation;
 	bypassedStages: Array<'LIFECYCLE' | 'DIRECT_DOCUMENT' | 'DELIBERATE'>;
+};
+/** Read-only, allowlisted recovery projection available even when scientific entry is disabled. */
+export type ScientificRecoveryDiagnostic = {
+	scope: 'SCIENTIFIC_STATE' | 'MATERIALIZATION';
+	state: 'BLOCKED' | 'RECOVERY_REQUIRED';
+	code: string;
+	phaseReached?: MaterializationState;
+	evidence?: string[];
+	lastValidTransition?: ScientificEventType;
+	nextAction: 'retry_materialization' | 'reconcile_materialization_evidence' | 'reconcile_scientific_state';
+	materializationId?: string;
+};
+export type ScientificRecoveryDiagnostics = {
+	status: 'ready' | 'recovery_required';
+	diagnostics: ScientificRecoveryDiagnostic[];
 };
 export type ScientificWorkflowPublicResult = {
 	status: ScientificWorkflowPublicStatus;

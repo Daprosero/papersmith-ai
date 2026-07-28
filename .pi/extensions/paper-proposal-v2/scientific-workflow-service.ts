@@ -4,6 +4,7 @@ import { validateReviewerAssessment } from './reviewer-adapter.js';
 import { ScientificContextBuilder, type ScientificContextBuilderInput } from './scientific-context-builder.js';
 import { createProductionReviewerAdapter } from './production-reviewer-adapter.js';
 import { ProductionModelRuntime } from './production-runtime.js';
+import { recordScientificMetric } from './runtime-metrics.js';
 import { createProductionTutorAdapter } from './production-tutor-adapter.js';
 import type { ScientificSnapshotRecord } from './scientific-state-store.js';
 import { ScientificStateStore } from './scientific-state-store.js';
@@ -20,6 +21,8 @@ import type {
 	ScientificSynthesisCandidate,
 	ScientificThread,
 	ScientificWorkflowPublicResult,
+	ScientificRecoveryDiagnostics,
+	MaterializationRecord,
 	StructuredConceptualFinding,
 	ThreadSynthesis,
 } from './scientific-domain.js';
@@ -160,7 +163,17 @@ export class ScientificWorkflowService {
 		}
 	}
 
+	async recoveryDiagnostics(): Promise<ScientificRecoveryDiagnostics> {
+		return this.dependencies.store.recoveryDiagnostics();
+	}
+
+	async retryMaterialization(record: MaterializationRecord) {
+		return this.dependencies.store.retryMaterialization(record);
+	}
+
 	projectReentry(entry: ProjectEntry): ScientificWorkflowPublicResult {
+		recordScientificMetric('entry');
+		if (entry.recovery.required) recordScientificMetric('recovery_required');
 		const candidates = entry.pendingCandidates ?? entry.pendingCandidateIds.map((decisionId) => ({ decisionId, threadId: entry.activeThreadId ?? 'unknown', state: 'ACCEPTED_UNMATERIALIZED' as const, eligibility: 'eligible' as const, blockers: [] }));
 		return {
 			status: entry.recovery.required ? 'recovery_required' : 'ready',

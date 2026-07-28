@@ -254,7 +254,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 ## 10. Recovery, audit, and regression tests
 
 ### T10.1 — Complete recovery and diagnostic outcomes
-- [ ] T10.1 — Complete recovery and diagnostic outcomes
+- [x] T10.1 — Complete recovery and diagnostic outcomes
 - **Files/discovery:** `scientific-audit.ts`, `scientific-state-store.ts`, `scientific-workflow-service.ts`, existing recovery markers/audit paths.
 - **Depends on:** T4.4 and T9.3.
 - **Implement:** expose `BLOCKED`/`RECOVERY_REQUIRED` diagnostics, validated restart/retry actions, scientific metrics, and read-only diagnostic behavior after feature rollback.
@@ -262,7 +262,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 - **Acceptance:** recovery is fail-closed, auditable, privacy-safe, and never fabricates scientific or document state; rollback preserves history and published documents.
 
 ### T10.2 — Run compatibility and full regression coverage
-- [ ] T10.2 — Run compatibility and full regression coverage
+- [x] T10.2 — Run compatibility and full regression coverage
 - **Files/discovery:** `tests/paper-proposal-v2-scientific-*.test.mjs`, existing V2 suites, `.pi/extensions/paper-proposal-v2/` exports and integration seams.
 - **Depends on:** T10.1.
 - **Implement:** add focused regression assertions for direct-document operations, `DELIBERATE`, lifecycle withdrawal/restore, manifests, receipts, audits, locks, recovery, feature default-off behavior, and privacy boundaries. Use repository-native Node/Jiti fixtures and record manual verification because no test runner is configured.
