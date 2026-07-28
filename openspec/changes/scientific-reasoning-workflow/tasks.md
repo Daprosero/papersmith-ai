@@ -77,7 +77,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 ## 2. ProjectEntryResolver
 
 ### T2.1 — Define conservative project-entry evidence and states
-- [ ] T2.1 — Define conservative project-entry evidence and states
+- [x] T2.1 — Define conservative project-entry evidence and states
 - **Files/discovery:** `.pi/extensions/paper-proposal-v2/project-entry-resolver.ts` (new), `.pi/extensions/paper-proposal-v2/types.ts`, current revision inventory/derived-state readers.
 - **Depends on:** T1.3.
 - **Implement:** resolve `EMPTY_PROJECT`, `SCIENTIFIC_ONLY`, `ACTIVE_PROPOSAL`, `ACTIVE_SCIENTIFIC_PROJECT`, `MATERIALIZATION_PENDING`, `WITHDRAWN_ONLY`, `INCONSISTENT_PROJECT`, and `MULTIPLE_ACTIVE_REVISIONS` from validated evidence before mutation. Do not infer or repair authoritative state.
@@ -85,7 +85,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 - **Acceptance:** entry resolution is read-only, auditable, deterministic, and never creates `r01`, selects an ambiguous revision, or silently repairs state.
 
 ### T2.2 — Validate scientific evidence and conservative bootstrap
-- [ ] T2.2 — Validate scientific evidence and conservative bootstrap
+- [x] T2.2 — Validate scientific evidence and conservative bootstrap
 - **Files/discovery:** `project-entry-resolver.ts`, existing proposal manifest/receipt/audit readers, `.paper-proposal-v2/scientific/` discovery target.
 - **Depends on:** T2.1.
 - **Implement:** consume a read-only scientific-state evidence port, validate schema/digests, event continuity, graph references, stale revision evidence, orphaned records, and transaction markers; support explicit bootstrap from exactly one verified active proposal as observations plus unknown-history markers only. The durable port implementation is wired in Slice 4.

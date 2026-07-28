@@ -98,6 +98,23 @@ export type RevisionEvidence = {
 export type EvidenceReference = { kind: string; id: string; sha256?: string };
 export type PublicBlocker = { code: string; message: string; nextAction?: string };
 export type ScientificPrivacy = { contentClass: 'PUBLIC_SUMMARY_ONLY'; redactionVersion: 1 };
+export type ProjectEntryRecovery = { required: boolean; code?: string; action?: string };
+export type ProjectEntryBootstrap = {
+	status: 'available';
+	source: RevisionEvidence;
+	observations: EvidenceReference[];
+	unknownHistory: true;
+};
+export type ProjectEntry = {
+	state: ProjectEntryState;
+	activeRevision?: RevisionEvidence;
+	activeThreadId?: ScientificThreadId;
+	relatedThreadIds: ScientificThreadId[];
+	pendingCandidateIds: ScientificDecisionId[];
+	recovery: ProjectEntryRecovery;
+	auditEvidence: string[];
+	bootstrap?: ProjectEntryBootstrap;
+};
 export type ScientificActor = { kind: ScientificActorKind };
 
 export type ThreadRelation = {
