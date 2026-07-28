@@ -271,8 +271,8 @@ After a reviewed `PASS`, `Thread Synthesis` records a bounded candidate synthesi
 |---|---|---|---|
 | Tutor | `ScientificRoleContext`, synthesis seed or structured critique | bounded advisory synthesis/repair | scientific acceptance, document plan, edit, publish |
 | Conceptual Reviewer | bounded context and exact Tutor candidate | pass/finding/repair-required assessment | repair acceptance, document review, write, publish |
-| Materialization Planner | frozen accepted decisions only | bounded document materialization plan | new scientific claim, decision acceptance, publish |
-| MaterializationCandidateExecutor | exact plan and frozen source | ephemeral exact candidate and validation inputs | filesystem write, guard call, receipt/manifest write, publish |
+| MaterializationPlanner | frozen accepted decisions, source evidence, provenance, canonical metadata | validated, versioned, persisted executable `MaterializationPlan` | new scientific claim, decision acceptance, publish, delegation of operation/payload selection |
+| CandidateExecutor (`MaterializationCandidateExecutor`) | reserved frozen plan and frozen source | unpublished exact candidate and validation inputs | drafting, summarization, reinterpretation, change selection, agents/context, filesystem write, guard call, receipt/manifest write, V2-index mutation, publish |
 | Document Reviewer | exact validated candidate, plan, provenance map | `APPROVE` or non-pass assessment | change plan, scientific acceptance, mutation authorization |
 | V2 publication adapter | approved exact candidate/payload | verified V2 publication result | scientific acceptance, materialization identity allocation |
 
@@ -377,14 +377,14 @@ type MaterializationRecordState =
 
 The exact-set `selectionKey` is looked up before eligibility or mutable-head checks. Under the scientific lock, a new set atomically creates a `RESOLVING` record and one decision claim per selected decision. Exact retry returns/resumes the same record; subset, superset, or partial selection overlap returns `MATERIALIZATION_SELECTION_CONFLICT`. Client idempotency keys are secondary aliases only. A retry never allocates a new record, changes the frozen source, or consumes an already-claimed decision into a new selection.
 
-### Planner, Executor, reviewer, and publication handoff
+### Planner, executable payload authority, and publication handoff
 
 The materialization sequence is mandatory for both `CREATE_R01` and `CREATE_SUCCESSOR`:
 
 ```text
 frozen accepted selection
-  -> Materialization Planner
-  -> MaterializationCandidateExecutor (non-writing)
+  -> MaterializationPlanner selects operation and freezes executable payload
+  -> CandidateExecutor / MaterializationCandidateExecutor (non-writing)
   -> deterministic compiler/validator seams
   -> existing V2 Document Reviewer
   -> guarded V2 publication adapter
@@ -392,9 +392,40 @@ frozen accepted selection
   -> MATERIALIZATION_COMMITTED / decisions MATERIALIZED
 ```
 
-`MaterializationPlanner` receives only frozen accepted decision content, exact source evidence, and selected thread provenance. It produces either a bounded successor patch plan or initial Markdown plan. It must map every scientific claim to exactly one selected immutable user acceptance event. Planner failure, unsupported/unmapped claim, source mismatch, budget exhaustion, or invalid plan moves the materialization record to recoverable `BLOCKED`; every selected decision remains `ACCEPTED_UNMATERIALIZED`.
+`MaterializationPlanner` is the **sole authorized component** that selects `CREATE_R01` or `CREATE_SUCCESSOR`, invokes the matching pure deterministic producer, validates that producer output, and atomically persists the frozen executable `MaterializationPlan` on the reserved materialization record. Operation selection derives only from the validated frozen selection, entry state, and exact source evidence; it is never caller-selected. The Planner receives only frozen accepted decision content, exact source evidence, selected thread provenance, and canonical metadata. It maps every scientific claim to exactly one selected immutable user acceptance event. No other component may draft, summarize, reinterpret, select changes, or replace the persisted payload.
 
-`MaterializationCandidateExecutor` is a named, non-writing component. It is deliberately distinct from `ProposalWorkspaceAdapter`.
+```ts
+type MaterializationPlan = {
+  schemaVersion: 1;
+  materializationId: string;
+  selectionKey: string;
+  operation: 'CREATE_R01' | 'CREATE_SUCCESSOR';
+  source?: VerifiedDocumentState;
+  expectedRevisionIdentity?: RevisionEvidence;
+  payload: CreateR01PayloadV1 | CreateSuccessorPayloadV1;
+  claimProvenance: ClaimProvenanceMap;
+  digest: string;
+};
+
+type CreateR01PayloadV1 = {
+  kind: 'CREATE_R01';
+  markdown: string;
+  canonicalMetadata: CanonicalProposalMetadata;
+};
+
+type CreateSuccessorPayloadV1 = {
+  kind: 'CREATE_SUCCESSOR';
+  patches: readonly FrozenEditPlan[]; // canonical ordered execution order
+};
+```
+
+`InitialRevisionRenderer` is the `CREATE_R01` producer. It is pure and deterministic: its complete Markdown output derives only from frozen accepted syntheses/decisions and canonical metadata embedded in the Planner input. It receives no agent, additional context, mutable external state, workspace access, or clock/randomness input.
+
+`SuccessorEditPlanner` is the `CREATE_SUCCESSOR` producer. It is pure and deterministic: from only the frozen base document, expected revision identity, and accepted decisions, it produces a canonical ordered `FrozenEditPlan[]`. Every patch carries stale-revision, wrong-base-identity, and exact-content preconditions, so the exact payload cannot apply to an unintended or changed source.
+
+Payload compatibility is versioned and fail-closed. The Planner validates `schemaVersion`, operation/payload discriminant agreement, canonical ordering, digest, source/revision bindings, provenance completeness, size/budget limits, and all producer preconditions before persisting the plan. Unsupported versions, malformed payloads, mismatched operation/payload pairs, or invalid producer output are `BLOCKED`; every selected decision remains `ACCEPTED_UNMATERIALIZED`. A new payload version requires an explicitly supported producer, validator, and executor compatibility path; it never silently coerces or upgrades a frozen payload.
+
+`CandidateExecutor` is implemented by the named `MaterializationCandidateExecutor` and is deliberately distinct from `ProposalWorkspaceAdapter`.
 
 ```ts
 interface MaterializationCandidateExecutor {
@@ -410,11 +441,11 @@ interface MaterializationCandidateExecutor {
 }
 ```
 
-For successors it calls the existing `compilePatches` and `validateCandidate` seams against the frozen source in memory. For `r01`, it renders initial Markdown in memory and runs the existing initial-document structural/compiler/validator seam without writing it. It creates an ephemeral exact candidate digest and claim-provenance map. It has no workspace handle, mutation guard, file-write API, receipt/manifest API, or publication authority. Candidate execution failure sets the record `BLOCKED` and preserves accepted decisions as `ACCEPTED_UNMATERIALIZED`.
+CandidateExecutor only loads and validates the frozen plan's supported schema version, reservation, source/revision identity, and payload preconditions, then executes the exact payload and returns an unpublished candidate. For successors it applies only the frozen ordered patches through the existing `compilePatches` and `validateCandidate` seams against the frozen source in memory. For `r01`, it validates and uses only the frozen complete Markdown through the existing initial-document structural/compiler/validator seam in memory. It creates an ephemeral exact candidate digest and uses the frozen claim-provenance map. It never drafts, summarizes, reinterprets, selects changes, calls agents or context builders, publishes, writes files, invokes guards, writes receipts/manifests, or modifies V2 indexes. Candidate execution failure sets the record `BLOCKED` and preserves accepted decisions as `ACCEPTED_UNMATERIALIZED`.
 
-The Document Reviewer receives the exact candidate digest, plan digest, source/candidate validation result, and claim-provenance map. `APPROVE` is its sole pass result. `APPROVE_WITH_CHANGES`, `BLOCK`, and `NEEDS_CLARIFICATION` set the record `BLOCKED`, retain the reviewer evidence, and keep all decisions `ACCEPTED_UNMATERIALIZED`; a changed plan/source/candidate invalidates prior approval and needs a fresh explicit retry and review. No guard preflight, authorization, workspace mutation, document manifest/receipt write, or `proposals/` write occurs before that exact approval.
+The existing Document Reviewer remains mandatory downstream of CandidateExecutor and receives the exact candidate digest, plan digest, source/candidate validation result, and claim-provenance map. `APPROVE` is its sole pass result. `APPROVE_WITH_CHANGES`, `BLOCK`, and `NEEDS_CLARIFICATION` set the record `BLOCKED`, retain the reviewer evidence, and keep all decisions `ACCEPTED_UNMATERIALIZED`; a changed plan/source/candidate invalidates prior approval and needs a fresh explicit retry and review. Any payload, schema-version, reservation, source/revision identity, or base-content precondition inconsistency fails closed before review or publication. No guard preflight, authorization, workspace mutation, document manifest/receipt write, or `proposals/` write occurs before that exact approval.
 
-Only after approval may the existing guarded V2 publication adapter invoke `publishInitial` or `publishSuccessor`. The adapter is a **publication adapter**, not the MaterializationCandidateExecutor. It rereads and verifies document bytes/hash, commits derived state, and writes the appropriate receipt. Publication failure before proven commit is `BLOCKED`; ambiguous or partially evidenced publication is `RECOVERY_REQUIRED`. In either case, the selected decisions remain `ACCEPTED_UNMATERIALIZED`. The only transition to `MATERIALIZED` occurs after the adapter result, derived state, and receipt all verify against the frozen record and exact candidate evidence.
+Only after approval may the existing guarded V2 publication adapter invoke `publishInitial` or `publishSuccessor`; the publication guard remains mandatory downstream of Document Reviewer. The adapter is a **publication adapter**, not the MaterializationCandidateExecutor. It rereads and verifies document bytes/hash, commits derived state, and writes the appropriate receipt. Publication failure before proven commit is `BLOCKED`; ambiguous or partially evidenced publication is `RECOVERY_REQUIRED`. In either case, the selected decisions remain `ACCEPTED_UNMATERIALIZED`. The only transition to `MATERIALIZED` occurs after the adapter result, derived state, and receipt all verify against the frozen record and exact candidate evidence.
 
 ### Initial and successor publication
 
@@ -480,7 +511,7 @@ Use temporary-root Node/Jiti fixtures; this design phase runs no tests.
 4. **Modify/reopen:** `MODIFY_SYNTHESIS` retains synthesis/decision history, appends reopen event, requires renewed Tutor/Reviewer work, and never changes a proposal.
 5. **Isolation/privacy:** all non-materialization acts leave proposal, manifest, receipt, and managed revision bytes unchanged; reject raw prompts/traces/unbounded role content.
 6. **Persistence/replay:** fault inject every atomic transition; replay validated events to snapshot; corrupt, duplicate, gapped, dangling, and invalid-claim records fail closed.
-7. **Materialization for r01 and successor:** explicit frozen selection, exact-set idempotency before head validation, overlap conflict, Planner → non-writing Candidate Executor → deterministic validation → Document Reviewer → adapter order, and no writes before review approval.
+7. **Materialization for r01 and successor:** explicit frozen selection, exact-set idempotency before head validation, overlap conflict, sole Planner authority for operation selection and versioned frozen payload persistence, pure deterministic initial/successor producers, CandidateExecutor schema/reservation/base-precondition rejection with no drafting or V2-index mutation, Planner → non-writing Candidate Executor → deterministic validation → Document Reviewer → adapter order, and no writes before review approval.
 8. **Failure matrix:** planner failure, candidate-execution/validation failure, document-review block, pre-commit publication failure, ambiguous publication, and incomplete derived/receipt each retain `ACCEPTED_UNMATERIALIZED`; only verified success marks `MATERIALIZED`.
 9. **Compatibility:** current lifecycle, direct operations, `DELIBERATE`, manifests, receipts, guard, audit, self-audit, locks, and recovery suites remain green. Lifecycle fixtures prove no scientific inventory access.
 

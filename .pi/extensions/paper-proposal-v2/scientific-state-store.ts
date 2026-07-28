@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { link, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { withMutationLock } from './mutation-lock.js';
+import { validateMaterializationPlan } from './materialization-planner.js';
 import type {
 	ScientificDecision,
 	ScientificEvent,
@@ -57,6 +58,9 @@ export type MaterializationReservationResult =
 	| { status: 'reserved'; record: MaterializationRecord }
 	| { status: 'existing'; record: MaterializationRecord }
 	| { status: 'conflict'; code: 'MATERIALIZATION_SELECTION_CONFLICT'; materializationId: string }
+	| { status: 'blocked'; code: string };
+export type MaterializationPlanPersistenceResult =
+	| { status: 'ready'; record: MaterializationRecord }
 	| { status: 'blocked'; code: string };
 
 export type ScientificState = {
@@ -249,7 +253,7 @@ function validateMaterializationRecord(record: unknown, snapshot: ScientificSnap
 	const threads = new Map(snapshot.threads.map((thread) => [thread.threadId, thread]));
 	const decisions = new Map(snapshot.decisions.map((decision) => [decision.decisionId, decision]));
 	const eventIds = new Set(events.map((event) => event.eventId));
-	return record.selectedDecisions.every((selected, index) => {
+	const selectedValid = record.selectedDecisions.every((selected, index) => {
 		if (!isObject(selected) || selected.decisionId !== record.frozenSelection.decisionIds[index] || selected.acceptedEventId !== record.frozenSelection.acceptedEventIds[index] || typeof selected.threadId !== 'string' || typeof selected.acceptedSynthesisDigest !== 'string' || !SHA256.test(selected.acceptedSynthesisDigest) || !Array.isArray(selected.sourceEventIds)) return false;
 		const decision = decisions.get(selected.decisionId);
 		const thread = threads.get(selected.threadId);
@@ -257,6 +261,7 @@ function validateMaterializationRecord(record: unknown, snapshot: ScientificSnap
 		if (selected.revisionEvidence !== undefined && (!isObject(selected.revisionEvidence) || digest(selected.revisionEvidence) !== digest(thread.revisionEvidence))) return false;
 		return true;
 	});
+	return selectedValid && (record.plan === undefined || validateMaterializationPlan(record.plan, record));
 }
 
 function emptyMaterializationIndex(): MaterializationIndexRecord {
@@ -310,6 +315,25 @@ export class ScientificStateStore {
 			const event: ScientificEvent = { schemaVersion: 1, eventId: randomUUID(), sequence: current.events.length + 1, occurredAt: new Date().toISOString(), actor: { kind: 'SYSTEM' }, type: 'MATERIALIZATION_RESERVED', causalEventIds: [...frozenSelection.acceptedEventIds], payload: { materializationId, selectionKey: frozenSelection.selectionKey, candidateIds: [...candidateIds], acceptedEventIds: [...frozenSelection.acceptedEventIds], status: 'RESOLVING' }, evidence: [], privacy: { contentClass: 'PUBLIC_SUMMARY_ONLY', redactionVersion: 1 } };
 			await this.commitTransitionLocked({ events: [event], snapshot: structuredClone(current.snapshot), materialization: { record, index: nextIndex } });
 			return { status: 'reserved', record };
+		});
+	}
+
+	async persistMaterializationPlan(record: MaterializationRecord, plan: import('./scientific-domain.js').MaterializationPlan): Promise<MaterializationPlanPersistenceResult> {
+		return this.withLock(async () => {
+			const current = await this.readValidated(false);
+			if (!current) return { status: 'blocked', code: 'MATERIALIZATION_STATE_MISSING' };
+			const root = await this.safeProjectRoot();
+			const index = await this.readMaterializationIndex(root, current.snapshot, current.events);
+			if (!index.records[record.materializationId]) return { status: 'blocked', code: 'MATERIALIZATION_RESERVATION_MISSING' };
+			const persisted = await this.readMaterializationRecord(root, record.materializationId, current.snapshot, current.events);
+			if (persisted.plan) {
+				return persisted.plan.digest === plan.digest ? { status: 'ready', record: persisted } : { status: 'blocked', code: 'MATERIALIZATION_PLAN_ALREADY_FROZEN' };
+			}
+			if (persisted.state !== 'RESOLVING' || persisted.frozenSelection.selectionKey !== record.frozenSelection.selectionKey || !validateMaterializationPlan(plan, persisted)) return { status: 'blocked', code: 'MATERIALIZATION_PLAN_INVALID' };
+			const nextRecord: MaterializationRecord = { ...persisted, state: 'PREPARED', plan: structuredClone(plan) };
+			const event: ScientificEvent = { schemaVersion: 1, eventId: randomUUID(), sequence: current.events.length + 1, occurredAt: new Date().toISOString(), actor: { kind: 'PLANNER' }, type: 'MATERIALIZATION_PLANNED', causalEventIds: [...persisted.frozenSelection.acceptedEventIds], payload: { materializationId: persisted.materializationId, selectionKey: persisted.frozenSelection.selectionKey, status: 'PREPARED' }, evidence: [], privacy: { contentClass: 'PUBLIC_SUMMARY_ONLY', redactionVersion: 1 } };
+			await this.commitTransitionLocked({ events: [event], snapshot: structuredClone(current.snapshot), materialization: { record: nextRecord, index: structuredClone(index) } });
+			return { status: 'ready', record: nextRecord };
 		});
 	}
 

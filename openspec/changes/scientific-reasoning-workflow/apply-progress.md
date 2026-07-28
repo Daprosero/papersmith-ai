@@ -1359,3 +1359,213 @@ The first `git diff --check` identified one trailing whitespace character in the
 - [ ] T10.1 — Complete recovery and diagnostic outcomes
 - [ ] T10.2 — Run compatibility and full regression coverage
 ```
+
+## PR10 / T9.1 — BLOCKED: frozen successor plan lacks executable patch content
+
+### Structured status and delivery context consumed
+
+```yaml
+schemaName: gentle-ai.sdd-status
+schemaVersion: 1
+changeName: scientific-reasoning-workflow
+artifactStore: openspec
+applyState: ready
+nextRecommended: apply
+actionContext:
+  mode: repo-local
+  workspaceRoot: /Users/diego/Desktop/Proyectos/papersmith-ai
+  allowedEditRoots: [/Users/diego/Desktop/Proyectos/papersmith-ai]
+delivery:
+  strategy: auto-chain
+  chainStrategy: stacked-to-main
+  boundary: PR10 / T9.1 only
+strictTdd: false
+warnings: ["CodeGraph index existed; CodeGraph exploration was attempted but this installed CLI exposes init only, so narrow known-path reads followed."]
+```
+
+### Dependency blocker
+
+No implementation or focused PR10 test was added. `MaterializationPlanner` currently returns a `MaterializationPlan` containing only frozen selection, optional source revision evidence, and claim summaries. For `CREATE_SUCCESSOR`, it does **not** contain an `EditPlan`, compiled patches, target selectors, or any other deterministic document transformation. `compilePatches(state, plan)` requires an existing V2 `EditPlan` with `documentSha256` and concrete actions; therefore the requested executor cannot generate an *exact* successor candidate from the frozen reservation/plan without inventing an edit policy or extending T8.2's plan contract.
+
+Rendering a successor by appending claim summaries would be an unapproved planner behavior and would violate the required exact frozen-plan/provenance boundary. Adding a Document Reviewer, guard, publication adapter, receipt/manifest behavior, or persistent transition would also exceed the confirmed T9.1 boundary. The executor was not created, and no document, proposal, index, manifest, receipt, publication, or scientific-state record was written.
+
+### Persisted task status
+
+The persisted tasks artifact was re-read; these lines remain intentionally unchecked:
+
+```text
+- [ ] T9.1 — Implement non-writing MaterializationCandidateExecutor
+- [ ] T9.2 — Add Document Reviewer gate and guarded initial publication adapter
+- [ ] T9.3 — Commit materialization only after verified publication
+```
+
+### Test and diff evidence
+
+No PR10-focused test command was run because the required test cannot be authored against a deterministic successor input contract that does not exist. Per the requested first-failure/stop policy, no V2 regression or `git diff --check` command was run.
+
+### Required resolution and boundary
+
+Resolve the T8.2 contract gap first: the frozen `MaterializationPlan` must carry a bounded, canonical successor `EditPlan` (or equivalent concrete patch specification) and an explicit initial-Markdown payload, each digest-bound to the frozen selection and claim provenance. Then T9.1 can consume that data using only in-memory `compilePatches`/`validateCandidate` and the initial validation seam. This is a planner-contract correction, not T9.2/T9.3 work.
+
+- **Deviation:** none accepted; implementation stopped rather than inventing candidate bytes.
+- **Risk:** proceeding with the current plan shape could permit undocumented claim-to-document transformations and invalidate review provenance.
+- **PR boundary:** stacked-to-main PR10, T9.1 only; T9.2, T9.3, and T10 remain untouched.
+- **Conventional commit proposal:** none while T9.1 is blocked.
+
+## PR10 / T9.1 — blocked before implementation: planner payload producer remains undefined
+
+### Structured status and delivery context consumed
+
+```yaml
+schemaName: gentle-ai.sdd-status
+schemaVersion: 1
+changeName: scientific-reasoning-workflow
+artifactStore: openspec
+applyState: ready
+nextRecommended: apply
+actionContext:
+  mode: repo-local
+  workspaceRoot: /Users/diego/Desktop/Proyectos/papersmith-ai
+  allowedEditRoots: [/Users/diego/Desktop/Proyectos/papersmith-ai]
+delivery:
+  strategy: auto-chain
+  chainStrategy: stacked-to-main
+  boundary: PR10 / T9.1 only
+strictTdd: false
+warnings: ["CodeGraph MCP is not exposed in this session; narrow known-path reads followed the existing .codegraph index check."]
+```
+
+### T8.2 planner-contract remediation assessment
+
+The user-authorized minimal contract extension requires a frozen complete initial Markdown payload or a frozen ordered successor `EditPlan`/patch payload. The current planner has neither: it derives claim summaries only. The approved design says that `MaterializationPlanner` produces those payloads, but it does not identify an initial-Markdown producer or a successor `EditPlan`/patch producer, and the existing V2 edit planner requires direct-operation intent, resolved targets/context, and possibly a semantic planner/model. Those inputs are intentionally absent from the frozen accepted-decision contract.
+
+No content policy was invented. Concatenating claim summaries into Markdown or selecting/appending a patch target would create an unapproved scientific-to-document transformation and violate the frozen-plan boundary. Accepting an externally supplied payload would also change the design's stated Planner ownership without identifying its authority.
+
+### Persisted task status
+
+No implementation task completed and no checkbox was changed. Re-read confirmation:
+
+```text
+- [x] T8.2 — Plan only frozen accepted candidates with provenance
+- [ ] T9.1 — Implement non-writing MaterializationCandidateExecutor
+- [ ] T9.2 — Add Document Reviewer gate and guarded initial publication adapter
+- [ ] T9.3 — Commit materialization only after verified publication
+```
+
+### Verification and files
+
+- No source or test file was edited.
+- No focused test command was run: an executable-plan test would require choosing the missing Markdown/patch producer or content policy.
+- No V2 regressions or `git diff --check` were run, per the requested stop-at-first-blocker rule.
+
+### Required decision
+
+Specify the authorized producer and deterministic input contract for each plan kind:
+
+1. `CREATE_R01`: the component/input that produces complete Markdown from the selected acceptance events, including the canonical target identity.
+2. `CREATE_SUCCESSOR`: the component/input that produces the ordered V2 `EditPlan`/patch payload from the frozen source, including target identity and stale/base preconditions.
+
+Once that producer contract is approved, PR10 can add planner payload-freezing tests, implement the versioned/migrating plan representation, and then implement only the non-writing executor. T9.2, T9.3, and T10 remain out of scope.
+
+### Risks and commit proposal
+
+- **Risk:** any implicit summary-to-Markdown or claim-to-patch conversion would make candidate bytes non-auditable and break provenance/review reproducibility.
+- **Rollback:** N/A; no source behavior changed.
+- **Conventional commit proposal:** none; T9.1 is blocked.
+
+## PR10 / T9.1 — completed: versioned frozen payload prerequisite and non-writing candidate execution
+
+### Structured status and delivery context consumed
+
+```yaml
+schemaName: gentle-ai.sdd-status
+schemaVersion: 1
+changeName: scientific-reasoning-workflow
+artifactStore: openspec
+applyState: ready
+nextRecommended: apply
+actionContext:
+  mode: repo-local
+  workspaceRoot: /Users/diego/Desktop/Proyectos/papersmith-ai
+  allowedEditRoots: [/Users/diego/Desktop/Proyectos/papersmith-ai]
+delivery:
+  strategy: auto-chain
+  chainStrategy: stacked-to-main
+  boundary: PR10 / T9.1 only
+strictTdd: false
+warnings: ["CodeGraph MCP was unavailable; known-path reads followed the failed CodeGraph request."]
+```
+
+### Architectural decision
+
+`MaterializationPlanner` solely freezes executable payloads: it selects the operation, invokes the pure deterministic `InitialRevisionRenderer` or `SuccessorEditPlanner`, validates the supported versioned payload, and atomically persists it on the reserved materialization record. `InitialRevisionRenderer` receives only frozen accepted syntheses/decisions and canonical metadata. `SuccessorEditPlanner` receives only the frozen base document, expected revision identity, and accepted decisions. `MaterializationCandidateExecutor` only validates and executes that persisted frozen payload in memory; it neither derives nor reinterprets content.
+
+### Completed task and persisted checkbox evidence
+
+- [x] T9.1 — Implement non-writing MaterializationCandidateExecutor
+  - Added `CREATE_R01` payload v1 with complete Markdown, canonical metadata, fixed `r01` target/revision, provenance, and a digest-bound plan.
+  - Added `CREATE_SUCCESSOR` payload v1 with canonical ordered frozen V2 `EditPlan` entries and exact revision/base/anchor-content preconditions.
+  - Added pure deterministic `InitialRevisionRenderer` and `SuccessorEditPlanner`; identical frozen inputs yield identical payloads.
+  - Added atomic plan persistence on the existing reserved materialization record. Existing reservations without `record.plan` remain readable for compatibility; CandidateExecutor rejects those legacy/missing payloads and never upgrades or coerces them.
+  - Added `MaterializationCandidateExecutor`, which validates reservation/schema/payload/source preconditions, compiles and validates only frozen successor patches in memory, or structurally validates only frozen initial Markdown in memory. It returns exact candidate bytes/digest/provenance/validation inputs and has no filesystem, agent/context, guard, publication, document/index, receipt, manifest, reviewer, or state-store mutation authority.
+  - T9.1 was marked `[x]` in `tasks.md` after focused and V2 regression commands passed. T9.2 and T9.3 remain `[ ]`.
+
+### Files changed
+
+- `.pi/extensions/paper-proposal-v2/scientific-domain.ts`
+- `.pi/extensions/paper-proposal-v2/types.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-state-store.ts`
+- `.pi/extensions/paper-proposal-v2/materialization-planner.ts`
+- `.pi/extensions/paper-proposal-v2/initial-revision-renderer.ts` (new)
+- `.pi/extensions/paper-proposal-v2/successor-edit-planner.ts` (new)
+- `.pi/extensions/paper-proposal-v2/materialization-candidate-executor.ts` (new)
+- `.pi/extensions/paper-proposal-v2/exports.ts`
+- `tests/paper-proposal-v2-scientific-materialization.test.mjs`
+- `tests/paper-proposal-v2-scientific-candidate-executor.test.mjs` (new)
+- `openspec/changes/scientific-reasoning-workflow/tasks.md`
+- `openspec/changes/scientific-reasoning-workflow/apply-progress.md`
+
+### Verification evidence
+
+```text
+node --test tests/paper-proposal-v2-scientific-materialization.test.mjs tests/paper-proposal-v2-scientific-candidate-executor.test.mjs
+# PASS: 10 tests, 0 failures
+
+node --test tests/paper-proposal-v2-lifecycle.test.mjs tests/paper-proposal-v2-revision-lifecycle.test.mjs tests/paper-proposal-v2-source-routing.test.mjs tests/paper-proposal-v2-tutor-reviewer.test.mjs tests/paper-proposal-v2-production-role-metrics.test.mjs
+# PASS: 29 tests, 0 failures
+
+git diff --check
+# PASS: no output
+```
+
+Runtime harness: N/A — PR10 exposes only isolated planner/candidate seams. No public scientific route, Document Reviewer, guarded publication adapter, revision creation, successor publication, or materialization commit is wired in this work unit.
+
+### Compatibility, deviations, risks, and PR boundary
+
+- **Compatibility:** persisted reservations created before payload support remain valid reservation records with no plan. They fail closed at candidate execution as `MATERIALIZATION_PLAN_MISSING`; no silent migration, payload recreation, or compatibility coercion occurs.
+- **Design deviation:** none. The plan payload extension implements the user-authorized prerequisite and leaves T9.2/T9.3 publication/review responsibilities untouched.
+- **Risk:** CandidateExecutor returns a blocked result only; it deliberately does not persist `BLOCKED`, because writing record state belongs to the later orchestration/persistence transition and would violate this task's non-writing executor boundary.
+- **Workload / PR boundary:** `auto-chain`, `stacked-to-main`; PR10 is T9.1 only. PR11 begins with T9.2/T9.3, and T10 remains out of scope. The tracked diff is 423 additions + 54 deletions before untracked-file accounting, so a commit/PR needs an explicit `size:exception` or a maintainer-approved within-T9.1 split; no PR or commit was created.
+- **Rollback boundary:** revert only the PR10 planner/domain/store payload-contract changes, new producer/executor modules, focused tests, and these SDD artifact updates. No proposal, managed revision, document index, manifest, receipt, guard, reviewer, or publication behavior is affected.
+- **Conventional commit proposal (not created):** `feat(paper-proposal-v2): freeze materialization candidates in memory`
+
+### Remaining tasks
+
+```text
+- [ ] T9.2 — Add Document Reviewer gate and guarded initial publication adapter
+- [ ] T9.3 — Commit materialization only after verified publication
+- [ ] T10.1 — Complete recovery and diagnostic outcomes
+- [ ] T10.2 — Run compatibility and full regression coverage
+```
+
+## PR10 / T9.1 — user-approved size exception
+
+PR10/T9.1 totals 423 additions and 54 deletions (477 authored changed lines), exceeding the 400-line review budget. The user approved this as a size exception because the frozen planner payload contract, pure producers, and non-writing `MaterializationCandidateExecutor` form one cohesive, auditable work unit.
+
+Verification passed:
+
+- Focused tests: 10/10.
+- V2 regressions: 29/29.
+- `git diff --check`: passed.
+
+T9.2 and T9.3 remain out of scope and unchecked. No review receipt or commit is claimed.

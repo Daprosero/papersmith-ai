@@ -1,3 +1,5 @@
+import type { EditPlan } from './types.js';
+
 export const SCIENTIFIC_WORKFLOW_OPERATION = 'SCIENTIFIC_WORKFLOW' as const;
 
 export type ScientificWorkflowOperation = typeof SCIENTIFIC_WORKFLOW_OPERATION;
@@ -59,6 +61,7 @@ export type ScientificEventType =
 	| 'DECISION_REJECTED'
 	| 'DECISION_RETRACTED'
 	| 'MATERIALIZATION_RESERVED'
+	| 'MATERIALIZATION_PLANNED'
 	| 'MATERIALIZATION_COMMITTED';
 export type ThreadRelationKind = 'RELATED' | 'SUPPORTS' | 'CHALLENGES' | 'DEPENDS_ON';
 export type ThreadSynthesisStatus = 'DRAFT' | 'REVIEWED' | 'REPAIR_REQUIRED' | 'ACCEPTED' | 'REJECTED' | 'RETRACTED';
@@ -167,6 +170,8 @@ export type MaterializationRecord = {
 	state: MaterializationState;
 	frozenSelection: FrozenDecisionSelection;
 	selectedDecisions: MaterializationReservedDecision[];
+	/** Absent only for reservations persisted before executable payload support. */
+	plan?: MaterializationPlan;
 };
 export type MaterializationClaimProvenance = {
 	claimId: string;
@@ -176,13 +181,46 @@ export type MaterializationClaimProvenance = {
 	acceptedSynthesisDigest: string;
 	summary: string;
 };
+export type CanonicalProposalMetadata = {
+	schemaVersion: 1;
+	title: string;
+	sectionHeading: string;
+};
+export type FrozenPatchPreconditions = {
+	expectedRevision: RevisionEvidence;
+	baseDocumentSha256: string;
+	anchorEntryId: string;
+	anchorTextSha256: string;
+};
+export type FrozenEditPlan = {
+	order: number;
+	plan: EditPlan;
+	preconditions: FrozenPatchPreconditions;
+};
+export type CreateR01PayloadV1 = {
+	kind: 'CREATE_R01';
+	payloadVersion: 1;
+	markdown: string;
+	target: { filename: 'research-concept-r01.md'; revision: 'r01' };
+	canonicalMetadata: CanonicalProposalMetadata;
+};
+export type CreateSuccessorPayloadV1 = {
+	kind: 'CREATE_SUCCESSOR';
+	payloadVersion: 1;
+	expectedBase: RevisionEvidence;
+	patches: readonly FrozenEditPlan[];
+};
 export type MaterializationPlan = {
-	planVersion: 1;
-	kind: MaterializationPlanKind;
+	schemaVersion: 1;
 	materializationId: string;
+	selectionKey: string;
+	operation: MaterializationPlanKind;
 	frozenSelection: FrozenDecisionSelection;
 	source?: RevisionEvidence;
-	claims: MaterializationClaimProvenance[];
+	expectedRevisionIdentity?: RevisionEvidence;
+	payload: CreateR01PayloadV1 | CreateSuccessorPayloadV1;
+	claimProvenance: MaterializationClaimProvenance[];
+	digest: string;
 };
 export type ThreadSynthesis = {
 	synthesisId: ThreadSynthesisId;

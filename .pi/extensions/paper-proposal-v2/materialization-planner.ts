@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
+import { InitialRevisionRenderer } from './initial-revision-renderer.js';
+import { SuccessorEditPlanner } from './successor-edit-planner.js';
 import type {
+	CanonicalProposalMetadata,
 	MaterializationClaimProvenance,
 	MaterializationPlan,
 	MaterializationRecord,
@@ -8,13 +11,16 @@ import type {
 	ScientificEvent,
 	ScientificThread,
 } from './scientific-domain.js';
-import type { ScientificState } from './scientific-state-store.js';
+import type { ScientificState, ScientificStateStore } from './scientific-state-store.js';
+import type { DocumentState } from './types.js';
 
 export type MaterializationPlannerInput = {
 	record: MaterializationRecord;
 	state: ScientificState;
-	/** Verified document evidence is required only for a successor plan. */
-	source?: RevisionEvidence;
+	/** A preloaded immutable source state; the planner never reads a workspace. */
+	source?: DocumentState;
+	/** Required only by the deterministic CREATE_R01 renderer. */
+	canonicalMetadata?: CanonicalProposalMetadata;
 	maxClaims?: number;
 	maxSummaryBytes?: number;
 };
@@ -29,18 +35,21 @@ const DEFAULT_MAX_SUMMARY_BYTES = 16_000;
 
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const sameEvidence = (left: RevisionEvidence, right: RevisionEvidence) => left.filename === right.filename && left.revision === right.revision && left.documentSha256 === right.documentSha256;
+const sourceEvidence = (source: DocumentState): RevisionEvidence => ({ filename: source.filename, revision: source.revision, documentSha256: source.documentSha256 });
+const equalJson = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
 
 function isSortedUnique(ids: string[]) {
 	return ids.length > 0 && ids.every((id, index) => /^[A-Za-z0-9_-]{1,128}$/.test(id) && (index === 0 || ids[index - 1] < id));
 }
 
-function sourceFor(selected: MaterializationRecord['selectedDecisions'], supplied?: RevisionEvidence): { kind: MaterializationPlan['kind']; source?: RevisionEvidence } | undefined {
+function sourceFor(selected: MaterializationRecord['selectedDecisions'], supplied?: DocumentState): { operation: MaterializationPlan['operation']; source?: RevisionEvidence; base?: DocumentState } | undefined {
 	const evidence = selected.map((decision) => decision.revisionEvidence);
-	if (evidence.every((value) => value === undefined)) return supplied === undefined ? { kind: 'CREATE_R01' } : undefined;
-	if (evidence.some((value) => value === undefined)) return undefined;
+	if (evidence.every((value) => value === undefined)) return supplied === undefined ? { operation: 'CREATE_R01' } : undefined;
+	if (evidence.some((value) => value === undefined) || !supplied) return undefined;
 	const expected = evidence[0]!;
-	if (!evidence.every((value) => sameEvidence(value!, expected)) || !supplied || !sameEvidence(supplied, expected)) return undefined;
-	return { kind: 'CREATE_SUCCESSOR', source: expected };
+	const actual = sourceEvidence(supplied);
+	if (!evidence.every((value) => sameEvidence(value!, expected)) || !sameEvidence(actual, expected)) return undefined;
+	return { operation: 'CREATE_SUCCESSOR', source: expected, base: supplied };
 }
 
 function claimFor(decision: ScientificDecision, thread: ScientificThread, events: ScientificEvent[]): MaterializationClaimProvenance | undefined {
@@ -60,9 +69,39 @@ function claimFor(decision: ScientificDecision, thread: ScientificThread, events
 	};
 }
 
-/** Converts a durable reservation into a bounded, non-writing document plan. */
+export function materializationPlanDigest(plan: Omit<MaterializationPlan, 'digest'>) {
+	return digest(plan);
+}
+
+/** Validates only supported frozen payloads; it never upgrades or derives one. */
+export function validateMaterializationPlan(plan: unknown, record: Pick<MaterializationRecord, 'materializationId' | 'frozenSelection'>): plan is MaterializationPlan {
+	if (!plan || typeof plan !== 'object') return false;
+	const candidate = plan as MaterializationPlan;
+	if (candidate.schemaVersion !== 1 || candidate.materializationId !== record.materializationId || candidate.selectionKey !== record.frozenSelection.selectionKey || !equalJson(candidate.frozenSelection, record.frozenSelection) || !SHA256.test(candidate.digest) || candidate.digest !== materializationPlanDigest({ ...candidate, digest: undefined } as unknown as Omit<MaterializationPlan, 'digest'>)) return false;
+	if (!Array.isArray(candidate.claimProvenance) || candidate.claimProvenance.length !== record.frozenSelection.decisionIds.length || candidate.claimProvenance.some((claim, index) => claim.decisionId !== record.frozenSelection.decisionIds[index] || claim.acceptedEventId !== record.frozenSelection.acceptedEventIds[index] || !claim.summary.trim())) return false;
+	if (candidate.operation === 'CREATE_R01') {
+		const payload = candidate.payload;
+		return payload.kind === 'CREATE_R01' && payload.payloadVersion === 1 && candidate.source === undefined && candidate.expectedRevisionIdentity === undefined
+			&& typeof payload.markdown === 'string' && payload.markdown.trim().length > 0
+			&& payload.target.filename === 'research-concept-r01.md' && payload.target.revision === 'r01'
+			&& payload.canonicalMetadata.schemaVersion === 1 && payload.canonicalMetadata.title.trim().length > 0 && payload.canonicalMetadata.sectionHeading.trim().length > 0;
+	}
+	if (candidate.operation !== 'CREATE_SUCCESSOR') return false;
+	const payload = candidate.payload;
+	if (payload.kind !== 'CREATE_SUCCESSOR' || payload.payloadVersion !== 1 || !candidate.source || !candidate.expectedRevisionIdentity || !sameEvidence(candidate.source, candidate.expectedRevisionIdentity) || !sameEvidence(payload.expectedBase, candidate.source) || !Array.isArray(payload.patches) || payload.patches.length === 0) return false;
+	return payload.patches.every((patch, index) => patch.order === index + 1
+		&& patch.plan.planVersion === '2' && patch.plan.documentSha256 === candidate.source!.documentSha256
+		&& patch.preconditions.baseDocumentSha256 === candidate.source!.documentSha256
+		&& sameEvidence(patch.preconditions.expectedRevision, candidate.source!)
+		&& typeof patch.preconditions.anchorEntryId === 'string' && SHA256.test(patch.preconditions.anchorTextSha256)
+		&& patch.plan.actions.length > 0);
+}
+
+/** Sole owner of operation selection and atomic persistence of executable frozen payloads. */
 export class MaterializationPlanner {
-	plan(input: MaterializationPlannerInput): MaterializationPlannerResult {
+	constructor(private readonly store: Pick<ScientificStateStore, 'persistMaterializationPlan'>) {}
+
+	async plan(input: MaterializationPlannerInput): Promise<MaterializationPlannerResult> {
 		const maxClaims = input.maxClaims ?? DEFAULT_MAX_CLAIMS;
 		const maxSummaryBytes = input.maxSummaryBytes ?? DEFAULT_MAX_SUMMARY_BYTES;
 		const { record, state } = input;
@@ -73,25 +112,35 @@ export class MaterializationPlanner {
 		if (!source) return { status: 'blocked', code: 'MATERIALIZATION_SOURCE_MISMATCH' };
 		const decisions = new Map(state.snapshot.decisions.map((decision) => [decision.decisionId, decision]));
 		const threads = new Map(state.snapshot.threads.map((thread) => [thread.threadId, thread]));
-		const claims: MaterializationClaimProvenance[] = [];
+		const claimProvenance: MaterializationClaimProvenance[] = [];
 		for (const [index, reserved] of record.selectedDecisions.entries()) {
 			const decision = decisions.get(reserved.decisionId);
 			const thread = threads.get(reserved.threadId);
 			if (!decision || !thread || decision.state !== 'ACCEPTED_UNMATERIALIZED' || decision.acceptedBy.kind !== 'USER' || decision.threadId !== reserved.threadId || decision.acceptedEventId !== record.frozenSelection.acceptedEventIds[index] || decision.acceptedSynthesisDigest !== reserved.acceptedSynthesisDigest || reserved.decisionId !== record.frozenSelection.decisionIds[index]) return { status: 'blocked', code: 'MATERIALIZATION_DECISION_INELIGIBLE' };
 			const claim = claimFor(decision, thread, state.events);
 			if (!claim || claim.summary.length > maxSummaryBytes) return { status: 'blocked', code: 'MATERIALIZATION_CLAIM_UNMAPPED' };
-			claims.push(claim);
+			claimProvenance.push(claim);
 		}
-		return {
-			status: 'ready',
-			plan: {
-				planVersion: 1,
-				kind: source.kind,
+		try {
+			const payload = source.operation === 'CREATE_R01'
+				? new InitialRevisionRenderer().render({ acceptedDecisions: claimProvenance, canonicalMetadata: input.canonicalMetadata! })
+				: new SuccessorEditPlanner().plan({ base: source.base!, expectedRevision: source.source!, acceptedDecisions: claimProvenance });
+			const incomplete = {
+				schemaVersion: 1 as const,
 				materializationId: record.materializationId,
+				selectionKey: record.frozenSelection.selectionKey,
+				operation: source.operation,
 				frozenSelection: structuredClone(record.frozenSelection),
-				...(source.source ? { source: structuredClone(source.source) } : {}),
-				claims,
-			},
-		};
+				...(source.source ? { source: structuredClone(source.source), expectedRevisionIdentity: structuredClone(source.source) } : {}),
+				payload,
+				claimProvenance: structuredClone(claimProvenance),
+			};
+			const plan: MaterializationPlan = { ...incomplete, digest: materializationPlanDigest(incomplete) };
+			if (!validateMaterializationPlan(plan, record)) return { status: 'blocked', code: 'MATERIALIZATION_PAYLOAD_INVALID' };
+			const persisted = await this.store.persistMaterializationPlan(record, plan);
+			return persisted.status === 'ready' ? { status: 'ready', plan: persisted.record.plan! } : { status: 'blocked', code: persisted.code };
+		} catch (error) {
+			return { status: 'blocked', code: error instanceof Error ? error.message : 'MATERIALIZATION_PAYLOAD_INVALID' };
+		}
 	}
 }

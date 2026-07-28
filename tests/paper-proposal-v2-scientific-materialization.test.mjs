@@ -18,12 +18,13 @@ const jiti = createJiti(import.meta.url, { alias: {
 const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const revision = { filename: 'research-concept-r01.md', revision: 'r01', documentSha256: 'a'.repeat(64) };
+const canonicalMetadata = { schemaVersion: 1, title: 'Scientific reasoning proposal', sectionHeading: 'Accepted scientific decisions' };
 
 function event(sequence, eventId, type, threadId, actor, payload, causalEventIds) {
 	return { schemaVersion: 1, eventId, sequence, occurredAt: `2026-01-01T00:${String(sequence).padStart(2, '0')}:00.000Z`, actor: { kind: actor }, type, threadId, causalEventIds, payload, evidence: [], privacy: { contentClass: 'PUBLIC_SUMMARY_ONLY', redactionVersion: 1 } };
 }
 
-async function fixture({ withRevision = false } = {}) {
+async function fixture({ withRevision = false, revisionEvidence = revision } = {}) {
 	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-v2-scientific-materialization-'));
 	const store = new v2.ScientificStateStore(projectRoot);
 	const events = [];
@@ -46,7 +47,7 @@ async function fixture({ withRevision = false } = {}) {
 			event(base + 2, review, 'CONCEPTUAL_REVIEW_RECORDED', threadId, 'CONCEPTUAL_REVIEWER', { status: 'PASS', synthesisId, synthesisDigest }, [tutor]),
 			event(base + 3, accepted, 'DECISION_ACCEPTED', threadId, 'USER', { decisionId, synthesisId, synthesisDigest, status: 'ACCEPTED_UNMATERIALIZED' }, [review]),
 		);
-		threads.push({ threadId, version: 1, status: 'ACCEPTED_UNMATERIALIZED', title: `Question ${id}`, summary: `Public summary ${id}.`, createdEventId: created, headEventId: accepted, ...(withRevision ? { revisionEvidence: revision } : {}), relationIds: [], decisionIds: [decisionId] });
+		threads.push({ threadId, version: 1, status: 'ACCEPTED_UNMATERIALIZED', title: `Question ${id}`, summary: `Public summary ${id}.`, createdEventId: created, headEventId: accepted, ...(withRevision ? { revisionEvidence } : {}), relationIds: [], decisionIds: [decisionId] });
 		decisions.push({ decisionId, threadId, acceptedEventId: accepted, acceptedSynthesisDigest: synthesisDigest, acceptedBy: { kind: 'USER' }, state: 'ACCEPTED_UNMATERIALIZED', sourceEventIds: [tutor, review] });
 	}
 	await store.commitTransition({ events, snapshot: { schemaVersion: 1, activeThreadId: 'thread-a', threads, relations: [], decisions } });
@@ -90,30 +91,57 @@ test('MaterializationPlanner creates an initial plan from exact frozen provenanc
 	const { store } = await fixture();
 	const reservation = await store.reserveMaterialization(['decision-a']);
 	assert.equal(reservation.status, 'reserved');
-	const result = new v2.MaterializationPlanner().plan({ record: reservation.record, state: await store.read() });
+	const planner = new v2.MaterializationPlanner(store);
+	const result = await planner.plan({ record: reservation.record, state: await store.read(), canonicalMetadata });
 	assert.equal(result.status, 'ready');
-	assert.equal(result.plan.kind, 'CREATE_R01');
+	assert.equal(result.plan.operation, 'CREATE_R01');
 	assert.deepEqual(result.plan.frozenSelection.decisionIds, ['decision-a']);
-	assert.deepEqual(result.plan.claims.map((claim) => [claim.decisionId, claim.acceptedEventId, claim.threadId]), [['decision-a', 'accepted-a', 'thread-a']]);
-	assert.equal(result.plan.claims[0].summary, 'Bounded accepted synthesis a.');
-	assert.deepEqual(new v2.MaterializationPlanner().plan({ record: reservation.record, state: await store.read(), source: revision }), { status: 'blocked', code: 'MATERIALIZATION_SOURCE_MISMATCH' });
+	assert.deepEqual(result.plan.claimProvenance.map((claim) => [claim.decisionId, claim.acceptedEventId, claim.threadId]), [['decision-a', 'accepted-a', 'thread-a']]);
+	assert.equal(result.plan.claimProvenance[0].summary, 'Bounded accepted synthesis a.');
+	assert.equal(result.plan.payload.markdown.includes('Bounded accepted synthesis a.'), true);
+	assert.deepEqual(result.plan.payload.target, { filename: 'research-concept-r01.md', revision: 'r01' });
+	assert.equal((await store.reserveMaterialization(['decision-a'])).record.plan.digest, result.plan.digest);
+	assert.deepEqual(await planner.plan({ record: reservation.record, state: await store.read(), source: revision, canonicalMetadata }), { status: 'blocked', code: 'MATERIALIZATION_SOURCE_MISMATCH' });
 });
 
 test('MaterializationPlanner requires exact frozen source and claim provenance for successors', async () => {
-	const { store } = await fixture({ withRevision: true });
+	const base = await v2.rebuildDerivedState('research-concept-r01.md', 'r01', 'ROOT', Buffer.from('# Existing proposal\n\nStable base.\n'));
+	const source = { filename: base.filename, revision: base.revision, documentSha256: base.documentSha256 };
+	const { store } = await fixture({ withRevision: true, revisionEvidence: source });
 	const reservation = await store.reserveMaterialization(['decision-a']);
 	assert.equal(reservation.status, 'reserved');
-	const planner = new v2.MaterializationPlanner();
+	const planner = new v2.MaterializationPlanner(store);
 	const state = await store.read();
-	const planned = planner.plan({ record: reservation.record, state, source: revision });
+	const planned = await planner.plan({ record: reservation.record, state, source: base, canonicalMetadata });
 	assert.equal(planned.status, 'ready');
-	assert.equal(planned.plan.kind, 'CREATE_SUCCESSOR');
-	assert.deepEqual(planned.plan.source, revision);
-	assert.deepEqual(planner.plan({ record: reservation.record, state, source: { ...revision, documentSha256: 'b'.repeat(64) } }), { status: 'blocked', code: 'MATERIALIZATION_SOURCE_MISMATCH' });
+	assert.equal(planned.plan.operation, 'CREATE_SUCCESSOR');
+	assert.deepEqual(planned.plan.expectedRevisionIdentity, source);
+	assert.deepEqual(planned.plan.payload.expectedBase, source);
+	assert.equal(planned.plan.payload.patches.length, 1);
+	assert.deepEqual(planned.plan.payload.patches.map((patch) => patch.order), [1]);
+	assert.equal(planned.plan.payload.patches[0].plan.documentSha256, base.documentSha256);
+	assert.equal(planned.plan.payload.patches[0].preconditions.anchorTextSha256.length, 64);
+	assert.deepEqual(await planner.plan({ record: reservation.record, state, source: await v2.rebuildDerivedState('research-concept-r01.md', 'r01', 'ROOT', Buffer.from('# Changed\n')), canonicalMetadata }), { status: 'blocked', code: 'MATERIALIZATION_SOURCE_MISMATCH' });
 	const unmapped = structuredClone(state);
 	delete unmapped.events.find((item) => item.eventId === 'tutor-a').payload.summary;
-	assert.deepEqual(planner.plan({ record: reservation.record, state: unmapped, source: revision }), { status: 'blocked', code: 'MATERIALIZATION_CLAIM_UNMAPPED' });
-	assert.deepEqual(planner.plan({ record: reservation.record, state, source: revision, maxClaims: 0 }), { status: 'blocked', code: 'MATERIALIZATION_PLAN_BUDGET_INVALID' });
+	assert.deepEqual(await planner.plan({ record: reservation.record, state: unmapped, source: base, canonicalMetadata }), { status: 'blocked', code: 'MATERIALIZATION_CLAIM_UNMAPPED' });
+	assert.deepEqual(await planner.plan({ record: reservation.record, state, source: base, canonicalMetadata, maxClaims: 0 }), { status: 'blocked', code: 'MATERIALIZATION_PLAN_BUDGET_INVALID' });
+});
+
+test('identical frozen inputs produce identical executable payloads before persistence', async () => {
+	const source = await v2.rebuildDerivedState('research-concept-r01.md', 'r01', 'ROOT', Buffer.from('# Existing proposal\n\nStable base.\n'));
+	const evidence = { filename: source.filename, revision: source.revision, documentSha256: source.documentSha256 };
+	const first = await fixture({ withRevision: true, revisionEvidence: evidence });
+	const second = await fixture({ withRevision: true, revisionEvidence: evidence });
+	const firstReservation = await first.store.reserveMaterialization(['decision-a']);
+	const secondReservation = await second.store.reserveMaterialization(['decision-a']);
+	assert.equal(firstReservation.status, 'reserved');
+	assert.equal(secondReservation.status, 'reserved');
+	const firstPlan = await new v2.MaterializationPlanner(first.store).plan({ record: firstReservation.record, state: await first.store.read(), source, canonicalMetadata });
+	const secondPlan = await new v2.MaterializationPlanner(second.store).plan({ record: secondReservation.record, state: await second.store.read(), source, canonicalMetadata });
+	assert.equal(firstPlan.status, 'ready');
+	assert.equal(secondPlan.status, 'ready');
+	assert.deepEqual(firstPlan.plan.payload, secondPlan.plan.payload);
 });
 
 test('materialization modules retain no candidate execution, review, guard, or publication authority', async () => {

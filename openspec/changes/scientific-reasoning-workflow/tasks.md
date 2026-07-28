@@ -227,9 +227,10 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 ## 9. CandidateExecutor, Document Reviewer, and V2 publication
 
 ### T9.1 — Implement non-writing MaterializationCandidateExecutor
-- [ ] T9.1 — Implement non-writing MaterializationCandidateExecutor
+- [x] T9.1 — Implement non-writing MaterializationCandidateExecutor
 - **Files/discovery:** `materialization-candidate-executor.ts` (new), existing `compilePatches`, `validateCandidate`, initial-document compiler/validator seams.
 - **Depends on:** T8.2.
+- **Prerequisite:** Before CandidateExecutor may run, `MaterializationPlanner` must persist a versioned frozen executable payload from `InitialRevisionRenderer` (complete `r01` Markdown) or `SuccessorEditPlanner` (ordered deterministic patches/`EditPlan` plus base/revision/content preconditions). T9.1 must prove that identical frozen input produces an identical payload; the executor rejects a missing payload; the executor does not derive content; a stale base fails closed; `CREATE_R01` has complete Markdown; and `CREATE_SUCCESSOR` has ordered patches and preconditions.
 - **Implement:** generate exact in-memory successor or `r01` candidates, candidate digests, provenance maps, and validation inputs without workspace handles, guard calls, manifest/receipt APIs, or filesystem writes.
 - **Tests:** add `tests/paper-proposal-v2-scientific-candidate-executor.test.mjs` for successor and initial candidates, exact digest/provenance, compiler failure, validator failure, and filesystem mutation probes.
 - **Acceptance:** executor is non-writing and cannot publish; all failures set materialization `BLOCKED` while preserving `ACCEPTED_UNMATERIALIZED`.
