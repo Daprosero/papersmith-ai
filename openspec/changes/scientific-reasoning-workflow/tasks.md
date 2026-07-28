@@ -155,7 +155,7 @@ The invariant applies to PR1 and every subsequent chained PR. A PR that violates
 ## 5. ScientificContextBuilder
 
 ### T5.1 — Build bounded active-thread context
-- [ ] T5.1 — Build bounded active-thread context
+- [x] T5.1 — Build bounded active-thread context
 - **Files/discovery:** `.pi/extensions/paper-proposal-v2/scientific-context-builder.ts` (new), existing `context-builder.ts`, revision/document evidence readers.
 - **Depends on:** T4.4.
 - **Implement:** include the active thread, only explicitly selected valid direct neighbors, act-relevant evidence, and verified bounded document fragments; enforce count/byte caps and public redaction.

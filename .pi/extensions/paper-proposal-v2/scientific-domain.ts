@@ -206,6 +206,31 @@ export type ScientificWorkflowRequest = {
 	idempotencyKey?: string;
 };
 export type ThreadSummary = Pick<ScientificThread, 'threadId' | 'status' | 'title' | 'summary'>;
+export type ScientificContextLimits = {
+	maxRelatedThreads: number;
+	maxEvidence: number;
+	maxDocumentFragments: number;
+	maxBytes: number;
+};
+export type ScientificDocumentFragment = {
+	entryId: string;
+	type: string;
+	text: string;
+	textSha256: string;
+	headingPath: string[];
+	revision: RevisionEvidence;
+};
+export type ScientificRoleContext = {
+	schemaVersion: 1;
+	act: ScientificActKind;
+	activeThread: ThreadSummary;
+	relatedThreads: ThreadSummary[];
+	evidence: EvidenceReference[];
+	documentFragments: ScientificDocumentFragment[];
+	limits: ScientificContextLimits;
+	byteCount: number;
+	privacy: ScientificPrivacy;
+};
 export type MaterializationCandidateSummary = {
 	decisionId: ScientificDecisionId;
 	threadId: ScientificThreadId;

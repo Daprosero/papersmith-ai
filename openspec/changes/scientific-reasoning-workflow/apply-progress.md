@@ -877,3 +877,148 @@ cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-propo
 - [ ] T10.1 — Complete recovery and diagnostic outcomes
 - [ ] T10.2 — Run compatibility and full regression coverage
 ```
+
+## PR6 / T5.1 — BLOCKED on first focused test failure
+
+### Structured status and delivery context consumed
+
+```yaml
+schemaName: gentle-ai.sdd-status
+schemaVersion: 1
+changeName: scientific-reasoning-workflow
+artifactStore: openspec
+applyState: ready
+nextRecommended: apply
+actionContext:
+  mode: repo-local
+  workspaceRoot: /Users/diego/Desktop/Proyectos/papersmith-ai
+  allowedEditRoots: [/Users/diego/Desktop/Proyectos/papersmith-ai]
+delivery:
+  strategy: auto-chain
+  chainStrategy: stacked-to-main
+  boundary: PR6 / T5.1 only
+strictTdd: false
+warnings: ["CodeGraph MCP was unavailable; narrow known-path reads followed the required attempt."]
+```
+
+### Attempted scope and blocker
+
+- Added the standalone `ScientificContextBuilder`, importing canonical scientific contracts and exposing only a read-only scientific-state port plus an optional verified-fragment port. It selects the authoritative active thread and explicitly requested direct neighbors, validates context-scoped public evidence, applies count/byte caps, and has no persistence, role, materialization, document-write, or full-document-loader authority.
+- Added canonical `ScientificRoleContext`, `ScientificDocumentFragment`, and `ScientificContextLimits` shapes to the sole shared scientific-domain contract owner, a barrel export, and focused T5.1 fixtures.
+- **Blocker:** the first required PR6 focused suite failed in the cap-narrowing case with `SCIENTIFIC_CONTEXT_DOCUMENT_NOT_RELEVANT`. The builder caps selected evidence before document-fragment relevance validation. The test's second requested document fragment therefore no longer has a retained evidence reference, although the caller explicitly supplied that validated evidence. This boundary must be reconciled without widening context or permitting unrelated evidence.
+- Per the assigned stop-at-first-failure rule, no corrective edit, task-checkbox update, V2 regression command, or `git diff --check` was run after this failure. T6/PR7 and all later work remain untouched.
+
+### Persisted task status
+
+`tasks.md` was re-read after the failure and remains unchanged:
+
+```text
+- [ ] T5.1 — Build bounded active-thread context
+```
+
+### Files changed before stop
+
+- `.pi/extensions/paper-proposal-v2/scientific-domain.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-context-builder.ts` (new)
+- `.pi/extensions/paper-proposal-v2/exports.ts`
+- `tests/paper-proposal-v2-scientific-context.test.mjs` (new)
+- `openspec/changes/scientific-reasoning-workflow/apply-progress.md`
+
+### Verification evidence
+
+```text
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-proposal-v2-scientific-domain-contract.test.mjs tests/paper-proposal-v2-scientific-persistence.test.mjs tests/paper-proposal-v2-scientific-entry.test.mjs tests/paper-proposal-v2-scientific-thread.test.mjs tests/paper-proposal-v2-scientific-audit.test.mjs tests/paper-proposal-v2-scientific-store-resolvers.test.mjs tests/paper-proposal-v2-scientific-context.test.mjs
+# FAIL: 30 passed, 1 failed
+# Failed: ScientificContextBuilder enforces narrowing count and byte caps without full-document or transcript expansion
+# Error: SCIENTIFIC_CONTEXT_DOCUMENT_NOT_RELEVANT
+```
+
+No V2 regression command or `git diff --check` ran because the focused prerequisite failed.
+
+### Deviation, risks, workload boundary, and rollback
+
+- **Design deviation:** none accepted; the T5.1 context cap/relevance ordering defect is unresolved.
+- **Risk:** the current builder and focused test are unverified as a work unit and must not be committed. The fix must preserve active-thread plus explicit-direct-neighbor-only selection, reject transitive/implicit expansion and raw role transcripts, and never load a full document or project history.
+- **Workload / PR boundary:** `auto-chain`, `stacked-to-main`; PR6 is T5.1 only. T6/PR7 and later tasks were not started.
+- **Rollback boundary:** remove only the four T5.1 source/test/export/domain changes listed above and this progress entry. No proposal, managed revision, manifest, receipt, lifecycle inventory, scientific event, decision, role orchestration, or materialization behavior was changed.
+- **Conventional commit proposal:** none until the focused suite, relevant V2 regressions, and `git diff --check` pass.
+
+## PR6 / T5.1 — completed
+
+### Structured status and delivery context consumed
+
+```yaml
+schemaName: gentle-ai.sdd-status
+schemaVersion: 1
+changeName: scientific-reasoning-workflow
+artifactStore: openspec
+applyState: ready
+nextRecommended: apply
+actionContext:
+  mode: repo-local
+  workspaceRoot: /Users/diego/Desktop/Proyectos/papersmith-ai
+  allowedEditRoots: [/Users/diego/Desktop/Proyectos/papersmith-ai]
+delivery:
+  strategy: auto-chain
+  chainStrategy: stacked-to-main
+  boundary: PR6 / T5.1 only
+strictTdd: false
+warnings: []
+```
+
+### Completed task and persisted checkbox evidence
+
+- [x] T5.1 — Build bounded active-thread context
+  - The builder now derives document-fragment relevance from the full, validated act-relevant evidence set before any evidence cap.
+  - It discards non-relevant requested document fragments, then applies evidence and document caps while preserving the request order of surviving fragments.
+  - The change remains read-only: no role, persistence, materialization, document-write, or public-contract behavior was added.
+  - The T5.1 checkbox was updated in `tasks.md` only after every command below passed.
+
+### Files changed
+
+- `.pi/extensions/paper-proposal-v2/scientific-domain.ts`
+- `.pi/extensions/paper-proposal-v2/scientific-context-builder.ts`
+- `.pi/extensions/paper-proposal-v2/exports.ts`
+- `tests/paper-proposal-v2-scientific-context.test.mjs`
+- `openspec/changes/scientific-reasoning-workflow/tasks.md`
+- `openspec/changes/scientific-reasoning-workflow/apply-progress.md`
+
+### Verification evidence
+
+```text
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-proposal-v2-scientific-domain-contract.test.mjs tests/paper-proposal-v2-scientific-persistence.test.mjs tests/paper-proposal-v2-scientific-entry.test.mjs tests/paper-proposal-v2-scientific-thread.test.mjs tests/paper-proposal-v2-scientific-audit.test.mjs tests/paper-proposal-v2-scientific-store-resolvers.test.mjs tests/paper-proposal-v2-scientific-context.test.mjs
+# PASS: 31 tests, 0 failures
+
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && node --test tests/paper-proposal-v2-lifecycle.test.mjs tests/paper-proposal-v2-revision-lifecycle.test.mjs tests/paper-proposal-v2-source-routing.test.mjs tests/paper-proposal-v2-tutor-reviewer.test.mjs tests/paper-proposal-v2-production-role-metrics.test.mjs
+# PASS: 29 tests, 0 failures
+
+cd /Users/diego/Desktop/Proyectos/papersmith-ai && git diff --check
+# PASS: no output
+```
+
+Runtime harness: N/A — T5.1 is an isolated, read-only context-construction boundary with no public execution route wired in this PR.
+
+### Deviations, risks, workload boundary, and rollback
+
+- **Design deviation:** none. The correction follows the design's active/direct-neighbor-only and cap-narrowing rules without widening context.
+- **Risk / decision:** non-relevant requested fragments are discarded before caps; selected relevant fragments retain caller order. The fragment port is still bounded by the selected IDs and byte/count limits.
+- **Workload / PR boundary:** `auto-chain`, `stacked-to-main`; PR6 is T5.1 only. T6/PR7 and later tasks were not started.
+- **Rollback boundary:** revert only the T5.1 domain/context-builder/export/test additions and these task/progress updates. No proposal, managed revision, manifest, receipt, lifecycle inventory, event, decision, role orchestration, or materialization behavior is affected.
+- **Conventional commit proposal (not created):** `feat(paper-proposal-v2): bound scientific role context`
+
+### Remaining tasks
+
+```text
+- [ ] T6.1 — Add advisory Tutor and Conceptual Reviewer orchestration
+- [ ] T6.2 — Implement bounded structured repair/recheck
+- [ ] T6.3 — Add synthesis modification/reopen flow
+- [ ] T7.1 — Implement explicit user decision lifecycle
+- [ ] T7.2 — Expose durable pending candidates on re-entry
+- [ ] T8.1 — Add frozen selection and materialization reservation
+- [ ] T8.2 — Plan only frozen accepted candidates with provenance
+- [ ] T9.1 — Implement non-writing MaterializationCandidateExecutor
+- [ ] T9.2 — Add Document Reviewer gate and guarded initial publication adapter
+- [ ] T9.3 — Commit materialization only after verified publication
+- [ ] T10.1 — Complete recovery and diagnostic outcomes
+- [ ] T10.2 — Run compatibility and full regression coverage
+```
