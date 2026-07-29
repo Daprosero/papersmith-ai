@@ -5293,7 +5293,7 @@ export function createProposalWorkspaceTool(
 	};
 }
 
-import { PaperProposalV2Orchestrator, ProposalWorkspaceAdapter, ProductionModelRuntime, createProductionSemanticPlanner, createProductionTutorAdapter, createProductionReviewerAdapter, getRuntimeMetrics, recordRouteMetric, resolveIntent, runConsistencyAudit, runPaperProposalV2SelfAudit, SCIENTIFIC_WORKFLOW_OPERATION, type ScientificWorkflowPublicResult, type ScientificWorkflowRequest } from './paper-proposal-v2/exports.js';
+import { PaperProposalV2Orchestrator, ProposalWorkspaceAdapter, ProductionModelRuntime, ScientificWorkflowRuntime, createProductionSemanticPlanner, createProductionTutorAdapter, createProductionReviewerAdapter, getRuntimeMetrics, recordRouteMetric, resolveIntent, runConsistencyAudit, runPaperProposalV2SelfAudit, SCIENTIFIC_WORKFLOW_OPERATION, type ScientificWorkflowPublicResult, type ScientificWorkflowRequest, type ScientificWorkflowRuntimeOptions } from './paper-proposal-v2/exports.js';
 
 type GlobalRouteStage = 'LIFECYCLE' | 'DIRECT_DOCUMENT' | 'DELIBERATE' | 'SCIENTIFIC_WORKFLOW' | 'EXISTING_FALLBACK';
 type GlobalRouteInput = Pick<ScientificWorkflowRequest, 'instruction'> & { operation?: string };
@@ -5346,12 +5346,19 @@ export function projectPaperProposalV2PublicResult(input:{result:any;operation:s
  return {...base,status:result.status,category:errorCategory(result),message:result.reason??result.question??'Execution did not complete.',patchCount:0,receiptId:null,manifestStatus:'NOT_PUBLISHED',auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN',recoveryStatus:result.status==='published-derived-failed'?'required':'not_required',nextAction:result.status==='budget_block'?'reduce_request_or_raise_budget':result.status==='needs-clarification'||result.status==='ambiguous'?'clarify_request':'inspect_error',...(result.budget?{budget:result.budget}:{})};
 }
 
-export default function proposalWorkspaceExtension(pi: ExtensionAPI): void {
- const operationGuard=createDocumentOperationGuard(installedProjectRoot);
- const proposalWorkspace=createProposalWorkspaceTool(installedProjectRoot,{operationGuard});
- const adapter=new ProposalWorkspaceAdapter(installedProjectRoot,operationGuard,proposalWorkspace);
+export type PaperProposalV2ExtensionOptions = { projectRoot?: string; scientificWorkflow?: ScientificWorkflowRuntimeOptions };
+
+/** Creates the registered public-tool composition for the installed project or an explicitly hosted workspace. */
+export function createPaperProposalV2Extension(options: PaperProposalV2ExtensionOptions = {}): (pi: ExtensionAPI) => void {
+ return function proposalWorkspaceExtension(pi: ExtensionAPI): void {
+ const projectRoot=options.projectRoot??installedProjectRoot;
+ const operationGuard=createDocumentOperationGuard(projectRoot);
+ const proposalWorkspace=createProposalWorkspaceTool(projectRoot,{operationGuard});
+ const adapter=new ProposalWorkspaceAdapter(projectRoot,operationGuard,proposalWorkspace);
  const productionRuntime=new ProductionModelRuntime();
- const orchestrator=new PaperProposalV2Orchestrator(installedProjectRoot,adapter,undefined,createProductionSemanticPlanner(productionRuntime),{tutor:createProductionTutorAdapter(productionRuntime),reviewer:createProductionReviewerAdapter(productionRuntime)});
+ const orchestrator=new PaperProposalV2Orchestrator(projectRoot,adapter,undefined,createProductionSemanticPlanner(productionRuntime),{tutor:createProductionTutorAdapter(productionRuntime),reviewer:createProductionReviewerAdapter(productionRuntime)});
+ let scientificWorkflowRuntime:ScientificWorkflowRuntime|undefined;
+ const getScientificWorkflowRuntime=()=>scientificWorkflowRuntime??=new ScientificWorkflowRuntime(projectRoot,adapter,productionRuntime,options.scientificWorkflow);
  pi.registerTool(createDocumentOperationGuardTool(operationGuard));
  pi.registerTool(proposalWorkspace);
  pi.registerTool({
@@ -5378,11 +5385,17 @@ export default function proposalWorkspaceExtension(pi: ExtensionAPI): void {
        scientificAct:Type.Optional(Type.String({minLength:1,maxLength:64})),
        candidateIds:Type.Optional(Type.Array(Type.String({minLength:1,maxLength:256}),{maxItems:64})),
        idempotencyKey:Type.Optional(Type.String({minLength:1,maxLength:256})),
+       synthesisId:Type.Optional(Type.String({minLength:1,maxLength:256})),
+       synthesisDigest:Type.Optional(Type.String({minLength:64,maxLength:64,pattern:'^[a-f0-9]{64}$'})),
+       modificationCause:Type.Optional(Type.String({minLength:1,maxLength:2000})),
+       actor:Type.Optional(Type.Object({kind:StringEnum(['USER','SYSTEM','TUTOR','CONCEPTUAL_REVIEWER','PLANNER','EXECUTOR','DOCUMENT_REVIEWER'] as const)},{additionalProperties:false})),
   }),
   async execute(_toolCallId,params,signal,_onUpdate,ctx){
    const route=resolveGlobalRoute(params);
    if(route.stage==='SCIENTIFIC_WORKFLOW'){
-    const publicResult=scientificWorkflowFeatureEnabled()?{...unavailableScientificWorkflowResult(),blockers:[{code:'SCIENTIFIC_WORKFLOW_NOT_WIRED',message:'Persistent scientific workflow is enabled but no scientific service is installed.'}],nextAction:'complete_scientific_workflow_setup'}:unavailableScientificWorkflowResult();
+    const publicResult=scientificWorkflowFeatureEnabled()
+     ?await getScientificWorkflowRuntime().execute({operation:SCIENTIFIC_WORKFLOW_OPERATION,instruction:params.instruction,...(params.activeThreadId?{activeThreadId:params.activeThreadId}:{}),...(params.relatedThreadIds?{relatedThreadIds:params.relatedThreadIds}:{}),...(params.scientificAct?{scientificAct:params.scientificAct as ScientificWorkflowRequest['scientificAct']}:{}),...(params.candidateIds?{candidateIds:params.candidateIds}:{}),...(params.idempotencyKey?{idempotencyKey:params.idempotencyKey}:{}),...(params.synthesisId?{synthesisId:params.synthesisId}:{}),...(params.synthesisDigest?{synthesisDigest:params.synthesisDigest}:{}),...(params.modificationCause?{modificationCause:params.modificationCause}:{}),...(params.actor?{actor:params.actor}:{})})
+     :unavailableScientificWorkflowResult();
     return {content:[{type:'text',text:JSON.stringify(publicResult)}],details:publicResult};
    }
    const resolvedIntent=resolveIntent(params.instruction).intent;
@@ -5396,8 +5409,8 @@ export default function proposalWorkspaceExtension(pi: ExtensionAPI): void {
    let audit,selfAudit;
    if(!lifecycle&&result.status==='published'){
     try {
-     audit=await runConsistencyAudit({projectRoot:installedProjectRoot});
-     selfAudit=await runPaperProposalV2SelfAudit({projectRoot:installedProjectRoot});
+     audit=await runConsistencyAudit({projectRoot});
+     selfAudit=await runPaperProposalV2SelfAudit({projectRoot});
     } catch { audit={status:'FAIL',warnings:[]};selfAudit={status:'FAIL'}; }
    }
    const publicResult=lifecycle?projectRevisionLifecyclePublicResult(result):projectPaperProposalV2PublicResult({result,operation,sourceFilename:params.sourceFilename,metricsBefore,metricsAfter:getRuntimeMetrics(),audit,selfAudit});
@@ -5407,4 +5420,7 @@ export default function proposalWorkspaceExtension(pi: ExtensionAPI): void {
  pi.on('input', async ()=>({action:'continue'}));
  pi.on('tool_call',(event)=>operationGuard.handleToolCall(event));
  pi.on('tool_result',(event)=>operationGuard.handleToolResult(event));
+ }
 }
+
+export default createPaperProposalV2Extension();

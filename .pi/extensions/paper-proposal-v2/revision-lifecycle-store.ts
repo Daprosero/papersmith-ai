@@ -216,3 +216,31 @@ export async function findWithdrawal(input:{projectRoot:string;operationId?:stri
 }
 
 export function lifecycleInventoryDigest(artifacts:Array<{publicRelativePath:string;sha256:string}>) { return artifactDigest(artifacts); }
+
+/** Read-only canonical managed-revision inventory for scientific entry admission. */
+export type CanonicalManagedRevisionInventory =
+ | { status:'valid'; activeRevisions:Array<{filename:string;revision:string;documentSha256:string}>; withdrawnRevisions:Array<{filename:string;revision:string;documentSha256:string}>; auditEvidence:string[] }
+ | { status:'inconsistent'; code:string; auditEvidence:string[] };
+
+export async function readCanonicalManagedRevisionInventory(projectRoot:string):Promise<CanonicalManagedRevisionInventory> {
+ try {
+  const root=await canonicalRoot(projectRoot);
+  const entries=await readdir(join(root,'proposals'),{withFileTypes:true});
+  const revisions:Array<{filename:string;revision:string;documentSha256:string;revisionNumber:number}>=[];
+  for(const entry of entries) {
+   if(!entry.isFile()||!MANAGED.test(entry.name)) continue;
+   const identity=parseManagedRevisionFilename(entry.name);
+   const document=await regularBytes(root,join(root,'proposals',entry.name),'MANAGED_DOCUMENT_MISSING');
+   if(!document.subarray(0,MARKER.length).equals(MARKER)) block('UNMANAGED_REVISION');
+   const documentSha256=sha256(document);
+   const state=parseJson(await regularBytes(root,derivedStatePath(root,entry.name),'MANAGED_STATE_MISSING'),'MALFORMED_MANAGED_STATE');
+   if(state?.manifest?.status!=='COMMITTED'||!validateStoredState(state,entry.name,documentSha256,PARSER_VERSION,document)) block('MANAGED_STATE_IDENTITY_MISMATCH');
+   revisions.push({filename:entry.name,revision:identity.revision,documentSha256,revisionNumber:identity.revisionNumber});
+  }
+  revisions.sort((left,right)=>left.revisionNumber-right.revisionNumber||left.filename.localeCompare(right.filename));
+  const latest=revisions.at(-1);
+  return {status:'valid',activeRevisions:latest?[{filename:latest.filename,revision:latest.revision,documentSha256:latest.documentSha256}]:[],withdrawnRevisions:[],auditEvidence:['revision-inventory:canonical-read-only']};
+ } catch(error) {
+  return {status:'inconsistent',code:error instanceof Error?error.message:'REVISION_INVENTORY_UNAVAILABLE',auditEvidence:['revision-inventory:canonical-read-only-blocked']};
+ }
+}

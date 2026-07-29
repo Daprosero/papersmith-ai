@@ -36,6 +36,7 @@ export type ScientificThreadResolverInput = {
 export type ScientificThreadIdFactory = () => ScientificThreadId;
 
 const usableThreadStatuses = new Set(['OPEN', 'UNDER_REVIEW', 'REPAIRED', 'ACCEPTED_UNMATERIALIZED']);
+const unsafePublicSummary = /(?:chain.?of.?thought|hidden.?prompt|raw.?trace|private.?reasoning|role.?transcript|\bprompt\b|\btrace\b|\bthought\b|\bsecret\b|(?:^|\s)\/(?:Users|home|var|tmp|etc|private|opt)\/|(?:error|typeerror|referenceerror):\s*stack|stack[-_ ]?frame|full[_ -]?document(?:[_ -]?content)?|internal[_ -]?events?|infrastructure(?:[_ -]?data)?|adapter[_ -]?details?|candidate[_ -]?payload)/i;
 
 function blocked(code: string, message: string): ThreadResolution {
 	return { status: 'blocked', code, blockers: [{ code, message, nextAction: 'select_or_reconcile_thread' }] };
@@ -47,7 +48,9 @@ function isBoundedSeed(seed: BoundedScientificSeed | undefined): seed is Bounded
 		&& seed.title.trim().length > 0
 		&& seed.summary.trim().length > 0
 		&& seed.title.length <= 200
-		&& seed.summary.length <= 2_000;
+		&& seed.summary.length <= 2_000
+		&& !unsafePublicSummary.test(seed.title)
+		&& !unsafePublicSummary.test(seed.summary);
 }
 
 function sameRevision(left: ScientificThread['revisionEvidence'], right: ProjectEntry['activeRevision']) {

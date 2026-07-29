@@ -321,6 +321,11 @@ export type ScientificWorkflowRequest = {
 	scientificAct?: ScientificActKind;
 	candidateIds?: ScientificDecisionId[];
 	idempotencyKey?: string;
+	/** Exact authoritative reviewed synthesis identity required for accept/modify actions. */
+	synthesisId?: string;
+	synthesisDigest?: string;
+	modificationCause?: string;
+	actor?: ScientificActor;
 };
 export type ThreadSummary = Pick<ScientificThread, 'threadId' | 'status' | 'title' | 'summary'>;
 export type ScientificContextLimits = {
@@ -384,6 +389,9 @@ export type ScientificWorkflowPublicResult = {
 	candidates: MaterializationCandidateSummary[];
 	eventId?: ScientificEventId;
 	decisionId?: ScientificDecisionId;
+	synthesisId?: string;
+	synthesisDigest?: string;
+	materialization?: { materializationId: string; state: MaterializationState; targetFilename?: string; targetRevision?: string };
 	blockers: PublicBlocker[];
 	nextAction: string | null;
 	auditStatus: ScientificAuditStatus;

@@ -125,7 +125,10 @@ export class ScientificWorkflowService {
 		}
 		const reopenEvent = await this.appendEvent(input.activeThread.threadId, 'SYNTHESIS_REOPENED', { status: 'DRAFT', synthesisId: input.priorSynthesis.synthesisId, synthesisDigest: input.priorSynthesis.digest, modificationCause: input.modificationCause }, [input.priorSynthesis.reviewEventId].filter((id): id is string => !!id));
 		if (!reopenEvent) return { status: 'blocked', code: 'SYNTHESIS_REOPEN_PERSISTENCE_FAILED', eventIds: [] };
-		return this.runSynthesis(input, [reopenEvent.eventId]);
+		const current = await this.dependencies.store.read();
+		const activeThread = current?.snapshot.threads.find((thread) => thread.threadId === input.activeThread.threadId);
+		if (!activeThread) return { status: 'blocked', code: 'SYNTHESIS_REOPEN_PERSISTENCE_FAILED', eventIds: [reopenEvent.eventId] };
+		return this.runSynthesis({ ...input, activeThread }, [reopenEvent.eventId]);
 	}
 
 	async modifySynthesis(input: ScientificSynthesisRequest & { priorSynthesis: ThreadSynthesis; modificationCause: string; actor: ScientificActor }): Promise<ScientificSynthesisResult> {

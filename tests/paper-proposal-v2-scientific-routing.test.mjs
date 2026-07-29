@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
@@ -74,4 +76,44 @@ test('disabled scientific workflow returns a typed unavailable result without a 
 		selfAuditStatus: 'NOT_RUN',
 		metrics: { routeStage: 'SCIENTIFIC_WORKFLOW', bypassedStages: ['LIFECYCLE', 'DIRECT_DOCUMENT', 'DELIBERATE'] },
 	});
+});
+
+test('registered public tool keeps default-off admission exact and delegates enabled scientific requests to the lazy coordinator', async () => {
+	const tools = [];
+	workspace.default({ registerTool: (tool) => tools.push(tool), on: () => {} });
+	const tool = tools.find((candidate) => candidate.name === 'paper_proposal_v2_execute');
+	assert.ok(tool);
+	const previous = process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED;
+	try {
+		delete process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED;
+		const disabled = (await tool.execute('scientific-disabled', { operation: 'SCIENTIFIC_WORKFLOW', instruction: 'scientific idea' })).details;
+		assert.equal(disabled.blockers[0].code, 'SCIENTIFIC_WORKFLOW_DISABLED');
+		process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED = 'true';
+		const enabled = (await tool.execute('scientific-enabled', { operation: 'SCIENTIFIC_WORKFLOW', instruction: 'scientific idea' })).details;
+		assert.notEqual(enabled.blockers?.[0]?.code, 'SCIENTIFIC_WORKFLOW_NOT_WIRED');
+		assert.equal(enabled.operation, 'SCIENTIFIC_WORKFLOW');
+		assert.doesNotMatch(JSON.stringify(enabled), /prompt|trace|thought|transcript/i);
+	} finally {
+		if (previous === undefined) delete process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED;
+		else process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED = previous;
+	}
+});
+
+test('coordinator uses read-only pre-materialization adapters and fails closed without injected canonical metadata', async () => {
+	const projectRoot = await mkdtemp(path.join(tmpdir(), 'scientific-runtime-'));
+	await mkdir(path.join(projectRoot, 'proposals'));
+	try {
+		const adapter = new v2.ProposalWorkspaceAdapter(projectRoot, {}, {});
+		const runtime = new v2.ScientificWorkflowRuntime(projectRoot, adapter, new v2.ProductionModelRuntime());
+		const result = await runtime.execute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'request materialization', scientificAct: 'REQUEST_MATERIALIZATION', candidateIds: ['decision-a'] });
+		assert.equal(result.status, 'blocked');
+		assert.equal(result.blockers[0].code, 'CANONICAL_METADATA_UNAVAILABLE');
+		assert.equal(result.entryState, 'EMPTY_PROJECT');
+		assert.deepEqual(result.relatedThreads, []);
+		assert.deepEqual(result.candidates, []);
+		assert.equal('events' in result, false);
+		assert.equal('paths' in result, false);
+	} finally {
+		await rm(projectRoot, { recursive: true, force: true });
+	}
 });

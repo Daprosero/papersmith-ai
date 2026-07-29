@@ -1896,3 +1896,144 @@ node --test tests/paper-proposal-v2-scientific-recovery.test.mjs tests/paper-pro
 - **Workload / PR boundary:** `auto-chain`, `stacked-to-main`; final PR12 is limited to T10.1–T10.2.
 - **Rollback boundary:** revert the PR12 recovery/diagnostic/publication changes and their focused tests, including the isolated production-modify fixture setup correction. This does not restore an artificial repository successor or alter a published proposal.
 - **Conventional commit proposal (not created):** `fix(paper-proposal-v2): preserve incomplete publication recovery`
+
+## Final read-only conformance audit — corrective scope discovered
+
+The enabled public `SCIENTIFIC_WORKFLOW` route was unreachable through the registered tool. Corrective T11.1–T11.3 scope was approved to wire, exercise, and audit the public boundary. The feature gate remains default-off; the pre-existing 4R candidate-view infrastructure limitation is outside product scope.
+
+## T11.1 — Public scientific workflow wiring completed
+
+- [x] T11.1 — Public scientific workflow wiring
+- The registered `paper_proposal_v2_execute` tool lazily delegates only an enabled explicit scientific route to `ScientificWorkflowRuntime`.
+- Disabled mode returns the exact `SCIENTIFIC_WORKFLOW_DISABLED` unavailable result without runtime construction, document mutation, or scientific persistence.
+- The coordinator reuses the existing scientific state, entry, act, thread, context, service, planner, candidate, reviewer, and publication seams. Read-only inventory and document-fragment adapters fail closed on missing metadata and do not write before materialization.
+- Evidence: `node --test tests/paper-proposal-v2-scientific-routing.test.mjs` passed 7/7; `git diff --check` passed.
+- No verify/sync/archive/4R operation or commit was created.
+
+## T11.2 — Public scientific workflow E2E completed
+
+- [x] T11.2 — Public scientific workflow E2E
+- Added registered-tool-only public E2E coverage for disabled admission, scientific-only deliberation, reopen, user acceptance, frozen materialization, exact idempotent replay/conflict, incomplete-evidence recovery, and lifecycle/direct/`DELIBERATE` isolation.
+- Narrow composition corrections completed the public runtime handoff, read-only context port shape, authoritative-thread reload after reopen, and hosted public-tool factory for deterministic fixtures.
+- Evidence: `node --test tests/paper-proposal-v2-scientific-public-e2e.test.mjs` passed 8/8 before T11.3; routing passed 7/7; `git diff --check` passed.
+- No full-suite claim, verify/sync/archive report, 4R operation, or commit was made in T11.2.
+
+
+## T11.3 — Final public conformance regression / audit completed
+
+### Formal SDD status consumed
+
+```yaml
+schemaName: gentle-ai.sdd-status
+schemaVersion: 1
+changeName: scientific-reasoning-workflow
+artifactStore: openspec
+applyState: ready
+nextRecommended: apply
+actionContext:
+  mode: repo-local
+  workspaceRoot: /Users/diego/Desktop/Proyectos/papersmith-ai
+  allowedEditRoots: [/Users/diego/Desktop/Proyectos/papersmith-ai]
+delivery:
+  strategy: auto-chain
+  chainStrategy: stacked-to-main
+  boundary: corrective T11.3 only
+strictTdd: false
+warnings: ["CodeGraph MCP was unavailable after the existing .codegraph index check; narrow known-path audit reads followed."]
+```
+
+### Completed task and persisted checkbox
+
+- [x] T11.3 — Public conformance regression
+  - `tasks.md` was updated to `[x]` only after all focused/audit and full-suite commands passed.
+  - Re-read confirmation: T11.3 is visibly `[x]`; no implementation checkbox remains unchecked.
+
+### Narrow public privacy correction
+
+The audit added a registered-tool regression using explicit markers for a secret, absolute path, stack, full document content, internal infrastructure data, adapter detail, and an unpublished candidate payload. The new regression initially proved a real defect: an unsafe idea seed was persisted and echoed through the active-thread public summary.
+
+`ScientificThreadResolver` now rejects unsafe idea seed title/summary content before a scientific transition is created. The rejection is generic (`THREAD_SEED_INVALID`), contains none of the supplied markers, and leaves no scientific state or document write. This is a narrow public privacy boundary correction; it adds no workflow capability or architectural path.
+
+### Public conformance matrix
+
+| Source | Requirement(s) audited | Classification | Evidence |
+|---|---|---|---|
+| Proposal | P1 explicit mode; P2 conservative entry; P3 start before r01; P4 continuation | IMPLEMENTADO | public E2E, entry, thread tests |
+| Proposal | P5 act classification; P6 route precedence; P7 scientific-only deliberation | IMPLEMENTADO | routing, public E2E, lifecycle/direct/DELIBERATE suites |
+| Proposal | P8 Tutor authority; P9 reviewer repair; P10 Planner admission | IMPLEMENTADO | synthesis, materialization, authority-negative tests |
+| Proposal | P11 explicit materialization; P12 existing V2 handoff; P13 pending candidates; P14 once-only | IMPLEMENTADO | public E2E, materialization, publication, recovery tests |
+| Proposal | P15 versioned/auditable/private persistence; P16 bounded context; P17 conservative bootstrap; P18 fail closed | IMPLEMENTADO | persistence, audit, context, entry, recovery tests |
+| Proposal | P19 composed audit/recovery; P20 feature gate/metrics; P21 graph; P22 active-thread ownership | IMPLEMENTADO | audit, routing, thread/store-resolver tests |
+| Proposal | P23 materialization provenance; P24 thread/privacy preservation | IMPLEMENTADO | planner, candidate, publication, public privacy regression |
+| Specification | S1 explicit route and unchanged DELIBERATE | IMPLEMENTADO | routing + public E2E terminal-route assertions |
+| Specification | S2 entry vocabulary and conservative evidence | IMPLEMENTADO | scientific-entry suite |
+| Specification | S3 graph/thread ownership | IMPLEMENTADO | scientific-thread + store-resolvers suites |
+| Specification | S4 act/decision lifecycle | IMPLEMENTADO | act, synthesis, decisions suites |
+| Specification | S5 bounded role context/authority | IMPLEMENTADO | context + synthesis authority-negative suites |
+| Specification | S6 deliberative write isolation | IMPLEMENTADO | public E2E snapshots; synthesis/decision tests |
+| Specification | S7 accepted candidates | IMPLEMENTADO | entry/decisions/materialization suites |
+| Specification | S8 explicit provenance-preserving materialization | IMPLEMENTADO | public E2E + planner/candidate/publication suites |
+| Specification | S9 once-only/recovery | IMPLEMENTADO | idempotency, publication, recovery suites |
+| Specification | S10 bootstrap/lifecycle, persistence/privacy, flag/metrics compatibility | IMPLEMENTADO | entry, persistence/audit, routing, lifecycle, production suites |
+| Design | D1 route order and outer-only default-off gate | IMPLEMENTADO | routing tests and registered-tool E2E |
+| Design | D2 entry resolver and no implicit repair | IMPLEMENTADO | entry/recovery tests |
+| Design | D3 act resolver and D4 thread resolver | IMPLEMENTADO | act/thread/store-resolver tests |
+| Design | D5 direct-neighbor bounded context | IMPLEMENTADO | context tests |
+| Design | D6 Tutor → Reviewer repair bound; D7 user-only decisions/reopen | IMPLEMENTADO | synthesis/decisions/public E2E tests |
+| Design | D8 authoritative graph/event persistence and atomic recovery | IMPLEMENTADO | persistence/audit/recovery tests |
+| Design | D9 frozen selection/idempotency; D10 sole Planner payload authority | IMPLEMENTADO | materialization/candidate tests |
+| Design | D11 non-writing Candidate Executor; D12 Reviewer → guarded publication order | IMPLEMENTADO | candidate/publication/public E2E tests |
+| Design | D13 verified commit and incomplete-evidence recovery | IMPLEMENTADO | publication/recovery/public E2E tests |
+| Design | D14 lifecycle compatibility, audit, rollout metrics, privacy projection | IMPLEMENTADO | lifecycle, audit, routing, production-modify, public privacy tests |
+| Tasks | T1.0–T10.2 prior slice evidence revalidated | IMPLEMENTADO | all focused scientific + V2 compatibility suite: 123/123 |
+| Tasks | T11.1 public composition/wiring | IMPLEMENTADO | routing + public E2E |
+| Tasks | T11.2 registered-tool E2E | IMPLEMENTADO | public E2E: 9/9 |
+| Tasks | T11.3 final public conformance | IMPLEMENTADO | focused/audit suite, complete suite, and diff check below |
+
+No material requirement was classified `PARCIAL`, `NO IMPLEMENTADO`, or `IMPLEMENTADO CON DESVIACIÓN`. The embedded historical task wording that said “Amend only `openspec/changes/scientific-reasoning-workflow/tasks.md`; do not modify code, tests, or apply-progress.” is an obsolete contradictory constraint inside T11.1/T11.3: it conflicts with their required public implementation/test/audit evidence and with this delegated corrective scope. It is therefore classified **IMPLEMENTADO CON ACLARACIÓN APROBADA** for traceability only; the actual T11.3 scope added one necessary privacy regression and the smallest matching safety correction.
+
+### Audit findings
+
+- Checked tasks without evidence: none found after revalidating focused suites and the full suite.
+- Public path without a test: none found for disabled/enabled scientific entry, deliberation, reopen, acceptance, materialization, replay conflict, incomplete-evidence re-entry, lifecycle, direct-document, and `DELIBERATE` routing.
+- Unbacked code / fixture-only coverage: none found in the material public paths; public E2E invokes the registered tool only.
+- Public/internal mismatch: fixed for unsafe idea-seed echo/persistence; safe public results exclude absolute paths, stacks, full-document content, internal-event/infrastructure markers, secrets, adapter details, and candidate-payload markers.
+- Canonical-root and unsafe escape/symlink rejection: passed via persistence and lifecycle unsafe-root/symlink regressions.
+- Read-only adapters: passed through routing/public E2E and static authority-negative tests; no indirect pre-materialization writes were observed.
+- Default-off gate, lifecycle/direct/`DELIBERATE` no-runtime construction, incompatible idempotency-key fail-closed, and incomplete-evidence `RECOVERY_REQUIRED` without silent retry: passed.
+- Planner → Candidate Executor → Document Reviewer → guarded publication authority separation and reservation → plan → candidate → review → publication/recovery traceability: passed.
+
+### Exact verification evidence
+
+```text
+node --test tests/paper-proposal-v2-scientific-public-e2e.test.mjs
+# PASS: 9 tests, 0 failures
+
+node --test tests/paper-proposal-v2-scientific-*.test.mjs tests/paper-proposal-v2-lifecycle.test.mjs tests/paper-proposal-v2-revision-lifecycle.test.mjs tests/paper-proposal-v2-source-routing.test.mjs tests/paper-proposal-v2-tutor-reviewer.test.mjs tests/paper-proposal-v2-production-role-metrics.test.mjs tests/paper-proposal-v2-production-modify.test.mjs
+# PASS: 123 tests, 0 failures
+
+node --test tests/*.test.mjs
+# PASS: 277 tests, 0 failures
+
+git diff --check
+# PASS: no output
+```
+
+### Files changed in T11.3
+
+- `.pi/extensions/paper-proposal-v2/scientific-thread-resolver.ts`
+- `tests/paper-proposal-v2-scientific-public-e2e.test.mjs`
+- `openspec/changes/scientific-reasoning-workflow/tasks.md`
+- `openspec/changes/scientific-reasoning-workflow/apply-progress.md`
+
+### Remaining risks and delivery boundary
+
+- Product risk: no functional blocker found.
+- 4R infrastructure limitation: the existing native candidate-view/review-receipt infrastructure limitation remains outside product scope. No 4R operation, infrastructure workaround, receipt, verify report, sync report, archive, or commit was created.
+- CodeGraph limitation: CodeGraph MCP was unavailable; known-path inspection followed the required index check.
+- Workload / PR boundary: `auto-chain` / `stacked-to-main`, corrective T11.3 only; this audit does not create a PR.
+- Commit proposal (not created): `fix(paper-proposal-v2): harden public scientific workflow privacy`
+
+### Apply result
+
+All implementation task checkboxes are complete. Apply is ready for independent verification; this phase did not run `sdd-verify`, create a verify/sync report, archive, or commit.
