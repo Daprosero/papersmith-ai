@@ -5098,18 +5098,49 @@ async function deriveProposalRevision(
 	};
 }
 
-export type DocumentOperationGuardInput = { action: 'begin_document_operation'|'inspect'|'authorize_role'|'preflight_plan'|'authorize_mutation'|'complete_operation'|'block_operation'; operation_id:string; role?:string; mode?:'INITIAL_CREATE'|'INCREMENTAL_EDIT'; operation?:'MODIFY'|'INSERT'|'DELETE'|'MOVE'|'CONCEPTUAL_REVISION'|'REVIEW'|'DELIBERATE'|'AMBIGUOUS'; budget?:{max_document_delegations:number;attempts:number;model_candidates:number;patches:number}; targetFilename?:string; sourceFilename?:string; sourceSha256?:string; successorFilename?:string; mutationAction?:'write'|'derive_successor'; reason?:string };
+export type DocumentOperationGuardInput = { action: 'begin_document_operation'|'inspect'|'authorize_role'|'preflight_plan'|'authorize_mutation'|'complete_operation'|'block_operation'; operation_id:string; role?:string; mode?:'INITIAL_CREATE'|'INCREMENTAL_EDIT'; operation?:'MODIFY'|'INSERT'|'DELETE'|'MOVE'|'COPY'|'CONCEPTUAL_REVISION'; budget?:{max_document_delegations:number;attempts:number;model_candidates:number;patches:number}; targetFilename?:string; sourceFilename?:string; sourceSha256?:string; successorFilename?:string; mutationAction?:'write'|'derive_successor'|'create_draft'; userAuthorized?:boolean; reason?:string };
 type DocumentOperationReceipt = { receipt_version:'document-operation-guard/v2'; receipt_id:string; operation_id:string; decision:'allowed'|'denied'; reason:{code:string;message:string}; terminal_state:'ACTIVE'|'BLOCKED'|'COMPLETED'; allowed_document_roles:readonly string[]; state:{execution_scope:'DOCUMENT_OPERATION';maintenance_authorized:false;infrastructure_mutation_allowed:false;test_execution_allowed:false;mode:'INITIAL_CREATE'|'INCREMENTAL_EDIT'|null;operation:DocumentOperationGuardInput['operation']|null}; budget:{max_document_delegations:number;attempts:number;model_candidates:number;patches:number}; consumed:{document_delegations:number;attempts:number;model_candidates:number;patches:number}; authorization?:string };
 export type DocumentOperationGuard = { execute(input:DocumentOperationGuardInput,signal?:AbortSignal):Promise<DocumentOperationReceipt>; authorizeWorkspaceMutation(params:ProposalWorkspaceInput):DocumentOperationReceipt; completeWorkspaceMutation(operationId?:string):DocumentOperationReceipt; failWorkspaceMutation(operationId?:string,reason?:string):DocumentOperationReceipt; handleToolCall(_event:unknown):void;handleToolResult(_event:unknown):void };
 const documentOperationGuardSchema = Type.Object({
  action: StringEnum(['begin_document_operation','inspect','authorize_role','preflight_plan','authorize_mutation','complete_operation','block_operation'] as const),
  operation_id: Type.String({minLength:1,maxLength:80}), role: Type.Optional(Type.String()),
  mode: Type.Optional(StringEnum(['INITIAL_CREATE','INCREMENTAL_EDIT'] as const)),
- operation: Type.Optional(StringEnum(['MODIFY','INSERT','DELETE','MOVE','CONCEPTUAL_REVISION','REVIEW','DELIBERATE','AMBIGUOUS'] as const)),
+ operation: Type.Optional(StringEnum(['MODIFY','INSERT','DELETE','MOVE','COPY','CONCEPTUAL_REVISION'] as const)),
  budget: Type.Optional(Type.Object({max_document_delegations:Type.Integer({minimum:0,maximum:3}),attempts:Type.Integer({minimum:0,maximum:1}),model_candidates:Type.Integer({minimum:0,maximum:2}),patches:Type.Integer({minimum:0,maximum:8})})),
- targetFilename: Type.Optional(Type.String()), sourceFilename: Type.Optional(Type.String()), sourceSha256: Type.Optional(Type.String()), successorFilename: Type.Optional(Type.String()), mutationAction: Type.Optional(StringEnum(['write','derive_successor'] as const)), reason: Type.Optional(Type.String())
+ targetFilename: Type.Optional(Type.String()), sourceFilename: Type.Optional(Type.String()), sourceSha256: Type.Optional(Type.String()), successorFilename: Type.Optional(Type.String()), mutationAction: Type.Optional(StringEnum(['write','derive_successor','create_draft'] as const)), userAuthorized: Type.Optional(Type.Boolean()), reason: Type.Optional(Type.String())
 },{additionalProperties:false});
-export function createDocumentOperationGuard(_projectRoot:string):DocumentOperationGuard {let active:{id:string;mode:any;operation:any;budget:any;token?:string;terminal:'ACTIVE'|'BLOCKED'|'COMPLETED'}|undefined;const terminalIds=new Set<string>();const receipt=(decision:'allowed'|'denied',code:string,message:string):DocumentOperationReceipt=>({receipt_version:'document-operation-guard/v2',receipt_id:randomUUID(),operation_id:active?.id??'missing',decision,reason:{code,message},terminal_state:active?.terminal??'BLOCKED',allowed_document_roles:['paper-proposal-router','paper-proposal-editor','paper-proposal-reviewer','paper-proposal-tutor'],state:{execution_scope:'DOCUMENT_OPERATION',maintenance_authorized:false,infrastructure_mutation_allowed:false,test_execution_allowed:false,mode:active?.mode??null,operation:active?.operation??null},budget:active?.budget??{max_document_delegations:0,attempts:0,model_candidates:0,patches:0},consumed:{document_delegations:0,attempts:0,model_candidates:0,patches:0},authorization:active?.token});return {async execute(input){if(input.action==='begin_document_operation'){if(active)return receipt('denied','operation-active','another document operation is active');if(terminalIds.has(input.operation_id))return receipt('denied','operation-inactive','operation is terminal');active={id:input.operation_id,mode:null,operation:null,budget:{max_document_delegations:2,attempts:1,model_candidates:1,patches:4},terminal:'ACTIVE'};return receipt('allowed','begun','operation begun')}if(!active||active.id!==input.operation_id||active.terminal!=='ACTIVE')return receipt('denied','operation-inactive','operation is not active');if(input.action==='preflight_plan'){active.mode=input.mode;active.operation=input.operation;active.budget=input.budget??active.budget;return receipt('allowed','preflight-approved','V2 plan approved')}if(input.action==='authorize_mutation'){active.token=randomBytes(32).toString('base64url');return receipt('allowed','mutation-authorized','successor publication authorized')}if(input.action==='complete_operation'){active.terminal='COMPLETED';const done=receipt('allowed','completed','operation completed');terminalIds.add(active.id);active=undefined;return done}if(input.action==='block_operation'){active.terminal='BLOCKED';const done=receipt('allowed','blocked',input.reason??'blocked');terminalIds.add(active.id);active=undefined;return done}return receipt('allowed','ok','operation active')},authorizeWorkspaceMutation(params){if(!active||params.operation_id!==active.id||params.operationAuthorization!==active.token)return receipt('denied','mutation-unauthorized','mutation is not authorized');return receipt('allowed','mutation-authorized','mutation authorized')},completeWorkspaceMutation(){if(!active)return receipt('denied','operation-inactive','operation is not active');active.terminal='COMPLETED';const done=receipt('allowed','completed','published');terminalIds.add(active.id);active=undefined;return done},failWorkspaceMutation(_id,reason){if(!active)return receipt('denied','operation-inactive','operation is not active');active.terminal='BLOCKED';const done=receipt('denied','publish-failed',reason??'publish failed');terminalIds.add(active.id);active=undefined;return done},handleToolCall(){},handleToolResult(){}}}
+export function createDocumentOperationGuard(_projectRoot:string):DocumentOperationGuard {
+ let active:{id:string;mode:any;operation:any;budget:any;token?:string;terminal:'ACTIVE'|'BLOCKED'|'COMPLETED';mutationAction?:DocumentOperationGuardInput['mutationAction'];targetFilename?:string;userAuthorized?:boolean}|undefined;
+ const terminalIds=new Set<string>();
+ const receipt=(decision:'allowed'|'denied',code:string,message:string):DocumentOperationReceipt=>({receipt_version:'document-operation-guard/v2',receipt_id:randomUUID(),operation_id:active?.id??'missing',decision,reason:{code,message},terminal_state:active?.terminal??'BLOCKED',allowed_document_roles:['paper-proposal-router','paper-proposal-editor','paper-proposal-reviewer','paper-proposal-tutor'],state:{execution_scope:'DOCUMENT_OPERATION',maintenance_authorized:false,infrastructure_mutation_allowed:false,test_execution_allowed:false,mode:active?.mode??null,operation:active?.operation??null},budget:active?.budget??{max_document_delegations:0,attempts:0,model_candidates:0,patches:0},consumed:{document_delegations:0,attempts:0,model_candidates:0,patches:0},authorization:active?.token});
+ return {
+  async execute(input){
+   if(input.action==='begin_document_operation'){
+    if(active)return receipt('denied','operation-active','another document operation is active');
+    if(terminalIds.has(input.operation_id))return receipt('denied','operation-inactive','operation is terminal');
+    active={id:input.operation_id,mode:null,operation:null,budget:{max_document_delegations:2,attempts:1,model_candidates:1,patches:4},terminal:'ACTIVE'};
+    return receipt('allowed','begun','operation begun');
+   }
+   if(!active||active.id!==input.operation_id||active.terminal!=='ACTIVE')return receipt('denied','operation-inactive','operation is not active');
+   if(input.action==='preflight_plan'){
+    if(input.mutationAction==='create_draft'&&(input.mode!=='INITIAL_CREATE'||input.userAuthorized!==true||!input.targetFilename))return receipt('denied','draft-preflight-invalid','draft creation requires a bound target and explicit current-turn INITIAL_CREATE authorization');
+    active.mode=input.mode;active.operation=input.operation;active.budget=input.budget??active.budget;active.mutationAction=input.mutationAction;active.targetFilename=input.targetFilename;active.userAuthorized=input.userAuthorized;
+    return receipt('allowed','preflight-approved','V2 plan approved');
+   }
+   if(input.action==='authorize_mutation'){
+    if(active.mutationAction==='create_draft'&&active.userAuthorized!==true)return receipt('denied','draft-authorization-missing','draft creation was not explicitly authorized');
+    active.token=randomBytes(32).toString('base64url');return receipt('allowed','mutation-authorized',active.mutationAction==='create_draft'?'draft creation authorized':'successor publication authorized');
+   }
+   if(input.action==='complete_operation'){active.terminal='COMPLETED';const done=receipt('allowed','completed','operation completed');terminalIds.add(active.id);active=undefined;return done}
+   if(input.action==='block_operation'){active.terminal='BLOCKED';const done=receipt('allowed','blocked',input.reason??'blocked');terminalIds.add(active.id);active=undefined;return done}
+   return receipt('allowed','ok','operation active');
+  },
+  authorizeWorkspaceMutation(params){if(!active||params.operation_id!==active.id||params.operationAuthorization!==active.token)return receipt('denied','mutation-unauthorized','mutation is not authorized');return receipt('allowed','mutation-authorized','mutation authorized')},
+  completeWorkspaceMutation(){if(!active)return receipt('denied','operation-inactive','operation is not active');active.terminal='COMPLETED';const done=receipt('allowed','completed','published');terminalIds.add(active.id);active=undefined;return done},
+  failWorkspaceMutation(_id,reason){if(!active)return receipt('denied','operation-inactive','operation is not active');active.terminal='BLOCKED';const done=receipt('denied','publish-failed',reason??'publish failed');terminalIds.add(active.id);active=undefined;return done},
+  handleToolCall(){},handleToolResult(){}
+ };
+}
 
 export function createDocumentOperationGuardTool(guard: DocumentOperationGuard) {
 	return {
@@ -5293,26 +5324,70 @@ export function createProposalWorkspaceTool(
 	};
 }
 
-import { PaperProposalV2Orchestrator, ProposalWorkspaceAdapter, ProductionModelRuntime, ScientificWorkflowRuntime, createProductionSemanticPlanner, createProductionTutorAdapter, createProductionReviewerAdapter, getRuntimeMetrics, recordRouteMetric, resolveIntent, runConsistencyAudit, runPaperProposalV2SelfAudit, SCIENTIFIC_WORKFLOW_OPERATION, type ScientificWorkflowPublicResult, type ScientificWorkflowRequest, type ScientificWorkflowRuntimeOptions } from './paper-proposal-v2/exports.js';
+import { ChatDeliberationService, DraftMaterializationService, LifecycleV1PublicRouter, PaperProposalV2Orchestrator, ProposalWorkspaceAdapter, ProductionModelRuntime, ScientificWorkflowRuntime, createProductionSemanticPlanner, createProductionTutorAdapter, createProductionReviewerAdapter, defaultPiSessionDraftLifecycleAdapter, getRuntimeMetrics, getSharedPiSessionDraftRegistry, loadDocumentState, MAX_CHAT_DOCUMENT_CONTEXT_BYTES, recordLifecycleMetric, recordRouteMetric, resolveIntent, runConsistencyAudit, runPaperProposalV2SelfAudit, SCIENTIFIC_WORKFLOW_OPERATION, type ChatDocumentContext, type DraftMaterializationPolicy, type DraftMaterializationRequest, type PiSessionDraftLifecycleAdapter, type PiSessionDraftRegistry, type ScientificWorkflowPublicResult, type ScientificWorkflowRequest, type ScientificWorkflowRuntimeOptions } from './paper-proposal-v2/exports.js';
+import { createSuccessorAcceptanceRegistry, type SuccessorAcceptanceRegistry } from './paper-proposal-v2/successor-acceptance-registry.js';
 
-type GlobalRouteStage = 'LIFECYCLE' | 'DIRECT_DOCUMENT' | 'DELIBERATE' | 'SCIENTIFIC_WORKFLOW' | 'EXISTING_FALLBACK';
-type GlobalRouteInput = Pick<ScientificWorkflowRequest, 'instruction'> & { operation?: string };
+type GlobalRouteStage = 'LIFECYCLE' | 'DIRECT_DOCUMENT' | 'CHAT_DELIBERATION' | 'DRAFT_MATERIALIZATION' | 'MAINTENANCE' | 'SCIENTIFIC_WORKFLOW' | 'EXISTING_FALLBACK';
+type GlobalRouteInput = Pick<ScientificWorkflowRequest, 'instruction'> & { operation?: string; conversationId?: string; draftMaterialization?: DraftMaterializationRequest };
 type GlobalRoute = { stage: GlobalRouteStage; bypassedStages: GlobalRouteStage[] };
+export type V2ExecutionAuthority = { scope:'CHAT_DELIBERATION'|'DOCUMENT_EDIT'|'MAINTENANCE'|'SCIENTIFIC_WORKFLOW'|'EXISTING_FALLBACK'; taskDelegation:'FORBIDDEN'|'LOCAL_ONLY'|'PERMITTED'; documentAuthority:'FORBIDDEN'|'GUARDED'|'NOT_APPLICABLE'; durableState:'FORBIDDEN'|'PERMITTED'|'NOT_APPLICABLE'; stateIdentifier:'conversationId'|'maintenanceTaskId'|'scientificThreadId'|null; explicitHandoffRequired:boolean };
 const LIFECYCLE_OPERATIONS = new Set(['WITHDRAW_REVISION', 'RESTORE_WITHDRAWN_REVISION']);
 const DIRECT_DOCUMENT_INTENTS = new Set(['MODIFY', 'INSERT', 'DELETE', 'MOVE', 'COPY', 'CONCEPTUAL_REVISION', 'REVIEW']);
+const MAINTENANCE_OPERATION = 'MAINTENANCE';
+const CREATE_SUCCESSOR_OPERATION = 'CREATE_SUCCESSOR';
+const MANAGED_CHAT_DOCUMENT_FILENAME = /^research-concept-(?:[a-z0-9]+(?:-[a-z0-9]+)*-)?r[0-9]{2,}\.md$/;
+const MANAGED_ARTIFACT_MARKER = Buffer.from('<!-- proposal-workspace:artifact:v1 -->\n');
+
+/** Canonicalizes only the two public CHAT_DELIBERATION spellings; it never normalizes paths. */
+export function resolveChatDocumentFilename(rawFilename: unknown): { filename?: string; reason?: string } {
+ if (rawFilename === undefined) return {};
+ if (typeof rawFilename !== 'string') return { reason: 'CHAT_DOCUMENT_FILENAME_INVALID' };
+ const filename = rawFilename.startsWith('proposals/') ? rawFilename.slice('proposals/'.length) : rawFilename;
+ if (!MANAGED_CHAT_DOCUMENT_FILENAME.test(filename) || (rawFilename !== filename && rawFilename !== `proposals/${filename}`)) return { reason: 'CHAT_DOCUMENT_FILENAME_INVALID' };
+ return { filename };
+}
+
+async function loadChatDocumentContext(projectRoot: string, filename: string): Promise<{ document?: ChatDocumentContext; reason?: string }> {
+ try {
+  const state = await loadDocumentState(projectRoot, filename, { readOnly: true });
+  if (!state.documentBytes.subarray(0, MANAGED_ARTIFACT_MARKER.length).equals(MANAGED_ARTIFACT_MARKER)) return { reason: 'CHAT_DOCUMENT_UNMANAGED' };
+  const content = state.documentBytes.subarray(0, MAX_CHAT_DOCUMENT_CONTEXT_BYTES).toString('utf8');
+  return { document: Object.freeze({ access: 'READ_ONLY', filename: state.filename, revision: state.revision, lineage: state.lineage, documentSha256: state.documentSha256, content, bytesRead: state.documentBytes.length, truncated: state.documentBytes.length > MAX_CHAT_DOCUMENT_CONTEXT_BYTES }) };
+ } catch {
+  return { reason: 'CHAT_DOCUMENT_NOT_FOUND' };
+ }
+}
+
 function selectedGlobalRoute(stage: GlobalRouteStage, bypassedStages: GlobalRouteStage[]): GlobalRoute {
  const route = {stage, bypassedStages};
  recordRouteMetric(route.stage, route.bypassedStages);
  return route;
 }
+/** Public V2 authority boundary. Generic worker/task control is external; V2 never mints it for chat or document edits. */
+export function resolveV2ExecutionAuthority(stage: GlobalRouteStage): V2ExecutionAuthority {
+ if(stage==='CHAT_DELIBERATION') return {scope:'CHAT_DELIBERATION',taskDelegation:'FORBIDDEN',documentAuthority:'FORBIDDEN',durableState:'FORBIDDEN',stateIdentifier:'conversationId',explicitHandoffRequired:false};
+ if(stage==='DIRECT_DOCUMENT'||stage==='DRAFT_MATERIALIZATION') return {scope:'DOCUMENT_EDIT',taskDelegation:'LOCAL_ONLY',documentAuthority:'GUARDED',durableState:'NOT_APPLICABLE',stateIdentifier:null,explicitHandoffRequired:true};
+ if(stage==='MAINTENANCE') return {scope:'MAINTENANCE',taskDelegation:'PERMITTED',documentAuthority:'FORBIDDEN',durableState:'NOT_APPLICABLE',stateIdentifier:'maintenanceTaskId',explicitHandoffRequired:true};
+ if(stage==='SCIENTIFIC_WORKFLOW') return {scope:'SCIENTIFIC_WORKFLOW',taskDelegation:'LOCAL_ONLY',documentAuthority:'NOT_APPLICABLE',durableState:'PERMITTED',stateIdentifier:'scientificThreadId',explicitHandoffRequired:true};
+ return {scope:'EXISTING_FALLBACK',taskDelegation:'LOCAL_ONLY',documentAuthority:'NOT_APPLICABLE',durableState:'NOT_APPLICABLE',stateIdentifier:null,explicitHandoffRequired:true};
+}
 export function resolveGlobalRoute(input: GlobalRouteInput): GlobalRoute {
+ // Draft materialization is the only explicit create-only exit from session-local chat.
+ if(input.draftMaterialization) return selectedGlobalRoute('DRAFT_MATERIALIZATION',['LIFECYCLE','DIRECT_DOCUMENT','CHAT_DELIBERATION','MAINTENANCE','SCIENTIFIC_WORKFLOW']);
+ // Mode is otherwise an authority boundary: explicit chat wins before every generic heuristic, including lifecycle text.
+ if(input.operation==='CHAT_DELIBERATION') return selectedGlobalRoute('CHAT_DELIBERATION',['LIFECYCLE','DIRECT_DOCUMENT','DRAFT_MATERIALIZATION','MAINTENANCE','SCIENTIFIC_WORKFLOW']);
+ if(input.operation===MAINTENANCE_OPERATION) return selectedGlobalRoute('MAINTENANCE',['LIFECYCLE','DIRECT_DOCUMENT','CHAT_DELIBERATION','DRAFT_MATERIALIZATION','SCIENTIFIC_WORKFLOW']);
+ // CREATE_SUCCESSOR is an explicit document-edit route, never a lifecycle inference.
+ if(input.operation===CREATE_SUCCESSOR_OPERATION) return selectedGlobalRoute('DIRECT_DOCUMENT',['LIFECYCLE','CHAT_DELIBERATION','DRAFT_MATERIALIZATION','MAINTENANCE','SCIENTIFIC_WORKFLOW']);
  const resolved = resolveIntent(input.instruction);
  const explicitLifecycle = typeof input.operation === 'string' && LIFECYCLE_OPERATIONS.has(input.operation);
- if (explicitLifecycle || LIFECYCLE_OPERATIONS.has(resolved.intent)) return selectedGlobalRoute('LIFECYCLE',[]);
- if (DIRECT_DOCUMENT_INTENTS.has(resolved.intent)) return selectedGlobalRoute('DIRECT_DOCUMENT',['LIFECYCLE']);
- if (resolved.intent === 'DELIBERATE') return selectedGlobalRoute('DELIBERATE',['LIFECYCLE','DIRECT_DOCUMENT']);
- if (input.operation === SCIENTIFIC_WORKFLOW_OPERATION) return selectedGlobalRoute('SCIENTIFIC_WORKFLOW',['LIFECYCLE','DIRECT_DOCUMENT','DELIBERATE']);
- return selectedGlobalRoute('EXISTING_FALLBACK',['LIFECYCLE','DIRECT_DOCUMENT','DELIBERATE','SCIENTIFIC_WORKFLOW']);
+ if(explicitLifecycle || LIFECYCLE_OPERATIONS.has(resolved.intent)) return selectedGlobalRoute('LIFECYCLE',[]);
+ // An edit is the only natural-language exit from an established chat conversation.
+ if(DIRECT_DOCUMENT_INTENTS.has(resolved.intent)) return selectedGlobalRoute('DIRECT_DOCUMENT',['LIFECYCLE']);
+ if(resolved.intent==='DELIBERATE') return selectedGlobalRoute('CHAT_DELIBERATION',['LIFECYCLE','DIRECT_DOCUMENT','DRAFT_MATERIALIZATION','MAINTENANCE']);
+ if(input.operation===SCIENTIFIC_WORKFLOW_OPERATION) return selectedGlobalRoute('SCIENTIFIC_WORKFLOW',['LIFECYCLE','DIRECT_DOCUMENT','CHAT_DELIBERATION','DRAFT_MATERIALIZATION','MAINTENANCE']);
+ if(input.conversationId) return selectedGlobalRoute('CHAT_DELIBERATION',['LIFECYCLE','DIRECT_DOCUMENT','DRAFT_MATERIALIZATION','MAINTENANCE','SCIENTIFIC_WORKFLOW']);
+ return selectedGlobalRoute('EXISTING_FALLBACK',['LIFECYCLE','DIRECT_DOCUMENT','CHAT_DELIBERATION','DRAFT_MATERIALIZATION','MAINTENANCE','SCIENTIFIC_WORKFLOW']);
 }
 
 export function scientificWorkflowFeatureEnabled(environment: Record<string, string | undefined> = process.env): boolean {
@@ -5320,7 +5395,7 @@ export function scientificWorkflowFeatureEnabled(environment: Record<string, str
 }
 
 export function unavailableScientificWorkflowResult(): ScientificWorkflowPublicResult {
- return {status:'unavailable',operation:SCIENTIFIC_WORKFLOW_OPERATION,routeStage:SCIENTIFIC_WORKFLOW_OPERATION,entryState:null,relatedThreads:[],candidates:[],blockers:[{code:'SCIENTIFIC_WORKFLOW_DISABLED',message:'Persistent scientific workflow is disabled.'}],nextAction:'enable_scientific_workflow',auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN',metrics:{routeStage:SCIENTIFIC_WORKFLOW_OPERATION,bypassedStages:['LIFECYCLE','DIRECT_DOCUMENT','DELIBERATE']}};
+ return {status:'unavailable',operation:SCIENTIFIC_WORKFLOW_OPERATION,routeStage:SCIENTIFIC_WORKFLOW_OPERATION,entryState:null,relatedThreads:[],candidates:[],blockers:[{code:'SCIENTIFIC_WORKFLOW_DISABLED',message:'Persistent scientific workflow is disabled.'}],nextAction:'enable_scientific_workflow',auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN',metrics:{routeStage:SCIENTIFIC_WORKFLOW_OPERATION,bypassedStages:['LIFECYCLE','DIRECT_DOCUMENT','CHAT_DELIBERATION','DRAFT_MATERIALIZATION']}};
 }
 
 const extensionPath = fileURLToPath(import.meta.url);
@@ -5335,28 +5410,56 @@ export function projectRevisionLifecyclePublicResult(result:any){
  return {status,operation,withdrawnFilename:typeof result?.withdrawnFilename==='string'?result.withdrawnFilename:null,restoredLatestFilename:typeof result?.restoredLatestFilename==='string'?result.restoredLatestFilename:null,operationId:lifecycleOperationId(result),artifactCount:Number.isSafeInteger(result?.artifactCount)&&result.artifactCount>=0?result.artifactCount:0,backupLocation:typeof result?.backupLocation==='string'?result.backupLocation:null,auditStatus:['PASS','WARN','FAIL','NOT_RUN'].includes(result?.auditStatus)?result.auditStatus:'NOT_RUN',selfAuditStatus:['PASS','WARN','FAIL','NOT_RUN'].includes(result?.selfAuditStatus)?result.selfAuditStatus:'NOT_RUN',modelCalls:0,plannerCalls:0,warnings:Array.isArray(result?.warnings)?result.warnings.filter((warning:any)=>typeof warning==='string').slice(0,16):[],...(status==='ambiguous'&&typeof result?.question==='string'?{question:result.question}:{})};
 }
 
+/** Projects lifecycle-v1 records without falling back to filename-era withdrawal state. */
+export function projectLifecycleV1PublicResult(operation:'WITHDRAW_REVISION'|'RESTORE_WITHDRAWN_REVISION',requestId:string,result:any){
+ if(result?.outcome==='COMMITTED'||result?.outcome==='ALREADY_COMMITTED'){
+  const inventory=result.inventory;
+  const revisionId=result.revision?.revisionId??result.withdrawal?.revisionId??null;
+  const withdrawalId=result.withdrawalId??result.withdrawal?.withdrawalId??null;
+  const lifecycleState=inventory.lifecycleState;
+  const activeRevisionId=inventory.activeRevisionId??null;
+  const transitionEvidence={operation,requestId,outcome:'committed' as const,lifecycleState,activeRevisionId,revisionId,withdrawalId};
+  return {status:operation==='WITHDRAW_REVISION'?'withdrawn':'restored',operation,requestId,revisionId,withdrawalId,lifecycleState,activeRevisionId,transitionEvidence,auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN',modelCalls:0,plannerCalls:0,warnings:[]};
+ }
+ const semanticCode=typeof result?.code==='string'?result.code:'LIFECYCLE_INVENTORY_INCONSISTENT';
+ const transitionEvidence={operation,requestId,outcome:'rejected' as const,semanticCode};
+ return {status:'blocked',operation,requestId,revisionId:null,withdrawalId:null,lifecycleState:null,activeRevisionId:null,semanticCode,transitionEvidence,auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN',modelCalls:0,plannerCalls:0,warnings:[]};
+}
+
 export function projectPaperProposalV2PublicResult(input:{result:any;operation:string;sourceFilename?:string;metricsBefore:any;metricsAfter:any;audit?:any;selfAudit?:any}){
  const {result}=input,delta=(key:string)=>Math.max(0,(input.metricsAfter[key]??0)-(input.metricsBefore[key]??0));
  const calls={modelCalls:result.modelCalls??delta('totalModelCalls'),plannerCalls:result.plannerCalls??delta('totalPlannerCalls'),tutorCalls:delta('totalTutorCalls'),reviewerCalls:delta('totalReviewerCalls')};
- const base={operation:input.operation,sourceFilename:result.published?.sourceFilename??input.sourceFilename??null,...calls,mutations:result.mutations??0,warnings:input.audit?.warnings??[]};
+ const base={operation:input.operation,sourceFilename:result.published?.sourceFilename??result.sourceFilename??input.sourceFilename??null,...calls,mutations:result.mutations??0,warnings:input.audit?.warnings??[]};
+ if(result.status==='awaiting_acceptance')return {...base,status:'awaiting_acceptance',targetFilename:result.targetFilename,acceptanceToken:result.acceptanceToken,patchCount:result.patchCount,receiptId:null,manifestStatus:'NOT_PUBLISHED',auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN',recoveryStatus:'not_required',nextAction:'accept_successor'};
  if(result.status==='published'){
   const unresolved=input.audit?.status==='FAIL'||input.selfAudit?.status==='FAIL';
   return {...base,status:unresolved?'blocked':'published',...(unresolved?{category:'audit',message:'Terminal audit failed; inspect the receipt before retrying.'}:{}),targetFilename:result.published.targetFilename,targetSha256:result.published.publishedSha256,patchCount:result.published.patchCount,receiptId:`${result.published.targetFilename}:${result.published.targetRevision}`,manifestStatus:result.derived.derivedStateManifest.status,auditStatus:input.audit?.status??'NOT_RUN',selfAuditStatus:input.selfAudit?.status??'NOT_RUN',recoveryStatus:unresolved?'required':'not_required',nextAction:unresolved?'inspect_receipt':null};
  }
- return {...base,status:result.status,category:errorCategory(result),message:result.reason??result.question??'Execution did not complete.',patchCount:0,receiptId:null,manifestStatus:'NOT_PUBLISHED',auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN',recoveryStatus:result.status==='published-derived-failed'?'required':'not_required',nextAction:result.status==='budget_block'?'reduce_request_or_raise_budget':result.status==='needs-clarification'||result.status==='ambiguous'?'clarify_request':'inspect_error',...(result.budget?{budget:result.budget}:{})};
+ return {...base,status:result.status,category:errorCategory(result),message:result.reason??result.question??'Execution did not complete.',patchCount:0,receiptId:null,manifestStatus:'NOT_PUBLISHED',auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN',recoveryStatus:result.status==='published-derived-failed'?'required':'not_required',nextAction:result.status==='budget_block'?'reduce_request_or_raise_budget':result.status==='needs-clarification'||result.status==='ambiguous'?'clarify_request':'inspect_error',...(result.assessment?{assessment:result.assessment}:{}),...(Array.isArray(result.alternatives)?{alternatives:result.alternatives}:{}),...(Array.isArray(result.risks)?{risks:result.risks}:{}),...(Array.isArray(result.unresolvedQuestions)?{unresolvedQuestions:result.unresolvedQuestions}:{}),...(result.budget?{budget:result.budget}:{})};
 }
 
-export type PaperProposalV2ExtensionOptions = { projectRoot?: string; scientificWorkflow?: ScientificWorkflowRuntimeOptions };
+export type PaperProposalV2ExtensionOptions = { projectRoot?: string; scientificWorkflow?: ScientificWorkflowRuntimeOptions; operationGuard?: DocumentOperationGuard; draftMaterialization?: DraftMaterializationPolicy; draftRegistry?: PiSessionDraftRegistry; draftLifecycle?: PiSessionDraftLifecycleAdapter; successorAcceptanceRegistry?: SuccessorAcceptanceRegistry };
 
 /** Creates the registered public-tool composition for the installed project or an explicitly hosted workspace. */
 export function createPaperProposalV2Extension(options: PaperProposalV2ExtensionOptions = {}): (pi: ExtensionAPI) => void {
  return function proposalWorkspaceExtension(pi: ExtensionAPI): void {
  const projectRoot=options.projectRoot??installedProjectRoot;
- const operationGuard=createDocumentOperationGuard(projectRoot);
+ const operationGuard=options.operationGuard??createDocumentOperationGuard(projectRoot);
  const proposalWorkspace=createProposalWorkspaceTool(projectRoot,{operationGuard});
  const adapter=new ProposalWorkspaceAdapter(projectRoot,operationGuard,proposalWorkspace);
  const productionRuntime=new ProductionModelRuntime();
- const orchestrator=new PaperProposalV2Orchestrator(projectRoot,adapter,undefined,createProductionSemanticPlanner(productionRuntime),{tutor:createProductionTutorAdapter(productionRuntime),reviewer:createProductionReviewerAdapter(productionRuntime)});
+ const tutor=createProductionTutorAdapter(productionRuntime);
+ const successorAcceptanceRegistry=options.successorAcceptanceRegistry??createSuccessorAcceptanceRegistry();
+ const orchestrator=new PaperProposalV2Orchestrator(projectRoot,adapter,undefined,createProductionSemanticPlanner(productionRuntime),{tutor,reviewer:createProductionReviewerAdapter(productionRuntime)},undefined,undefined,successorAcceptanceRegistry);
+ const draftRegistry=options.draftRegistry??getSharedPiSessionDraftRegistry();
+ const draftLifecycle=options.draftLifecycle??defaultPiSessionDraftLifecycleAdapter;
+ const chatDeliberation=new ChatDeliberationService(tutor,draftRegistry);
+ const draftMaterialization=new DraftMaterializationService(projectRoot,operationGuard,options.draftMaterialization);
+ const lifecycleV1Router=options.scientificWorkflow?.lifecycleV1WorkspaceId
+  ?new LifecycleV1PublicRouter({projectRoot,workspaceId:options.scientificWorkflow.lifecycleV1WorkspaceId})
+  :undefined;
+ let runtimeSessionIdentity:string|undefined;
+ const sessionIdentity=(ctx:Pick<ExtensionContext,'sessionManager'>)=>runtimeSessionIdentity=draftLifecycle.sessionIdentity(ctx);
  let scientificWorkflowRuntime:ScientificWorkflowRuntime|undefined;
  const getScientificWorkflowRuntime=()=>scientificWorkflowRuntime??=new ScientificWorkflowRuntime(projectRoot,adapter,productionRuntime,options.scientificWorkflow);
  pi.registerTool(createDocumentOperationGuardTool(operationGuard));
@@ -5364,14 +5467,18 @@ export function createPaperProposalV2Extension(options: PaperProposalV2Extension
  pi.registerTool({
   name:'paper_proposal_v2_execute',
   label:'Execute Paper Proposal V2',
-  description:'Execute one validated Paper Proposal V2 content or managed-revision lifecycle request.',
-  promptSnippet:'Execute a resolved Paper Proposal V2 instruction.',
-  promptGuidelines:['Use paper_proposal_v2_execute after resolving a Paper Proposal V2 request. For managed-revision withdrawal or restore, pass the typed lifecycle operation and an exact sourceFilename or restore withdrawalOperationId; omit withdrawalOperationId for withdrawal because V2 generates it. Supply only user-facing semantic selectors and content; never construct patches, offsets, manifests, receipts, or internal revision mechanics.'],
+  description:'Execute a bounded Paper Proposal V2 chat, explicitly authorized draft creation, document change, or managed-revision lifecycle request.',
+  promptSnippet:'Deliberate conversationally or execute a resolved Paper Proposal V2 instruction.',
+  promptGuidelines:['Use operation CHAT_DELIBERATION for non-mutating tutor conversation; it is session-local, mode-first, and cannot mint document or task authority. Materialize chat only with draftMaterialization INITIAL_CREATE plus explicit current-turn authorization and an exact validated route or approval of the pending proposed route; UPDATE and REPLACE are forbidden. Use document mutation verbs only for explicit principal-local managed edits, which retain exact target resolution and guarded publication. MAINTENANCE is an explicit external-controller handoff only; V2 does not create or resume workers or grant document authority. For managed-revision withdrawal or restore, pass the typed lifecycle operation and an exact sourceFilename or restore withdrawalOperationId; omit withdrawalOperationId for withdrawal because V2 generates it. Supply only user-facing semantic selectors and content; never construct patches, offsets, manifests, receipts, or internal revision mechanics.'],
   parameters:Type.Object({
    instruction:Type.String({minLength:1,maxLength:65536}),
-   operation:Type.Optional(StringEnum(['WITHDRAW_REVISION','RESTORE_WITHDRAWN_REVISION','SCIENTIFIC_WORKFLOW'] as const,{description:'Explicit lifecycle or scientific-workflow operation. Omit for existing direct-document classification.'})),
+   operation:Type.Optional(StringEnum(['WITHDRAW_REVISION','RESTORE_WITHDRAWN_REVISION','CREATE_SUCCESSOR','CHAT_DELIBERATION','MAINTENANCE','SCIENTIFIC_WORKFLOW'] as const,{description:'Explicit lifecycle, managed-successor edit, session-local chat, external-maintenance handoff, or persistent scientific-workflow operation. Omit for existing direct-document classification.'})),
+       editIntent:Type.Optional(StringEnum(['MODIFY','CONCEPTUAL_REVISION'] as const,{description:'Required only with CREATE_SUCCESSOR; identifies the bounded inner document edit.'})),
+       sectionRange:Type.Optional(Type.String({minLength:5,maxLength:64,pattern:'^(?:sections?\\s+)?\\d+(?:\\.\\d+)*\\s*[–-]\\s*\\d+(?:\\.\\d+)*$',description:'Required only with CREATE_SUCCESSOR. Exact numbered Markdown-heading range, for example sections 1–2.2.'})),
+       acceptSuccessor:Type.Optional(Type.Boolean({description:'Set true only for an explicit current-turn acceptance of a previously previewed successor.'})),
+       successorAcceptanceToken:Type.Optional(Type.String({minLength:32,maxLength:128,pattern:'^[A-Za-z0-9_-]+$',description:'Opaque token forwarded internally from the immediately preceding successor preview.'})),
    selectedEntryId:Type.Optional(Type.String({minLength:1,maxLength:256})),
-   sourceFilename:Type.Optional(Type.String({minLength:1,maxLength:256,pattern:'^research-concept-(?:[a-z0-9]+(?:-[a-z0-9]+)*-)?r[0-9]{2,}\\.md$'})),
+   sourceFilename:Type.Optional(Type.String({minLength:1,maxLength:266,pattern:'^(?:proposals/)?research-concept-(?:[a-z0-9]+(?:-[a-z0-9]+)*-)?r[0-9]{2,}\\.md$',description:'For CHAT_DELIBERATION, pass an exact managed revision filename or the same filename prefixed once by proposals/. Paths are never normalized.'})),
    sourceQuery:Type.Optional(Type.String({minLength:1,maxLength:4096})),
    destinationQuery:Type.Optional(Type.String({minLength:1,maxLength:4096})),
    position:Type.Optional(StringEnum(['before','after','inside_start','inside_end'] as const)),
@@ -5380,6 +5487,15 @@ export function createPaperProposalV2Extension(options: PaperProposalV2Extension
    expectedSourceSha256:Type.Optional(Type.String({pattern:'^[a-f0-9]{64}$'})),
    withdrawalOperationId:Type.Optional(Type.String({minLength:36,maxLength:36,pattern:'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'})),
    withdrawalReason:Type.Optional(Type.String({minLength:1,maxLength:500})),
+       conversationId:Type.Optional(Type.String({minLength:5,maxLength:256,pattern:'^chat-[a-z0-9][a-z0-9-]{0,250}$'})),
+       draftMaterialization:Type.Optional(Type.Object({
+        operation:StringEnum(['INITIAL_CREATE','UPDATE','REPLACE'] as const,{description:'Only INITIAL_CREATE is authorized for chat materialization; UPDATE and REPLACE are explicit fail-closed values.'}),
+        route:Type.Optional(Type.String({minLength:1,maxLength:512,description:'Exact project-relative route. It is never normalized or rewritten on the caller’s behalf.'})),
+        approveProposedRoute:Type.Optional(Type.Boolean({description:'Approve the exact route previously proposed for this conversation.'})),
+        authorized:Type.Boolean({description:'Explicit current-turn authorization for INITIAL_CREATE.'}),
+        metadata:Type.Optional(Type.Object({slug:Type.Optional(Type.String({minLength:1,maxLength:80})),purpose:Type.Optional(Type.String({minLength:1,maxLength:80})),revision:Type.Optional(Type.String({minLength:1,maxLength:40})),extension:Type.Optional(Type.String({minLength:2,maxLength:12}))},{additionalProperties:false})),
+       },{additionalProperties:false})),
+       maintenanceTaskId:Type.Optional(Type.String({minLength:13,maxLength:256,pattern:'^maintenance-[a-z0-9][a-z0-9-]{0,242}$'})),
        activeThreadId:Type.Optional(Type.String({minLength:1,maxLength:256})),
        relatedThreadIds:Type.Optional(Type.Array(Type.String({minLength:1,maxLength:256}),{maxItems:32})),
        scientificAct:Type.Optional(Type.String({minLength:1,maxLength:64})),
@@ -5392,8 +5508,42 @@ export function createPaperProposalV2Extension(options: PaperProposalV2Extension
   }),
   async execute(_toolCallId,params,signal,_onUpdate,ctx){
    const route=resolveGlobalRoute(params);
+   if(route.stage==='DRAFT_MATERIALIZATION'){
+    const conversationId=params.conversationId??'';
+    const currentSessionIdentity=sessionIdentity(ctx);
+    const materializationPayload=conversationId?draftRegistry.get(currentSessionIdentity,conversationId):undefined;
+    const result=await draftMaterialization.execute({conversationId,materializationPayload,request:params.draftMaterialization!});
+    if(result.status==='materialized'&&conversationId)draftRegistry.delete(currentSessionIdentity,conversationId);
+    const publicResult={...result,operation:result.operation,routeStage:'DOCUMENT_EDIT',transition:'CHAT_DELIBERATION_TO_DOCUMENT_EDIT',authority:resolveV2ExecutionAuthority(route.stage),conversationId:params.conversationId??null,modelCalls:0,plannerCalls:0,tutorCalls:0,reviewerCalls:0,receiptId:null,manifestStatus:'NOT_PUBLISHED',auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN',recoveryStatus:'not_required'};
+    return {content:[{type:'text',text:JSON.stringify(publicResult)}],details:publicResult};
+   }
+   if(route.stage==='CHAT_DELIBERATION'){
+    // FORBIDDEN is mutation authority: an explicitly selected managed document may be loaded as immutable tutor context only.
+    const resolvedDocument=resolveChatDocumentFilename(params.sourceFilename);
+    const chatDocument=resolvedDocument.filename?await loadChatDocumentContext(projectRoot,resolvedDocument.filename):resolvedDocument;
+    const result=chatDocument.reason
+     ?{status:'blocked' as const,conversationId:params.conversationId??'chat-unresolved',alternatives:[],risks:[],unresolvedQuestions:[],context:{turnCount:0,reusedConclusion:false},modelCalls:0,mutations:0 as const,receiptId:null,manifestStatus:'NOT_PUBLISHED' as const,auditStatus:'NOT_RUN' as const,selfAuditStatus:'NOT_RUN' as const,recoveryStatus:'not_required' as const,nextAction:'clarify_request' as const,reason:chatDocument.reason}
+     :await productionRuntime.withContext(ctx,signal,()=>chatDeliberation.deliberate({instruction:params.instruction,sessionIdentity:sessionIdentity(ctx),...(params.conversationId?{conversationId:params.conversationId}:{}),...(chatDocument.document?{document:chatDocument.document}:{})}));
+    const {reason,...publicChat}=result;
+    const calls={plannerCalls:0,tutorCalls:result.modelCalls,reviewerCalls:0};
+    const authority=resolveV2ExecutionAuthority(route.stage);
+    const publicResult=result.status==='blocked'
+     ?{operation:'CHAT_DELIBERATION',routeStage:'CHAT_DELIBERATION',authority,...publicChat,...calls,category:/MODEL|PRODUCTION/.test(reason??'')?'model':'validation',message:reason??'Chat deliberation did not complete.'}
+     :{operation:'CHAT_DELIBERATION',routeStage:'CHAT_DELIBERATION',authority,...publicChat,...calls};
+    return {content:[{type:'text',text:JSON.stringify(publicResult)}],details:publicResult};
+   }
+   if(route.stage==='MAINTENANCE'){
+    const authority=resolveV2ExecutionAuthority(route.stage);
+    const maintenanceTaskId=params.maintenanceTaskId;
+    const publicResult=maintenanceTaskId!==undefined&&!/^maintenance-[a-z0-9][a-z0-9-]{0,242}$/.test(maintenanceTaskId)
+     ?{status:'blocked',operation:MAINTENANCE_OPERATION,routeStage:'MAINTENANCE',authority,maintenanceTaskId:null,mutations:0,receiptId:null,manifestStatus:'NOT_PUBLISHED',auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN',recoveryStatus:'not_required',nextAction:'supply_maintenance_task_id',blockers:[{code:'MAINTENANCE_TASK_ID_INVALID',message:'Maintenance handoff requires a maintenance-prefixed task ID.'}]}
+     :{status:'delegation_permitted',operation:MAINTENANCE_OPERATION,routeStage:'MAINTENANCE',authority,maintenanceTaskId:maintenanceTaskId??null,mutations:0,receiptId:null,manifestStatus:'NOT_PUBLISHED',auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN',recoveryStatus:'not_required',nextAction:'handoff_to_maintenance_controller'};
+    return {content:[{type:'text',text:JSON.stringify(publicResult)}],details:publicResult};
+   }
    if(route.stage==='SCIENTIFIC_WORKFLOW'){
-    const publicResult=scientificWorkflowFeatureEnabled()
+    const publicResult=params.activeThreadId?.startsWith('chat-')
+     ?{status:'blocked',operation:SCIENTIFIC_WORKFLOW_OPERATION,routeStage:SCIENTIFIC_WORKFLOW_OPERATION,entryState:null,relatedThreads:[],candidates:[],blockers:[{code:'SCIENTIFIC_THREAD_ID_RESERVED_FOR_CHAT',message:'Scientific workflow cannot use a chat conversation ID.'}],nextAction:'supply_scientific_thread_id',auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN'}
+     :scientificWorkflowFeatureEnabled()
      ?await getScientificWorkflowRuntime().execute({operation:SCIENTIFIC_WORKFLOW_OPERATION,instruction:params.instruction,...(params.activeThreadId?{activeThreadId:params.activeThreadId}:{}),...(params.relatedThreadIds?{relatedThreadIds:params.relatedThreadIds}:{}),...(params.scientificAct?{scientificAct:params.scientificAct as ScientificWorkflowRequest['scientificAct']}:{}),...(params.candidateIds?{candidateIds:params.candidateIds}:{}),...(params.idempotencyKey?{idempotencyKey:params.idempotencyKey}:{}),...(params.synthesisId?{synthesisId:params.synthesisId}:{}),...(params.synthesisDigest?{synthesisDigest:params.synthesisDigest}:{}),...(params.modificationCause?{modificationCause:params.modificationCause}:{}),...(params.actor?{actor:params.actor}:{})})
      :unavailableScientificWorkflowResult();
     return {content:[{type:'text',text:JSON.stringify(publicResult)}],details:publicResult};
@@ -5403,8 +5553,21 @@ export function createPaperProposalV2Extension(options: PaperProposalV2Extension
    const lifecycle=route.stage==='LIFECYCLE';
    const operation=lifecycle?(LIFECYCLE_OPERATIONS.has(requestedOperation)?requestedOperation:resolvedIntent):requestedOperation;
    const metricsBefore=getRuntimeMetrics();
-   const {operation:_operation,...existingParams}=params;
-   const executionParams=lifecycle?{...existingParams,operation}:existingParams;
+   if(lifecycle&&lifecycleV1Router){
+    const requestId=params.idempotencyKey??randomUUID();
+    const result=operation==='WITHDRAW_REVISION'
+     ?await lifecycleV1Router.execute({operation,requestId,locator:params.sourceFilename,reason:params.withdrawalReason})
+     :await lifecycleV1Router.execute({operation:'RESTORE_WITHDRAWN_REVISION',requestId,withdrawalId:params.withdrawalOperationId,reference:params.sourceFilename});
+    recordLifecycleMetric(operation==='WITHDRAW_REVISION'
+     ?(result.outcome==='COMMITTED'||result.outcome==='ALREADY_COMMITTED'?'withdrawal_committed':'withdrawal_rejected')
+     :(result.outcome==='COMMITTED'||result.outcome==='ALREADY_COMMITTED'?'restore_committed':'restore_rejected'));
+    const publicResult=projectLifecycleV1PublicResult(operation,requestId,result);
+    return {content:[{type:'text',text:JSON.stringify(publicResult)}],details:publicResult};
+   }
+   const {operation:_operation,conversationId,draftMaterialization:_draftMaterialization,maintenanceTaskId:_maintenanceTaskId,activeThreadId:_activeThreadId,relatedThreadIds:_relatedThreadIds,scientificAct:_scientificAct,candidateIds:_candidateIds,idempotencyKey:_idempotencyKey,synthesisId:_synthesisId,synthesisDigest:_synthesisDigest,modificationCause:_modificationCause,actor:_actor,...existingParams}=params;
+   const priorConclusion=route.stage==='DIRECT_DOCUMENT'?chatDeliberation.latestConclusion(conversationId):undefined;
+   const conversationSource=operation===CREATE_SUCCESSOR_OPERATION?chatDeliberation.currentManagedDocument(conversationId)?.filename:undefined;
+   const executionParams=lifecycle?{...existingParams,operation}:{...existingParams,...(operation===CREATE_SUCCESSOR_OPERATION?{operation,sessionIdentity:sessionIdentity(ctx),...(conversationSource&&!params.sourceFilename?{sourceFilename:conversationSource}:{})}:{}),...(priorConclusion?{priorConclusion}:{})};
    const result=lifecycle?await orchestrator.execute(executionParams):await productionRuntime.withContext(ctx,signal,()=>orchestrator.execute(executionParams));
    let audit,selfAudit;
    if(!lifecycle&&result.status==='published'){
@@ -5413,10 +5576,13 @@ export function createPaperProposalV2Extension(options: PaperProposalV2Extension
      selfAudit=await runPaperProposalV2SelfAudit({projectRoot});
     } catch { audit={status:'FAIL',warnings:[]};selfAudit={status:'FAIL'}; }
    }
-   const publicResult=lifecycle?projectRevisionLifecyclePublicResult(result):projectPaperProposalV2PublicResult({result,operation,sourceFilename:params.sourceFilename,metricsBefore,metricsAfter:getRuntimeMetrics(),audit,selfAudit});
+   const projected=lifecycle?projectRevisionLifecyclePublicResult(result):projectPaperProposalV2PublicResult({result,operation,sourceFilename:params.sourceFilename,metricsBefore,metricsAfter:getRuntimeMetrics(),audit,selfAudit});
+   const publicResult=route.stage==='DIRECT_DOCUMENT'?{...projected,authority:resolveV2ExecutionAuthority(route.stage)}:projected;
    return {content:[{type:'text',text:JSON.stringify(publicResult)}],details:publicResult};
   },
  });
+ pi.on('session_start',(_event,ctx)=>{runtimeSessionIdentity=draftLifecycle.sessionIdentity(ctx);});
+ pi.on('session_shutdown',(event,ctx)=>{if(draftLifecycle.shouldClearSession(event)){const identity=runtimeSessionIdentity??draftLifecycle.sessionIdentity(ctx);draftRegistry.clearSession(identity);successorAcceptanceRegistry.clearSession(identity);}});
  pi.on('input', async ()=>({action:'continue'}));
  pi.on('tool_call',(event)=>operationGuard.handleToolCall(event));
  pi.on('tool_result',(event)=>operationGuard.handleToolResult(event));

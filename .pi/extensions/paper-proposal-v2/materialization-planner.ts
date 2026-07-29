@@ -12,7 +12,8 @@ import type {
 	ScientificThread,
 } from './scientific-domain.js';
 import type { ScientificState, ScientificStateStore } from './scientific-state-store.js';
-import type { DocumentState } from './types.js';
+import type { DocumentState, LifecycleRevision, MaterializationResult, WorkspaceLifecycleState } from './types.js';
+import { LifecycleService } from './lifecycle-service.js';
 
 export type MaterializationPlannerInput = {
 	record: MaterializationRecord;
@@ -142,5 +143,35 @@ export class MaterializationPlanner {
 		} catch (error) {
 			return { status: 'blocked', code: error instanceof Error ? error.message : 'MATERIALIZATION_PAYLOAD_INVALID' };
 		}
+	}
+}
+
+export type LifecycleMaterializationPlannerResult =
+	| { status:'ready'; result:MaterializationResult; revision:LifecycleRevision; inventory:WorkspaceLifecycleState }
+	| { status:'blocked'; code:string };
+
+/** Opt-in boundary: never reads filename-era sources or writes legacy projections. */
+export class LifecycleMaterializationPlanner {
+	constructor(private readonly input:{projectRoot:string;workspaceId:string;service?:LifecycleService}) {}
+
+	async readInventory(): Promise<WorkspaceLifecycleState> {
+		return (this.input.service ?? new LifecycleService(this.input.projectRoot)).rebuildLifecycleInventory(this.input.workspaceId);
+	}
+
+	async materialize(request:{requestId:string;revisionId:string;approvedChanges:ReadonlyArray<{from:string;to:string}>;locator?:string}):Promise<LifecycleMaterializationPlannerResult> {
+		const service=this.input.service??new LifecycleService(this.input.projectRoot);
+		const inventory=await service.rebuildLifecycleInventory(this.input.workspaceId).catch(()=>undefined);
+		if(!inventory?.base) return {status:'blocked',code:'BASE_DOCUMENT_NOT_REGISTERED'};
+		const active=inventory.revisions.find(revision=>revision.revisionId===inventory.activeRevisionId);
+		if(inventory.revisions.length>0&&!active) return {status:'blocked',code:'ACTIVE_REVISION_NOT_FOUND'};
+		const result=active
+			? await service.createSuccessor({workspaceId:this.input.workspaceId,requestId:request.requestId,operation:'CREATE_SUCCESSOR',revisionId:request.revisionId,source:{sourceKind:'REVISION',sourceId:active.revisionId,sourceContentHash:active.contentHash,baseDocumentId:inventory.base.baseDocumentId},approvedChanges:request.approvedChanges,...(request.locator?{locator:request.locator}:{})})
+			: await service.createFromBase({workspaceId:this.input.workspaceId,requestId:request.requestId,operation:'CREATE_FROM_BASE',revisionId:request.revisionId,source:{sourceKind:'BASE_DOCUMENT',sourceId:inventory.base.baseDocumentId,sourceContentHash:inventory.base.contentHash,baseDocumentId:inventory.base.baseDocumentId},approvedChanges:request.approvedChanges,...(request.locator?{locator:request.locator}:{})});
+		if(result.outcome!=='COMMITTED'&&result.outcome!=='ALREADY_COMMITTED') return {status:'blocked',code:result.code??'LIFECYCLE_INVENTORY_INCONSISTENT'};
+		const rebuilt=await service.rebuildLifecycleInventory(this.input.workspaceId);
+		const revision='revision' in result?result.revision:rebuilt.revisions.find(item=>item.revisionId===result.revisionId);
+		const materializationResult='result' in result?result.result:result as MaterializationResult;
+		if(!revision) return {status:'blocked',code:'LIFECYCLE_INVENTORY_INCONSISTENT'};
+		return {status:'ready',result:materializationResult,revision,inventory:rebuilt};
 	}
 }

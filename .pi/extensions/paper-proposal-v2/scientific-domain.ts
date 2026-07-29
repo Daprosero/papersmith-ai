@@ -100,6 +100,10 @@ export type ThreadSynthesisId = string;
 export type RevisionEvidence = {
 	filename: string;
 	revision: string;
+	/** Stable lifecycle-v1 identity when this is explicit authority rather than a legacy projection. */
+	revisionId?: string;
+	baseDocumentId?: string;
+	lineage?: { sourceKind: 'BASE_DOCUMENT'|'REVISION'; sourceId: string; sourceContentHash: string };
 	documentSha256: string;
 };
 export type EvidenceReference = { kind: string; id: string; sha256?: string };
@@ -114,6 +118,9 @@ export type ProjectEntryBootstrap = {
 };
 export type ProjectEntry = {
 	state: ProjectEntryState;
+	/** Read-only projection emitted only for explicitly registered lifecycle-v1 workspaces. */
+	baseDocument?: { baseDocumentId: string; contentHash: string };
+	lifecycleState?: 'EMPTY'|'BASE_REGISTERED'|'ACTIVE'|'WITHDRAWN_ONLY';
 	activeRevision?: RevisionEvidence;
 	activeThreadId?: ScientificThreadId;
 	relatedThreadIds: ScientificThreadId[];
@@ -172,6 +179,13 @@ export type DocumentReviewEvidence = {
 	planDigest: string;
 	decision: 'APPROVE' | 'APPROVE_WITH_CHANGES' | 'BLOCK' | 'NEEDS_CLARIFICATION';
 };
+export type LifecycleMaterializationEvidence = {
+	workspaceId: string;
+	operation: 'CREATE_FROM_BASE' | 'CREATE_SUCCESSOR';
+	requestId: string;
+	revisionId: string;
+	contentHash: string;
+};
 export type MaterializationCommitEvidence = {
 	candidateDigest: string;
 	planDigest: string;
@@ -180,6 +194,8 @@ export type MaterializationCommitEvidence = {
 	publishedSha256: string;
 	receiptSha256: string;
 	threadIds: ScientificThreadId[];
+	/** Present only when the lifecycle-v1 authority owns the published revision. */
+	lifecycle?: LifecycleMaterializationEvidence;
 };
 /** Bounded failure evidence only; it never stores exception text, prompts, or model output. */
 export type MaterializationOutcome = {
@@ -199,6 +215,8 @@ export type MaterializationRecord = {
 	plan?: MaterializationPlan;
 	review?: DocumentReviewEvidence;
 	commit?: MaterializationCommitEvidence;
+	/** The sole semantic-publication route for explicitly registered lifecycle-v1 workspaces. */
+	lifecycle?: LifecycleMaterializationEvidence;
 	outcome?: MaterializationOutcome;
 };
 export type MaterializationClaimProvenance = {

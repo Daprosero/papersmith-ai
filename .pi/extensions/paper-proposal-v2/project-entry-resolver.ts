@@ -18,6 +18,9 @@ type ValidRevisionInventory = {
 	status: 'valid';
 	activeRevisions: RevisionEvidence[];
 	withdrawnRevisions: RevisionEvidence[];
+	/** Present only when the caller supplied explicit lifecycle-v1 evidence. */
+	baseDocument?: { baseDocumentId: string; contentHash: string };
+	lifecycleState?: 'EMPTY'|'BASE_REGISTERED'|'ACTIVE'|'WITHDRAWN_ONLY';
 	auditEvidence: string[];
 };
 
@@ -86,7 +89,7 @@ function failure(code: string, auditEvidence: string[]): ProjectEntry {
 
 function validRevisionEvidence(value: RevisionEvidence) {
 	return !!value && typeof value.filename === 'string' && typeof value.revision === 'string' && typeof value.documentSha256 === 'string'
-		&& value.filename.length > 0 && revision.test(value.revision) && sha.test(value.documentSha256);
+		&& (value.filename.length > 0 || typeof value.revisionId === 'string') && (revision.test(value.revision) || typeof value.revisionId === 'string') && sha.test(value.documentSha256);
 }
 
 function validateRevisionInventory(evidence: RevisionInventoryEvidence): string | undefined {
@@ -101,7 +104,7 @@ function validateRevisionInventory(evidence: RevisionInventoryEvidence): string 
 }
 
 function matchingRevision(left: RevisionEvidence, right: RevisionEvidence) {
-	return left.filename === right.filename && left.revision === right.revision && left.documentSha256 === right.documentSha256;
+	return left.documentSha256 === right.documentSha256 && (left.revisionId&&right.revisionId ? left.revisionId===right.revisionId : left.filename === right.filename && left.revision === right.revision);
 }
 
 function validateScientificEvidence(evidence: PresentScientificStateEvidence, activeRevisions: RevisionEvidence[]): string | undefined {
@@ -216,7 +219,11 @@ export class ProjectEntryResolver {
 		const revisionFailure = validateRevisionInventory(revisionEvidence);
 		if (revisionFailure) return failure(revisionFailure, auditEvidence);
 		const activeRevisions = revisionEvidence.activeRevisions;
+		const lifecycleProjection = revisionEvidence.status === 'valid' && (revisionEvidence.baseDocument || revisionEvidence.lifecycleState)
+			? { ...(revisionEvidence.baseDocument ? { baseDocument: structuredClone(revisionEvidence.baseDocument) } : {}), ...(revisionEvidence.lifecycleState ? { lifecycleState: revisionEvidence.lifecycleState } : {}) }
+			: {};
 		if (activeRevisions.length > 1) return {
+			...lifecycleProjection,
 			state: 'MULTIPLE_ACTIVE_REVISIONS',
 			relatedThreadIds: [],
 			pendingCandidateIds: [],
@@ -229,6 +236,7 @@ export class ProjectEntryResolver {
 			const projection = reentryProjection(scientificEvidence.snapshot);
 			const pendingCandidateIds = projection.pendingCandidates.map((candidate) => candidate.decisionId);
 			return {
+				...lifecycleProjection,
 				state: pendingCandidateIds.length
 					? 'MATERIALIZATION_PENDING'
 					: activeRevisions.length === 0
@@ -245,6 +253,7 @@ export class ProjectEntryResolver {
 		}
 		if (activeRevisions.length === 1) {
 			return {
+				...lifecycleProjection,
 				state: 'ACTIVE_PROPOSAL',
 				activeRevision: activeRevisions[0],
 				relatedThreadIds: [],
@@ -255,6 +264,7 @@ export class ProjectEntryResolver {
 			};
 		}
 		if (revisionEvidence.withdrawnRevisions.length > 0) return {
+			...lifecycleProjection,
 			state: 'WITHDRAWN_ONLY',
 			relatedThreadIds: [],
 			pendingCandidateIds: [],
@@ -262,6 +272,7 @@ export class ProjectEntryResolver {
 			auditEvidence,
 		};
 		return {
+			...lifecycleProjection,
 			state: 'EMPTY_PROJECT',
 			relatedThreadIds: [],
 			pendingCandidateIds: [],

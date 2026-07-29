@@ -32,7 +32,7 @@ export function resolveIntent(instruction:string):ResolvedIntent {
   else if(has('analiza','propón alternativas','no la cambies','delibera','explica'))intent='DELIBERATE';
   else if(has('revisa críticamente','review explícito','revisión independiente'))intent='REVIEW';
   else if(has('adapta','regularización','motivación matemática','múltiples dominios','reorganiza el argumento','semi-supervisado','conceptual'))intent='CONCEPTUAL_REVISION';
-  else if(has('cambia','modifica','reemplaza','corrige'))intent='MODIFY';
+  else if(has('cambia','modifica','reemplaza','corrige','aplica','aplicar'))intent='MODIFY';
  }
  const adaptive=has('adapta la transición','ajusta al nuevo contexto','reformula para que encaje');
  const moveCopy=intent==='MOVE'||intent==='COPY';

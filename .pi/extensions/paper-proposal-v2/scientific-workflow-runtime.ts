@@ -5,13 +5,14 @@ import { ScientificActResolver } from './scientific-act-resolver.js';
 import { ScientificThreadResolver } from './scientific-thread-resolver.js';
 import { ScientificContextBuilder } from './scientific-context-builder.js';
 import { createReadOnlyDocumentFragmentLoader } from './document-state.js';
-import { readCanonicalManagedRevisionInventory } from './revision-lifecycle-store.js';
-import { MaterializationPlanner } from './materialization-planner.js';
+import { createLifecycleV1RevisionInventoryPort, readCanonicalManagedRevisionInventory } from './revision-lifecycle-store.js';
+import { LifecycleMaterializationPlanner, MaterializationPlanner } from './materialization-planner.js';
 import { MaterializationCandidateExecutor } from './materialization-candidate-executor.js';
 import { DocumentReviewerGate } from './document-reviewer-gate.js';
 import { MaterializationPublicationService } from './materialization-publication-service.js';
 import { loadDocumentState } from './document-state.js';
 import type { ProposalWorkspaceAdapter } from './proposal-workspace-adapter.js';
+import { sha256 } from './types.js';
 import type { ProductionModelRuntime } from './production-runtime.js';
 import type {
 	CanonicalProposalMetadata,
@@ -34,6 +35,8 @@ export type ScientificWorkflowRuntimeOptions = {
 	newId?: () => string;
 	now?: () => Date;
 	derivedStore?: ConstructorParameters<typeof MaterializationPublicationService>[0]['derivedStore'];
+	/** Opt-in only: legacy workspaces are never inferred or migrated into lifecycle-v1. */
+	lifecycleV1WorkspaceId?: string;
 };
 
 function publicBlocker(code: string, nextAction: string): PublicBlocker {
@@ -56,6 +59,7 @@ export class ScientificWorkflowRuntime {
 	private readonly candidateExecutor: MaterializationCandidateExecutor;
 	private readonly documentReviewer: DocumentReviewerGate;
 	private readonly publication: MaterializationPublicationService;
+	private readonly lifecyclePublication?: LifecycleMaterializationPlanner;
 	/** Secondary client retry aliases are scoped to this public-runtime lifetime; durable exact-set identity remains store-owned. */
 	private readonly idempotencySelections = new Map<string, string>();
 
@@ -66,7 +70,9 @@ export class ScientificWorkflowRuntime {
 		private readonly options: ScientificWorkflowRuntimeOptions = {},
 	) {
 		this.store = new ScientificStateStore(projectRoot);
-		this.entryResolver = new ProjectEntryResolver({ read: () => readCanonicalManagedRevisionInventory(projectRoot) }, this.store);
+		this.entryResolver = new ProjectEntryResolver(options.lifecycleV1WorkspaceId
+			? createLifecycleV1RevisionInventoryPort({ projectRoot, workspaceId: options.lifecycleV1WorkspaceId })
+			: { read: () => readCanonicalManagedRevisionInventory(projectRoot) }, this.store);
 		this.threadResolver = new ScientificThreadResolver(this.store);
 		const roles = options.roleAdapters ?? createProductionScientificRoleAdapters(runtime);
 		const contextBuilder = new ScientificContextBuilder({ read: async () => {
@@ -79,6 +85,7 @@ export class ScientificWorkflowRuntime {
 		this.candidateExecutor = new MaterializationCandidateExecutor();
 		this.documentReviewer = new DocumentReviewerGate(roles.reviewer);
 		this.publication = new MaterializationPublicationService({ projectRoot, store: this.store, executor: this.candidateExecutor, reviewer: this.documentReviewer, adapter, ...(options.derivedStore ? { derivedStore: options.derivedStore } : {}) });
+		this.lifecyclePublication = options.lifecycleV1WorkspaceId ? new LifecycleMaterializationPlanner({ projectRoot, workspaceId: options.lifecycleV1WorkspaceId }) : undefined;
 	}
 
 	async execute(request: ScientificWorkflowRequest): Promise<ScientificWorkflowPublicResult> {
@@ -122,6 +129,7 @@ export class ScientificWorkflowRuntime {
 	}
 
 	private async materialize(entry: ProjectEntry, request: ScientificWorkflowRequest): Promise<ScientificWorkflowPublicResult> {
+		if (this.lifecyclePublication) return this.materializeLifecycleV1(entry, request);
 		if (!this.options.canonicalMetadata) return this.withBlock(entry, 'CANONICAL_METADATA_UNAVAILABLE', 'supply_canonical_metadata', 'blocked');
 		if (!request.candidateIds?.length) return this.withBlock(entry, 'MATERIALIZATION_SELECTION_REQUIRED', 'select_accepted_candidates', 'blocked');
 		const requestedSelection = JSON.stringify(request.candidateIds);
@@ -147,6 +155,51 @@ export class ScientificWorkflowRuntime {
 		const result = await this.publication.materialize({ record, ...(source ? { source } : {}) });
 		if (result.status === 'materialized') return { ...this.workflow.projectReentry(entry), status: 'materialized', materialization: { materializationId: result.record.materializationId, state: result.record.state, targetFilename: result.targetFilename, targetRevision: result.targetRevision }, nextAction: null };
 		return this.withBlock(entry, result.code, result.status === 'recovery_required' ? 'reconcile_materialization_evidence' : 'retry_materialization', 'blocked');
+	}
+
+	/** The only public lifecycle-v1 publication route. It never invokes filename-era planning, candidate rendering, or workspace publication. */
+	private async materializeLifecycleV1(entry: ProjectEntry, request: ScientificWorkflowRequest): Promise<ScientificWorkflowPublicResult> {
+		if (!request.candidateIds?.length) return this.withBlock(entry, 'MATERIALIZATION_SELECTION_REQUIRED', 'select_accepted_candidates', 'blocked');
+		let authority;
+		try { authority = await this.lifecyclePublication!.readInventory(); } catch { return this.withBlock(entry, 'LIFECYCLE_INVENTORY_INCONSISTENT', 'reconcile_lifecycle_inventory', 'blocked'); }
+		if (!authority.base) return this.withBlock(entry, 'BASE_DOCUMENT_NOT_REGISTERED', 'register_lifecycle_base', 'blocked');
+		const active = authority.revisions.find((revision) => revision.revisionId === authority.activeRevisionId);
+		if (authority.revisions.length > 0 && !active) return this.withBlock(entry, 'ACTIVE_REVISION_NOT_FOUND', 'reconcile_lifecycle_inventory', 'blocked');
+		const reserved = await this.store.reserveMaterialization(request.candidateIds);
+		if (reserved.status === 'blocked') return this.withBlock(entry, reserved.code, 'select_accepted_candidates', 'blocked');
+		if (reserved.status === 'conflict') return this.withBlock(entry, reserved.code, 'resolve_materialization_selection_conflict', 'blocked');
+		const record = reserved.record;
+		if (record.state === 'COMMITTED' && record.commit?.lifecycle) return { ...this.workflow.projectReentry(entry), status: 'materialized', materialization: { materializationId: record.materializationId, state: record.state, targetFilename: record.commit.targetFilename, targetRevision: record.commit.targetRevision }, nextAction: null };
+		if (record.state !== 'RESOLVING') return this.withBlock(entry, 'MATERIALIZATION_LIFECYCLE_RETRY_UNSUPPORTED', 'reconcile_materialization_evidence', 'blocked');
+		const state = await this.store.read();
+		if (!state) return this.withBlock(entry, 'MATERIALIZATION_STATE_MISSING', 'reconcile_scientific_state', 'blocked');
+		const summaries = record.selectedDecisions.map((selected) => {
+			const tutor = state.events.find((event) => event.type === 'TUTOR_ASSESSED' && event.threadId === selected.threadId && event.eventId === selected.sourceEventIds[0]);
+			return typeof tutor?.payload.summary === 'string' ? tutor.payload.summary.trim() : undefined;
+		});
+		if (summaries.some((summary) => !summary)) return this.withBlock(entry, 'MATERIALIZATION_CLAIM_UNMAPPED', 'reconcile_materialization_plan', 'blocked');
+		const source = active ?? authority.base;
+		const addition = `\n\n## Accepted scientific decisions\n\n${summaries.map((summary) => `- ${summary}`).join('\n')}\n`;
+		const published = await this.lifecyclePublication.materialize({
+			requestId: record.materializationId,
+			revisionId: `revision-${record.materializationId}`,
+			approvedChanges: [{ from: source.content, to: `${source.content}${addition}` }],
+		});
+		if (published.status === 'blocked') return this.withBlock(entry, published.code, 'reconcile_materialization_evidence', 'blocked');
+		const lifecycle = { workspaceId: this.options.lifecycleV1WorkspaceId!, operation: published.result.operation, requestId: published.result.requestId, revisionId: published.revision.revisionId, contentHash: published.revision.contentHash } as const;
+		const commit = {
+			candidateDigest: published.revision.contentHash,
+			planDigest: sha256(JSON.stringify({ schemaVersion: 'lifecycle-v1', requestId: published.result.requestId, operation: published.result.operation, selectionKey: record.frozenSelection.selectionKey })),
+			targetFilename: `lifecycle-v1:${published.revision.revisionId}`,
+			targetRevision: published.revision.revisionId,
+			publishedSha256: published.revision.contentHash,
+			receiptSha256: sha256(JSON.stringify(published.result)),
+			threadIds: [...new Set(record.selectedDecisions.map((decision) => decision.threadId))].sort(),
+			lifecycle,
+		};
+		const committed = await this.store.commitLifecycleMaterialization(record, commit);
+		if (committed.status !== 'ready') return this.withBlock(entry, committed.code, 'reconcile_materialization_evidence', 'blocked');
+		return { ...this.workflow.projectReentry(entry), status: 'materialized', materialization: { materializationId: committed.record.materializationId, state: committed.record.state, targetFilename: commit.targetFilename, targetRevision: commit.targetRevision }, nextAction: null };
 	}
 
 	private async reviewedCandidate(threadId: string, synthesisId?: string, synthesisDigest?: string): Promise<ScientificSynthesisCandidate | undefined> {

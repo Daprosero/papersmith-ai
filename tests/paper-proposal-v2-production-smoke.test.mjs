@@ -69,7 +69,10 @@ test('runs the production V2 tool through a complete temporary fixture', async (
   const payload = JSON.parse(context.messages.at(-1).content.find((part) => part.type === 'text').text);
   if (payload.intent) {
    calls.planner++;
-   return aiCompat.fauxAssistantMessage(JSON.stringify({ actions: [{ kind: 'replace', targetEntryId: payload.target.entryId, replacementText: payload.intent.intent === 'CONCEPTUAL_REVISION' ? 'Gamma conceptually revised.' : 'Alpha semantically revised.' }], expectedEffects: [] }));
+   if (payload.intent.intent === 'CONCEPTUAL_REVISION') {
+    return aiCompat.fauxAssistantMessage(aiCompat.fauxToolCall('paper_proposal_v2_conceptual_revision', { actions: [{ kind: 'replace', targetEntryId: payload.target.entryId, replacementText: 'Gamma conceptually revised.' }], unresolvedQuestions: [] }));
+   }
+   return aiCompat.fauxAssistantMessage(JSON.stringify({ actions: [{ kind: 'replace', targetEntryId: payload.target.entryId, replacementText: 'Alpha semantically revised.' }], expectedEffects: [] }));
   }
   calls.tutor++;
   return aiCompat.fauxAssistantMessage(JSON.stringify({ decision: 'ACCEPT', summary: 'ok', mathematicalIssues: [], notationIssues: [], assumptionIssues: [], requiredRevisions: [], unresolvedQuestions: [], riskLevel: 'LOW', affectedEntryIds: payload.context.fragments.map((fragment) => fragment.entryId) }));
@@ -86,7 +89,7 @@ test('runs the production V2 tool through a complete temporary fixture', async (
  assert.equal(tools.filter((candidate) => candidate.name === 'paper_proposal_v2_execute').length, 1);
  assert.ok(tool);
  assert.equal((await handlers.get('input')({ text: '/skill:paper-proposal modify Alpha' })).action, 'continue');
- const ctx = { model: faux.getModel(), modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: 'fake', headers: {}, env: {} }) } };
+ const ctx = { model: faux.getModel(), sessionManager: { getSessionId: () => 'production-smoke-session' }, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: 'fake', headers: {}, env: {} }) } };
  const execute = async (input) => (await tool.execute('production-smoke', input, undefined, undefined, ctx)).details;
 
  const modifyRequest = { instruction: 'modifica Alpha paragraph.', selectedEntryId: await entryId(stateModule, fixture, 'Alpha') };

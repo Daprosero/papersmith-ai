@@ -2,6 +2,40 @@
 
 Use `/skill:paper-proposal` for guidance. Every proposal operation is executed with `paper_proposal_v2_execute` and a natural-language request. These examples assume the proposal already exists and is managed by V2.
 
+## Chat deliberation
+
+For a non-mutating tutor conversation, call `paper_proposal_v2_execute` with `operation: CHAT_DELIBERATION`:
+
+> Discuss whether the bag definition in section 3.1 should use finite-set notation. Do not edit the proposal.
+
+Pass the returned `conversationId` in a follow-up to reuse the bounded in-session conclusions. Chat works when persistent scientific workflow is disabled, does not require a managed proposal, and does not promise survival across restarts. It creates no proposal, receipt, audit record, document mutation, or delegated task authority. An explicit `CHAT_DELIBERATION` request stays chat even when its wording mentions a document or lifecycle action.
+
+A later explicit edit may pass that `conversationId`, but still needs an exact target or clarification and uses the normal principal-local guarded publication path:
+
+> Now apply that conclusion to the definition of training bags.
+
+## Materialize chat as a standalone draft
+
+Materialization is the only mutating exit from `CHAT_DELIBERATION` that does not edit the managed primary document. Send the existing `conversationId` and a `draftMaterialization` object:
+
+```json
+{
+  "operation": "INITIAL_CREATE",
+  "route": "<configured-draft-directory>/<metadata-derived-name>.<allowed-extension>",
+  "authorized": true
+}
+```
+
+The authorization applies only to the current turn. The exact route must be relative, normalized, inside the configured draft directory, use an allowed extension, differ from the dynamically resolved managed primary document, and identify a target that does not exist or resolve through a symlink. `UPDATE` and `REPLACE` are always rejected from chat.
+
+When `route` is omitted, V2 returns a metadata-derived proposal and writes nothing. On a later turn, set `approveProposedRoute: true` and explicitly authorize `INITIAL_CREATE`; V2 uses only the exact pending route. A supplied invalid or conflicting route is rejected unchanged and is never silently rewritten.
+
+Success returns the exact route, `INITIAL_CREATE`, written UTF-8 byte count, confirmation that the managed primary document is intact, and terminal completion. Materialization carries the consolidated session-local chat content without another tutor or reviewer call and does not resume deliberation.
+
+## Maintenance handoff
+
+`MAINTENANCE` is distinct from chat and document editing. It returns an explicit external-controller handoff and may carry a `maintenance-…` task ID, but V2 does not create a worker, resume a task, grant document authority, or persist maintenance state. Use it only when an external controller has a narrowly scoped, justified maintenance action to delegate.
+
 ## Editing examples
 
 ### Modify

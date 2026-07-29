@@ -2,6 +2,7 @@ import { buildStructuralIndex } from './document-index.js';
 import { sha256,type CompositeTarget,type DocumentState,type StructuralEntry,type TargetCandidate } from './types.js';
 
 export type TargetResolutionOptions={allowInterEntryWhitespaceFallback?:boolean};
+export type SectionRangeResolution={candidate?:TargetCandidate;entryIds?:string[];reason?:'SECTION_RANGE_INVALID'|'SECTION_RANGE_NOT_FOUND'|'SECTION_RANGE_AMBIGUOUS'|'SECTION_RANGE_REVERSED'};
 
 type StructuralCore={entry:StructuralEntry;startByte:number;endByte:number;text:Buffer};
 
@@ -62,6 +63,25 @@ function interEntryWhitespaceCompositeTargets(state:DocumentState,providedText:s
   candidates.push(compositeCandidate(state,members,cores[0].startByte,cores.at(-1)!.endByte,'explicit composite selection with document inter-entry whitespace'));
  }
  return candidates;
+}
+
+/** Resolves only `sections <number>–<number>` against numbered Markdown headings. */
+export function resolveSectionRange(state:DocumentState,raw:string):SectionRangeResolution {
+ const match=/^(?:sections?\s+)?(\d+(?:\.\d+)*)\s*[–-]\s*(\d+(?:\.\d+)*)$/iu.exec(raw.trim());
+ if(!match)return {reason:'SECTION_RANGE_INVALID'};
+ const sectionNumber=(entry:StructuralEntry)=>{
+  if(!['section','subsection','heading'].includes(entry.type))return;
+  return /^#{1,6}\s+(\d+(?:\.\d+)*)(?=[\s.:]|$)/u.exec(entryText(state,entry.entryId))?.[1];
+ };
+ const numbered=state.structuralIndex.entries.filter(entry=>sectionNumber(entry) !== undefined);
+ const starts=numbered.filter(entry=>sectionNumber(entry)===match[1]);
+ const ends=numbered.filter(entry=>sectionNumber(entry)===match[2]);
+ if(starts.length>1||ends.length>1)return {reason:'SECTION_RANGE_AMBIGUOUS'};
+ if(starts.length!==1||ends.length!==1)return {reason:'SECTION_RANGE_NOT_FOUND'};
+ const [start]=starts,[end]=ends;
+ if(start.startByte>end.startByte)return {reason:'SECTION_RANGE_REVERSED'};
+ const entryIds=state.structuralIndex.entries.filter(entry=>entry.type!=='document'&&entry.startByte>=start.startByte&&entry.endByte<=end.endByte).map(entry=>entry.entryId);
+ return {candidate:compositeCandidate(state,[start,end],start.startByte,end.endByte,`explicit numbered section range ${match[1]}–${match[2]}`),entryIds};
 }
 
 export function materializeCompositeTarget(state:DocumentState,candidate:TargetCandidate){

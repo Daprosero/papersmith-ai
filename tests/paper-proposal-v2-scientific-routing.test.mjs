@@ -25,12 +25,24 @@ test('explicit scientific mode is an explicit global-route discriminant', () => 
 	assert.equal(route.stage, 'SCIENTIFIC_WORKFLOW');
 });
 
-test('terminal routes retain lifecycle, direct-document, and DELIBERATE precedence', () => {
+test('terminal routes retain lifecycle, direct-document, and CHAT_DELIBERATION precedence', () => {
 	assert.equal(workspace.resolveGlobalRoute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'withdraw research-concept-r01.md' }).stage, 'LIFECYCLE');
 	assert.equal(workspace.resolveGlobalRoute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'inserta un párrafo' }).stage, 'DIRECT_DOCUMENT');
-	assert.equal(workspace.resolveGlobalRoute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'delibera sobre los supuestos' }).stage, 'DELIBERATE');
+	assert.equal(workspace.resolveGlobalRoute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'delibera sobre los supuestos' }).stage, 'CHAT_DELIBERATION');
 	const scientific = workspace.resolveGlobalRoute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'Explore an idea.' });
-	assert.deepEqual(scientific, { stage: 'SCIENTIFIC_WORKFLOW', bypassedStages: ['LIFECYCLE', 'DIRECT_DOCUMENT', 'DELIBERATE'] });
+	assert.deepEqual(scientific, { stage: 'SCIENTIFIC_WORKFLOW', bypassedStages: ['LIFECYCLE', 'DIRECT_DOCUMENT', 'CHAT_DELIBERATION', 'DRAFT_MATERIALIZATION', 'MAINTENANCE'] });
+});
+
+test('explicit chat mode wins every generic route and established conversations exit only for an explicit edit or maintenance handoff', () => {
+	assert.equal(workspace.resolveGlobalRoute({ operation: 'CHAT_DELIBERATION', instruction: 'withdraw research-concept-r01.md' }).stage, 'CHAT_DELIBERATION');
+	assert.equal(workspace.resolveGlobalRoute({ operation: 'CHAT_DELIBERATION', instruction: 'inserta una ecuación candidata' }).stage, 'CHAT_DELIBERATION');
+	assert.equal(workspace.resolveGlobalRoute({ operation: 'CHAT_DELIBERATION', instruction: 'delibera sobre la infraestructura' }).stage, 'CHAT_DELIBERATION');
+	assert.equal(workspace.resolveGlobalRoute({ conversationId: 'chat-session-1', instruction: 'explica las consecuencias de la ecuación candidata' }).stage, 'CHAT_DELIBERATION');
+	assert.equal(workspace.resolveGlobalRoute({ conversationId: 'chat-session-1', instruction: 'modifica la ecuación candidata' }).stage, 'DIRECT_DOCUMENT');
+	assert.equal(workspace.resolveGlobalRoute({ conversationId: 'chat-session-1', operation: 'MAINTENANCE', instruction: 'run maintenance' }).stage, 'MAINTENANCE');
+	assert.deepEqual(workspace.resolveV2ExecutionAuthority('CHAT_DELIBERATION'), { scope: 'CHAT_DELIBERATION', taskDelegation: 'FORBIDDEN', documentAuthority: 'FORBIDDEN', durableState: 'FORBIDDEN', stateIdentifier: 'conversationId', explicitHandoffRequired: false });
+	assert.deepEqual(workspace.resolveV2ExecutionAuthority('DIRECT_DOCUMENT'), { scope: 'DOCUMENT_EDIT', taskDelegation: 'LOCAL_ONLY', documentAuthority: 'GUARDED', durableState: 'NOT_APPLICABLE', stateIdentifier: null, explicitHandoffRequired: true });
+	assert.deepEqual(workspace.resolveV2ExecutionAuthority('MAINTENANCE'), { scope: 'MAINTENANCE', taskDelegation: 'PERMITTED', documentAuthority: 'FORBIDDEN', durableState: 'NOT_APPLICABLE', stateIdentifier: 'maintenanceTaskId', explicitHandoffRequired: true });
 });
 
 test('route-stage and bypass metrics are privacy-safe and terminal routing does not construct scientific components', () => {
@@ -38,14 +50,14 @@ test('route-stage and bypass metrics are privacy-safe and terminal routing does 
 	const privateMarker = 'private prompt/model output/raw trace/reasoning must never be recorded';
 	assert.equal(workspace.resolveGlobalRoute({ operation: 'WITHDRAW_REVISION', instruction: privateMarker }).stage, 'LIFECYCLE');
 	assert.equal(workspace.resolveGlobalRoute({ instruction: `inserta un párrafo ${privateMarker}` }).stage, 'DIRECT_DOCUMENT');
-	assert.equal(workspace.resolveGlobalRoute({ instruction: `delibera sobre los supuestos ${privateMarker}` }).stage, 'DELIBERATE');
+	assert.equal(workspace.resolveGlobalRoute({ instruction: `delibera sobre los supuestos ${privateMarker}` }).stage, 'CHAT_DELIBERATION');
 	assert.equal(workspace.resolveGlobalRoute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: privateMarker }).stage, 'SCIENTIFIC_WORKFLOW');
 	assert.equal(workspace.resolveGlobalRoute({ instruction: privateMarker }).stage, 'EXISTING_FALLBACK');
 
 	const metrics = v2.getRuntimeMetrics();
 	assert.deepEqual(metrics.routeMetrics, {
-		routeSelections: { LIFECYCLE: 1, DIRECT_DOCUMENT: 1, DELIBERATE: 1, SCIENTIFIC_WORKFLOW: 1, EXISTING_FALLBACK: 1 },
-		bypassedStageSelections: { LIFECYCLE: 4, DIRECT_DOCUMENT: 3, DELIBERATE: 2, SCIENTIFIC_WORKFLOW: 1, EXISTING_FALLBACK: 0 },
+		routeSelections: { LIFECYCLE: 1, DIRECT_DOCUMENT: 1, CHAT_DELIBERATION: 1, DRAFT_MATERIALIZATION: 0, MAINTENANCE: 0, SCIENTIFIC_WORKFLOW: 1, EXISTING_FALLBACK: 1 },
+		bypassedStageSelections: { LIFECYCLE: 4, DIRECT_DOCUMENT: 3, CHAT_DELIBERATION: 2, DRAFT_MATERIALIZATION: 3, MAINTENANCE: 3, SCIENTIFIC_WORKFLOW: 1, EXISTING_FALLBACK: 0 },
 	});
 	assert.equal(metrics.totalModelCalls, 0);
 	assert.equal(metrics.totalWrites, 0);
@@ -74,7 +86,7 @@ test('disabled scientific workflow returns a typed unavailable result without a 
 		nextAction: 'enable_scientific_workflow',
 		auditStatus: 'NOT_RUN',
 		selfAuditStatus: 'NOT_RUN',
-		metrics: { routeStage: 'SCIENTIFIC_WORKFLOW', bypassedStages: ['LIFECYCLE', 'DIRECT_DOCUMENT', 'DELIBERATE'] },
+		metrics: { routeStage: 'SCIENTIFIC_WORKFLOW', bypassedStages: ['LIFECYCLE', 'DIRECT_DOCUMENT', 'CHAT_DELIBERATION', 'DRAFT_MATERIALIZATION'] },
 	});
 });
 

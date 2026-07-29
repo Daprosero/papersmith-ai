@@ -1,11 +1,11 @@
-strict_tdd: false
+strict_tdd: true
 context: |
-  papersmith-ai is a Unclassified software project project.
-  Detected markers: none.
-  No reliable test runner was detected; verify testing manually before enabling strict TDD.
-  Unit tests: none.
-  Integration tests: none.
-  E2E tests: none.
+  papersmith-ai is a mixed Python + Node.js repository.
+  Detected markers: `requirements.txt`, `tests/`, `.pi/`, `openspec/`, `papersmith.yaml`.
+  Test capabilities were verified during init: Node built-in `node:test` suites and a Python `unittest` suite are present.
+  Unit tests: Node built-in suites in `tests/*.test.mjs`.
+  Integration tests: none explicitly detected.
+  E2E tests: none explicitly detected.
 rules:
   proposal:
     require_problem_statement: true
@@ -16,14 +16,14 @@ rules:
   tasks:
     protect_review_workload: true
   apply:
-    test_command: ""
+    test_command: "node --test tests/*.test.mjs && python3 -m unittest discover -s tests -p 'test_extract_pdf.py'"
   verify:
-    test_command: ""
+    test_command: "node --test tests/*.test.mjs && python3 -m unittest discover -s tests -p 'test_extract_pdf.py'"
 testing:
   detected: "2026-07-16"
   runner:
-    command: ""
-    framework: ""
+    command: "node --test tests/*.test.mjs && python3 -m unittest discover -s tests -p 'test_extract_pdf.py'"
+    framework: "node:test + unittest"
   layers:
     unit: ""
     integration: ""

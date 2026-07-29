@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -139,6 +139,18 @@ test('active PENDING_AUDIT rejects a declared SHA mismatch',async()=>{
   const audit=await runActiveSelfAudit(value);
   assert.equal(audit.status,'FAIL');
   assert.ok(audit.checks.find(check=>check.id==='consistency').evidence.failures.some(failure=>failure.includes('SHA_MISMATCH')));
+});
+
+test('lifecycle-v1 legacy diagnostics leave an active PENDING_AUDIT fixture byte-identical and do not create authority',async()=>{
+  const value=await fixture();
+  const tracked=['metadata.json','audit-marker.json',...publicPaths.map(publicRelativePath=>`public-backup/${publicRelativePath}`)];
+  const before=await Promise.all(tracked.map(relativePath=>readFile(path.join(value.operationDirectory,relativePath),'utf8')));
+  const inventory=await v2.readLifecycleV1Inventory({projectRoot:value.root,workspaceId:'legacy-pending-audit'});
+  assert.deepEqual(inventory,{status:'unregistered',code:'LIFECYCLE_V1_UNREGISTERED',auditEvidence:['lifecycle-v1:authority-unregistered']});
+  await assert.rejects(readdir(path.join(value.root,'.paper-proposal-v2','lifecycle','v1')),{code:'ENOENT'});
+  assert.deepEqual(await Promise.all(tracked.map(relativePath=>readFile(path.join(value.operationDirectory,relativePath),'utf8'))),before);
+  const audit=await runActiveSelfAudit(value);
+  assert.equal(audit.status,'PASS',JSON.stringify(audit));
 });
 
 test('a finalized committed marker passes fresh context-free audits',async()=>{

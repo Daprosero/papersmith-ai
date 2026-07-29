@@ -262,14 +262,24 @@ function validateDocumentReviewEvidence(value: unknown): value is DocumentReview
 		&& ['APPROVE', 'APPROVE_WITH_CHANGES', 'BLOCK', 'NEEDS_CLARIFICATION'].includes(value.decision as string);
 }
 
+function validLifecycleCommit(value: unknown): value is NonNullable<MaterializationCommitEvidence['lifecycle']> {
+	return isObject(value) && typeof value.workspaceId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value.workspaceId)
+		&& (value.operation === 'CREATE_FROM_BASE' || value.operation === 'CREATE_SUCCESSOR')
+		&& typeof value.requestId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value.requestId)
+		&& typeof value.revisionId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value.revisionId)
+		&& isDigest(value.contentHash);
+}
+
 function validateMaterializationCommitEvidence(value: unknown, selected: MaterializationRecord['selectedDecisions']): value is MaterializationCommitEvidence {
-	return isObject(value) && isDigest(value.candidateDigest) && isDigest(value.planDigest)
-		&& typeof value.targetFilename === 'string' && /^research-concept-(?:[a-z0-9]+(?:-[a-z0-9]+)*-)?r\d{2,}\.md$/.test(value.targetFilename)
-		&& typeof value.targetRevision === 'string' && /^r\d{2,}$/.test(value.targetRevision)
-		&& isDigest(value.publishedSha256) && isDigest(value.receiptSha256)
-		&& Array.isArray(value.threadIds) && value.threadIds.length > 0 && value.threadIds.every((id) => typeof id === 'string')
-		&& JSON.stringify([...new Set(value.threadIds)].sort()) === JSON.stringify(value.threadIds)
-		&& JSON.stringify([...new Set(selected.map((decision) => decision.threadId))].sort()) === JSON.stringify(value.threadIds);
+	if (!isObject(value) || !isDigest(value.candidateDigest) || !isDigest(value.planDigest) || !isDigest(value.publishedSha256) || !isDigest(value.receiptSha256)
+		|| !Array.isArray(value.threadIds) || value.threadIds.length < 1 || !value.threadIds.every((id) => typeof id === 'string')
+		|| JSON.stringify([...new Set(value.threadIds)].sort()) !== JSON.stringify(value.threadIds)
+		|| JSON.stringify([...new Set(selected.map((decision) => decision.threadId))].sort()) !== JSON.stringify(value.threadIds)) return false;
+	if (value.lifecycle !== undefined) return validLifecycleCommit(value.lifecycle)
+		&& value.targetFilename === `lifecycle-v1:${value.lifecycle.revisionId}` && value.targetRevision === value.lifecycle.revisionId
+		&& value.candidateDigest === value.lifecycle.contentHash && value.publishedSha256 === value.lifecycle.contentHash;
+	return typeof value.targetFilename === 'string' && /^research-concept-(?:[a-z0-9]+(?:-[a-z0-9]+)*-)?r\d{2,}\.md$/.test(value.targetFilename)
+		&& typeof value.targetRevision === 'string' && /^r\d{2,}$/.test(value.targetRevision);
 }
 
 function validateMaterializationRecord(record: unknown, snapshot: ScientificSnapshotRecord, events: ScientificEvent[]): record is MaterializationRecord {
@@ -288,17 +298,19 @@ function validateMaterializationRecord(record: unknown, snapshot: ScientificSnap
 	const planValid = record.plan === undefined || validateMaterializationPlan(record.plan, record);
 	const reviewValid = record.review === undefined || validateDocumentReviewEvidence(record.review);
 	const commitValid = record.commit === undefined || validateMaterializationCommitEvidence(record.commit, record.selectedDecisions);
+	const lifecycleValid = record.lifecycle === undefined || validLifecycleCommit(record.lifecycle);
 	const outcomeValid = record.outcome === undefined || (isObject(record.outcome)
 		&& typeof record.outcome.code === 'string' && /^[A-Z0-9_]{1,128}$/.test(record.outcome.code)
 		&& (record.outcome.phaseReached === undefined || ['RESOLVING', 'PREPARED', 'PLANNING', 'EXECUTING_CANDIDATE', 'REVIEWING_DOCUMENT', 'PUBLISHING', 'COMMITTED', 'BLOCKED', 'RECOVERY_REQUIRED'].includes(record.outcome.phaseReached as string))
 		&& (record.outcome.evidence === undefined || (Array.isArray(record.outcome.evidence) && record.outcome.evidence.length <= 8 && record.outcome.evidence.every((item) => typeof item === 'string' && /^[a-z_]+:(?:absent|inconsistent|unavailable)$/.test(item))))
 		&& (record.outcome.lastValidTransition === undefined || typeof record.outcome.lastValidTransition === 'string')
 		&& (record.outcome.allowedRecoveryAction === undefined || record.outcome.allowedRecoveryAction === 'retry_materialization' || record.outcome.allowedRecoveryAction === 'reconcile_materialization_evidence'));
-	if (!selectedValid || !planValid || !reviewValid || !commitValid || !outcomeValid) return false;
+	if (!selectedValid || !planValid || !reviewValid || !commitValid || !lifecycleValid || !outcomeValid) return false;
 	if ((record.state === 'BLOCKED' || record.state === 'RECOVERY_REQUIRED') && !record.outcome) return false;
 	if (record.outcome && record.state !== 'BLOCKED' && record.state !== 'RECOVERY_REQUIRED') return false;
 	if (record.state === 'PUBLISHING' && (!record.review || record.review.decision !== 'APPROVE')) return false;
-	if (record.state === 'COMMITTED' && (!record.review || record.review.decision !== 'APPROVE' || !record.commit || record.commit.planDigest !== record.plan?.digest || record.commit.candidateDigest !== record.review.candidateDigest)) return false;
+	if (record.state === 'COMMITTED' && record.lifecycle === undefined && (!record.review || record.review.decision !== 'APPROVE' || !record.commit || record.commit.planDigest !== record.plan?.digest || record.commit.candidateDigest !== record.review.candidateDigest)) return false;
+	if (record.state === 'COMMITTED' && record.lifecycle !== undefined && (!record.commit || !record.commit.lifecycle || JSON.stringify(record.commit.lifecycle) !== JSON.stringify(record.lifecycle))) return false;
 	return true;
 }
 
@@ -490,6 +502,30 @@ export class ScientificStateStore {
 				decision.state = 'MATERIALIZED';
 			}
 			const nextRecord: MaterializationRecord = { ...persisted, state: 'COMMITTED', commit: structuredClone(commit) };
+			const event: ScientificEvent = { schemaVersion: 1, eventId: randomUUID(), sequence: current.events.length + 1, occurredAt: new Date().toISOString(), actor: { kind: 'SYSTEM' }, type: 'MATERIALIZATION_COMMITTED', causalEventIds: [...persisted.frozenSelection.acceptedEventIds], payload: { materializationId: persisted.materializationId, selectionKey: persisted.frozenSelection.selectionKey, status: 'COMMITTED', candidateDigest: commit.candidateDigest, planDigest: commit.planDigest, targetFilename: commit.targetFilename, targetRevision: commit.targetRevision, publishedSha256: commit.publishedSha256, receiptSha256: commit.receiptSha256, threadIds: commit.threadIds }, evidence: [], privacy: { contentClass: 'PUBLIC_SUMMARY_ONLY', redactionVersion: 1 } };
+			await this.commitTransitionLocked({ events: [event], snapshot, materialization: { record: nextRecord, index: structuredClone(index) } });
+			return { status: 'ready', record: nextRecord };
+		});
+	}
+
+	/** Records the scientific projection after lifecycle-v1 has atomically committed its own request/result/active transition. */
+	async commitLifecycleMaterialization(record: MaterializationRecord, commit: MaterializationCommitEvidence & { lifecycle: NonNullable<MaterializationCommitEvidence['lifecycle']> }): Promise<MaterializationPlanPersistenceResult> {
+		return this.withLock(async () => {
+			const current = await this.readValidated(false);
+			if (!current) return { status: 'blocked', code: 'MATERIALIZATION_STATE_MISSING' };
+			const root = await this.safeProjectRoot();
+			const index = await this.readMaterializationIndex(root, current.snapshot, current.events);
+			if (!index.records[record.materializationId]) return { status: 'blocked', code: 'MATERIALIZATION_RESERVATION_MISSING' };
+			const persisted = await this.readMaterializationRecord(root, record.materializationId, current.snapshot, current.events);
+			if (persisted.state === 'COMMITTED' && persisted.lifecycle && JSON.stringify(persisted.lifecycle) === JSON.stringify(commit.lifecycle)) return { status: 'ready', record: persisted };
+			if (persisted.state !== 'RESOLVING' || !validateMaterializationCommitEvidence(commit, persisted.selectedDecisions)) return { status: 'blocked', code: 'MATERIALIZATION_LIFECYCLE_COMMIT_EVIDENCE_INVALID' };
+			const snapshot = structuredClone(current.snapshot);
+			for (const selected of persisted.selectedDecisions) {
+				const decision = snapshot.decisions.find((candidate) => candidate.decisionId === selected.decisionId);
+				if (!decision || decision.state !== 'ACCEPTED_UNMATERIALIZED' || decision.acceptedEventId !== selected.acceptedEventId) return { status: 'blocked', code: 'MATERIALIZATION_DECISION_INELIGIBLE' };
+				decision.state = 'MATERIALIZED';
+			}
+			const nextRecord: MaterializationRecord = { ...persisted, state: 'COMMITTED', commit: structuredClone(commit), lifecycle: structuredClone(commit.lifecycle) };
 			const event: ScientificEvent = { schemaVersion: 1, eventId: randomUUID(), sequence: current.events.length + 1, occurredAt: new Date().toISOString(), actor: { kind: 'SYSTEM' }, type: 'MATERIALIZATION_COMMITTED', causalEventIds: [...persisted.frozenSelection.acceptedEventIds], payload: { materializationId: persisted.materializationId, selectionKey: persisted.frozenSelection.selectionKey, status: 'COMMITTED', candidateDigest: commit.candidateDigest, planDigest: commit.planDigest, targetFilename: commit.targetFilename, targetRevision: commit.targetRevision, publishedSha256: commit.publishedSha256, receiptSha256: commit.receiptSha256, threadIds: commit.threadIds }, evidence: [], privacy: { contentClass: 'PUBLIC_SUMMARY_ONLY', redactionVersion: 1 } };
 			await this.commitTransitionLocked({ events: [event], snapshot, materialization: { record: nextRecord, index: structuredClone(index) } });
 			return { status: 'ready', record: nextRecord };

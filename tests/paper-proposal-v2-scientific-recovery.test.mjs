@@ -71,6 +71,54 @@ test('recovery-required evidence cannot be retried and corrupt authoritative fil
 	assert.equal(await readFile(manifestPath, 'utf8'), before);
 });
 
+test('a committed lifecycle marker recovers through the read-only inventory adapter after a projection fault', async () => {
+	const { projectRoot } = await fixture();
+	const faulted = new v2.LifecycleService(projectRoot, { afterCommitMarker: () => { throw new Error('injected-after-marker'); } });
+	const result = await faulted.registerBaseDocument({ workspaceId: 'workspace-v1', requestId: 'register-base', baseDocumentId: 'base-v1', content: '# Durable base\n' });
+	assert.deepEqual({ outcome: result.outcome, code: result.code }, { outcome: 'INCONSISTENT', code: 'LIFECYCLE_INVENTORY_INCONSISTENT' });
+	const recovered = await v2.readLifecycleV1Inventory({ projectRoot, workspaceId: 'workspace-v1' });
+	assert.deepEqual({ status: recovered.status, lifecycleState: recovered.lifecycleState, baseDocumentId: recovered.baseDocument?.baseDocumentId, activeRevision: recovered.activeRevision }, { status: 'valid', lifecycleState: 'BASE_REGISTERED', baseDocumentId: 'base-v1', activeRevision: undefined });
+	await assert.rejects(() => readFile(path.join(projectRoot, 'proposals', 'research-concept-r01.md')));
+});
+
+test('lifecycle marker and projection faults preserve recovery evidence without a partial public proposal', async () => {
+	const beforeMarker = await fixture();
+	const beforeManifestPath = path.join(beforeMarker.projectRoot, '.paper-proposal-v2/scientific/manifest.json');
+	const beforeManifest = await readFile(beforeManifestPath, 'utf8');
+	const interrupted = await new v2.LifecycleService(beforeMarker.projectRoot, { beforeCommitMarker: () => { throw new Error('injected-before-marker'); } }).registerBaseDocument({ workspaceId: 'fault-workspace', requestId: 'register-before-marker', baseDocumentId: 'fault-base', content: '# Interrupted base\n' });
+	assert.deepEqual({ outcome: interrupted.outcome, code: interrupted.code }, { outcome: 'INCONSISTENT', code: 'LIFECYCLE_INVENTORY_INCONSISTENT' });
+	assert.deepEqual(await v2.readLifecycleV1Inventory({ projectRoot: beforeMarker.projectRoot, workspaceId: 'fault-workspace' }), { status: 'unregistered', code: 'LIFECYCLE_V1_UNREGISTERED', auditEvidence: ['lifecycle-v1:authority-unregistered'] });
+	assert.equal(await readFile(beforeManifestPath, 'utf8'), beforeManifest);
+	await assert.rejects(() => readFile(path.join(beforeMarker.projectRoot, 'proposals', 'research-concept-r01.md')));
+
+	const afterProjection = await fixture();
+	const afterManifestPath = path.join(afterProjection.projectRoot, '.paper-proposal-v2/scientific/manifest.json');
+	const afterManifest = await readFile(afterManifestPath, 'utf8');
+	const committed = await new v2.LifecycleService(afterProjection.projectRoot, { afterInventoryProjection: () => { throw new Error('injected-after-projection'); } }).registerBaseDocument({ workspaceId: 'projection-workspace', requestId: 'register-after-projection', baseDocumentId: 'projection-base', content: '# Committed base\n' });
+	assert.deepEqual({ outcome: committed.outcome, code: committed.code }, { outcome: 'INCONSISTENT', code: 'LIFECYCLE_INVENTORY_INCONSISTENT' });
+	const rebuilt = await v2.readLifecycleV1Inventory({ projectRoot: afterProjection.projectRoot, workspaceId: 'projection-workspace' });
+	assert.deepEqual({ status: rebuilt.status, lifecycleState: rebuilt.lifecycleState, baseDocumentId: rebuilt.baseDocument?.baseDocumentId, activeRevision: rebuilt.activeRevision }, { status: 'valid', lifecycleState: 'BASE_REGISTERED', baseDocumentId: 'projection-base', activeRevision: undefined });
+	assert.equal(await readFile(afterManifestPath, 'utf8'), afterManifest);
+	await assert.rejects(() => readFile(path.join(afterProjection.projectRoot, 'proposals', 'research-concept-r01.md')));
+});
+
+test('a fresh entry resolver rebuilds lifecycle-owned active evidence without selecting or publishing a legacy filename', async () => {
+	const { projectRoot } = await fixture();
+	const service = new v2.LifecycleService(projectRoot);
+	const base = await service.registerBaseDocument({ workspaceId: 'restart-workspace', requestId: 'register-base', baseDocumentId: 'restart-base', content: '# Durable base\n\nUnchanged premise.\n' });
+	assert.equal(base.outcome, 'COMMITTED');
+	const first = await service.createFromBase({ workspaceId: 'restart-workspace', requestId: 'create-first', operation: 'CREATE_FROM_BASE', revisionId: 'restart-r1', locator: 'research-concept-r99.md', source: { sourceKind: 'BASE_DOCUMENT', sourceId: 'restart-base', sourceContentHash: base.base.contentHash, baseDocumentId: 'restart-base' }, approvedChanges: [] });
+	assert.equal(first.outcome, 'COMMITTED');
+	const successor = await service.createSuccessor({ workspaceId: 'restart-workspace', requestId: 'create-successor', operation: 'CREATE_SUCCESSOR', revisionId: 'restart-r2', locator: 'research-concept-r01.md', source: { sourceKind: 'REVISION', sourceId: 'restart-r1', sourceContentHash: first.revision.contentHash, baseDocumentId: 'restart-base' }, approvedChanges: [] });
+	assert.equal(successor.outcome, 'COMMITTED');
+	const entry = await new v2.ProjectEntryResolver(v2.createLifecycleV1RevisionInventoryPort({ projectRoot, workspaceId: 'restart-workspace' }), new v2.ScientificStateStore(projectRoot)).resolve();
+	assert.deepEqual({ state: entry.state, baseDocumentId: entry.baseDocument?.baseDocumentId, activeRevisionId: entry.activeRevision?.revisionId, activeHash: entry.activeRevision?.documentSha256 }, { state: 'MATERIALIZATION_PENDING', baseDocumentId: 'restart-base', activeRevisionId: 'restart-r2', activeHash: successor.revision.contentHash });
+	const rebuilt = await v2.readLifecycleV1Inventory({ projectRoot, workspaceId: 'restart-workspace' });
+	assert.deepEqual({ status: rebuilt.status, lifecycleState: rebuilt.lifecycleState, activeRevisionId: rebuilt.activeRevision?.revisionId, states: rebuilt.revisions.map((revision) => [revision.revisionId, revision.state]) }, { status: 'valid', lifecycleState: 'ACTIVE', activeRevisionId: 'restart-r2', states: [['restart-r1', 'SUPERSEDED'], ['restart-r2', 'ACTIVE']] });
+	await assert.rejects(() => readFile(path.join(projectRoot, 'proposals', 'research-concept-r01.md')));
+	await assert.rejects(() => readFile(path.join(projectRoot, 'proposals', 'research-concept-r99.md')));
+});
+
 test('feature rollback leaves scientific history available to read-only diagnostics without exposing private input', async () => {
 	const { projectRoot, store, record } = await fixture();
 	await store.recordMaterializationOutcome(record, 'BLOCKED', 'MATERIALIZATION_COMPILATION_FAILED');

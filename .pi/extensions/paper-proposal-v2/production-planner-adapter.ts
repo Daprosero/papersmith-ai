@@ -2,11 +2,24 @@ import { Type } from 'typebox';
 import type { SemanticEditPlanner, SemanticPlannerInput } from './types.js';
 import { ProductionModelRuntime } from './production-runtime.js';
 
-const PLANNER_PROMPT = `You are the Paper Proposal V2 semantic planner. Return one plain JSON object only through the required structured-output tool, without prose, Markdown, code fences, or text outside the tool call. Use only the supplied local context and supplied document SHA. Never read files, publish, return a full document, invent entry IDs, offsets, or hashes. Return the smallest valid V2 plan fragment. For adaptive MOVE/COPY return only transformedContent and preserve supplied source, destination, and position. For semantic cleanup return only bounded cleanup/rewrite_transition actions inside supplied context. For conceptual revision return 1-3 bounded replace actions on supplied context entry IDs. Include unresolvedQuestions when clarification is needed.`;
+const plannerPrompt = (maxConceptualActions: number) => `You are the Paper Proposal V2 semantic planner. Return one plain JSON object only through the required structured-output tool, without prose, Markdown, code fences, or text outside the tool call. Use only the supplied local context and supplied document SHA. Never read files, publish, return a full document, invent entry IDs, offsets, or hashes. Return the smallest valid V2 plan fragment. For adaptive MOVE/COPY return only transformedContent and preserve supplied source, destination, and position. For semantic cleanup return only bounded cleanup/rewrite_transition actions inside supplied context. For conceptual revision, return exactly two top-level keys: actions and unresolvedQuestions. Do not return expectedEffects, expectedEffects-like plan metadata, or any other top-level key. Return 1-${maxConceptualActions} bounded replace actions on supplied context entry IDs. Include unresolvedQuestions when clarification is needed.`;
 const FIDELITY_MODIFY_PROMPT = `Return exactly one required tool call for the supplied exact MODIFY. Copy replacementBlock byte-for-byte into replacementText, use targetEntryId unchanged, and return only actions and unresolvedQuestions. Never broaden the edit, invent identifiers, use external or session context, or return document content.`;
 
 const FIDELITY_RESPONSE_KEYS = new Set(['actions', 'unresolvedQuestions']);
 const REPLACE_ACTION_KEYS = new Set(['kind', 'targetEntryId', 'replacementText']);
+const CONCEPTUAL_RESPONSE_KEYS = new Set(['actions', 'unresolvedQuestions']);
+const conceptualOutput = (maxActions: number) => Object.freeze({
+ name: 'paper_proposal_v2_conceptual_revision',
+ description: `Return 1-${maxActions} authorized Paper Proposal V2 conceptual replacements and any unresolved questions.`,
+ schema: Type.Object({
+  actions: Type.Array(Type.Object({
+   kind: Type.Literal('replace'),
+   targetEntryId: Type.String({ minLength: 1 }),
+   replacementText: Type.String(),
+  }, { additionalProperties: false }), { minItems: 1, maxItems: maxActions }),
+  unresolvedQuestions: Type.Array(Type.String({ minLength: 1 })),
+ }, { additionalProperties: false }),
+});
 const FIDELITY_MODIFY_OUTPUT = Object.freeze({
  name: 'paper_proposal_v2_fidelity_modify',
  description: 'Return the one authorized Paper Proposal V2 fidelity MODIFY replacement.',
@@ -24,11 +37,15 @@ export type PlannerDiagnosticCode =
  | 'MODEL_RESPONSE_ERROR'
  | 'RESPONSE_NOT_OBJECT'
  | 'UNEXPECTED_RESPONSE_FIELD'
+ | 'MISSING_RESPONSE_FIELD'
  | 'INVALID_UNRESOLVED_QUESTIONS'
  | 'INVALID_ACTION_COUNT'
  | 'ACTION_NOT_OBJECT'
  | 'UNEXPECTED_ACTION_FIELD'
+ | 'MISSING_ACTION_FIELD'
  | 'WRONG_ACTION_KIND'
+ | 'INVALID_TARGET_ENTRY_ID'
+ | 'INVALID_REPLACEMENT_TEXT'
  | 'WRONG_TARGET_ENTRY_ID'
  | 'ALTERED_REPLACEMENT_TEXT';
 
@@ -120,6 +137,29 @@ function buildFidelityModifyPayload(input: SemanticPlannerInput) {
  } as const;
 }
 
+function normalizeConceptualRevision(
+ input: SemanticPlannerInput,
+ response: unknown,
+): Awaited<ReturnType<SemanticEditPlanner['plan']>> {
+ const expectedResponseFields = ['actions', 'unresolvedQuestions'];
+ const maxActions = input.context?.successorCompositeTarget === true ? 1 : 3;
+ if (!isRecord(response)) rejectResponse('RESPONSE_NOT_OBJECT', { response, expectedFields: expectedResponseFields });
+ if (!hasOnlyKeys(response, CONCEPTUAL_RESPONSE_KEYS)) rejectResponse('UNEXPECTED_RESPONSE_FIELD', { response, expectedFields: expectedResponseFields, unexpectedFields: unexpectedKeys(response, CONCEPTUAL_RESPONSE_KEYS) });
+ if (!Object.hasOwn(response, 'actions') || !Object.hasOwn(response, 'unresolvedQuestions')) rejectResponse('MISSING_RESPONSE_FIELD', { response, expectedFields: expectedResponseFields });
+ const unresolvedQuestions = normalizeQuestions(response.unresolvedQuestions, response);
+ if (!Array.isArray(response.actions) || response.actions.length < 1 || response.actions.length > maxActions) rejectResponse('INVALID_ACTION_COUNT', { response, expectedFields: [...REPLACE_ACTION_KEYS] });
+ const actions = response.actions.map((action) => {
+  if (!isRecord(action)) rejectResponse('ACTION_NOT_OBJECT', { response, expectedFields: [...REPLACE_ACTION_KEYS] });
+  if (!hasOnlyKeys(action, REPLACE_ACTION_KEYS)) rejectResponse('UNEXPECTED_ACTION_FIELD', { response, expectedFields: [...REPLACE_ACTION_KEYS], unexpectedFields: unexpectedKeys(action, REPLACE_ACTION_KEYS) });
+  if (!Object.hasOwn(action, 'kind') || !Object.hasOwn(action, 'targetEntryId') || !Object.hasOwn(action, 'replacementText')) rejectResponse('MISSING_ACTION_FIELD', { response, expectedFields: [...REPLACE_ACTION_KEYS] });
+  if (action.kind !== 'replace') rejectResponse('WRONG_ACTION_KIND', { response, expectedFields: [...REPLACE_ACTION_KEYS] });
+  if (typeof action.targetEntryId !== 'string' || action.targetEntryId.length === 0) rejectResponse('INVALID_TARGET_ENTRY_ID', { response, expectedFields: [...REPLACE_ACTION_KEYS] });
+  if (typeof action.replacementText !== 'string') rejectResponse('INVALID_REPLACEMENT_TEXT', { response, expectedFields: [...REPLACE_ACTION_KEYS] });
+  return { kind: 'replace' as const, targetEntryId: action.targetEntryId, replacementText: action.replacementText };
+ });
+ return { actions, unresolvedQuestions };
+}
+
 function normalizeFidelityModify(
  input: SemanticPlannerInput,
  response: unknown,
@@ -156,12 +196,15 @@ export function createProductionSemanticPlanner(runtime: ProductionModelRuntime)
   async plan(input) {
    let response: unknown;
    const fidelityModify = fidelityInput(input);
+   const conceptualRevision = input.intent.intent === 'CONCEPTUAL_REVISION';
+   const maxConceptualActions = input.context?.successorCompositeTarget === true ? 1 : 3;
+   const conceptualContract = conceptualRevision ? conceptualOutput(maxConceptualActions) : undefined;
    const fidelityPayload = fidelityModify ? buildFidelityModifyPayload(input) : undefined;
    if (fidelityPayload) runtime.preflightFidelityModify(FIDELITY_MODIFY_PROMPT, fidelityPayload, FIDELITY_MODIFY_OUTPUT);
    try {
     response = fidelityPayload
      ? await runtime.structured(FIDELITY_MODIFY_PROMPT, fidelityPayload, FIDELITY_MODIFY_OUTPUT)
-     : await runtime.structured(PLANNER_PROMPT, {
+     : await runtime.structured(plannerPrompt(maxConceptualActions), {
        intent: input.intent,
        instruction: input.instruction,
        target: input.target,
@@ -174,12 +217,13 @@ export function createProductionSemanticPlanner(runtime: ProductionModelRuntime)
        context: input.context,
        sourceContext: input.sourceContext,
        destinationContext: input.destinationContext,
-      });
+      }, conceptualContract);
    } catch (error) {
     rejectResponse('MODEL_RESPONSE_ERROR', { response }, error, 'runtime');
    }
 
    if (fidelityModify) return normalizeFidelityModify(input, response);
+   if (conceptualRevision) return normalizeConceptualRevision(input, response);
    return response as Awaited<ReturnType<SemanticEditPlanner['plan']>>;
   },
  };

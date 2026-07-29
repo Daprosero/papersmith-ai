@@ -15,14 +15,24 @@ const jiti = createJiti(import.meta.url, { alias: {
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
 const workspace = await jiti.import(path.join(root, '.pi/extensions/proposal-workspace.ts'));
+const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
 
 const metadata = { schemaVersion: 1, title: 'Public scientific proposal', sectionHeading: 'Accepted scientific decisions' };
 const tutor = () => ({ decision: 'ACCEPT', summary: 'Bounded public scientific synthesis.', mathematicalIssues: [], notationIssues: [], assumptionIssues: [], requiredRevisions: [], unresolvedQuestions: [], riskLevel: 'LOW', affectedEntryIds: [] });
 const reviewer = () => ({ decision: 'APPROVE', scientificCoherence: 'Coherent.', scopeCompliance: 'Bounded.', unsupportedClaims: [], referenceRisks: [], notationRisks: [], requiredChanges: [], unresolvedQuestions: [], riskLevel: 'LOW' });
 
-async function fixture({ incompleteEvidence = false } = {}) {
+async function fixture({ incompleteEvidence = false, lifecycleV1WorkspaceId } = {}) {
 	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-v2-scientific-public-'));
 	await mkdir(path.join(projectRoot, 'proposals'));
+	if (lifecycleV1WorkspaceId) {
+		const service = new v2.LifecycleService(projectRoot);
+		const base = await service.registerBaseDocument({ workspaceId: lifecycleV1WorkspaceId, requestId: 'register-public-base', baseDocumentId: 'public-base', content: 'Public lifecycle base\n' });
+		assert.equal(base.outcome, 'COMMITTED');
+		const first = await service.createFromBase({ workspaceId: lifecycleV1WorkspaceId, requestId: 'create-public-r01', operation: 'CREATE_FROM_BASE', revisionId: 'revision-1', locator: 'research-concept-r01.md', source: { sourceKind: 'BASE_DOCUMENT', sourceId: 'public-base', sourceContentHash: base.base.contentHash, baseDocumentId: 'public-base' }, approvedChanges: [] });
+		assert.equal(first.outcome, 'COMMITTED');
+		const successor = await service.createSuccessor({ workspaceId: lifecycleV1WorkspaceId, requestId: 'create-public-r02', operation: 'CREATE_SUCCESSOR', revisionId: 'revision-2', locator: 'research-concept-r02.md', source: { sourceKind: 'REVISION', sourceId: 'revision-1', sourceContentHash: first.revision.contentHash, baseDocumentId: 'public-base' }, approvedChanges: [] });
+		assert.equal(successor.outcome, 'COMMITTED');
+	}
 	const calls = [];
 	let id = 0;
 	const extension = workspace.createPaperProposalV2Extension({
@@ -35,6 +45,7 @@ async function fixture({ incompleteEvidence = false } = {}) {
 				tutor: { assess: async () => { calls.push('Tutor'); return tutor(); } },
 				reviewer: { review: async () => { calls.push('Reviewer'); return reviewer(); } },
 			},
+			...(lifecycleV1WorkspaceId ? { lifecycleV1WorkspaceId } : {}),
 			...(incompleteEvidence ? { derivedStore: { commitDerivedState: async () => undefined, markDerivedState: async () => undefined, saveRevisionReceipt: async () => undefined, loadDerivedState: async () => undefined } } : {}),
 		},
 	});
@@ -46,7 +57,8 @@ async function fixture({ incompleteEvidence = false } = {}) {
 }
 
 async function invoke(tool, callId, params) {
-	const result = await tool.execute(callId, params);
+	const ctx = { model: undefined, sessionManager: { getSessionId: () => 'scientific-public-e2e-session' }, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: false, error: 'MODEL_NOT_CONFIGURED' }) } };
+	const result = await tool.execute(callId, params, undefined, undefined, ctx);
 	return result.details;
 }
 
@@ -191,6 +203,28 @@ test('controlled incomplete public publication evidence persists recovery and pu
 		const reentry = await invoke(run.tool, 'reentry', { operation: 'SCIENTIFIC_WORKFLOW', instruction: 'Construct another idea.', scientificAct: 'CONSTRUCT_IDEA' });
 		assert.equal(reentry.status, 'recovery_required');
 		assert.equal(run.calls.filter((call) => call === 'Tutor').length, 1);
+	} finally { if (previous === undefined) delete process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED; else process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED = previous; await run.dispose(); }
+});
+
+test('public lifecycle-v1 withdrawal and restore expose typed bounded transition evidence without legacy publication', async () => {
+	const run = await fixture({ lifecycleV1WorkspaceId: 'public-lifecycle-e2e' });
+	const previous = process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED;
+	try {
+		process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED = 'true';
+		const withdrawn = await invoke(run.tool, 'public-lifecycle-withdraw', { operation: 'WITHDRAW_REVISION', instruction: 'withdraw research-concept-r02.md', sourceFilename: 'research-concept-r02.md', idempotencyKey: 'public-lifecycle-withdraw' });
+		assert.deepEqual({ status: withdrawn.status, semanticCode: withdrawn.semanticCode ?? null, lifecycleState: withdrawn.lifecycleState, revisionId: withdrawn.revisionId, activeRevisionId: withdrawn.activeRevisionId }, { status: 'withdrawn', semanticCode: null, lifecycleState: 'WITHDRAWN_ONLY', revisionId: 'revision-2', activeRevisionId: null });
+		assert.deepEqual(withdrawn.transitionEvidence, { operation: 'WITHDRAW_REVISION', requestId: 'public-lifecycle-withdraw', outcome: 'committed', lifecycleState: 'WITHDRAWN_ONLY', activeRevisionId: null, revisionId: 'revision-2', withdrawalId: withdrawn.withdrawalId });
+		assert.match(withdrawn.withdrawalId, /^[0-9a-f-]{36}$/);
+		assert.doesNotMatch(JSON.stringify(withdrawn.transitionEvidence), /research-concept|public-lifecycle-e2e|contents\/|withdraw research/i);
+
+		const rejected = await invoke(run.tool, 'public-lifecycle-rejected', { operation: 'RESTORE_WITHDRAWN_REVISION', instruction: 'restore a filename', sourceFilename: 'research-concept-r02.md', idempotencyKey: 'public-lifecycle-rejected' });
+		assert.deepEqual({ status: rejected.status, semanticCode: rejected.semanticCode, lifecycleState: rejected.lifecycleState, transitionEvidence: rejected.transitionEvidence }, { status: 'blocked', semanticCode: 'WITHDRAWAL_IDENTITY_NOT_FOUND', lifecycleState: null, transitionEvidence: { operation: 'RESTORE_WITHDRAWN_REVISION', requestId: 'public-lifecycle-rejected', outcome: 'rejected', semanticCode: 'WITHDRAWAL_IDENTITY_NOT_FOUND' } });
+
+		const restored = await invoke(run.tool, 'public-lifecycle-restore', { operation: 'RESTORE_WITHDRAWN_REVISION', instruction: 'restore the withdrawn revision', withdrawalOperationId: withdrawn.withdrawalId, idempotencyKey: 'public-lifecycle-restore' });
+		assert.deepEqual({ status: restored.status, lifecycleState: restored.lifecycleState, revisionId: restored.revisionId, activeRevisionId: restored.activeRevisionId }, { status: 'restored', lifecycleState: 'ACTIVE', revisionId: 'revision-2', activeRevisionId: 'revision-2' });
+		assert.deepEqual(restored.transitionEvidence, { operation: 'RESTORE_WITHDRAWN_REVISION', requestId: 'public-lifecycle-restore', outcome: 'committed', lifecycleState: 'ACTIVE', activeRevisionId: 'revision-2', revisionId: 'revision-2', withdrawalId: withdrawn.withdrawalId });
+		assert.deepEqual(await readdir(path.join(run.projectRoot, 'proposals')), []);
+		assert.equal(await scientificPaths(run.projectRoot).then((paths) => paths.filter((entry) => entry.includes('materializations')).length), 0);
 	} finally { if (previous === undefined) delete process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED; else process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED = previous; await run.dispose(); }
 });
 

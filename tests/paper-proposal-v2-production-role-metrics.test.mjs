@@ -47,6 +47,7 @@ async function productionFixture(responses) {
  assert.ok(tool, 'registered production paper_proposal_v2_execute tool is required');
  const ctx = {
   model: faux.getModel(),
+  sessionManager: { getSessionId: () => `production-role-metrics-session-${providerSequence}` },
   modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: 'fake', headers: {}, env: {} }) },
  };
  return {

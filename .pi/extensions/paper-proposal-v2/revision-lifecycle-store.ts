@@ -1,7 +1,8 @@
 import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { derivedStatePath, receiptPath, validateStoredState } from './derived-state-store.js';
-import { PARSER_VERSION, sha256, type RevisionLifecycleArtifact, type RevisionWithdrawalMetadata } from './types.js';
+import { PARSER_VERSION, sha256, type BaseDocument, type LifecycleRevision, type RevisionLifecycleArtifact, type RevisionWithdrawalMetadata, type WithdrawalRecord } from './types.js';
+import { LifecycleService } from './lifecycle-service.js';
 
 const MANAGED=/^research-concept-(?:[a-z0-9]+(?:-[a-z0-9]+)*-)?r\d{2,}\.md$/;
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -216,6 +217,33 @@ export async function findWithdrawal(input:{projectRoot:string;operationId?:stri
 }
 
 export function lifecycleInventoryDigest(artifacts:Array<{publicRelativePath:string;sha256:string}>) { return artifactDigest(artifacts); }
+
+export type LifecycleV1ReadInventory =
+ | { status:'valid'; lifecycleState:'EMPTY'|'BASE_REGISTERED'|'ACTIVE'|'WITHDRAWN_ONLY'; baseDocument?:BaseDocument; activeRevision?:LifecycleRevision; revisions:Array<LifecycleRevision&{state:'ACTIVE'|'SUPERSEDED'|'WITHDRAWN'}>; withdrawals:WithdrawalRecord[]; auditEvidence:string[] }
+ | { status:'unregistered'; code:'LIFECYCLE_V1_UNREGISTERED'; auditEvidence:string[] }
+ | { status:'inconsistent'; code:string; auditEvidence:string[] };
+
+/** Reads only explicit lifecycle-v1 authority; it never consults proposal filenames or legacy withdrawals. */
+export async function readLifecycleV1Inventory(input:{projectRoot:string;workspaceId:string}):Promise<LifecycleV1ReadInventory> {
+ try {
+  const service=new LifecycleService(input.projectRoot);
+  if(!await service.hasLifecycleAuthority(input.workspaceId)) return {status:'unregistered',code:'LIFECYCLE_V1_UNREGISTERED',auditEvidence:['lifecycle-v1:authority-unregistered']};
+  const inventory=await service.rebuildLifecycleInventory(input.workspaceId);
+  if(inventory.lifecycleState==='INCONSISTENT') return {status:'inconsistent',code:'LIFECYCLE_INVENTORY_INCONSISTENT',auditEvidence:['lifecycle-v1:rebuild-inconsistent']};
+  return {status:'valid',lifecycleState:inventory.lifecycleState,baseDocument:inventory.base,activeRevision:inventory.revisions.find(revision=>revision.revisionId===inventory.activeRevisionId),revisions:inventory.revisions,withdrawals:inventory.withdrawals,auditEvidence:['lifecycle-v1:rebuild-read-only']};
+ } catch(error) { return {status:'inconsistent',code:error instanceof Error?error.message:'LIFECYCLE_INVENTORY_INCONSISTENT',auditEvidence:['lifecycle-v1:rebuild-blocked']}; }
+}
+
+/** Adapts explicit lifecycle-v1 records to the existing read-only project-entry port. */
+export function createLifecycleV1RevisionInventoryPort(input:{projectRoot:string;workspaceId:string}) {
+ return { read: async () => {
+  const inventory=await readLifecycleV1Inventory(input);
+  if(inventory.status==='inconsistent') return {status:'inconsistent' as const,code:inventory.code,auditEvidence:inventory.auditEvidence};
+  if(inventory.status==='unregistered') return {status:'valid' as const,activeRevisions:[],withdrawnRevisions:[],lifecycleState:'EMPTY' as const,auditEvidence:inventory.auditEvidence};
+  const evidence=(revision:LifecycleRevision&{state:'ACTIVE'|'SUPERSEDED'|'WITHDRAWN'})=>({filename:revision.locator??'',revision:revision.revisionId,revisionId:revision.revisionId,documentSha256:revision.contentHash,baseDocumentId:revision.baseDocumentId,lineage:revision.lineage});
+  return {status:'valid' as const,activeRevisions:inventory.activeRevision?[evidence(inventory.activeRevision as LifecycleRevision&{state:'ACTIVE'|'SUPERSEDED'|'WITHDRAWN'})]:[],withdrawnRevisions:inventory.revisions.filter(revision=>revision.state==='WITHDRAWN').map(evidence),baseDocument:inventory.baseDocument?{baseDocumentId:inventory.baseDocument.baseDocumentId,contentHash:inventory.baseDocument.contentHash}:undefined,lifecycleState:inventory.lifecycleState,auditEvidence:inventory.auditEvidence};
+ }};
+}
 
 /** Read-only canonical managed-revision inventory for scientific entry admission. */
 export type CanonicalManagedRevisionInventory =

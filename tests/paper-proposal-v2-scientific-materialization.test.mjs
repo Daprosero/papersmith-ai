@@ -149,3 +149,69 @@ test('materialization modules retain no candidate execution, review, guard, or p
 	assert.match(planner, /scientific-domain\.js/);
 	assert.doesNotMatch(planner, /(?:writeFile|mkdir|rename|publish(?:Initial|Successor)?|ProposalWorkspaceAdapter|MaterializationCandidateExecutor|DocumentReviewer|compilePatches|validateCandidate)/);
 });
+
+test('unregistered lifecycle-v1 scientific materialization fails closed without legacy publication', async () => {
+	const { projectRoot } = await fixture();
+	const runtime = new v2.ScientificWorkflowRuntime(projectRoot, {}, {}, { lifecycleV1WorkspaceId: 'unregistered-workspace' });
+	const result = await runtime.execute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'request materialization for unregistered base', scientificAct: 'REQUEST_MATERIALIZATION', candidateIds: ['decision-a'] });
+	assert.equal(result.status, 'blocked');
+	assert.equal(result.blockers[0].code, 'BASE_DOCUMENT_NOT_REGISTERED');
+	await assert.rejects(() => readFile(path.join(projectRoot, 'proposals', 'research-concept-r01.md')));
+});
+
+test('a fresh lifecycle-v1 runtime blocks a withdrawn-only workspace before reserving another materialization', async () => {
+	const { projectRoot } = await fixture();
+	const lifecycle = new v2.LifecycleService(projectRoot);
+	const registered = await lifecycle.registerBaseDocument({ workspaceId: 'workspace-v1', requestId: 'register-base', baseDocumentId: 'base-v1', content: '# Registered base\n\nUnchanged theorem.\n' });
+	assert.equal(registered.outcome, 'COMMITTED');
+	const firstRuntime = new v2.ScientificWorkflowRuntime(projectRoot, {}, {}, { lifecycleV1WorkspaceId: 'workspace-v1' });
+	const first = await firstRuntime.execute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'request materialization for approved base revision', scientificAct: 'REQUEST_MATERIALIZATION', candidateIds: ['decision-a'] });
+	const successor = await firstRuntime.execute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'request materialization for approved successor', scientificAct: 'REQUEST_MATERIALIZATION', candidateIds: ['decision-b'] });
+	assert.equal(first.status, 'materialized');
+	assert.equal(successor.status, 'materialized');
+	const withdrawal = await lifecycle.withdrawRevision({ workspaceId: 'workspace-v1', requestId: 'withdraw-successor', revisionId: successor.materialization.targetRevision });
+	assert.equal(withdrawal.outcome, 'COMMITTED');
+	const recordsPath = path.join(projectRoot, '.paper-proposal-v2', 'scientific', 'materializations');
+	const before = await readdir(recordsPath);
+	const restarted = new v2.ScientificWorkflowRuntime(projectRoot, {}, {}, { lifecycleV1WorkspaceId: 'workspace-v1' });
+	const blocked = await restarted.execute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'request materialization for approved withdrawn lifecycle revision', scientificAct: 'REQUEST_MATERIALIZATION', candidateIds: ['decision-c'] });
+	assert.deepEqual({ status: blocked.status, code: blocked.blockers?.[0]?.code, nextAction: blocked.nextAction }, { status: 'blocked', code: 'ACTIVE_REVISION_NOT_FOUND', nextAction: 'reconcile_lifecycle_inventory' });
+	assert.equal((await lifecycle.rebuildLifecycleInventory('workspace-v1')).lifecycleState, 'WITHDRAWN_ONLY');
+	assert.deepEqual(await readdir(recordsPath), before);
+	await assert.rejects(() => readFile(path.join(projectRoot, 'proposals', 'research-concept-r03.md')));
+});
+
+test('registered lifecycle-v1 scientific materialization publishes only lifecycle-owned base and successor revisions', async () => {
+	const { projectRoot } = await fixture();
+	const lifecycle = new v2.LifecycleService(projectRoot);
+	const base = '# Registered base\n\nUnchanged theorem.\n';
+	const registered = await lifecycle.registerBaseDocument({ workspaceId: 'workspace-v1', requestId: 'register-base', baseDocumentId: 'base-v1', content: base });
+	assert.equal(registered.outcome, 'COMMITTED');
+	const runtime = new v2.ScientificWorkflowRuntime(projectRoot, {}, {}, { lifecycleV1WorkspaceId: 'workspace-v1' });
+	const first = await runtime.execute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'request materialization for approved base revision', scientificAct: 'REQUEST_MATERIALIZATION', candidateIds: ['decision-a'] });
+	assert.equal(first.status, 'materialized', JSON.stringify(first));
+	assert.match(first.materialization.targetFilename, /^lifecycle-v1:/);
+	const afterFirst = await lifecycle.rebuildLifecycleInventory('workspace-v1');
+	assert.equal(afterFirst.activeRevisionId, first.materialization.targetRevision);
+	assert.equal(afterFirst.revisions.length, 1);
+	assert.equal(afterFirst.revisions[0].lineage.sourceKind, 'BASE_DOCUMENT');
+	assert.equal(afterFirst.revisions[0].content.startsWith(base), true);
+	assert.equal(afterFirst.revisions[0].content.includes('Bounded accepted synthesis a.'), true);
+	const firstRetry = await runtime.execute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'request materialization for approved base revision', scientificAct: 'REQUEST_MATERIALIZATION', candidateIds: ['decision-a'] });
+	assert.equal(firstRetry.status, 'materialized');
+	assert.equal(firstRetry.materialization.targetRevision, first.materialization.targetRevision);
+	assert.equal((await lifecycle.rebuildLifecycleInventory('workspace-v1')).revisions.length, 1);
+	await assert.rejects(() => readFile(path.join(projectRoot, 'proposals', 'research-concept-r01.md')));
+
+	const successor = await runtime.execute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'request materialization for approved successor', scientificAct: 'REQUEST_MATERIALIZATION', candidateIds: ['decision-b'] });
+	assert.equal(successor.status, 'materialized');
+	const afterSuccessor = await lifecycle.rebuildLifecycleInventory('workspace-v1');
+	assert.equal(afterSuccessor.activeRevisionId, successor.materialization.targetRevision);
+	assert.equal(afterSuccessor.revisions.length, 2);
+	assert.equal(afterSuccessor.revisions.find((revision) => revision.revisionId === first.materialization.targetRevision).state, 'SUPERSEDED');
+	const active = afterSuccessor.revisions.find((revision) => revision.revisionId === successor.materialization.targetRevision);
+	assert.equal(active.lineage.sourceKind, 'REVISION');
+	assert.equal(active.lineage.sourceId, first.materialization.targetRevision);
+	assert.equal(active.content.includes('Bounded accepted synthesis a.'), true);
+	assert.equal(active.content.includes('Bounded accepted synthesis b.'), true);
+});

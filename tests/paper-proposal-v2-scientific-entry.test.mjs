@@ -124,3 +124,15 @@ test('entry resolver remains read-only and imports canonical scientific contract
 	assert.doesNotMatch(source, /(?:writeFile|mkdir|rename|rm\()/);
 	assert.doesNotMatch(source, /type\s+(?:ScientificThread|ScientificDecision|ScientificEvent|ThreadRelation|ProjectEntryState)\s*=/);
 });
+
+test('ProjectEntryResolver exposes registered lifecycle evidence read-only and preserves withdrawn-only absence', async () => {
+ const base = { baseDocumentId: 'base-1', contentHash: 'c'.repeat(64) };
+ const active = { filename: 'ignored-locator.md', revision: 'r01', documentSha256: 'a'.repeat(64), revisionId: 'revision-1', baseDocumentId: 'base-1', lineage: { sourceKind: 'BASE_DOCUMENT', sourceId: 'base-1', sourceContentHash: 'c'.repeat(64) } };
+ const lifecycle = { ...inventory({ activeRevisions: [active] }), baseDocument: base, lifecycleState: 'ACTIVE' };
+ const before = JSON.stringify(lifecycle);
+ const entry = await resolver(lifecycle, scientific({ status: 'absent' })).resolve();
+ assert.deepEqual({ state: entry.state, baseDocument: entry.baseDocument, lifecycleState: entry.lifecycleState, activeRevisionId: entry.activeRevision.revisionId }, { state: 'ACTIVE_PROPOSAL', baseDocument: base, lifecycleState: 'ACTIVE', activeRevisionId: 'revision-1' });
+ assert.equal(JSON.stringify(lifecycle), before);
+ const withdrawn = await resolver({ ...inventory({ withdrawnRevisions: [withdrawnRevision] }), baseDocument: base, lifecycleState: 'WITHDRAWN_ONLY' }, scientific({ status: 'absent' })).resolve();
+ assert.deepEqual({ state: withdrawn.state, lifecycleState: withdrawn.lifecycleState, activeRevision: withdrawn.activeRevision }, { state: 'WITHDRAWN_ONLY', lifecycleState: 'WITHDRAWN_ONLY', activeRevision: undefined });
+});
