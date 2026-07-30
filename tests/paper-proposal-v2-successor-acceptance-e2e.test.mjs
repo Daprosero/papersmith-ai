@@ -19,7 +19,7 @@ const workspace = await jiti.import(path.join(root, '.pi/extensions/proposal-wor
 const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
 const aiCompat = await jiti.import(path.join(aiRoot, 'compat.js'));
 
-const sourceContent = `# 1 Introduction\n\nPrefix bytes remain untouched.\n\n# 2 Framing\n\nOld framing.\n\n## 2.1 Setup\n\nOld setup.\n\n## 2.2 Method\n\nOld method.\n\n## 2.3 Consequences\n\nOld consequences.\n\n# 3 Results\n\nOld results.\n\n## 3.1 Analysis\n\nOld analysis.\n\n## 3.2 Validation\n\nOld validation.\n\n## 3.3 Discussion\n\nOld discussion.\n\n# 4 Conclusion\n\nSuffix bytes remain untouched.\n`;
+const sourceContent = `# 1 Introduction\n\nPrefix bytes remain untouched.\n\n# 2 Framing\n\nOld framing.\n\n## 2.1 Framing average\n\nOld average.\n\n## 2.2 Setup\n\nOld setup.\n\n## 2.3 Method\n\nOld method.\n\n## 2.4 Consequences\n\nOld consequences.\n\n# 3 Results\n\nOld results.\n\n## 3.1 Analysis\n\nOld analysis.\n\n## 3.2 Validation\n\nOld validation.\n\n## 3.3 Discussion\n\nOld discussion.\n\n# 4 Conclusion\n\nSuffix bytes remain untouched.\n`;
 
 async function fixture() {
  const projectRoot = await mkdtemp(path.join(tmpdir(), 'pp-v2-successor-acceptance-'));
@@ -27,6 +27,7 @@ async function fixture() {
  const bootstrap = workspace.createProposalWorkspaceTool(projectRoot);
  await bootstrap.execute('seed', { action: 'write', resource: 'proposal', slug: 'r01', content: sourceContent });
  const guardCalls = [];
+ const plannerPayloads = [];
  const guard = workspace.createDocumentOperationGuard(projectRoot);
  const guardExecute = guard.execute.bind(guard);
  guard.execute = async (input, signal) => { guardCalls.push(input); return guardExecute(input, signal); };
@@ -34,10 +35,17 @@ async function fixture() {
  const faux = aiCompat.registerFauxProvider({ api: providerId, provider: providerId, models: [{ id: `${providerId}-model`, input: ['text'], contextWindow: 32000, maxTokens: 4096 }] });
  const state = await v2.loadDocumentState(projectRoot, 'research-concept-r01.md');
  const entry = heading => state.structuralIndex.entries.find(candidate => ['section', 'subsection', 'heading'].includes(candidate.type) && state.documentBytes.subarray(candidate.startByte, candidate.endByte).toString('utf8').includes(heading));
- const childId = entry('## 2.1 Setup').entryId;
+ const childId = entry('## 2.2 Setup').entryId;
  const outsideId = entry('# 4 Conclusion').entryId;
  faux.setResponses(Array.from({ length: 16 }, () => context => {
   const payload = JSON.parse(context.messages.at(-1).content.find(part => part.type === 'text').text);
+  if (payload.operation === 'CREATE_SUCCESSOR_REPLACEMENT') {
+   plannerPayloads.push(payload);
+   const replacementText = /recupera el promedio/i.test(payload.instruction)
+    ? '## 2.1 Framing average\n\nEl promedio se recupera.\n\n'
+    : '# 2–3.3 Revised\n\nOnly the bounded composite range changes.\n\n';
+   return aiCompat.fauxAssistantMessage(aiCompat.fauxToolCall('paper_proposal_v2_successor_replacement', { replacementText, unresolvedQuestions: [] }));
+  }
   if (!payload.intent) return aiCompat.fauxAssistantMessage(JSON.stringify({ decision: 'ACCEPT', summary: 'The current managed revision is the correct source.', mathematicalIssues: [], notationIssues: [], assumptionIssues: [], requiredRevisions: [], unresolvedQuestions: [], riskLevel: 'LOW', affectedEntryIds: [] }));
   const targetEntryId = /child action/i.test(payload.instruction) ? childId : /outside action/i.test(payload.instruction) ? outsideId : payload.target.entryId;
   return aiCompat.fauxAssistantMessage(aiCompat.fauxToolCall('paper_proposal_v2_conceptual_revision', { actions: [{ kind: 'replace', targetEntryId, replacementText: '# 2–3.3 Revised\n\nOnly the bounded composite range changes.\n\n' }], unresolvedQuestions: [] }));
@@ -47,7 +55,7 @@ async function fixture() {
  const tool = tools.find(candidate => candidate.name === 'paper_proposal_v2_execute');
  const ctx = { model: faux.getModel(), sessionManager: { getSessionId: () => `acceptance-session-${providerId}` }, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: 'fake', headers: {}, env: {} }) } };
  return {
-  projectRoot, guardCalls, state,
+  projectRoot, guardCalls, plannerPayloads, state,
   execute: async params => (await tool.execute('successor-acceptance', params, undefined, undefined, ctx)).details,
   async dispose() { faux.unregister?.(); await rm(projectRoot, { recursive: true, force: true }); },
  };
@@ -102,10 +110,46 @@ test('CREATE_SUCCESSOR previews one composite patch and publishes exactly once o
   assert.equal(replay.message, 'SUCCESSOR_ACCEPTANCE_INVALID');
 
   const child = await run.execute({ ...request, instruction: 'Use a child action instead.' });
-  assert.equal(child.status, 'blocked', JSON.stringify(child));
-  assert.equal(child.message, 'SUCCESSOR_CHILD_TARGET_FORBIDDEN');
+  assert.equal(child.status, 'awaiting_acceptance', JSON.stringify(child));
+  assert.equal(child.patchCount, 1);
   const outside = await run.execute({ ...request, instruction: 'Use an outside action instead.' });
-  assert.equal(outside.status, 'blocked', JSON.stringify(outside));
-  assert.equal(outside.message, 'SUCCESSOR_OUTSIDE_TARGET_FORBIDDEN');
+  assert.equal(outside.status, 'awaiting_acceptance', JSON.stringify(outside));
+  assert.equal(outside.patchCount, 1);
+ } finally { await run.dispose(); }
+});
+
+test('CREATE_SUCCESSOR resolves a no-range semantic target to one minimal section and gives the production planner content-only authority', async () => {
+ const run = await fixture();
+ try {
+  const r01Path = path.join(run.projectRoot, 'proposals/research-concept-r01.md');
+  const r02Path = path.join(run.projectRoot, 'proposals/research-concept-r02.md');
+  const sourceBefore = await readFile(r01Path);
+  const originalTarget = '## 2.1 Framing average\n\nOld average.\n\n';
+  const replacement = '## 2.1 Framing average\n\nEl promedio se recupera.\n\n';
+  const request = {
+   operation: 'CREATE_SUCCESSOR',
+   editIntent: 'CONCEPTUAL_REVISION',
+   sourceFilename: 'research-concept-r01.md',
+   instruction: 'Modifica la sección Framing; se recupera el promedio y preserva la conclusión.',
+  };
+  const preview = await run.execute(request);
+  assert.equal(preview.status, 'awaiting_acceptance', JSON.stringify(preview));
+  assert.equal(preview.patchCount, 1);
+  assert.equal(preview.plannerCalls, 1);
+  assert.deepEqual(run.plannerPayloads.at(-1) && Object.keys(run.plannerPayloads.at(-1)).sort(), ['constraints', 'context', 'documentSha256', 'instruction', 'operation']);
+  assert.equal(Object.hasOwn(run.plannerPayloads.at(-1), 'targetEntryId'), false);
+  assert.equal(Object.hasOwn(run.plannerPayloads.at(-1), 'sourceFilename'), false);
+  assert.equal(Object.hasOwn(run.plannerPayloads.at(-1), 'destination'), false);
+  assert.equal(Object.hasOwn(run.plannerPayloads.at(-1), 'publication'), false);
+  assert.equal(Object.hasOwn(run.plannerPayloads.at(-1), 'actions'), false);
+  assert.equal(run.plannerPayloads.at(-1).context.fragments[0].text, originalTarget, 'nested semantic candidates collapse to the minimal section');
+  assert.deepEqual(await readFile(r01Path), sourceBefore, 'preview preserves the byte-identical source');
+  await assert.rejects(readFile(r02Path), { code: 'ENOENT' });
+
+  const published = await run.execute({ ...request, acceptSuccessor: true, successorAcceptanceToken: preview.acceptanceToken });
+  assert.equal(published.status, 'published', JSON.stringify(published));
+  assert.equal(published.patchCount, 1);
+  assert.deepEqual(await readFile(r01Path), sourceBefore, 'publication preserves the byte-identical source');
+  assert.deepEqual(await readFile(r02Path), Buffer.from(sourceBefore.toString('utf8').replace(originalTarget, replacement)), 'only the canonical successor section changes');
  } finally { await run.dispose(); }
 });

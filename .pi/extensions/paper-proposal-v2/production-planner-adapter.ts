@@ -4,8 +4,10 @@ import { ProductionModelRuntime } from './production-runtime.js';
 
 const plannerPrompt = (maxConceptualActions: number) => `You are the Paper Proposal V2 semantic planner. Return one plain JSON object only through the required structured-output tool, without prose, Markdown, code fences, or text outside the tool call. Use only the supplied local context and supplied document SHA. Never read files, publish, return a full document, invent entry IDs, offsets, or hashes. Return the smallest valid V2 plan fragment. For adaptive MOVE/COPY return only transformedContent and preserve supplied source, destination, and position. For semantic cleanup return only bounded cleanup/rewrite_transition actions inside supplied context. For conceptual revision, return exactly two top-level keys: actions and unresolvedQuestions. Do not return expectedEffects, expectedEffects-like plan metadata, or any other top-level key. Return 1-${maxConceptualActions} bounded replace actions on supplied context entry IDs. Include unresolvedQuestions when clarification is needed.`;
 const FIDELITY_MODIFY_PROMPT = `Return exactly one required tool call for the supplied exact MODIFY. Copy replacementBlock byte-for-byte into replacementText, use targetEntryId unchanged, and return only actions and unresolvedQuestions. Never broaden the edit, invent identifiers, use external or session context, or return document content.`;
+const SUCCESSOR_REPLACEMENT_PROMPT = `You are the Paper Proposal V2 successor replacement writer. Return one plain JSON object only through the required structured-output tool. Supply only replacementText and unresolvedQuestions for the one already-authorized bounded successor section. Do not return actions, target IDs, source or destination information, publication instructions, offsets, hashes, or a complete document.`;
 
 const FIDELITY_RESPONSE_KEYS = new Set(['actions', 'unresolvedQuestions']);
+const SUCCESSOR_RESPONSE_KEYS = new Set(['replacementText', 'unresolvedQuestions']);
 const REPLACE_ACTION_KEYS = new Set(['kind', 'targetEntryId', 'replacementText']);
 const CONCEPTUAL_RESPONSE_KEYS = new Set(['actions', 'unresolvedQuestions']);
 const conceptualOutput = (maxActions: number) => Object.freeze({
@@ -29,6 +31,14 @@ const FIDELITY_MODIFY_OUTPUT = Object.freeze({
    targetEntryId: Type.String({ minLength: 1 }),
    replacementText: Type.String(),
   }, { additionalProperties: false }), { minItems: 1, maxItems: 1 }),
+  unresolvedQuestions: Type.Array(Type.String()),
+ }, { additionalProperties: false }),
+});
+const SUCCESSOR_REPLACEMENT_OUTPUT = Object.freeze({
+ name: 'paper_proposal_v2_successor_replacement',
+ description: 'Return replacement content for the one already-authorized successor section.',
+ schema: Type.Object({
+  replacementText: Type.String({ minLength: 1 }),
   unresolvedQuestions: Type.Array(Type.String()),
  }, { additionalProperties: false }),
 });
@@ -160,6 +170,20 @@ function normalizeConceptualRevision(
  return { actions, unresolvedQuestions };
 }
 
+function normalizeSuccessorReplacement(
+ input: SemanticPlannerInput,
+ response: unknown,
+): Awaited<ReturnType<SemanticEditPlanner['plan']>> {
+ const expectedResponseFields = ['replacementText', 'unresolvedQuestions'];
+ if (!isRecord(response)) rejectResponse('RESPONSE_NOT_OBJECT', { response, expectedFields: expectedResponseFields });
+ if (!hasOnlyKeys(response, SUCCESSOR_RESPONSE_KEYS)) rejectResponse('UNEXPECTED_RESPONSE_FIELD', { response, expectedFields: expectedResponseFields, unexpectedFields: unexpectedKeys(response, SUCCESSOR_RESPONSE_KEYS) });
+ if (!Object.hasOwn(response, 'replacementText') || !Object.hasOwn(response, 'unresolvedQuestions')) rejectResponse('MISSING_RESPONSE_FIELD', { response, expectedFields: expectedResponseFields });
+ if (typeof response.replacementText !== 'string' || response.replacementText.trim().length === 0) rejectResponse('INVALID_REPLACEMENT_TEXT', { response, expectedFields: expectedResponseFields });
+ const unresolvedQuestions = normalizeQuestions(response.unresolvedQuestions, response);
+ if (!input.target) throw new Error('SUCCESSOR_TARGET_REQUIRED');
+ return { actions: [{ kind: 'replace', targetEntryId: input.target.entryId, replacementText: response.replacementText }], unresolvedQuestions };
+}
+
 function normalizeFidelityModify(
  input: SemanticPlannerInput,
  response: unknown,
@@ -188,40 +212,45 @@ function normalizeFidelityModify(
 
 export function createProductionSemanticPlanner(runtime: ProductionModelRuntime): SemanticEditPlanner {
  const fidelityInput = (input: SemanticPlannerInput) => input.intent.intent === 'MODIFY' && input.fidelity?.replacementBlock !== undefined;
+ const successorInput = (input: SemanticPlannerInput) => input.context?.successorCompositeTarget === true;
  return {
   preflight(input) {
-   if (!fidelityInput(input)) return undefined;
+   if (successorInput(input) || !fidelityInput(input)) return undefined;
    return runtime.preflightFidelityModify(FIDELITY_MODIFY_PROMPT, buildFidelityModifyPayload(input), FIDELITY_MODIFY_OUTPUT);
   },
   async plan(input) {
    let response: unknown;
-   const fidelityModify = fidelityInput(input);
+   const successor = successorInput(input);
+   const fidelityModify = !successor && fidelityInput(input);
    const conceptualRevision = input.intent.intent === 'CONCEPTUAL_REVISION';
-   const maxConceptualActions = input.context?.successorCompositeTarget === true ? 1 : 3;
+   const maxConceptualActions = successor ? 1 : 3;
    const conceptualContract = conceptualRevision ? conceptualOutput(maxConceptualActions) : undefined;
    const fidelityPayload = fidelityModify ? buildFidelityModifyPayload(input) : undefined;
    if (fidelityPayload) runtime.preflightFidelityModify(FIDELITY_MODIFY_PROMPT, fidelityPayload, FIDELITY_MODIFY_OUTPUT);
    try {
-    response = fidelityPayload
-     ? await runtime.structured(FIDELITY_MODIFY_PROMPT, fidelityPayload, FIDELITY_MODIFY_OUTPUT)
-     : await runtime.structured(plannerPrompt(maxConceptualActions), {
-       intent: input.intent,
-       instruction: input.instruction,
-       target: input.target,
-       sourceEntryIds: input.sourceEntryIds,
-       destinationEntryId: input.destinationEntryId,
-       position: input.position,
-       constraints: input.constraints,
-       fidelity: input.fidelity,
-       documentSha256: input.documentSha256,
-       context: input.context,
-       sourceContext: input.sourceContext,
-       destinationContext: input.destinationContext,
-      }, conceptualContract);
+    response = successor
+     ? await runtime.structured(SUCCESSOR_REPLACEMENT_PROMPT, { operation: 'CREATE_SUCCESSOR_REPLACEMENT', instruction: input.instruction, constraints: input.constraints, documentSha256: input.documentSha256, context: input.context }, SUCCESSOR_REPLACEMENT_OUTPUT)
+     : fidelityPayload
+      ? await runtime.structured(FIDELITY_MODIFY_PROMPT, fidelityPayload, FIDELITY_MODIFY_OUTPUT)
+      : await runtime.structured(plannerPrompt(maxConceptualActions), {
+        intent: input.intent,
+        instruction: input.instruction,
+        target: input.target,
+        sourceEntryIds: input.sourceEntryIds,
+        destinationEntryId: input.destinationEntryId,
+        position: input.position,
+        constraints: input.constraints,
+        fidelity: input.fidelity,
+        documentSha256: input.documentSha256,
+        context: input.context,
+        sourceContext: input.sourceContext,
+        destinationContext: input.destinationContext,
+       }, conceptualContract);
    } catch (error) {
     rejectResponse('MODEL_RESPONSE_ERROR', { response }, error, 'runtime');
    }
 
+   if (successor) return normalizeSuccessorReplacement(input, response);
    if (fidelityModify) return normalizeFidelityModify(input, response);
    if (conceptualRevision) return normalizeConceptualRevision(input, response);
    return response as Awaited<ReturnType<SemanticEditPlanner['plan']>>;
