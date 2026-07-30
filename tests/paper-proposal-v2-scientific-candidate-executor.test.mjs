@@ -15,7 +15,7 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
+const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const metadata = { schemaVersion: 1, title: 'Scientific reasoning proposal', sectionHeading: 'Accepted scientific decisions' };
 
@@ -24,7 +24,7 @@ function event(sequence, eventId, type, threadId, actor, payload, causalEventIds
 }
 
 async function fixture({ source } = {}) {
-	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-v2-scientific-candidate-'));
+	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-scientific-candidate-'));
 	const store = new v2.ScientificStateStore(projectRoot);
 	const summary = 'Bounded accepted synthesis.';
 	const synthesisDigest = digest({ synthesisId: 'synthesis-a', threadId: 'thread-a', summary });
@@ -99,6 +99,6 @@ test('CandidateExecutor rejects missing, invalid, compiler-failing, and validato
 });
 
 test('CandidateExecutor has no drafting, agent, context, workspace-write, guard, index, review, or publication authority', async () => {
-	const source = await (await import('node:fs/promises')).readFile(path.join(root, '.pi/extensions/paper-proposal-v2/materialization-candidate-executor.ts'), 'utf8');
+	const source = await (await import('node:fs/promises')).readFile(path.join(root, '.claude/skills/paper-proposal/engine/materialization-candidate-executor.ts'), 'utf8');
 	assert.doesNotMatch(source, /(?:writeFile|mkdir|rename|publish(?:Initial|Successor)?|ProposalWorkspaceAdapter|DocumentReviewer|createInitialProposal|loadDocumentState|ScientificStateStore|Tutor|Reviewer|ContextBuilder|guard)/);
 });

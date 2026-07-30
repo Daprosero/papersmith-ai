@@ -15,7 +15,7 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
+const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const revision = { filename: 'research-concept-r01.md', revision: 'r01', documentSha256: 'a'.repeat(64) };
 const canonicalMetadata = { schemaVersion: 1, title: 'Scientific reasoning proposal', sectionHeading: 'Accepted scientific decisions' };
@@ -25,7 +25,7 @@ function event(sequence, eventId, type, threadId, actor, payload, causalEventIds
 }
 
 async function fixture({ withRevision = false, revisionEvidence = revision } = {}) {
-	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-v2-scientific-materialization-'));
+	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-scientific-materialization-'));
 	const store = new v2.ScientificStateStore(projectRoot);
 	const events = [];
 	const threads = [];
@@ -70,7 +70,7 @@ test('reservation freezes only explicit sorted unique accepted decisions and exa
 	assert.deepEqual(await store.reserveMaterialization(['decision-a', 'decision-b', 'decision-c']), { status: 'conflict', code: 'MATERIALIZATION_SELECTION_CONFLICT', materializationId: reserved.record.materializationId });
 	const state = await store.read();
 	assert.equal(state.events.at(-1).type, 'MATERIALIZATION_RESERVED');
-	const records = await readdir(path.join(projectRoot, '.paper-proposal-v2/scientific/materializations'));
+	const records = await readdir(path.join(projectRoot, '.paper-proposal/scientific/materializations'));
 	assert.equal(records.filter((name) => name.endsWith('.json') && name !== 'index.json').length, 1);
 });
 
@@ -145,7 +145,7 @@ test('identical frozen inputs produce identical executable payloads before persi
 });
 
 test('materialization modules retain no candidate execution, review, guard, or publication authority', async () => {
-	const planner = await readFile(path.join(root, '.pi/extensions/paper-proposal-v2/materialization-planner.ts'), 'utf8');
+	const planner = await readFile(path.join(root, '.claude/skills/paper-proposal/engine/materialization-planner.ts'), 'utf8');
 	assert.match(planner, /scientific-domain\.js/);
 	assert.doesNotMatch(planner, /(?:writeFile|mkdir|rename|publish(?:Initial|Successor)?|ProposalWorkspaceAdapter|MaterializationCandidateExecutor|DocumentReviewer|compilePatches|validateCandidate)/);
 });
@@ -171,7 +171,7 @@ test('a fresh lifecycle-v1 runtime blocks a withdrawn-only workspace before rese
 	assert.equal(successor.status, 'materialized');
 	const withdrawal = await lifecycle.withdrawRevision({ workspaceId: 'workspace-v1', requestId: 'withdraw-successor', revisionId: successor.materialization.targetRevision });
 	assert.equal(withdrawal.outcome, 'COMMITTED');
-	const recordsPath = path.join(projectRoot, '.paper-proposal-v2', 'scientific', 'materializations');
+	const recordsPath = path.join(projectRoot, '.paper-proposal', 'scientific', 'materializations');
 	const before = await readdir(recordsPath);
 	const restarted = new v2.ScientificWorkflowRuntime(projectRoot, {}, {}, { lifecycleV1WorkspaceId: 'workspace-v1' });
 	const blocked = await restarted.execute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'request materialization for approved withdrawn lifecycle revision', scientificAct: 'REQUEST_MATERIALIZATION', candidateIds: ['decision-c'] });

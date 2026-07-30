@@ -8,15 +8,15 @@ import { pathToFileURL } from 'node:url';
 const piRoot='/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
 const {createJiti}=await import(pathToFileURL(path.join(piRoot,'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti=createJiti(import.meta.url,{alias:{'@earendil-works/pi-coding-agent':path.join(piRoot,'dist/index.js'),'@earendil-works/pi-ai/compat':path.join(piRoot,'node_modules/@earendil-works/pi-ai/dist/compat.js'),'@earendil-works/pi-ai':path.join(piRoot,'node_modules/@earendil-works/pi-ai/dist/index.js'),typebox:path.join(piRoot,'node_modules/typebox/build/index.mjs')}});
-const v2=await jiti.import(path.resolve('.pi/extensions/paper-proposal-v2/exports.ts'));
+const v2=await jiti.import(path.resolve('.claude/skills/paper-proposal/engine/exports.ts'));
 
 const operationId='11111111-1111-4111-8111-111111111111';
 const r01='research-concept-r01.md';
 const r02='research-concept-r02.md';
-const publicPaths=[`proposals/${r02}`,`.paper-proposal-v2/state/${r02}.json`,`.paper-proposal-v2/receipts/${r02}.json`];
+const publicPaths=[`proposals/${r02}`,`.paper-proposal/state/${r02}.json`,`.paper-proposal/receipts/${r02}.json`];
 
 function immutablePath(publicRelativePath) {
-  return publicRelativePath.startsWith('proposals/')?`artifacts/${publicRelativePath}`:`artifacts/${publicRelativePath.replace(/^\.paper-proposal-v2\//,'')}`;
+  return publicRelativePath.startsWith('proposals/')?`artifacts/${publicRelativePath}`:`artifacts/${publicRelativePath.replace(/^\.paper-proposal\//,'')}`;
 }
 
 async function writeJson(filename,value) {
@@ -40,7 +40,7 @@ async function fixture() {
     documentShaAfter:state.documentSha256,derivedStateStatus:'COMMITTED',
   });
 
-  const operationDirectory=path.join(root,'.paper-proposal-v2','withdrawn',operationId);
+  const operationDirectory=path.join(root,'.paper-proposal','withdrawn',operationId);
   const artifacts=[];
   for (const publicRelativePath of publicPaths) {
     const source=path.join(root,publicRelativePath);
@@ -65,7 +65,7 @@ async function fixture() {
   const context={
     operationType:'WITHDRAW_REVISION',operationId,pendingAudit:true,
     phase:'WITHDRAW_PUBLIC_ARTIFACTS_MOVED',temporarilyMovedArtifacts:artifacts,
-    expectedMarker:{relativePath:`.paper-proposal-v2/withdrawn/${operationId}/audit-marker.json`,state:'PENDING_AUDIT',inventoryDigest,expiresAt},
+    expectedMarker:{relativePath:`.paper-proposal/withdrawn/${operationId}/audit-marker.json`,state:'PENDING_AUDIT',inventoryDigest,expiresAt},
   };
   const marker={
     operationType:context.operationType,operationId,state:'PENDING_AUDIT',phase:context.phase,
@@ -75,7 +75,7 @@ async function fixture() {
   return {root,operationDirectory,context,marker};
 }
 
-async function runActiveSelfAudit(value,run=()=>v2.runPaperProposalV2SelfAudit({projectRoot:value.root,auditContext:value.context})) {
+async function runActiveSelfAudit(value,run=()=>v2.runPaperProposalSelfAudit({projectRoot:value.root,auditContext:value.context})) {
   v2.resetMutationLockMetrics();
   return v2.withRevisionLifecycleMutationLock(
     {projectRoot:value.root,operationId:value.context.operationId,filename:r02},
@@ -147,7 +147,7 @@ test('lifecycle-v1 legacy diagnostics leave an active PENDING_AUDIT fixture byte
   const before=await Promise.all(tracked.map(relativePath=>readFile(path.join(value.operationDirectory,relativePath),'utf8')));
   const inventory=await v2.readLifecycleV1Inventory({projectRoot:value.root,workspaceId:'legacy-pending-audit'});
   assert.deepEqual(inventory,{status:'unregistered',code:'LIFECYCLE_V1_UNREGISTERED',auditEvidence:['lifecycle-v1:authority-unregistered']});
-  await assert.rejects(readdir(path.join(value.root,'.paper-proposal-v2','lifecycle','v1')),{code:'ENOENT'});
+  await assert.rejects(readdir(path.join(value.root,'.paper-proposal','lifecycle','v1')),{code:'ENOENT'});
   assert.deepEqual(await Promise.all(tracked.map(relativePath=>readFile(path.join(value.operationDirectory,relativePath),'utf8'))),before);
   const audit=await runActiveSelfAudit(value);
   assert.equal(audit.status,'PASS',JSON.stringify(audit));
@@ -159,7 +159,7 @@ test('a finalized committed marker passes fresh context-free audits',async()=>{
   await writeJson(path.join(value.operationDirectory,'audit-marker.json'),{...value.marker,state:'COMMITTED',auditStatus:'PASS',selfAuditStatus:'PASS'});
   v2.resetMutationLockMetrics();
   const consistency=await v2.runConsistencyAudit({projectRoot:value.root});
-  const selfAudit=await v2.runPaperProposalV2SelfAudit({projectRoot:value.root});
+  const selfAudit=await v2.runPaperProposalSelfAudit({projectRoot:value.root});
   assert.equal(consistency.status,'PASS',JSON.stringify(consistency));
   assert.equal(selfAudit.status,'PASS',JSON.stringify(selfAudit));
 });
@@ -170,7 +170,7 @@ test('injected pending-audit failure followed by rollback passes normal audits',
   await rollback(value);
   v2.resetMutationLockMetrics();
   const consistency=await v2.runConsistencyAudit({projectRoot:value.root});
-  const selfAudit=await v2.runPaperProposalV2SelfAudit({projectRoot:value.root});
+  const selfAudit=await v2.runPaperProposalSelfAudit({projectRoot:value.root});
   assert.equal(consistency.status,'PASS',JSON.stringify(consistency));
   assert.equal(selfAudit.status,'PASS',JSON.stringify(selfAudit));
 });

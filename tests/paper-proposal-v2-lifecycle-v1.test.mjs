@@ -8,12 +8,12 @@ import { pathToFileURL } from 'node:url';
 const piRoot='/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
 const {createJiti}=await import(pathToFileURL(path.join(piRoot,'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti=createJiti(import.meta.url,{alias:{'@earendil-works/pi-coding-agent':path.join(piRoot,'dist/index.js'),'@earendil-works/pi-ai/compat':path.join(piRoot,'node_modules/@earendil-works/pi-ai/dist/compat.js'),'@earendil-works/pi-ai':path.join(piRoot,'node_modules/@earendil-works/pi-ai/dist/index.js'),typebox:path.join(piRoot,'node_modules/typebox/build/index.mjs')}});
-const v2=await jiti.import(path.resolve('.pi/extensions/paper-proposal-v2/exports.ts'));
-const workspace=await jiti.import(path.resolve('.pi/extensions/proposal-workspace.ts'));
+const v2=await jiti.import(path.resolve('.claude/skills/paper-proposal/engine/exports.ts'));
+const workspace=await jiti.import(path.resolve('.claude/skills/paper-proposal/engine/proposal-workspace.ts'));
 
 async function fixture(dependencies={}) {
- const root=await mkdtemp(path.join(os.tmpdir(),'paper-proposal-v2-lifecycle-v1-'));
- await mkdir(path.join(root,'.paper-proposal-v2'),{recursive:true});
+ const root=await mkdtemp(path.join(os.tmpdir(),'paper-proposal-lifecycle-v1-'));
+ await mkdir(path.join(root,'.paper-proposal'),{recursive:true});
  let id=0;
  const service=new v2.LifecycleService(root,{newId:(kind)=>`${kind}-${++id}`,now:()=>new Date('2026-01-01T00:00:00.000Z'),...dependencies});
  return {root,service};
@@ -34,7 +34,7 @@ test('registers one immutable base with stable identity and durable content',asy
  assert.equal(base.base.baseDocumentId,'base-1');
  assert.equal(base.base.content,'Complete base content');
  assert.equal((await service.rebuildLifecycleInventory('workspace-1')).base.baseDocumentId,'base-1');
- assert.match(base.storageRoot,new RegExp(`${path.sep.replace(/\\/g,'\\\\')}\.paper-proposal-v2${path.sep.replace(/\\/g,'\\\\')}lifecycle${path.sep.replace(/\\/g,'\\\\')}v1`));
+ assert.match(base.storageRoot,new RegExp(`${path.sep.replace(/\\/g,'\\\\')}\.paper-proposal${path.sep.replace(/\\/g,'\\\\')}lifecycle${path.sep.replace(/\\/g,'\\\\')}v1`));
 });
 
 test('enforces one base, verifies hashes, and replays an equivalent registration without mutation',async()=>{
@@ -99,13 +99,13 @@ test('public lifecycle routing uses configured v1 authority without legacy propo
  await service.createSuccessor({workspaceId:'workspace-1',requestId:'create-2',operation:'CREATE_SUCCESSOR',revisionId:'revision-2',locator:'research-concept-r02.md',source:{sourceKind:'REVISION',sourceId:'revision-1',sourceContentHash:first.revision.contentHash,baseDocumentId:'base-1'},approvedChanges:[]});
  const tools=[];
  v2.resetRuntimeMetrics();
- workspace.createPaperProposalV2Extension({projectRoot:root,scientificWorkflow:{lifecycleV1WorkspaceId:'workspace-1'}})({registerTool:(tool)=>tools.push(tool),on:()=>{}});
- const execute=tools.find((tool)=>tool.name==='paper_proposal_v2_execute');
+ workspace.createPaperProposalExtension({projectRoot:root,scientificWorkflow:{lifecycleV1WorkspaceId:'workspace-1'}})({registerTool:(tool)=>tools.push(tool),on:()=>{}});
+ const execute=tools.find((tool)=>tool.name==='paper_proposal_execute');
  const withdrawn=(await execute.execute('withdraw-v1',{operation:'WITHDRAW_REVISION',instruction:'withdraw research-concept-r02.md',sourceFilename:'research-concept-r02.md',idempotencyKey:'withdraw-v1'})).details;
  assert.deepEqual({status:withdrawn.status,operation:withdrawn.operation,revisionId:withdrawn.revisionId,lifecycleState:withdrawn.lifecycleState,activeRevisionId:withdrawn.activeRevisionId},{status:'withdrawn',operation:'WITHDRAW_REVISION',revisionId:'revision-2',lifecycleState:'WITHDRAWN_ONLY',activeRevisionId:null});
  assert.match(withdrawn.withdrawalId,/^[0-9a-f-]{36}$/);
  assert.deepEqual(withdrawn.transitionEvidence,{operation:'WITHDRAW_REVISION',requestId:'withdraw-v1',outcome:'committed',lifecycleState:'WITHDRAWN_ONLY',activeRevisionId:null,revisionId:'revision-2',withdrawalId:withdrawn.withdrawalId});
- assert.doesNotMatch(JSON.stringify(withdrawn.transitionEvidence),/Title|Unchanged paragraph|withdraw research-concept|paper-proposal-v2-lifecycle-v1-|absolute|contents\//i);
+ assert.doesNotMatch(JSON.stringify(withdrawn.transitionEvidence),/Title|Unchanged paragraph|withdraw research-concept|paper-proposal-lifecycle-v1-|absolute|contents\//i);
  const rejected=(await execute.execute('restore-v1-rejected',{operation:'RESTORE_WITHDRAWN_REVISION',instruction:'restore the withdrawn revision',sourceFilename:'research-concept-r01.md',idempotencyKey:'restore-v1-rejected'})).details;
  assert.deepEqual({status:rejected.status,semanticCode:rejected.semanticCode,lifecycleState:rejected.lifecycleState},{status:'blocked',semanticCode:'WITHDRAWAL_IDENTITY_NOT_FOUND',lifecycleState:null});
  assert.deepEqual(rejected.transitionEvidence,{operation:'RESTORE_WITHDRAWN_REVISION',requestId:'restore-v1-rejected',outcome:'rejected',semanticCode:'WITHDRAWAL_IDENTITY_NOT_FOUND'});
@@ -113,8 +113,8 @@ test('public lifecycle routing uses configured v1 authority without legacy propo
  assert.deepEqual({status:restored.status,operation:restored.operation,revisionId:restored.revisionId,lifecycleState:restored.lifecycleState,activeRevisionId:restored.activeRevisionId},{status:'restored',operation:'RESTORE_WITHDRAWN_REVISION',revisionId:'revision-2',lifecycleState:'ACTIVE',activeRevisionId:'revision-2'});
  assert.deepEqual(restored.transitionEvidence,{operation:'RESTORE_WITHDRAWN_REVISION',requestId:'restore-v1',outcome:'committed',lifecycleState:'ACTIVE',activeRevisionId:'revision-2',revisionId:'revision-2',withdrawalId:withdrawn.withdrawalId});
  assert.deepEqual(v2.getRuntimeMetrics().lifecycleMetrics,{withdrawal_committed:1,withdrawal_rejected:0,restore_committed:1,restore_rejected:1});
- const transitions=await Promise.all((await readdir(path.join(root,'.paper-proposal-v2','lifecycle','v1','transitions'))).map((name)=>readFile(path.join(root,'.paper-proposal-v2','lifecycle','v1','transitions',name),'utf8')));
- assert.doesNotMatch(transitions.join('\n'),/Title|Unchanged paragraph|withdraw research-concept|paper-proposal-v2-lifecycle-v1-/);
+ const transitions=await Promise.all((await readdir(path.join(root,'.paper-proposal','lifecycle','v1','transitions'))).map((name)=>readFile(path.join(root,'.paper-proposal','lifecycle','v1','transitions',name),'utf8')));
+ assert.doesNotMatch(transitions.join('\n'),/Title|Unchanged paragraph|withdraw research-concept|paper-proposal-lifecycle-v1-/);
  await assert.rejects(readFile(path.join(root,'proposals','research-concept-r02.md')),{code:'ENOENT'});
 });
 
@@ -130,7 +130,7 @@ test('ignores pre-marker staging, reconstructs committed marker state, and fails
  const {root,service,base}=await registeredWorkspace();
  const first=await service.createFromBase({workspaceId:'workspace-1',requestId:'create-1',operation:'CREATE_FROM_BASE',revisionId:'revision-1',source:{sourceKind:'BASE_DOCUMENT',sourceId:'base-1',sourceContentHash:base.base.contentHash,baseDocumentId:'base-1'},approvedChanges:[]});
  await service.createSuccessor({workspaceId:'workspace-1',requestId:'create-2',operation:'CREATE_SUCCESSOR',revisionId:'revision-2',source:{sourceKind:'REVISION',sourceId:'revision-1',sourceContentHash:first.revision.contentHash,baseDocumentId:'base-1'},approvedChanges:[]});
- const transitions=path.join(root,'.paper-proposal-v2','lifecycle','v1','transitions');
+ const transitions=path.join(root,'.paper-proposal','lifecycle','v1','transitions');
  const transitionRows=await Promise.all((await readdir(transitions)).map(async name=>({name,marker:JSON.parse(await readFile(path.join(transitions,name),'utf8'))})));
  const selected=transitionRows.find(row=>row.marker.operation==='CREATE_SUCCESSOR');
  selected.marker.stateChanges=[];
@@ -142,11 +142,11 @@ test('fails closed for an orphan withdrawal record instead of treating it as his
  const {root,service,base}=await registeredWorkspace();
  const first=await service.createFromBase({workspaceId:'workspace-1',requestId:'create-1',operation:'CREATE_FROM_BASE',revisionId:'revision-1',source:{sourceKind:'BASE_DOCUMENT',sourceId:'base-1',sourceContentHash:base.base.contentHash,baseDocumentId:'base-1'},approvedChanges:[]});
  const second=await service.createSuccessor({workspaceId:'workspace-1',requestId:'create-2',operation:'CREATE_SUCCESSOR',revisionId:'revision-2',source:{sourceKind:'REVISION',sourceId:'revision-1',sourceContentHash:first.revision.contentHash,baseDocumentId:'base-1'},approvedChanges:[]});
- const transitions=path.join(root,'.paper-proposal-v2','lifecycle','v1','transitions');
+ const transitions=path.join(root,'.paper-proposal','lifecycle','v1','transitions');
  const rows=await Promise.all((await readdir(transitions)).map(async name=>JSON.parse(await readFile(path.join(transitions,name),'utf8'))));
  const transition=rows.find(item=>item.operation==='CREATE_SUCCESSOR');
  const orphan={schemaVersion:'lifecycle-v1',workspaceId:'workspace-1',withdrawalId:'withdrawal-orphan',revisionId:second.revision.revisionId,contentHash:second.revision.contentHash,recoveryContent:second.revision.content,transitionId:transition.transitionId,state:'COMMITTED'};
- await writeFile(path.join(root,'.paper-proposal-v2','lifecycle','v1','withdrawals','withdrawal-orphan.json'),JSON.stringify(orphan));
+ await writeFile(path.join(root,'.paper-proposal','lifecycle','v1','withdrawals','withdrawal-orphan.json'),JSON.stringify(orphan));
  await assert.rejects(new v2.LifecycleService(root).rebuildLifecycleInventory('workspace-1'),/LIFECYCLE_INVENTORY_INCONSISTENT/);
 });
 
@@ -154,26 +154,26 @@ test('persists request and result records before exposing a committed lifecycle 
  const {root,service}=await fixture();
  const result=await service.registerBaseDocument({workspaceId:'workspace-1',requestId:'register-1',baseDocumentId:'base-1',content:'base'});
  assert.equal(result.outcome,'COMMITTED');
- const request=JSON.parse(await readFile(path.join(root,'.paper-proposal-v2','lifecycle','v1','requests','register-1.json'),'utf8'));
- const storedResult=JSON.parse(await readFile(path.join(root,'.paper-proposal-v2','lifecycle','v1','results','register-1.json'),'utf8'));
+ const request=JSON.parse(await readFile(path.join(root,'.paper-proposal','lifecycle','v1','requests','register-1.json'),'utf8'));
+ const storedResult=JSON.parse(await readFile(path.join(root,'.paper-proposal','lifecycle','v1','results','register-1.json'),'utf8'));
  assert.deepEqual({requestId:request.requestId,workspaceId:request.workspaceId,transitionId:request.transitionId},{requestId:'register-1',workspaceId:'workspace-1',transitionId:storedResult.transitionId});
  assert.equal(storedResult.value.baseDocumentId,'base-1');
 });
 
 test('fails closed for missing content, broken lineage, and cross-workspace durable evidence',async()=>{
  const missing=await registeredWorkspace();
- await rm(path.join(missing.root,'.paper-proposal-v2','lifecycle','v1','contents',missing.base.base.contentHash));
+ await rm(path.join(missing.root,'.paper-proposal','lifecycle','v1','contents',missing.base.base.contentHash));
  await assert.rejects(new v2.LifecycleService(missing.root).rebuildLifecycleInventory('workspace-1'),/SOURCE_CONTENT_HASH_MISMATCH/);
  const broken=await registeredWorkspace();
  const first=await broken.service.createFromBase({workspaceId:'workspace-1',requestId:'create-1',operation:'CREATE_FROM_BASE',revisionId:'revision-1',source:{sourceKind:'BASE_DOCUMENT',sourceId:'base-1',sourceContentHash:broken.base.base.contentHash,baseDocumentId:'base-1'},approvedChanges:[]});
- const revisionPath=path.join(broken.root,'.paper-proposal-v2','lifecycle','v1','revisions','revision-1.json');
+ const revisionPath=path.join(broken.root,'.paper-proposal','lifecycle','v1','revisions','revision-1.json');
  const revision=JSON.parse(await readFile(revisionPath,'utf8'));
  revision.lineage.sourceId='base-other';
  await writeFile(revisionPath,JSON.stringify(revision));
  await assert.rejects(new v2.LifecycleService(broken.root).rebuildLifecycleInventory('workspace-1'),/INVALID_LINEAGE_REFERENCE/);
  const cross=await registeredWorkspace();
  const crossRevision=await cross.service.createFromBase({workspaceId:'workspace-1',requestId:'create-1',operation:'CREATE_FROM_BASE',revisionId:'revision-1',source:{sourceKind:'BASE_DOCUMENT',sourceId:'base-1',sourceContentHash:cross.base.base.contentHash,baseDocumentId:'base-1'},approvedChanges:[]});
- const crossPath=path.join(cross.root,'.paper-proposal-v2','lifecycle','v1','revisions','revision-1.json');
+ const crossPath=path.join(cross.root,'.paper-proposal','lifecycle','v1','revisions','revision-1.json');
  const crossRecord=JSON.parse(await readFile(crossPath,'utf8'));
  crossRecord.workspaceId='workspace-2';
  await writeFile(crossPath,JSON.stringify(crossRecord));
@@ -205,16 +205,16 @@ test('reports recovery/inconsistency if inventory projection publication is inte
 test('exposes explicitly registered lifecycle-v1 inventory read-only without consulting legacy filenames',async()=>{
  const {root,service,base}=await registeredWorkspace();
  const first=await service.createFromBase({workspaceId:'workspace-1',requestId:'create-1',operation:'CREATE_FROM_BASE',revisionId:'revision-1',locator:'research-concept-r99.md',source:{sourceKind:'BASE_DOCUMENT',sourceId:'base-1',sourceContentHash:base.base.contentHash,baseDocumentId:'base-1'},approvedChanges:[]});
- const before=await (await import('node:fs/promises')).readdir(path.join(root,'.paper-proposal-v2','lifecycle','v1'),{recursive:true});
+ const before=await (await import('node:fs/promises')).readdir(path.join(root,'.paper-proposal','lifecycle','v1'),{recursive:true});
  const inventory=await v2.readLifecycleV1Inventory({projectRoot:root,workspaceId:'workspace-1'});
  assert.deepEqual({status:inventory.status,lifecycleState:inventory.lifecycleState,baseDocumentId:inventory.baseDocument?.baseDocumentId,activeRevisionId:inventory.activeRevision?.revisionId},{status:'valid',lifecycleState:'ACTIVE',baseDocumentId:'base-1',activeRevisionId:first.revision.revisionId});
- assert.deepEqual(await (await import('node:fs/promises')).readdir(path.join(root,'.paper-proposal-v2','lifecycle','v1'),{recursive:true}),before);
+ assert.deepEqual(await (await import('node:fs/promises')).readdir(path.join(root,'.paper-proposal','lifecycle','v1'),{recursive:true}),before);
 });
 
 test('legacy workspaces are diagnostic-only and lifecycle-v1 reads never create authority records',async()=>{
  const {root}=await fixture();
  const proposals=path.join(root,'proposals');
- const withdrawn=path.join(root,'.paper-proposal-v2','withdrawn');
+ const withdrawn=path.join(root,'.paper-proposal','withdrawn');
  await mkdir(proposals,{recursive:true});
  await mkdir(withdrawn,{recursive:true});
  const legacyProposal=path.join(proposals,'research-concept-r99.md');
@@ -224,7 +224,7 @@ test('legacy workspaces are diagnostic-only and lifecycle-v1 reads never create 
  const before=await Promise.all([readFile(legacyProposal,'utf8'),readFile(legacyWithdrawal,'utf8')]);
  const inventory=await v2.readLifecycleV1Inventory({projectRoot:root,workspaceId:'legacy-workspace'});
  assert.deepEqual(inventory,{status:'unregistered',code:'LIFECYCLE_V1_UNREGISTERED',auditEvidence:['lifecycle-v1:authority-unregistered']});
- await assert.rejects(readdir(path.join(root,'.paper-proposal-v2','lifecycle','v1')),{code:'ENOENT'});
+ await assert.rejects(readdir(path.join(root,'.paper-proposal','lifecycle','v1')),{code:'ENOENT'});
  assert.deepEqual(await Promise.all([readFile(legacyProposal,'utf8'),readFile(legacyWithdrawal,'utf8')]),before);
  const router=new v2.LifecycleV1PublicRouter({projectRoot:root,workspaceId:'legacy-workspace'});
  assert.deepEqual(await router.execute({operation:'WITHDRAW_REVISION',requestId:'legacy-withdraw',locator:'research-concept-r99.md'}),{outcome:'REJECTED',code:'LIFECYCLE_V1_UNREGISTERED'});
@@ -251,12 +251,12 @@ test('public lifecycle composition blocks an explicitly configured legacy worksp
  const before=await readFile(legacyProposal,'utf8');
  const tools=[];
  v2.resetRuntimeMetrics();
- workspace.createPaperProposalV2Extension({projectRoot:root,scientificWorkflow:{lifecycleV1WorkspaceId:'legacy-workspace'}})({registerTool:(tool)=>tools.push(tool),on:()=>{}});
- const execute=tools.find((tool)=>tool.name==='paper_proposal_v2_execute');
+ workspace.createPaperProposalExtension({projectRoot:root,scientificWorkflow:{lifecycleV1WorkspaceId:'legacy-workspace'}})({registerTool:(tool)=>tools.push(tool),on:()=>{}});
+ const execute=tools.find((tool)=>tool.name==='paper_proposal_execute');
  const result=(await execute.execute('legacy-public-withdraw',{operation:'WITHDRAW_REVISION',instruction:'withdraw research-concept-r99.md',sourceFilename:'research-concept-r99.md',idempotencyKey:'legacy-public-withdraw'})).details;
  assert.deepEqual({status:result.status,semanticCode:result.semanticCode,lifecycleState:result.lifecycleState},{status:'blocked',semanticCode:'LIFECYCLE_V1_UNREGISTERED',lifecycleState:null});
  assert.equal(await readFile(legacyProposal,'utf8'),before);
- await assert.rejects(readdir(path.join(root,'.paper-proposal-v2','lifecycle','v1')),{code:'ENOENT'});
+ await assert.rejects(readdir(path.join(root,'.paper-proposal','lifecycle','v1')),{code:'ENOENT'});
  assert.deepEqual(v2.getRuntimeMetrics().lifecycleMetrics,{withdrawal_committed:0,withdrawal_rejected:1,restore_committed:0,restore_rejected:0});
 });
 

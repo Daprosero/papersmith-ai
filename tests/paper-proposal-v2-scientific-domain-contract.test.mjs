@@ -16,7 +16,7 @@ const jiti = createJiti(import.meta.url, {
 	},
 });
 
-const domainPath = path.join(root, '.pi/extensions/paper-proposal-v2/scientific-domain.ts');
+const domainPath = path.join(root, '.claude/skills/paper-proposal/engine/scientific-domain.ts');
 const domain = await jiti.import(domainPath);
 
 const sharedContracts = [
@@ -39,7 +39,7 @@ test('scientific domain keeps version and privacy metadata literals canonical', 
 });
 
 test('scientific implementation files have one shared contract owner', async () => {
-	const directory = path.join(root, '.pi/extensions/paper-proposal-v2');
+	const directory = path.join(root, '.claude/skills/paper-proposal/engine');
 	const scientificFiles = (await readdir(directory)).filter((name) => name.startsWith('scientific-') && name !== 'scientific-domain.ts');
 	for (const filename of scientificFiles) {
 		const source = await readFile(path.join(directory, filename), 'utf8');
@@ -49,6 +49,6 @@ test('scientific implementation files have one shared contract owner', async () 
 });
 
 test('V2 barrel loads the canonical scientific domain module', async () => {
-	const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
+	const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
 	assert.equal(v2.SCIENTIFIC_WORKFLOW_OPERATION, 'SCIENTIFIC_WORKFLOW');
 });

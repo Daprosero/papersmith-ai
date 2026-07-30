@@ -40,7 +40,7 @@ const jiti = createJiti(import.meta.url, {
 		typebox: path.join(piRoot, "node_modules/typebox/build/index.mjs"),
 	},
 });
-const extensionPath = path.resolve(".pi/extensions/proposal-workspace.ts");
+const extensionPath = path.resolve(".claude/skills/paper-proposal/engine/proposal-workspace.ts");
 const extension = await jiti.import(extensionPath);
 const artifactMarker = "<!-- proposal-workspace:artifact:v1 -->\n";
 const fixedCredaBase = String.raw`# CREDA base

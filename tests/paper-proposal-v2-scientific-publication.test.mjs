@@ -15,8 +15,8 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const workspaceModule = await jiti.import(path.join(root, '.pi/extensions/proposal-workspace.ts'));
-const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
+const workspaceModule = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/proposal-workspace.ts'));
+const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const metadata = { schemaVersion: 1, title: 'Scientific reasoning proposal', sectionHeading: 'Accepted scientific decisions' };
 
@@ -28,7 +28,7 @@ function assessment(decision = 'APPROVE') {
 }
 
 async function fixture({ successor = false, reviewerDecision = 'APPROVE', adapter, derivedStore } = {}) {
-	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-v2-scientific-publication-'));
+	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-scientific-publication-'));
 	await mkdir(path.join(projectRoot, 'proposals'), { recursive: true });
 	let source;
 	let workspace;
@@ -97,7 +97,7 @@ test('approved r01 candidate publishes only through INITIAL_CREATE then commits 
 	assert.equal(result.targetFilename, 'research-concept-r01.md');
 	assert.equal(calls.length, 1);
 	const bytes = await readFile(path.join(projectRoot, 'proposals', 'research-concept-r01.md'));
-	const receipt = JSON.parse(await readFile(path.join(projectRoot, '.paper-proposal-v2/receipts/research-concept-r01.md.json'), 'utf8'));
+	const receipt = JSON.parse(await readFile(path.join(projectRoot, '.paper-proposal/receipts/research-concept-r01.md.json'), 'utf8'));
 	assert.equal(receipt.kind, 'INITIAL_PUBLICATION');
 	assert.equal(receipt.documentShaAfter, createHash('sha256').update(bytes).digest('hex'));
 	const committed = (await store.reserveMaterialization(['decision-a'])).record;
@@ -113,7 +113,7 @@ test('approved successor uses the guarded V2 successor adapter and commits only 
 	assert.equal(result.status, 'materialized', JSON.stringify(result));
 	assert.equal(result.targetFilename, 'research-concept-r02.md');
 	const bytes = await readFile(path.join(projectRoot, 'proposals', 'research-concept-r02.md'));
-	const receipt = JSON.parse(await readFile(path.join(projectRoot, '.paper-proposal-v2/receipts/research-concept-r02.md.json'), 'utf8'));
+	const receipt = JSON.parse(await readFile(path.join(projectRoot, '.paper-proposal/receipts/research-concept-r02.md.json'), 'utf8'));
 	assert.equal(receipt.documentShaAfter, createHash('sha256').update(bytes).digest('hex'));
 	assert.equal((await store.reserveMaterialization(['decision-a'])).record.state, 'COMMITTED');
 });

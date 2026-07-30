@@ -14,14 +14,14 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
+const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
 
 const tutor = (summary = 'Bounded candidate synthesis.') => ({ decision: 'ACCEPT', summary, mathematicalIssues: [], notationIssues: [], assumptionIssues: [], requiredRevisions: [], unresolvedQuestions: [], riskLevel: 'LOW', affectedEntryIds: [] });
 const review = () => ({ decision: 'APPROVE', scientificCoherence: 'Coherent within selected scientific context.', scopeCompliance: 'Bounded scope.', unsupportedClaims: [], referenceRisks: [], notationRisks: [], requiredChanges: [], unresolvedQuestions: [], riskLevel: 'LOW' });
 const inventory = { read: async () => ({ status: 'valid', activeRevisions: [], withdrawnRevisions: [], auditEvidence: ['revision-inventory:validated'] }) };
 
 async function fixture({ tutorResults = [tutor()], reviewerResults = [review()] } = {}) {
-	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-v2-scientific-decisions-'));
+	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-scientific-decisions-'));
 	const store = new v2.ScientificStateStore(projectRoot);
 	const event = { schemaVersion: 1, eventId: 'thread-created', sequence: 1, occurredAt: '2026-01-01T00:00:00.000Z', actor: { kind: 'USER' }, type: 'THREAD_CREATED', threadId: 'thread-1', causalEventIds: [], payload: { title: 'Bounded question', summary: 'Public thread summary.', activeThreadId: 'thread-1' }, evidence: [], privacy: { contentClass: 'PUBLIC_SUMMARY_ONLY', redactionVersion: 1 } };
 	const thread = { threadId: 'thread-1', version: 1, status: 'OPEN', title: 'Bounded question', summary: 'Public thread summary.', createdEventId: 'thread-created', headEventId: 'thread-created', relationIds: [], decisionIds: [] };
@@ -58,7 +58,7 @@ test('ScientificWorkflowService accepts only the exact reviewer-passed synthesis
 	assert.deepEqual(state.snapshot.decisions, [{ decisionId: accepted.decisionId, threadId: 'thread-1', acceptedEventId: accepted.eventId, acceptedSynthesisDigest: candidate.digest, acceptedBy: { kind: 'USER' }, state: 'ACCEPTED_UNMATERIALIZED', sourceEventIds: [candidate.tutorEventId, candidate.reviewEventId] }]);
 	assert.equal(state.snapshot.threads[0].status, 'ACCEPTED_UNMATERIALIZED');
 	assert.deepEqual(state.events.map((event) => event.type), ['THREAD_CREATED', 'TUTOR_ASSESSED', 'CONCEPTUAL_REVIEW_RECORDED', 'DECISION_ACCEPTED']);
-	assert.deepEqual(await readdir(run.projectRoot), ['.paper-proposal-v2']);
+	assert.deepEqual(await readdir(run.projectRoot), ['.paper-proposal']);
 	await assert.rejects(() => readFile(path.join(run.projectRoot, 'proposals', 'research-concept-r01.md')));
 });
 
@@ -118,7 +118,7 @@ test('ProjectEntryResolver and workflow re-entry expose only durable eligible pe
 });
 
 test('Scientific decision lifecycle imports canonical contracts and does not start materialization or publication', async () => {
-	const source = await readFile(path.join(root, '.pi/extensions/paper-proposal-v2/scientific-workflow-service.ts'), 'utf8');
+	const source = await readFile(path.join(root, '.claude/skills/paper-proposal/engine/scientific-workflow-service.ts'), 'utf8');
 	assert.match(source, /scientific-domain\.js/);
 	assert.doesNotMatch(source, /(?:ProposalWorkspaceAdapter|publishInitial|publishSuccessor|createInitialProposal|MATERIALIZATION_RESERVED|MATERIALIZATION_COMMITTED|MaterializationCandidateExecutor)/);
 });

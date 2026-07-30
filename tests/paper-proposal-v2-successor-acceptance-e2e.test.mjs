@@ -11,13 +11,13 @@ const aiRoot = path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist');
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti = createJiti(import.meta.url, { alias: {
  '@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),
- '@earendil-works/pi-ai/compat': path.join(aiRoot, 'compat.js'),
+ '@earendil-works/pi-ai/compat': path.join(root, '.claude/skills/paper-proposal/engine/_pi-compat/pi-ai-compat.ts'),
  '@earendil-works/pi-ai': path.join(aiRoot, 'index.js'),
  typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const workspace = await jiti.import(path.join(root, '.pi/extensions/proposal-workspace.ts'));
-const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
-const aiCompat = await jiti.import(path.join(aiRoot, 'compat.js'));
+const workspace = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/proposal-workspace.ts'));
+const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
+const aiCompat = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/_pi-compat/pi-ai-compat.ts'));
 
 const sourceContent = `# 1 Introduction\n\nPrefix bytes remain untouched.\n\n# 2 Framing\n\nOld framing.\n\n## 2.1 Framing average\n\nOld average.\n\n## 2.2 Setup\n\nOld setup.\n\n## 2.3 Method\n\nOld method.\n\n## 2.4 Consequences\n\nOld consequences.\n\n# 3 Results\n\nOld results.\n\n## 3.1 Analysis\n\nOld analysis.\n\n## 3.2 Validation\n\nOld validation.\n\n## 3.3 Discussion\n\nOld discussion.\n\n# 4 Conclusion\n\nSuffix bytes remain untouched.\n`;
 
@@ -31,7 +31,7 @@ async function fixture() {
  const guard = workspace.createDocumentOperationGuard(projectRoot);
  const guardExecute = guard.execute.bind(guard);
  guard.execute = async (input, signal) => { guardCalls.push(input); return guardExecute(input, signal); };
- const providerId = `paper-proposal-v2-successor-acceptance-${Date.now()}-${Math.random()}`;
+ const providerId = `paper-proposal-successor-acceptance-${Date.now()}-${Math.random()}`;
  const faux = aiCompat.registerFauxProvider({ api: providerId, provider: providerId, models: [{ id: `${providerId}-model`, input: ['text'], contextWindow: 32000, maxTokens: 4096 }] });
  const state = await v2.loadDocumentState(projectRoot, 'research-concept-r01.md');
  const entry = heading => state.structuralIndex.entries.find(candidate => ['section', 'subsection', 'heading'].includes(candidate.type) && state.documentBytes.subarray(candidate.startByte, candidate.endByte).toString('utf8').includes(heading));
@@ -44,15 +44,15 @@ async function fixture() {
    const replacementText = /recupera el promedio/i.test(payload.instruction)
     ? '## 2.1 Framing average\n\nEl promedio se recupera.\n\n'
     : '# 2–3.3 Revised\n\nOnly the bounded composite range changes.\n\n';
-   return aiCompat.fauxAssistantMessage(aiCompat.fauxToolCall('paper_proposal_v2_successor_replacement', { replacementText, unresolvedQuestions: [] }));
+   return aiCompat.fauxAssistantMessage(aiCompat.fauxToolCall('paper_proposal_successor_replacement', { replacementText, unresolvedQuestions: [] }));
   }
   if (!payload.intent) return aiCompat.fauxAssistantMessage(JSON.stringify({ decision: 'ACCEPT', summary: 'The current managed revision is the correct source.', mathematicalIssues: [], notationIssues: [], assumptionIssues: [], requiredRevisions: [], unresolvedQuestions: [], riskLevel: 'LOW', affectedEntryIds: [] }));
   const targetEntryId = /child action/i.test(payload.instruction) ? childId : /outside action/i.test(payload.instruction) ? outsideId : payload.target.entryId;
-  return aiCompat.fauxAssistantMessage(aiCompat.fauxToolCall('paper_proposal_v2_conceptual_revision', { actions: [{ kind: 'replace', targetEntryId, replacementText: '# 2–3.3 Revised\n\nOnly the bounded composite range changes.\n\n' }], unresolvedQuestions: [] }));
+  return aiCompat.fauxAssistantMessage(aiCompat.fauxToolCall('paper_proposal_conceptual_revision', { actions: [{ kind: 'replace', targetEntryId, replacementText: '# 2–3.3 Revised\n\nOnly the bounded composite range changes.\n\n' }], unresolvedQuestions: [] }));
  }));
  const tools = [];
- workspace.createPaperProposalV2Extension({ projectRoot, operationGuard: guard })({ registerTool: tool => tools.push(tool), on: () => {} });
- const tool = tools.find(candidate => candidate.name === 'paper_proposal_v2_execute');
+ workspace.createPaperProposalExtension({ projectRoot, operationGuard: guard })({ registerTool: tool => tools.push(tool), on: () => {} });
+ const tool = tools.find(candidate => candidate.name === 'paper_proposal_execute');
  const ctx = { model: faux.getModel(), sessionManager: { getSessionId: () => `acceptance-session-${providerId}` }, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: 'fake', headers: {}, env: {} }) } };
  return {
   projectRoot, guardCalls, plannerPayloads, state,

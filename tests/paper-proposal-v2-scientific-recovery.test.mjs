@@ -15,8 +15,8 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
-const workspace = await jiti.import(path.join(root, '.pi/extensions/proposal-workspace.ts'));
+const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
+const workspace = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/proposal-workspace.ts'));
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
 function event(sequence, eventId, type, actor, payload, causes = []) {
@@ -24,7 +24,7 @@ function event(sequence, eventId, type, actor, payload, causes = []) {
 }
 
 async function fixture() {
-	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-v2-scientific-recovery-'));
+	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-scientific-recovery-'));
 	await mkdir(path.join(projectRoot, 'proposals'));
 	const store = new v2.ScientificStateStore(projectRoot);
 	const summary = 'Bounded accepted synthesis.';
@@ -62,7 +62,7 @@ test('recovery-required evidence cannot be retried and corrupt authoritative fil
 	assert.equal(recovery.status, 'ready');
 	assert.deepEqual(await store.recoveryDiagnostics(), { status: 'recovery_required', diagnostics: [{ scope: 'MATERIALIZATION', state: 'RECOVERY_REQUIRED', code: 'MATERIALIZATION_PUBLICATION_EVIDENCE_INCOMPLETE', phaseReached: 'PREPARED', evidence: [], lastValidTransition: 'MATERIALIZATION_PLANNED', nextAction: 'reconcile_materialization_evidence', materializationId: record.materializationId }] });
 	assert.deepEqual(await store.retryMaterialization(recovery.record), { status: 'blocked', code: 'MATERIALIZATION_RETRY_NOT_ALLOWED' });
-	const manifestPath = path.join(projectRoot, '.paper-proposal-v2/scientific/manifest.json');
+	const manifestPath = path.join(projectRoot, '.paper-proposal/scientific/manifest.json');
 	await writeFile(manifestPath, '{not-json');
 	const before = await readFile(manifestPath, 'utf8');
 	const diagnostics = await store.recoveryDiagnostics();
@@ -83,7 +83,7 @@ test('a committed lifecycle marker recovers through the read-only inventory adap
 
 test('lifecycle marker and projection faults preserve recovery evidence without a partial public proposal', async () => {
 	const beforeMarker = await fixture();
-	const beforeManifestPath = path.join(beforeMarker.projectRoot, '.paper-proposal-v2/scientific/manifest.json');
+	const beforeManifestPath = path.join(beforeMarker.projectRoot, '.paper-proposal/scientific/manifest.json');
 	const beforeManifest = await readFile(beforeManifestPath, 'utf8');
 	const interrupted = await new v2.LifecycleService(beforeMarker.projectRoot, { beforeCommitMarker: () => { throw new Error('injected-before-marker'); } }).registerBaseDocument({ workspaceId: 'fault-workspace', requestId: 'register-before-marker', baseDocumentId: 'fault-base', content: '# Interrupted base\n' });
 	assert.deepEqual({ outcome: interrupted.outcome, code: interrupted.code }, { outcome: 'INCONSISTENT', code: 'LIFECYCLE_INVENTORY_INCONSISTENT' });
@@ -92,7 +92,7 @@ test('lifecycle marker and projection faults preserve recovery evidence without 
 	await assert.rejects(() => readFile(path.join(beforeMarker.projectRoot, 'proposals', 'research-concept-r01.md')));
 
 	const afterProjection = await fixture();
-	const afterManifestPath = path.join(afterProjection.projectRoot, '.paper-proposal-v2/scientific/manifest.json');
+	const afterManifestPath = path.join(afterProjection.projectRoot, '.paper-proposal/scientific/manifest.json');
 	const afterManifest = await readFile(afterManifestPath, 'utf8');
 	const committed = await new v2.LifecycleService(afterProjection.projectRoot, { afterInventoryProjection: () => { throw new Error('injected-after-projection'); } }).registerBaseDocument({ workspaceId: 'projection-workspace', requestId: 'register-after-projection', baseDocumentId: 'projection-base', content: '# Committed base\n' });
 	assert.deepEqual({ outcome: committed.outcome, code: committed.code }, { outcome: 'INCONSISTENT', code: 'LIFECYCLE_INVENTORY_INCONSISTENT' });
@@ -122,8 +122,8 @@ test('a fresh entry resolver rebuilds lifecycle-owned active evidence without se
 test('feature rollback leaves scientific history available to read-only diagnostics without exposing private input', async () => {
 	const { projectRoot, store, record } = await fixture();
 	await store.recordMaterializationOutcome(record, 'BLOCKED', 'MATERIALIZATION_COMPILATION_FAILED');
-	assert.equal(workspace.scientificWorkflowFeatureEnabled({ PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED: 'false' }), false);
-	const recordPath = path.join(projectRoot, '.paper-proposal-v2/scientific/materializations', `${record.materializationId}.json`);
+	assert.equal(workspace.scientificWorkflowFeatureEnabled({ PAPER_PROPOSAL_SCIENTIFIC_WORKFLOW_ENABLED: 'false' }), false);
+	const recordPath = path.join(projectRoot, '.paper-proposal/scientific/materializations', `${record.materializationId}.json`);
 	const before = await readFile(recordPath, 'utf8');
 	v2.resetRuntimeMetrics();
 	const diagnostics = await store.recoveryDiagnostics();

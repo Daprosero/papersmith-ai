@@ -15,9 +15,9 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
+const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
 
-async function project() { return mkdtemp(path.join(tmpdir(), 'paper-proposal-v2-scientific-store-')); }
+async function project() { return mkdtemp(path.join(tmpdir(), 'paper-proposal-scientific-store-')); }
 
 function event(sequence, eventId, overrides = {}) {
 	return {
@@ -51,7 +51,7 @@ test('ScientificStateStore persists only versioned authoritative records and reb
 	assert.equal(committed.manifest.schemaVersion, 1);
 	assert.equal(committed.events[0].eventId, 'event-1');
 	assert.deepEqual(committed.projection.pendingCandidateIds, []);
-	const scientific = path.join(rootDir, '.paper-proposal-v2/scientific');
+	const scientific = path.join(rootDir, '.paper-proposal/scientific');
 	const projectionPath = path.join(scientific, 'projections/entry-index.json');
 	await writeFile(projectionPath, '{"not":"authoritative"}');
 	const reopened = await store.read();
@@ -76,7 +76,7 @@ test('ScientificStateStore rejects unsafe symlinks and does not follow them as r
 	const rootDir = await project();
 	const store = new v2.ScientificStateStore(rootDir);
 	await seed(store);
-	const manifest = path.join(rootDir, '.paper-proposal-v2/scientific/manifest.json');
+	const manifest = path.join(rootDir, '.paper-proposal/scientific/manifest.json');
 	const replacement = path.join(rootDir, 'replacement.json');
 	await writeFile(replacement, await readFile(manifest));
 	await nativeFs.rm(manifest);
@@ -99,18 +99,18 @@ test('ScientificStateStore keeps an interrupted transition fail-closed and recov
 	await assert.rejects(() => seed(store), /INJECTED_EVENT_WRITE_FAILURE/);
 	await expectCode(() => store.read(), 'SCIENTIFIC_TRANSACTION_INCOMPLETE');
 	assert.deepEqual(await store.recover(), { status: 'recovery_required', transitionId: 'transition-1', code: 'SCIENTIFIC_TRANSACTION_INCOMPLETE' });
-	assert.equal(await nativeFs.stat(path.join(rootDir, '.paper-proposal-v2/scientific/transactions/transition-1.json')).then(() => true), true);
+	assert.equal(await nativeFs.stat(path.join(rootDir, '.paper-proposal/scientific/transactions/transition-1.json')).then(() => true), true);
 });
 
 test('ScientificStateStore validates replay and can clean only a fully committed marker', async () => {
 	const rootDir = await project();
 	const store = new v2.ScientificStateStore(rootDir);
 	const committed = await seed(store);
-	const markerPath = path.join(rootDir, '.paper-proposal-v2/scientific/transactions/replay.json');
+	const markerPath = path.join(rootDir, '.paper-proposal/scientific/transactions/replay.json');
 	await writeFile(markerPath, JSON.stringify({ schemaVersion: 1, transitionId: 'replay', state: 'COMMITTED', eventIds: ['event-1'], snapshotSha256: committed.manifest.snapshotSha256, manifestSha256: v2.scientificEvidenceDigest(committed.manifest) }));
 	assert.deepEqual(await store.recover(), { status: 'recovered', transitionId: 'replay' });
 	assert.equal(await nativeFs.access(markerPath).then(() => true, () => false), false);
-	const eventsPath = path.join(rootDir, '.paper-proposal-v2/scientific/events/1-event-1.json');
+	const eventsPath = path.join(rootDir, '.paper-proposal/scientific/events/1-event-1.json');
 	const invalid = JSON.parse(await readFile(eventsPath, 'utf8'));
 	invalid.sequence = 9;
 	await writeFile(eventsPath, JSON.stringify(invalid));
@@ -118,7 +118,7 @@ test('ScientificStateStore validates replay and can clean only a fully committed
 });
 
 test('scientific persistence imports canonical contracts and keeps storage-only records local', async () => {
-	const source = await readFile(path.join(root, '.pi/extensions/paper-proposal-v2/scientific-state-store.ts'), 'utf8');
+	const source = await readFile(path.join(root, '.claude/skills/paper-proposal/engine/scientific-state-store.ts'), 'utf8');
 	assert.match(source, /scientific-domain\.js/);
 	assert.match(source, /ScientificManifestRecord/);
 	assert.match(source, /ScientificEntryProjection/);

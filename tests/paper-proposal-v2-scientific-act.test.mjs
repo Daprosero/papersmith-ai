@@ -13,7 +13,7 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
+const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
 const resolver = new v2.ScientificActResolver();
 
 test('ScientificActResolver classifies every approved bounded act', () => {
@@ -46,7 +46,7 @@ test('ScientificActResolver preserves lifecycle, direct-document, and DELIBERATE
 });
 
 test('ScientificActResolver consumes the canonical domain and has no persistence or document behavior', async () => {
-	const source = await readFile(path.join(root, '.pi/extensions/paper-proposal-v2/scientific-act-resolver.ts'), 'utf8');
+	const source = await readFile(path.join(root, '.claude/skills/paper-proposal/engine/scientific-act-resolver.ts'), 'utf8');
 	assert.match(source, /scientific-domain\.js/);
 	assert.doesNotMatch(source, /(?:writeFile|mkdir|rename|proposals\/|publish|receipt)/);
 });

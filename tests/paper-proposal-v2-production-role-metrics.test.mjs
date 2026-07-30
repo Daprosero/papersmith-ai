@@ -18,23 +18,23 @@ const jiti = createJiti(import.meta.url, {
   typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
  },
 });
-const aiCompat = await jiti.import(path.join(aiRoot, 'compat.js'));
+const aiCompat = await jiti.import(path.resolve('.claude/skills/paper-proposal/engine/_pi-compat/pi-ai-compat.ts'));
 let providerSequence = 0;
 
 async function productionFixture(responses) {
- const root = await mkdtemp(path.join(tmpdir(), 'paper-proposal-v2-production-role-metrics-'));
+ const root = await mkdtemp(path.join(tmpdir(), 'paper-proposal-production-role-metrics-'));
  await mkdir(path.join(root, '.pi'), { recursive: true });
  await mkdir(path.join(root, 'proposals'), { recursive: true });
- await cp(path.join(repositoryRoot, '.pi/extensions'), path.join(root, '.pi/extensions'), { recursive: true });
+ await cp(path.join(repositoryRoot, '.claude/skills/paper-proposal/engine'), path.join(root, '.claude/skills/paper-proposal/engine'), { recursive: true });
  await copyFile(repositorySourcePath, path.join(root, 'proposals/research-concept-r01.md'));
- const workspaceModule = await jiti.import(path.join(root, '.pi/extensions/proposal-workspace.ts'));
- const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
+ const workspaceModule = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/proposal-workspace.ts'));
+ const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
  const state = await v2.loadDocumentState(root, 'research-concept-r01.md');
  const paragraphs = state.structuralIndex.entries.filter((entry) => entry.type === 'paragraph');
  const paragraph = paragraphs.find((entry) => entry.startByte > '<!-- proposal-workspace:artifact:v1 -->\n'.length);
  assert.ok(paragraph, 'temporary production fixture requires a paragraph target after the artifact marker');
  v2.resetRuntimeMetrics();
- const providerId = `paper-proposal-v2-production-role-metrics-${++providerSequence}`;
+ const providerId = `paper-proposal-production-role-metrics-${++providerSequence}`;
  const faux = aiCompat.registerFauxProvider({
   api: providerId,
   provider: providerId,
@@ -43,8 +43,8 @@ async function productionFixture(responses) {
  faux.setResponses(responses);
  const tools = [];
  workspaceModule.default({ registerTool: (tool) => tools.push(tool), on: () => {} });
- const tool = tools.find((candidate) => candidate.name === 'paper_proposal_v2_execute');
- assert.ok(tool, 'registered production paper_proposal_v2_execute tool is required');
+ const tool = tools.find((candidate) => candidate.name === 'paper_proposal_execute');
+ assert.ok(tool, 'registered production paper_proposal_execute tool is required');
  const ctx = {
   model: faux.getModel(),
   sessionManager: { getSessionId: () => `production-role-metrics-session-${providerSequence}` },

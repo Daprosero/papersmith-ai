@@ -13,7 +13,7 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
+const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
 
 const revision = { filename: 'research-concept-r01.md', revision: 'r01', documentSha256: 'a'.repeat(64) };
 const thread = (threadId, relationIds = [], extras = {}) => ({
@@ -121,7 +121,7 @@ test('ScientificContextBuilder enforces narrowing count and byte caps without fu
 });
 
 test('ScientificContextBuilder uses canonical contracts and has no role, persistence, or full-document loader authority', async () => {
-	const source = await readFile(path.join(root, '.pi/extensions/paper-proposal-v2/scientific-context-builder.ts'), 'utf8');
+	const source = await readFile(path.join(root, '.claude/skills/paper-proposal/engine/scientific-context-builder.ts'), 'utf8');
 	assert.match(source, /scientific-domain\.js/);
 	assert.match(source, /VerifiedDocumentFragmentPort/);
 	assert.doesNotMatch(source, /(?:writeFile|mkdir|rename|proposals\/|publish|Materialization|Tutor|Reviewer|loadDocumentState)/);

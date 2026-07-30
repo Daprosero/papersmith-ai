@@ -55,32 +55,32 @@ y_{i,c}^s,y_{i,c'}^s\\in\\mathbf y_i^s,
 $$`;
  const instruction = `En la propuesta administrada research-concept-r01.md, reemplaza exactamente este bloque:\n\n${target}\n\npor este bloque:\n\n${replacement}\n\nNo modifiques ningún otro byte del documento.`;
  const sourceFilename = 'research-concept-r01.md';
- const fixture = await mkdtemp(path.join(tmpdir(), 'paper-proposal-v2-skill-boundary-'));
+ const fixture = await mkdtemp(path.join(tmpdir(), 'paper-proposal-skill-boundary-'));
  await mkdir(path.join(fixture, '.pi'), { recursive: true });
  await mkdir(path.join(fixture, 'proposals'), { recursive: true });
- await cp('.pi/extensions', path.join(fixture, '.pi/extensions'), {
+ await cp('.claude/skills/paper-proposal/engine', path.join(fixture, '.claude/skills/paper-proposal/engine'), {
   recursive: true,
   filter: (source) => !source.endsWith('.before-v2-barrel-fix'),
  });
 
- await importWithDiagnostics(path.join(fixture, '.pi/extensions/paper-proposal-v2/production-runtime.ts'));
- const aiCompat = await importWithDiagnostics(path.join(aiRoot, 'compat.js'));
+ await importWithDiagnostics(path.join(fixture, '.claude/skills/paper-proposal/engine/production-runtime.ts'));
+ const aiCompat = await importWithDiagnostics(path.join(fixture, '.claude/skills/paper-proposal/engine/_pi-compat/pi-ai-compat.ts'));
  const plannerPayloads = [];
  const faux = aiCompat.registerFauxProvider({
-  api: 'paper-proposal-v2-skill-boundary-faux',
-  provider: 'paper-proposal-v2-skill-boundary-faux',
-  models: [{ id: 'paper-proposal-v2-skill-boundary-model', input: ['text'], contextWindow: 32000, maxTokens: 4096 }],
+  api: 'paper-proposal-skill-boundary-faux',
+  provider: 'paper-proposal-skill-boundary-faux',
+  models: [{ id: 'paper-proposal-skill-boundary-model', input: ['text'], contextWindow: 32000, maxTokens: 4096 }],
  });
  faux.setResponses([(context) => {
   const payload = JSON.parse(context.messages.at(-1).content.find((part) => part.type === 'text').text);
   plannerPayloads.push(payload);
-  return aiCompat.fauxAssistantMessage(aiCompat.fauxToolCall('paper_proposal_v2_fidelity_modify', {
+  return aiCompat.fauxAssistantMessage(aiCompat.fauxToolCall('paper_proposal_fidelity_modify', {
    actions: [{ kind: 'replace', targetEntryId: payload.targetEntryId, replacementText: payload.replacementBlock }],
    unresolvedQuestions: [],
   }));
  }]);
 
- const workspaceModule = await importWithDiagnostics(path.join(fixture, '.pi/extensions/proposal-workspace.ts'));
+ const workspaceModule = await importWithDiagnostics(path.join(fixture, '.claude/skills/paper-proposal/engine/proposal-workspace.ts'));
  const seed = workspaceModule.createProposalWorkspaceTool(fixture);
  await seed.execute('seed', {
   action: 'write',
@@ -96,8 +96,8 @@ $$`;
   registerTool: (tool) => tools.push(tool),
   on: (name, handler) => handlers.set(name, handler),
  });
- const tool = tools.find((candidate) => candidate.name === 'paper_proposal_v2_execute');
- assert.ok(tool, 'registered production paper_proposal_v2_execute tool is required');
+ const tool = tools.find((candidate) => candidate.name === 'paper_proposal_execute');
+ assert.ok(tool, 'registered production paper_proposal_execute tool is required');
 
  const skill = await readFile('.pi/skills/paper-proposal/SKILL.md', 'utf8');
  assert.equal((await handlers.get('input')({ text: `/skill:paper-proposal\n${instruction}` })).action, 'continue');

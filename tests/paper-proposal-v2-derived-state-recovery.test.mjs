@@ -15,7 +15,7 @@ const jiti = createJiti(import.meta.url, {
     typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
   },
 });
-const v2 = await jiti.import(path.resolve('.pi/extensions/paper-proposal-v2/exports.ts'));
+const v2 = await jiti.import(path.resolve('.claude/skills/paper-proposal/engine/exports.ts'));
 
 const document = '# Título α\n\nTexto Unicode y referencia \\eqref{eq:uno}.\n\n$$\nx = 1\n\\label{eq:uno}\n\\tag{1}\n$$\n\n## Resultados\n\nSímbolo z ∈ R.\n';
 
@@ -153,7 +153,7 @@ test('later publication from VALID source persists COMMITTED state and receipt',
     },
   };
 
-  const result = await new v2.PaperProposalV2Orchestrator(root, adapter).execute({
+  const result = await new v2.PaperProposalOrchestrator(root, adapter).execute({
     instruction: 'inserta una nota literal después del párrafo seleccionado',
     selectedEntryId,
     literalContent: '\n\nRecovery publication note.\n',

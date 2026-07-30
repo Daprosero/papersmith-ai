@@ -13,7 +13,7 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
+const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
 
 const entry = { state: 'SCIENTIFIC_ONLY', relatedThreadIds: [], pendingCandidateIds: [], recovery: { required: false }, auditEvidence: [] };
 const act = (kind, extras = {}) => ({ status: 'resolved', act: kind, relatedThreadIds: [], ...extras });
@@ -101,7 +101,7 @@ test('ScientificThreadResolver reports interrupted transition without a document
 });
 
 test('ScientificThreadResolver uses canonical contracts and exposes an in-memory-only transition boundary', async () => {
-	const source = await readFile(path.join(root, '.pi/extensions/paper-proposal-v2/scientific-thread-resolver.ts'), 'utf8');
+	const source = await readFile(path.join(root, '.claude/skills/paper-proposal/engine/scientific-thread-resolver.ts'), 'utf8');
 	assert.match(source, /scientific-domain\.js/);
 	assert.match(source, /ReadOnlyScientificThreadStatePort/);
 	assert.match(source, /ThreadTransitionIntentPort/);

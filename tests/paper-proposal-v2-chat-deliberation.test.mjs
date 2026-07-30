@@ -11,26 +11,26 @@ const aiRoot = path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist');
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),
-	'@earendil-works/pi-ai/compat': path.join(aiRoot, 'compat.js'),
+	'@earendil-works/pi-ai/compat': path.join(root, '.claude/skills/paper-proposal/engine/_pi-compat/pi-ai-compat.ts'),
 	'@earendil-works/pi-ai': path.join(aiRoot, 'index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const workspace = await jiti.import(path.join(root, '.pi/extensions/proposal-workspace.ts'));
-const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
-const aiCompat = await jiti.import(path.join(aiRoot, 'compat.js'));
+const workspace = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/proposal-workspace.ts'));
+const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
+const aiCompat = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/_pi-compat/pi-ai-compat.ts'));
 
 function payload(context) {
 	return JSON.parse(context.messages.at(-1).content.find((part) => part.type === 'text').text);
 }
 
 async function fixture() {
-	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-v2-chat-'));
+	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-chat-'));
 	await mkdir(path.join(projectRoot, 'proposals'));
 	const guardCalls = [];
 	const guard = workspace.createDocumentOperationGuard(projectRoot);
 	const originalExecute = guard.execute.bind(guard);
 	guard.execute = async (input, signal) => { guardCalls.push(input); return originalExecute(input, signal); };
-	const providerId = `paper-proposal-v2-chat-${Date.now()}-${Math.random()}`;
+	const providerId = `paper-proposal-chat-${Date.now()}-${Math.random()}`;
 	const faux = aiCompat.registerFauxProvider({ api: providerId, provider: providerId, models: [{ id: `${providerId}-model`, input: ['text'], contextWindow: 32000, maxTokens: 4096 }] });
 	let tutorCalls = 0;
 	const tutorInputs = [];
@@ -49,8 +49,8 @@ async function fixture() {
 	const register = () => {
 		const tools = [];
 		const handlers = new Map();
-		workspace.createPaperProposalV2Extension({ projectRoot, operationGuard: guard })({ registerTool: (candidate) => tools.push(candidate), on: (event, handler) => handlers.set(event, handler) });
-		tool = tools.find((candidate) => candidate.name === 'paper_proposal_v2_execute');
+		workspace.createPaperProposalExtension({ projectRoot, operationGuard: guard })({ registerTool: (candidate) => tools.push(candidate), on: (event, handler) => handlers.set(event, handler) });
+		tool = tools.find((candidate) => candidate.name === 'paper_proposal_execute');
 		return handlers;
 	};
 	let handlers = register();
@@ -74,9 +74,9 @@ async function fixture() {
 
 test('CHAT_DELIBERATION is multi-turn, bounded, non-mutating, and available without scientific persistence or a managed proposal', async () => {
 	const run = await fixture();
-	const previous = process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED;
+	const previous = process.env.PAPER_PROPOSAL_SCIENTIFIC_WORKFLOW_ENABLED;
 	try {
-		delete process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED;
+		delete process.env.PAPER_PROPOSAL_SCIENTIFIC_WORKFLOW_ENABLED;
 		const first = await run.execute({ operation: 'CHAT_DELIBERATION', instruction: '¿Qué hipótesis conviene usar para la definición de bolsas?' });
 		assert.equal(first.status, 'deliberated', JSON.stringify(first));
 		assert.ok(first.conversationId);
@@ -91,8 +91,8 @@ test('CHAT_DELIBERATION is multi-turn, bounded, non-mutating, and available with
 		assert.deepEqual(await readdir(run.projectRoot), ['proposals']);
 		assert.deepEqual(run.guardCalls, []);
 	} finally {
-		if (previous === undefined) delete process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED;
-		else process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED = previous;
+		if (previous === undefined) delete process.env.PAPER_PROPOSAL_SCIENTIFIC_WORKFLOW_ENABLED;
+		else process.env.PAPER_PROPOSAL_SCIENTIFIC_WORKFLOW_ENABLED = previous;
 		await run.dispose();
 	}
 });
@@ -115,13 +115,13 @@ test('explicit CHAT_DELIBERATION overrides document-like scientific terminology 
 });
 
 test('chat remains principal-only for candidate-equation analysis regardless of scientific persistence or active maintenance state', async () => {
-	const previous = process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED;
+	const previous = process.env.PAPER_PROPOSAL_SCIENTIFIC_WORKFLOW_ENABLED;
 	try {
 		for (const persistence of [undefined, 'true']) {
 			const run = await fixture();
 			try {
-				if (persistence === undefined) delete process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED;
-				else process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED = persistence;
+				if (persistence === undefined) delete process.env.PAPER_PROPOSAL_SCIENTIFIC_WORKFLOW_ENABLED;
+				else process.env.PAPER_PROPOSAL_SCIENTIFIC_WORKFLOW_ENABLED = persistence;
 				const maintenance = await run.execute({ operation: 'MAINTENANCE', maintenanceTaskId: 'maintenance-task-1', instruction: 'Inspect extension infrastructure.' });
 				assert.equal(maintenance.status, 'delegation_permitted');
 				assert.equal(maintenance.authority.taskDelegation, 'PERMITTED');
@@ -144,8 +144,8 @@ test('chat remains principal-only for candidate-equation analysis regardless of 
 			} finally { await run.dispose(); }
 		}
 	} finally {
-		if (previous === undefined) delete process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED;
-		else process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED = previous;
+		if (previous === undefined) delete process.env.PAPER_PROPOSAL_SCIENTIFIC_WORKFLOW_ENABLED;
+		else process.env.PAPER_PROPOSAL_SCIENTIFIC_WORKFLOW_ENABLED = previous;
 	}
 });
 

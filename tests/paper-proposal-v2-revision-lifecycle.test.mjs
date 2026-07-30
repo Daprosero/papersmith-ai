@@ -9,7 +9,7 @@ const repositoryRoot=path.resolve('.');
 const piRoot='/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
 const {createJiti}=await import(pathToFileURL(path.join(piRoot,'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti=createJiti(import.meta.url,{alias:{'@earendil-works/pi-coding-agent':path.join(piRoot,'dist/index.js'),'@earendil-works/pi-ai/compat':path.join(piRoot,'node_modules/@earendil-works/pi-ai/dist/compat.js'),'@earendil-works/pi-ai':path.join(piRoot,'node_modules/@earendil-works/pi-ai/dist/index.js'),typebox:path.join(piRoot,'node_modules/typebox/build/index.mjs')}});
-const v2=await jiti.import(path.resolve('.pi/extensions/paper-proposal-v2/exports.ts'));
+const v2=await jiti.import(path.resolve('.claude/skills/paper-proposal/engine/exports.ts'));
 const marker='<!-- proposal-workspace:artifact:v1 -->\n';
 const r01='research-concept-r01.md';
 const r02='research-concept-r02.md';
@@ -35,7 +35,7 @@ async function createRevision(root,filename,body,sourceFilename) {
  return state;
 }
 async function fixture(options={}) {
- const root=await mkdtemp(path.join(os.tmpdir(),'paper-proposal-v2-revision-lifecycle-'));
+ const root=await mkdtemp(path.join(os.tmpdir(),'paper-proposal-revision-lifecycle-'));
  await mkdir(path.join(root,'proposals'),{recursive:true});
  await createRevision(root,r01,'# Base\n\nBase text.\n');
  await createRevision(root,r02,'# Revision\n\nRevised text.\n',r01);
@@ -44,11 +44,11 @@ async function fixture(options={}) {
 }
 async function productiveTool(root) {
  await mkdir(path.join(root,'.pi'),{recursive:true});
- await cp(path.join(repositoryRoot,'.pi/extensions'),path.join(root,'.pi/extensions'),{recursive:true});
- const workspace=await jiti.import(path.join(root,'.pi/extensions/proposal-workspace.ts'));
+ await cp(path.join(repositoryRoot,'.claude/skills/paper-proposal/engine'),path.join(root,'.claude/skills/paper-proposal/engine'),{recursive:true});
+ const workspace=await jiti.import(path.join(root,'.claude/skills/paper-proposal/engine/proposal-workspace.ts'));
  const tools=[];
  workspace.default({registerTool:tool=>tools.push(tool),on:()=>{}});
- const tool=tools.find(candidate=>candidate.name==='paper_proposal_v2_execute');
+ const tool=tools.find(candidate=>candidate.name==='paper_proposal_execute');
  assert.ok(tool);
  return tool;
 }
@@ -91,7 +91,7 @@ test('classifies managed revision lifecycle intent before DELETE while preservin
 test('explicit lifecycle dispatch occurs before state, planner, tutor, reviewer, or model paths',async()=>{
  let stateCalls=0,lifecycleCalls=0,lifecycleInput;
  const expected={status:'blocked',operation:'WITHDRAW_REVISION',withdrawnFilename:null,restoredLatestFilename:null,artifactCount:0,backupLocation:null,auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN',warnings:['stub']};
- const orchestrator=new v2.PaperProposalV2Orchestrator('/unused',{},undefined,{plan:async()=>{throw new Error('planner called');}},{tutor:{assess:async()=>{throw new Error('tutor called');}},reviewer:{review:async()=>{throw new Error('reviewer called');}}},async()=>{stateCalls++;throw new Error('state called');},{withdraw:async input=>{lifecycleCalls++;lifecycleInput=input;return expected;},restore:async()=>{throw new Error('restore called');}});
+ const orchestrator=new v2.PaperProposalOrchestrator('/unused',{},undefined,{plan:async()=>{throw new Error('planner called');}},{tutor:{assess:async()=>{throw new Error('tutor called');}},reviewer:{review:async()=>{throw new Error('reviewer called');}}},async()=>{stateCalls++;throw new Error('state called');},{withdraw:async input=>{lifecycleCalls++;lifecycleInput=input;return expected;},restore:async()=>{throw new Error('restore called');}});
  const result=await orchestrator.execute({instruction:'Elimina r02.',operation:'WITHDRAW_REVISION',sourceFilename:r02,withdrawalOperationId:operationId});
  assert.deepEqual(result,expected);
  assert.equal(stateCalls,0);
@@ -128,8 +128,8 @@ test('base, missing, malformed, inconsistent, missing-source, and dependent revi
 
 test('unsafe withdrawal-root aliases fail closed without writing outside the project',async()=>{
  const run=await fixture();
- const outside=await mkdtemp(path.join(os.tmpdir(),'paper-proposal-v2-withdrawal-escape-'));
- await symlink(outside,path.join(run.root,'.paper-proposal-v2','withdrawn'));
+ const outside=await mkdtemp(path.join(os.tmpdir(),'paper-proposal-withdrawal-escape-'));
+ await symlink(outside,path.join(run.root,'.paper-proposal','withdrawn'));
  const before=await publicBytes(run.root);
  const result=await run.tx().withdraw({filename:r02});
  assert.equal(result.status,'blocked');
@@ -162,7 +162,7 @@ test('successful withdrawal quarantines exact artifacts, writes complete metadat
  assert.equal(markerValue.auditStatus,'PASS');
  assert.equal(markerValue.selfAuditStatus,'PASS');
  assert.equal((await v2.runConsistencyAudit({projectRoot:run.root})).status,'PASS');
- assert.equal((await v2.runPaperProposalV2SelfAudit({projectRoot:run.root})).status,'PASS');
+ assert.equal((await v2.runPaperProposalSelfAudit({projectRoot:run.root})).status,'PASS');
 });
 
 test('withdrawal writes a bounded PENDING_AUDIT marker before SelfAudit and propagates the exact context',async()=>{
@@ -176,7 +176,7 @@ test('withdrawal writes a bounded PENDING_AUDIT marker before SelfAudit and prop
   const markerValue=JSON.parse(await readFile(path.join(run.root,input.auditContext.expectedMarker.relativePath),'utf8'));
   assert.equal(markerValue.state,'PENDING_AUDIT');
   assert.equal(markerValue.inventoryDigest,input.auditContext.expectedMarker.inventoryDigest);
-  return v2.runPaperProposalV2SelfAudit(input);
+  return v2.runPaperProposalSelfAudit(input);
  };
  const result=await successfulWithdrawal(run,{selfAudit});
  assert.ok(observed);
@@ -196,8 +196,8 @@ test('Nth move, audit, and marker-finalization failures roll withdrawal back exa
   assert.deepEqual(await treeSnapshot(run.root),before);
   assert.equal(await v2.latestManagedFilename(run.root),r02);
   assert.equal((await v2.runConsistencyAudit({projectRoot:run.root})).status,'PASS');
-  assert.equal((await v2.runPaperProposalV2SelfAudit({projectRoot:run.root})).status,'PASS');
-  await assert.rejects(readFile(path.join(run.root,'.paper-proposal-v2','withdrawn',operationId,'audit-marker.json')));
+  assert.equal((await v2.runPaperProposalSelfAudit({projectRoot:run.root})).status,'PASS');
+  await assert.rejects(readFile(path.join(run.root,'.paper-proposal','withdrawn',operationId,'audit-marker.json')));
  }
 });
 
@@ -213,7 +213,7 @@ test('exact restoration retains immutable quarantine data and completes marker-f
   assert.equal(input.auditContext.operationType,'RESTORE_WITHDRAWN_REVISION');
   assert.equal(input.auditContext.phase,'RESTORE_PUBLIC_ARTIFACTS_MOVED');
   assert.ok(input.auditContext.temporarilyMovedArtifacts.every(artifact=>artifact.expectedLocation==='public'));
-  return v2.runPaperProposalV2SelfAudit(input);
+  return v2.runPaperProposalSelfAudit(input);
  }}).restore({operationId});
  assert.equal(restore.status,'restored',JSON.stringify(restore));
  assert.deepEqual(Object.keys(restore).sort(),lifecycleResultKeys);
@@ -230,7 +230,7 @@ test('exact restoration retains immutable quarantine data and completes marker-f
  assert.equal(markerValue.auditStatus,'PASS');
  assert.equal(markerValue.selfAuditStatus,'PASS');
  assert.equal((await v2.runConsistencyAudit({projectRoot:run.root})).status,'PASS');
- assert.equal((await v2.runPaperProposalV2SelfAudit({projectRoot:run.root})).status,'PASS');
+ assert.equal((await v2.runPaperProposalSelfAudit({projectRoot:run.root})).status,'PASS');
 });
 
 test('restore move, audit, and marker-finalization failures expose no partial public state and retain quarantine',async()=>{
@@ -247,7 +247,7 @@ test('restore move, audit, and marker-finalization failures expose no partial pu
   assert.deepEqual(await treeSnapshot(run.root),before);
   assert.equal(await v2.latestManagedFilename(run.root),r01);
   assert.equal((await v2.runConsistencyAudit({projectRoot:run.root})).status,'PASS');
-  assert.equal((await v2.runPaperProposalV2SelfAudit({projectRoot:run.root})).status,'PASS');
+  assert.equal((await v2.runPaperProposalSelfAudit({projectRoot:run.root})).status,'PASS');
  }
 });
 
@@ -269,7 +269,7 @@ test('every restore rename failure rolls back exactly without touching unrelated
   assert.deepEqual(await readFile(unrelatedPath),Buffer.from([0,1,2,3,255]));
   assert.equal(JSON.parse(await readFile(markerPath,'utf8')).state,'COMMITTED');
   assert.equal((await v2.runConsistencyAudit({projectRoot:run.root})).status,'PASS');
-  assert.equal((await v2.runPaperProposalV2SelfAudit({projectRoot:run.root})).status,'PASS');
+  assert.equal((await v2.runPaperProposalSelfAudit({projectRoot:run.root})).status,'PASS');
  }
 });
 
@@ -323,12 +323,12 @@ test('restore can be retried after a successful exact rollback and ordinary audi
  assert.equal(failed.status,'blocked',JSON.stringify(failed));
  assert.deepEqual(await treeSnapshot(run.root),withdrawn);
  assert.equal((await v2.runConsistencyAudit({projectRoot:run.root})).status,'PASS');
- assert.equal((await v2.runPaperProposalV2SelfAudit({projectRoot:run.root})).status,'PASS');
+ assert.equal((await v2.runPaperProposalSelfAudit({projectRoot:run.root})).status,'PASS');
  const restored=await run.tx().restore({operationId});
  assert.equal(restored.status,'restored',JSON.stringify(restored));
  assert.deepEqual(await publicBytes(run.root),exactPublic);
  assert.equal((await v2.runConsistencyAudit({projectRoot:run.root})).status,'PASS');
- assert.equal((await v2.runPaperProposalV2SelfAudit({projectRoot:run.root})).status,'PASS');
+ assert.equal((await v2.runPaperProposalSelfAudit({projectRoot:run.root})).status,'PASS');
 });
 
 test('pending lifecycle authorization fails closed for missing, mismatched, expired markers and orphan staging',async()=>{
@@ -337,7 +337,7 @@ test('pending lifecycle authorization fails closed for missing, mismatched, expi
   async (run,context)=>{const markerPath=path.join(run.root,context.expectedMarker.relativePath);const value=JSON.parse(await readFile(markerPath,'utf8'));value.inventoryDigest='0'.repeat(64);await writeJson(markerPath,value);},
  ]) {
   const run=await fixture();
-  const result=await run.tx({selfAudit:async input=>{await mutate(run,input.auditContext);return v2.runPaperProposalV2SelfAudit(input);}}).withdraw({filename:r02});
+  const result=await run.tx({selfAudit:async input=>{await mutate(run,input.auditContext);return v2.runPaperProposalSelfAudit(input);}}).withdraw({filename:r02});
   assert.equal(result.status,'blocked');
   assert.equal((await v2.runConsistencyAudit({projectRoot:run.root})).status,'PASS');
  }
@@ -347,7 +347,7 @@ test('pending lifecycle authorization fails closed for missing, mismatched, expi
  assert.equal(result.status,'blocked');
  assert.equal((await v2.runConsistencyAudit({projectRoot:expired.root})).status,'PASS');
  const orphan=await fixture();
- await mkdir(path.join(orphan.root,'.paper-proposal-v2','withdrawn',`.staging-${operationId}`),{recursive:true});
+ await mkdir(path.join(orphan.root,'.paper-proposal','withdrawn',`.staging-${operationId}`),{recursive:true});
  const audit=await v2.runConsistencyAudit({projectRoot:orphan.root});
  assert.equal(audit.status,'FAIL');
  assert.ok(audit.failures.some(failure=>failure.startsWith('ORPHAN_WITHDRAWAL_STAGING')));

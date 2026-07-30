@@ -15,9 +15,9 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
+const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
 
-async function project() { return mkdtemp(path.join(tmpdir(), 'paper-proposal-v2-scientific-resolvers-')); }
+async function project() { return mkdtemp(path.join(tmpdir(), 'paper-proposal-scientific-resolvers-')); }
 const inventory = { read: async () => ({ status: 'valid', activeRevisions: [], withdrawnRevisions: [], auditEvidence: ['revision-inventory:validated'] }) };
 const resolvedIdea = { status: 'resolved', act: 'CONSTRUCT_IDEA', relatedThreadIds: [] };
 const resolvedQuestion = { status: 'resolved', act: 'CONSTRUCT_QUESTION', relatedThreadIds: [] };

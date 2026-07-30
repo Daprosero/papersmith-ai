@@ -15,7 +15,7 @@ const jiti = createJiti(import.meta.url, {
 	},
 });
 
-const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
+const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
 const revision = { filename: 'research-concept-r01.md', revision: 'r01', documentSha256: 'a'.repeat(64) };
 const withdrawnRevision = { filename: 'research-concept-r02.md', revision: 'r02', documentSha256: 'b'.repeat(64) };
 
@@ -119,7 +119,7 @@ test('bootstrap is explicit, observation-only, and limited to one verified activ
 });
 
 test('entry resolver remains read-only and imports canonical scientific contracts', async () => {
-	const source = await (await import('node:fs/promises')).readFile(path.join(root, '.pi/extensions/paper-proposal-v2/project-entry-resolver.ts'), 'utf8');
+	const source = await (await import('node:fs/promises')).readFile(path.join(root, '.claude/skills/paper-proposal/engine/project-entry-resolver.ts'), 'utf8');
 	assert.match(source, /scientific-domain\.js/);
 	assert.doesNotMatch(source, /(?:writeFile|mkdir|rename|rm\()/);
 	assert.doesNotMatch(source, /type\s+(?:ScientificThread|ScientificDecision|ScientificEvent|ThreadRelation|ProjectEntryState)\s*=/);

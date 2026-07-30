@@ -11,16 +11,16 @@ const aiRoot = path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist');
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),
-	'@earendil-works/pi-ai/compat': path.join(aiRoot, 'compat.js'),
+	'@earendil-works/pi-ai/compat': path.join(root, '.claude/skills/paper-proposal/engine/_pi-compat/pi-ai-compat.ts'),
 	'@earendil-works/pi-ai': path.join(aiRoot, 'index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const workspace = await jiti.import(path.join(root, '.pi/extensions/proposal-workspace.ts'));
-const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
-const aiCompat = await jiti.import(path.join(aiRoot, 'compat.js'));
+const workspace = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/proposal-workspace.ts'));
+const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
+const aiCompat = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/_pi-compat/pi-ai-compat.ts'));
 
 async function serviceFixture(overrides = {}) {
-	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-v2-draft-'));
+	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-draft-'));
 	const primaryName = `source-${Math.random().toString(36).slice(2)}.md`;
 	const primaryRoute = `documents/${primaryName}`;
 	const primaryBytes = Buffer.from('# Source\n\nProtected primary bytes.\n');
@@ -40,7 +40,7 @@ const materializationPayload = (conversationId, content) => ({ source: 'CHAT_DEL
 const materialize = (service, conversationId, content, draftRequest) => service.execute({ conversationId, materializationPayload: materializationPayload(conversationId, content), request: draftRequest });
 
 test('missing or empty materializationPayload fails closed before resolving or creating any file', async () => {
-	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-v2-empty-draft-'));
+	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-empty-draft-'));
 	let inventoryCalls = 0;
 	const guard = workspace.createDocumentOperationGuard(projectRoot);
 	const service = new v2.DraftMaterializationService(projectRoot, guard, {
@@ -152,13 +152,13 @@ function registerPublicDraftExtension({ run, sessionIdentity, model, draftRegist
 		registerTool: tool => tools.push(tool),
 		on: (event, handler) => handlers.set(event, [...(handlers.get(event) ?? []), handler]),
 	};
-	workspace.createPaperProposalV2Extension({
+	workspace.createPaperProposalExtension({
 		projectRoot: run.projectRoot,
 		operationGuard: operationGuard ?? workspace.createDocumentOperationGuard(run.projectRoot),
 		draftMaterialization: { managedDocumentPath: run.primaryRoute, draftDirectory: 'working-drafts', allowedExtensions: ['.md'] },
 		...(draftRegistry ? { draftRegistry } : {}),
 	})(pi);
-	const tool = tools.find(candidate => candidate.name === 'paper_proposal_v2_execute');
+	const tool = tools.find(candidate => candidate.name === 'paper_proposal_execute');
 	const ctx = { model, sessionManager: { getSessionId: () => sessionIdentity }, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: 'fake', headers: {}, env: {} }) } };
 	return {
 		execute: async params => (await tool.execute('draft-session-transition', params, undefined, undefined, ctx)).details,
@@ -167,7 +167,7 @@ function registerPublicDraftExtension({ run, sessionIdentity, model, draftRegist
 }
 
 function fauxTutorProvider(summaries) {
-	const providerId = `paper-proposal-v2-registry-${Date.now()}-${Math.random()}`;
+	const providerId = `paper-proposal-registry-${Date.now()}-${Math.random()}`;
 	const faux = aiCompat.registerFauxProvider({ api: providerId, provider: providerId, models: [{ id: `${providerId}-model`, input: ['text'], contextWindow: 32000, maxTokens: 4096 }] });
 	faux.setResponses(summaries.map(summary => context => {
 		const input = modelPayload(context);
@@ -303,7 +303,7 @@ test('Pi session end clears every transient draft for that session', async () =>
 });
 
 test('public materialization without any produced draft returns CHAT_CONTENT_REQUIRED before guards or filesystem', async () => {
-	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-v2-no-chat-draft-'));
+	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-no-chat-draft-'));
 	let inventoryCalls = 0;
 	const guardCalls = [];
 	const guard = workspace.createDocumentOperationGuard(projectRoot);
@@ -311,13 +311,13 @@ test('public materialization without any produced draft returns CHAT_CONTENT_REQ
 	guard.execute = async input => { guardCalls.push(input); return originalExecute(input); };
 	const sessionIdentity = 'pi-session-no-draft';
 	const tools = [];
-	workspace.createPaperProposalV2Extension({
+	workspace.createPaperProposalExtension({
 		projectRoot,
 		operationGuard: guard,
 		draftRegistry: v2.createPiSessionDraftRegistry(),
 		draftMaterialization: { draftDirectory: 'working-drafts', managedDocumentInventory: async () => { inventoryCalls += 1; throw new Error('MUST_NOT_RESOLVE_PRIMARY'); } },
 	})({ registerTool: tool => tools.push(tool), on: () => {} });
-	const tool = tools.find(candidate => candidate.name === 'paper_proposal_v2_execute');
+	const tool = tools.find(candidate => candidate.name === 'paper_proposal_execute');
 	const ctx = { model: undefined, sessionManager: { getSessionId: () => sessionIdentity }, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: 'fake', headers: {}, env: {} }) } };
 	try {
 		const result = (await tool.execute('no-chat-draft', { operation: 'CHAT_DELIBERATION', conversationId: 'chat-never-produced', instruction: 'Materialize absent content.', draftMaterialization: request('working-drafts/absent.md') }, undefined, undefined, ctx)).details;
@@ -332,7 +332,7 @@ test('public materialization without any produced draft returns CHAT_CONTENT_REQ
 
 test('public CHAT_DELIBERATION hands off consolidated bytes exactly once to guarded DOCUMENT_EDIT materialization', async () => {
 	const run = await serviceFixture();
-	const providerId = `paper-proposal-v2-draft-${Date.now()}-${Math.random()}`;
+	const providerId = `paper-proposal-draft-${Date.now()}-${Math.random()}`;
 	const faux = aiCompat.registerFauxProvider({ api: providerId, provider: providerId, models: [{ id: `${providerId}-model`, input: ['text'], contextWindow: 32000, maxTokens: 4096 }] });
 	let tutorCalls = 0;
 	const draftFragments = ['# Generic draft\n\nExact UTF-8 bytes: café — λ.', '## Consolidated conclusion\n\nFinal paragraph.'];
@@ -344,8 +344,8 @@ test('public CHAT_DELIBERATION hands off consolidated bytes exactly once to guar
 	}));
 	try {
 		const tools = [];
-		workspace.createPaperProposalV2Extension({ projectRoot: run.projectRoot, operationGuard: workspace.createDocumentOperationGuard(run.projectRoot), draftMaterialization: { managedDocumentPath: run.primaryRoute, draftDirectory: 'working-drafts', allowedExtensions: ['.md'] } })({ registerTool: tool => tools.push(tool), on: () => {} });
-		const tool = tools.find(candidate => candidate.name === 'paper_proposal_v2_execute');
+		workspace.createPaperProposalExtension({ projectRoot: run.projectRoot, operationGuard: workspace.createDocumentOperationGuard(run.projectRoot), draftMaterialization: { managedDocumentPath: run.primaryRoute, draftDirectory: 'working-drafts', allowedExtensions: ['.md'] } })({ registerTool: tool => tools.push(tool), on: () => {} });
+		const tool = tools.find(candidate => candidate.name === 'paper_proposal_execute');
 		const sessionIdentity = `draft-test-session-${Math.random().toString(36).slice(2)}`;
 		const ctx = { model: faux.getModel(), sessionManager: { getSessionId: () => sessionIdentity }, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: 'fake', headers: {}, env: {} }) } };
 		const execute = async params => (await tool.execute('draft-transition', params, undefined, undefined, ctx)).details;

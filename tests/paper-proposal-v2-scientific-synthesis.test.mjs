@@ -14,13 +14,13 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
+const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
 
 const tutor = (summary = 'Bounded candidate synthesis.') => ({ decision: 'ACCEPT', summary, mathematicalIssues: [], notationIssues: [], assumptionIssues: [], requiredRevisions: [], unresolvedQuestions: [], riskLevel: 'LOW', affectedEntryIds: [] });
 const review = (decision = 'APPROVE', changes = []) => ({ decision, scientificCoherence: 'Coherent within selected scientific context.', scopeCompliance: 'Bounded scope.', unsupportedClaims: [], referenceRisks: [], notationRisks: [], requiredChanges: changes, unresolvedQuestions: [], riskLevel: 'LOW' });
 
 async function fixture({ tutorResults = [tutor()], reviewerResults = [review()], contextFails = false } = {}) {
-	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-v2-scientific-synthesis-'));
+	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-scientific-synthesis-'));
 	const store = new v2.ScientificStateStore(projectRoot);
 	const initialEvent = { schemaVersion: 1, eventId: 'thread-created', sequence: 1, occurredAt: '2026-01-01T00:00:00.000Z', actor: { kind: 'USER' }, type: 'THREAD_CREATED', threadId: 'thread-1', causalEventIds: [], payload: { title: 'Bounded question', summary: 'Public thread summary.', activeThreadId: 'thread-1' }, evidence: [], privacy: { contentClass: 'PUBLIC_SUMMARY_ONLY', redactionVersion: 1 } };
 	const thread = { threadId: 'thread-1', version: 1, status: 'OPEN', title: 'Bounded question', summary: 'Public thread summary.', createdEventId: 'thread-created', headEventId: 'thread-created', relationIds: [], decisionIds: [] };
@@ -52,7 +52,7 @@ test('ScientificWorkflowService runs Tutor then Conceptual Reviewer, persists on
 	assert.deepEqual(state.events.map((event) => event.type), ['THREAD_CREATED', 'TUTOR_ASSESSED', 'CONCEPTUAL_REVIEW_RECORDED']);
 	assert.equal(state.snapshot.decisions.length, 0);
 	assert.equal(state.events.some((event) => /publish|materiali[sz]|plan/i.test(JSON.stringify(event.payload))), false);
-	assert.deepEqual(await readdir(run.projectRoot), ['.paper-proposal-v2']);
+	assert.deepEqual(await readdir(run.projectRoot), ['.paper-proposal']);
 	await assert.rejects(() => readFile(path.join(run.projectRoot, 'proposals', 'research-concept-r01.md')));
 });
 
@@ -101,7 +101,7 @@ test('ScientificWorkflowService reopens immutable synthesis history and requires
 });
 
 test('Scientific synthesis orchestration imports canonical contracts and has no document, lifecycle, or materialization authority', async () => {
-	const source = await readFile(path.join(root, '.pi/extensions/paper-proposal-v2/scientific-workflow-service.ts'), 'utf8');
+	const source = await readFile(path.join(root, '.claude/skills/paper-proposal/engine/scientific-workflow-service.ts'), 'utf8');
 	assert.match(source, /scientific-domain\.js/);
 	assert.match(source, /ProductionModelRuntime/);
 	assert.doesNotMatch(source, /(?:writeFile|ProposalWorkspaceAdapter|publishInitial|publishSuccessor|createInitialProposal|MATERIALIZATION_COMMITTED)/);

@@ -15,10 +15,10 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
+const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
 
 async function project() {
-	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-v2-scientific-audit-'));
+	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-scientific-audit-'));
 	await mkdir(path.join(projectRoot, 'proposals'));
 	return projectRoot;
 }
@@ -65,7 +65,7 @@ test('scientific audit projects absent, validated, and stale revision evidence w
 	const combined = await v2.runConsistencyAudit({ projectRoot: rootDir });
 	assert.equal(combined.status, 'PASS');
 	assert.equal(combined.scientific.status, 'PASS');
-	assert.equal((await v2.runPaperProposalV2SelfAudit({ projectRoot: rootDir })).checks.find((check) => check.id === 'scientific-consistency').status, 'PASS');
+	assert.equal((await v2.runPaperProposalSelfAudit({ projectRoot: rootDir })).checks.find((check) => check.id === 'scientific-consistency').status, 'PASS');
 
 	const staleRoot = await project();
 	const restoredBytes = 'restored bytes';

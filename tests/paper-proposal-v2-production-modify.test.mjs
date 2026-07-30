@@ -20,8 +20,8 @@ const jiti = createJiti(import.meta.url, {
   typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
  },
 });
-const aiCompat = await jiti.import(path.join(aiRoot, 'compat.js'));
-const v2Module = await jiti.import(path.join(repositoryRoot, '.pi/extensions/paper-proposal-v2/exports.ts'));
+const v2Module = await jiti.import(path.join(repositoryRoot, '.claude/skills/paper-proposal/engine/exports.ts'));
+const aiCompat = await jiti.import(path.resolve('.claude/skills/paper-proposal/engine/_pi-compat/pi-ai-compat.ts'));
 
 const firstEquation = `$$
 \\sum_{c=1}^C y_{i,c}^s=1,\\qquad i\\in\\{1,\\ldots,N_s\\}.
@@ -60,22 +60,22 @@ async function assertRepositoryUnchanged(expectedBytes) {
 async function executeThroughProductionTool(responseFactory, options = {}) {
  const repositorySourceBefore = await readFile(repositorySourcePath);
  await assertMissing(repositorySuccessorPath);
- const root = await mkdtemp(path.join(tmpdir(), 'paper-proposal-v2-production-modify-'));
+ const root = await mkdtemp(path.join(tmpdir(), 'paper-proposal-production-modify-'));
  await mkdir(path.join(root, '.pi'), { recursive: true });
  await mkdir(path.join(root, 'proposals'), { recursive: true });
- await cp(path.join(repositoryRoot, '.pi/extensions'), path.join(root, '.pi/extensions'), {
+ await cp(path.join(repositoryRoot, '.claude/skills/paper-proposal/engine'), path.join(root, '.claude/skills/paper-proposal/engine'), {
   recursive: true,
   filter: (source) => !source.endsWith('.before-v2-barrel-fix'),
  });
  await copyFile(repositorySourcePath, path.join(root, 'proposals/research-concept-r01.md'));
  await assertMissing(path.join(root, 'proposals/research-concept-r02.md'));
 
- const workspaceModule = await jiti.import(path.join(root, '.pi/extensions/proposal-workspace.ts'));
- const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
+ const workspaceModule = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/proposal-workspace.ts'));
+ const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
  v2.resetRuntimeMetrics();
  const payloads = [];
  const providerContexts = [];
- const providerId = `paper-proposal-v2-production-modify-${++providerSequence}`;
+ const providerId = `paper-proposal-production-modify-${++providerSequence}`;
  const faux = aiCompat.registerFauxProvider({
   api: providerId,
   provider: providerId,
@@ -87,24 +87,24 @@ async function executeThroughProductionTool(responseFactory, options = {}) {
   providerContexts.push(context);
   const plannerResponse = responseFactory(payload);
   try {
-   return aiCompat.fauxAssistantMessage(aiCompat.fauxToolCall('paper_proposal_v2_fidelity_modify', JSON.parse(plannerResponse)));
+   return aiCompat.fauxAssistantMessage(aiCompat.fauxToolCall('paper_proposal_fidelity_modify', JSON.parse(plannerResponse)));
   } catch {
    return aiCompat.fauxAssistantMessage(plannerResponse);
   }
  }]);
 
  const tools = [];
- const previousBudget = process.env.PAPER_PROPOSAL_V2_MODIFY_INPUT_BUDGET_BYTES;
- if (options.modifyInputBudget !== undefined) process.env.PAPER_PROPOSAL_V2_MODIFY_INPUT_BUDGET_BYTES = String(options.modifyInputBudget);
+ const previousBudget = process.env.PAPER_PROPOSAL_MODIFY_INPUT_BUDGET_BYTES;
+ if (options.modifyInputBudget !== undefined) process.env.PAPER_PROPOSAL_MODIFY_INPUT_BUDGET_BYTES = String(options.modifyInputBudget);
  try {
   workspaceModule.default({ registerTool: (tool) => tools.push(tool), on: () => {} });
  } finally {
-  if (previousBudget === undefined) delete process.env.PAPER_PROPOSAL_V2_MODIFY_INPUT_BUDGET_BYTES;
-  else process.env.PAPER_PROPOSAL_V2_MODIFY_INPUT_BUDGET_BYTES = previousBudget;
+  if (previousBudget === undefined) delete process.env.PAPER_PROPOSAL_MODIFY_INPUT_BUDGET_BYTES;
+  else process.env.PAPER_PROPOSAL_MODIFY_INPUT_BUDGET_BYTES = previousBudget;
  }
- const tool = tools.find((candidate) => candidate.name === 'paper_proposal_v2_execute');
- assert.ok(tool, 'registered production paper_proposal_v2_execute tool is required');
- assert.equal(tools.filter((candidate) => candidate.name === 'paper_proposal_v2_execute').length, 1);
+ const tool = tools.find((candidate) => candidate.name === 'paper_proposal_execute');
+ assert.ok(tool, 'registered production paper_proposal_execute tool is required');
+ assert.equal(tools.filter((candidate) => candidate.name === 'paper_proposal_execute').length, 1);
  const request = { sourceFilename: 'research-concept-r01.md', instruction };
  const ctx = {
   model: faux.getModel(),
@@ -188,8 +188,8 @@ test('production tool publishes the P0 replacement from a byte-identical tempora
  const endByte = startByte + Buffer.byteLength(sourceTargetBlock);
  assert.deepEqual(run.sourceBefore.subarray(0, startByte), after.subarray(0, startByte));
  assert.deepEqual(run.sourceBefore.subarray(endByte), after.subarray(startByte + Buffer.byteLength(replacementBlock)));
- const receipt = JSON.parse(await readFile(path.join(run.root, '.paper-proposal-v2/receipts/research-concept-r02.md.json'), 'utf8'));
- const state = JSON.parse(await readFile(path.join(run.root, '.paper-proposal-v2/state/research-concept-r02.md.json'), 'utf8'));
+ const receipt = JSON.parse(await readFile(path.join(run.root, '.paper-proposal/receipts/research-concept-r02.md.json'), 'utf8'));
+ const state = JSON.parse(await readFile(path.join(run.root, '.paper-proposal/state/research-concept-r02.md.json'), 'utf8'));
  assert.equal(receipt.patchCount, 1);
  assert.equal(receipt.derivedStateStatus, 'COMMITTED');
  assert.equal(state.manifest.status, 'COMMITTED');

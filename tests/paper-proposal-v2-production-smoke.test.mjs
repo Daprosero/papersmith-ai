@@ -49,28 +49,28 @@ async function entryId(stateModule, root, text) {
 }
 
 test('runs the production V2 tool through a complete temporary fixture', async () => {
- const fixture = await mkdtemp(path.join(tmpdir(), 'paper-proposal-v2-production-'));
+ const fixture = await mkdtemp(path.join(tmpdir(), 'paper-proposal-production-'));
  await mkdir(path.join(fixture, '.pi'), { recursive: true });
  await mkdir(path.join(fixture, 'proposals'), { recursive: true });
- await cp('.pi/extensions', path.join(fixture, '.pi/extensions'), {
+ await cp('.claude/skills/paper-proposal/engine', path.join(fixture, '.claude/skills/paper-proposal/engine'), {
   recursive: true,
   filter: (source) => !source.endsWith('.before-v2-barrel-fix'),
  });
 
- await importWithDiagnostics(path.join(fixture, '.pi/extensions/paper-proposal-v2/production-runtime.ts'));
- const aiCompat = await importWithDiagnostics(path.join(aiRoot, 'compat.js'));
+ await importWithDiagnostics(path.join(fixture, '.claude/skills/paper-proposal/engine/production-runtime.ts'));
+ const aiCompat = await importWithDiagnostics(path.join(fixture, '.claude/skills/paper-proposal/engine/_pi-compat/pi-ai-compat.ts'));
  const calls = { planner: 0, tutor: 0, reviewer: 0 };
  const faux = aiCompat.registerFauxProvider({
-  api: 'paper-proposal-v2-faux',
-  provider: 'paper-proposal-v2-faux',
-  models: [{ id: 'paper-proposal-v2-faux-model', input: ['text'], contextWindow: 32000, maxTokens: 4096 }],
+  api: 'paper-proposal-faux',
+  provider: 'paper-proposal-faux',
+  models: [{ id: 'paper-proposal-faux-model', input: ['text'], contextWindow: 32000, maxTokens: 4096 }],
  });
  faux.setResponses(Array.from({ length: 4 }, () => (context) => {
   const payload = JSON.parse(context.messages.at(-1).content.find((part) => part.type === 'text').text);
   if (payload.intent) {
    calls.planner++;
    if (payload.intent.intent === 'CONCEPTUAL_REVISION') {
-    return aiCompat.fauxAssistantMessage(aiCompat.fauxToolCall('paper_proposal_v2_conceptual_revision', { actions: [{ kind: 'replace', targetEntryId: payload.target.entryId, replacementText: 'Gamma conceptually revised.' }], unresolvedQuestions: [] }));
+    return aiCompat.fauxAssistantMessage(aiCompat.fauxToolCall('paper_proposal_conceptual_revision', { actions: [{ kind: 'replace', targetEntryId: payload.target.entryId, replacementText: 'Gamma conceptually revised.' }], unresolvedQuestions: [] }));
    }
    return aiCompat.fauxAssistantMessage(JSON.stringify({ actions: [{ kind: 'replace', targetEntryId: payload.target.entryId, replacementText: 'Alpha semantically revised.' }], expectedEffects: [] }));
   }
@@ -78,15 +78,15 @@ test('runs the production V2 tool through a complete temporary fixture', async (
   return aiCompat.fauxAssistantMessage(JSON.stringify({ decision: 'ACCEPT', summary: 'ok', mathematicalIssues: [], notationIssues: [], assumptionIssues: [], requiredRevisions: [], unresolvedQuestions: [], riskLevel: 'LOW', affectedEntryIds: payload.context.fragments.map((fragment) => fragment.entryId) }));
  }));
 
- const workspaceModule = await importWithDiagnostics(path.join(fixture, '.pi/extensions/proposal-workspace.ts'));
+ const workspaceModule = await importWithDiagnostics(path.join(fixture, '.claude/skills/paper-proposal/engine/proposal-workspace.ts'));
  const seed = workspaceModule.createProposalWorkspaceTool(fixture);
  await seed.execute('seed', { action: 'write', resource: 'proposal', slug: 'r01', content: '# Proposal\n\nAlpha paragraph.\n\n## Results\n\nGamma paragraph.\n' });
- const stateModule = await importWithDiagnostics(path.join(fixture, '.pi/extensions/paper-proposal-v2/document-state.ts'));
+ const stateModule = await importWithDiagnostics(path.join(fixture, '.claude/skills/paper-proposal/engine/document-state.ts'));
  const tools = [];
  const handlers = new Map();
  workspaceModule.default({ registerTool: (tool) => tools.push(tool), on: (name, handler) => handlers.set(name, handler) });
- const tool = tools.find((candidate) => candidate.name === 'paper_proposal_v2_execute');
- assert.equal(tools.filter((candidate) => candidate.name === 'paper_proposal_v2_execute').length, 1);
+ const tool = tools.find((candidate) => candidate.name === 'paper_proposal_execute');
+ assert.equal(tools.filter((candidate) => candidate.name === 'paper_proposal_execute').length, 1);
  assert.ok(tool);
  assert.equal((await handlers.get('input')({ text: '/skill:paper-proposal modify Alpha' })).action, 'continue');
  const ctx = { model: faux.getModel(), sessionManager: { getSessionId: () => 'production-smoke-session' }, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: 'fake', headers: {}, env: {} }) } };

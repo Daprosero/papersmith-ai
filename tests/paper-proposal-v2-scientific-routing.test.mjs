@@ -17,8 +17,8 @@ const jiti = createJiti(import.meta.url, {
 	},
 });
 
-const workspace = await jiti.import(path.join(root, '.pi/extensions/proposal-workspace.ts'));
-const v2 = await jiti.import(path.join(root, '.pi/extensions/paper-proposal-v2/exports.ts'));
+const workspace = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/proposal-workspace.ts'));
+const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
 
 test('explicit scientific mode is an explicit global-route discriminant', () => {
 	const route = workspace.resolveGlobalRoute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'Explore an idea.' });
@@ -69,8 +69,8 @@ test('route-stage and bypass metrics are privacy-safe and terminal routing does 
 
 test('scientific workflow remains disabled unless its exact flag is true', () => {
 	assert.equal(workspace.scientificWorkflowFeatureEnabled({}), false);
-	assert.equal(workspace.scientificWorkflowFeatureEnabled({ PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED: 'false' }), false);
-	assert.equal(workspace.scientificWorkflowFeatureEnabled({ PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED: 'true' }), true);
+	assert.equal(workspace.scientificWorkflowFeatureEnabled({ PAPER_PROPOSAL_SCIENTIFIC_WORKFLOW_ENABLED: 'false' }), false);
+	assert.equal(workspace.scientificWorkflowFeatureEnabled({ PAPER_PROPOSAL_SCIENTIFIC_WORKFLOW_ENABLED: 'true' }), true);
 });
 
 test('disabled scientific workflow returns a typed unavailable result without a document fallback', () => {
@@ -93,21 +93,21 @@ test('disabled scientific workflow returns a typed unavailable result without a 
 test('registered public tool keeps default-off admission exact and delegates enabled scientific requests to the lazy coordinator', async () => {
 	const tools = [];
 	workspace.default({ registerTool: (tool) => tools.push(tool), on: () => {} });
-	const tool = tools.find((candidate) => candidate.name === 'paper_proposal_v2_execute');
+	const tool = tools.find((candidate) => candidate.name === 'paper_proposal_execute');
 	assert.ok(tool);
-	const previous = process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED;
+	const previous = process.env.PAPER_PROPOSAL_SCIENTIFIC_WORKFLOW_ENABLED;
 	try {
-		delete process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED;
+		delete process.env.PAPER_PROPOSAL_SCIENTIFIC_WORKFLOW_ENABLED;
 		const disabled = (await tool.execute('scientific-disabled', { operation: 'SCIENTIFIC_WORKFLOW', instruction: 'scientific idea' })).details;
 		assert.equal(disabled.blockers[0].code, 'SCIENTIFIC_WORKFLOW_DISABLED');
-		process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED = 'true';
+		process.env.PAPER_PROPOSAL_SCIENTIFIC_WORKFLOW_ENABLED = 'true';
 		const enabled = (await tool.execute('scientific-enabled', { operation: 'SCIENTIFIC_WORKFLOW', instruction: 'scientific idea' })).details;
 		assert.notEqual(enabled.blockers?.[0]?.code, 'SCIENTIFIC_WORKFLOW_NOT_WIRED');
 		assert.equal(enabled.operation, 'SCIENTIFIC_WORKFLOW');
 		assert.doesNotMatch(JSON.stringify(enabled), /prompt|trace|thought|transcript/i);
 	} finally {
-		if (previous === undefined) delete process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED;
-		else process.env.PAPER_PROPOSAL_V2_SCIENTIFIC_WORKFLOW_ENABLED = previous;
+		if (previous === undefined) delete process.env.PAPER_PROPOSAL_SCIENTIFIC_WORKFLOW_ENABLED;
+		else process.env.PAPER_PROPOSAL_SCIENTIFIC_WORKFLOW_ENABLED = previous;
 	}
 });
 
