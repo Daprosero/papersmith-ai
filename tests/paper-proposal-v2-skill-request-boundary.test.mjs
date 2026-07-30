@@ -26,7 +26,7 @@ async function importWithDiagnostics(modulePath) {
 }
 
 function requestFromSkillContract(skill, sourceFilename, instruction) {
- assert.match(skill, /with exactly `sourceFilename` and the complete original user `instruction`/);
+ assert.match(skill, /Send exactly `sourceFilename` and the complete original user `instruction`/);
  assert.match(skill, /Omit `selectedEntryId`, `literalContent`, every literal-mode field/);
  assert.match(skill, /internal IntentResolver derives those semantics/);
  assert.match(skill, /only after real structural document resolution returns that entry ID/);
@@ -99,7 +99,7 @@ $$`;
  const tool = tools.find((candidate) => candidate.name === 'paper_proposal_execute');
  assert.ok(tool, 'registered production paper_proposal_execute tool is required');
 
- const skill = await readFile('.pi/skills/paper-proposal/SKILL.md', 'utf8');
+ const skill = await readFile('.claude/skills/paper-proposal/SKILL.md', 'utf8');
  assert.equal((await handlers.get('input')({ text: `/skill:paper-proposal\n${instruction}` })).action, 'continue');
  const skillRequest = requestFromSkillContract(skill, sourceFilename, instruction);
  let actualArgs;

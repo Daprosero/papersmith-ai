@@ -17,7 +17,7 @@ import jsonschema
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = REPOSITORY_ROOT / ".pi/skills/paper-ingestion/scripts/extract_pdf.py"
+SCRIPT = REPOSITORY_ROOT / ".claude/skills/paper-ingestion/scripts/extract_pdf.py"
 SPEC = importlib.util.spec_from_file_location("extract_pdf", SCRIPT)
 assert SPEC and SPEC.loader
 EXTRACTOR = importlib.util.module_from_spec(SPEC)
