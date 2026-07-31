@@ -5325,7 +5325,7 @@ export function createProposalWorkspaceTool(
 	};
 }
 
-import { ChatDeliberationService, createFilesystemInitialRevisionPublicationPort, DraftMaterializationService, InitialRevisionCreationService, LifecycleV1PublicRouter, PaperProposalOrchestrator, ProposalWorkspaceAdapter, ProductionModelRuntime, ScientificWorkflowRuntime, createProductionSemanticPlanner, createProductionTutorAdapter, createProductionReviewerAdapter, defaultPiSessionDraftLifecycleAdapter, getRuntimeMetrics, getSharedPiSessionDraftRegistry, loadDocumentState, MAX_CHAT_DOCUMENT_CONTEXT_BYTES, MAX_CHAT_GUIDE_CONTEXT_BYTES, recordLifecycleMetric, recordRouteMetric, resolveIntent, resolveLatestManagedRevision, runConsistencyAudit, runPaperProposalSelfAudit, SCIENTIFIC_WORKFLOW_OPERATION, type ChatDocumentContext, type ChatGuideFragment, type DraftMaterializationPolicy, type DraftMaterializationRequest, type PiSessionDraftLifecycleAdapter, type PiSessionDraftRegistry, type ScientificWorkflowPublicResult, type ScientificWorkflowRequest, type ScientificWorkflowRuntimeOptions } from './exports.js';
+import { ChatDeliberationService, createFilesystemInitialRevisionPublicationPort, DraftMaterializationService, InitialRevisionCreationService, LifecycleV1PublicRouter, PaperProposalOrchestrator, ProposalWorkspaceAdapter, ScientificWorkflowRuntime, defaultPiSessionDraftLifecycleAdapter, getRuntimeMetrics, getSharedPiSessionDraftRegistry, loadDocumentState, MAX_CHAT_DOCUMENT_CONTEXT_BYTES, MAX_CHAT_GUIDE_CONTEXT_BYTES, recordLifecycleMetric, recordRouteMetric, resolveIntent, resolveLatestManagedRevision, runConsistencyAudit, runPaperProposalSelfAudit, SCIENTIFIC_WORKFLOW_OPERATION, type ChatDocumentContext, type ChatGuideFragment, type DraftMaterializationPolicy, type DraftMaterializationRequest, type PiSessionDraftLifecycleAdapter, type PiSessionDraftRegistry, type ReviewerAdapter, type ScientificWorkflowPublicResult, type ScientificWorkflowRequest, type ScientificWorkflowRuntimeOptions, type SemanticEditPlanner, type TutorAdapter } from './exports.js';
 import { createSuccessorAcceptanceRegistry, type SuccessorAcceptanceRegistry } from './successor-acceptance-registry.js';
 
 type GlobalRouteStage = 'LIFECYCLE' | 'DIRECT_DOCUMENT' | 'CHAT_DELIBERATION' | 'DRAFT_MATERIALIZATION' | 'MAINTENANCE' | 'SCIENTIFIC_WORKFLOW' | 'CREATE_INITIAL_REVISION' | 'EXISTING_FALLBACK';
@@ -5519,7 +5519,18 @@ export function projectPaperProposalPublicResult(input:{result:any;operation:str
  return {...base,status:result.status,category:errorCategory(result),message:result.reason??result.question??'Execution did not complete.',patchCount:0,receiptId:null,manifestStatus:'NOT_PUBLISHED',auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN',recoveryStatus:result.status==='published-derived-failed'?'required':'not_required',nextAction:result.status==='budget_block'?'reduce_request_or_raise_budget':result.status==='needs-clarification'||result.status==='ambiguous'?'clarify_request':'inspect_error',...(result.assessment?{assessment:result.assessment}:{}),...(Array.isArray(result.alternatives)?{alternatives:result.alternatives}:{}),...(Array.isArray(result.risks)?{risks:result.risks}:{}),...(Array.isArray(result.unresolvedQuestions)?{unresolvedQuestions:result.unresolvedQuestions}:{}),...(result.budget?{budget:result.budget}:{})};
 }
 
-export type PaperProposalExtensionOptions = { projectRoot?: string; scientificWorkflow?: ScientificWorkflowRuntimeOptions; operationGuard?: DocumentOperationGuard; draftMaterialization?: DraftMaterializationPolicy; draftRegistry?: PiSessionDraftRegistry; draftLifecycle?: PiSessionDraftLifecycleAdapter; successorAcceptanceRegistry?: SuccessorAcceptanceRegistry };
+/**
+ * `tutor`/`reviewer`/`semanticPlanner` are the SAME injectable ports
+ * `orchestrator.ts`/`chat-deliberation.ts` already accept (design
+ * `sdd/paper-proposal-ambient-model`, SLICE 2): the ambient-model paradigm
+ * removed the separate real-API production implementations of these roles, so
+ * production no longer wires a default. The primary CREATE_SUCCESSOR path
+ * (keyless CLI, `resolvedDecisions`) never needs them; CHAT_DELIBERATION and
+ * the legacy non-ambient model-planner path fail closed (`TUTOR_REQUIRED`/
+ * `REVIEWER_REQUIRED`/`CONCEPTUAL_PLANNER_REQUIRED`) unless a caller (a host,
+ * or a test) supplies scripted adapters here.
+ */
+export type PaperProposalExtensionOptions = { projectRoot?: string; scientificWorkflow?: ScientificWorkflowRuntimeOptions; operationGuard?: DocumentOperationGuard; draftMaterialization?: DraftMaterializationPolicy; draftRegistry?: PiSessionDraftRegistry; draftLifecycle?: PiSessionDraftLifecycleAdapter; successorAcceptanceRegistry?: SuccessorAcceptanceRegistry; tutor?: TutorAdapter; reviewer?: ReviewerAdapter; semanticPlanner?: SemanticEditPlanner };
 
 /** Creates the registered public-tool composition for the installed project or an explicitly hosted workspace. */
 export function createPaperProposalExtension(options: PaperProposalExtensionOptions = {}): (pi: ExtensionAPI) => void {
@@ -5528,13 +5539,19 @@ export function createPaperProposalExtension(options: PaperProposalExtensionOpti
  const operationGuard=options.operationGuard??createDocumentOperationGuard(projectRoot);
  const proposalWorkspace=createProposalWorkspaceTool(projectRoot,{operationGuard});
  const adapter=new ProposalWorkspaceAdapter(projectRoot,operationGuard,proposalWorkspace);
- const productionRuntime=new ProductionModelRuntime();
- const tutor=createProductionTutorAdapter(productionRuntime);
+ // Ambient-model paradigm (design `sdd/paper-proposal-ambient-model`, SLICE 2): no production
+ // real-API tutor/reviewer/planner is wired by default anymore -- these are the same
+ // injectable ports the deterministic/scripted-adapter test suites already use. A host or
+ // test supplies them via `options`; omitting them leaves the model-backed routes (chat
+ // tutor loop, the legacy non-ambient CREATE_SUCCESSOR planner path) failing closed rather
+ // than calling out to a real API.
+ const tutor=options.tutor;
+ const reviewer=options.reviewer;
  const successorAcceptanceRegistry=options.successorAcceptanceRegistry??createSuccessorAcceptanceRegistry();
- const orchestrator=new PaperProposalOrchestrator(projectRoot,adapter,undefined,createProductionSemanticPlanner(productionRuntime),{tutor,reviewer:createProductionReviewerAdapter(productionRuntime)},undefined,undefined,successorAcceptanceRegistry);
+ const orchestrator=new PaperProposalOrchestrator(projectRoot,adapter,undefined,options.semanticPlanner,{tutor,reviewer},undefined,undefined,successorAcceptanceRegistry);
  const draftRegistry=options.draftRegistry??getSharedPiSessionDraftRegistry();
  const draftLifecycle=options.draftLifecycle??defaultPiSessionDraftLifecycleAdapter;
- const chatDeliberation=new ChatDeliberationService(tutor,draftRegistry,createProductionReviewerAdapter(productionRuntime));
+ const chatDeliberation=new ChatDeliberationService(tutor,draftRegistry,reviewer);
  const draftMaterialization=new DraftMaterializationService(projectRoot,operationGuard,options.draftMaterialization);
  const lifecycleV1Router=options.scientificWorkflow?.lifecycleV1WorkspaceId
   ?new LifecycleV1PublicRouter({projectRoot,workspaceId:options.scientificWorkflow.lifecycleV1WorkspaceId})
@@ -5549,7 +5566,7 @@ export function createPaperProposalExtension(options: PaperProposalExtensionOpti
  let runtimeSessionIdentity:string|undefined;
  const sessionIdentity=(ctx:Pick<ExtensionContext,'sessionManager'>)=>runtimeSessionIdentity=draftLifecycle.sessionIdentity(ctx);
  let scientificWorkflowRuntime:ScientificWorkflowRuntime|undefined;
- const getScientificWorkflowRuntime=()=>scientificWorkflowRuntime??=new ScientificWorkflowRuntime(projectRoot,adapter,productionRuntime,options.scientificWorkflow);
+ const getScientificWorkflowRuntime=()=>scientificWorkflowRuntime??=new ScientificWorkflowRuntime(projectRoot,adapter,options.scientificWorkflow);
  pi.registerTool(createDocumentOperationGuardTool(operationGuard));
  pi.registerTool(proposalWorkspace);
  pi.registerTool({
@@ -5566,6 +5583,7 @@ export function createPaperProposalExtension(options: PaperProposalExtensionOpti
        acceptSuccessor:Type.Optional(Type.Boolean({description:'Set true only for an explicit current-turn acceptance of a previously previewed successor.'})),
        successorAcceptanceToken:Type.Optional(Type.String({minLength:32,maxLength:128,pattern:'^[A-Za-z0-9_-]+$',description:'Opaque token forwarded internally from the immediately preceding successor preview.'})),
    selectedEntryId:Type.Optional(Type.String({minLength:1,maxLength:256})),
+   resolvedDecisions:Type.Optional(Type.Array(Type.Unknown(),{description:'CREATE_SUCCESSOR + MODIFY only (ambient-model paradigm): one already-resolved EditAction per approved locus, supplied by the caller instead of a separate model call. Routes through the ambient-supplied echo-and-validate planner; no model/network call happens on this path.'})),
    sourceFilename:Type.Optional(Type.String({minLength:1,maxLength:266,pattern:'^(?:proposals/)?research-concept-(?:[a-z0-9]+(?:-[a-z0-9]+)*-)?r[0-9]{2,}\\.md$',description:'For CHAT_DELIBERATION, pass an exact managed revision filename or the same filename prefixed once by proposals/. Paths are never normalized.'})),
    sourceQuery:Type.Optional(Type.String({minLength:1,maxLength:4096})),
    destinationQuery:Type.Optional(Type.String({minLength:1,maxLength:4096})),
@@ -5595,7 +5613,7 @@ export function createPaperProposalExtension(options: PaperProposalExtensionOpti
        modificationCause:Type.Optional(Type.String({minLength:1,maxLength:2000})),
        actor:Type.Optional(Type.Object({kind:StringEnum(['USER','SYSTEM','TUTOR','CONCEPTUAL_REVIEWER','PLANNER','EXECUTOR','DOCUMENT_REVIEWER'] as const)},{additionalProperties:false})),
   }),
-  async execute(_toolCallId,params,signal,_onUpdate,ctx){
+  async execute(_toolCallId,params,_signal,_onUpdate,ctx){
    const openDeliberation=params.conversationId?chatDeliberation.isOpen(sessionIdentity(ctx),params.conversationId):false;
    const route=resolveGlobalRoute({...params,openDeliberation});
    if(route.stage==='DRAFT_MATERIALIZATION'){
@@ -5641,7 +5659,7 @@ export function createPaperProposalExtension(options: PaperProposalExtensionOpti
     const guideFragments=!openDeliberation?await loadGuideDirectoryFragments(projectRoot):[];
     const result=chatDocument.reason
      ?{status:'blocked' as const,conversationId:params.conversationId??'chat-unresolved',alternatives:[],risks:[],unresolvedQuestions:[],context:{turnCount:0,reusedConclusion:false},modelCalls:0,tutorCalls:0,reviewerCalls:0,mutations:0 as const,receiptId:null,manifestStatus:'NOT_PUBLISHED' as const,auditStatus:'NOT_RUN' as const,selfAuditStatus:'NOT_RUN' as const,recoveryStatus:'not_required' as const,nextAction:'clarify_request' as const,reason:chatDocument.reason}
-     :await productionRuntime.withContext(ctx,signal,()=>chatDeliberation.deliberate({instruction:params.instruction,sessionIdentity:sessionIdentity(ctx),...(params.conversationId?{conversationId:params.conversationId}:{}),...(chatDocument.document?{document:chatDocument.document}:{}),...(guideFragments.length?{guideFragments}:{})}));
+     :await chatDeliberation.deliberate({instruction:params.instruction,sessionIdentity:sessionIdentity(ctx),...(params.conversationId?{conversationId:params.conversationId}:{}),...(chatDocument.document?{document:chatDocument.document}:{}),...(guideFragments.length?{guideFragments}:{})});
     const {reason,...publicChat}=result;
     const calls={plannerCalls:0,tutorCalls:result.tutorCalls,reviewerCalls:result.reviewerCalls};
     const authority=resolveV2ExecutionAuthority(route.stage);
@@ -5695,7 +5713,7 @@ export function createPaperProposalExtension(options: PaperProposalExtensionOpti
    const priorConclusion=route.stage==='DIRECT_DOCUMENT'?chatDeliberation.latestConclusion(conversationId):undefined;
    const conversationSource=operation===CREATE_SUCCESSOR_OPERATION?chatDeliberation.currentManagedDocument(conversationId)?.filename:undefined;
    const executionParams=lifecycle?{...existingParams,operation}:{...existingParams,...(operation===CREATE_SUCCESSOR_OPERATION?{operation,sessionIdentity:sessionIdentity(ctx),...(conversationSource&&!params.sourceFilename?{sourceFilename:conversationSource}:{})}:{}),...(priorConclusion?{priorConclusion}:{})};
-   const result=lifecycle?await orchestrator.execute(executionParams):await productionRuntime.withContext(ctx,signal,()=>orchestrator.execute(executionParams));
+   const result=await orchestrator.execute(executionParams);
    let audit,selfAudit;
    if(!lifecycle&&result.status==='published'){
     try {

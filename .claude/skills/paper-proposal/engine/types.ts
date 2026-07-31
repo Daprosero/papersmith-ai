@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 export const PARSER_VERSION = 'paper-proposal/1';
-export const LIMITS = Object.freeze({ maxCandidates: 8, maxContextFragments: 8, maxContextBytesLocal: 32000, maxContextBytesSection: 32000, maxPatchCountLocal: 4, maxCleanupRanges: 3, maxModelCallsLocal: 1, maxModelCallsConceptual: 2, maxParallelReadTasks: 4, maxParallelValidationTasks: 6, maxParallelModelCalls: 1, maxParallelWriteTasks: 1 });
+export const LIMITS = Object.freeze({ maxCandidates: 8, maxContextFragments: 8, maxContextBytesLocal: 32000, maxContextBytesSection: 32000, maxPatchCountLocal: 4, maxCleanupRanges: 3, maxModelCallsLocal: 1, maxModelCallsConceptual: 2, maxParallelReadTasks: 4, maxParallelValidationTasks: 6, maxParallelWriteTasks: 1 });
 export type Intent = 'MODIFY'|'INSERT'|'DELETE'|'MOVE'|'COPY'|'CONCEPTUAL_REVISION'|'REVIEW'|'DELIBERATE'|'WITHDRAW_REVISION'|'RESTORE_WITHDRAWN_REVISION'|'CLOSE_DELIBERATION'|'AMBIGUOUS';
 /** Explicit public route: derives the only permitted target from the managed source. */
 export type CreateSuccessorOperation = 'CREATE_SUCCESSOR';

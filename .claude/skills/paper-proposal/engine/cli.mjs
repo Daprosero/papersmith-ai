@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // Native Claude Code host for the paper-proposal engine.
 //
-// Reproduces exactly what the pi runtime did around `paper_proposal_execute`:
-// it builds the same extension, registers the same tool, and invokes it with a
-// runtime context — only the host is Claude Code instead of pi, and the model
-// backend is the Claude Messages API (see engine/_pi-compat/pi-ai-compat.ts).
-// The engine logic, operations, guards, receipts, and audits are unchanged.
+// Ambient-model paradigm (design `sdd/paper-proposal-ambient-model`): this host
+// is keyless. It builds the extension, registers `paper_proposal_execute`, and
+// invokes it with a runtime context — the ambient model calling this CLI IS the
+// tutor/reviewer/planner (deliberating in-conversation and supplying already-
+// resolved `resolvedDecisions` on CREATE_SUCCESSOR); the engine never performs a
+// separate model/network call itself. The engine logic, operations, guards,
+// receipts, and audits are unchanged.
 //
 // Usage:
 //   node cli.mjs '<json-request>'      # one-shot; prints the JSON result
@@ -15,11 +17,8 @@
 //                                       # chat/draft session state across turns
 //
 // Environment:
-//   ANTHROPIC_API_KEY            required for any model-backed operation
-//   PAPER_PROPOSAL_MODEL         Claude model id (default: claude-sonnet-5)
 //   PAPER_PROPOSAL_PROJECT_ROOT  managed project root (default: process.cwd())
 //   PAPER_PROPOSAL_SESSION_ID    stable session identity (default: cli session)
-//   PAPER_PROPOSAL_MAX_TOKENS    max output tokens per model call (default 8192)
 
 import { createInterface } from 'node:readline';
 import path from 'node:path';
@@ -34,17 +33,10 @@ const host = await jiti.import(path.join(engineDir, 'proposal-workspace.ts'));
 const projectRoot = process.env.PAPER_PROPOSAL_PROJECT_ROOT ?? process.cwd();
 const sessionId = process.env.PAPER_PROPOSAL_SESSION_ID ?? 'paper-proposal-cli-session';
 
-/** Runtime context: the exact ExtensionContext surface the engine reads. */
+/** Runtime context: the exact ExtensionContext surface the engine reads. No model
+ * identity or model-auth registry is wired -- the keyless CREATE_SUCCESSOR +
+ * `resolvedDecisions` path never needs one. */
 const ctx = {
-	model: { provider: 'anthropic', id: process.env.PAPER_PROPOSAL_MODEL ?? 'claude-sonnet-5' },
-	modelRegistry: {
-		getApiKeyAndHeaders: async () => {
-			const apiKey = process.env.ANTHROPIC_API_KEY;
-			return apiKey
-				? { ok: true, apiKey, headers: {}, env: {} }
-				: { ok: false, error: 'MODEL_AUTH_REQUIRED:anthropic (set ANTHROPIC_API_KEY)' };
-		},
-	},
 	sessionManager: { getSessionId: () => sessionId },
 	hasUI: false,
 	ui: { confirm: async () => false },

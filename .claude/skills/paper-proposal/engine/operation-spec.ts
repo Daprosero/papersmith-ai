@@ -1,6 +1,6 @@
 import type { CleanupLevel,EffectiveOperationProfile,Intent,OperationRisk } from './types.js'; import { roleBudgets } from './role-budget.js';
-export type OperationProfile={destructive:boolean;maxModels:number;maxRoleAuthorizations:number;maxMutations:number;maxPatches:number;maxContextFragments:number;maxContextBytes:number;maxParallelModelCalls:number};
-const local={maxContextFragments:8,maxContextBytes:32000,maxParallelModelCalls:1};
+export type OperationProfile={destructive:boolean;maxModels:number;maxRoleAuthorizations:number;maxMutations:number;maxPatches:number;maxContextFragments:number;maxContextBytes:number};
+const local={maxContextFragments:8,maxContextBytes:32000};
 const profile=(intent:Intent,destructive=false):OperationProfile=>({destructive,maxModels:roleBudgets[intent].maxModelCalls,maxRoleAuthorizations:roleBudgets[intent].maxRoleAuthorizations,maxMutations:roleBudgets[intent].maxMutations,maxPatches:roleBudgets[intent].maxPatchCount,...local});
 export const operationSpec:Record<Intent,OperationProfile>={MODIFY:profile('MODIFY'),INSERT:profile('INSERT'),DELETE:profile('DELETE',true),MOVE:profile('MOVE',true),COPY:profile('COPY'),CONCEPTUAL_REVISION:profile('CONCEPTUAL_REVISION'),REVIEW:profile('REVIEW'),DELIBERATE:profile('DELIBERATE'),WITHDRAW_REVISION:profile('WITHDRAW_REVISION',true),RESTORE_WITHDRAWN_REVISION:profile('RESTORE_WITHDRAWN_REVISION',true),AMBIGUOUS:profile('AMBIGUOUS')};
 export function operationProfile(intent:Intent):OperationProfile|undefined{return operationSpec[intent]}

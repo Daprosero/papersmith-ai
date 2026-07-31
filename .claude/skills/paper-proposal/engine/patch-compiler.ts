@@ -1,4 +1,4 @@
-import { LIMITS,sha256,type Compilation,type DocumentState,type EditPlan,type Position,type StructuralEntry,type StructuralPatchSelector } from './types.js'; import { expandDestructiveScope } from './destructive-scope.js'; import { composeSuccessorBlockCandidate } from './successor-composite-engine.js'; import type { SuccessorBlockPlan } from './block-plan.js';
+import { LIMITS,sha256,type Compilation,type CompiledPatch,type DocumentState,type EditPlan,type Position,type StructuralEntry,type StructuralPatchSelector } from './types.js'; import { expandDestructiveScope } from './destructive-scope.js'; import { composeSuccessorBlockCandidate } from './successor-composite-engine.js'; import type { SuccessorBlockPlan } from './block-plan.js'; import type { AmbientCompositePart } from './ambient-supplied-planner.js';
 const text=(s:DocumentState,e:StructuralEntry)=>{const value=s.documentBytes.subarray(e.startByte,e.endByte).toString('utf8');if(sha256(value)!==e.textSha256)throw new Error('STALE_INDEX_ENTRY');return value};
 const insertionPoint=(entry:StructuralEntry,position:Position)=>{if(position==='before')return {point:entry.startByte,adapterPosition:'before' as const};if(position==='after'||position==='inside_end')return {point:entry.endByte,adapterPosition:'after' as const};throw new Error('UNSUPPORTED_INSIDE_START')};
 const apply=(base:Buffer,edits:{start:number;end:number;value:Buffer}[])=>edits.sort((a,b)=>b.start-a.start).reduce((candidate,e)=>Buffer.concat([candidate.subarray(0,e.start),e.value,candidate.subarray(e.end)]),base);
@@ -93,4 +93,50 @@ export async function compileSuccessorCompositeReplacement(state:DocumentState,p
  }
  const patches=ordered.map((item,index)=>({id:`patch-${index+1}`,kind:'replace' as const,oldText:item.oldText,newText:item.replacementText,selector:item.selector}));
  return {patches,candidate:result.candidateBytes.toString('utf8'),candidateSha256:result.manifest.candidateSha256,patchIds:patches.map(patch=>patch.id),unchangedByteCoverage:true,modifiedRanges:ordered.map(item=>({startByte:item.selector.startByte,endByte:item.selector.endByte}))};
+}
+
+/**
+ * Byte-preserving successor compile path for ANY-kind resolved decisions
+ * (design `sdd/paper-proposal-ambient-model`, SLICE 1b): unlike
+ * `compileSuccessorCompositeReplacement` above (kept unchanged, replace-only,
+ * still the exact path `edit-planner.ts`'s hard MODIFY invariant requires),
+ * this accepts pre-reduced `AmbientCompositePart[]` (`ambient-supplied-planner.ts`'s
+ * `resolveAmbientCompositeDecisions`) carrying an explicit `op` -- `replace`,
+ * `insert` (zero-width anchor splice), or `delete` (empty replacement over a
+ * non-empty span) -- one or two parts per decision (`move` contributes both an
+ * insert-at-destination and a delete-at-source part; every other kind
+ * contributes exactly one). Every part is spliced through the SAME disjoint,
+ * source-frozen `composeSuccessorBlockCandidate` engine, so
+ * `COMPOSITE_UNTOUCHED_INVARIANT`, the `(startByte,endByte)` tie-break, and
+ * overlap/no-op rejection apply identically regardless of operation kind.
+ */
+export async function compileSuccessorCompositeChangeset(state:DocumentState,parts:readonly AmbientCompositePart[]):Promise<Compilation> {
+ if(!parts.length)throw new Error('NO_MUTATION_PLAN');
+ const ordered=[...parts].sort((left,right)=>left.startByte-right.startByte||left.endByte-right.endByte);
+ for(let index=1;index<ordered.length;index++)if(ordered[index].startByte<ordered[index-1].endByte)throw new Error('SUCCESSOR_TARGET_OVERLAP');
+ const blockIds=ordered.map((_,index)=>`successor-block-${index+1}`);
+ const blocks=ordered.map((item,index)=>{
+  const subsetEdits=ordered.slice(0,index+1).map(candidate=>({startByte:candidate.startByte,endByte:candidate.endByte,replacement:Buffer.from(candidate.replacementText,'utf8')}));
+  return {id:blockIds[index],dependsOn:[],target:{status:'resolved' as const,selector:{entryId:item.entryId,startByte:item.startByte,endByte:item.endByte,textSha256:item.textSha256,documentSha256:state.documentSha256}},candidateSha256:sha256(spliceDisjointForCandidateHash(state.documentBytes,subsetEdits)),op:item.op};
+ });
+ const blockPlan:SuccessorBlockPlan={source:{filename:state.filename,revision:state.revision,documentSha256:state.documentSha256},orderedBlockIds:blockIds,blocks,mergeGroups:[]};
+ const byBlockId=new Map(blockIds.map((id,index)=>[id,ordered[index]]));
+ const result=await composeSuccessorBlockCandidate(blockPlan,state,({block})=>byBlockId.get(block.id)!.replacementText);
+ if(result.status!=='composed'){
+  const code=result.diagnostics[0]?.code;
+  if(code==='COMPOSITE_NO_OP')throw new Error('NO_OP_PLAN');
+  if(code==='COMPOSITE_UNTOUCHED_INVARIANT')throw new Error('SUCCESSOR_BYTE_PRESERVATION_FAILED');
+  throw new Error(`SUCCESSOR_COMPOSITE_PLAN_INVALID:${code??'UNKNOWN'}`);
+ }
+ const patches:CompiledPatch[]=ordered.map((item,index)=>{
+  const id=`patch-${index+1}`;
+  if(item.op==='insert'){
+   const entry=state.structuralIndex.byId[item.entryId];
+   const anchor=entry?state.documentBytes.subarray(entry.startByte,entry.endByte).toString('utf8'):'';
+   return {id,kind:'insert' as const,anchor,position:item.position??'after',content:item.replacementText};
+  }
+  const oldText=state.documentBytes.subarray(item.startByte,item.endByte).toString('utf8');
+  return {id,kind:'replace' as const,oldText,newText:item.replacementText,selector:{entryId:item.entryId,startByte:item.startByte,endByte:item.endByte,textSha256:item.textSha256,documentSha256:state.documentSha256}};
+ });
+ return {patches,candidate:result.candidateBytes.toString('utf8'),candidateSha256:result.manifest.candidateSha256,patchIds:patches.map(patch=>patch.id),unchangedByteCoverage:true,modifiedRanges:ordered.map(item=>({startByte:item.startByte,endByte:item.endByte}))};
 }

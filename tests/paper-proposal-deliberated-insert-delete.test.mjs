@@ -329,7 +329,7 @@ async function materialize({ baseContent, decisions, workspaceId = 'workspace-1'
 		}
 		await store.commitTransition({ events: allEvents, snapshot: { schemaVersion: 1, activeThreadId: threads[0].threadId, threads, relations: [], decisions: allDecisions } });
 
-		const runtime = new v2.ScientificWorkflowRuntime(projectRoot, {}, {}, { lifecycleV1WorkspaceId: workspaceId });
+		const runtime = new v2.ScientificWorkflowRuntime(projectRoot, {}, { lifecycleV1WorkspaceId: workspaceId });
 		const result = await runtime.execute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'request materialization', scientificAct: 'REQUEST_MATERIALIZATION', candidateIds: decisions.map((d) => `decision-${d.id}`) });
 		assert.equal(result.status, 'materialized', JSON.stringify(result));
 		const inventory = await lifecycle.rebuildLifecycleInventory(workspaceId);
