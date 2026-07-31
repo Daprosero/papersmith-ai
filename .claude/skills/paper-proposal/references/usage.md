@@ -15,28 +15,40 @@ node .claude/skills/paper-proposal/engine/cli.mjs '{
 
 This is explicit and user-triggered only: it never runs automatically, and it is rejected outright when a managed proposal already exists (it never overwrites or duplicates one). The engine loads the project's `guidance/paper-guide` directory once and composes v1 from that guide content plus the supplied idea — title, section heading, and filename slug are all derived from the idea, never a fixed generic skeleton. A successful call returns the created filename, revision, and document hash as completion evidence.
 
-## Resolving a locus before deciding
+## Open one `--serve` process for the whole deliberation
 
-Before you can build a `resolvedDecisions` entry, you need the engine's own resolved entry ID for the locus you intend to touch. This is read-only and makes no model call — it uses the exact same resolver `orchestrator.ts` calls internally for `CREATE_SUCCESSOR`:
+The engine host's own cold start (jiti compiling its TS sources) is paid once per spawned process. A single version already needs at least three calls — resolve, preview, accept — so start ONE persistent process and keep it open for the whole deliberation instead of spawning a fresh `cli.mjs` invocation per call:
 
 ```bash
-node --input-type=module -e '
-import { createJiti } from "jiti";
-import path from "node:path";
-const engineDir = path.resolve(".claude/skills/paper-proposal/engine");
-const jiti = createJiti(import.meta.url);
-const engine = await jiti.import(path.join(engineDir, "exports.ts"));
-const state = await engine.loadDocumentState(process.cwd(), "research-concept-r05.md");
-const resolution = engine.resolveSuccessorTarget(state, "the definition of stationarity in the assumptions section");
-const gate = engine.ambiguityGate(resolution.candidates);
-console.log(JSON.stringify({ entryId: gate.candidate?.entryId, blocked: gate.blocked, question: gate.question, candidates: resolution.candidates.map((c) => c.entryId) }, null, 2));
-'
+node .claude/skills/paper-proposal/engine/cli.mjs --serve
+```
+
+Every example below is a JSON line sent to that same process's stdin, in order.
+
+## Resolving a locus before deciding
+
+Before you can build a `resolvedDecisions` entry, you need the engine's own resolved entry ID for the locus you intend to touch. Send a `RESOLVE_TARGET` line to the `--serve` process above — this is read-only, makes no model call, and needs no `ANTHROPIC_API_KEY`. It uses the exact same resolver (`loadDocumentState` → `resolveSuccessorTarget` → `ambiguityGate`) `orchestrator.ts` calls internally for `CREATE_SUCCESSOR`, so the returned `entryId` is guaranteed to match what `CREATE_SUCCESSOR` itself would resolve for the identical `sourceFilename`/query:
+
+```json
+{ "operation": "RESOLVE_TARGET", "sourceFilename": "research-concept-r05.md", "query": "the definition of stationarity in the assumptions section" }
+```
+
+```json
+{ "status": "resolved", "operation": "RESOLVE_TARGET", "entryId": "…", "blocked": false, "question": null }
 ```
 
 - If `blocked` is `false`, `entryId` is the real value to use as `targetEntryId`/`anchorEntryId`/`sourceEntryIds`/`destinationAnchorId` in your decision.
-- If `blocked` is `true`, the description matched more than one candidate — narrow it (add the section, a nearby phrase, or an exact quote) and resolve again. Never guess between the listed `candidates`.
+- If `blocked` is `true`, the description matched more than one candidate — `question` lists them; narrow the description (add the section, a nearby phrase, or an exact quote) and resolve again. Never guess between the listed candidates.
 
-Do this once per independent locus in the batch you are about to apply.
+Do this once per independent locus in the batch you are about to apply. To resolve several loci in one call, send `queries` (an array of `{ "query": "..." }`) instead of `query`:
+
+```json
+{ "operation": "RESOLVE_TARGET", "sourceFilename": "research-concept-r05.md", "queries": [{ "query": "the definition of stationarity in the assumptions section" }, { "query": "the main theorem statement" }] }
+```
+
+```json
+{ "status": "resolved", "operation": "RESOLVE_TARGET", "results": [{ "query": "the definition of stationarity in the assumptions section", "entryId": "…", "blocked": false, "question": null }, { "query": "the main theorem statement", "entryId": "…", "blocked": false, "question": null }] }
+```
 
 ## Building `resolvedDecisions` and applying
 
@@ -171,18 +183,15 @@ Every `CREATE_SUCCESSOR` call above only previews. A real run looks like:
 
 (`modelCalls`/`plannerCalls` are always `1` here as a bookkeeping artifact of routing through the ambient-supplied planner — no network or model call is made. `tutorCalls`/`reviewerCalls` are always `0`: those roles are yours, in-conversation, not the engine's.)
 
-To publish, start a `--serve` session and send the same request twice — the preview line, then an accept line with `acceptSuccessor: true` and the returned `acceptanceToken`:
-
-```bash
-node .claude/skills/paper-proposal/engine/cli.mjs --serve
-```
+To publish, reuse the SAME `--serve` session opened at the top of this page — send the resolve line, then the preview line, then an accept line with `acceptSuccessor: true` and the returned `acceptanceToken`, all over the same stdin:
 
 ```json
-{"operation":"CREATE_SUCCESSOR","sourceFilename":"research-concept-r05.md","instruction":"...","selectedEntryId":"...","resolvedDecisions":[{"kind":"replace","targetEntryId":"...","replacementText":"..."}]}
-{"operation":"CREATE_SUCCESSOR","sourceFilename":"research-concept-r05.md","instruction":"...","selectedEntryId":"...","resolvedDecisions":[{"kind":"replace","targetEntryId":"...","replacementText":"..."}],"acceptSuccessor":true,"successorAcceptanceToken":"<the acceptanceToken from the first line>"}
+{"operation":"RESOLVE_TARGET","sourceFilename":"research-concept-r05.md","query":"..."}
+{"operation":"CREATE_SUCCESSOR","sourceFilename":"research-concept-r05.md","instruction":"...","selectedEntryId":"...","resolvedDecisions":[{"kind":"replace","targetEntryId":"<entryId from the resolve line>","replacementText":"..."}]}
+{"operation":"CREATE_SUCCESSOR","sourceFilename":"research-concept-r05.md","instruction":"...","selectedEntryId":"...","resolvedDecisions":[{"kind":"replace","targetEntryId":"<entryId from the resolve line>","replacementText":"..."}],"acceptSuccessor":true,"successorAcceptanceToken":"<the acceptanceToken from the preview line>"}
 ```
 
-The second line returns `status: "published"`, the new filename, `receiptId`, `manifestStatus: "COMMITTED"`, and `auditStatus`/`selfAuditStatus: "PASS"`. The acceptance token is single-use and lives only in that `--serve` process's memory — a preview from one process cannot be accepted by another invocation of `cli.mjs`.
+The final line returns `status: "published"`, the new filename, `receiptId`, `manifestStatus: "COMMITTED"`, and `auditStatus`/`selfAuditStatus: "PASS"`. The acceptance token is single-use and lives only in that `--serve` process's memory — a preview from one process cannot be accepted by another invocation of `cli.mjs`. Keeping resolve, preview, and accept on the same stdin also means the engine's cold start is paid once for all three, not three times.
 
 ## Rejections are the safety net, not a bug
 
