@@ -3,7 +3,7 @@
   "schema_version": "1.1",
   "source_pdf": "/Users/diego/Desktop/Proyectos/papersmith-ai/guidance/paper-guide/source/Li_2026_Prog._Biomed._Eng._8_022013.pdf",
   "source_sha256": "0615fb1b937eddef5eb1608455b7373ec1461c3d855bb23b94fd18ada9c0c16c",
-  "processed_at": "2026-07-17T15:37:20.340596+00:00",
+  "processed_at": "2026-07-30T18:07:18.782249+00:00",
   "renderer": "PyMuPDF",
   "render_dpi": 200,
   "page_count": 20,

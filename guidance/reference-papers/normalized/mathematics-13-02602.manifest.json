@@ -3,7 +3,7 @@
   "schema_version": "1.1",
   "source_pdf": "/Users/diego/Desktop/Proyectos/papersmith-ai/guidance/reference-papers/source/mathematics-13-02602.pdf",
   "source_sha256": "ad8e9ea9f966922bb14d4c0cd80dc17a0f9aaf9e2790e44a2223956884f723d2",
-  "processed_at": "2026-07-17T15:37:47.815426+00:00",
+  "processed_at": "2026-07-30T18:07:28.771322+00:00",
   "renderer": "PyMuPDF",
   "render_dpi": 200,
   "page_count": 29,
