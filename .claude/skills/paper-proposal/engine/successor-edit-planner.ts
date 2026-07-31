@@ -12,22 +12,72 @@ function anchorFor(state: DocumentState, excludeEntryIds: ReadonlySet<string> = 
 		.sort((left, right) => right.endByte - left.endByte || right.startByte - left.startByte || left.entryId.localeCompare(right.entryId))[0];
 }
 
+/** A structural claim's disjoint splice span (the byte range it occupies for overlap purposes) plus its compiled action. */
+type StructuralClaim = { claim: MaterializationClaimProvenance; entry: StructuralEntry; startByte: number; endByte: number; action: EditAction };
+
+/**
+ * Resolves one claim's `proposedEdit` (when present) against the CURRENT base
+ * -- an EXPLICIT document-index lookup, never fuzzy summary matching -- into
+ * its anchor/target entry, disjoint splice span, and compiled `EditAction`.
+ * Supports three of the five kinds `parseProposedEdit` recognizes: `replace`
+ * (a non-empty span), `insert` (a zero-width point at the anchor's own start
+ * or end boundary -- normalized to `before`/`after` only at capture time), and
+ * `delete` (the target's full non-empty span, empty replacement). Returns
+ * `undefined` on drift (missing entry, a `document`-type entry, or a
+ * would-be-empty delete span) so the caller falls back to the pre-existing
+ * summary-annotation route.
+ *
+ * `move`/`copy` (relocations) are a deliberate, disclosed scope decision for
+ * this SECONDARY/filename-era route: it falls through to `undefined` (the
+ * same pre-existing summary-annotation fallback) exactly like any other
+ * unrecognized kind, unchanged. Splicing a relocation into this planner's
+ * single combined plan would conflict with `patch-compiler.ts`'s own
+ * `move`/`copy` compilation, which requires the plan to contain EXACTLY one
+ * action and never mixes a relocation with other structural edits -- the
+ * SEPARATE-VERSION grouping this slice implements for the PRIMARY
+ * lifecycle-v1 route (`scientific-workflow-runtime.ts`) has no analog here
+ * without a larger redesign of this planner's single-plan-per-materialization
+ * shape. A relocation claim routed through this planner therefore still
+ * safely materializes as a summary annotation, never silently dropped.
+ */
+function resolveStructuralClaim(base: DocumentState, claim: MaterializationClaimProvenance): StructuralClaim | undefined {
+	const edit = claim.proposedEdit;
+	if (!edit) return undefined;
+	if (edit.kind === 'replace') {
+		const entry = base.structuralIndex.byId[edit.targetEntryId];
+		if (!entry || entry.type === 'document') return undefined;
+		return { claim, entry, startByte: entry.startByte, endByte: entry.endByte, action: { kind: 'replace', targetEntryId: entry.entryId, replacementText: edit.replacementText } };
+	}
+	if (edit.kind === 'insert') {
+		const entry = base.structuralIndex.byId[edit.anchorEntryId];
+		if (!entry || entry.type === 'document') return undefined;
+		const point = edit.position === 'before' || edit.position === 'inside_start' ? entry.startByte : entry.endByte;
+		return { claim, entry, startByte: point, endByte: point, action: { kind: 'insert', anchorEntryId: entry.entryId, position: edit.position, content: edit.content } };
+	}
+	if (edit.kind === 'delete') {
+		const entry = base.structuralIndex.byId[edit.targetEntryId];
+		if (!entry || entry.type === 'document' || entry.startByte >= entry.endByte) return undefined;
+		return { claim, entry, startByte: entry.startByte, endByte: entry.endByte, action: { kind: 'delete', targetEntryId: entry.entryId, instructionEvidence: edit.instructionEvidence, reason: edit.reason } };
+	}
+	return undefined;
+}
+
 /**
  * Structural (real, byte-preserving) claims: those whose accepted decision
- * carries a `proposedEdit` resolved by EXPLICIT `targetEntryId` against the
- * CURRENT base -- a document-index lookup, never fuzzy summary matching.
- * Overlapping/duplicate targets are never silently applied: both members of a
- * colliding pair degrade to the summary-annotation fallback instead of
- * forcing an offset.
+ * carries a `proposedEdit` resolved against the CURRENT base. Overlapping/
+ * duplicate loci are never silently applied: both members of a colliding pair
+ * degrade to the summary-annotation fallback instead of forcing an offset. A
+ * zero-width `insert` point exactly at another claim's span boundary is NOT
+ * an overlap (boundary-adjacent); strictly inside another span is.
  */
-function resolveStructuralClaims(base: DocumentState, acceptedDecisions: readonly MaterializationClaimProvenance[]): { structural: { claim: MaterializationClaimProvenance; entry: StructuralEntry }[]; fallback: MaterializationClaimProvenance[] } {
+function resolveStructuralClaims(base: DocumentState, acceptedDecisions: readonly MaterializationClaimProvenance[]): { structural: StructuralClaim[]; fallback: MaterializationClaimProvenance[] } {
 	const candidates = acceptedDecisions
-		.map((claim) => ({ claim, entry: claim.proposedEdit?.kind === 'replace' ? base.structuralIndex.byId[claim.proposedEdit.targetEntryId] : undefined }))
-		.filter((item): item is { claim: MaterializationClaimProvenance; entry: StructuralEntry } => !!item.entry && item.entry.type !== 'document');
+		.map((claim) => resolveStructuralClaim(base, claim))
+		.filter((item): item is StructuralClaim => !!item);
 	const overlapping = new Set<string>();
 	for (const left of candidates) for (const right of candidates) {
 		if (left.claim.decisionId === right.claim.decisionId) continue;
-		if (left.entry.startByte < right.entry.endByte && right.entry.startByte < left.entry.endByte) { overlapping.add(left.claim.decisionId); overlapping.add(right.claim.decisionId); }
+		if (left.startByte < right.endByte && right.startByte < left.endByte) { overlapping.add(left.claim.decisionId); overlapping.add(right.claim.decisionId); }
 	}
 	const structural = candidates.filter((item) => !overlapping.has(item.claim.decisionId));
 	const structuralIds = new Set(structural.map((item) => item.claim.decisionId));
@@ -88,22 +138,23 @@ export class SuccessorEditPlanner {
 		}
 
 		// At least one decision carries a real, resolvable structural edit: apply
-		// every resolvable structural replace directly at its own locus -- ALL
-		// spliced into the SAME successor version, never a separate one per
-		// decision -- and fold every remaining (no-proposedEdit, or
-		// drifted/overlapping) decision into ONE shared document-tail summary
+		// every resolvable structural edit (replace/insert/delete) directly at its
+		// own locus -- ALL spliced into the SAME successor version, never a
+		// separate one per decision -- and fold every remaining (no-proposedEdit,
+		// or drifted/overlapping) decision into ONE shared document-tail summary
 		// block, so no decision is ever silently lost.
-		const replaceActions: EditAction[] = structural.map(({ claim, entry }) => ({ kind: 'replace', targetEntryId: entry.entryId, replacementText: (claim.proposedEdit as Extract<EditAction, { kind: 'replace' }>).replacementText }));
+		const structuralActions: EditAction[] = structural.map(({ action }) => action);
 		const resolvedTargets = structural.map(({ entry }) => entry.entryId);
+		const destructiveIntent = structuralActions.some((action) => action.kind === 'delete');
 		const primaryAnchor = structural[0]!.entry;
-		if (fallback.length === 0) return this.buildPayload(input, resolvedTargets, replaceActions, primaryAnchor);
+		if (fallback.length === 0) return this.buildPayload(input, resolvedTargets, structuralActions, primaryAnchor, destructiveIntent);
 
 		const tailAnchor = anchorFor(input.base, new Set(resolvedTargets)) ?? primaryAnchor;
-		const actions: EditAction[] = [...replaceActions, { kind: 'insert', anchorEntryId: tailAnchor.entryId, position: 'after', content: tailBlockContent(fallback) }];
-		return this.buildPayload(input, [...resolvedTargets, tailAnchor.entryId], actions, primaryAnchor);
+		const actions: EditAction[] = [...structuralActions, { kind: 'insert', anchorEntryId: tailAnchor.entryId, position: 'after', content: tailBlockContent(fallback) }];
+		return this.buildPayload(input, [...resolvedTargets, tailAnchor.entryId], actions, primaryAnchor, destructiveIntent);
 	}
 
-	private buildPayload(input: { base: DocumentState; expectedRevision: RevisionEvidence; acceptedDecisions: readonly MaterializationClaimProvenance[] }, resolvedTargets: string[], actions: EditAction[], anchor: StructuralEntry): CreateSuccessorPayloadV1 {
+	private buildPayload(input: { base: DocumentState; expectedRevision: RevisionEvidence; acceptedDecisions: readonly MaterializationClaimProvenance[] }, resolvedTargets: string[], actions: EditAction[], anchor: StructuralEntry, destructiveIntent = false): CreateSuccessorPayloadV1 {
 		const plan: EditPlan = {
 			planVersion: '2' as const,
 			documentSha256: input.base.documentSha256,
@@ -111,7 +162,7 @@ export class SuccessorEditPlanner {
 			instructionHash: instructionHashFor(input.acceptedDecisions),
 			resolvedTargets,
 			semanticChange: false,
-			destructiveIntent: false,
+			destructiveIntent,
 			cleanupLevel: 'NONE' as const,
 			constraints: ['frozen-scientific-materialization'],
 			actions,

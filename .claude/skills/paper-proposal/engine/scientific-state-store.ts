@@ -149,14 +149,16 @@ function assertPlainText(value: unknown, maximum: number, code: string) {
 }
 
 /**
- * Only the exact `payload.proposedEdit.replacementText` (or `.content`) leaf
- * gets the raised `PROPOSED_EDIT_REPLACEMENT_MAX_BYTES` cap; every other
- * public string -- including every OTHER field nested inside `proposedEdit`
- * itself (e.g. `targetEntryId`, `rationale`) -- keeps the original 2,000-byte
- * guard below, unchanged.
+ * Only the exact edit-content leaves of `payload.proposedEdit` --
+ * `replacementText` (replace), `content` (insert), and `transformedContent`
+ * (ADAPTIVE move/copy) -- get the raised `PROPOSED_EDIT_REPLACEMENT_MAX_BYTES`
+ * cap; every other public string -- including every OTHER field nested inside
+ * `proposedEdit` itself (e.g. `targetEntryId`, `rationale`) -- keeps the
+ * original 2,000-byte guard below, unchanged. These three must stay aligned
+ * with the identical bound enforced in `deriveMoveCopyEdit`/`parseProposedEdit`.
  */
 function isProposedEditReplacementField(keyPath: readonly string[]): boolean {
-	return keyPath.length === 2 && keyPath[0] === 'proposedEdit' && (keyPath[1] === 'replacementText' || keyPath[1] === 'content');
+	return keyPath.length === 2 && keyPath[0] === 'proposedEdit' && (keyPath[1] === 'replacementText' || keyPath[1] === 'content' || keyPath[1] === 'transformedContent');
 }
 
 function assertPublicValue(value: unknown, depth = 0, keyPath: readonly string[] = []): void {

@@ -83,9 +83,23 @@ function blocked(diagnostics: SuccessorCompositeDiagnostic[]): SuccessorComposit
 	return { status: 'blocked', diagnostics };
 }
 
-/** Splices disjoint, ascending, non-overlapping source spans in a single pass. */
+/**
+ * Splices disjoint, ascending, non-overlapping source spans in a single pass.
+ *
+ * Ordered by `(startByte, endByte)` ascending -- NOT `startByte` alone -- so a
+ * zero-width `insert` point that shares its exact offset with the START of a
+ * wider `replace`/`delete` span (a boundary-adjacent, non-overlapping pair,
+ * e.g. an ADD placed immediately `before` an entry that is also deleted)
+ * always sorts before that wider span. Without this secondary key, ties would
+ * fall back to array order and could process the wider span first, which
+ * advances the running cursor PAST the zero-width point and makes the
+ * subsequent insert's `source.subarray(cursor, point)` slice invalid --
+ * silently re-emitting already-consumed source bytes. Ascending `endByte`
+ * cannot reorder two genuinely disjoint, non-tied spans (their `startByte`
+ * values already differ), so this is a pure tie-break, not a semantic change.
+ */
 function spliceDisjoint(source: Buffer, edits: readonly { startByte: number; endByte: number; replacement: Buffer }[]): Buffer {
-	const ordered = [...edits].sort((left, right) => left.startByte - right.startByte);
+	const ordered = [...edits].sort((left, right) => left.startByte - right.startByte || left.endByte - right.endByte);
 	const parts: Buffer[] = [];
 	let cursor = 0;
 	for (const edit of ordered) {
@@ -132,7 +146,13 @@ export async function composeSuccessorBlockCandidate(
 			diagnostics.push({ code: 'BLOCK_REPLACEMENT_MISSING', blockId });
 			continue;
 		}
-		if (typeof text !== 'string' || text.length === 0) {
+		// `delete`-kind blocks are the ONE case where an empty replacement is
+		// authorized (removing a non-empty source span); every other kind
+		// (`replace`, the default, and `insert`) still requires non-empty text,
+		// unchanged. A `delete`-kind block declaring non-empty text is rejected
+		// too -- it would silently behave like a hidden replace.
+		const isDelete = block.op === 'delete';
+		if (typeof text !== 'string' || (isDelete ? text.length !== 0 : text.length === 0)) {
 			diagnostics.push({ code: 'BLOCK_REPLACEMENT_INVALID', blockId });
 			continue;
 		}
@@ -182,7 +202,13 @@ export async function composeSuccessorBlockCandidate(
 	// Byte-preservation invariant: every region outside the union of block spans
 	// must be identical to the source. Build the preserved regions from the gaps
 	// between the ordered spans and verify them against the composed candidate.
-	const spans = allEdits.map((edit) => ({ startByte: edit.startByte, endByte: edit.endByte, replacementLength: edit.replacement.length })).sort((left, right) => left.startByte - right.startByte);
+	// Ordered by `(startByte, endByte)` ascending -- matching `spliceDisjoint`'s
+	// own tie-break exactly -- so a zero-width `insert` point sharing its offset
+	// with a wider span's own start walks in the SAME order it was actually
+	// spliced in; a mismatched order here would misalign this loop's running
+	// `sourceCursor`/`candidateCursor` against the real candidate bytes and
+	// falsely reject (or falsely accept) the untouched-byte invariant.
+	const spans = allEdits.map((edit) => ({ startByte: edit.startByte, endByte: edit.endByte, replacementLength: edit.replacement.length })).sort((left, right) => left.startByte - right.startByte || left.endByte - right.endByte);
 	const preservedRegions: PreservedRegionEvidence[] = [];
 	let sourceCursor = 0;
 	let candidateCursor = 0;
