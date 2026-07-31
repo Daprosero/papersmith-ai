@@ -45,25 +45,31 @@ Deliberation state (turns, what has been discussed, what the user has approved) 
 
 When the user approves one or more changes, you resolve them into `EditAction` decisions and hand them to the engine as `resolvedDecisions`. The engine never calls a model; it only validates and applies exactly what you give it.
 
-### 1. Resolve the real target entry ID first
+### 0. Open ONE persistent `--serve` process for the whole deliberation
 
-Every decision must name the *engine's own* resolved entry ID for its target — never a guessed, invented, or human-readable identifier. To learn it before building a decision, resolve the same locus query the engine itself would use, read-only, with the engine's own resolver (no mutation, no model call):
+Before resolving anything, start a single long-lived process and keep it open for resolve, preview, accept, and every further version in this deliberation — one JSON request per line over the same stdin:
 
 ```bash
-node --input-type=module -e '
-import { createJiti } from "jiti";
-import path from "node:path";
-const engineDir = path.resolve(".claude/skills/paper-proposal/engine");
-const jiti = createJiti(import.meta.url);
-const engine = await jiti.import(path.join(engineDir, "exports.ts"));
-const state = await engine.loadDocumentState(process.cwd(), "<managed-filename>.md");
-const resolution = engine.resolveSuccessorTarget(state, "<the same locus description you will use in the request>");
-const gate = engine.ambiguityGate(resolution.candidates);
-console.log(JSON.stringify({ entryId: gate.candidate?.entryId, blocked: gate.blocked, question: gate.question }, null, 2));
-'
+node .claude/skills/paper-proposal/engine/cli.mjs --serve
 ```
 
-If `blocked` is true, the locus is ambiguous — narrow the description (do not guess) and resolve again. Do this once per independent locus you intend to touch. See [usage examples](references/usage.md) for a worked recipe.
+The engine host itself cold-starts in well under a second (compiling its TS sources once via jiti), but that cost is paid **once per process**, not once per call. Resolving a locus, previewing, and accepting are three separate calls — send all three (and any later version's calls) down this SAME stdin instead of spawning a fresh `cli.mjs` invocation for each one; only the `acceptSuccessor` step strictly requires this (the acceptance token lives only in that process's memory), but doing it for every call is what actually amortizes the cold start across the whole deliberation.
+
+### 1. Resolve the real target entry ID first
+
+Every decision must name the *engine's own* resolved entry ID for its target — never a guessed, invented, or human-readable identifier. To learn it before building a decision, send a `RESOLVE_TARGET` line to the SAME `--serve` process you opened above (no mutation, no model call, no `ANTHROPIC_API_KEY`):
+
+```json
+{ "operation": "RESOLVE_TARGET", "sourceFilename": "<managed-filename>.md", "query": "<the same locus description you will use in the request>" }
+```
+
+which returns:
+
+```json
+{ "status": "resolved", "operation": "RESOLVE_TARGET", "entryId": "...", "blocked": false, "question": null }
+```
+
+`RESOLVE_TARGET` reuses the exact same resolver (`loadDocumentState` → `resolveSuccessorTarget` → `ambiguityGate`) that `CREATE_SUCCESSOR` itself uses internally, so the `entryId` it returns is guaranteed to match what `CREATE_SUCCESSOR` will resolve for the identical `sourceFilename`/query — there is no separate, divergent resolution path. If `blocked` is true, the locus is ambiguous — narrow the description (do not guess) and resolve again. Do this once per independent locus you intend to touch. To resolve more than one locus in a single call, send `queries` (an array of `{ "query": "..." }`) instead of `query`; the response returns one `{ query, entryId, blocked, question }` result per entry in the same order. See [usage examples](references/usage.md) for a worked recipe.
 
 ### 2. Build one `EditAction` per resolved locus
 
@@ -80,9 +86,7 @@ For `move`/`copy`: the kind, source, destination, and position are whatever the 
 
 ### 3. Call the engine: `CREATE_SUCCESSOR` + `resolvedDecisions`
 
-```
-node .claude/skills/paper-proposal/engine/cli.mjs '<json-request>'
-```
+Send this as the next line on the SAME `--serve` stdin you resolved the entry ID on in step 1:
 
 ```json
 {
@@ -102,15 +106,21 @@ No `ANTHROPIC_API_KEY` and no model configuration are ever required — this cal
 
 ### 4. Preview, then accept, in the same session
 
-The first call above only **previews**: it returns `status: "awaiting_acceptance"`, an `acceptanceToken`, the would-be `targetFilename`, and (once approved decisions are large enough) a non-blocking `growthAdvisory`. Nothing is written yet.
+The call above only **previews**: it returns `status: "awaiting_acceptance"`, an `acceptanceToken`, the would-be `targetFilename`, and (once approved decisions are large enough) a non-blocking `growthAdvisory`. Nothing is written yet.
 
-To publish, resend the identical request with `acceptSuccessor: true` and `successorAcceptanceToken: "<the returned acceptanceToken>"` — **in the same `--serve` process**, since the acceptance token is short-lived, single-use, and held in that process's memory only:
+To publish, send the identical request with `acceptSuccessor: true` and `successorAcceptanceToken: "<the returned acceptanceToken>"` as the next line on the SAME `--serve` stdin — the acceptance token is short-lived, single-use, and held in that process's memory only. So by this point one `--serve` process (opened in step 0) has already carried the resolve line, the preview line, and now the accept line:
 
 ```
 node .claude/skills/paper-proposal/engine/cli.mjs --serve
 ```
 
-One JSON request per line: the preview line, then the accept line, over the same stdin. Never split preview and accept across two separate one-shot invocations of `cli.mjs` — the second one will not find the token.
+```
+{"operation":"RESOLVE_TARGET", ...}
+{"operation":"CREATE_SUCCESSOR", ...}
+{"operation":"CREATE_SUCCESSOR", ..., "acceptSuccessor":true, "successorAcceptanceToken":"<from the preview line>"}
+```
+
+Never split resolve/preview/accept across separate one-shot invocations of `cli.mjs` — a fresh process has no memory of the previous one's acceptance token (and pays a fresh cold start for nothing). Keep the same `--serve` process open for the rest of the deliberation, too: resolving and applying a later version reuses it exactly the same way.
 
 A successful accept returns `status: "published"`, the new managed filename and hash, a `receiptId`, `manifestStatus: "COMMITTED"`, and `auditStatus`/`selfAuditStatus: "PASS"`. Treat anything else — a different status, a failed audit, or a `recoveryStatus` other than `not_required` — as incomplete; do not tell the user the edit is done.
 
