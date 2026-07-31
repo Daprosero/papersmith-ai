@@ -50,12 +50,15 @@ function publicBlocker(code: string, nextAction: string): PublicBlocker {
 
 /**
  * Splices disjoint, ascending source spans in a single pass. Mirrors
- * `successor-composite-engine.ts`'s private `spliceDisjoint` exactly; duplicated
- * locally (rather than exported from that module) to keep the composite
- * engine's public contract minimal, per its own module documentation.
+ * `successor-composite-engine.ts`'s private `spliceDisjoint` exactly (including
+ * its `(startByte, endByte)` tie-break, needed so a zero-width `insert` point
+ * sharing its offset with a wider `replace`/`delete` span's own start sorts
+ * before it); duplicated locally (rather than exported from that module) to
+ * keep the composite engine's public contract minimal, per its own module
+ * documentation.
  */
 function spliceDisjointForSuccessorLocus(source: Buffer, edits: readonly { startByte: number; endByte: number; replacement: Buffer }[]): Buffer {
-	const ordered = [...edits].sort((left, right) => left.startByte - right.startByte);
+	const ordered = [...edits].sort((left, right) => left.startByte - right.startByte || left.endByte - right.endByte);
 	const parts: Buffer[] = [];
 	let cursor = 0;
 	for (const edit of ordered) {
@@ -181,8 +184,67 @@ export class ScientificWorkflowRuntime {
 		return this.withBlock(entry, result.code, result.status === 'recovery_required' ? 'reconcile_materialization_evidence' : 'retry_materialization', 'blocked');
 	}
 
-	/** The only public lifecycle-v1 publication route. It never invokes filename-era planning, candidate rendering, or workspace publication. */
+	/**
+	 * The only public lifecycle-v1 publication route. It never invokes
+	 * filename-era planning, candidate rendering, or workspace publication.
+	 *
+	 * Enforces the SEPARATE-VERSION grouping rule: within one batch of accepted
+	 * decisions, in-place edits (change/insert/delete, or summary-only) and
+	 * relocations (move/copy) are never spliced into the SAME successor
+	 * version -- a relocation is inherently riskier (it removes content from
+	 * one locus and reintroduces it, possibly transformed, at another) and is
+	 * isolated into its own version. When a requested batch mixes both kinds,
+	 * this materializes them as TWO SEQUENTIAL, INDEPENDENT reservations+
+	 * commits (in-place first, relocation second, each its own
+	 * materializationId/targetRevision) rather than one combined splice; the
+	 * relocation's base is the in-place version's own committed output, since
+	 * each group re-reads the CURRENT active revision fresh. The deliberation
+	 * itself is untouched by this split -- it stays open either way. A
+	 * homogeneous batch (all in-place, or all relocation -- including every
+	 * batch from SLICE 1, which never carries a relocation) is unaffected and
+	 * produces exactly one version, exactly as before.
+	 */
 	private async materializeLifecycleV1(entry: ProjectEntry, request: ScientificWorkflowRequest): Promise<ScientificWorkflowPublicResult> {
+		if (!request.candidateIds?.length) return this.withBlock(entry, 'MATERIALIZATION_SELECTION_REQUIRED', 'select_accepted_candidates', 'blocked');
+		const state = await this.store.read();
+		const { inPlace, relocation } = this.classifyMaterializationGroups(state, request.candidateIds);
+		if (inPlace.length > 0 && relocation.length > 0) {
+			const inPlaceResult = await this.materializeLifecycleGroup(entry, { ...request, candidateIds: inPlace });
+			if (inPlaceResult.status !== 'materialized') return inPlaceResult;
+			return this.materializeLifecycleGroup(entry, { ...request, candidateIds: relocation });
+		}
+		return this.materializeLifecycleGroup(entry, request);
+	}
+
+	/**
+	 * Classifies each requested decisionId as `relocation` (its persisted
+	 * `proposedEdit` is a `move`/`copy`) or `inPlace` (everything else --
+	 * `replace`/`insert`/`delete`, or a summary-only decision with no
+	 * `proposedEdit` at all). Looks up each decision's own TUTOR_ASSESSED event
+	 * directly from the current snapshot -- BEFORE any reservation -- so the
+	 * split can be decided up front and each group reserved independently. Any
+	 * decisionId that cannot be classified (missing state, missing decision,
+	 * missing/malformed tutor event) is conservatively treated as `inPlace` so
+	 * it flows into the pre-existing, unchanged single-group path and surfaces
+	 * its own precise diagnostic there (e.g. `MATERIALIZATION_DECISION_UNKNOWN`),
+	 * rather than being silently dropped or misrouted here.
+	 */
+	private classifyMaterializationGroups(state: Awaited<ReturnType<ScientificStateStore['read']>>, candidateIds: readonly string[]): { inPlace: string[]; relocation: string[] } {
+		const inPlace: string[] = [];
+		const relocation: string[] = [];
+		for (const decisionId of candidateIds) {
+			const decision = state?.snapshot.decisions.find((candidate) => candidate.decisionId === decisionId);
+			const tutorEventId = decision?.sourceEventIds[0];
+			const tutor = tutorEventId ? state?.events.find((event) => event.type === 'TUTOR_ASSESSED' && event.eventId === tutorEventId) : undefined;
+			const proposedEdit = parseProposedEdit(tutor?.payload.proposedEdit);
+			if (proposedEdit && (proposedEdit.kind === 'move' || proposedEdit.kind === 'copy')) relocation.push(decisionId);
+			else inPlace.push(decisionId);
+		}
+		return { inPlace, relocation };
+	}
+
+	/** Materializes exactly one homogeneous group of decisionIds into exactly one lifecycle-v1 successor version. */
+	private async materializeLifecycleGroup(entry: ProjectEntry, request: ScientificWorkflowRequest): Promise<ScientificWorkflowPublicResult> {
 		if (!request.candidateIds?.length) return this.withBlock(entry, 'MATERIALIZATION_SELECTION_REQUIRED', 'select_accepted_candidates', 'blocked');
 		let authority;
 		try { authority = await this.lifecyclePublication!.readInventory(); } catch { return this.withBlock(entry, 'LIFECYCLE_INVENTORY_INCONSISTENT', 'reconcile_lifecycle_inventory', 'blocked'); }
@@ -229,33 +291,63 @@ export class ScientificWorkflowRuntime {
 		return { ...this.workflow.projectReentry(entry), status: 'materialized', materialization: { materializationId: committed.record.materializationId, state: committed.record.state, targetFilename: commit.targetFilename, targetRevision: commit.targetRevision }, nextAction: null };
 	}
 
+	/** The SHA-256 of an empty buffer -- every zero-width `insert` splice point's declared `textSha256`. */
+	private static readonly EMPTY_TEXT_SHA256 = sha256(Buffer.alloc(0));
+
 	/**
 	 * Composes the lifecycle-v1 successor's approved changes for `LifecycleService`.
 	 *
 	 * Resolves EACH accepted decision's locus independently (design: "mixed sets are
 	 * per-decision independent" -- never all-or-nothing):
-	 *   1. Structural (real, byte-preserving CHANGE): when the decision carries a
-	 *      persisted `proposedEdit`, its `targetEntryId` is resolved by an EXPLICIT
-	 *      document-index lookup against the CURRENT materialization base -- never
-	 *      the synthesis-time document, and never fuzzy summary matching. On drift
-	 *      (missing/moved entry) this decision falls through to (2).
-	 *   2. Annotate-at-locus (pre-existing fallback): the decision's summary is
-	 *      resolved via `resolveSuccessorTarget`, the same heading/section resolver
-	 *      used by the interactive orchestrator successor path. Composed as
+	 *   1. Structural (real, byte-preserving edit): when the decision carries a
+	 *      persisted `proposedEdit`, its locus/loci are resolved by an EXPLICIT
+	 *      document-index lookup against the CURRENT materialization base --
+	 *      never the synthesis-time document, and never fuzzy summary matching.
+	 *      Five kinds are supported, each a disjoint source-frozen splice (or,
+	 *      for `move`, exactly TWO disjoint splices bound to the same decision):
+	 *        - `replace`: a non-empty span replaced by `replacementText` (a CHANGE).
+	 *        - `insert`: a zero-width point at the anchor's own start (`before`/
+	 *          `inside_start`) or end (`after`/`inside_end`) boundary, splicing in
+	 *          `content` (a deliberated ADD).
+	 *        - `delete`: a non-empty span replaced by nothing (a deliberated
+	 *          DELETE).
+	 *        - `copy`: an insert-only zero-width splice at the destination anchor's
+	 *          boundary, carrying the source's own frozen bytes (LITERAL) or the
+	 *          tutor's `transformedContent` (ADAPTIVE); the source itself is left
+	 *          untouched.
+	 *        - `move`: the SAME insert-at-destination as `copy`, PLUS a second,
+	 *          disjoint delete-at-source splice -- two blocks, one decision. Never
+	 *          spliced into the same successor version as an in-place decision;
+	 *          see `materializeLifecycleV1`'s SEPARATE-VERSION grouping, which
+	 *          guarantees every batch reaching this method is already homogeneous
+	 *          (either all in-place, or all relocation).
+	 *      On drift (missing/moved entry, a self-referential move/copy, or a
+	 *      destination nested inside its own moved/copied source --
+	 *      HIERARCHY_CYCLE) this decision falls through to (2).
+	 *   2. Annotate-at-locus (pre-existing fallback, unchanged -- summary-only
+	 *      decisions, or any decision without a `proposedEdit`, never take this
+	 *      structural path at all): the decision's summary is resolved via
+	 *      `resolveSuccessorTarget`, the same heading/section resolver used by the
+	 *      interactive orchestrator successor path. Composed as
 	 *      `originalText + "> Accepted revision: <summary>"`, exactly as before.
 	 *   3. No locus at all: the decision's summary is preserved in the shared
 	 *      document-tail "Accepted scientific decisions" block -- never silently
 	 *      discarded.
 	 *
-	 * Overlapping/duplicate loci (from either tier) are never silently applied:
-	 * every decision in a colliding pair degrades to tier (3) instead. Every
-	 * resolved (tier 1 + tier 2) edit is spliced into ONE successor version through
-	 * `composeSuccessorBlockCandidate` -- `successor-composite-engine.ts`'s guarded
-	 * byte-preserving path -- so every byte outside the resolved loci is provably
-	 * preserved, even when multiple decisions are involved. When NOTHING resolves
-	 * (or the guarded compose call itself blocks), this falls back to appending a
-	 * single "Accepted scientific decisions" summary block for every decision,
-	 * matching the pre-repair shape byte-for-byte for that all-unresolved case.
+	 * Overlapping/duplicate loci (from either tier, or from any part of a
+	 * multi-part relocation) are never silently applied: every claim in a
+	 * colliding pair degrades to tier (3) instead. Two zero-width points landing
+	 * at the EXACT same offset (e.g. two decisions both inserting/relocating to
+	 * the same anchor boundary) are treated the same way -- there is no
+	 * mechanism here for one decision to declare it depends on another, so
+	 * silently picking an order is never acceptable; both degrade instead. Every
+	 * resolved (tier 1 + tier 2) edit is spliced into ONE successor version
+	 * through `composeSuccessorBlockCandidate` -- `successor-composite-engine.ts`'s
+	 * guarded byte-preserving path -- so every byte outside the resolved loci is
+	 * provably preserved. When NOTHING resolves (or the guarded compose call
+	 * itself blocks), this falls back to appending a single "Accepted scientific
+	 * decisions" summary block for every decision, matching the pre-repair shape
+	 * byte-for-byte for that all-unresolved case.
 	 *
 	 * Either way, the final content is committed through a single whole-document
 	 * `{from,to}` pair, which `LifecycleService`'s byte-safe `applyChanges` (V1)
@@ -268,20 +360,21 @@ export class ScientificWorkflowRuntime {
 		};
 		const documentState = await rebuildDerivedState('lifecycle-v1:successor-locus', 'working', 'lifecycle-v1', Buffer.from(sourceContent, 'utf8'));
 
-		type ResolvedEdit = { index: number; entryId: string; startByte: number; endByte: number; textSha256: string; replacementText: string };
+		type StructuralEditPart = { entryId: string; startByte: number; endByte: number; textSha256: string; replacementText: string; op: 'replace' | 'insert' | 'delete' };
+		type ResolvedEdit = { index: number; parts: readonly StructuralEditPart[] };
 		const resolved: ResolvedEdit[] = [];
 		const unresolved: number[] = [];
 		for (const [index, claim] of claims.entries()) {
-			const structuralTarget = claim.proposedEdit?.kind === 'replace' ? documentState.structuralIndex.byId[claim.proposedEdit.targetEntryId] : undefined;
-			if (structuralTarget && structuralTarget.type !== 'document') {
-				resolved.push({ index, entryId: structuralTarget.entryId, startByte: structuralTarget.startByte, endByte: structuralTarget.endByte, textSha256: structuralTarget.textSha256, replacementText: (claim.proposedEdit as Extract<EditAction, { kind: 'replace' }>).replacementText });
+			const structural = this.resolveStructuralClaim(documentState, claim.proposedEdit);
+			if (structural) {
+				resolved.push({ index, parts: structural });
 				continue;
 			}
 			const candidates = resolveSuccessorTarget(documentState, claim.summary).candidates;
 			if (candidates.length === 1) {
 				const entry = materializeCompositeTarget(documentState, candidates[0]!)!;
 				const originalText = documentState.documentBytes.subarray(entry.startByte, entry.endByte).toString('utf8');
-				resolved.push({ index, entryId: entry.entryId, startByte: entry.startByte, endByte: entry.endByte, textSha256: entry.textSha256, replacementText: `${originalText}\n\n> Accepted revision: ${claim.summary.trim()}\n` });
+				resolved.push({ index, parts: [{ entryId: entry.entryId, startByte: entry.startByte, endByte: entry.endByte, textSha256: entry.textSha256, replacementText: `${originalText}\n\n> Accepted revision: ${claim.summary.trim()}\n`, op: 'replace' }] });
 				continue;
 			}
 			unresolved.push(index);
@@ -289,28 +382,39 @@ export class ScientificWorkflowRuntime {
 
 		// Never silently apply overlapping/duplicate loci: every claim in a
 		// colliding pair degrades to the shared tail-block fallback instead of
-		// forcing an offset.
+		// forcing an offset. A zero-width `insert` point at exactly one span's
+		// boundary is NOT an overlap (boundary-adjacent); strictly inside another
+		// span is. Two zero-width points sharing the EXACT same offset are their
+		// own ambiguity (see the method doc above) -- also degraded, since there
+		// is no dependsOn-style ordering signal between independent decisions.
 		const overlapping = new Set<number>();
 		for (const left of resolved) for (const right of resolved) {
 			if (left.index === right.index) continue;
-			if (left.startByte < right.endByte && right.startByte < left.endByte) { overlapping.add(left.index); overlapping.add(right.index); }
+			for (const leftPart of left.parts) for (const rightPart of right.parts) {
+				const spanOverlap = leftPart.startByte < rightPart.endByte && rightPart.startByte < leftPart.endByte;
+				const sameZeroWidthPoint = leftPart.startByte === leftPart.endByte && rightPart.startByte === rightPart.endByte && leftPart.startByte === rightPart.startByte;
+				if (spanOverlap || sameZeroWidthPoint) { overlapping.add(left.index); overlapping.add(right.index); }
+			}
 		}
-		const applied = resolved.filter((edit) => !overlapping.has(edit.index)).sort((left, right) => left.startByte - right.startByte);
+		const applied = resolved.filter((edit) => !overlapping.has(edit.index)).sort((left, right) => Math.min(...left.parts.map((part) => part.startByte)) - Math.min(...right.parts.map((part) => part.startByte)));
 		if (applied.length === 0) return appendAll(claims);
 
 		let appliedSoFar: { startByte: number; endByte: number; replacement: Buffer }[] = [];
 		const blocks: SuccessorBlock[] = [];
-		const byBlockId = new Map<string, ResolvedEdit>();
+		const byBlockId = new Map<string, StructuralEditPart>();
 		for (const edit of applied) {
-			appliedSoFar = [...appliedSoFar, { startByte: edit.startByte, endByte: edit.endByte, replacement: Buffer.from(edit.replacementText, 'utf8') }];
-			const blockId = `block-${edit.index}`;
-			byBlockId.set(blockId, edit);
-			blocks.push({
-				id: blockId,
-				dependsOn: [],
-				target: { status: 'resolved', selector: { entryId: edit.entryId, startByte: edit.startByte, endByte: edit.endByte, textSha256: edit.textSha256, documentSha256: documentState.documentSha256 } },
-				candidateSha256: sha256(spliceDisjointForSuccessorLocus(documentState.documentBytes, appliedSoFar)),
-			});
+			for (const [partIndex, part] of edit.parts.entries()) {
+				appliedSoFar = [...appliedSoFar, { startByte: part.startByte, endByte: part.endByte, replacement: Buffer.from(part.replacementText, 'utf8') }];
+				const blockId = `block-${edit.index}-${partIndex}`;
+				byBlockId.set(blockId, part);
+				blocks.push({
+					id: blockId,
+					dependsOn: [],
+					target: { status: 'resolved', selector: { entryId: part.entryId, startByte: part.startByte, endByte: part.endByte, textSha256: part.textSha256, documentSha256: documentState.documentSha256 } },
+					candidateSha256: sha256(spliceDisjointForSuccessorLocus(documentState.documentBytes, appliedSoFar)),
+					op: part.op,
+				});
+			}
 		}
 		const plan: SuccessorBlockPlan = {
 			source: { filename: documentState.filename, revision: documentState.revision, documentSha256: documentState.documentSha256 },
@@ -327,6 +431,75 @@ export class ScientificWorkflowRuntime {
 		if (fallbackClaims.length === 0) return [{ from: sourceContent, to: composed.candidateBytes.toString('utf8') }];
 		const addition = `\n\n## Accepted scientific decisions\n\n${fallbackClaims.map((claim) => `- ${claim.summary}`).join('\n')}\n`;
 		return [{ from: sourceContent, to: `${composed.candidateBytes.toString('utf8')}${addition}` }];
+	}
+
+	/**
+	 * Resolves one decision's `proposedEdit` (when present) against the CURRENT
+	 * materialization base into one or more disjoint splice parts (span +
+	 * replacement text + op kind), bound to that ONE decision. Returns
+	 * `undefined` on drift (missing anchor/target/source/destination entry, a
+	 * `document`-type entry, a self-referential move/copy, a destination
+	 * nested inside its own moved/copied source -- HIERARCHY_CYCLE -- or an
+	 * ADAPTIVE relocation somehow missing its already-validated content) so
+	 * the caller falls through to the pre-existing annotate-at-locus fallback
+	 * -- never a forced offset. Supports all five kinds `parseProposedEdit`
+	 * recognizes:
+	 *   - `replace` (unchanged): one part, the target's full span.
+	 *   - `insert` (unchanged): one part, a zero-width splice at the anchor's
+	 *     own start or end boundary.
+	 *   - `delete` (unchanged): one part, empty replacement over the target's
+	 *     full span.
+	 *   - `copy`: one part -- an insert-only zero-width splice at the
+	 *     destination anchor's boundary. LITERAL content is the source's own
+	 *     frozen bytes (read here, never trusted from the persisted claim);
+	 *     ADAPTIVE content is the frozen `transformedContent`. The source
+	 *     itself is left untouched.
+	 *   - `move`: TWO parts bound to this ONE decision -- the SAME
+	 *     insert-at-destination as `copy`, plus a second delete-at-source part
+	 *     removing the source's full span. Both parts are source-frozen and
+	 *     disjoint by construction (the HIERARCHY_CYCLE check above already
+	 *     rejects any destination nested inside the source), spliced in the
+	 *     SAME single composite pass as every other resolved decision -- never
+	 *     two separate passes, and never a delete without its paired insert.
+	 */
+	private resolveStructuralClaim(documentState: Awaited<ReturnType<typeof rebuildDerivedState>>, proposedEdit: EditAction | undefined): readonly { entryId: string; startByte: number; endByte: number; textSha256: string; replacementText: string; op: 'replace' | 'insert' | 'delete' }[] | undefined {
+		if (!proposedEdit) return undefined;
+		if (proposedEdit.kind === 'replace') {
+			const entry = documentState.structuralIndex.byId[proposedEdit.targetEntryId];
+			if (!entry || entry.type === 'document') return undefined;
+			return [{ entryId: entry.entryId, startByte: entry.startByte, endByte: entry.endByte, textSha256: entry.textSha256, replacementText: proposedEdit.replacementText, op: 'replace' }];
+		}
+		if (proposedEdit.kind === 'insert') {
+			const anchor = documentState.structuralIndex.byId[proposedEdit.anchorEntryId];
+			if (!anchor || anchor.type === 'document') return undefined;
+			const point = proposedEdit.position === 'before' || proposedEdit.position === 'inside_start' ? anchor.startByte : anchor.endByte;
+			return [{ entryId: anchor.entryId, startByte: point, endByte: point, textSha256: ScientificWorkflowRuntime.EMPTY_TEXT_SHA256, replacementText: proposedEdit.content, op: 'insert' }];
+		}
+		if (proposedEdit.kind === 'delete') {
+			const entry = documentState.structuralIndex.byId[proposedEdit.targetEntryId];
+			if (!entry || entry.type === 'document' || entry.startByte >= entry.endByte) return undefined;
+			return [{ entryId: entry.entryId, startByte: entry.startByte, endByte: entry.endByte, textSha256: entry.textSha256, replacementText: '', op: 'delete' }];
+		}
+		if (proposedEdit.kind === 'move' || proposedEdit.kind === 'copy') {
+			if (proposedEdit.sourceEntryIds.length !== 1) return undefined;
+			const source = documentState.structuralIndex.byId[proposedEdit.sourceEntryIds[0]!];
+			const destination = documentState.structuralIndex.byId[proposedEdit.destinationAnchorId];
+			if (!source || source.type === 'document' || source.startByte >= source.endByte) return undefined;
+			if (!destination || destination.type === 'document') return undefined;
+			if (source.entryId === destination.entryId) return undefined; // move/copy source == destination: safe fallback, never a no-op forced through
+			// HIERARCHY_CYCLE: the destination anchor is nested inside (or equal to) the moved/copied source's own span.
+			if (destination.startByte >= source.startByte && destination.endByte <= source.endByte) return undefined;
+			const content = proposedEdit.moveMode === 'ADAPTIVE'
+				? proposedEdit.transformedContent
+				: documentState.documentBytes.subarray(source.startByte, source.endByte).toString('utf8');
+			if (!content) return undefined; // ADAPTIVE without content: never fabricated, falls back
+			const point = proposedEdit.position === 'before' || proposedEdit.position === 'inside_start' ? destination.startByte : destination.endByte;
+			const insertPart = { entryId: destination.entryId, startByte: point, endByte: point, textSha256: ScientificWorkflowRuntime.EMPTY_TEXT_SHA256, replacementText: content, op: 'insert' as const };
+			if (proposedEdit.kind === 'copy') return [insertPart];
+			const deletePart = { entryId: source.entryId, startByte: source.startByte, endByte: source.endByte, textSha256: source.textSha256, replacementText: '', op: 'delete' as const };
+			return [deletePart, insertPart];
+		}
+		return undefined;
 	}
 
 	private async reviewedCandidate(threadId: string, synthesisId?: string, synthesisDigest?: string): Promise<ScientificSynthesisCandidate | undefined> {

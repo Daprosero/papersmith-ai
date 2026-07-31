@@ -10,8 +10,9 @@ import type { ScientificSnapshotRecord } from './scientific-state-store.js';
 import { ScientificStateStore } from './scientific-state-store.js';
 import type { TutorAdapter, TutorAssessment } from './tutor-adapter.js';
 import { validateTutorAssessment } from './tutor-adapter.js';
+import { resolveIntent } from './intent-resolver.js';
 import { PROPOSED_EDIT_REPLACEMENT_MAX_BYTES } from './types.js';
-import type { EditAction } from './types.js';
+import type { EditAction, Position, ResolvedIntent } from './types.js';
 import type {
 	ConceptualReviewOutcome,
 	EvidenceReference,
@@ -262,7 +263,11 @@ export class ScientificWorkflowService {
 		while (true) {
 			const tutor = await this.assessTutor(instruction, context);
 			if (!tutor) return { status: 'blocked', code: 'TUTOR_ASSESSMENT_INVALID', eventIds };
-			const candidate = this.candidate(input.activeThread.threadId, tutor);
+			// Operation kind/operands for a deliberated INSERT or DELETE are captured
+			// from the USER's own original instruction (never a repair-cycle rewrite),
+			// deterministically parsed by the existing `resolveIntent` -- the tutor only
+			// reviews/refutes and supplies content, it never chooses kind or locus.
+			const candidate = this.candidate(input.activeThread.threadId, tutor, input.instruction);
 			const tutorEvent = await this.appendEvent(input.activeThread.threadId, 'TUTOR_ASSESSED', {
 				status: candidate.status,
 				summary: candidate.summary,
@@ -336,10 +341,10 @@ export class ScientificWorkflowService {
 		}
 	}
 
-	private candidate(threadId: string, assessment: TutorAssessment): ScientificSynthesisCandidate {
+	private candidate(threadId: string, assessment: TutorAssessment, rawInstruction: string): ScientificSynthesisCandidate {
 		const synthesisId = this.newId();
 		const summary = assessment.summary.trim();
-		const proposedEdit = this.deriveProposedEdit(assessment);
+		const proposedEdit = this.deriveProposedEdit(assessment, rawInstruction);
 		// JSON.stringify drops an `undefined` proposedEdit, so the digest stays
 		// byte-identical to the pre-repair summary-only digest when no edit was
 		// liftable (additive-safe); when present, the edit is transitively frozen
@@ -349,25 +354,100 @@ export class ScientificWorkflowService {
 
 	/**
 	 * Lifts the tutor's own already-emitted structured signal -- `proposedAlternative`
-	 * (replacement text) targeted at exactly one already-validated `affectedEntryIds`
-	 * locus -- into a genuine, reusable `EditAction`, instead of discarding it down to
-	 * `summary` alone (closes the V2-PARTIAL gap: the scientific materialization route
-	 * can apply a real structured CHANGE instead of only annotating).
+	 * (content/replacement text) targeted at exactly one already-validated
+	 * `affectedEntryIds` locus -- into a genuine, reusable `EditAction`, instead of
+	 * discarding it down to `summary` alone (closes the V2-PARTIAL gap: the scientific
+	 * materialization route can apply a real structured edit instead of only
+	 * annotating).
 	 *
-	 * Bounded to the single-locus `replace` case the tutor naturally produces: a
-	 * `TutorAssessment` has no anchor/position signal distinguishing a genuine INSERT
-	 * (new content) from a CHANGE (revise existing content) -- `affectedEntryIds` only
-	 * ever names entries the assessment concerns, always validated as EXISTING document
-	 * fragment entries. Anything else (zero/multiple affected entries, a decision that
-	 * isn't an actual proposed change, or an oversized/empty alternative) stays
-	 * summary-only, unchanged from today.
+	 * Operation KIND (CHANGE/replace vs. deliberated ADD/insert vs. deliberated
+	 * DELETE/delete) and its operands (position) come from the USER's own original
+	 * instruction, deterministically parsed by the EXISTING `resolveIntent` parser --
+	 * never invented or guessed by the tutor. The tutor only reviews/refutes the
+	 * resulting operation and supplies the content-bearing side (`proposedAlternative`)
+	 * for content-bearing kinds (`replace`/`insert`); it never chooses kind, locus, or
+	 * position. Bounded to a single already-validated `affectedEntryIds` locus in every
+	 * case -- multi-entry decomposition per decision remains an explicit, documented,
+	 * unforced fallback (stays summary-only), exactly as before.
 	 */
-	private deriveProposedEdit(assessment: TutorAssessment): EditAction | undefined {
-		if (assessment.decision !== 'ACCEPT_WITH_REVISIONS' && assessment.decision !== 'PROPOSE_ALTERNATIVE') return undefined;
+	private deriveProposedEdit(assessment: TutorAssessment, rawInstruction: string): EditAction | undefined {
+		const resolved = resolveIntent(rawInstruction);
+
+		// MOVE/COPY (a relocation) is bounded to exactly TWO already-validated loci
+		// -- [sourceEntryId, destinationAnchorId], in that fixed order -- instead of
+		// the single-locus bound every other kind uses below. Checked first, before
+		// the single-locus gate, since it would otherwise always fail that gate.
+		if (resolved.intent === 'MOVE' || resolved.intent === 'COPY') return this.deriveMoveCopyEdit(assessment, resolved);
+
 		if (assessment.affectedEntryIds.length !== 1) return undefined;
+		const entryId = assessment.affectedEntryIds[0]!;
+
+		if (resolved.intent === 'DELETE') {
+			// A deliberated DELETE carries no tutor-supplied content -- ACCEPT (tutor
+			// agrees to remove exactly what the user asked) or ACCEPT_WITH_REVISIONS
+			// (tutor agrees, with an otherwise-unrelated revision noted in `summary`)
+			// both authorize it; REJECT_WITH_REASON/NEEDS_CLARIFICATION/PROPOSE_ALTERNATIVE
+			// (tutor suggests doing something else instead of deleting) do not.
+			if (assessment.decision !== 'ACCEPT' && assessment.decision !== 'ACCEPT_WITH_REVISIONS') return undefined;
+			const reason = assessment.summary.trim();
+			if (!isBoundedText(reason)) return undefined;
+			const instructionEvidence = rawInstruction.trim().slice(0, 2_000);
+			if (!isBoundedText(instructionEvidence)) return undefined;
+			return { kind: 'delete', targetEntryId: entryId, instructionEvidence, reason };
+		}
+
+		if (resolved.intent === 'INSERT') {
+			if (assessment.decision !== 'ACCEPT_WITH_REVISIONS' && assessment.decision !== 'PROPOSE_ALTERNATIVE') return undefined;
+			const content = assessment.proposedAlternative?.trim();
+			if (!isBoundedText(content, PROPOSED_EDIT_REPLACEMENT_MAX_BYTES)) return undefined;
+			// Normalized to exactly `before`/`after` (never `inside_start`/`inside_end`):
+			// both the composite engine's zero-width splice and `patch-compiler.ts`'s
+			// `insertionPoint` agree on these two anchor-boundary semantics; the latter
+			// throws for `inside_start`, so it is never persisted here.
+			const position: Position = resolved.requestedPosition === 'before' || resolved.requestedPosition === 'inside_start' ? 'before' : 'after';
+			return { kind: 'insert', anchorEntryId: entryId, position, content };
+		}
+
+		// Unchanged pre-existing behavior: the well-specified single-locus CHANGE case.
+		if (assessment.decision !== 'ACCEPT_WITH_REVISIONS' && assessment.decision !== 'PROPOSE_ALTERNATIVE') return undefined;
 		const replacementText = assessment.proposedAlternative?.trim();
 		if (!isBoundedText(replacementText, PROPOSED_EDIT_REPLACEMENT_MAX_BYTES)) return undefined;
-		return { kind: 'replace', targetEntryId: assessment.affectedEntryIds[0]!, replacementText };
+		return { kind: 'replace', targetEntryId: entryId, replacementText };
+	}
+
+	/**
+	 * Lifts a deliberated MOVE/COPY (a relocation). Operation kind, source,
+	 * destination, position, and `moveMode` all come from the USER's own
+	 * original instruction via the EXISTING deterministic `resolveIntent` --
+	 * never invented by the tutor. `affectedEntryIds` is bounded to exactly TWO
+	 * already-validated loci, in the fixed order [sourceEntryId,
+	 * destinationAnchorId]; any other length is a documented, unforced
+	 * fallback (stays summary-only), exactly like the single-locus bound above.
+	 *
+	 * For a LITERAL relocation the tutor authors no content (the composite
+	 * engine resolves the source's own frozen bytes at materialization) --
+	 * ACCEPT or ACCEPT_WITH_REVISIONS both authorize it, mirroring DELETE's
+	 * gate. For an ADAPTIVE relocation (the transition text must be reworded to
+	 * fit its new context) the tutor's `proposedAlternative` becomes
+	 * `transformedContent` -- REQUIRED and bounded; absent or oversized content
+	 * is a block, never a fabrication, mirroring INSERT's gate.
+	 */
+	private deriveMoveCopyEdit(assessment: TutorAssessment, resolved: ResolvedIntent): EditAction | undefined {
+		if (assessment.affectedEntryIds.length !== 2) return undefined;
+		const [sourceEntryId, destinationAnchorId] = assessment.affectedEntryIds as [string, string];
+		const isMove = resolved.intent === 'MOVE';
+		// Normalized to exactly `before`/`after`, same convention as INSERT above:
+		// both the composite engine's zero-width splice and `patch-compiler.ts`'s
+		// `insertionPoint` only distinguish the anchor's start vs. end boundary.
+		const position: Position = resolved.requestedPosition === 'before' || resolved.requestedPosition === 'inside_start' ? 'before' : 'after';
+		if (resolved.moveMode === 'ADAPTIVE') {
+			if (assessment.decision !== 'ACCEPT_WITH_REVISIONS' && assessment.decision !== 'PROPOSE_ALTERNATIVE') return undefined;
+			const transformedContent = assessment.proposedAlternative?.trim();
+			if (!isBoundedText(transformedContent, PROPOSED_EDIT_REPLACEMENT_MAX_BYTES)) return undefined;
+			return { kind: isMove ? 'move' : 'copy', sourceEntryIds: [sourceEntryId], destinationAnchorId, position, moveMode: 'ADAPTIVE', removeSource: isMove, transformedContent, cleanupLevel: resolved.cleanupLevel };
+		}
+		if (assessment.decision !== 'ACCEPT' && assessment.decision !== 'ACCEPT_WITH_REVISIONS') return undefined;
+		return { kind: isMove ? 'move' : 'copy', sourceEntryIds: [sourceEntryId], destinationAnchorId, position, moveMode: 'LITERAL', removeSource: isMove, cleanupLevel: resolved.cleanupLevel };
 	}
 
 	private finding(candidate: ScientificSynthesisCandidate, assessment: ReviewerAssessment): StructuredConceptualFinding | undefined {

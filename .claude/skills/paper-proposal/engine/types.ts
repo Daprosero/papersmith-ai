@@ -94,31 +94,82 @@ export type EditAction = { kind:'replace'; targetEntryId:string; replacementText
  */
 export const PROPOSED_EDIT_REPLACEMENT_MAX_BYTES = 20_000;
 
+const PROPOSED_EDIT_INSERT_POSITIONS = new Set<Position>(['before', 'after', 'inside_start', 'inside_end']);
+const PROPOSED_EDIT_CLEANUP_LEVELS = new Set<CleanupLevel>(['NONE', 'STRUCTURAL', 'SEMANTIC']);
+
 /**
  * Validates an untrusted, persisted `TUTOR_ASSESSED.payload.proposedEdit` value
- * into a genuine `EditAction`. Currently recognizes only the single-locus
- * `replace` shape -- the only shape `ScientificWorkflowService.candidate()`
- * ever emits. Anything else (a malformed object, or a well-formed but
- * unimplemented `insert`/`delete`/`move`/`copy`/`cleanup`/`rewrite_transition`
- * shape) returns `undefined` so callers fall back to the pre-existing
- * summary-annotation route rather than trusting an edit shape this pipeline
- * never validated end-to-end.
+ * into a genuine `EditAction`. Recognizes five bounded, single-locus shapes:
+ * `replace` (a CHANGE), `insert` (an ADD anchored at one existing entry's
+ * boundary), `delete` (a REMOVE of one existing entry's span), and `move`/
+ * `copy` (a RELOCATION -- exactly one source entry to one destination anchor)
+ * -- the only shapes `ScientificWorkflowService.candidate()` ever emits.
+ * Anything else (a malformed object, or a well-formed but unimplemented
+ * `cleanup`/`rewrite_transition` shape) returns `undefined` so callers fall
+ * back to the pre-existing summary-annotation route rather than trusting an
+ * edit shape this pipeline never validated end-to-end.
+ *
+ * `move`/`copy` bound `sourceEntryIds` to exactly one entry for this slice
+ * (multi-entry relocation sources remain a documented, unforced fallback, same
+ * as multi-entry-per-decision elsewhere in this pipeline). `removeSource` must
+ * agree with `kind` (`move` implies `true`, `copy` implies `false`) -- a
+ * mismatched combination is rejected as malformed rather than silently
+ * trusted. `transformedContent` is REQUIRED and bounded when `moveMode` is
+ * `'ADAPTIVE'` (never fabricated downstream if absent) and, when present for a
+ * `'LITERAL'` move/copy, is simply ignored by every resolver (LITERAL content
+ * always comes from the frozen source bytes, never from this field).
  */
 export function parseProposedEdit(value: unknown): EditAction | undefined {
 	if (!value || typeof value !== 'object') return undefined;
 	const candidate = value as Record<string, unknown>;
-	if (candidate.kind !== 'replace') return undefined;
-	if (typeof candidate.targetEntryId !== 'string' || candidate.targetEntryId.length === 0 || candidate.targetEntryId.length > 128) return undefined;
-	if (typeof candidate.replacementText !== 'string' || candidate.replacementText.length === 0 || candidate.replacementText.length > PROPOSED_EDIT_REPLACEMENT_MAX_BYTES) return undefined;
-	if (candidate.semanticChange !== undefined && typeof candidate.semanticChange !== 'boolean') return undefined;
-	if (candidate.rationale !== undefined && (typeof candidate.rationale !== 'string' || candidate.rationale.length > 2_000)) return undefined;
-	return {
-		kind: 'replace',
-		targetEntryId: candidate.targetEntryId,
-		replacementText: candidate.replacementText,
-		...(candidate.semanticChange !== undefined ? { semanticChange: candidate.semanticChange as boolean } : {}),
-		...(candidate.rationale !== undefined ? { rationale: candidate.rationale as string } : {}),
-	};
+	if (candidate.kind === 'replace') {
+		if (typeof candidate.targetEntryId !== 'string' || candidate.targetEntryId.length === 0 || candidate.targetEntryId.length > 128) return undefined;
+		if (typeof candidate.replacementText !== 'string' || candidate.replacementText.length === 0 || candidate.replacementText.length > PROPOSED_EDIT_REPLACEMENT_MAX_BYTES) return undefined;
+		if (candidate.semanticChange !== undefined && typeof candidate.semanticChange !== 'boolean') return undefined;
+		if (candidate.rationale !== undefined && (typeof candidate.rationale !== 'string' || candidate.rationale.length > 2_000)) return undefined;
+		return {
+			kind: 'replace',
+			targetEntryId: candidate.targetEntryId,
+			replacementText: candidate.replacementText,
+			...(candidate.semanticChange !== undefined ? { semanticChange: candidate.semanticChange as boolean } : {}),
+			...(candidate.rationale !== undefined ? { rationale: candidate.rationale as string } : {}),
+		};
+	}
+	if (candidate.kind === 'insert') {
+		if (typeof candidate.anchorEntryId !== 'string' || candidate.anchorEntryId.length === 0 || candidate.anchorEntryId.length > 128) return undefined;
+		if (typeof candidate.position !== 'string' || !PROPOSED_EDIT_INSERT_POSITIONS.has(candidate.position as Position)) return undefined;
+		if (typeof candidate.content !== 'string' || candidate.content.length === 0 || candidate.content.length > PROPOSED_EDIT_REPLACEMENT_MAX_BYTES) return undefined;
+		return { kind: 'insert', anchorEntryId: candidate.anchorEntryId, position: candidate.position as Position, content: candidate.content };
+	}
+	if (candidate.kind === 'delete') {
+		if (typeof candidate.targetEntryId !== 'string' || candidate.targetEntryId.length === 0 || candidate.targetEntryId.length > 128) return undefined;
+		if (typeof candidate.instructionEvidence !== 'string' || candidate.instructionEvidence.length === 0 || candidate.instructionEvidence.length > 2_000) return undefined;
+		if (typeof candidate.reason !== 'string' || candidate.reason.length === 0 || candidate.reason.length > 2_000) return undefined;
+		return { kind: 'delete', targetEntryId: candidate.targetEntryId, instructionEvidence: candidate.instructionEvidence, reason: candidate.reason };
+	}
+	if (candidate.kind === 'move' || candidate.kind === 'copy') {
+		if (!Array.isArray(candidate.sourceEntryIds) || candidate.sourceEntryIds.length !== 1) return undefined;
+		const sourceEntryId = candidate.sourceEntryIds[0];
+		if (typeof sourceEntryId !== 'string' || sourceEntryId.length === 0 || sourceEntryId.length > 128) return undefined;
+		if (typeof candidate.destinationAnchorId !== 'string' || candidate.destinationAnchorId.length === 0 || candidate.destinationAnchorId.length > 128) return undefined;
+		if (typeof candidate.position !== 'string' || !PROPOSED_EDIT_INSERT_POSITIONS.has(candidate.position as Position)) return undefined;
+		if (candidate.moveMode !== 'LITERAL' && candidate.moveMode !== 'ADAPTIVE') return undefined;
+		if (typeof candidate.removeSource !== 'boolean' || candidate.removeSource !== (candidate.kind === 'move')) return undefined;
+		if (typeof candidate.cleanupLevel !== 'string' || !PROPOSED_EDIT_CLEANUP_LEVELS.has(candidate.cleanupLevel as CleanupLevel)) return undefined;
+		if (candidate.transformedContent !== undefined && (typeof candidate.transformedContent !== 'string' || candidate.transformedContent.length === 0 || candidate.transformedContent.length > PROPOSED_EDIT_REPLACEMENT_MAX_BYTES)) return undefined;
+		if (candidate.moveMode === 'ADAPTIVE' && candidate.transformedContent === undefined) return undefined;
+		return {
+			kind: candidate.kind,
+			sourceEntryIds: [sourceEntryId],
+			destinationAnchorId: candidate.destinationAnchorId,
+			position: candidate.position as Position,
+			moveMode: candidate.moveMode,
+			removeSource: candidate.removeSource,
+			cleanupLevel: candidate.cleanupLevel as CleanupLevel,
+			...(candidate.transformedContent !== undefined ? { transformedContent: candidate.transformedContent as string } : {}),
+		};
+	}
+	return undefined;
 }
 export type DeletePlan = { planVersion:'2'; documentSha256:string; targetEntryIds:string[]; destructiveIntent:true; instructionEvidence:string[]; reason:string; affectedReferences:string[]; affectedSymbols:string[]; cleanupLevel:CleanupLevel; unresolvedQuestions:string[] };
 export type EditPlan = { planVersion:'2'; documentSha256:string; intent:Intent; instructionHash:string; resolvedTargets:string[]; destination?:string; semanticChange:boolean; destructiveIntent:boolean; cleanupLevel:CleanupLevel; constraints:string[]; actions:EditAction[]; expectedEffects:string[]; unresolvedQuestions:string[]; successorCompositeTarget?:true };

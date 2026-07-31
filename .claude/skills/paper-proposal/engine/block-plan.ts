@@ -10,12 +10,23 @@ export type UnresolvedSuccessorBlockTarget = Readonly<{ status: 'unresolved'; qu
 export type AmbiguousSuccessorBlockTarget = Readonly<{ status: 'ambiguous'; candidateEntryIds: readonly string[] }>;
 export type SuccessorBlockTarget = ResolvedSuccessorBlockTarget | UnresolvedSuccessorBlockTarget | AmbiguousSuccessorBlockTarget;
 
+/**
+ * The block's splice kind. Absent (or `'replace'`) is the pre-existing,
+ * backward-compatible shape: a non-empty source span replaced by non-empty
+ * text. `'insert'` targets a zero-width source span (see `targetMatchesState`)
+ * with non-empty content; `'delete'` targets a non-empty source span with
+ * empty replacement text (see `successor-composite-engine.ts`).
+ */
+export type SuccessorBlockOp = 'replace' | 'insert' | 'delete';
+
 export type SuccessorBlock = Readonly<{
 	id: string;
 	dependsOn: readonly string[];
 	target: SuccessorBlockTarget;
 	candidateSha256: string;
 	mergeGroupId?: string;
+	/** Defaults to `'replace'` when absent -- fully backward compatible. */
+	op?: SuccessorBlockOp;
 }>;
 
 export type SuccessorBlockMergeGroup = Readonly<{
@@ -45,6 +56,7 @@ export type SuccessorBlockPlanDiagnostic = Readonly<{
 		| 'BLOCK_TARGET_INVALID'
 		| 'BLOCK_TARGET_STALE'
 		| 'BLOCK_TARGET_OVERLAP'
+		| 'BLOCK_INSERT_ORDER_AMBIGUOUS'
 		| 'BLOCK_MERGE_GROUP_INVALID'
 		| 'BLOCK_CANDIDATE_HASH_INVALID'
 		| 'BLOCK_SOURCE_STALE';
@@ -87,12 +99,28 @@ function isResolvedSuccessorBlockTarget(target: unknown): target is ResolvedSucc
 		&& typeof selector.documentSha256 === 'string';
 }
 
+const EMPTY_SHA256 = sha256(Buffer.alloc(0));
+
+/**
+ * Resolved-target staleness check, generalized for zero-width insertion
+ * points: when `selector.startByte === selector.endByte` (an `insert`-kind
+ * block's anchor splice point), the target is fresh iff the anchor entry
+ * still exists at the expected document identity AND the zero-width point
+ * still sits at one of that entry's own boundaries (its start, for a
+ * `before`/`inside_start` insert, or its end, for an `after`/`inside_end`
+ * insert). Otherwise (the pre-existing `replace`/`delete` shape) the full
+ * entry span and its content hash must match exactly, unchanged.
+ */
 function targetMatchesState(target: ResolvedSuccessorBlockTarget, state: DocumentState) {
 	const selector = target.selector;
+	if (selector.documentSha256 !== state.documentSha256) return false;
 	const entry = state.structuralIndex.byId[selector.entryId];
-	return !!entry
-		&& selector.documentSha256 === state.documentSha256
-		&& selector.startByte === entry.startByte
+	if (!entry) return false;
+	if (selector.startByte === selector.endByte) {
+		return selector.textSha256 === EMPTY_SHA256
+			&& (selector.startByte === entry.startByte || selector.startByte === entry.endByte);
+	}
+	return selector.startByte === entry.startByte
 		&& selector.endByte === entry.endByte
 		&& selector.textSha256 === entry.textSha256
 		&& sha256(state.documentBytes.subarray(selector.startByte, selector.endByte)) === selector.textSha256;
@@ -177,6 +205,17 @@ export function preflightSuccessorBlockPlan(plan: SuccessorBlockPlan, source: Do
 			const overlaps = leftTarget.selector.startByte < rightTarget.selector.endByte && rightTarget.selector.startByte < leftTarget.selector.endByte;
 			const members = left.mergeGroupId && left.mergeGroupId === right.mergeGroupId ? mergeGroups.get(left.mergeGroupId) : undefined;
 			if (overlaps && (!members || !members.has(left.id) || !members.has(right.id))) diagnostics.push({ code: 'BLOCK_TARGET_OVERLAP', blockId: right.id, relatedBlockId: left.id });
+			// Two zero-width insert points sharing the EXACT same offset are not caught
+			// by the strict-inequality overlap formula above (it requires each span to
+			// extend past the other's start, which two equal zero-width points never
+			// do). Without an explicit `dependsOn` relationship declaring which one
+			// splices first, their relative order would otherwise depend on array
+			// position alone -- a silent, unreviewable choice. Require an explicit
+			// order; reject as ambiguous when neither declares one.
+			const leftZeroWidth = leftTarget.selector.startByte === leftTarget.selector.endByte;
+			const rightZeroWidth = rightTarget.selector.startByte === rightTarget.selector.endByte;
+			const sameZeroWidthPoint = leftZeroWidth && rightZeroWidth && leftTarget.selector.startByte === rightTarget.selector.startByte;
+			if (sameZeroWidthPoint && !left.dependsOn.includes(right.id) && !right.dependsOn.includes(left.id)) diagnostics.push({ code: 'BLOCK_INSERT_ORDER_AMBIGUOUS', blockId: right.id, relatedBlockId: left.id });
 		}
 	}
 	const canonicalDiagnostics = diagnostics.sort(diagnosticOrder);
