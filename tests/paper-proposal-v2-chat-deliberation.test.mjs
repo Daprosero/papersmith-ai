@@ -11,18 +11,18 @@ const aiRoot = path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist');
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),
-	'@earendil-works/pi-ai/compat': path.join(root, '.claude/skills/paper-proposal/engine/_pi-compat/pi-ai-compat.ts'),
 	'@earendil-works/pi-ai': path.join(aiRoot, 'index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
 const workspace = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/proposal-workspace.ts'));
 const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
-const aiCompat = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/_pi-compat/pi-ai-compat.ts'));
 
-function payload(context) {
-	return JSON.parse(context.messages.at(-1).content.find((part) => part.type === 'text').text);
-}
-
+// Ambient-model paradigm (design `sdd/paper-proposal-ambient-model`, SLICE 2): the
+// production real-API transport (faux-provider harness over `ctx.model`) was removed
+// along with `production-tutor-adapter.ts`/`production-planner-adapter.ts`. This test
+// now injects plain scripted `TutorAdapter`/`SemanticEditPlanner` doubles directly
+// through the SAME seam `createPaperProposalExtension`'s `tutor`/`semanticPlanner`
+// options and `orchestrator.ts`/`chat-deliberation.ts` already accept.
 async function fixture() {
 	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-chat-'));
 	await mkdir(path.join(projectRoot, 'proposals'));
@@ -30,37 +30,38 @@ async function fixture() {
 	const guard = workspace.createDocumentOperationGuard(projectRoot);
 	const originalExecute = guard.execute.bind(guard);
 	guard.execute = async (input, signal) => { guardCalls.push(input); return originalExecute(input, signal); };
-	const providerId = `paper-proposal-chat-${Date.now()}-${Math.random()}`;
-	const faux = aiCompat.registerFauxProvider({ api: providerId, provider: providerId, models: [{ id: `${providerId}-model`, input: ['text'], contextWindow: 32000, maxTokens: 4096 }] });
 	let tutorCalls = 0;
 	const tutorInputs = [];
-	faux.setResponses(Array.from({ length: 8 }, () => (context) => {
-		const input = payload(context);
-		if (input.intent) {
+	const tutor = {
+		assess: async (input) => {
+			tutorCalls += 1;
+			tutorInputs.push(input);
+			if (input.context.fragments.some((fragment) => fragment.entryId === 'chat-turn-1')) assert.match(JSON.stringify(input.context.fragments), /Las bolsas deben denotarse como conjuntos finitos/i);
+			return { decision: 'ACCEPT', summary: 'El estado matemático del documento indica que las bolsas deben denotarse como conjuntos finitos.', mathematicalIssues: [], notationIssues: [], assumptionIssues: [], requiredRevisions: [], unresolvedQuestions: [], riskLevel: 'LOW', affectedEntryIds: [] };
+		},
+	};
+	const semanticPlanner = {
+		plan: async (input) => {
 			// ADAPTED (Phase 2, D1): this planner call used to always carry the tutor's OWN prior
 			// conclusion into `instruction` (via the now-retired bare-conversationId leak). The lock
 			// fix means a fresh direct-document request is decoupled from any chat conversationId, so
 			// only the looser "bolsas" match (true for both the retired and the current phrasing) is
 			// asserted here.
 			assert.match(input.instruction, /bolsas/i);
-			return aiCompat.fauxAssistantMessage(JSON.stringify({ actions: [{ kind: 'replace', targetEntryId: input.target.entryId, replacementText: 'La definición de bolsas de entrenamiento las denota como conjuntos finitos.' }], unresolvedQuestions: [] }));
-		}
-		tutorCalls += 1;
-		tutorInputs.push(input);
-		if (input.context.fragments.some((fragment) => fragment.entryId === 'chat-turn-1')) assert.match(JSON.stringify(input.context.fragments), /Las bolsas deben denotarse como conjuntos finitos/i);
-		return aiCompat.fauxAssistantMessage(JSON.stringify({ decision: 'ACCEPT', summary: 'El estado matemático del documento indica que las bolsas deben denotarse como conjuntos finitos.', mathematicalIssues: [], notationIssues: [], assumptionIssues: [], requiredRevisions: [], unresolvedQuestions: [], riskLevel: 'LOW', affectedEntryIds: [] }));
-	}));
+			return { actions: [{ kind: 'replace', targetEntryId: input.target.entryId, replacementText: 'La definición de bolsas de entrenamiento las denota como conjuntos finitos.' }], unresolvedQuestions: [] };
+		},
+	};
 	let tool;
 	const register = () => {
 		const tools = [];
 		const handlers = new Map();
-		workspace.createPaperProposalExtension({ projectRoot, operationGuard: guard })({ registerTool: (candidate) => tools.push(candidate), on: (event, handler) => handlers.set(event, handler) });
+		workspace.createPaperProposalExtension({ projectRoot, operationGuard: guard, tutor, semanticPlanner })({ registerTool: (candidate) => tools.push(candidate), on: (event, handler) => handlers.set(event, handler) });
 		tool = tools.find((candidate) => candidate.name === 'paper_proposal_execute');
 		return handlers;
 	};
 	let handlers = register();
 	const sessionIdentity = `chat-test-session-${Math.random().toString(36).slice(2)}`;
-	const ctx = { model: faux.getModel(), sessionManager: { getSessionId: () => sessionIdentity }, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: 'fake', headers: {}, env: {} }) } }; 
+	const ctx = { sessionManager: { getSessionId: () => sessionIdentity } };
 	return {
 		projectRoot, guardCalls, tutorCalls: () => tutorCalls, tutorInputs: () => tutorInputs,
 		execute: async (params) => (await tool.execute('chat-deliberation', params, undefined, undefined, ctx)).details,
@@ -73,7 +74,7 @@ async function fixture() {
 			const bootstrap = workspace.createProposalWorkspaceTool(projectRoot);
 			await bootstrap.execute('seed', { action: 'write', resource: 'proposal', slug: 'r01', content: '# Propuesta\n\n## Método\n\nLa definición de bolsas de entrenamiento es informal.\n\nLa definición de bolsas de validación es informal.\n' });
 		},
-		async dispose() { faux.unregister?.(); await rm(projectRoot, { recursive: true, force: true }); },
+		async dispose() { await rm(projectRoot, { recursive: true, force: true }); },
 	};
 }
 

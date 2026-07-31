@@ -2,5 +2,5 @@ export * from './block-plan.js'; export * from './successor-composite-engine.js'
 export * from './mutation-lock.js'; export * from './runtime-metrics.js'; export * from './scientific-audit.js'; export * from './consistency-audit.js'; export * from './self-audit.js'; export * from './revision-lifecycle-store.js'; export * from './revision-lifecycle-transaction.js';
 
 export * from './destructive-scope.js'; export * from './cleanup-planner.js'; export * from './conceptual-planner.js'; export * from './tutor-adapter.js'; export * from './reviewer-adapter.js'; export * from './role-budget.js'; export * from './growth-threshold.js';
-export * from './production-runtime.js'; export * from './production-planner-adapter.js'; export * from './production-tutor-adapter.js'; export * from './production-reviewer-adapter.js';
 export * from './initial-revision-creation.js';
+export * from './ambient-supplied-planner.js';

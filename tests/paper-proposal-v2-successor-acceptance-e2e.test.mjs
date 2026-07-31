@@ -11,16 +11,23 @@ const aiRoot = path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist');
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti = createJiti(import.meta.url, { alias: {
  '@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),
- '@earendil-works/pi-ai/compat': path.join(root, '.claude/skills/paper-proposal/engine/_pi-compat/pi-ai-compat.ts'),
  '@earendil-works/pi-ai': path.join(aiRoot, 'index.js'),
  typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
 const workspace = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/proposal-workspace.ts'));
 const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
-const aiCompat = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/_pi-compat/pi-ai-compat.ts'));
 
 const sourceContent = `# 1 Introduction\n\nPrefix bytes remain untouched.\n\n# 2 Framing\n\nOld framing.\n\n## 2.1 Framing average\n\nOld average.\n\n## 2.2 Setup\n\nOld setup.\n\n## 2.3 Method\n\nOld method.\n\n## 2.4 Consequences\n\nOld consequences.\n\n# 3 Results\n\nOld results.\n\n## 3.1 Analysis\n\nOld analysis.\n\n## 3.2 Validation\n\nOld validation.\n\n## 3.3 Discussion\n\nOld discussion.\n\n# 4 Conclusion\n\nSuffix bytes remain untouched.\n`;
 
+// Ambient-model paradigm (design `sdd/paper-proposal-ambient-model`, SLICE 2): the
+// production real-API transport (faux-provider harness over `ctx.model`) was removed
+// along with `production-tutor-adapter.ts`/`production-planner-adapter.ts`. Plain
+// scripted `TutorAdapter`/`SemanticEditPlanner` doubles are injected directly through
+// `createPaperProposalExtension`'s `tutor`/`semanticPlanner` options instead --
+// `plan(input)` now receives the engine's own `SemanticPlannerInput` directly (not a
+// serialized wire payload), so the dispatch mirrors `production-planner-adapter.ts`'s
+// own `successorInput(input)` discriminator (`input.context?.successorCompositeTarget
+// === true`) rather than inspecting a JSON request body.
 async function fixture() {
  const projectRoot = await mkdtemp(path.join(tmpdir(), 'pp-v2-successor-acceptance-'));
  await mkdir(path.join(projectRoot, 'proposals'));
@@ -31,33 +38,35 @@ async function fixture() {
  const guard = workspace.createDocumentOperationGuard(projectRoot);
  const guardExecute = guard.execute.bind(guard);
  guard.execute = async (input, signal) => { guardCalls.push(input); return guardExecute(input, signal); };
- const providerId = `paper-proposal-successor-acceptance-${Date.now()}-${Math.random()}`;
- const faux = aiCompat.registerFauxProvider({ api: providerId, provider: providerId, models: [{ id: `${providerId}-model`, input: ['text'], contextWindow: 32000, maxTokens: 4096 }] });
  const state = await v2.loadDocumentState(projectRoot, 'research-concept-r01.md');
  const entry = heading => state.structuralIndex.entries.find(candidate => ['section', 'subsection', 'heading'].includes(candidate.type) && state.documentBytes.subarray(candidate.startByte, candidate.endByte).toString('utf8').includes(heading));
  const childId = entry('## 2.2 Setup').entryId;
  const outsideId = entry('# 4 Conclusion').entryId;
- faux.setResponses(Array.from({ length: 16 }, () => context => {
-  const payload = JSON.parse(context.messages.at(-1).content.find(part => part.type === 'text').text);
-  if (payload.operation === 'CREATE_SUCCESSOR_REPLACEMENT') {
-   plannerPayloads.push(payload);
-   const replacementText = /recupera el promedio/i.test(payload.instruction)
-    ? '## 2.1 Framing average\n\nEl promedio se recupera.\n\n'
-    : '# 3 Results Revised\n\nOnly the bounded composite locus changes.\n\n';
-   return aiCompat.fauxAssistantMessage(aiCompat.fauxToolCall('paper_proposal_successor_replacement', { replacementText, unresolvedQuestions: [] }));
-  }
-  if (!payload.intent) return aiCompat.fauxAssistantMessage(JSON.stringify({ decision: 'ACCEPT', summary: 'The current managed revision is the correct source.', mathematicalIssues: [], notationIssues: [], assumptionIssues: [], requiredRevisions: [], unresolvedQuestions: [], riskLevel: 'LOW', affectedEntryIds: [] }));
-  const targetEntryId = /child action/i.test(payload.instruction) ? childId : /outside action/i.test(payload.instruction) ? outsideId : payload.target.entryId;
-  return aiCompat.fauxAssistantMessage(aiCompat.fauxToolCall('paper_proposal_conceptual_revision', { actions: [{ kind: 'replace', targetEntryId, replacementText: '# 2–3.3 Revised\n\nOnly the bounded composite range changes.\n\n' }], unresolvedQuestions: [] }));
- }));
+ const tutor = {
+  assess: async () => ({ decision: 'ACCEPT', summary: 'The current managed revision is the correct source.', mathematicalIssues: [], notationIssues: [], assumptionIssues: [], requiredRevisions: [], unresolvedQuestions: [], riskLevel: 'LOW', affectedEntryIds: [] }),
+ };
+ const semanticPlanner = {
+  plan: async (input) => {
+   if (input.context?.successorCompositeTarget === true) {
+    plannerPayloads.push({ operation: 'CREATE_SUCCESSOR_REPLACEMENT', instruction: input.instruction, constraints: input.constraints, documentSha256: input.documentSha256, context: input.context });
+    const replacementText = /recupera el promedio/i.test(input.instruction)
+     ? '## 2.1 Framing average\n\nEl promedio se recupera.\n\n'
+     : '# 3 Results Revised\n\nOnly the bounded composite locus changes.\n\n';
+    return { actions: [{ kind: 'replace', targetEntryId: input.target.entryId, replacementText }], unresolvedQuestions: [] };
+   }
+   const targetEntryId = /child action/i.test(input.instruction) ? childId : /outside action/i.test(input.instruction) ? outsideId : input.target.entryId;
+   return { actions: [{ kind: 'replace', targetEntryId, replacementText: '# 2–3.3 Revised\n\nOnly the bounded composite range changes.\n\n' }], unresolvedQuestions: [] };
+  },
+ };
  const tools = [];
- workspace.createPaperProposalExtension({ projectRoot, operationGuard: guard })({ registerTool: tool => tools.push(tool), on: () => {} });
+ workspace.createPaperProposalExtension({ projectRoot, operationGuard: guard, tutor, semanticPlanner })({ registerTool: tool => tools.push(tool), on: () => {} });
  const tool = tools.find(candidate => candidate.name === 'paper_proposal_execute');
- const ctx = { model: faux.getModel(), sessionManager: { getSessionId: () => `acceptance-session-${providerId}` }, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: 'fake', headers: {}, env: {} }) } };
+ const sessionIdentity = `acceptance-session-${Math.random().toString(36).slice(2)}`;
+ const ctx = { sessionManager: { getSessionId: () => sessionIdentity } };
  return {
   projectRoot, guardCalls, plannerPayloads, state,
   execute: async params => (await tool.execute('successor-acceptance', params, undefined, undefined, ctx)).details,
-  async dispose() { faux.unregister?.(); await rm(projectRoot, { recursive: true, force: true }); },
+  async dispose() { await rm(projectRoot, { recursive: true, force: true }); },
  };
 }
 

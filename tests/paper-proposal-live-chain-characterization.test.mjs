@@ -93,7 +93,7 @@ test('lifecycle-v1 materialization preserves $$ math delimiters and applies the 
 
 		// Exercises the exact call contract cli.mjs's registered paper_proposal_execute
 		// tool uses for SCIENTIFIC_WORKFLOW operations (getScientificWorkflowRuntime().execute(...)).
-		const runtime = new v2.ScientificWorkflowRuntime(projectRoot, {}, {}, { lifecycleV1WorkspaceId: 'workspace-1' });
+		const runtime = new v2.ScientificWorkflowRuntime(projectRoot, {}, { lifecycleV1WorkspaceId: 'workspace-1' });
 		const result = await runtime.execute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'request materialization for the accepted energy identity', scientificAct: 'REQUEST_MATERIALIZATION', candidateIds: ['decision-a'] });
 		assert.equal(result.status, 'materialized', JSON.stringify(result));
 

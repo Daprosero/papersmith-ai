@@ -18,7 +18,6 @@ const aiRoot = path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist');
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),
-	'@earendil-works/pi-ai/compat': path.join(root, '.claude/skills/paper-proposal/engine/_pi-compat/pi-ai-compat.ts'),
 	'@earendil-works/pi-ai': path.join(aiRoot, 'index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });

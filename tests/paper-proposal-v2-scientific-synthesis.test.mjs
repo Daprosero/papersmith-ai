@@ -103,6 +103,11 @@ test('ScientificWorkflowService reopens immutable synthesis history and requires
 test('Scientific synthesis orchestration imports canonical contracts and has no document, lifecycle, or materialization authority', async () => {
 	const source = await readFile(path.join(root, '.claude/skills/paper-proposal/engine/scientific-workflow-service.ts'), 'utf8');
 	assert.match(source, /scientific-domain\.js/);
-	assert.match(source, /ProductionModelRuntime/);
+	// Ambient-model paradigm (design `sdd/paper-proposal-ambient-model`, SLICE 2): the
+	// production real-API `ProductionModelRuntime` wiring was removed; the role-port
+	// boundary this test enforces is now the injectable `TutorAdapter`/`ReviewerAdapter`
+	// contracts themselves, imported directly rather than through a production runtime.
+	assert.match(source, /tutor-adapter\.js/);
+	assert.match(source, /reviewer-adapter\.js/);
 	assert.doesNotMatch(source, /(?:writeFile|ProposalWorkspaceAdapter|publishInitial|publishSuccessor|createInitialProposal|MATERIALIZATION_COMMITTED)/);
 });

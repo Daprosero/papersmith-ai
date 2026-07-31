@@ -11,17 +11,31 @@ const aiRoot = path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist');
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),
-	'@earendil-works/pi-ai/compat': path.join(root, '.claude/skills/paper-proposal/engine/_pi-compat/pi-ai-compat.ts'),
 	'@earendil-works/pi-ai': path.join(aiRoot, 'index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
 const workspace = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/proposal-workspace.ts'));
-const aiCompat = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/_pi-compat/pi-ai-compat.ts'));
 
 const MARKER = '<!-- proposal-workspace:artifact:v1 -->\n';
 
-function payload(context) {
-	return JSON.parse(context.messages.at(-1).content.find((part) => part.type === 'text').text);
+// Ambient-model paradigm (design `sdd/paper-proposal-ambient-model`, SLICE 2): the
+// production real-API tutor transport (`_pi-compat/pi-ai-compat.ts`'s faux-provider
+// harness) was removed along with `production-tutor-adapter.ts`. This test now injects
+// a plain scripted `TutorAdapter` (`{assess}`) directly through the SAME seam
+// `createPaperProposalExtension`'s `tutor` option and `ChatDeliberationService`'s
+// constructor already accept -- no faux model transport or `ctx.model` needed.
+function scriptedTutor() {
+	let tutorCalls = 0;
+	const tutorInputs = [];
+	return {
+		tutorCalls: () => tutorCalls,
+		tutorInputs: () => tutorInputs,
+		assess: async (input) => {
+			tutorCalls += 1;
+			tutorInputs.push(input);
+			return { decision: 'ACCEPT', summary: 'El estado matemático del documento es consistente.', mathematicalIssues: [], notationIssues: [], assumptionIssues: [], requiredRevisions: [], unresolvedQuestions: [], riskLevel: 'LOW', affectedEntryIds: [] };
+		},
+	};
 }
 
 async function writeManagedProposal(projectRoot, filename, body) {
@@ -38,25 +52,16 @@ async function fixture() {
 	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-chat-base-guide-'));
 	await mkdir(path.join(projectRoot, 'proposals'));
 	const guard = workspace.createDocumentOperationGuard(projectRoot);
-	const providerId = `paper-proposal-base-guide-${Date.now()}-${Math.random()}`;
-	const faux = aiCompat.registerFauxProvider({ api: providerId, provider: providerId, models: [{ id: `${providerId}-model`, input: ['text'], contextWindow: 32000, maxTokens: 4096 }] });
-	let tutorCalls = 0;
-	const tutorInputs = [];
-	faux.setResponses(Array.from({ length: 8 }, () => (context) => {
-		const input = payload(context);
-		tutorCalls += 1;
-		tutorInputs.push(input);
-		return aiCompat.fauxAssistantMessage(JSON.stringify({ decision: 'ACCEPT', summary: 'El estado matemático del documento es consistente.', mathematicalIssues: [], notationIssues: [], assumptionIssues: [], requiredRevisions: [], unresolvedQuestions: [], riskLevel: 'LOW', affectedEntryIds: [] }));
-	}));
+	const tutor = scriptedTutor();
 	const tools = [];
-	workspace.createPaperProposalExtension({ projectRoot, operationGuard: guard })({ registerTool: (candidate) => tools.push(candidate), on: () => {} });
+	workspace.createPaperProposalExtension({ projectRoot, operationGuard: guard, tutor })({ registerTool: (candidate) => tools.push(candidate), on: () => {} });
 	const tool = tools.find((candidate) => candidate.name === 'paper_proposal_execute');
 	const sessionIdentity = `chat-base-guide-session-${Math.random().toString(36).slice(2)}`;
-	const ctx = { model: faux.getModel(), sessionManager: { getSessionId: () => sessionIdentity }, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: 'fake', headers: {}, env: {} }) } };
+	const ctx = { sessionManager: { getSessionId: () => sessionIdentity } };
 	return {
-		projectRoot, tutorCalls: () => tutorCalls, tutorInputs: () => tutorInputs,
+		projectRoot, tutorCalls: tutor.tutorCalls, tutorInputs: tutor.tutorInputs,
 		execute: async (params) => (await tool.execute('chat-base-guide', params, undefined, undefined, ctx)).details,
-		async dispose() { faux.unregister?.(); await rm(projectRoot, { recursive: true, force: true }); },
+		async dispose() { await rm(projectRoot, { recursive: true, force: true }); },
 	};
 }
 

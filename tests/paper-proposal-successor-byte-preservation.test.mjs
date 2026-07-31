@@ -99,7 +99,7 @@ async function materializeSingleDecision({ baseContent, summary, workspaceId = '
 		const decisions = [{ decisionId: 'decision-a', threadId: 'thread-a', acceptedEventId: 'accepted-a', acceptedSynthesisDigest: synthesisDigest, acceptedBy: { kind: 'USER' }, state: 'ACCEPTED_UNMATERIALIZED', sourceEventIds: ['tutor-a', 'review-a'] }];
 		await store.commitTransition({ events, snapshot: { schemaVersion: 1, activeThreadId: 'thread-a', threads, relations: [], decisions } });
 
-		const runtime = new v2.ScientificWorkflowRuntime(projectRoot, {}, {}, { lifecycleV1WorkspaceId: workspaceId });
+		const runtime = new v2.ScientificWorkflowRuntime(projectRoot, {}, { lifecycleV1WorkspaceId: workspaceId });
 		const result = await runtime.execute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'request materialization for the accepted energy identity', scientificAct: 'REQUEST_MATERIALIZATION', candidateIds: ['decision-a'] });
 		assert.equal(result.status, 'materialized', JSON.stringify(result));
 		const inventory = await lifecycle.rebuildLifecycleInventory(workspaceId);

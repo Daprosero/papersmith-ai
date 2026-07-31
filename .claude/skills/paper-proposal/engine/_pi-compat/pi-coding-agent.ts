@@ -1,22 +1,15 @@
 // pi-free compatibility shim for `@earendil-works/pi-coding-agent`.
 //
 // Reproduces exactly the surface the paper-proposal engine consumes:
-//   - types: ExtensionAPI, ExtensionContext, SessionShutdownEvent, ModelDescriptor
+//   - types: ExtensionAPI, ExtensionContext, SessionShutdownEvent
 //   - runtime: withFileMutationQueue (per-path async mutation serialization)
 //
-// The host (cli.ts) supplies a concrete ExtensionContext backed by the Claude
-// transport; the engine logic is untouched.
-
-/** Model identity the engine forwards to the transport layer. */
-export type ModelDescriptor = { provider: string; id: string };
-
-export type ApiKeyAndHeaders =
-	| { ok: true; apiKey: string; headers?: Record<string, string>; env?: Record<string, string | undefined>; error?: undefined }
-	| { ok: false; apiKey?: undefined; headers?: undefined; env?: undefined; error: string };
-
-export interface ModelRegistry {
-	getApiKeyAndHeaders(model: ModelDescriptor): Promise<ApiKeyAndHeaders>;
-}
+// The host (cli.mjs) supplies a concrete ExtensionContext; the engine logic is
+// untouched. The ambient-model paradigm (design `sdd/paper-proposal-ambient-model`)
+// removed the separate-model transport, so this context no longer carries a model
+// identity or a model-auth registry (`ModelDescriptor`/`ApiKeyAndHeaders`/
+// `getApiKeyAndHeaders` were removed as unreferenced once `production-runtime.ts`
+// -- their only consumer -- was deleted).
 
 export interface SessionManager {
 	getSessionId(): string;
@@ -28,8 +21,6 @@ export interface UI {
 
 /** Runtime context handed to the tool's execute(): the members the engine reads. */
 export interface ExtensionContext {
-	model?: ModelDescriptor;
-	modelRegistry: ModelRegistry;
 	sessionManager: SessionManager;
 	hasUI?: boolean;
 	ui: UI;

@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import type { Compilation, EditPlan } from './types.js';
+import type { Compilation, EditAction, EditPlan } from './types.js';
 
 const MAX_SESSIONS = 32;
 const MAX_PREVIEWS_PER_SESSION = 8;
@@ -17,6 +17,18 @@ export type FrozenSuccessorPreview = Readonly<{
  compiled: Compilation;
  modelCalls: number;
  plannerCalls: number;
+ /**
+  * Ambient composite MIXED-batch only (design `sdd/paper-proposal-ambient-model`,
+  * SLICE 1b): when one CREATE_SUCCESSOR call carries both in-place
+  * (replace/insert/delete) and relocation (move/copy) decisions, `plan`/`compiled`
+  * above freeze ONLY the in-place half against the CURRENT source. The
+  * relocation half cannot be frozen the same way -- its byte offsets shift once
+  * the in-place half publishes -- so its ORIGINAL, fuzzy, text-based locus
+  * queries (never byte offsets) and already-validated decisions are deferred
+  * here, to be RE-RESOLVED fresh against the in-place version's just-published
+  * state at accept time (see `orchestrator.ts`'s `acceptAmbientCompositeSuccessor`).
+  */
+ pendingRelocation?: Readonly<{ queries: readonly string[]; oldEntryIds: readonly string[]; decisions: readonly EditAction[] }>;
 }>;
 
 type StoredPreview = FrozenSuccessorPreview & { token: string };

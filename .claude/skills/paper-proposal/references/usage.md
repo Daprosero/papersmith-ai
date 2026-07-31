@@ -1,138 +1,221 @@
-# Paper Proposal V2 examples and help
+# Paper Proposal — examples and help
 
-Use `/skill:paper-proposal` for guidance. Every proposal operation is executed with `paper_proposal_execute` and a natural-language request. Most examples below assume the proposal already exists and is managed by V2; the first example covers creating that initial version.
+See [SKILL.md](../SKILL.md) for the full tutor-role conditioning and workflow discipline. This page is worked examples only: creating the first managed version, resolving a locus, building `resolvedDecisions`, and the preview → accept → publish cycle. Every call below is a real, verified invocation of `node .claude/skills/paper-proposal/engine/cli.mjs` — none of it requires `ANTHROPIC_API_KEY` or any model configuration.
 
 ## Creating the first managed version
 
-When no managed proposal exists yet, call `paper_proposal_execute` with `operation: CREATE_INITIAL_REVISION` and the idea as `instruction`:
+When no managed proposal exists yet, call the engine with `operation: CREATE_INITIAL_REVISION` and the idea as `instruction`:
 
-```json
-{
+```bash
+node .claude/skills/paper-proposal/engine/cli.mjs '{
   "operation": "CREATE_INITIAL_REVISION",
   "instruction": "A paper proposing a distribution-free calibration test for conformal prediction sets under covariate shift."
-}
+}'
 ```
 
-This is explicit and user-triggered only: it never runs automatically from a chat turn or any other route, and it is rejected outright when a managed proposal already exists (it never overwrites or duplicates one). The engine loads the paper-guide directory once and composes v1 from that guide content plus the supplied idea — title, section heading, and filename slug are all derived from the idea, never a fixed generic skeleton. A successful call returns the created filename, revision, and document hash as completion evidence.
+This is explicit and user-triggered only: it never runs automatically, and it is rejected outright when a managed proposal already exists (it never overwrites or duplicates one). The engine loads the project's `guidance/paper-guide` directory once and composes v1 from that guide content plus the supplied idea — title, section heading, and filename slug are all derived from the idea, never a fixed generic skeleton. A successful call returns the created filename, revision, and document hash as completion evidence.
 
-## Chat deliberation
+## Resolving a locus before deciding
 
-For a non-mutating tutor conversation, call `paper_proposal_execute` with `operation: CHAT_DELIBERATION`:
+Before you can build a `resolvedDecisions` entry, you need the engine's own resolved entry ID for the locus you intend to touch. This is read-only and makes no model call — it uses the exact same resolver `orchestrator.ts` calls internally for `CREATE_SUCCESSOR`:
 
-> Discuss whether the bag definition in section 3.1 should use finite-set notation. Do not edit the proposal.
-
-Pass the returned `conversationId` in a follow-up to reuse the bounded in-session conclusions. Chat works when persistent scientific workflow is disabled, does not require a managed proposal, and does not promise survival across restarts. It creates no proposal, receipt, audit record, document mutation, or delegated task authority. An explicit `CHAT_DELIBERATION` request stays chat even when its wording mentions a document or lifecycle action.
-
-On the first turn of a new deliberation (no `sourceFilename` and no prior `confirmBase`), the engine resolves the latest managed revision and asks for confirmation before proceeding: `status: "base_confirmation_required"` with either a single `proposedBase` (resend with `confirmBase: true` to accept it, or `sourceFilename` to override) or, if more than one active revision exists, a `MULTIPLE_ACTIVE_REVISIONS` warning plus the full candidate list (an exact `sourceFilename` is then required). No path or filename is ever guessed or hardcoded.
-
-By default, the tutor assesses every turn. When a turn proposes a concrete change (an `ACCEPT_WITH_REVISIONS`- or `PROPOSE_ALTERNATIVE`-type decision), the engine additionally runs the reviewer and, if needed, a bounded repair loop (at most 2 repair cycles) before returning its conclusion — this runs by default, with no separate flag to enable it. A purely discussion turn runs the tutor alone. Each turn's result also carries a non-blocking `growthAdvisory` suggesting materialization once the accumulated approved changes exceed roughly 4 sections or 40% of the document.
-
-Deliberation is locked: once `CHAT_DELIBERATION` opens, follow-up turns stay in chat even if they use edit verbs — the engine never infers a document edit from wording alone while the conversation is open:
-
-> Now apply that conclusion to the definition of training bags.
-
-The turn above is still handled in-chat, not as a document edit. To leave chat, either materialize the conversation as a draft (below) or send an explicit close:
-
-```json
-{ "operation": "CLOSE_DELIBERATION", "conversationId": "chat-…" }
+```bash
+node --input-type=module -e '
+import { createJiti } from "jiti";
+import path from "node:path";
+const engineDir = path.resolve(".claude/skills/paper-proposal/engine");
+const jiti = createJiti(import.meta.url);
+const engine = await jiti.import(path.join(engineDir, "exports.ts"));
+const state = await engine.loadDocumentState(process.cwd(), "research-concept-r05.md");
+const resolution = engine.resolveSuccessorTarget(state, "the definition of stationarity in the assumptions section");
+const gate = engine.ambiguityGate(resolution.candidates);
+console.log(JSON.stringify({ entryId: gate.candidate?.entryId, blocked: gate.blocked, question: gate.question, candidates: resolution.candidates.map((c) => c.entryId) }, null, 2));
+'
 ```
 
-`CLOSE_DELIBERATION` discards the conversation's in-session state (turns, tutor/reviewer conclusions, accumulated growth tally). Reusing the same `conversationId` afterward is rejected as terminated, not resumed — start a new `CHAT_DELIBERATION` instead, which resolves its base the same way as any new deliberation.
+- If `blocked` is `false`, `entryId` is the real value to use as `targetEntryId`/`anchorEntryId`/`sourceEntryIds`/`destinationAnchorId` in your decision.
+- If `blocked` is `true`, the description matched more than one candidate — narrow it (add the section, a nearby phrase, or an exact quote) and resolve again. Never guess between the listed `candidates`.
 
-## Materialize chat as a standalone draft
+Do this once per independent locus in the batch you are about to apply.
 
-Materialization is the only mutating exit from `CHAT_DELIBERATION` that does not edit the managed primary document. Send the existing `conversationId` and a `draftMaterialization` object:
+## Building `resolvedDecisions` and applying
+
+### Replace (the common case: rewrite a paragraph, definition, or block)
+
+```bash
+node .claude/skills/paper-proposal/engine/cli.mjs '{
+  "operation": "CREATE_SUCCESSOR",
+  "sourceFilename": "research-concept-r05.md",
+  "instruction": "Tighten the definition of stationarity to require strict, not weak, stationarity.",
+  "selectedEntryId": "the definition of stationarity in the assumptions section",
+  "resolvedDecisions": [
+    { "kind": "replace", "targetEntryId": "<entryId from the resolve step>", "replacementText": "A process is strictly stationary when its full joint distribution is shift-invariant..." }
+  ]
+}'
+```
+
+### Insert
 
 ```json
 {
-  "operation": "INITIAL_CREATE",
-  "route": "<configured-draft-directory>/<metadata-derived-name>.<allowed-extension>",
-  "authorized": true
+  "operation": "CREATE_SUCCESSOR",
+  "sourceFilename": "research-concept-r05.md",
+  "instruction": "Add a remark after the main theorem clarifying the role of the boundedness assumption.",
+  "selectedEntryId": "the main theorem statement",
+  "resolvedDecisions": [
+    { "kind": "insert", "anchorEntryId": "<entryId>", "position": "after", "content": "**Remark.** Boundedness is used only to control the tail of the empirical process; ..." }
+  ]
 }
 ```
 
-The authorization applies only to the current turn. The exact route must be relative, normalized, inside the configured draft directory, use an allowed extension, differ from the dynamically resolved managed primary document, and identify a target that does not exist or resolve through a symlink. `UPDATE` and `REPLACE` are always rejected from chat.
+### Delete
 
-When `route` is omitted, V2 returns a metadata-derived proposal and writes nothing. On a later turn, set `approveProposedRoute: true` and explicitly authorize `INITIAL_CREATE`; V2 uses only the exact pending route. A supplied invalid or conflicting route is rejected unchanged and is never silently rewritten.
+```json
+{
+  "operation": "CREATE_SUCCESSOR",
+  "sourceFilename": "research-concept-r05.md",
+  "instruction": "Remove the sentence claiming the method has no computational overhead — it is unsupported.",
+  "selectedEntryId": "the sentence claiming no computational overhead, in the limitations section",
+  "resolvedDecisions": [
+    { "kind": "delete", "targetEntryId": "<entryId>", "instructionEvidence": "Remove the sentence claiming the method has no computational overhead.", "reason": "unsupported claim" }
+  ]
+}
+```
 
-Success returns the exact route, `INITIAL_CREATE`, written UTF-8 byte count, confirmation that the managed primary document is intact, and terminal completion. Materialization carries the consolidated session-local chat content without another tutor or reviewer call and does not resume deliberation.
+### Move (literal — content carried byte-for-byte)
 
-## Maintenance handoff
+```json
+{
+  "operation": "CREATE_SUCCESSOR",
+  "sourceFilename": "research-concept-r05.md",
+  "instruction": "Move the paragraph beginning \"We next impose compactness\" from the motivation section to immediately before the assumptions list.",
+  "selectedEntryId": "the paragraph beginning \"We next impose compactness\"",
+  "resolvedDecisions": [
+    {
+      "kind": "move",
+      "sourceEntryIds": ["<source entryId>"],
+      "destinationAnchorId": "<destination entryId>",
+      "position": "before",
+      "moveMode": "LITERAL",
+      "removeSource": true,
+      "cleanupLevel": "NONE"
+    }
+  ]
+}
+```
 
-`MAINTENANCE` is distinct from chat and document editing. It returns an explicit external-controller handoff and may carry a `maintenance-…` task ID, but V2 does not create a worker, resume a task, grant document authority, or persist maintenance state. Use it only when an external controller has a narrowly scoped, justified maintenance action to delegate.
+### Copy (adaptive — content reworded to fit its new context)
 
-## Editing examples
+An `ADAPTIVE` relocation requires you to supply the reworded text yourself in `transformedContent` — the engine never invents it, and neither should you without a stated basis:
 
-### Modify
+```json
+{
+  "operation": "CREATE_SUCCESSOR",
+  "sourceFilename": "research-concept-r05.md",
+  "instruction": "Copy the notation convention for logarithms from the notation section to the start of the appendix, adapting it to refer back to the notation section.",
+  "selectedEntryId": "the sentence establishing the natural-logarithm convention",
+  "resolvedDecisions": [
+    {
+      "kind": "copy",
+      "sourceEntryIds": ["<source entryId>"],
+      "destinationAnchorId": "<appendix start entryId>",
+      "position": "inside_start",
+      "moveMode": "ADAPTIVE",
+      "removeSource": false,
+      "cleanupLevel": "NONE",
+      "transformedContent": "As established in the notation section, all logarithms are natural unless noted otherwise."
+    }
+  ]
+}
+```
 
-Call `paper_proposal_execute` with:
+### Multiple independent loci in one version
 
-> In the methodology section, modify the paragraph defining the loss so it states that the expectation is over both data and augmentation randomness. Preserve the notation used in the following equation.
+Use `selectedEntryIds` (plural) instead of `selectedEntryId`, one locus description per entry, and supply one decision per resolved locus:
 
-### Move
+```json
+{
+  "operation": "CREATE_SUCCESSOR",
+  "sourceFilename": "research-concept-r05.md",
+  "instruction": "Tighten stationarity and add the boundedness remark in the same version.",
+  "selectedEntryIds": ["the definition of stationarity in the assumptions section", "the main theorem statement"],
+  "resolvedDecisions": [
+    { "kind": "replace", "targetEntryId": "<entryId 1>", "replacementText": "..." },
+    { "kind": "insert", "anchorEntryId": "<entryId 2>", "position": "after", "content": "..." }
+  ]
+}
+```
 
-Call `paper_proposal_execute` with:
+A batch that mixes in-place kinds (`replace`/`insert`/`delete`) with a relocation (`move`/`copy`) still completes in a single accept call, but publishes as two versions — see SKILL.md's "One version per homogeneous batch."
 
-> Move the paragraph beginning “We next impose compactness” from the motivation section to immediately before the assumptions list. Remove it from its current location.
+## Preview, then accept
 
-### Copy
+Every `CREATE_SUCCESSOR` call above only previews. A real run looks like:
 
-Call `paper_proposal_execute` with:
+```json
+{
+  "operation": "CREATE_SUCCESSOR",
+  "modelCalls": 1,
+  "plannerCalls": 1,
+  "tutorCalls": 0,
+  "reviewerCalls": 0,
+  "mutations": 0,
+  "status": "awaiting_acceptance",
+  "targetFilename": "research-concept-r06.md",
+  "acceptanceToken": "…",
+  "patchCount": 1,
+  "manifestStatus": "NOT_PUBLISHED",
+  "nextAction": "accept_successor"
+}
+```
 
-> Copy the exact sentence “All logarithms are natural unless noted otherwise.” from the notation section to the start of the appendix. Preserve the original sentence in the notation section.
+(`modelCalls`/`plannerCalls` are always `1` here as a bookkeeping artifact of routing through the ambient-supplied planner — no network or model call is made. `tutorCalls`/`reviewerCalls` are always `0`: those roles are yours, in-conversation, not the engine's.)
 
-### Delete content but keep the section
+To publish, start a `--serve` session and send the same request twice — the preview line, then an accept line with `acceptSuccessor: true` and the returned `acceptanceToken`:
 
-Call `paper_proposal_execute` with:
+```bash
+node .claude/skills/paper-proposal/engine/cli.mjs --serve
+```
 
-> In the limitations section, delete only the sentence claiming the method has no computational overhead. Keep the section and all other content.
+```json
+{"operation":"CREATE_SUCCESSOR","sourceFilename":"research-concept-r05.md","instruction":"...","selectedEntryId":"...","resolvedDecisions":[{"kind":"replace","targetEntryId":"...","replacementText":"..."}]}
+{"operation":"CREATE_SUCCESSOR","sourceFilename":"research-concept-r05.md","instruction":"...","selectedEntryId":"...","resolvedDecisions":[{"kind":"replace","targetEntryId":"...","replacementText":"..."}],"acceptSuccessor":true,"successorAcceptanceToken":"<the acceptanceToken from the first line>"}
+```
 
-### Delete a section
+The second line returns `status: "published"`, the new filename, `receiptId`, `manifestStatus: "COMMITTED"`, and `auditStatus`/`selfAuditStatus: "PASS"`. The acceptance token is single-use and lives only in that `--serve` process's memory — a preview from one process cannot be accepted by another invocation of `cli.mjs`.
 
-Call `paper_proposal_execute` with:
+## Rejections are the safety net, not a bug
 
-> Delete the entire section headed “Preliminary Ablations,” including its content. Do not delete similarly named references elsewhere.
+If your resolution or decision was wrong, the engine rejects it instead of silently doing something else:
 
-### Cleanup
-
-Call `paper_proposal_execute` with:
-
-> Clean up the notation subsection structurally: normalize list formatting and remove duplicate blank lines. Do not change mathematical meaning.
-
-### Conceptual revision
-
-Call `paper_proposal_execute` with:
-
-> Revise the convergence argument so it consistently assumes local Lipschitz continuity rather than global smoothness. Update only the directly affected explanation and assumptions, and flag consequences that require clarification.
-
-### Deliberation
-
-Call `paper_proposal_execute` with:
-
-> Deliberate on whether the identifiability assumption should remain explicit or be replaced by an invariance argument. Compare mathematical consequences, notation impact, and risks without changing the proposal.
+- `WRONG_TARGET_ENTRY_ID` — re-resolve the locus (previous section) and rebuild the decision; do not reuse a stale or guessed ID.
+- `ALTERED_REPLACEMENT_TEXT` — for an exact byte-preserving edit, copy the original block into `replacementText` unchanged.
+- `NO_MATCHING_DECISION` / `AMBIGUOUS_MATCHING_DECISIONS` — every resolved locus in the request needs exactly one decision claiming it.
+- `SOURCE_EQUALS_DESTINATION` / `HIERARCHY_CYCLE_DESTINATION_DESCENDANT` / `NO_OP_PLAN` — the described relocation or replacement is structurally impossible; go back to the user rather than forcing a shape that would satisfy validation without satisfying the request.
 
 ## Managed revision lifecycle
 
-To withdraw an eligible managed revision, call `paper_proposal_execute` with `operation: WITHDRAW_REVISION`, its exact `sourceFilename`, and a clear instruction. Omit `withdrawalOperationId`; V2 generates and returns it.
+To withdraw an eligible managed revision:
 
-To restore it, call the same tool with `operation: RESTORE_WITHDRAWN_REVISION` and either the exact withdrawn `sourceFilename` or the returned `withdrawalOperationId`. If more than one withdrawn record has that filename, use the operation ID requested by the clarification.
+```bash
+node .claude/skills/paper-proposal/engine/cli.mjs '{
+  "operation": "WITHDRAW_REVISION",
+  "sourceFilename": "research-concept-r05.md",
+  "withdrawalReason": "superseded by a cleaner formulation"
+}'
+```
 
-Lifecycle actions are distinct from content deletion. “Delete r02” requires clarification; “delete this section” remains a content `DELETE`.
+Omit `withdrawalOperationId` — the engine generates and returns it along with the audited backup location. To restore:
 
-## Clarification and ambiguity
+```bash
+node .claude/skills/paper-proposal/engine/cli.mjs '{
+  "operation": "RESTORE_WITHDRAWN_REVISION",
+  "sourceFilename": "research-concept-r05.md"
+}'
+```
 
-V2 does not silently choose among plausible targets. If it returns a clarification, answer it and call `paper_proposal_execute` again.
-
-Ambiguous request:
-
-> Delete the consistency paragraph.
-
-Better follow-up after V2 reports two matches:
-
-> Use the consistency paragraph in the section headed “Asymptotic Guarantees,” the one beginning “Under compactness.” Delete that paragraph only.
-
-If the target still cannot be resolved, provide an exact quote plus its semantic location. Do not provide offsets, hashes, revision names, or internal patch fields.
+If more than one withdrawn record shares that filename, the engine asks for the exact `withdrawalOperationId` instead of guessing. Withdrawal and restore bypass target resolution, `resolvedDecisions`, and all planning — they are deterministic file operations with an audited recovery copy, unaffected by the ambient-model rewrite.
 
 ## Reading the result
 
-Before claiming completion, check the returned outcome and the available receipt, manifest, effective profile/budget, recovery or restart guidance, consistency audit, and `SelfAudit`. A clarification, blocked recovery state, failed consistency audit, or incomplete `SelfAudit` means the operation is not complete.
+Before telling the user an edit is complete, check the returned `status`, `manifestStatus`, `auditStatus`, `selfAuditStatus`, and `recoveryStatus`. Anything other than `published` / `COMMITTED` / `PASS` / `PASS` / `not_required` means the operation is not done — follow only the recovery or clarification the engine itself reports; never invent a revision or replay a request blindly.

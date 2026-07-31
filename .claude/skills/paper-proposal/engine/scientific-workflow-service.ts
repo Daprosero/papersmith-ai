@@ -2,10 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { ReviewerAdapter, ReviewerAssessment } from './reviewer-adapter.js';
 import { validateReviewerAssessment } from './reviewer-adapter.js';
 import { ScientificContextBuilder, type ScientificContextBuilderInput } from './scientific-context-builder.js';
-import { createProductionReviewerAdapter } from './production-reviewer-adapter.js';
-import { ProductionModelRuntime } from './production-runtime.js';
 import { recordScientificMetric } from './runtime-metrics.js';
-import { createProductionTutorAdapter } from './production-tutor-adapter.js';
 import type { ScientificSnapshotRecord } from './scientific-state-store.js';
 import { ScientificStateStore } from './scientific-state-store.js';
 import type { TutorAdapter, TutorAssessment } from './tutor-adapter.js';
@@ -55,11 +52,6 @@ export type ScientificWorkflowServiceDependencies = {
 	newId?: () => string;
 	now?: () => Date;
 };
-
-/** Reuses the existing production role adapters without granting workflow authority to the runtime. */
-export function createProductionScientificRoleAdapters(runtime: ProductionModelRuntime): Pick<ScientificWorkflowServiceDependencies, 'tutor' | 'reviewer'> {
-	return { tutor: createProductionTutorAdapter(runtime), reviewer: createProductionReviewerAdapter(runtime) };
-}
 
 const FORBIDDEN_AUTHORITY = /(?:publish|materiali[sz]|lifecycle|document.?edit|\bplan\b|accept(?:ance|ed)?(?:Decision)?)/i;
 const PRIVATE_CONTENT = /(?:chain.?of.?thought|hidden.?prompt|raw.?trace|private.?reasoning|role.?transcript|\bprompt\b|\btrace\b|\bthought\b)/i;

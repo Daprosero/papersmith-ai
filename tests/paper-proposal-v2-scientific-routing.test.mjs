@@ -157,7 +157,7 @@ test('coordinator uses read-only pre-materialization adapters and fails closed w
 	await mkdir(path.join(projectRoot, 'proposals'));
 	try {
 		const adapter = new v2.ProposalWorkspaceAdapter(projectRoot, {}, {});
-		const runtime = new v2.ScientificWorkflowRuntime(projectRoot, adapter, new v2.ProductionModelRuntime());
+		const runtime = new v2.ScientificWorkflowRuntime(projectRoot, adapter);
 		const result = await runtime.execute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'request materialization', scientificAct: 'REQUEST_MATERIALIZATION', candidateIds: ['decision-a'] });
 		assert.equal(result.status, 'blocked');
 		assert.equal(result.blockers[0].code, 'CANONICAL_METADATA_UNAVAILABLE');

@@ -11,13 +11,11 @@ const aiRoot = path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist');
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),
-	'@earendil-works/pi-ai/compat': path.join(root, '.claude/skills/paper-proposal/engine/_pi-compat/pi-ai-compat.ts'),
 	'@earendil-works/pi-ai': path.join(aiRoot, 'index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
 const workspace = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/proposal-workspace.ts'));
 const v2 = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/exports.ts'));
-const aiCompat = await jiti.import(path.join(root, '.claude/skills/paper-proposal/engine/_pi-compat/pi-ai-compat.ts'));
 
 async function serviceFixture(overrides = {}) {
 	const projectRoot = await mkdtemp(path.join(tmpdir(), 'paper-proposal-draft-'));
@@ -141,11 +139,7 @@ test('generated path uses generic metadata, is proposed without writing, and req
 	} finally { await run.dispose(); }
 });
 
-function modelPayload(context) {
-	return JSON.parse(context.messages.at(-1).content.find(part => part.type === 'text').text);
-}
-
-function registerPublicDraftExtension({ run, sessionIdentity, model, draftRegistry, operationGuard }) {
+function registerPublicDraftExtension({ run, sessionIdentity, tutor, draftRegistry, operationGuard }) {
 	const tools = [];
 	const handlers = new Map();
 	const pi = {
@@ -156,24 +150,31 @@ function registerPublicDraftExtension({ run, sessionIdentity, model, draftRegist
 		projectRoot: run.projectRoot,
 		operationGuard: operationGuard ?? workspace.createDocumentOperationGuard(run.projectRoot),
 		draftMaterialization: { managedDocumentPath: run.primaryRoute, draftDirectory: 'working-drafts', allowedExtensions: ['.md'] },
+		tutor,
 		...(draftRegistry ? { draftRegistry } : {}),
 	})(pi);
 	const tool = tools.find(candidate => candidate.name === 'paper_proposal_execute');
-	const ctx = { model, sessionManager: { getSessionId: () => sessionIdentity }, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: 'fake', headers: {}, env: {} }) } };
+	const ctx = { sessionManager: { getSessionId: () => sessionIdentity } };
 	return {
 		execute: async params => (await tool.execute('draft-session-transition', params, undefined, undefined, ctx)).details,
 		emit: async (event, value) => { for (const handler of handlers.get(event) ?? []) await handler({ type: event, ...value }, ctx); },
 	};
 }
 
-function fauxTutorProvider(summaries) {
-	const providerId = `paper-proposal-registry-${Date.now()}-${Math.random()}`;
-	const faux = aiCompat.registerFauxProvider({ api: providerId, provider: providerId, models: [{ id: `${providerId}-model`, input: ['text'], contextWindow: 32000, maxTokens: 4096 }] });
-	faux.setResponses(summaries.map(summary => context => {
-		const input = modelPayload(context);
-		return aiCompat.fauxAssistantMessage(JSON.stringify({ decision: 'ACCEPT', summary, mathematicalIssues: [], notationIssues: [], assumptionIssues: [], requiredRevisions: [], unresolvedQuestions: [], riskLevel: 'LOW', affectedEntryIds: input.context.fragments.map(fragment => fragment.entryId) }));
-	}));
-	return faux;
+// Ambient-model paradigm (design `sdd/paper-proposal-ambient-model`, SLICE 2): the
+// production real-API tutor transport (faux-provider harness over `ctx.model`) was
+// removed along with `production-tutor-adapter.ts`. A plain scripted `TutorAdapter`
+// (`{assess}`) is injected directly through `createPaperProposalExtension`'s `tutor`
+// option instead -- the same seam the deterministic/scripted-adapter suites use.
+function scriptedTutor(summaries) {
+	let call = 0;
+	return {
+		assess: async (input) => {
+			const summary = summaries[Math.min(call, summaries.length - 1)];
+			call += 1;
+			return { decision: 'ACCEPT', summary, mathematicalIssues: [], notationIssues: [], assumptionIssues: [], requiredRevisions: [], unresolvedQuestions: [], riskLevel: 'LOW', affectedEntryIds: input.context.fragments.map(fragment => fragment.entryId) };
+		},
+	};
 }
 
 test('public session draft survives route proposal and reload re-registration, then materializes exact bytes and is removed', async () => {
@@ -181,10 +182,10 @@ test('public session draft survives route proposal and reload re-registration, t
 	const sessionIdentity = `pi-session-reload-${Math.random().toString(36).slice(2)}`;
 	const registry = v2.getSharedPiSessionDraftRegistry();
 	const exactDraft = '# Session draft\n\nExact UTF-8 bytes: café — λ.';
-	const faux = fauxTutorProvider([exactDraft]);
+	const tutor = scriptedTutor([exactDraft]);
 	registry.clearSession(sessionIdentity);
 	try {
-		let extension = registerPublicDraftExtension({ run, sessionIdentity, model: faux.getModel() });
+		let extension = registerPublicDraftExtension({ run, sessionIdentity, tutor });
 		await extension.emit('session_start', { reason: 'startup' });
 		const chat = await extension.execute({ operation: 'CHAT_DELIBERATION', instruction: 'Create a bounded chat draft.' });
 		assert.equal(chat.status, 'deliberated', JSON.stringify(chat));
@@ -201,7 +202,7 @@ test('public session draft survives route proposal and reload re-registration, t
 
 		await extension.emit('session_shutdown', { reason: 'reload' });
 		assert.equal(registry.has(sessionIdentity, chat.conversationId), true, 'reload shutdown is not Pi session termination');
-		extension = registerPublicDraftExtension({ run, sessionIdentity, model: faux.getModel() });
+		extension = registerPublicDraftExtension({ run, sessionIdentity, tutor });
 		await extension.emit('session_start', { reason: 'reload' });
 		const materialized = await extension.execute({ operation: 'CHAT_DELIBERATION', conversationId: chat.conversationId, instruction: 'Authorize the exact proposed route.', draftMaterialization: request(proposed.route) });
 		assert.equal(materialized.status, 'materialized', JSON.stringify(materialized));
@@ -210,7 +211,6 @@ test('public session draft survives route proposal and reload re-registration, t
 		assert.equal(registry.has(sessionIdentity, chat.conversationId), false, 'successful materialization consumes the payload');
 	} finally {
 		registry.clearSession(sessionIdentity);
-		faux.unregister?.();
 		await run.dispose();
 	}
 });
@@ -234,15 +234,15 @@ test('draft payload survives multiple reload re-registrations', async () => {
 	const registry = v2.createPiSessionDraftRegistry();
 	const sessionIdentity = 'pi-session-multiple-reloads';
 	const exactDraft = 'Payload retained across repeated extension instances.';
-	const faux = fauxTutorProvider([exactDraft]);
+	const tutor = scriptedTutor([exactDraft]);
 	try {
-		let extension = registerPublicDraftExtension({ run, sessionIdentity, model: faux.getModel(), draftRegistry: registry });
+		let extension = registerPublicDraftExtension({ run, sessionIdentity, tutor, draftRegistry: registry });
 		await extension.emit('session_start', { reason: 'startup' });
 		const chat = await extension.execute({ operation: 'CHAT_DELIBERATION', instruction: 'Create a reload-safe payload.' });
 		for (let index = 0; index < 3; index += 1) {
 			await extension.emit('session_shutdown', { reason: 'reload' });
 			assert.equal(registry.has(sessionIdentity, chat.conversationId), true);
-			extension = registerPublicDraftExtension({ run, sessionIdentity, model: faux.getModel(), draftRegistry: registry });
+			extension = registerPublicDraftExtension({ run, sessionIdentity, tutor, draftRegistry: registry });
 			await extension.emit('session_start', { reason: 'reload' });
 		}
 		const route = `working-drafts/${Math.random().toString(36).slice(2)}.md`;
@@ -251,7 +251,6 @@ test('draft payload survives multiple reload re-registrations', async () => {
 		assert.equal(await readFile(path.join(run.projectRoot, route), 'utf8'), exactDraft);
 		assert.equal(registry.has(sessionIdentity, chat.conversationId), false);
 	} finally {
-		faux.unregister?.();
 		await run.dispose();
 	}
 });
@@ -261,7 +260,7 @@ test('failed materialization preserves the session draft payload', async () => {
 	const registry = v2.createPiSessionDraftRegistry();
 	const sessionIdentity = 'pi-session-failed-materialization';
 	const exactDraft = 'Retain this payload after a denied materialization.';
-	const faux = fauxTutorProvider([exactDraft]);
+	const tutor = scriptedTutor([exactDraft]);
 	const backingGuard = workspace.createDocumentOperationGuard(run.projectRoot);
 	const denyingGuard = {
 		...backingGuard,
@@ -270,7 +269,7 @@ test('failed materialization preserves the session draft payload', async () => {
 			: backingGuard.execute(input),
 	};
 	try {
-		const extension = registerPublicDraftExtension({ run, sessionIdentity, model: faux.getModel(), draftRegistry: registry, operationGuard: denyingGuard });
+		const extension = registerPublicDraftExtension({ run, sessionIdentity, tutor, draftRegistry: registry, operationGuard: denyingGuard });
 		await extension.emit('session_start', { reason: 'startup' });
 		const chat = await extension.execute({ operation: 'CHAT_DELIBERATION', instruction: 'Create content that must survive a failed write attempt.' });
 		const route = `working-drafts/${Math.random().toString(36).slice(2)}.md`;
@@ -279,7 +278,6 @@ test('failed materialization preserves the session draft payload', async () => {
 		assert.equal(failed.reason, 'DRAFT_GUARD_PREFLIGHT_TEST_PREFLIGHT_DENIED');
 		assert.equal(registry.get(sessionIdentity, chat.conversationId).content, exactDraft);
 	} finally {
-		faux.unregister?.();
 		await run.dispose();
 	}
 });
@@ -288,16 +286,15 @@ test('Pi session end clears every transient draft for that session', async () =>
 	const run = await serviceFixture();
 	const registry = v2.createPiSessionDraftRegistry();
 	const sessionIdentity = 'pi-session-cleanup';
-	const faux = fauxTutorProvider(['Transient payload.']);
+	const tutor = scriptedTutor(['Transient payload.']);
 	try {
-		const extension = registerPublicDraftExtension({ run, sessionIdentity, model: faux.getModel(), draftRegistry: registry });
+		const extension = registerPublicDraftExtension({ run, sessionIdentity, tutor, draftRegistry: registry });
 		await extension.emit('session_start', { reason: 'startup' });
 		const chat = await extension.execute({ operation: 'CHAT_DELIBERATION', instruction: 'Create transient content.' });
 		assert.equal(registry.has(sessionIdentity, chat.conversationId), true);
 		await extension.emit('session_shutdown', { reason: 'quit' });
 		assert.equal(registry.sessionSize(sessionIdentity), 0);
 	} finally {
-		faux.unregister?.();
 		await run.dispose();
 	}
 });
@@ -318,7 +315,7 @@ test('public materialization without any produced draft returns CHAT_CONTENT_REQ
 		draftMaterialization: { draftDirectory: 'working-drafts', managedDocumentInventory: async () => { inventoryCalls += 1; throw new Error('MUST_NOT_RESOLVE_PRIMARY'); } },
 	})({ registerTool: tool => tools.push(tool), on: () => {} });
 	const tool = tools.find(candidate => candidate.name === 'paper_proposal_execute');
-	const ctx = { model: undefined, sessionManager: { getSessionId: () => sessionIdentity }, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: 'fake', headers: {}, env: {} }) } };
+	const ctx = { sessionManager: { getSessionId: () => sessionIdentity } };
 	try {
 		const result = (await tool.execute('no-chat-draft', { operation: 'CHAT_DELIBERATION', conversationId: 'chat-never-produced', instruction: 'Materialize absent content.', draftMaterialization: request('working-drafts/absent.md') }, undefined, undefined, ctx)).details;
 		assert.equal(result.status, 'blocked');
@@ -332,22 +329,22 @@ test('public materialization without any produced draft returns CHAT_CONTENT_REQ
 
 test('public CHAT_DELIBERATION hands off consolidated bytes exactly once to guarded DOCUMENT_EDIT materialization', async () => {
 	const run = await serviceFixture();
-	const providerId = `paper-proposal-draft-${Date.now()}-${Math.random()}`;
-	const faux = aiCompat.registerFauxProvider({ api: providerId, provider: providerId, models: [{ id: `${providerId}-model`, input: ['text'], contextWindow: 32000, maxTokens: 4096 }] });
 	let tutorCalls = 0;
 	const draftFragments = ['# Generic draft\n\nExact UTF-8 bytes: café — λ.', '## Consolidated conclusion\n\nFinal paragraph.'];
 	const consolidatedDraft = draftFragments.join('\n\n');
-	faux.setResponses(draftFragments.map(summary => (context) => {
-		tutorCalls += 1;
-		const input = modelPayload(context);
-		return aiCompat.fauxAssistantMessage(JSON.stringify({ decision: 'ACCEPT', summary, mathematicalIssues: [], notationIssues: [], assumptionIssues: [], requiredRevisions: [], unresolvedQuestions: [], riskLevel: 'LOW', affectedEntryIds: input.context.fragments.map(fragment => fragment.entryId) }));
-	}));
+	const tutor = {
+		assess: async (input) => {
+			const summary = draftFragments[Math.min(tutorCalls, draftFragments.length - 1)];
+			tutorCalls += 1;
+			return { decision: 'ACCEPT', summary, mathematicalIssues: [], notationIssues: [], assumptionIssues: [], requiredRevisions: [], unresolvedQuestions: [], riskLevel: 'LOW', affectedEntryIds: input.context.fragments.map(fragment => fragment.entryId) };
+		},
+	};
 	try {
 		const tools = [];
-		workspace.createPaperProposalExtension({ projectRoot: run.projectRoot, operationGuard: workspace.createDocumentOperationGuard(run.projectRoot), draftMaterialization: { managedDocumentPath: run.primaryRoute, draftDirectory: 'working-drafts', allowedExtensions: ['.md'] } })({ registerTool: tool => tools.push(tool), on: () => {} });
+		workspace.createPaperProposalExtension({ projectRoot: run.projectRoot, operationGuard: workspace.createDocumentOperationGuard(run.projectRoot), draftMaterialization: { managedDocumentPath: run.primaryRoute, draftDirectory: 'working-drafts', allowedExtensions: ['.md'] }, tutor })({ registerTool: tool => tools.push(tool), on: () => {} });
 		const tool = tools.find(candidate => candidate.name === 'paper_proposal_execute');
 		const sessionIdentity = `draft-test-session-${Math.random().toString(36).slice(2)}`;
-		const ctx = { model: faux.getModel(), sessionManager: { getSessionId: () => sessionIdentity }, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: 'fake', headers: {}, env: {} }) } };
+		const ctx = { sessionManager: { getSessionId: () => sessionIdentity } };
 		const execute = async params => (await tool.execute('draft-transition', params, undefined, undefined, ctx)).details;
 		const chat = await execute({ operation: 'CHAT_DELIBERATION', instruction: 'Discuss a generic bounded topic.' });
 		assert.equal(chat.status, 'deliberated');
@@ -384,7 +381,6 @@ test('public CHAT_DELIBERATION hands off consolidated bytes exactly once to guar
 		assert.equal(continued.message, 'CONVERSATION_TERMINATED');
 		assert.equal(tutorCalls, 2, 'the terminated conversation never reopens tutor reasoning');
 	} finally {
-		faux.unregister?.();
 		await run.dispose();
 	}
 });

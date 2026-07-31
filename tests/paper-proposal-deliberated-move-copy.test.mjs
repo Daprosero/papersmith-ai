@@ -19,8 +19,9 @@
 //      SEPARATE successor version from a coexisting in-place CHANGE; a COPY
 //      duplicates without removing the source; self/cycle/drift all fall
 //      back safely, never forced or lost.
-//   D. `production-tutor-adapter.ts`'s TUTOR_PROMPT documents how to express
-//      a move/copy so it is not blocked.
+//   (Section D -- production-tutor-adapter.ts's TUTOR_PROMPT documenting
+//   move/copy -- was removed in design `sdd/paper-proposal-ambient-model`
+//   SLICE 2 along with the production adapter itself.)
 //
 // No real proposal `.md` file is ever created or modified; every fixture is
 // in-memory DocumentState/temp-directory only.
@@ -252,7 +253,7 @@ async function materializeBatch({ baseContent, decisions, workspaceId = 'workspa
 		}
 		await store.commitTransition({ events: allEvents, snapshot: { schemaVersion: 1, activeThreadId: threads[0].threadId, threads, relations: [], decisions: allDecisions } });
 
-		const runtime = new v2.ScientificWorkflowRuntime(projectRoot, {}, {}, { lifecycleV1WorkspaceId: workspaceId });
+		const runtime = new v2.ScientificWorkflowRuntime(projectRoot, {}, { lifecycleV1WorkspaceId: workspaceId });
 		const result = await runtime.execute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'request materialization', scientificAct: 'REQUEST_MATERIALIZATION', candidateIds: decisions.map((d) => `decision-${d.id}`) });
 		const inventory = await lifecycle.rebuildLifecycleInventory(workspaceId);
 		return { result, inventory, baseContent, projectRoot };
@@ -397,20 +398,7 @@ test('materialization: an ADAPTIVE move persisted without transformedContent fai
 	assert.equal(revision.content.includes(summary), true, 'the decision itself is never silently lost');
 });
 
-// --- Section D: production-tutor-adapter.ts TUTOR_PROMPT documents move/copy -----------
-
-test('production-tutor-adapter: TUTOR_PROMPT documents how to express a move/copy (source, destination, position, moveMode/transformedContent) so it is not blocked', async () => {
-	let capturedPrompt;
-	const fakeRuntime = { structured: async (prompt) => { capturedPrompt = prompt; return { decision: 'ACCEPT', summary: 'x', mathematicalIssues: [], notationIssues: [], assumptionIssues: [], requiredRevisions: [], unresolvedQuestions: [], riskLevel: 'LOW', affectedEntryIds: [] }; } };
-	const adapter = v2.createProductionTutorAdapter(fakeRuntime);
-	await adapter.assess({ instruction: 'x', context: { documentSha256: 'x', targetEntryId: 'x', instruction: 'x', fragments: [], nearbySymbols: {}, directReferences: [] } });
-
-	assert.match(capturedPrompt, /\bMOVE\b/);
-	assert.match(capturedPrompt, /\bCOPY\b/);
-	assert.match(capturedPrompt, /affectedEntryIds/);
-	assert.match(capturedPrompt, /sourceEntryId/);
-	assert.match(capturedPrompt, /destinationEntryId/);
-	assert.match(capturedPrompt, /proposedAlternative/);
-	assert.match(capturedPrompt, /ADAPTIVE/);
-	assert.match(capturedPrompt, /LITERAL/);
-});
+// Section D (production-tutor-adapter.ts's TUTOR_PROMPT documents move/copy) was
+// REMOVED (design `sdd/paper-proposal-ambient-model`, SLICE 2): production-tutor-adapter.ts
+// and its real-API transport no longer exist -- the tutor role prompt migrates to
+// SKILL.md (ambient conditioning) in a later slice, not a production adapter constant.

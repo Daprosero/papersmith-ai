@@ -1,4 +1,4 @@
-import { createProductionScientificRoleAdapters, ScientificWorkflowService } from './scientific-workflow-service.js';
+import { ScientificWorkflowService } from './scientific-workflow-service.js';
 import { ScientificStateStore } from './scientific-state-store.js';
 import { ProjectEntryResolver } from './project-entry-resolver.js';
 import { ScientificActResolver } from './scientific-act-resolver.js';
@@ -18,7 +18,6 @@ import type { SuccessorBlock, SuccessorBlockPlan } from './block-plan.js';
 import type { ProposalWorkspaceAdapter } from './proposal-workspace-adapter.js';
 import { parseProposedEdit, sha256 } from './types.js';
 import type { EditAction } from './types.js';
-import type { ProductionModelRuntime } from './production-runtime.js';
 import type {
 	CanonicalProposalMetadata,
 	ProjectEntry,
@@ -93,7 +92,6 @@ export class ScientificWorkflowRuntime {
 	constructor(
 		private readonly projectRoot: string,
 		adapter: ProposalWorkspaceAdapter,
-		runtime: ProductionModelRuntime,
 		private readonly options: ScientificWorkflowRuntimeOptions = {},
 	) {
 		this.store = new ScientificStateStore(projectRoot);
@@ -101,7 +99,11 @@ export class ScientificWorkflowRuntime {
 			? createLifecycleV1RevisionInventoryPort({ projectRoot, workspaceId: options.lifecycleV1WorkspaceId })
 			: { read: () => readCanonicalManagedRevisionInventory(projectRoot) }, this.store);
 		this.threadResolver = new ScientificThreadResolver(this.store);
-		const roles = options.roleAdapters ?? createProductionScientificRoleAdapters(runtime);
+		// Ambient-model paradigm (design `sdd/paper-proposal-ambient-model`): no production
+		// model-backed role adapters exist anymore. `roleAdapters` is the only source of
+		// tutor/reviewer roles; omitting it leaves both undefined and `ScientificWorkflowService`
+		// fails closed (`TUTOR_UNAVAILABLE`/`CONCEPTUAL_REVIEWER_UNAVAILABLE`) rather than crash.
+		const roles = options.roleAdapters ?? {};
 		const contextBuilder = new ScientificContextBuilder({ read: async () => {
 			const state = await this.store.read();
 			if (!state) throw new Error('SCIENTIFIC_STATE_MISSING');
