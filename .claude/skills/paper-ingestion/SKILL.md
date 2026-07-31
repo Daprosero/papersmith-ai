@@ -22,7 +22,7 @@ Run it only when its effective behavior satisfies the hard rules below. Never mo
 ## Hard Rules
 
 - Produce `normalized/<document>.md`, `normalized/<document>.manifest.json`, and `normalized/<document>-assets/`; never modify source PDFs.
-- Process only PDFs without document-named Markdown. Require explicit approval for each forced re-ingestion.
+- Process only PDFs without document-named Markdown. Require an interactive confirmation before any forced re-ingestion.
 - Treat forced output as one transaction across Markdown, manifest, and the entire asset directory. On failure preserve the previous complete set. On success replace the set and remove obsolete page assets from shorter reruns.
 - Preserve exact raw page text, rendered page images, page numbers, source hash, configuration, confidence, and review status.
 - Lite tables are not structured extraction. Even when `extract.tables` is true, retain only raw page text and rendered page images as table evidence; emit no cells, rows, columns, inferred values, or table claims.
@@ -40,12 +40,12 @@ Run it only when its effective behavior satisfies the hard rules below. Never mo
 
 ## Execution Steps
 
-1. Load and validate `papersmith.yaml`; identify pending PDFs.
-2. Report existing outputs and request exact per-PDF force approval when needed.
-3. Extract only pending or explicitly approved PDFs.
-4. Verify each successful artifact set is complete and internally consistent.
-5. Report processed, skipped, and review-required documents.
+1. Validate `papersmith.yaml` silently. On invalid config, stop and report only the error.
+2. Identify PDFs under `source_roots` with no `normalized/<document>.md` (new documents).
+3. If there are new documents, ingest only those without prompting.
+4. If there are none, present an interactive yes/no prompt asking whether to re-ingest the existing documents. Only on "yes", force re-ingest; on "no", stop with no action.
+5. Keep output minimal (see Output Contract). Never print per-document tables, config dumps, or skip lists.
 
 ## Output Contract
 
-Return Markdown, manifest, and asset paths plus review-required pages. State the table mode as `lite_evidence_only`. Do not claim structured tables, reconstructed equations, caption/image association, or visual interpretation.
+On success, emit only a brief confirmation check of which documents were ingested — nothing else: no tables, config echoes, skip lists, or path dumps. If an error occurred, report only that error. The table mode remains `lite_evidence_only`: never claim structured tables, reconstructed equations, caption/image association, or visual interpretation.

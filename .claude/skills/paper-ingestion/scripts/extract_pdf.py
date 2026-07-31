@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import tempfile
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -383,6 +384,192 @@ def verify_artifact_set(
         raise RuntimeError("manifest page-image provenance is inconsistent")
 
 
+# Per-page rendering and extraction is parallelizable because every page's work
+# is pure: it reads one page and returns a plain dict, mutating no shared state.
+# Every document renders through a single process pool sized to the host; there
+# is no sequential fallback and no small-document shortcut.
+#
+# One PyMuPDF Document per worker process. macOS uses the ``spawn`` start method,
+# so the initializer and ``process_page`` must be module-level and every argument
+# picklable. Each worker process is single-threaded, so a single Document per
+# process is safe; a Document is never shared across processes.
+_WORKER_DOCUMENT: fitz.Document | None = None
+_WORKER_SOURCE: str | None = None
+
+
+def initialize_worker(source: str) -> None:
+    """Open the PDF once per worker process into a process-global Document."""
+    global _WORKER_DOCUMENT, _WORKER_SOURCE
+    _WORKER_DOCUMENT = fitz.open(source)
+    _WORKER_SOURCE = source
+
+
+def close_worker() -> None:
+    """Close the process-global Document (used by the reference helper and tests)."""
+    global _WORKER_DOCUMENT, _WORKER_SOURCE
+    if _WORKER_DOCUMENT is not None:
+        _WORKER_DOCUMENT.close()
+    _WORKER_DOCUMENT = None
+    _WORKER_SOURCE = None
+
+
+def process_page(
+    source: str,
+    page_number: int,
+    scale: float,
+    staged_assets_dir: str,
+    assets_dir_name: str,
+    extraction: dict[str, bool],
+    confidence_threshold: float,
+) -> dict[str, Any]:
+    """Do all per-page work for one page and return its contributions.
+
+    Pure in -> dict out: it seeks its page from the process-global worker
+    Document (opening ``source`` lazily if none was initialized), renders the
+    page PNG, computes all evidence, and
+    returns this page's ``pages[]`` entry, equations, figures, and rendered
+    markdown fragment. It mutates no shared state, so results can be produced in
+    any order and reassembled deterministically in ascending page order.
+    """
+    global _WORKER_DOCUMENT, _WORKER_SOURCE
+    if _WORKER_DOCUMENT is None or _WORKER_SOURCE != source:
+        initialize_worker(source)
+    document = _WORKER_DOCUMENT
+    assert document is not None
+    page = document[page_number - 1]
+
+    matrix = fitz.Matrix(scale, scale)
+    image_path = Path(staged_assets_dir) / f"page-{page_number:03d}.png"
+    page.get_pixmap(matrix=matrix, alpha=False).save(image_path)
+    image_reference = f"{assets_dir_name}/{image_path.name}"
+    # Table-lite, equation, and caption evidence depend on exact page text even
+    # when general prose-text output is disabled.
+    raw_text = page.get_text("text") if any(extraction.values()) else ""
+    # raw_text is table-lite evidence. Preserve it exactly as returned by
+    # PyMuPDF; do not strip or normalize before storage.
+    captions = textual_figure_captions(raw_text) if extraction["figures"] else []
+    equations = equation_candidates(raw_text, page_number, image_reference) if extraction["equations"] else []
+    figures = embedded_figures(page, page_number, image_reference) if extraction["figures"] else []
+    confidence, confidence_notes = page_confidence(raw_text, equations, figures)
+    confidence_status = (
+        "acceptable" if confidence >= confidence_threshold else "review_required"
+    )
+    page_entry = {
+        "page": page_number,
+        "image": image_reference,
+        "raw_text": raw_text,
+        "text_characters": len(raw_text),
+        "confidence": confidence,
+        "confidence_status": confidence_status,
+        "confidence_notes": confidence_notes,
+        "textual_figure_captions": captions,
+        "equation_ids": [candidate["id"] for candidate in equations],
+        "figure_ids": [figure["id"] for figure in figures],
+    }
+
+    fragment: list[str] = [f"## Page {page_number}", f"![Page {page_number}]({image_reference})", ""]
+    confidence_statement = (
+        f"- **Confidence:** {confidence:.2f} (below the configured "
+        f"{confidence_threshold:.2f} threshold; human review required)."
+        if confidence_status == "review_required"
+        else f"- **Confidence:** {confidence:.2f} (meets the configured threshold)."
+    )
+    fragment.extend([
+        "### Extraction assessment",
+        confidence_statement,
+        f"- {confidence_notes}",
+        "",
+    ])
+    if extraction["text"] or extraction["tables"]:
+        fragment.extend(["### Raw extracted text"])
+        if extraction["tables"] and not extraction["text"]:
+            fragment.append("_Preserved as table-lite evidence despite general text extraction being disabled._")
+        if raw_text:
+            fragment.extend([*markdown_code_block(raw_text), ""])
+        else:
+            fragment.extend(["_No machine-readable text extracted; inspect the page image._", ""])
+    else:
+        fragment.extend(["### Raw extracted text", "_Disabled by papersmith.yaml._", ""])
+    if captions:
+        fragment.extend(["### Textual figure-caption evidence"])
+        for caption in captions:
+            fragment.append(f"- {caption}")
+        fragment.extend([
+            "- Captions are page-level text evidence and are not associated with embedded images.",
+            "",
+        ])
+    if equations:
+        fragment.extend(["### Equation candidates"])
+        for candidate in equations:
+            fragment.extend([
+                f"- `{candidate['id']}` — {candidate['status']} "
+                f"(confidence {candidate['confidence']:.2f}; page {page_number}).",
+                *markdown_code_block(candidate["raw_text"]),
+            ])
+        fragment.append("")
+    if figures:
+        fragment.extend(["### Embedded images"])
+        for figure in figures:
+            dimensions = figure["metadata"]
+            fragment.append(
+                f"- `{figure['id']}` — embedded image metadata: "
+                f"{dimensions['width']} × {dimensions['height']} px, "
+                f"xref {dimensions['xref']}; visual review required."
+            )
+        fragment.append("")
+
+    return {
+        "page": page_entry,
+        "equations": equations,
+        "figures": figures,
+        "markdown_fragment": fragment,
+    }
+
+
+def collect_page_results(
+    source: str,
+    page_count: int,
+    scale: float,
+    staged_assets_dir: str,
+    assets_dir_name: str,
+    extraction: dict[str, bool],
+    confidence_threshold: float,
+) -> dict[int, dict[str, Any]]:
+    """Render every page through one process pool and return results-by-index.
+
+    There is exactly one execution path: all page indices are submitted to a
+    ``ProcessPoolExecutor`` that calls the pure ``process_page``. The returned
+    mapping is keyed by 1-based page number so the caller can reassemble the
+    contributions deterministically regardless of completion order. A document
+    with no pages produces an empty mapping without spawning a pool.
+    """
+    results: dict[int, dict[str, Any]] = {}
+    if page_count == 0:
+        return results
+
+    with ProcessPoolExecutor(
+        max_workers=min(os.cpu_count() or 1, 8),
+        initializer=initialize_worker,
+        initargs=(source,),
+    ) as executor:
+        futures = {
+            executor.submit(
+                process_page,
+                source,
+                page_number,
+                scale,
+                staged_assets_dir,
+                assets_dir_name,
+                extraction,
+                confidence_threshold,
+            ): page_number
+            for page_number in range(1, page_count + 1)
+        }
+        for future, page_number in futures.items():
+            results[page_number] = future.result()
+    return results
+
+
 def main() -> int:
     args = parse_args()
     source = args.pdf.resolve()
@@ -417,7 +604,6 @@ def main() -> int:
 
     try:
         scale = dpi / 72
-        matrix = fitz.Matrix(scale, scale)
         pages: list[dict[str, Any]] = []
         all_equations: list[dict[str, Any]] = []
         all_figures: list[dict[str, Any]] = []
@@ -436,87 +622,26 @@ def main() -> int:
 
         with fitz.open(source) as pdf:
             page_count = len(pdf)
-            for index, page in enumerate(pdf, start=1):
-                image_path = staged_assets / f"page-{index:03d}.png"
-                page.get_pixmap(matrix=matrix, alpha=False).save(image_path)
-                image_reference = f"{assets_dir.name}/{image_path.name}"
-                # Table-lite, equation, and caption evidence depend on exact page text even
-                # when general prose-text output is disabled.
-                raw_text = page.get_text("text") if any(extraction.values()) else ""
-                # raw_text is table-lite evidence. Preserve it exactly as returned
-                # by PyMuPDF; do not strip or normalize before storage.
-                captions = textual_figure_captions(raw_text) if extraction["figures"] else []
-                equations = equation_candidates(raw_text, index, image_reference) if extraction["equations"] else []
-                figures = embedded_figures(page, index, image_reference) if extraction["figures"] else []
-                confidence, confidence_notes = page_confidence(raw_text, equations, figures)
-                confidence_status = (
-                    "acceptable" if confidence >= configuration["confidence_threshold"] else "review_required"
-                )
-                pages.append({
-                    "page": index,
-                    "image": image_reference,
-                    "raw_text": raw_text,
-                    "text_characters": len(raw_text),
-                    "confidence": confidence,
-                    "confidence_status": confidence_status,
-                    "confidence_notes": confidence_notes,
-                    "textual_figure_captions": captions,
-                    "equation_ids": [candidate["id"] for candidate in equations],
-                    "figure_ids": [figure["id"] for figure in figures],
-                })
-                all_equations.extend(equations)
-                all_figures.extend(figures)
 
-                markdown.extend([f"## Page {index}", f"![Page {index}]({image_reference})", ""])
-                confidence_statement = (
-                    f"- **Confidence:** {confidence:.2f} (below the configured "
-                    f"{configuration['confidence_threshold']:.2f} threshold; human review required)."
-                    if confidence_status == "review_required"
-                    else f"- **Confidence:** {confidence:.2f} (meets the configured threshold)."
-                )
-                markdown.extend([
-                    "### Extraction assessment",
-                    confidence_statement,
-                    f"- {confidence_notes}",
-                    "",
-                ])
-                if extraction["text"] or extraction["tables"]:
-                    markdown.extend(["### Raw extracted text"])
-                    if extraction["tables"] and not extraction["text"]:
-                        markdown.append("_Preserved as table-lite evidence despite general text extraction being disabled._")
-                    if raw_text:
-                        markdown.extend([*markdown_code_block(raw_text), ""])
-                    else:
-                        markdown.extend(["_No machine-readable text extracted; inspect the page image._", ""])
-                else:
-                    markdown.extend(["### Raw extracted text", "_Disabled by papersmith.yaml._", ""])
-                if captions:
-                    markdown.extend(["### Textual figure-caption evidence"])
-                    for caption in captions:
-                        markdown.append(f"- {caption}")
-                    markdown.extend([
-                        "- Captions are page-level text evidence and are not associated with embedded images.",
-                        "",
-                    ])
-                if equations:
-                    markdown.extend(["### Equation candidates"])
-                    for candidate in equations:
-                        markdown.extend([
-                            f"- `{candidate['id']}` — {candidate['status']} "
-                            f"(confidence {candidate['confidence']:.2f}; page {index}).",
-                            *markdown_code_block(candidate["raw_text"]),
-                        ])
-                    markdown.append("")
-                if figures:
-                    markdown.extend(["### Embedded images"])
-                    for figure in figures:
-                        dimensions = figure["metadata"]
-                        markdown.append(
-                            f"- `{figure['id']}` — embedded image metadata: "
-                            f"{dimensions['width']} × {dimensions['height']} px, "
-                            f"xref {dimensions['xref']}; visual review required."
-                        )
-                    markdown.append("")
+        # Per-page rendering/extraction always runs through one process pool over
+        # the pure process_page. Reassembly below is the exact serial join in
+        # ascending page order, so output is byte-identical regardless of
+        # completion order.
+        page_results = collect_page_results(
+            str(source),
+            page_count,
+            scale,
+            str(staged_assets),
+            assets_dir.name,
+            extraction,
+            configuration["confidence_threshold"],
+        )
+        for index in range(1, page_count + 1):
+            result = page_results[index]
+            pages.append(result["page"])
+            all_equations.extend(result["equations"])
+            all_figures.extend(result["figures"])
+            markdown.extend(result["markdown_fragment"])
 
         markdown[5] = f"- Rendered pages: {page_count} at {dpi} DPI (PyMuPDF)."
         table_mode = "lite_evidence_only" if extraction["tables"] else "disabled"

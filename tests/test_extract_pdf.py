@@ -547,5 +547,75 @@ class ExtractPdfConfigurationAndSchemaTests(ExtractPdfTestCase):
 
 
 
+class ExtractPdfDeterminismTests(ExtractPdfTestCase):
+    PAGE_COUNT = 8
+
+    def multi_page_pages(self) -> list[str]:
+        # Mix strong equations, ambiguous equations, and figure captions so the
+        # per-page contributions (equations, figures, markdown, confidence) vary
+        # across pages and exercise the deterministic reassembly meaningfully.
+        return [
+            "Introduction page one with prose text.",
+            "E = m*c (1)",
+            "f(x) =",
+            "Figure 1. Textual architecture caption.",
+            "Plain body text for page five.",
+            "y = a*x (2)",
+            "g(z) <=",
+            "Figure 2. Another caption line.",
+        ]
+
+    def asset_bytes(self, assets_dir: Path) -> dict[str, bytes]:
+        return {
+            path.name: path.read_bytes()
+            for path in sorted(assets_dir.glob("page-*.png"))
+        }
+
+    def strip_processed_at(self, manifest: dict[str, object]) -> dict[str, object]:
+        # Only the timestamp legitimately differs between two independent runs.
+        without_timestamp = dict(manifest)
+        without_timestamp.pop("processed_at", None)
+        return without_timestamp
+
+    def test_extraction_is_deterministic_across_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            pdf_path = temporary_path / "multipage.pdf"
+            self.create_pdf(pdf_path, self.multi_page_pages(), image=True)
+
+            first_dir = temporary_path / "first"
+            second_dir = temporary_path / "second"
+
+            first = self.run_extractor(pdf_path, first_dir)
+            second = self.run_extractor(pdf_path, second_dir)
+
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual(second.returncode, 0, second.stderr)
+
+            first_markdown = (first_dir / "multipage.md").read_bytes()
+            second_markdown = (second_dir / "multipage.md").read_bytes()
+            self.assertEqual(first_markdown, second_markdown)
+
+            first_manifest = json.loads(
+                (first_dir / "multipage.manifest.json").read_text(encoding="utf-8")
+            )
+            second_manifest = json.loads(
+                (second_dir / "multipage.manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(first_manifest["page_count"], self.PAGE_COUNT)
+            self.assertEqual(
+                self.strip_processed_at(first_manifest),
+                self.strip_processed_at(second_manifest),
+            )
+
+            first_assets = self.asset_bytes(first_dir / "multipage-assets")
+            second_assets = self.asset_bytes(second_dir / "multipage-assets")
+            self.assertEqual(
+                sorted(first_assets),
+                [f"page-{index:03d}.png" for index in range(1, self.PAGE_COUNT + 1)],
+            )
+            self.assertEqual(first_assets, second_assets)
+
+
 if __name__ == "__main__":
     unittest.main()
