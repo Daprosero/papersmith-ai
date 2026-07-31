@@ -14,7 +14,25 @@ function canonical(value:unknown) { return JSON.stringify(value); }
 function stable(value:string,code='INVALID_LIFECYCLE_ID') { if(typeof value!=='string'||!safeId.test(value)) throw new Error(code); return value; }
 function code(error:unknown):LifecycleV1ErrorCode { const value=error instanceof Error?error.message:String(error); return (['BASE_DOCUMENT_NOT_REGISTERED','BASE_DOCUMENT_ALREADY_REGISTERED','ACTIVE_REVISION_ALREADY_EXISTS','ACTIVE_REVISION_NOT_FOUND','INVALID_LINEAGE_REFERENCE','REVISION_NOT_WITHDRAWABLE','REVISION_NOT_WITHDRAWN','WITHDRAWAL_IDENTITY_NOT_FOUND','BASE_DOCUMENT_NOT_RESTORABLE','OUTPUT_FILENAME_CONFLICT','SOURCE_CONTENT_HASH_MISMATCH','LIFECYCLE_INVENTORY_INCONSISTENT','LIFECYCLE_V1_UNREGISTERED','REQUEST_ID_CONFLICT','RECOVERY_REQUIRED'] as string[]).includes(value)?value as LifecycleV1ErrorCode:'LIFECYCLE_INVENTORY_INCONSISTENT'; }
 async function withLock<T>(key:string,action:()=>Promise<T>) { const prior=locks.get(key)??Promise.resolve(); let release!:()=>void; const current=new Promise<void>(resolve=>{release=resolve;}); locks.set(key,prior.then(()=>current)); await prior; try{return await action();}finally{release();if(locks.get(key)===current)locks.delete(key);} }
-function applyChanges(content:string,changes:ReadonlyArray<{from:string;to:string}>) { let result=content; for(const change of changes){if(typeof change?.from!=='string'||typeof change?.to!=='string'||!result.includes(change.from))throw new Error('INVALID_LINEAGE_REFERENCE'); result=result.replace(change.from,change.to);} return result; }
+// Byte-offset splice: locates each `from` occurrence via `Buffer.indexOf` and substitutes
+// `to` via `Buffer.concat`. Unlike `String.prototype.replace`, this never interprets `$$`,
+// `$&`, `$1`, or `$<name>` in `to` as a replacement pattern, so math-heavy content (e.g.
+// `$$...$$` display equations) is preserved byte-for-byte outside the located span. Only the
+// first located occurrence of each `from` is substituted, matching the prior (buggy)
+// single-occurrence contract exactly -- this fixes the corruption without changing which
+// occurrence is targeted.
+function applyChanges(content:string,changes:ReadonlyArray<{from:string;to:string}>) {
+ let buffer=Buffer.from(content,'utf8');
+ for(const change of changes){
+  if(typeof change?.from!=='string'||typeof change?.to!=='string')throw new Error('INVALID_LINEAGE_REFERENCE');
+  const needle=Buffer.from(change.from,'utf8');
+  const index=needle.length?buffer.indexOf(needle):-1;
+  if(index<0)throw new Error('INVALID_LINEAGE_REFERENCE');
+  const replacement=Buffer.from(change.to,'utf8');
+  buffer=Buffer.concat([buffer.subarray(0,index),replacement,buffer.subarray(index+needle.length)]);
+ }
+ return buffer.toString('utf8');
+}
 
 export class LifecycleService {
  readonly store:LifecycleStateStore;

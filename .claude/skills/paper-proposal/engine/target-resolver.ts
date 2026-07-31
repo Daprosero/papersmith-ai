@@ -3,7 +3,7 @@ import { sha256,type CompositeTarget,type DocumentState,type SectionReplacementC
 
 export type TargetResolutionOptions={allowInterEntryWhitespaceFallback?:boolean};
 export type SectionRangeResolution={candidate?:TargetCandidate;entryIds?:string[];reason?:'SECTION_RANGE_INVALID'|'SECTION_RANGE_NOT_FOUND'|'SECTION_RANGE_AMBIGUOUS'|'SECTION_RANGE_REVERSED'|'SECTION_RANGE_INCOMPLETE_BODY'};
-export type SuccessorTargetResolution={candidates:TargetCandidate[];reason?:'SUCCESSOR_TARGET_NOT_FOUND'|'SUCCESSOR_TARGET_INCOMPLETE_BODY'};
+export type SuccessorTargetResolution={candidates:TargetCandidate[];reason?:'SUCCESSOR_TARGET_NOT_FOUND'};
 
 type StructuralCore={entry:StructuralEntry;startByte:number;endByte:number;text:Buffer};
 
@@ -107,7 +107,29 @@ export function resolveSectionRange(state:DocumentState,raw:string):SectionRange
 function successorSelectionQuery(query:string){const selected=/(?:\bsecci[oó]n|\bsubsecci[oó]n|\bsection|\bsubsection|\bapartado)\s+(?:de(?:l|\s+la)?\s+)?(.+?)(?=[,;:.]|\b(?:para|pero|donde|que|conserva|preserva|mant(?:é|e)n|keep)\b|$)/iu.exec(query)?.[1];return (selected??query).replace(/\becuaci[oó]n(?:es)?\b/giu,' ').trim();}
 function collapseNestedSuccessorCandidates(candidates:TargetCandidate[]){return candidates.filter(candidate=>!candidates.some(other=>other.entryId!==candidate.entryId&&other.composite!.startByte>=candidate.composite!.startByte&&other.composite!.endByte<=candidate.composite!.endByte&&(other.composite!.startByte!==candidate.composite!.startByte||other.composite!.endByte!==candidate.composite!.endByte)));}
 
-/** Resolves a semantic successor target into one complete, minimal Markdown heading subtree. */
+/**
+ * Builds a successor locus candidate directly from a matched heading's natural
+ * span (heading start through the next same-or-higher-level heading, or the
+ * document end). Unlike `sectionReplacementCandidate` (used only by the
+ * explicit numbered-range path), this does NOT require a "complete section
+ * body" or line-start/line-end alignment, and never attaches a
+ * `sectionReplacement` contract: the byte-preserving composite engine splices
+ * at these exact offsets directly, with no boundary reformatting, so those
+ * numbered-range-only requirements would only add friction here.
+ */
+function successorLocusCandidate(state:DocumentState,entry:StructuralEntry,evidence:string){
+ const startByte=entry.startByte,endByte=sectionBodyEnd(state,entry);
+ if(endByte<startByte)return;
+ // The heading's own structural entry may end before the natural section
+ // boundary (e.g. when it has child subsections it does not itself span);
+ // find whichever entry actually ends exactly at that boundary so
+ // `materializeCompositeTarget` can validate the composite's full span.
+ const last=state.structuralIndex.entries.filter(candidate=>candidate.startByte>=startByte&&candidate.endByte===endByte).sort((left,right)=>right.startByte-left.startByte)[0];
+ if(!last)return;
+ return compositeCandidate(state,[entry,last],startByte,endByte,evidence);
+}
+
+/** Resolves a semantic successor target into one Markdown heading's natural span, inferred from the request/deliberation without requiring a numbered range. */
 export function resolveSuccessorTarget(state:DocumentState,query:string):SuccessorTargetResolution {
  const semanticQuery=successorSelectionQuery(query);
  const headingCandidates=resolveTargets(state,semanticQuery).filter(candidate=>['section','subsection','heading'].includes(candidate.type));
@@ -120,11 +142,11 @@ export function resolveSuccessorTarget(state:DocumentState,query:string):Success
  const semantic=direct.length?direct:headingCandidates;
  if(!semantic.length)return {candidates:[],reason:'SUCCESSOR_TARGET_NOT_FOUND'};
  const candidates=semantic.flatMap(candidate=>{
-  const entry=state.structuralIndex.byId[candidate.entryId],structural=entry&&sectionReplacementCandidate(state,entry,[entry.entryId],`semantic successor target: ${candidate.evidence.join(', ')}`);
+  const entry=state.structuralIndex.byId[candidate.entryId],structural=entry&&successorLocusCandidate(state,entry,`semantic successor target: ${candidate.evidence.join(', ')}`);
   return structural?[{...structural,matchedTerms:candidate.matchedTerms,matchedLabels:candidate.matchedLabels,matchedTags:candidate.matchedTags,matchedSymbols:candidate.matchedSymbols,score:candidate.score,confidence:candidate.confidence,evidence:[...structural.evidence,...candidate.evidence]}]:[];
  });
  const canonical=collapseNestedSuccessorCandidates(candidates);
- return canonical.length?{candidates:canonical}:{candidates:[],reason:'SUCCESSOR_TARGET_INCOMPLETE_BODY'};
+ return canonical.length?{candidates:canonical}:{candidates:[],reason:'SUCCESSOR_TARGET_NOT_FOUND'};
 }
 
 export function materializeCompositeTarget(state:DocumentState,candidate:TargetCandidate){

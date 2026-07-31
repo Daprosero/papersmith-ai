@@ -67,6 +67,47 @@ test('route-stage and bypass metrics are privacy-safe and terminal routing does 
 	assert.equal(v2.getRuntimeMetrics().routeMetrics.routeSelections.LIFECYCLE, 1);
 });
 
+test('mode-first lock (D1/D2): an open deliberation keeps a keyword-inferred edit/lifecycle follow-up in chat; explicit exits remain honored', () => {
+	// Baseline (unaffected by openDeliberation): a bare conversationId + edit verb still leaks to
+	// DIRECT_DOCUMENT when the conversation is NOT open -- this is the existing, still-correct fallback.
+	assert.equal(workspace.resolveGlobalRoute({ conversationId: 'chat-session-1', instruction: 'modifica la ecuación candidata' }).stage, 'DIRECT_DOCUMENT');
+	// D1 fix: the SAME follow-up, while the conversation IS open, stays in chat instead of leaking.
+	const locked = workspace.resolveGlobalRoute({ conversationId: 'chat-session-1', instruction: 'modifica la ecuación candidata', openDeliberation: true });
+	assert.equal(locked.stage, 'CHAT_DELIBERATION');
+	assert.deepEqual(locked.bypassedStages, ['LIFECYCLE', 'DIRECT_DOCUMENT', 'DRAFT_MATERIALIZATION', 'MAINTENANCE', 'SCIENTIFIC_WORKFLOW']);
+	// A keyword-inferred lifecycle follow-up (no explicit operation) is locked out the same way.
+	assert.equal(workspace.resolveGlobalRoute({ conversationId: 'chat-session-1', instruction: 'restaura la revisión r01', openDeliberation: true }).stage, 'CHAT_DELIBERATION');
+	// An explicit lifecycle operation always remains honored, even while open.
+	assert.equal(workspace.resolveGlobalRoute({ operation: 'WITHDRAW_REVISION', conversationId: 'chat-session-1', instruction: 'withdraw research-concept-r01.md', openDeliberation: true }).stage, 'LIFECYCLE');
+	// Explicit CREATE_SUCCESSOR and MAINTENANCE remain honored escapes while open.
+	assert.equal(workspace.resolveGlobalRoute({ operation: 'CREATE_SUCCESSOR', conversationId: 'chat-session-1', instruction: 'modifica la ecuación candidata', openDeliberation: true }).stage, 'DIRECT_DOCUMENT');
+	assert.equal(workspace.resolveGlobalRoute({ operation: 'MAINTENANCE', conversationId: 'chat-session-1', instruction: 'run maintenance', openDeliberation: true }).stage, 'MAINTENANCE');
+	// Explicit CLOSE_DELIBERATION always routes to the CHAT_DELIBERATION-scoped dispatch, honored while open.
+	assert.equal(workspace.resolveGlobalRoute({ operation: 'CLOSE_DELIBERATION', conversationId: 'chat-session-1', instruction: 'irrelevant', openDeliberation: true }).stage, 'CHAT_DELIBERATION');
+	// A natural-language CLOSE (task 2.3) is itself the exit action and is honored even while open.
+	assert.equal(workspace.resolveGlobalRoute({ conversationId: 'chat-session-1', instruction: 'cierra la deliberación', openDeliberation: true }).stage, 'CHAT_DELIBERATION');
+	assert.equal(workspace.resolveGlobalRoute({ conversationId: 'chat-session-1', instruction: 'close the deliberation' }).stage, 'CHAT_DELIBERATION');
+	// Re-audit cleanup (issue #5): an explicit typed SCIENTIFIC_WORKFLOW operation is honored while open,
+	// exactly like every other explicit typed operation above (WITHDRAW_REVISION, CREATE_SUCCESSOR,
+	// MAINTENANCE, CLOSE_DELIBERATION) -- it must never be trapped into CHAT_DELIBERATION by the
+	// mode-first gate just because a keyword-inferred instruction would have been.
+	assert.equal(workspace.resolveGlobalRoute({ operation: 'SCIENTIFIC_WORKFLOW', conversationId: 'chat-session-1', instruction: 'Explore an idea.', openDeliberation: true }).stage, 'SCIENTIFIC_WORKFLOW');
+});
+
+test('re-audit cleanup (issue #5): explicit SCIENTIFIC_WORKFLOW operation ordering is consistent with the other explicit typed operations', () => {
+	// Symmetric with the other explicit-operation checks (WITHDRAW_REVISION/RESTORE_WITHDRAWN_REVISION,
+	// CREATE_SUCCESSOR, MAINTENANCE, CREATE_INITIAL_REVISION, CLOSE_DELIBERATION): all of them are honored
+	// before the openDeliberation gate. Trapping SCIENTIFIC_WORKFLOW alone into chat during an open
+	// deliberation was an unintentional asymmetry, not a documented product decision -- so it is now
+	// resolved before the gate exactly like its siblings, and its bypassedStages/route metadata are
+	// unchanged for the non-open case.
+	const open = workspace.resolveGlobalRoute({ operation: 'SCIENTIFIC_WORKFLOW', conversationId: 'chat-session-1', instruction: 'Explore an idea.', openDeliberation: true });
+	assert.deepEqual(open, { stage: 'SCIENTIFIC_WORKFLOW', bypassedStages: ['LIFECYCLE', 'DIRECT_DOCUMENT', 'CHAT_DELIBERATION', 'DRAFT_MATERIALIZATION', 'MAINTENANCE'] });
+	// Unaffected: the non-open baseline route and its bypassedStages remain exactly as before.
+	const closed = workspace.resolveGlobalRoute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'Explore an idea.' });
+	assert.deepEqual(closed, { stage: 'SCIENTIFIC_WORKFLOW', bypassedStages: ['LIFECYCLE', 'DIRECT_DOCUMENT', 'CHAT_DELIBERATION', 'DRAFT_MATERIALIZATION', 'MAINTENANCE'] });
+});
+
 test('scientific workflow remains disabled unless its exact flag is true', () => {
 	assert.equal(workspace.scientificWorkflowFeatureEnabled({}), false);
 	assert.equal(workspace.scientificWorkflowFeatureEnabled({ PAPER_PROPOSAL_SCIENTIFIC_WORKFLOW_ENABLED: 'false' }), false);

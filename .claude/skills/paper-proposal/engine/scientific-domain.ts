@@ -1,4 +1,4 @@
-import type { EditPlan } from './types.js';
+import type { EditAction, EditPlan } from './types.js';
 
 export const SCIENTIFIC_WORKFLOW_OPERATION = 'SCIENTIFIC_WORKFLOW' as const;
 
@@ -226,6 +226,8 @@ export type MaterializationClaimProvenance = {
 	acceptedEventId: ScientificEventId;
 	acceptedSynthesisDigest: string;
 	summary: string;
+	/** Present only when the accepted decision carries a real, single-locus structured edit (see `parseProposedEdit`). Absent decisions fall back to the pre-existing summary annotation. */
+	proposedEdit?: EditAction;
 };
 export type CanonicalProposalMetadata = {
 	schemaVersion: 1;
@@ -278,6 +280,8 @@ export type ThreadSynthesis = {
 };
 export type ScientificSynthesisCandidate = ThreadSynthesis & {
 	tutorEventId: ScientificEventId;
+	/** Present only when the tutor's own structured signal (`proposedAlternative` + a single `affectedEntryIds` locus) was liftable into a real `EditAction`. See `ScientificWorkflowService.candidate()`. */
+	proposedEdit?: EditAction;
 };
 export type StructuredConceptualFinding = {
 	findingId: string;

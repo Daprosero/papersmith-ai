@@ -12,6 +12,7 @@ import {
 	lstat,
 	open,
 	readdir,
+	readFile,
 	realpath,
 	stat,
 	unlink,
@@ -5324,17 +5325,18 @@ export function createProposalWorkspaceTool(
 	};
 }
 
-import { ChatDeliberationService, DraftMaterializationService, LifecycleV1PublicRouter, PaperProposalOrchestrator, ProposalWorkspaceAdapter, ProductionModelRuntime, ScientificWorkflowRuntime, createProductionSemanticPlanner, createProductionTutorAdapter, createProductionReviewerAdapter, defaultPiSessionDraftLifecycleAdapter, getRuntimeMetrics, getSharedPiSessionDraftRegistry, loadDocumentState, MAX_CHAT_DOCUMENT_CONTEXT_BYTES, recordLifecycleMetric, recordRouteMetric, resolveIntent, runConsistencyAudit, runPaperProposalSelfAudit, SCIENTIFIC_WORKFLOW_OPERATION, type ChatDocumentContext, type DraftMaterializationPolicy, type DraftMaterializationRequest, type PiSessionDraftLifecycleAdapter, type PiSessionDraftRegistry, type ScientificWorkflowPublicResult, type ScientificWorkflowRequest, type ScientificWorkflowRuntimeOptions } from './exports.js';
+import { ChatDeliberationService, createFilesystemInitialRevisionPublicationPort, DraftMaterializationService, InitialRevisionCreationService, LifecycleV1PublicRouter, PaperProposalOrchestrator, ProposalWorkspaceAdapter, ProductionModelRuntime, ScientificWorkflowRuntime, createProductionSemanticPlanner, createProductionTutorAdapter, createProductionReviewerAdapter, defaultPiSessionDraftLifecycleAdapter, getRuntimeMetrics, getSharedPiSessionDraftRegistry, loadDocumentState, MAX_CHAT_DOCUMENT_CONTEXT_BYTES, MAX_CHAT_GUIDE_CONTEXT_BYTES, recordLifecycleMetric, recordRouteMetric, resolveIntent, resolveLatestManagedRevision, runConsistencyAudit, runPaperProposalSelfAudit, SCIENTIFIC_WORKFLOW_OPERATION, type ChatDocumentContext, type ChatGuideFragment, type DraftMaterializationPolicy, type DraftMaterializationRequest, type PiSessionDraftLifecycleAdapter, type PiSessionDraftRegistry, type ScientificWorkflowPublicResult, type ScientificWorkflowRequest, type ScientificWorkflowRuntimeOptions } from './exports.js';
 import { createSuccessorAcceptanceRegistry, type SuccessorAcceptanceRegistry } from './successor-acceptance-registry.js';
 
-type GlobalRouteStage = 'LIFECYCLE' | 'DIRECT_DOCUMENT' | 'CHAT_DELIBERATION' | 'DRAFT_MATERIALIZATION' | 'MAINTENANCE' | 'SCIENTIFIC_WORKFLOW' | 'EXISTING_FALLBACK';
-type GlobalRouteInput = Pick<ScientificWorkflowRequest, 'instruction'> & { operation?: string; conversationId?: string; draftMaterialization?: DraftMaterializationRequest };
+type GlobalRouteStage = 'LIFECYCLE' | 'DIRECT_DOCUMENT' | 'CHAT_DELIBERATION' | 'DRAFT_MATERIALIZATION' | 'MAINTENANCE' | 'SCIENTIFIC_WORKFLOW' | 'CREATE_INITIAL_REVISION' | 'EXISTING_FALLBACK';
+type GlobalRouteInput = Pick<ScientificWorkflowRequest, 'instruction'> & { operation?: string; conversationId?: string; draftMaterialization?: DraftMaterializationRequest; openDeliberation?: boolean };
 type GlobalRoute = { stage: GlobalRouteStage; bypassedStages: GlobalRouteStage[] };
 export type V2ExecutionAuthority = { scope:'CHAT_DELIBERATION'|'DOCUMENT_EDIT'|'MAINTENANCE'|'SCIENTIFIC_WORKFLOW'|'EXISTING_FALLBACK'; taskDelegation:'FORBIDDEN'|'LOCAL_ONLY'|'PERMITTED'; documentAuthority:'FORBIDDEN'|'GUARDED'|'NOT_APPLICABLE'; durableState:'FORBIDDEN'|'PERMITTED'|'NOT_APPLICABLE'; stateIdentifier:'conversationId'|'maintenanceTaskId'|'scientificThreadId'|null; explicitHandoffRequired:boolean };
 const LIFECYCLE_OPERATIONS = new Set(['WITHDRAW_REVISION', 'RESTORE_WITHDRAWN_REVISION']);
 const DIRECT_DOCUMENT_INTENTS = new Set(['MODIFY', 'INSERT', 'DELETE', 'MOVE', 'COPY', 'CONCEPTUAL_REVISION', 'REVIEW']);
 const MAINTENANCE_OPERATION = 'MAINTENANCE';
 const CREATE_SUCCESSOR_OPERATION = 'CREATE_SUCCESSOR';
+const CREATE_INITIAL_REVISION_OPERATION = 'CREATE_INITIAL_REVISION';
 const MANAGED_CHAT_DOCUMENT_FILENAME = /^research-concept-(?:[a-z0-9]+(?:-[a-z0-9]+)*-)?r[0-9]{2,}\.md$/;
 const MANAGED_ARTIFACT_MARKER = Buffer.from('<!-- proposal-workspace:artifact:v1 -->\n');
 
@@ -5345,6 +5347,62 @@ export function resolveChatDocumentFilename(rawFilename: unknown): { filename?: 
  const filename = rawFilename.startsWith('proposals/') ? rawFilename.slice('proposals/'.length) : rawFilename;
  if (!MANAGED_CHAT_DOCUMENT_FILENAME.test(filename) || (rawFilename !== filename && rawFilename !== `proposals/${filename}`)) return { reason: 'CHAT_DOCUMENT_FILENAME_INVALID' };
  return { filename };
+}
+
+/**
+ * Loads the paper-guide directory (task 3.5/3.6, spec I2) as read-only reference fragments for a
+ * NEW deliberation's initial context assembly. Reused across every invocation but only ever called
+ * by `execute()` for a conversation's first turn -- never per turn. Never hardcodes a guide filename:
+ * it inventories `GUIDE_DIRECTORY` (the existing constant) exactly like `inventoryGuides` does, and
+ * silently returns no fragments (never throws) when the directory is absent, so projects without a
+ * guide (or existing fixtures that never configured one) are unaffected.
+ */
+async function loadGuideDirectoryFragments(projectRoot: string): Promise<ChatGuideFragment[]> {
+ let directory: string;
+ try {
+  const root = await canonicalProjectRoot(projectRoot);
+  directory = await canonicalDirectory(root, GUIDE_DIRECTORY);
+ } catch {
+  return [];
+ }
+ let entries;
+ try {
+  entries = await readdir(directory, { withFileTypes: true });
+ } catch {
+  return [];
+ }
+ const markdownNames = entries
+  .filter((entry) => entry.isFile() && GUIDE_MARKDOWN.test(entry.name) && !GUIDE_MANIFEST.test(entry.name))
+  .map((entry) => entry.name)
+  .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+ const fragments: ChatGuideFragment[] = [];
+ let bytes = 0;
+ for (const name of markdownNames) {
+  if (bytes >= MAX_CHAT_GUIDE_CONTEXT_BYTES) break;
+  let canonicalPath: string;
+  try {
+   canonicalPath = await canonicalRegularFile(directory, name, "normalized guide Markdown");
+  } catch {
+   continue;
+  }
+  const buffer = await readFile(canonicalPath);
+  const text = buffer.subarray(0, MAX_CHAT_GUIDE_CONTEXT_BYTES - bytes).toString("utf8");
+  if (!text) continue;
+  bytes += Buffer.byteLength(text);
+  fragments.push({ path: `${GUIDE_DIRECTORY}/${name}`, content: text });
+ }
+ return fragments;
+}
+
+/** Wraps `resolveLatestManagedRevision` for the base-confirmation gate: a project with no `proposals/`
+ * directory at all (e.g. a fresh workspace, or fixtures that never created one) has nothing to confirm,
+ * so any resolution failure degrades to `{status:'empty'}` rather than blocking ordinary chat. */
+async function safeResolveLatestManagedRevision(projectRoot: string) {
+ try {
+  return await resolveLatestManagedRevision(projectRoot);
+ } catch {
+  return { status: "empty" as const };
+ }
 }
 
 async function loadChatDocumentContext(projectRoot: string, filename: string): Promise<{ document?: ChatDocumentContext; reason?: string }> {
@@ -5368,6 +5426,7 @@ export function resolveV2ExecutionAuthority(stage: GlobalRouteStage): V2Executio
  if(stage==='CHAT_DELIBERATION') return {scope:'CHAT_DELIBERATION',taskDelegation:'FORBIDDEN',documentAuthority:'FORBIDDEN',durableState:'FORBIDDEN',stateIdentifier:'conversationId',explicitHandoffRequired:false};
  if(stage==='DIRECT_DOCUMENT'||stage==='DRAFT_MATERIALIZATION') return {scope:'DOCUMENT_EDIT',taskDelegation:'LOCAL_ONLY',documentAuthority:'GUARDED',durableState:'NOT_APPLICABLE',stateIdentifier:null,explicitHandoffRequired:true};
  if(stage==='MAINTENANCE') return {scope:'MAINTENANCE',taskDelegation:'PERMITTED',documentAuthority:'FORBIDDEN',durableState:'NOT_APPLICABLE',stateIdentifier:'maintenanceTaskId',explicitHandoffRequired:true};
+ if(stage==='CREATE_INITIAL_REVISION') return {scope:'DOCUMENT_EDIT',taskDelegation:'LOCAL_ONLY',documentAuthority:'GUARDED',durableState:'NOT_APPLICABLE',stateIdentifier:null,explicitHandoffRequired:true};
  if(stage==='SCIENTIFIC_WORKFLOW') return {scope:'SCIENTIFIC_WORKFLOW',taskDelegation:'LOCAL_ONLY',documentAuthority:'NOT_APPLICABLE',durableState:'PERMITTED',stateIdentifier:'scientificThreadId',explicitHandoffRequired:true};
  return {scope:'EXISTING_FALLBACK',taskDelegation:'LOCAL_ONLY',documentAuthority:'NOT_APPLICABLE',durableState:'NOT_APPLICABLE',stateIdentifier:null,explicitHandoffRequired:true};
 }
@@ -5375,13 +5434,33 @@ export function resolveGlobalRoute(input: GlobalRouteInput): GlobalRoute {
  // Draft materialization is the only explicit create-only exit from session-local chat.
  if(input.draftMaterialization) return selectedGlobalRoute('DRAFT_MATERIALIZATION',['LIFECYCLE','DIRECT_DOCUMENT','CHAT_DELIBERATION','MAINTENANCE','SCIENTIFIC_WORKFLOW']);
  // Mode is otherwise an authority boundary: explicit chat wins before every generic heuristic, including lifecycle text.
- if(input.operation==='CHAT_DELIBERATION') return selectedGlobalRoute('CHAT_DELIBERATION',['LIFECYCLE','DIRECT_DOCUMENT','DRAFT_MATERIALIZATION','MAINTENANCE','SCIENTIFIC_WORKFLOW']);
+ // CLOSE_DELIBERATION is an explicit chat-scoped operation too (task 2.2): it is dispatched inside the CHAT_DELIBERATION branch, never a separate route stage.
+ if(input.operation==='CHAT_DELIBERATION'||input.operation==='CLOSE_DELIBERATION') return selectedGlobalRoute('CHAT_DELIBERATION',['LIFECYCLE','DIRECT_DOCUMENT','DRAFT_MATERIALIZATION','MAINTENANCE','SCIENTIFIC_WORKFLOW']);
  if(input.operation===MAINTENANCE_OPERATION) return selectedGlobalRoute('MAINTENANCE',['LIFECYCLE','DIRECT_DOCUMENT','CHAT_DELIBERATION','DRAFT_MATERIALIZATION','SCIENTIFIC_WORKFLOW']);
+ // CREATE_INITIAL_REVISION (spec I1) is an explicit, user-triggered operation only -- it is never inferred
+ // from natural language and never auto-bootstrapped from any other route, including an open deliberation.
+ if(input.operation===CREATE_INITIAL_REVISION_OPERATION) return selectedGlobalRoute('CREATE_INITIAL_REVISION',['LIFECYCLE','DIRECT_DOCUMENT','CHAT_DELIBERATION','DRAFT_MATERIALIZATION','MAINTENANCE','SCIENTIFIC_WORKFLOW']);
  // CREATE_SUCCESSOR is an explicit document-edit route, never a lifecycle inference.
  if(input.operation===CREATE_SUCCESSOR_OPERATION) return selectedGlobalRoute('DIRECT_DOCUMENT',['LIFECYCLE','CHAT_DELIBERATION','DRAFT_MATERIALIZATION','MAINTENANCE','SCIENTIFIC_WORKFLOW']);
- const resolved = resolveIntent(input.instruction);
+ // An explicit lifecycle operation is always honored, even while a conversation is in open deliberation.
  const explicitLifecycle = typeof input.operation === 'string' && LIFECYCLE_OPERATIONS.has(input.operation);
- if(explicitLifecycle || LIFECYCLE_OPERATIONS.has(resolved.intent)) return selectedGlobalRoute('LIFECYCLE',[]);
+ if(explicitLifecycle) return selectedGlobalRoute('LIFECYCLE',[]);
+ const resolved = resolveIntent(input.instruction);
+ // An explicit natural-language CLOSE (task 2.3) is itself the exit action: always honored, same as the explicit operation above.
+ if(resolved.intent==='CLOSE_DELIBERATION') return selectedGlobalRoute('CHAT_DELIBERATION',['LIFECYCLE','DIRECT_DOCUMENT','DRAFT_MATERIALIZATION','MAINTENANCE','SCIENTIFIC_WORKFLOW']);
+ // Mode-first lock (D1/D2): while a conversation is in OPEN deliberation, only the explicit exits above (chat re-send, MAINTENANCE, CREATE_SUCCESSOR,
+ // an explicit lifecycle operation, or an explicit CLOSE) can leave it. A keyword-inferred lifecycle/edit/deliberate follow-up never leaks to a
+ // mutating route; control stays in the tutor loop until CLOSE.
+ // Re-audit cleanup (issue #5): an explicit typed SCIENTIFIC_WORKFLOW operation is exempted from this gate too,
+ // consistent with every other explicit typed operation above (MAINTENANCE, CREATE_SUCCESSOR, CREATE_INITIAL_REVISION,
+ // explicit lifecycle) and below (explicit CLOSE_DELIBERATION) -- all of which are honored even while open. Trapping
+ // SCIENTIFIC_WORKFLOW alone into chat during an open deliberation was an unintentional asymmetry, not a documented
+ // product decision. The exemption is scoped to the gate only: keyword resolution below (LIFECYCLE_OPERATIONS,
+ // DIRECT_DOCUMENT_INTENTS, DELIBERATE) still takes precedence over the SCIENTIFIC_WORKFLOW operation exactly as it
+ // does when the conversation is not open (see "terminal routes retain ... precedence" test), so this exemption only
+ // stops the gate from unconditionally trapping it -- it does not change relative precedence versus keyword intents.
+ if(input.openDeliberation&&input.operation!==SCIENTIFIC_WORKFLOW_OPERATION) return selectedGlobalRoute('CHAT_DELIBERATION',['LIFECYCLE','DIRECT_DOCUMENT','DRAFT_MATERIALIZATION','MAINTENANCE','SCIENTIFIC_WORKFLOW']);
+ if(LIFECYCLE_OPERATIONS.has(resolved.intent)) return selectedGlobalRoute('LIFECYCLE',[]);
  // An edit is the only natural-language exit from an established chat conversation.
  if(DIRECT_DOCUMENT_INTENTS.has(resolved.intent)) return selectedGlobalRoute('DIRECT_DOCUMENT',['LIFECYCLE']);
  if(resolved.intent==='DELIBERATE') return selectedGlobalRoute('CHAT_DELIBERATION',['LIFECYCLE','DIRECT_DOCUMENT','DRAFT_MATERIALIZATION','MAINTENANCE']);
@@ -5455,11 +5534,18 @@ export function createPaperProposalExtension(options: PaperProposalExtensionOpti
  const orchestrator=new PaperProposalOrchestrator(projectRoot,adapter,undefined,createProductionSemanticPlanner(productionRuntime),{tutor,reviewer:createProductionReviewerAdapter(productionRuntime)},undefined,undefined,successorAcceptanceRegistry);
  const draftRegistry=options.draftRegistry??getSharedPiSessionDraftRegistry();
  const draftLifecycle=options.draftLifecycle??defaultPiSessionDraftLifecycleAdapter;
- const chatDeliberation=new ChatDeliberationService(tutor,draftRegistry);
+ const chatDeliberation=new ChatDeliberationService(tutor,draftRegistry,createProductionReviewerAdapter(productionRuntime));
  const draftMaterialization=new DraftMaterializationService(projectRoot,operationGuard,options.draftMaterialization);
  const lifecycleV1Router=options.scientificWorkflow?.lifecycleV1WorkspaceId
   ?new LifecycleV1PublicRouter({projectRoot,workspaceId:options.scientificWorkflow.lifecycleV1WorkspaceId})
   :undefined;
+ // CREATE_INITIAL_REVISION (spec I1): independent of the scientific-workflow flag and of any canonical-metadata
+ // option. The existing-proposal check and publication are both injectable ports so the full creation logic is
+ // unit-testable without a real filesystem; production wiring uses the real proposals/ directory below.
+ const initialRevisionCreation=new InitialRevisionCreationService(
+  {hasManagedProposal:async()=>(await safeResolveLatestManagedRevision(projectRoot)).status!=='empty'},
+  createFilesystemInitialRevisionPublicationPort(projectRoot),
+ );
  let runtimeSessionIdentity:string|undefined;
  const sessionIdentity=(ctx:Pick<ExtensionContext,'sessionManager'>)=>runtimeSessionIdentity=draftLifecycle.sessionIdentity(ctx);
  let scientificWorkflowRuntime:ScientificWorkflowRuntime|undefined;
@@ -5471,10 +5557,10 @@ export function createPaperProposalExtension(options: PaperProposalExtensionOpti
   label:'Execute Paper Proposal V2',
   description:'Execute a bounded Paper Proposal V2 chat, explicitly authorized draft creation, document change, or managed-revision lifecycle request.',
   promptSnippet:'Deliberate conversationally or execute a resolved Paper Proposal V2 instruction.',
-  promptGuidelines:['Use operation CHAT_DELIBERATION for non-mutating tutor conversation; it is session-local, mode-first, and cannot mint document or task authority. Materialize chat only with draftMaterialization INITIAL_CREATE plus explicit current-turn authorization and an exact validated route or approval of the pending proposed route; UPDATE and REPLACE are forbidden. Use document mutation verbs only for explicit principal-local managed edits, which retain exact target resolution and guarded publication. MAINTENANCE is an explicit external-controller handoff only; V2 does not create or resume workers or grant document authority. For managed-revision withdrawal or restore, pass the typed lifecycle operation and an exact sourceFilename or restore withdrawalOperationId; omit withdrawalOperationId for withdrawal because V2 generates it. Supply only user-facing semantic selectors and content; never construct patches, offsets, manifests, receipts, or internal revision mechanics.'],
+  promptGuidelines:['Use operation CHAT_DELIBERATION for non-mutating tutor conversation; it is session-local, mode-first, and cannot mint document or task authority. Materialize chat only with draftMaterialization INITIAL_CREATE plus explicit current-turn authorization and an exact validated route or approval of the pending proposed route; UPDATE and REPLACE are forbidden. Use document mutation verbs only for explicit principal-local managed edits, which retain exact target resolution and guarded publication. Use operation CREATE_INITIAL_REVISION, with instruction as the idea, only to explicitly create the first managed proposal (v1); it never runs automatically and is rejected outright whenever a managed proposal already exists. MAINTENANCE is an explicit external-controller handoff only; V2 does not create or resume workers or grant document authority. For managed-revision withdrawal or restore, pass the typed lifecycle operation and an exact sourceFilename or restore withdrawalOperationId; omit withdrawalOperationId for withdrawal because V2 generates it. Supply only user-facing semantic selectors and content; never construct patches, offsets, manifests, receipts, or internal revision mechanics.'],
   parameters:Type.Object({
    instruction:Type.String({minLength:1,maxLength:65536}),
-   operation:Type.Optional(StringEnum(['WITHDRAW_REVISION','RESTORE_WITHDRAWN_REVISION','CREATE_SUCCESSOR','CHAT_DELIBERATION','MAINTENANCE','SCIENTIFIC_WORKFLOW'] as const,{description:'Explicit lifecycle, managed-successor edit, session-local chat, external-maintenance handoff, or persistent scientific-workflow operation. Omit for existing direct-document classification.'})),
+   operation:Type.Optional(StringEnum(['WITHDRAW_REVISION','RESTORE_WITHDRAWN_REVISION','CREATE_SUCCESSOR','CREATE_INITIAL_REVISION','CHAT_DELIBERATION','CLOSE_DELIBERATION','MAINTENANCE','SCIENTIFIC_WORKFLOW'] as const,{description:'Explicit lifecycle, managed-successor edit, explicit first-managed-version creation, session-local chat, explicit chat close, external-maintenance handoff, or persistent scientific-workflow operation. Omit for existing direct-document classification.'})),
        editIntent:Type.Optional(StringEnum(['MODIFY','CONCEPTUAL_REVISION'] as const,{description:'Required only with CREATE_SUCCESSOR; identifies the bounded inner document edit.'})),
        sectionRange:Type.Optional(Type.String({minLength:5,maxLength:64,pattern:'^(?:sections?\\s+)?\\d+(?:\\.\\d+)*\\s*[–-]\\s*\\d+(?:\\.\\d+)*$',description:'Required only with CREATE_SUCCESSOR. Exact numbered Markdown-heading range, for example sections 1–2.2.'})),
        acceptSuccessor:Type.Optional(Type.Boolean({description:'Set true only for an explicit current-turn acceptance of a previously previewed successor.'})),
@@ -5490,6 +5576,7 @@ export function createPaperProposalExtension(options: PaperProposalExtensionOpti
    withdrawalOperationId:Type.Optional(Type.String({minLength:36,maxLength:36,pattern:'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'})),
    withdrawalReason:Type.Optional(Type.String({minLength:1,maxLength:500})),
        conversationId:Type.Optional(Type.String({minLength:5,maxLength:256,pattern:'^chat-[a-z0-9][a-z0-9-]{0,250}$'})),
+       confirmBase:Type.Optional(Type.Boolean({description:'CHAT_DELIBERATION only: confirms the auto-proposed latest managed revision as this new deliberation\'s base, returned by a prior base_confirmation_required response. Omit or override with sourceFilename instead.'})),
        draftMaterialization:Type.Optional(Type.Object({
         operation:StringEnum(['INITIAL_CREATE','UPDATE','REPLACE'] as const,{description:'Only INITIAL_CREATE is authorized for chat materialization; UPDATE and REPLACE are explicit fail-closed values.'}),
         route:Type.Optional(Type.String({minLength:1,maxLength:512,description:'Exact project-relative route. It is never normalized or rewritten on the caller’s behalf.'})),
@@ -5509,25 +5596,54 @@ export function createPaperProposalExtension(options: PaperProposalExtensionOpti
        actor:Type.Optional(Type.Object({kind:StringEnum(['USER','SYSTEM','TUTOR','CONCEPTUAL_REVIEWER','PLANNER','EXECUTOR','DOCUMENT_REVIEWER'] as const)},{additionalProperties:false})),
   }),
   async execute(_toolCallId,params,signal,_onUpdate,ctx){
-   const route=resolveGlobalRoute(params);
+   const openDeliberation=params.conversationId?chatDeliberation.isOpen(sessionIdentity(ctx),params.conversationId):false;
+   const route=resolveGlobalRoute({...params,openDeliberation});
    if(route.stage==='DRAFT_MATERIALIZATION'){
     const conversationId=params.conversationId??'';
     const currentSessionIdentity=sessionIdentity(ctx);
     const materializationPayload=conversationId?draftRegistry.get(currentSessionIdentity,conversationId):undefined;
     const result=await draftMaterialization.execute({conversationId,materializationPayload,request:params.draftMaterialization!});
-    if(result.status==='materialized'&&conversationId)draftRegistry.delete(currentSessionIdentity,conversationId);
+    // D5: a direct materialization terminates the conversation's own deliberation state, not merely the draft-registry entry.
+    if(result.status==='materialized'&&conversationId)chatDeliberation.close(currentSessionIdentity,conversationId);
     const publicResult={...result,operation:result.operation,routeStage:'DOCUMENT_EDIT',transition:'CHAT_DELIBERATION_TO_DOCUMENT_EDIT',authority:resolveV2ExecutionAuthority(route.stage),conversationId:params.conversationId??null,modelCalls:0,plannerCalls:0,tutorCalls:0,reviewerCalls:0,receiptId:null,manifestStatus:'NOT_PUBLISHED',auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN',recoveryStatus:'not_required'};
     return {content:[{type:'text',text:JSON.stringify(publicResult)}],details:publicResult};
    }
    if(route.stage==='CHAT_DELIBERATION'){
+    if(params.operation==='CLOSE_DELIBERATION'){
+     const currentSessionIdentity=sessionIdentity(ctx);
+     const closeResult=chatDeliberation.close(currentSessionIdentity,params.conversationId??'');
+     const publicResult={operation:'CLOSE_DELIBERATION',routeStage:'CHAT_DELIBERATION',authority:resolveV2ExecutionAuthority(route.stage),...closeResult};
+     return {content:[{type:'text',text:JSON.stringify(publicResult)}],details:publicResult};
+    }
+    // Interactive base confirmation (spec I4, user requirement 3): gates only the very first turn of a
+    // NEW deliberation, and only when the caller has not already named an explicit base via sourceFilename.
+    // Auto-identifies the latest managed revision via the unified resolver -- never a hardcoded name/path --
+    // and requires the caller to confirm it (confirmBase:true) or override it (sourceFilename) before the
+    // tutor runs. This also satisfies "load prior materialized version as base": whatever is currently the
+    // latest managed revision (e.g. after a prior deliberation's materialization) is what gets proposed.
+    if(!openDeliberation&&!params.sourceFilename&&!params.confirmBase){
+     const baseResolution=await safeResolveLatestManagedRevision(projectRoot);
+     if(baseResolution.status!=='empty'){
+      const authority=resolveV2ExecutionAuthority(route.stage);
+      const publicResult=baseResolution.status==='multiple'
+       ?{status:'base_confirmation_required' as const,operation:'CHAT_DELIBERATION',routeStage:'CHAT_DELIBERATION',authority,conversationId:params.conversationId??null,warnings:['MULTIPLE_ACTIVE_REVISIONS'],candidates:baseResolution.candidates.map(c=>c.filename),modelCalls:0,tutorCalls:0,reviewerCalls:0,mutations:0,receiptId:null,manifestStatus:'NOT_PUBLISHED',auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN',recoveryStatus:'not_required',nextAction:'confirm_or_override_base',question:'Multiple active revisions were found. Pass one exact filename as sourceFilename to select the base.'}
+       :{status:'base_confirmation_required' as const,operation:'CHAT_DELIBERATION',routeStage:'CHAT_DELIBERATION',authority,conversationId:params.conversationId??null,proposedBase:baseResolution.latest.filename,modelCalls:0,tutorCalls:0,reviewerCalls:0,mutations:0,receiptId:null,manifestStatus:'NOT_PUBLISHED',auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN',recoveryStatus:'not_required',nextAction:'confirm_or_override_base',question:`Use ${baseResolution.latest.filename} as the deliberation base? Resend with confirmBase:true to accept it, or sourceFilename to override.`};
+      return {content:[{type:'text',text:JSON.stringify(publicResult)}],details:publicResult};
+     }
+     // status 'empty' -- no managed proposal exists yet; nothing to confirm, proceed document-less as before.
+    }
+    const confirmedBaseResolution=params.sourceFilename||!params.confirmBase?undefined:await safeResolveLatestManagedRevision(projectRoot);
+    const effectiveSourceFilename=params.sourceFilename??(confirmedBaseResolution&&confirmedBaseResolution.status!=='empty'?confirmedBaseResolution.latest.filename:undefined);
     // FORBIDDEN is mutation authority: an explicitly selected managed document may be loaded as immutable tutor context only.
-    const resolvedDocument=resolveChatDocumentFilename(params.sourceFilename);
+    const resolvedDocument=resolveChatDocumentFilename(effectiveSourceFilename);
     const chatDocument=resolvedDocument.filename?await loadChatDocumentContext(projectRoot,resolvedDocument.filename):resolvedDocument;
+    // Paper-guide initial context (task 3.5/3.6, spec I2): loaded once, only for this conversation's first turn.
+    const guideFragments=!openDeliberation?await loadGuideDirectoryFragments(projectRoot):[];
     const result=chatDocument.reason
-     ?{status:'blocked' as const,conversationId:params.conversationId??'chat-unresolved',alternatives:[],risks:[],unresolvedQuestions:[],context:{turnCount:0,reusedConclusion:false},modelCalls:0,mutations:0 as const,receiptId:null,manifestStatus:'NOT_PUBLISHED' as const,auditStatus:'NOT_RUN' as const,selfAuditStatus:'NOT_RUN' as const,recoveryStatus:'not_required' as const,nextAction:'clarify_request' as const,reason:chatDocument.reason}
-     :await productionRuntime.withContext(ctx,signal,()=>chatDeliberation.deliberate({instruction:params.instruction,sessionIdentity:sessionIdentity(ctx),...(params.conversationId?{conversationId:params.conversationId}:{}),...(chatDocument.document?{document:chatDocument.document}:{})}));
+     ?{status:'blocked' as const,conversationId:params.conversationId??'chat-unresolved',alternatives:[],risks:[],unresolvedQuestions:[],context:{turnCount:0,reusedConclusion:false},modelCalls:0,tutorCalls:0,reviewerCalls:0,mutations:0 as const,receiptId:null,manifestStatus:'NOT_PUBLISHED' as const,auditStatus:'NOT_RUN' as const,selfAuditStatus:'NOT_RUN' as const,recoveryStatus:'not_required' as const,nextAction:'clarify_request' as const,reason:chatDocument.reason}
+     :await productionRuntime.withContext(ctx,signal,()=>chatDeliberation.deliberate({instruction:params.instruction,sessionIdentity:sessionIdentity(ctx),...(params.conversationId?{conversationId:params.conversationId}:{}),...(chatDocument.document?{document:chatDocument.document}:{}),...(guideFragments.length?{guideFragments}:{})}));
     const {reason,...publicChat}=result;
-    const calls={plannerCalls:0,tutorCalls:result.modelCalls,reviewerCalls:0};
+    const calls={plannerCalls:0,tutorCalls:result.tutorCalls,reviewerCalls:result.reviewerCalls};
     const authority=resolveV2ExecutionAuthority(route.stage);
     const publicResult=result.status==='blocked'
      ?{operation:'CHAT_DELIBERATION',routeStage:'CHAT_DELIBERATION',authority,...publicChat,...calls,category:/MODEL|PRODUCTION/.test(reason??'')?'model':'validation',message:reason??'Chat deliberation did not complete.'}
@@ -5540,6 +5656,15 @@ export function createPaperProposalExtension(options: PaperProposalExtensionOpti
     const publicResult=maintenanceTaskId!==undefined&&!/^maintenance-[a-z0-9][a-z0-9-]{0,242}$/.test(maintenanceTaskId)
      ?{status:'blocked',operation:MAINTENANCE_OPERATION,routeStage:'MAINTENANCE',authority,maintenanceTaskId:null,mutations:0,receiptId:null,manifestStatus:'NOT_PUBLISHED',auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN',recoveryStatus:'not_required',nextAction:'supply_maintenance_task_id',blockers:[{code:'MAINTENANCE_TASK_ID_INVALID',message:'Maintenance handoff requires a maintenance-prefixed task ID.'}]}
      :{status:'delegation_permitted',operation:MAINTENANCE_OPERATION,routeStage:'MAINTENANCE',authority,maintenanceTaskId:maintenanceTaskId??null,mutations:0,receiptId:null,manifestStatus:'NOT_PUBLISHED',auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN',recoveryStatus:'not_required',nextAction:'handoff_to_maintenance_controller'};
+    return {content:[{type:'text',text:JSON.stringify(publicResult)}],details:publicResult};
+   }
+   if(route.stage==='CREATE_INITIAL_REVISION'){
+    const authority=resolveV2ExecutionAuthority(route.stage);
+    const guideFragments=await loadGuideDirectoryFragments(projectRoot);
+    const result=await initialRevisionCreation.execute({idea:params.instruction,...(guideFragments.length?{guideFragments}:{})});
+    const publicResult=result.status==='created'
+     ?{status:'created' as const,operation:CREATE_INITIAL_REVISION_OPERATION,routeStage:'CREATE_INITIAL_REVISION',authority,targetFilename:result.filename,targetRevision:result.revision,targetSha256:result.documentSha256,canonicalMetadata:result.canonicalMetadata,mutations:1 as const,receiptId:`${result.filename}:${result.revision}`,manifestStatus:'NOT_TRACKED',auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN',recoveryStatus:'not_required',nextAction:null}
+     :{status:'blocked' as const,operation:CREATE_INITIAL_REVISION_OPERATION,routeStage:'CREATE_INITIAL_REVISION',authority,targetFilename:null,mutations:0 as const,receiptId:null,manifestStatus:'NOT_PUBLISHED',auditStatus:'NOT_RUN',selfAuditStatus:'NOT_RUN',recoveryStatus:'not_required',nextAction:result.code==='MANAGED_PROPOSAL_ALREADY_EXISTS'?'use_existing_managed_proposal':'supply_initial_idea',blockers:[{code:result.code,message:result.code==='MANAGED_PROPOSAL_ALREADY_EXISTS'?'A managed proposal already exists; CREATE_INITIAL_REVISION never overwrites or duplicates it.':'Provide a non-empty idea in instruction.'}]};
     return {content:[{type:'text',text:JSON.stringify(publicResult)}],details:publicResult};
    }
    if(route.stage==='SCIENTIFIC_WORKFLOW'){

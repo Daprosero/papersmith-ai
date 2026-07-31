@@ -1,6 +1,19 @@
 # Paper Proposal V2 examples and help
 
-Use `/skill:paper-proposal` for guidance. Every proposal operation is executed with `paper_proposal_execute` and a natural-language request. These examples assume the proposal already exists and is managed by V2.
+Use `/skill:paper-proposal` for guidance. Every proposal operation is executed with `paper_proposal_execute` and a natural-language request. Most examples below assume the proposal already exists and is managed by V2; the first example covers creating that initial version.
+
+## Creating the first managed version
+
+When no managed proposal exists yet, call `paper_proposal_execute` with `operation: CREATE_INITIAL_REVISION` and the idea as `instruction`:
+
+```json
+{
+  "operation": "CREATE_INITIAL_REVISION",
+  "instruction": "A paper proposing a distribution-free calibration test for conformal prediction sets under covariate shift."
+}
+```
+
+This is explicit and user-triggered only: it never runs automatically from a chat turn or any other route, and it is rejected outright when a managed proposal already exists (it never overwrites or duplicates one). The engine loads the paper-guide directory once and composes v1 from that guide content plus the supplied idea — title, section heading, and filename slug are all derived from the idea, never a fixed generic skeleton. A successful call returns the created filename, revision, and document hash as completion evidence.
 
 ## Chat deliberation
 
@@ -10,9 +23,21 @@ For a non-mutating tutor conversation, call `paper_proposal_execute` with `opera
 
 Pass the returned `conversationId` in a follow-up to reuse the bounded in-session conclusions. Chat works when persistent scientific workflow is disabled, does not require a managed proposal, and does not promise survival across restarts. It creates no proposal, receipt, audit record, document mutation, or delegated task authority. An explicit `CHAT_DELIBERATION` request stays chat even when its wording mentions a document or lifecycle action.
 
-A later explicit edit may pass that `conversationId`, but still needs an exact target or clarification and uses the normal principal-local guarded publication path:
+On the first turn of a new deliberation (no `sourceFilename` and no prior `confirmBase`), the engine resolves the latest managed revision and asks for confirmation before proceeding: `status: "base_confirmation_required"` with either a single `proposedBase` (resend with `confirmBase: true` to accept it, or `sourceFilename` to override) or, if more than one active revision exists, a `MULTIPLE_ACTIVE_REVISIONS` warning plus the full candidate list (an exact `sourceFilename` is then required). No path or filename is ever guessed or hardcoded.
+
+By default, the tutor assesses every turn. When a turn proposes a concrete change (an `ACCEPT_WITH_REVISIONS`- or `PROPOSE_ALTERNATIVE`-type decision), the engine additionally runs the reviewer and, if needed, a bounded repair loop (at most 2 repair cycles) before returning its conclusion — this runs by default, with no separate flag to enable it. A purely discussion turn runs the tutor alone. Each turn's result also carries a non-blocking `growthAdvisory` suggesting materialization once the accumulated approved changes exceed roughly 4 sections or 40% of the document.
+
+Deliberation is locked: once `CHAT_DELIBERATION` opens, follow-up turns stay in chat even if they use edit verbs — the engine never infers a document edit from wording alone while the conversation is open:
 
 > Now apply that conclusion to the definition of training bags.
+
+The turn above is still handled in-chat, not as a document edit. To leave chat, either materialize the conversation as a draft (below) or send an explicit close:
+
+```json
+{ "operation": "CLOSE_DELIBERATION", "conversationId": "chat-…" }
+```
+
+`CLOSE_DELIBERATION` discards the conversation's in-session state (turns, tutor/reviewer conclusions, accumulated growth tally). Reusing the same `conversationId` afterward is rejected as terminated, not resumed — start a new `CHAT_DELIBERATION` instead, which resolves its base the same way as any new deliberation.
 
 ## Materialize chat as a standalone draft
 

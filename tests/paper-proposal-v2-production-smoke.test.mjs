@@ -104,7 +104,12 @@ test('runs the production V2 tool through a complete temporary fixture', async (
  assert.equal(conceptual.status, 'published');
  assert.equal(calls.tutor, 1);
  assert.equal(calls.planner, 2);
- const deliberated = await execute({ instruction: 'delibera sobre Gamma paragraph.', selectedEntryId: await entryId(stateModule, fixture, 'Gamma') });
+ // ADAPTED (paper-proposal-tutor-repair, Phase 3, spec I4): a NEW deliberation now interactively
+ // confirms its base (the unified resolver's latest managed revision) before the tutor runs, since a
+ // managed proposal already exists at this point in the fixture from the prior published operations.
+ // confirmBase:true accepts the auto-proposed latest revision, matching the "confirm proposed base"
+ // scenario; this does not weaken the assertion below, it exercises the confirmed path directly.
+ const deliberated = await execute({ instruction: 'delibera sobre Gamma paragraph.', selectedEntryId: await entryId(stateModule, fixture, 'Gamma'), confirmBase: true });
  assert.equal(deliberated.status, 'deliberated');
  assert.equal(deliberated.mutations, 0);
  assert.equal(calls.tutor, 2);

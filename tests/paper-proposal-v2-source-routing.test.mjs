@@ -67,22 +67,34 @@ test('explicit sourceFilename routes exact composite selection only through its 
  assert.ok(!published.includes('A_{r01}=1.'));
 });
 
-test('CREATE_SUCCESSOR authorizes only one composite range replacement and waits for acceptance', async () => {
+test('CREATE_SUCCESSOR authorizes only one composite locus replacement and waits for acceptance (locus inferred from the instruction, no numbered range)', async () => {
  const root = await mkdtemp(path.join(os.tmpdir(), 'pp-v2-composite-successor-'));
  const proposals = path.join(root, 'proposals');
  await mkdir(proposals, { recursive: true });
  const bootstrap = workspaceModule.createProposalWorkspaceTool(root);
  await bootstrap.execute('seed', { action: 'write', resource: 'proposal', slug: 'r01', content: '# 1 Intro\n\nKeep.\n\n# 2 Framing\n\nOld.\n\n## 2.1 Detail\n\nOld detail.\n\n# 3 End\n\nKeep.\n' });
  const state = await v2.loadDocumentState(root, 'research-concept-r01.md');
- const range = v2.resolveSectionRange(state, 'sections 2–2.1').candidate;
+ // The heading "2 Framing"'s natural span (its own start through the next
+ // same-or-higher-level heading, "3 End") covers the same bytes the retired
+ // numbered range "sections 2–2.1" used to cover; the locus is now inferred
+ // from the instruction alone, with no sectionRange/editIntent required.
+ const range = v2.resolveSuccessorTarget(state, 'Modifica la sección Framing.').candidates[0];
  const child = state.structuralIndex.entries.find(entry => entry.type === 'paragraph' && state.documentBytes.subarray(entry.startByte, entry.endByte).toString().includes('Old detail.')).entryId;
  const guard = workspaceModule.createDocumentOperationGuard(root);
  const adapter = new v2.ProposalWorkspaceAdapter(root, guard, workspaceModule.createProposalWorkspaceTool(root, { operationGuard: guard }), () => 'composite-successor');
- const request = { operation: 'CREATE_SUCCESSOR', editIntent: 'CONCEPTUAL_REVISION', sourceFilename: 'research-concept-r01.md', sectionRange: 'sections 2–2.1', instruction: 'Revise the bounded range.' };
+ // editIntent stays optional (no forced numbered-range+editIntent gate); it is
+ // supplied explicitly here only to exercise the CONCEPTUAL_REVISION branch's
+ // own out-of-target rejection, same as before.
+ const request = { operation: 'CREATE_SUCCESSOR', editIntent: 'CONCEPTUAL_REVISION', sourceFilename: 'research-concept-r01.md', instruction: 'Modifica la sección Framing.' };
  const childPlanner = { plan: async () => ({ actions: [{ kind: 'replace', targetEntryId: child, replacementText: 'bad' }], unresolvedQuestions: [] }) };
  const rejected = await new v2.PaperProposalOrchestrator(root, adapter, undefined, childPlanner).execute(request);
  assert.equal(rejected.status, 'blocked');
- assert.equal(rejected.reason, 'SUCCESSOR_CHILD_TARGET_FORBIDDEN');
+ // Locus-inferred (no numbered range) requests report the out-of-target
+ // reason against the composite's own two shell entries, same as the
+ // pre-existing no-range semantic path; the numbered-range path used to
+ // report the narrower "child" reason against its full descendant-entry set,
+ // which no longer exists now that sectionRange is retired.
+ assert.equal(rejected.reason, 'SUCCESSOR_OUTSIDE_TARGET_FORBIDDEN');
  const planner = { plan: async input => ({ actions: [{ kind: 'replace', targetEntryId: input.target.entryId, replacementText: '# 2 Reframed\n\nNew bounded content.\n\n' }], unresolvedQuestions: [] }) };
  const preview = await new v2.PaperProposalOrchestrator(root, adapter, undefined, planner).execute(request);
  assert.equal(preview.status, 'awaiting_acceptance', JSON.stringify(preview));
@@ -100,7 +112,7 @@ test('CREATE_SUCCESSOR rejects an oversized composite context before planning or
  const guard = workspaceModule.createDocumentOperationGuard(root);
  const adapter = new v2.ProposalWorkspaceAdapter(root, guard, workspaceModule.createProposalWorkspaceTool(root, { operationGuard: guard }), () => 'context-cap');
  let plannerCalls = 0;
- const result = await new v2.PaperProposalOrchestrator(root, adapter, undefined, { plan: async () => { plannerCalls++; return { actions: [] }; } }).execute({ operation: 'CREATE_SUCCESSOR', editIntent: 'CONCEPTUAL_REVISION', sourceFilename: 'research-concept-r01.md', sectionRange: 'sections 2–2', instruction: 'Revise the bounded range.' });
+ const result = await new v2.PaperProposalOrchestrator(root, adapter, undefined, { plan: async () => { plannerCalls++; return { actions: [] }; } }).execute({ operation: 'CREATE_SUCCESSOR', sourceFilename: 'research-concept-r01.md', instruction: 'Modifica la sección Large.' });
  assert.equal(result.status, 'blocked');
  assert.equal(result.reason, 'SUCCESSOR_CONTEXT_TOO_LARGE');
  assert.equal(plannerCalls, 0);
@@ -146,22 +158,30 @@ test('CREATE_SUCCESSOR section replacements preserve internal bytes and normaliz
  assert.equal(end.compiled.candidate, '# 1 Keep\n\nKeep.\n\n# 3 Replaced\n\nNew.');
 });
 
-test('CREATE_SUCCESSOR rejects a numbered range containing only headings before planning', async () => {
+test('resolveSectionRange (the pure, still-supported numbered-range resolver, now unused by the orchestrator) still rejects a range containing only headings', async () => {
  const root = await mkdtemp(path.join(os.tmpdir(), 'pp-v2-successor-incomplete-range-'));
  await mkdir(path.join(root, 'proposals'), { recursive: true });
  const workspace = workspaceModule.createProposalWorkspaceTool(root);
  await workspace.execute('seed', { action: 'write', resource: 'proposal', slug: 'r01', content: '# 3 Empty\n\n# 4 Complete\n\nBody.\n' });
  const state = await v2.loadDocumentState(root, 'research-concept-r01.md');
  assert.equal(v2.resolveSectionRange(state, '3–3').reason, 'SECTION_RANGE_INCOMPLETE_BODY');
- const guard = workspaceModule.createDocumentOperationGuard(root);
- const adapter = new v2.ProposalWorkspaceAdapter(root, guard, workspaceModule.createProposalWorkspaceTool(root, { operationGuard: guard }), () => 'incomplete-range');
- let plannerCalls = 0;
- const result = await new v2.PaperProposalOrchestrator(root, adapter, undefined, { plan: async () => { plannerCalls++; return { actions: [] }; } }).execute({ operation: 'CREATE_SUCCESSOR', editIntent: 'CONCEPTUAL_REVISION', sourceFilename: 'research-concept-r01.md', sectionRange: '3–3', instruction: 'Revise the bounded range.' });
- assert.equal(result.reason, 'SECTION_RANGE_INCOMPLETE_BODY');
- assert.equal(plannerCalls, 0);
 });
 
-test('CREATE_SUCCESSOR publishes r02 for the bounded §§3–3.1 replacement', async () => {
+test('CREATE_SUCCESSOR no longer requires a numbered range or a complete section body: a heading-only section now resolves and previews directly', async () => {
+ const root = await mkdtemp(path.join(os.tmpdir(), 'pp-v2-successor-empty-body-'));
+ await mkdir(path.join(root, 'proposals'), { recursive: true });
+ const workspace = workspaceModule.createProposalWorkspaceTool(root);
+ await workspace.execute('seed', { action: 'write', resource: 'proposal', slug: 'r01', content: '# 3 Empty\n\n# 4 Complete\n\nBody.\n' });
+ const guard = workspaceModule.createDocumentOperationGuard(root);
+ const adapter = new v2.ProposalWorkspaceAdapter(root, guard, workspaceModule.createProposalWorkspaceTool(root, { operationGuard: guard }), () => 'empty-body-locus');
+ let plannerCalls = 0;
+ const planner = { plan: async input => { plannerCalls++; return { actions: [{ kind: 'replace', targetEntryId: input.target.entryId, replacementText: '# 3 Empty\n\nNewly authored body.\n\n' }], unresolvedQuestions: [] }; } };
+ const result = await new v2.PaperProposalOrchestrator(root, adapter, undefined, planner).execute({ operation: 'CREATE_SUCCESSOR', sourceFilename: 'research-concept-r01.md', instruction: 'Modifica la sección Empty.' });
+ assert.equal(result.status, 'awaiting_acceptance', JSON.stringify(result));
+ assert.equal(plannerCalls, 1);
+});
+
+test('CREATE_SUCCESSOR publishes r02 for the Results section, locus inferred from the instruction with no numbered range', async () => {
  const root = await mkdtemp(path.join(os.tmpdir(), 'pp-v2-successor-r02-3-3-1-'));
  await mkdir(path.join(root, 'proposals'), { recursive: true });
  const workspace = workspaceModule.createProposalWorkspaceTool(root);
@@ -169,10 +189,12 @@ test('CREATE_SUCCESSOR publishes r02 for the bounded §§3–3.1 replacement', a
  await workspace.execute('seed', { action: 'write', resource: 'proposal', slug: 'r01', content: source });
  const guard = workspaceModule.createDocumentOperationGuard(root);
  const adapter = new v2.ProposalWorkspaceAdapter(root, guard, workspaceModule.createProposalWorkspaceTool(root, { operationGuard: guard }), () => 'r02-3-3-1');
- const replacement = '\n# 3 Revised\n\nNew results.\n\n## 3.1 Revised\n\nNew analysis.\n\n';
+ // Well-formed replacement bytes (the caller's own responsibility now that
+ // boundary whitespace is no longer auto-normalized by the compile step).
+ const replacement = '# 3 Revised\n\nNew results.\n\n## 3.1 Revised\n\nNew analysis.\n\n';
  const planner = { plan: async input => ({ actions: [{ kind: 'replace', targetEntryId: input.target.entryId, replacementText: replacement }], unresolvedQuestions: [] }) };
  const orchestrator = new v2.PaperProposalOrchestrator(root, adapter, undefined, planner);
- const request = { operation: 'CREATE_SUCCESSOR', editIntent: 'CONCEPTUAL_REVISION', sourceFilename: 'research-concept-r01.md', sectionRange: '3–3.1', instruction: 'Revise the bounded range.' };
+ const request = { operation: 'CREATE_SUCCESSOR', sourceFilename: 'research-concept-r01.md', instruction: 'Modifica la sección Results.' };
  const preview = await orchestrator.execute(request);
  assert.equal(preview.status, 'awaiting_acceptance', JSON.stringify(preview));
  const published = await orchestrator.execute({ ...request, acceptSuccessor: true, successorAcceptanceToken: preview.acceptanceToken });
@@ -188,7 +210,7 @@ test('CREATE_SUCCESSOR does not write r02 when pre-write candidate validation fa
  const guard = workspaceModule.createDocumentOperationGuard(root);
  const adapter = new v2.ProposalWorkspaceAdapter(root, guard, workspaceModule.createProposalWorkspaceTool(root, { operationGuard: guard }), () => 'validation-failure');
  const planner = { plan: async input => ({ actions: [{ kind: 'replace', targetEntryId: input.target.entryId, replacementText: '# 3 Revised\n\n$$\nunclosed display\n' }], unresolvedQuestions: [] }) };
- const result = await new v2.PaperProposalOrchestrator(root, adapter, undefined, planner).execute({ operation: 'CREATE_SUCCESSOR', editIntent: 'CONCEPTUAL_REVISION', sourceFilename: 'research-concept-r01.md', sectionRange: '3–3.1', instruction: 'Revise the bounded range.' });
+ const result = await new v2.PaperProposalOrchestrator(root, adapter, undefined, planner).execute({ operation: 'CREATE_SUCCESSOR', sourceFilename: 'research-concept-r01.md', instruction: 'Modifica la sección Results.' });
  assert.equal(result.status, 'blocked');
  assert.equal(result.reason, 'CANDIDATE_VALIDATION_FAILED');
  assert.deepEqual(await readdir(path.join(root, 'proposals')), ['research-concept-r01.md']);
@@ -205,7 +227,9 @@ test('explicit CREATE_SUCCESSOR overrides recupera r02 and derives one semantic 
  const r01Before = await readFile(r01Path);
  const guard = workspaceModule.createDocumentOperationGuard(root);
  const adapter = new v2.ProposalWorkspaceAdapter(root, guard, workspaceModule.createProposalWorkspaceTool(root, { operationGuard: guard }), () => 'semantic-successor');
- const planner = { plan: async input => ({ actions: [{ kind: 'replace', targetEntryId: input.target.entryId, replacementText: '\n# 2 Revised dynamics\n\n$$\nx_{t+1}=B x_t\n$$\n\nNew dynamics.\n\n' }], unresolvedQuestions: [] }) };
+ // Well-formed replacement bytes (no stray leading newline): boundary
+ // whitespace is no longer auto-normalized, so the caller supplies it.
+ const planner = { plan: async input => ({ actions: [{ kind: 'replace', targetEntryId: input.target.entryId, replacementText: '# 2 Revised dynamics\n\n$$\nx_{t+1}=B x_t\n$$\n\nNew dynamics.\n\n' }], unresolvedQuestions: [] }) };
  const orchestrator = new v2.PaperProposalOrchestrator(root, adapter, undefined, planner);
  const request = { operation: 'CREATE_SUCCESSOR', editIntent: 'MODIFY', sourceFilename: 'research-concept-r01.md', instruction: 'Modifica la sección Dynamics; la ecuación recupera r02.' };
  const preview = await orchestrator.execute(request);

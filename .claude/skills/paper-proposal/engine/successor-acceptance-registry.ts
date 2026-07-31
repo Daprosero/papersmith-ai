@@ -9,7 +9,8 @@ export type FrozenSuccessorPreview = Readonly<{
  sourceFilename: string;
  sourceRevision: string;
  sourceSha256: string;
- compositeTargetId: string;
+ /** One or more resolved composite locus ids (design amendment: multi-section successor), in resolution order. */
+ compositeTargetIds: readonly string[];
  sectionRange: string;
  targetFilename: string;
  plan: EditPlan;

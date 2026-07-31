@@ -19,11 +19,15 @@ export function extractManagedRevisionFilename(instruction:string) { return inst
 export function extractRevisionReference(instruction:string) { const match=instruction.match(/\br(\d{2,})\b/i); return match?`r${match[1]}`.toLowerCase():undefined; }
 export function extractWithdrawalOperationId(instruction:string) { return instruction.match(OPERATION_ID)?.[0].toLowerCase(); }
 
+const CLOSE_DELIBERATION=/(?:cierra|finaliza|termina)\s+(?:la\s+|el\s+)?(?:deliberaci[oó]n|conversaci[oó]n|chat)|close\s+(?:the\s+)?(?:deliberation|chat|conversation)|end\s+(?:the\s+)?deliberation/i;
+
 export function resolveIntent(instruction:string):ResolvedIntent {
  const s=instruction.toLowerCase(),has=(...x:string[])=>x.some(v=>s.includes(v));
  const destructive=has('elimina','borra','quita','suprime','remueve');
+ // Explicit natural-language CLOSE (task 2.3): recognized before any other keyword, never ambiguous.
+ const closeDeliberation=CLOSE_DELIBERATION.test(instruction);
  const lifecycleSelection=lifecycleIntent(instruction);
- let intent:ResolvedIntent['intent']=lifecycleSelection??'AMBIGUOUS';
+ let intent:ResolvedIntent['intent']=closeDeliberation?'CLOSE_DELIBERATION':(lifecycleSelection??'AMBIGUOUS');
  if(intent==='AMBIGUOUS'&&lifecycleSelection===undefined) {
   if(has('mueve','traslada','pasa este contenido a'))intent='MOVE';
   else if(has('copia','duplica en')||(has('incluye también en')&&has('conserva','mantén','preserva')))intent='COPY';

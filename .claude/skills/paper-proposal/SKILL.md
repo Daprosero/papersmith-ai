@@ -5,7 +5,7 @@ description: "Trigger: session-local scientific chat/deliberation, or edits and 
 
 # Paper Proposal
 
-Use this skill for Paper Proposal work: non-mutating scientific deliberation, edits to an existing managed mathematical proposal, and managed-revision lifecycle operations. All execution goes through the engine host CLI. The engine does not create an initial managed proposal; edits require an existing managed proposal, while `CHAT_DELIBERATION` does not. A chat may be materialized only as a new standalone draft through the explicit create-only route below.
+Use this skill for Paper Proposal work: non-mutating scientific deliberation, explicit first-version creation, edits to an existing managed mathematical proposal, and managed-revision lifecycle operations. All execution goes through the engine host CLI. Edits require an existing managed proposal; explicit `CREATE_INITIAL_REVISION` is the only way to create one, and only when none exists yet. `CHAT_DELIBERATION` requires no managed proposal. A chat may also be materialized as a new standalone draft through the explicit create-only route below.
 
 ## How to execute
 
@@ -23,17 +23,19 @@ Never construct patches, offsets, hashes, manifests, receipts, or internal revis
 
 ## Quick path
 
-1. For a non-mutating scientific conversation, send `{"operation":"CHAT_DELIBERATION","instruction":"..."}` and reuse the returned `conversationId` for follow-ups.
-2. To save that chat as a standalone draft, send `draftMaterialization` with `operation: INITIAL_CREATE`, explicit current-turn authorization, and either an exact route or approval of the previously proposed route.
-3. For an edit to the managed document, state the requested mutation in natural language and identify its target by meaning or exact quoted text; do not provide offsets, hashes, revision names, or patch fields.
-4. Send one request and follow any clarification it returns. Confirm a receipt and manifest only for a completed managed edit or lifecycle operation.
+1. When no managed proposal exists yet, send `{"operation":"CREATE_INITIAL_REVISION","instruction":"<the idea>"}` to create v1. Only use this when starting from nothing; it is rejected outright if a managed proposal already exists.
+2. For a non-mutating scientific conversation, send `{"operation":"CHAT_DELIBERATION","instruction":"..."}` and reuse the returned `conversationId` for follow-ups. The conversation stays locked in chat — including on edit-verb follow-ups — until you explicitly send `{"operation":"CLOSE_DELIBERATION","conversationId":"..."}`.
+3. To save that chat as a standalone draft instead of closing it into an edit, send `draftMaterialization` with `operation: INITIAL_CREATE`, explicit current-turn authorization, and either an exact route or approval of the previously proposed route.
+4. For an edit to the managed document, state the requested mutation in natural language and identify its target by meaning or exact quoted text; do not provide offsets, hashes, revision names, or patch fields.
+5. Send one request and follow any clarification it returns, including a base-confirmation prompt on a new deliberation. Confirm a receipt and manifest only for a completed managed edit or lifecycle operation.
 
 See [user-facing examples and help](references/usage.md) for request patterns.
 
 ## Runtime authority boundary
 
 - Ordinary `CHAT_DELIBERATION` is mode-first: it wins over lifecycle, document, and scientific-workflow wording. It uses only a `chat-…` `conversationId`; it does not open `document_operation_guard`, mutate `proposal_workspace`, create durable scientific/document state, or mint/continue task authority.
-- A returned `conversationId` remains a chat continuation until the user explicitly requests a managed document edit, explicitly materializes the chat as a new draft, or requests an explicit `MAINTENANCE` handoff. Passing scientific or maintenance identifiers with chat does not join their state.
+- A returned `conversationId` remains locked in chat until the user sends an explicit `CLOSE_DELIBERATION`, explicitly materializes the chat as a new draft, or requests an explicit `MAINTENANCE` handoff. An edit-verb follow-up inside an open deliberation does NOT leak into a mutating route on its own; it is handled in-chat and still requires `CLOSE_DELIBERATION` before a document edit can proceed. Passing scientific or maintenance identifiers with chat does not join their state.
+- Deliberation state (turns, tutor/reviewer conclusions, accumulated approved-change tally) is in-session only. `CLOSE_DELIBERATION` discards it; reusing the same `conversationId` afterward is rejected as terminated, not resumed.
 - Draft materialization is a one-way `CHAT_DELIBERATION` to `DOCUMENT_EDIT` transition. It accepts only `INITIAL_CREATE`, preserves the dynamically resolved managed primary document, writes only inside the configured draft directory, and terminates without resuming deliberation.
 - Without an exact route, the engine proposes a metadata-derived route and writes nothing. The caller must approve that exact proposal and explicitly authorize `INITIAL_CREATE` in the current turn. Invalid supplied routes are rejected unchanged; the engine never silently normalizes, relocates, replaces, or overwrites them.
 - Direct document edits are principal-local and guarded. The engine has no generic worker/task API, so it never delegates an edit through its public surface. Any external handoff must be explicit, narrowly scoped, and justified outside the engine.
@@ -57,6 +59,15 @@ For a semantic `MODIFY` phrased as "replace this block with this block":
 - Omit `selectedEntryId`, `literalContent`, every literal-mode field, and external `targetDescription`, `semanticChange`, or `fidelityConstraints`; the internal IntentResolver derives those semantics.
 - Supply `selectedEntryId` only after real structural document resolution returns that entry ID. Never invent it from a description or quoted block.
 
+## Base selection for a new deliberation
+
+On a new `CHAT_DELIBERATION` (no `sourceFilename` and no prior `confirmBase`), the engine resolves the latest managed revision through one unified resolver shared by every call site, then asks for interactive confirmation before proceeding:
+
+- If exactly one active managed revision resolves, the engine proposes it and asks the caller to confirm (`confirmBase: true`) or override it (`sourceFilename: "<exact-filename>"`).
+- If more than one active managed revision resolves, the engine surfaces the `MULTIPLE_ACTIVE_REVISIONS` warning with the full candidate list — never silently picking or suppressing it — and requires an exact `sourceFilename` to proceed.
+
+No revision name or path is ever hardcoded by the skill; always resolve or confirm the base through this prompt rather than guessing a filename.
+
 ## Supported operations
 
 | Operation | Observable behavior |
@@ -68,8 +79,10 @@ For a semantic `MODIFY` phrased as "replace this block with this block":
 | `DELETE` | Removes selected content or an explicitly selected section. |
 | `CLEANUP` | Performs requested structural cleanup; semantic cleanup requires explicit authorization. |
 | `CONCEPTUAL_REVISION` | Reworks a bounded concept and its necessary local consequences rather than applying a purely literal edit. |
-| `CREATE_SUCCESSOR` | Creates a managed successor revision for a bounded edit; requires `editIntent` (`MODIFY` or `CONCEPTUAL_REVISION`) and a numbered `sectionRange`. |
-| `DELIBERATE` / `CHAT_DELIBERATION` | Evaluates alternatives, assumptions, and tradeoffs without a document target or mutation. Use `CHAT_DELIBERATION` explicitly for a multi-turn conversation. |
+| `CREATE_SUCCESSOR` | Creates a managed successor revision for a bounded edit. The edit locus is inferred from the resolved target (heading/phrase/paragraph), not a mandatory numbered range; `editIntent` defaults silently to `MODIFY` when omitted and may be overridden to `CONCEPTUAL_REVISION`. Untouched content is byte-preserved; only the approved add/change/delete is applied. Multiple independently resolved sections can be approved and applied in one version, but multi-section application is currently `MODIFY`-only — `CONCEPTUAL_REVISION` with more than one target is rejected. |
+| `DELIBERATE` / `CHAT_DELIBERATION` | Evaluates alternatives, assumptions, and tradeoffs without a document target or mutation. Use `CHAT_DELIBERATION` explicitly for a multi-turn conversation. By default the tutor assesses every turn; a turn proposing a concrete change additionally runs a bounded tutor→reviewer→repair loop (at most 2 repair cycles). |
+| `CLOSE_DELIBERATION` | Explicitly ends an open `CHAT_DELIBERATION` conversation. Required to exit chat — an edit-verb follow-up alone does not exit it. Discards in-session deliberation state; the `conversationId` cannot be resumed afterward. |
+| `CREATE_INITIAL_REVISION` | Creates the first managed proposal (v1) from the supplied idea (`instruction`) and the paper-guide, only when no managed proposal exists yet. Never runs automatically and never overwrites or duplicates an existing managed proposal. Title, heading, and filename slug are derived from the idea, not a fixed generic skeleton. |
 | Draft `INITIAL_CREATE` | Materializes consolidated session-local chat content at one explicitly authorized, validated route under the configured draft directory. `UPDATE` and `REPLACE` are denied. |
 | `WITHDRAW_REVISION` | Safely withdraws one eligible managed revision while preserving an audited recovery copy. |
 | `RESTORE_WITHDRAWN_REVISION` | Restores one previously withdrawn managed revision from its audited recovery copy. |
@@ -97,6 +110,10 @@ The engine may exercise three bounded responsibilities internally:
 
 These are model-backed and run inside the engine when the resolved operation calls for them. The result reports the effective calls actually made (`plannerCalls`, `tutorCalls`, `reviewerCalls`, `modelCalls`). Treat those returned effective values as authoritative.
 
+In `CHAT_DELIBERATION`, the tutor assesses every turn (one call). When the tutor's decision proposes a concrete change, the engine additionally runs the reviewer and, if the reviewer requests changes, a bounded repair loop (at most 2 repair cycles) by default — this is not gated behind a separate flag. A discussion-only turn with no concrete change runs the tutor alone. Each completed turn also carries a non-blocking `growthAdvisory` that suggests materializing the accumulated approved changes once they exceed roughly 4 independent sections or 40% of the document; it never blocks the turn.
+
+On a new deliberation, the engine loads the paper-guide directory once as read-only reference context for that conversation; it is not reloaded on every turn.
+
 ## Completion and recovery
 
 A successful change returns observable completion evidence. Preserve it:
@@ -112,7 +129,8 @@ If execution is ambiguous, blocked, interrupted, or inconsistent, do not claim c
 
 ## Limits
 
-- The engine edits existing managed proposals; initial managed-proposal creation is unsupported. `CHAT_DELIBERATION` is session-local and is not promised to survive across separate one-shot invocations (use `--serve` for a multi-turn session). Explicit draft materialization creates only a separate standalone draft and never changes the managed primary document.
+- The engine edits existing managed proposals; `CREATE_INITIAL_REVISION` is the only way to create one, and only when none exists yet — it is never triggered automatically. `CHAT_DELIBERATION` is session-local and is not promised to survive across separate one-shot invocations (use `--serve` for a multi-turn session); its state is discarded on `CLOSE_DELIBERATION`. Explicit draft materialization creates only a separate standalone draft and never changes the managed primary document.
+- Multi-section `CREATE_SUCCESSOR` (more than one approved locus in one version) is currently `MODIFY`-only; a multi-section `CONCEPTUAL_REVISION` is not yet supported.
 - Use only the engine host CLI for proposal execution.
 - Do not expose or ask users to supply internal patch, index, hash, offset, or publication mechanics.
 - Do not modify engine infrastructure, shims, tests, or this skill during normal proposal work.

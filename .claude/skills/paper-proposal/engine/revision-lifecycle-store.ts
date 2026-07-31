@@ -98,15 +98,54 @@ function artifactDigest(artifacts:Array<{publicRelativePath:string;sha256:string
  return sha256(JSON.stringify(inventory));
 }
 
-export async function latestManagedFilename(projectRoot:string) {
+export type ManagedRevisionCandidate={filename:string;revisionNumber:number};
+export type ResolveLatestManagedRevisionOptions={markerOwned?:boolean};
+export type LatestManagedRevisionResolution =
+ | {status:'empty'}
+ | {status:'active';latest:ManagedRevisionCandidate;candidates:ManagedRevisionCandidate[]}
+ | {status:'multiple';latest:ManagedRevisionCandidate;candidates:ManagedRevisionCandidate[];code:'MULTIPLE_ACTIVE_REVISIONS'};
+
+/** Pure canonical tie-break (design decision I3/I4): highest revisionNumber; ties broken by ascending filename localeCompare, first element wins. Shared by every "latest managed revision" call site. */
+function pickCanonicalLatest(candidates:ManagedRevisionCandidate[]):{tied:ManagedRevisionCandidate[];ordered:ManagedRevisionCandidate[]}|undefined {
+ if (!candidates.length) return undefined;
+ const ordered=[...candidates].sort((a,b)=>b.revisionNumber-a.revisionNumber||a.filename.localeCompare(b.filename));
+ const highest=ordered[0].revisionNumber;
+ return {tied:ordered.filter(c=>c.revisionNumber===highest),ordered};
+}
+
+/**
+ * Single canonical "latest managed revision" resolver (design decision I3/I4), replacing four
+ * previously divergent implementations: `PaperProposalOrchestrator.latest()` (returned undefined on
+ * tie), `latestManagedFilename` (silently picked one via localeCompare), `readCanonicalManagedRevisionInventory`
+ * (always returned at most one, silently suppressing multiplicity), and draft-materialization's
+ * `resolvePrimaryDocument` (mtime-based tie-break). Every caller now shares this exact tie-break rule.
+ * When two or more managed files tie at the highest revisionNumber, `status` is `'multiple'` -- never
+ * silently collapsed -- so a caller can surface MULTIPLE_ACTIVE_REVISIONS instead of guessing.
+ */
+export async function resolveLatestManagedRevision(projectRoot:string,options:ResolveLatestManagedRevisionOptions={}):Promise<LatestManagedRevisionResolution> {
  const root=await canonicalRoot(projectRoot);
- let names:string[];
- try { names=(await readdir(join(root,'proposals'),{withFileTypes:true})).filter(entry=>entry.isFile()&&MANAGED.test(entry.name)).map(entry=>entry.name); }
+ let entries;
+ try { entries=(await readdir(join(root,'proposals'),{withFileTypes:true})).filter(entry=>entry.isFile()&&MANAGED.test(entry.name)); }
  catch { block('PROPOSALS_UNREADABLE'); }
- return names.sort((a,b)=>{
-  const left=parseManagedRevisionFilename(a),right=parseManagedRevisionFilename(b);
-  return left.revisionNumber-right.revisionNumber||a.localeCompare(b);
- }).at(-1);
+ const candidates:ManagedRevisionCandidate[]=[];
+ for (const entry of entries!) {
+  if (options.markerOwned) {
+   let bytes:Buffer;
+   try { bytes=await readFile(join(root,'proposals',entry.name)); }
+   catch { continue; }
+   if (!bytes.subarray(0,MARKER.length).equals(MARKER)) continue;
+  }
+  candidates.push({filename:entry.name,revisionNumber:parseManagedRevisionFilename(entry.name).revisionNumber});
+ }
+ const picked=pickCanonicalLatest(candidates);
+ if (!picked) return {status:'empty'};
+ if (picked.tied.length>1) return {status:'multiple',latest:picked.tied[0],candidates:picked.tied,code:'MULTIPLE_ACTIVE_REVISIONS'};
+ return {status:'active',latest:picked.tied[0],candidates:picked.ordered};
+}
+
+export async function latestManagedFilename(projectRoot:string) {
+ const resolution=await resolveLatestManagedRevision(projectRoot);
+ return resolution.status==='empty'?undefined:resolution.latest.filename;
 }
 
 export async function discoverManagedRevision(input:{projectRoot:string;filename:string}):Promise<ManagedRevisionDiscovery> {
@@ -265,9 +304,10 @@ export async function readCanonicalManagedRevisionInventory(projectRoot:string):
    if(state?.manifest?.status!=='COMMITTED'||!validateStoredState(state,entry.name,documentSha256,PARSER_VERSION,document)) block('MANAGED_STATE_IDENTITY_MISMATCH');
    revisions.push({filename:entry.name,revision:identity.revision,documentSha256,revisionNumber:identity.revisionNumber});
   }
-  revisions.sort((left,right)=>left.revisionNumber-right.revisionNumber||left.filename.localeCompare(right.filename));
-  const latest=revisions.at(-1);
-  return {status:'valid',activeRevisions:latest?[{filename:latest.filename,revision:latest.revision,documentSha256:latest.documentSha256}]:[],withdrawnRevisions:[],auditEvidence:['revision-inventory:canonical-read-only']};
+  const picked=pickCanonicalLatest(revisions);
+  const tiedFilenames=new Set((picked?.tied??[]).map(candidate=>candidate.filename));
+  const activeRevisions=revisions.filter(revision=>tiedFilenames.has(revision.filename)).map(({filename,revision,documentSha256})=>({filename,revision,documentSha256}));
+  return {status:'valid',activeRevisions,withdrawnRevisions:[],auditEvidence:['revision-inventory:canonical-read-only',...(picked&&picked.tied.length>1?['revision-inventory:multiple-active-revisions']:[])]};
  } catch(error) {
   return {status:'inconsistent',code:error instanceof Error?error.message:'REVISION_INVENTORY_UNAVAILABLE',auditEvidence:['revision-inventory:canonical-read-only-blocked']};
  }
