@@ -3,7 +3,7 @@
   "schema_version": "1.1",
   "source_pdf": "/Users/diego/Desktop/Proyectos/papersmith-ai/guidance/paper-guide/source/brainsci-16-00363.pdf",
   "source_sha256": "ee139be2960bdfdfde414da8ff30edefe9077f255d7f69cfbaf923386c1a1f04",
-  "processed_at": "2026-07-17T15:37:22.948063+00:00",
+  "processed_at": "2026-07-30T18:07:17.866144+00:00",
   "renderer": "PyMuPDF",
   "render_dpi": 200,
   "page_count": 23,

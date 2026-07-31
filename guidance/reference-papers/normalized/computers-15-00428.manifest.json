@@ -3,7 +3,7 @@
   "schema_version": "1.1",
   "source_pdf": "/Users/diego/Desktop/Proyectos/papersmith-ai/guidance/reference-papers/source/computers-15-00428.pdf",
   "source_sha256": "ed28d0acdde873628a5913bc4695e1a531e60da5aebb0054b010807139dcb9b7",
-  "processed_at": "2026-07-17T15:37:36.435574+00:00",
+  "processed_at": "2026-07-30T18:07:23.527889+00:00",
   "renderer": "PyMuPDF",
   "render_dpi": 200,
   "page_count": 32,

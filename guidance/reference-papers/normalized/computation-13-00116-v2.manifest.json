@@ -3,7 +3,7 @@
   "schema_version": "1.1",
   "source_pdf": "/Users/diego/Desktop/Proyectos/papersmith-ai/guidance/reference-papers/source/computation-13-00116-v2.pdf",
   "source_sha256": "9c08e20f18c788a8037e610c2dc72741db01002e3335bfb99e78bdf6e75df332",
-  "processed_at": "2026-07-17T15:37:26.026156+00:00",
+  "processed_at": "2026-07-30T18:07:19.800296+00:00",
   "renderer": "PyMuPDF",
   "render_dpi": 200,
   "page_count": 28,
