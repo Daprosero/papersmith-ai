@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, readdir, readFile, realpath, stat } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, realpath } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, normalize, relative, resolve, sep } from 'node:path';
 import { writeTask } from './runtime-metrics.js';
+import { resolveLatestManagedRevision } from './revision-lifecycle-store.js';
 
 const DEFAULT_DRAFT_DIRECTORY = 'drafts';
 const DEFAULT_ALLOWED_EXTENSIONS = ['.md'] as const;
@@ -119,27 +120,16 @@ export function defaultDraftNamingStrategy(metadata: DraftNamingInput): string {
 	return [metadata.slug, metadata.purpose, metadata.revision].filter(Boolean).join('-') + metadata.extension;
 }
 
+/**
+ * Delegates enumeration to the unified `resolveLatestManagedRevision` (design decision I3/I4)
+ * instead of this module's own mtime-based tie-break, so the default draft-naming base agrees
+ * exactly with every other "latest managed revision" call site. Returns at most the one canonical
+ * winner; `resolvePrimaryDocument`'s own generic sort below then becomes a no-op for this default.
+ */
 async function defaultManagedDocumentInventory(projectRoot: string): Promise<readonly ManagedDocumentInventoryEntry[]> {
-	const root = await realpath(projectRoot);
-	const inventoryDirectory = resolve(root, 'proposals');
-	let directory: string;
-	try {
-		directory = await realpath(inventoryDirectory);
-	} catch {
-		return [];
-	}
-	if (!isInside(root, directory)) throw new Error('MANAGED_DOCUMENT_INVENTORY_ESCAPES_PROJECT');
-	const entries = await readdir(directory, { withFileTypes: true });
-	const inventory: ManagedDocumentInventoryEntry[] = [];
-	for (const entry of entries) {
-		if (!entry.isFile() || entry.isSymbolicLink()) continue;
-		const candidate = resolve(directory, entry.name);
-		const bytes = await readFile(candidate);
-		if (!bytes.subarray(0, MANAGED_ARTIFACT_MARKER.length).equals(MANAGED_ARTIFACT_MARKER)) continue;
-		const info = await stat(candidate);
-		inventory.push({ path: relative(root, candidate), revision: basename(entry.name, extname(entry.name)).match(/(?:^|-)r(\d+)$/i)?.[1], modifiedMs: info.mtimeMs });
-	}
-	return inventory;
+	const resolution = await resolveLatestManagedRevision(projectRoot, { markerOwned: true }).catch(() => undefined);
+	if (!resolution || resolution.status === 'empty') return [];
+	return [{ path: `proposals/${resolution.latest.filename}`, revision: String(resolution.latest.revisionNumber) }];
 }
 
 function resolvePolicy(policy: DraftMaterializationPolicy): ResolvedPolicy {

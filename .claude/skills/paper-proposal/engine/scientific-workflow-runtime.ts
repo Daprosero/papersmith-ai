@@ -11,8 +11,13 @@ import { MaterializationCandidateExecutor } from './materialization-candidate-ex
 import { DocumentReviewerGate } from './document-reviewer-gate.js';
 import { MaterializationPublicationService } from './materialization-publication-service.js';
 import { loadDocumentState } from './document-state.js';
+import { rebuildDerivedState } from './derived-state-builder.js';
+import { materializeCompositeTarget, resolveSuccessorTarget } from './target-resolver.js';
+import { composeSuccessorBlockCandidate, type SuccessorBlockReplacementResolver } from './successor-composite-engine.js';
+import type { SuccessorBlock, SuccessorBlockPlan } from './block-plan.js';
 import type { ProposalWorkspaceAdapter } from './proposal-workspace-adapter.js';
-import { sha256 } from './types.js';
+import { parseProposedEdit, sha256 } from './types.js';
+import type { EditAction } from './types.js';
 import type { ProductionModelRuntime } from './production-runtime.js';
 import type {
 	CanonicalProposalMetadata,
@@ -41,6 +46,25 @@ export type ScientificWorkflowRuntimeOptions = {
 
 function publicBlocker(code: string, nextAction: string): PublicBlocker {
 	return { code, message: 'Scientific workflow cannot continue safely.', nextAction };
+}
+
+/**
+ * Splices disjoint, ascending source spans in a single pass. Mirrors
+ * `successor-composite-engine.ts`'s private `spliceDisjoint` exactly; duplicated
+ * locally (rather than exported from that module) to keep the composite
+ * engine's public contract minimal, per its own module documentation.
+ */
+function spliceDisjointForSuccessorLocus(source: Buffer, edits: readonly { startByte: number; endByte: number; replacement: Buffer }[]): Buffer {
+	const ordered = [...edits].sort((left, right) => left.startByte - right.startByte);
+	const parts: Buffer[] = [];
+	let cursor = 0;
+	for (const edit of ordered) {
+		parts.push(source.subarray(cursor, edit.startByte));
+		parts.push(edit.replacement);
+		cursor = edit.endByte;
+	}
+	parts.push(source.subarray(cursor));
+	return Buffer.concat(parts);
 }
 
 /**
@@ -173,17 +197,20 @@ export class ScientificWorkflowRuntime {
 		if (record.state !== 'RESOLVING') return this.withBlock(entry, 'MATERIALIZATION_LIFECYCLE_RETRY_UNSUPPORTED', 'reconcile_materialization_evidence', 'blocked');
 		const state = await this.store.read();
 		if (!state) return this.withBlock(entry, 'MATERIALIZATION_STATE_MISSING', 'reconcile_scientific_state', 'blocked');
-		const summaries = record.selectedDecisions.map((selected) => {
+		const claims = record.selectedDecisions.map((selected) => {
 			const tutor = state.events.find((event) => event.type === 'TUTOR_ASSESSED' && event.threadId === selected.threadId && event.eventId === selected.sourceEventIds[0]);
-			return typeof tutor?.payload.summary === 'string' ? tutor.payload.summary.trim() : undefined;
+			const summary = typeof tutor?.payload.summary === 'string' ? tutor.payload.summary.trim() : undefined;
+			if (!summary) return undefined;
+			const proposedEdit = parseProposedEdit(tutor?.payload.proposedEdit);
+			return { summary, ...(proposedEdit ? { proposedEdit } : {}) };
 		});
-		if (summaries.some((summary) => !summary)) return this.withBlock(entry, 'MATERIALIZATION_CLAIM_UNMAPPED', 'reconcile_materialization_plan', 'blocked');
+		if (claims.some((claim) => !claim)) return this.withBlock(entry, 'MATERIALIZATION_CLAIM_UNMAPPED', 'reconcile_materialization_plan', 'blocked');
 		const source = active ?? authority.base;
-		const addition = `\n\n## Accepted scientific decisions\n\n${summaries.map((summary) => `- ${summary}`).join('\n')}\n`;
+		const approvedChanges = await this.composeLifecycleSuccessorChanges(source.content, claims as { summary: string; proposedEdit?: EditAction }[]);
 		const published = await this.lifecyclePublication.materialize({
 			requestId: record.materializationId,
 			revisionId: `revision-${record.materializationId}`,
-			approvedChanges: [{ from: source.content, to: `${source.content}${addition}` }],
+			approvedChanges,
 		});
 		if (published.status === 'blocked') return this.withBlock(entry, published.code, 'reconcile_materialization_evidence', 'blocked');
 		const lifecycle = { workspaceId: this.options.lifecycleV1WorkspaceId!, operation: published.result.operation, requestId: published.result.requestId, revisionId: published.revision.revisionId, contentHash: published.revision.contentHash } as const;
@@ -200,6 +227,106 @@ export class ScientificWorkflowRuntime {
 		const committed = await this.store.commitLifecycleMaterialization(record, commit);
 		if (committed.status !== 'ready') return this.withBlock(entry, committed.code, 'reconcile_materialization_evidence', 'blocked');
 		return { ...this.workflow.projectReentry(entry), status: 'materialized', materialization: { materializationId: committed.record.materializationId, state: committed.record.state, targetFilename: commit.targetFilename, targetRevision: commit.targetRevision }, nextAction: null };
+	}
+
+	/**
+	 * Composes the lifecycle-v1 successor's approved changes for `LifecycleService`.
+	 *
+	 * Resolves EACH accepted decision's locus independently (design: "mixed sets are
+	 * per-decision independent" -- never all-or-nothing):
+	 *   1. Structural (real, byte-preserving CHANGE): when the decision carries a
+	 *      persisted `proposedEdit`, its `targetEntryId` is resolved by an EXPLICIT
+	 *      document-index lookup against the CURRENT materialization base -- never
+	 *      the synthesis-time document, and never fuzzy summary matching. On drift
+	 *      (missing/moved entry) this decision falls through to (2).
+	 *   2. Annotate-at-locus (pre-existing fallback): the decision's summary is
+	 *      resolved via `resolveSuccessorTarget`, the same heading/section resolver
+	 *      used by the interactive orchestrator successor path. Composed as
+	 *      `originalText + "> Accepted revision: <summary>"`, exactly as before.
+	 *   3. No locus at all: the decision's summary is preserved in the shared
+	 *      document-tail "Accepted scientific decisions" block -- never silently
+	 *      discarded.
+	 *
+	 * Overlapping/duplicate loci (from either tier) are never silently applied:
+	 * every decision in a colliding pair degrades to tier (3) instead. Every
+	 * resolved (tier 1 + tier 2) edit is spliced into ONE successor version through
+	 * `composeSuccessorBlockCandidate` -- `successor-composite-engine.ts`'s guarded
+	 * byte-preserving path -- so every byte outside the resolved loci is provably
+	 * preserved, even when multiple decisions are involved. When NOTHING resolves
+	 * (or the guarded compose call itself blocks), this falls back to appending a
+	 * single "Accepted scientific decisions" summary block for every decision,
+	 * matching the pre-repair shape byte-for-byte for that all-unresolved case.
+	 *
+	 * Either way, the final content is committed through a single whole-document
+	 * `{from,to}` pair, which `LifecycleService`'s byte-safe `applyChanges` (V1)
+	 * applies without interpreting `$$`/`$&`/`$<name>` as replacement patterns.
+	 */
+	private async composeLifecycleSuccessorChanges(sourceContent: string, claims: readonly { summary: string; proposedEdit?: EditAction }[]): Promise<ReadonlyArray<{ from: string; to: string }>> {
+		const appendAll = (targets: readonly { summary: string }[]): ReadonlyArray<{ from: string; to: string }> => {
+			const addition = `\n\n## Accepted scientific decisions\n\n${targets.map((claim) => `- ${claim.summary}`).join('\n')}\n`;
+			return [{ from: sourceContent, to: `${sourceContent}${addition}` }];
+		};
+		const documentState = await rebuildDerivedState('lifecycle-v1:successor-locus', 'working', 'lifecycle-v1', Buffer.from(sourceContent, 'utf8'));
+
+		type ResolvedEdit = { index: number; entryId: string; startByte: number; endByte: number; textSha256: string; replacementText: string };
+		const resolved: ResolvedEdit[] = [];
+		const unresolved: number[] = [];
+		for (const [index, claim] of claims.entries()) {
+			const structuralTarget = claim.proposedEdit?.kind === 'replace' ? documentState.structuralIndex.byId[claim.proposedEdit.targetEntryId] : undefined;
+			if (structuralTarget && structuralTarget.type !== 'document') {
+				resolved.push({ index, entryId: structuralTarget.entryId, startByte: structuralTarget.startByte, endByte: structuralTarget.endByte, textSha256: structuralTarget.textSha256, replacementText: (claim.proposedEdit as Extract<EditAction, { kind: 'replace' }>).replacementText });
+				continue;
+			}
+			const candidates = resolveSuccessorTarget(documentState, claim.summary).candidates;
+			if (candidates.length === 1) {
+				const entry = materializeCompositeTarget(documentState, candidates[0]!)!;
+				const originalText = documentState.documentBytes.subarray(entry.startByte, entry.endByte).toString('utf8');
+				resolved.push({ index, entryId: entry.entryId, startByte: entry.startByte, endByte: entry.endByte, textSha256: entry.textSha256, replacementText: `${originalText}\n\n> Accepted revision: ${claim.summary.trim()}\n` });
+				continue;
+			}
+			unresolved.push(index);
+		}
+
+		// Never silently apply overlapping/duplicate loci: every claim in a
+		// colliding pair degrades to the shared tail-block fallback instead of
+		// forcing an offset.
+		const overlapping = new Set<number>();
+		for (const left of resolved) for (const right of resolved) {
+			if (left.index === right.index) continue;
+			if (left.startByte < right.endByte && right.startByte < left.endByte) { overlapping.add(left.index); overlapping.add(right.index); }
+		}
+		const applied = resolved.filter((edit) => !overlapping.has(edit.index)).sort((left, right) => left.startByte - right.startByte);
+		if (applied.length === 0) return appendAll(claims);
+
+		let appliedSoFar: { startByte: number; endByte: number; replacement: Buffer }[] = [];
+		const blocks: SuccessorBlock[] = [];
+		const byBlockId = new Map<string, ResolvedEdit>();
+		for (const edit of applied) {
+			appliedSoFar = [...appliedSoFar, { startByte: edit.startByte, endByte: edit.endByte, replacement: Buffer.from(edit.replacementText, 'utf8') }];
+			const blockId = `block-${edit.index}`;
+			byBlockId.set(blockId, edit);
+			blocks.push({
+				id: blockId,
+				dependsOn: [],
+				target: { status: 'resolved', selector: { entryId: edit.entryId, startByte: edit.startByte, endByte: edit.endByte, textSha256: edit.textSha256, documentSha256: documentState.documentSha256 } },
+				candidateSha256: sha256(spliceDisjointForSuccessorLocus(documentState.documentBytes, appliedSoFar)),
+			});
+		}
+		const plan: SuccessorBlockPlan = {
+			source: { filename: documentState.filename, revision: documentState.revision, documentSha256: documentState.documentSha256 },
+			orderedBlockIds: blocks.map((block) => block.id),
+			blocks,
+			mergeGroups: [],
+		};
+		const resolver: SuccessorBlockReplacementResolver = ({ block }) => byBlockId.get(block.id)!.replacementText;
+		const composed = await composeSuccessorBlockCandidate(plan, documentState, resolver);
+		if (composed.status !== 'composed') return appendAll(claims);
+
+		const fallbackIndexes = new Set([...overlapping, ...unresolved]);
+		const fallbackClaims = claims.filter((_, index) => fallbackIndexes.has(index));
+		if (fallbackClaims.length === 0) return [{ from: sourceContent, to: composed.candidateBytes.toString('utf8') }];
+		const addition = `\n\n## Accepted scientific decisions\n\n${fallbackClaims.map((claim) => `- ${claim.summary}`).join('\n')}\n`;
+		return [{ from: sourceContent, to: `${composed.candidateBytes.toString('utf8')}${addition}` }];
 	}
 
 	private async reviewedCandidate(threadId: string, synthesisId?: string, synthesisDigest?: string): Promise<ScientificSynthesisCandidate | undefined> {

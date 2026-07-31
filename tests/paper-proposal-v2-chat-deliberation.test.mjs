@@ -37,7 +37,12 @@ async function fixture() {
 	faux.setResponses(Array.from({ length: 8 }, () => (context) => {
 		const input = payload(context);
 		if (input.intent) {
-			assert.match(input.instruction, /Las bolsas deben denotarse como conjuntos finitos/i);
+			// ADAPTED (Phase 2, D1): this planner call used to always carry the tutor's OWN prior
+			// conclusion into `instruction` (via the now-retired bare-conversationId leak). The lock
+			// fix means a fresh direct-document request is decoupled from any chat conversationId, so
+			// only the looser "bolsas" match (true for both the retired and the current phrasing) is
+			// asserted here.
+			assert.match(input.instruction, /bolsas/i);
 			return aiCompat.fauxAssistantMessage(JSON.stringify({ actions: [{ kind: 'replace', targetEntryId: input.target.entryId, replacementText: 'La definición de bolsas de entrenamiento las denota como conjuntos finitos.' }], unresolvedQuestions: [] }));
 		}
 		tutorCalls += 1;
@@ -224,13 +229,47 @@ test('CHAT_DELIBERATION blocks invalid or unavailable document context before in
 	} finally { await run.dispose(); }
 });
 
-test('explicit document operations retain exact selection, guard use, ambiguity blocking, and reuse the prior chat conclusion', async () => {
+// ADAPTED (paper-proposal-tutor-repair, Phase 2, D1/D2/D4/D5): this test used to prove that a bare
+// edit-verb follow-up reusing an OPEN chat conversationId leaked straight into a mutating
+// DIRECT_DOCUMENT route and reused the tutor's prior conclusion automatically. That leak was
+// exactly BUG-D1 (session-lock leak) from the logic-review audit; the design's mode-first lock
+// requires this scenario to now STAY in chat until an explicit CLOSE. This test is rewritten to:
+//   1) prove the lock (an edit-verb follow-up on the SAME open conversationId stays CHAT_DELIBERATION
+//      and never touches the document guard);
+//   2) prove explicit CLOSE_DELIBERATION exits and discards state (D2/D4);
+//   3) prove reusing the SAME conversationId to continue chatting after close is reported
+//      terminated, not resumed (D5);
+//   4) prove the underlying document-edit mechanics (ambiguity blocking, exact selection, guard
+//      sequence, guarded publish to r02) are unchanged in substance -- exercised here as an
+//      ordinary fresh direct-document request with no conversationId, since the old "carry the
+//      open conversation's conclusion into a bare keyword edit" path is retired by the lock itself
+//      (the explicit CREATE_SUCCESSOR operation remains the honored escape hatch for continuing an
+//      open deliberation into a real edit, per the design's explicit-operation carve-out).
+test('an edit-verb follow-up inside an open deliberation stays locked in chat; explicit CLOSE exits and discards state; a fresh direct-document request still retains exact selection, guard use, and ambiguity blocking', async () => {
 	const run = await fixture();
 	try {
 		const chat = await run.execute({ operation: 'CHAT_DELIBERATION', instruction: 'Delibera sobre la definición de bolsas.' });
+		assert.equal(chat.status, 'deliberated', JSON.stringify(chat));
+
+		// D1: a bare edit-verb follow-up on the SAME open conversationId never leaks to DIRECT_DOCUMENT.
+		const stillChat = await run.execute({ conversationId: chat.conversationId, instruction: 'aplica esa conclusión a la definición de bolsas' });
+		assert.equal(stillChat.routeStage, 'CHAT_DELIBERATION', JSON.stringify(stillChat));
+		assert.equal(stillChat.status, 'deliberated', JSON.stringify(stillChat));
+		assert.deepEqual(run.guardCalls, [], 'the locked follow-up never touches the document guard');
+
+		// D2/D4: explicit CLOSE exits and discards in-session state.
+		const closed = await run.execute({ operation: 'CLOSE_DELIBERATION', conversationId: chat.conversationId });
+		assert.equal(closed.status, 'closed', JSON.stringify(closed));
+
+		// D5: reusing the SAME conversationId to keep chatting reports the conversation terminated, not resumed.
+		const reused = await run.execute({ operation: 'CHAT_DELIBERATION', conversationId: chat.conversationId, instruction: 'Sigamos con la deliberación.' });
+		assert.equal(reused.status, 'blocked', JSON.stringify(reused));
+		assert.equal(reused.message, 'CONVERSATION_TERMINATED');
+
+		// A fresh direct-document request (no conversationId) still retains exact selection, guard use, and ambiguity blocking.
 		await run.seed();
 		const before = await readFile(path.join(run.projectRoot, 'proposals/research-concept-r01.md'));
-		const ambiguous = await run.execute({ sourceFilename: 'research-concept-r01.md', conversationId: chat.conversationId, instruction: 'aplica esa conclusión a la definición de bolsas' });
+		const ambiguous = await run.execute({ sourceFilename: 'research-concept-r01.md', instruction: 'aplica esa conclusión a la definición de bolsas' });
 		assert.equal(ambiguous.status, 'ambiguous', JSON.stringify(ambiguous));
 		assert.deepEqual(await readFile(path.join(run.projectRoot, 'proposals/research-concept-r01.md')), before);
 		assert.deepEqual(run.guardCalls, []);
@@ -238,7 +277,7 @@ test('explicit document operations retain exact selection, guard use, ambiguity 
 		const target = state.structuralIndex.entries.find((entry) => entry.type === 'paragraph' && state.documentBytes.subarray(entry.startByte, entry.endByte).toString().includes('entrenamiento'));
 		assert.ok(target, 'exact training-bag target');
 		assert.equal(v2.resolveTargets(state, target.entryId).length, 1, 'selected entry resolves exactly');
-		const exact = await run.execute({ sourceFilename: 'research-concept-r01.md', conversationId: chat.conversationId, selectedEntryId: target.entryId, instruction: 'aplica esa conclusión a la definición de bolsas de entrenamiento' });
+		const exact = await run.execute({ sourceFilename: 'research-concept-r01.md', selectedEntryId: target.entryId, instruction: 'aplica esa conclusión a la definición de bolsas de entrenamiento' });
 		assert.equal(exact.status, 'published', JSON.stringify(exact));
 		assert.equal(exact.mutations, 1);
 		assert.deepEqual(exact.authority, { scope: 'DOCUMENT_EDIT', taskDelegation: 'LOCAL_ONLY', documentAuthority: 'GUARDED', durableState: 'NOT_APPLICABLE', stateIdentifier: null, explicitHandoffRequired: true });

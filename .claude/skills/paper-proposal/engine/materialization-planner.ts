@@ -12,6 +12,7 @@ import type {
 	ScientificThread,
 } from './scientific-domain.js';
 import type { ScientificState, ScientificStateStore } from './scientific-state-store.js';
+import { parseProposedEdit } from './types.js';
 import type { DocumentState, LifecycleRevision, MaterializationResult, WorkspaceLifecycleState } from './types.js';
 import { LifecycleService } from './lifecycle-service.js';
 
@@ -60,6 +61,7 @@ function claimFor(decision: ScientificDecision, thread: ScientificThread, events
 		.map((eventId) => events.find((event) => event.eventId === eventId))
 		.find((event) => event?.type === 'TUTOR_ASSESSED' && event.threadId === decision.threadId && event.payload.synthesisDigest === decision.acceptedSynthesisDigest);
 	if (!tutor || typeof tutor.payload.summary !== 'string' || tutor.payload.summary.length === 0 || tutor.payload.summary.length > DEFAULT_MAX_SUMMARY_BYTES) return undefined;
+	const proposedEdit = parseProposedEdit(tutor.payload.proposedEdit);
 	return {
 		claimId: digest({ decisionId: decision.decisionId, acceptedEventId: decision.acceptedEventId, synthesisDigest: decision.acceptedSynthesisDigest }),
 		decisionId: decision.decisionId,
@@ -67,6 +69,7 @@ function claimFor(decision: ScientificDecision, thread: ScientificThread, events
 		acceptedEventId: decision.acceptedEventId,
 		acceptedSynthesisDigest: decision.acceptedSynthesisDigest,
 		summary: tutor.payload.summary,
+		...(proposedEdit ? { proposedEdit } : {}),
 	};
 }
 

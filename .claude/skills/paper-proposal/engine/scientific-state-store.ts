@@ -5,6 +5,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { withMutationLock } from './mutation-lock.js';
 import { recordScientificMetric } from './runtime-metrics.js';
 import { validateMaterializationPlan } from './materialization-planner.js';
+import { PROPOSED_EDIT_REPLACEMENT_MAX_BYTES } from './types.js';
 import type {
 	ScientificDecision,
 	ScientificEvent,
@@ -111,7 +112,7 @@ const defaultFs: ScientificFs = { link, lstat, mkdir, open, readdir, readFile, r
 const EVENT_FILE = /^(\d+)-([A-Za-z0-9_-]+)\.json$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const FORBIDDEN_PRIVATE_KEYS = /(?:chain.?of.?thought|hidden.?prompt|raw.?trace|private.?reasoning|transcript|\bprompt\b|\btrace\b|\bthought\b)/i;
-const ALLOWED_PAYLOAD_KEYS = new Set(['title', 'summary', 'status', 'decisionId', 'synthesisId', 'synthesisDigest', 'relationId', 'relatedThreadIds', 'activeThreadId', 'candidateIds', 'findingId', 'issueCategory', 'evidenceReferences', 'requiredCorrection', 'constraints', 'modificationCause', 'reason', 'code', 'materializationId', 'selectionKey', 'acceptedEventIds', 'candidateDigest', 'planDigest', 'decision', 'targetFilename', 'targetRevision', 'publishedSha256', 'receiptSha256', 'threadIds']);
+const ALLOWED_PAYLOAD_KEYS = new Set(['title', 'summary', 'status', 'decisionId', 'synthesisId', 'synthesisDigest', 'relationId', 'relatedThreadIds', 'activeThreadId', 'candidateIds', 'findingId', 'issueCategory', 'evidenceReferences', 'requiredCorrection', 'constraints', 'modificationCause', 'reason', 'code', 'materializationId', 'selectionKey', 'acceptedEventIds', 'candidateDigest', 'planDigest', 'decision', 'targetFilename', 'targetRevision', 'publishedSha256', 'receiptSha256', 'threadIds', 'proposedEdit']);
 const ALLOWED_EVIDENCE_KINDS = /^[a-z][a-z0-9_-]{0,63}$/;
 const THREAD_RELATION_KINDS = new Set(['RELATED', 'SUPPORTS', 'CHALLENGES', 'DEPENDS_ON']);
 const DECISION_STATES = new Set(['ACCEPTED_UNMATERIALIZED', 'MATERIALIZED', 'RETRACTED']);
@@ -147,22 +148,34 @@ function assertPlainText(value: unknown, maximum: number, code: string) {
 	if (typeof value !== 'string' || value.length === 0 || value.length > maximum || FORBIDDEN_PRIVATE_KEYS.test(value)) fail(code);
 }
 
-function assertPublicValue(value: unknown, depth = 0): void {
+/**
+ * Only the exact `payload.proposedEdit.replacementText` (or `.content`) leaf
+ * gets the raised `PROPOSED_EDIT_REPLACEMENT_MAX_BYTES` cap; every other
+ * public string -- including every OTHER field nested inside `proposedEdit`
+ * itself (e.g. `targetEntryId`, `rationale`) -- keeps the original 2,000-byte
+ * guard below, unchanged.
+ */
+function isProposedEditReplacementField(keyPath: readonly string[]): boolean {
+	return keyPath.length === 2 && keyPath[0] === 'proposedEdit' && (keyPath[1] === 'replacementText' || keyPath[1] === 'content');
+}
+
+function assertPublicValue(value: unknown, depth = 0, keyPath: readonly string[] = []): void {
 	if (depth > 3) fail('SCIENTIFIC_PAYLOAD_DEPTH_INVALID');
 	if (typeof value === 'string') {
-		if (value.length > 2_000 || FORBIDDEN_PRIVATE_KEYS.test(value)) fail('SCIENTIFIC_PRIVACY_VIOLATION');
+		const maximum = isProposedEditReplacementField(keyPath) ? PROPOSED_EDIT_REPLACEMENT_MAX_BYTES : 2_000;
+		if (value.length > maximum || FORBIDDEN_PRIVATE_KEYS.test(value)) fail('SCIENTIFIC_PRIVACY_VIOLATION');
 		return;
 	}
 	if (typeof value === 'number' || typeof value === 'boolean' || value === null) return;
 	if (Array.isArray(value)) {
 		if (value.length > 16) fail('SCIENTIFIC_PAYLOAD_LIMIT_INVALID');
-		for (const item of value) assertPublicValue(item, depth + 1);
+		for (const item of value) assertPublicValue(item, depth + 1, keyPath);
 		return;
 	}
 	if (!isObject(value)) fail('SCIENTIFIC_PAYLOAD_INVALID');
 	for (const [key, nested] of Object.entries(value)) {
 		if (FORBIDDEN_PRIVATE_KEYS.test(key)) fail('SCIENTIFIC_PRIVACY_VIOLATION');
-		assertPublicValue(nested, depth + 1);
+		assertPublicValue(nested, depth + 1, [...keyPath, key]);
 	}
 }
 

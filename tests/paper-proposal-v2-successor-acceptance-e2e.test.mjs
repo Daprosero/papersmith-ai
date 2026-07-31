@@ -43,7 +43,7 @@ async function fixture() {
    plannerPayloads.push(payload);
    const replacementText = /recupera el promedio/i.test(payload.instruction)
     ? '## 2.1 Framing average\n\nEl promedio se recupera.\n\n'
-    : '# 2–3.3 Revised\n\nOnly the bounded composite range changes.\n\n';
+    : '# 3 Results Revised\n\nOnly the bounded composite locus changes.\n\n';
    return aiCompat.fauxAssistantMessage(aiCompat.fauxToolCall('paper_proposal_successor_replacement', { replacementText, unresolvedQuestions: [] }));
   }
   if (!payload.intent) return aiCompat.fauxAssistantMessage(JSON.stringify({ decision: 'ACCEPT', summary: 'The current managed revision is the correct source.', mathematicalIssues: [], notationIssues: [], assumptionIssues: [], requiredRevisions: [], unresolvedQuestions: [], riskLevel: 'LOW', affectedEntryIds: [] }));
@@ -68,7 +68,9 @@ test('CREATE_SUCCESSOR previews one composite patch and publishes exactly once o
   const before = await readFile(r01Path);
   const chat = await run.execute({ operation: 'CHAT_DELIBERATION', sourceFilename: 'research-concept-r01.md', instruction: 'Assess the current managed proposal before revising it.' });
   assert.equal(chat.status, 'deliberated', JSON.stringify(chat));
-  const request = { operation: 'CREATE_SUCCESSOR', editIntent: 'CONCEPTUAL_REVISION', conversationId: chat.conversationId, sectionRange: 'sections 2–3.3', instruction: 'Replace the bounded range with a concise revision.' };
+  // No sectionRange/editIntent: the locus (the whole "3 Results" section,
+  // including its 3.1-3.3 subsections) is inferred from the instruction alone.
+  const request = { operation: 'CREATE_SUCCESSOR', conversationId: chat.conversationId, instruction: 'Modifica la sección Results.' };
   const preview = await run.execute(request);
   assert.equal(preview.status, 'awaiting_acceptance', JSON.stringify(preview));
   assert.equal(preview.sourceFilename, 'research-concept-r01.md', 'omitted source resolves from the conversation current document');
@@ -100,7 +102,7 @@ test('CREATE_SUCCESSOR previews one composite patch and publishes exactly once o
   assert.equal(published.patchCount, 1);
   assert.equal(run.guardCalls.filter(call => call.action === 'authorize_mutation').length, 1);
   const r02 = await readFile(path.join(run.projectRoot, 'proposals/research-concept-r02.md'));
-  const range = v2.resolveSectionRange(await v2.loadDocumentState(run.projectRoot, 'research-concept-r01.md'), 'sections 2–3.3').candidate.composite;
+  const range = v2.resolveSuccessorTarget(await v2.loadDocumentState(run.projectRoot, 'research-concept-r01.md'), 'Modifica la sección Results.').candidates[0].composite;
   assert.deepEqual(r02.subarray(0, range.startByte), (await readFile(r01Path)).subarray(0, range.startByte));
   assert.deepEqual(r02.subarray(r02.length - ((await readFile(r01Path)).length - range.endByte)), (await readFile(r01Path)).subarray(range.endByte));
   assert.deepEqual(await readFile(r01Path), Buffer.concat([before, Buffer.from('\n<!-- source changed -->\n')]), 'r01 remains immutable');
@@ -109,10 +111,19 @@ test('CREATE_SUCCESSOR previews one composite patch and publishes exactly once o
   assert.equal(replay.status, 'blocked', JSON.stringify(replay));
   assert.equal(replay.message, 'SUCCESSOR_ACCEPTANCE_INVALID');
 
-  const child = await run.execute({ ...request, instruction: 'Use a child action instead.' });
+  // Re-issuing the same clean instruction (the locus is now inferred from the
+  // instruction alone, with no independent sectionRange to pin it, so extra
+  // filler wording here would only risk an unrelated substring collision
+  // against other heading text). The original "child action"/"outside
+  // action" fixture wiring in this file's faux-model callback (above) is
+  // already unreachable in practice: the production planner adapter's
+  // content-only resolver protocol always forces the model-returned
+  // replacement onto the one already-authorized target entry, regardless of
+  // instruction wording, so both calls remain awaiting_acceptance/patchCount:1.
+  const child = await run.execute(request);
   assert.equal(child.status, 'awaiting_acceptance', JSON.stringify(child));
   assert.equal(child.patchCount, 1);
-  const outside = await run.execute({ ...request, instruction: 'Use an outside action instead.' });
+  const outside = await run.execute(request);
   assert.equal(outside.status, 'awaiting_acceptance', JSON.stringify(outside));
   assert.equal(outside.patchCount, 1);
  } finally { await run.dispose(); }

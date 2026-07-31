@@ -376,6 +376,13 @@ test('public CHAT_DELIBERATION hands off consolidated bytes exactly once to guar
 		assert.equal(tutorCalls, 2, 'successful materialization discards the chat snapshot instead of resuming deliberation');
 		assert.deepEqual((await readdir(path.join(run.projectRoot, 'working-drafts'))).sort(), [path.basename(route)]);
 		assert.deepEqual(await readFile(path.join(run.projectRoot, run.primaryRoute)), run.primaryBytes);
+		// D5 (Phase 2): a successful materialization terminates the conversation's OWN deliberation
+		// state, not merely its draft-registry entry -- reusing the conversationId to keep chatting
+		// reports it terminated instead of silently resuming.
+		const continued = await execute({ operation: 'CHAT_DELIBERATION', conversationId: followUp.conversationId, instruction: 'Keep discussing after materialization.' });
+		assert.equal(continued.status, 'blocked', JSON.stringify(continued));
+		assert.equal(continued.message, 'CONVERSATION_TERMINATED');
+		assert.equal(tutorCalls, 2, 'the terminated conversation never reopens tutor reasoning');
 	} finally {
 		faux.unregister?.();
 		await run.dispose();

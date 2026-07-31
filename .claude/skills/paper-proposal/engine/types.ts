@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 export const PARSER_VERSION = 'paper-proposal/1';
 export const LIMITS = Object.freeze({ maxCandidates: 8, maxContextFragments: 8, maxContextBytesLocal: 32000, maxContextBytesSection: 32000, maxPatchCountLocal: 4, maxCleanupRanges: 3, maxModelCallsLocal: 1, maxModelCallsConceptual: 2, maxParallelReadTasks: 4, maxParallelValidationTasks: 6, maxParallelModelCalls: 1, maxParallelWriteTasks: 1 });
-export type Intent = 'MODIFY'|'INSERT'|'DELETE'|'MOVE'|'COPY'|'CONCEPTUAL_REVISION'|'REVIEW'|'DELIBERATE'|'WITHDRAW_REVISION'|'RESTORE_WITHDRAWN_REVISION'|'AMBIGUOUS';
+export type Intent = 'MODIFY'|'INSERT'|'DELETE'|'MOVE'|'COPY'|'CONCEPTUAL_REVISION'|'REVIEW'|'DELIBERATE'|'WITHDRAW_REVISION'|'RESTORE_WITHDRAWN_REVISION'|'CLOSE_DELIBERATION'|'AMBIGUOUS';
 /** Explicit public route: derives the only permitted target from the managed source. */
 export type CreateSuccessorOperation = 'CREATE_SUCCESSOR';
 export type SuccessorEditIntent = Extract<Intent,'MODIFY'|'CONCEPTUAL_REVISION'>;
@@ -84,6 +84,42 @@ export type ContextFragment = { entryId:string; type:EntryType; text:string; tex
 export type LocalContext = { documentSha256:string; targetEntryId:string; instruction:string; fragments:ContextFragment[]; nearbySymbols:Record<string,string>; directReferences:string[]; fidelity?:FidelityConstraints; maxBytes?:number; authorizedEntryIds?:string[]; successorCompositeTarget?:true; successorRangeEntryIds?:string[] };
 export type MoveCopyContext = { documentSha256:string; instruction:string; sourceContext:LocalContext; destinationContext:LocalContext; fragments:ContextFragment[] };
 export type EditAction = { kind:'replace'; targetEntryId:string; replacementText:string; semanticChange?:boolean; rationale?:string } | { kind:'insert'; anchorEntryId:string; position:Position; content:string } | { kind:'delete'; targetEntryId:string; instructionEvidence:string; reason:string } | { kind:'move'|'copy'; sourceEntryIds:string[]; destinationAnchorId:string; position:Position; moveMode:MoveMode; removeSource:boolean; transformedContent?:string; cleanupLevel:CleanupLevel } | { kind:'cleanup'; boundedRangeIds:string[]; action:'delete'|'rewrite'; reason:string; instructionEvidence:string } | { kind:'rewrite_transition'; boundedRangeId:string; replacementText:string; reason:string };
+
+/**
+ * The public byte cap for a persisted scientific `proposedEdit.replacementText`
+ * (or `.content`) leaf ONLY. Every other public payload string (including every
+ * OTHER field nested inside `proposedEdit` itself) stays bounded at the
+ * pre-existing 2,000-byte guard -- see `scientific-state-store.ts`'s
+ * `assertPublicValue`, which is the sole enforcement point.
+ */
+export const PROPOSED_EDIT_REPLACEMENT_MAX_BYTES = 20_000;
+
+/**
+ * Validates an untrusted, persisted `TUTOR_ASSESSED.payload.proposedEdit` value
+ * into a genuine `EditAction`. Currently recognizes only the single-locus
+ * `replace` shape -- the only shape `ScientificWorkflowService.candidate()`
+ * ever emits. Anything else (a malformed object, or a well-formed but
+ * unimplemented `insert`/`delete`/`move`/`copy`/`cleanup`/`rewrite_transition`
+ * shape) returns `undefined` so callers fall back to the pre-existing
+ * summary-annotation route rather than trusting an edit shape this pipeline
+ * never validated end-to-end.
+ */
+export function parseProposedEdit(value: unknown): EditAction | undefined {
+	if (!value || typeof value !== 'object') return undefined;
+	const candidate = value as Record<string, unknown>;
+	if (candidate.kind !== 'replace') return undefined;
+	if (typeof candidate.targetEntryId !== 'string' || candidate.targetEntryId.length === 0 || candidate.targetEntryId.length > 128) return undefined;
+	if (typeof candidate.replacementText !== 'string' || candidate.replacementText.length === 0 || candidate.replacementText.length > PROPOSED_EDIT_REPLACEMENT_MAX_BYTES) return undefined;
+	if (candidate.semanticChange !== undefined && typeof candidate.semanticChange !== 'boolean') return undefined;
+	if (candidate.rationale !== undefined && (typeof candidate.rationale !== 'string' || candidate.rationale.length > 2_000)) return undefined;
+	return {
+		kind: 'replace',
+		targetEntryId: candidate.targetEntryId,
+		replacementText: candidate.replacementText,
+		...(candidate.semanticChange !== undefined ? { semanticChange: candidate.semanticChange as boolean } : {}),
+		...(candidate.rationale !== undefined ? { rationale: candidate.rationale as string } : {}),
+	};
+}
 export type DeletePlan = { planVersion:'2'; documentSha256:string; targetEntryIds:string[]; destructiveIntent:true; instructionEvidence:string[]; reason:string; affectedReferences:string[]; affectedSymbols:string[]; cleanupLevel:CleanupLevel; unresolvedQuestions:string[] };
 export type EditPlan = { planVersion:'2'; documentSha256:string; intent:Intent; instructionHash:string; resolvedTargets:string[]; destination?:string; semanticChange:boolean; destructiveIntent:boolean; cleanupLevel:CleanupLevel; constraints:string[]; actions:EditAction[]; expectedEffects:string[]; unresolvedQuestions:string[]; successorCompositeTarget?:true };
 export type MovePlan = EditPlan & { intent:'MOVE'; sourceEntryIds:string[]; destinationEntryId:string; position:Position; mode:MoveMode; removeSource:true; transformedContent?:string; semanticChange:boolean };

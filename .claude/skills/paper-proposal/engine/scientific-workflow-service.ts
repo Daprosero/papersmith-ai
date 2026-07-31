@@ -10,6 +10,8 @@ import type { ScientificSnapshotRecord } from './scientific-state-store.js';
 import { ScientificStateStore } from './scientific-state-store.js';
 import type { TutorAdapter, TutorAssessment } from './tutor-adapter.js';
 import { validateTutorAssessment } from './tutor-adapter.js';
+import { PROPOSED_EDIT_REPLACEMENT_MAX_BYTES } from './types.js';
+import type { EditAction } from './types.js';
 import type {
 	ConceptualReviewOutcome,
 	EvidenceReference,
@@ -266,6 +268,7 @@ export class ScientificWorkflowService {
 				summary: candidate.summary,
 				synthesisId: candidate.synthesisId,
 				synthesisDigest: candidate.digest,
+				...(candidate.proposedEdit ? { proposedEdit: candidate.proposedEdit } : {}),
 			}, [eventIds.at(-1)!]);
 			if (!tutorEvent) return { status: 'blocked', code: 'SCIENTIFIC_ADVISORY_PERSISTENCE_FAILED', eventIds };
 			eventIds.push(tutorEvent.eventId);
@@ -325,7 +328,7 @@ export class ScientificWorkflowService {
 
 	private async assessReviewer(instruction: string, context: Awaited<ReturnType<ScientificContextBuilder['build']>>, candidate: ScientificSynthesisCandidate): Promise<ReviewerAssessment | undefined> {
 		try {
-			const assessment = await this.dependencies.reviewer!.review({ instruction, context: roleContext(context, instruction), plan: { synthesisId: candidate.synthesisId, digest: candidate.digest, summary: candidate.summary } });
+			const assessment = await this.dependencies.reviewer!.review({ instruction, context: roleContext(context, instruction), plan: { synthesisId: candidate.synthesisId, digest: candidate.digest, summary: candidate.summary, ...(candidate.proposedEdit ? { proposedEdit: candidate.proposedEdit } : {}) } });
 			if (hasForbiddenAuthority(assessment)) return undefined;
 			return validateReviewerAssessment(assessment);
 		} catch {
@@ -336,7 +339,35 @@ export class ScientificWorkflowService {
 	private candidate(threadId: string, assessment: TutorAssessment): ScientificSynthesisCandidate {
 		const synthesisId = this.newId();
 		const summary = assessment.summary.trim();
-		return { synthesisId, threadId, digest: digest({ synthesisId, threadId, summary }), status: 'DRAFT', summary, tutorEventId: '' };
+		const proposedEdit = this.deriveProposedEdit(assessment);
+		// JSON.stringify drops an `undefined` proposedEdit, so the digest stays
+		// byte-identical to the pre-repair summary-only digest when no edit was
+		// liftable (additive-safe); when present, the edit is transitively frozen
+		// into every downstream acceptance/materialization digest check.
+		return { synthesisId, threadId, digest: digest({ synthesisId, threadId, summary, proposedEdit }), status: 'DRAFT', summary, tutorEventId: '', ...(proposedEdit ? { proposedEdit } : {}) };
+	}
+
+	/**
+	 * Lifts the tutor's own already-emitted structured signal -- `proposedAlternative`
+	 * (replacement text) targeted at exactly one already-validated `affectedEntryIds`
+	 * locus -- into a genuine, reusable `EditAction`, instead of discarding it down to
+	 * `summary` alone (closes the V2-PARTIAL gap: the scientific materialization route
+	 * can apply a real structured CHANGE instead of only annotating).
+	 *
+	 * Bounded to the single-locus `replace` case the tutor naturally produces: a
+	 * `TutorAssessment` has no anchor/position signal distinguishing a genuine INSERT
+	 * (new content) from a CHANGE (revise existing content) -- `affectedEntryIds` only
+	 * ever names entries the assessment concerns, always validated as EXISTING document
+	 * fragment entries. Anything else (zero/multiple affected entries, a decision that
+	 * isn't an actual proposed change, or an oversized/empty alternative) stays
+	 * summary-only, unchanged from today.
+	 */
+	private deriveProposedEdit(assessment: TutorAssessment): EditAction | undefined {
+		if (assessment.decision !== 'ACCEPT_WITH_REVISIONS' && assessment.decision !== 'PROPOSE_ALTERNATIVE') return undefined;
+		if (assessment.affectedEntryIds.length !== 1) return undefined;
+		const replacementText = assessment.proposedAlternative?.trim();
+		if (!isBoundedText(replacementText, PROPOSED_EDIT_REPLACEMENT_MAX_BYTES)) return undefined;
+		return { kind: 'replace', targetEntryId: assessment.affectedEntryIds[0]!, replacementText };
 	}
 
 	private finding(candidate: ScientificSynthesisCandidate, assessment: ReviewerAssessment): StructuredConceptualFinding | undefined {
