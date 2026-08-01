@@ -29,9 +29,47 @@ Once you open a deliberation with the user about this proposal, **stay in this r
 
 Deliberation is now entirely yours — there is no engine-side `CHAT_DELIBERATION` call backing it, so you are responsible for loading your own context once, not per turn.
 
-1. **Load once, reuse.** At the start of a deliberation, read the project's `guidance/paper-guide` directory once and load the latest managed proposal version (list `proposals/` for the highest `research-concept-...-rNN.md`; if more than one revision is plausibly "active," ask the user rather than guessing — see Limits). Do not reload either on every turn.
-2. **No managed proposal yet?** If none exists, take the user's idea and create v1 explicitly via `CREATE_INITIAL_REVISION` (see below) — never implicitly, never overwriting or duplicating an existing one. The engine itself loads the paper-guide for this one call; you do not need to pass it in.
-3. **After that, work from the latest version only.** Every further deliberation and edit in this session targets the most recent managed revision, never a stale one. If more than one active managed revision exists, ask the user which one, exactly as the engine itself would (see Limits).
+1. **Run `STATUS` first.** At the start of a deliberation (and any time you are unsure which file is the current base), call the engine's read-only `STATUS` operation and run the decision tree in [Resolving the base version](#resolving-the-base-version) below against its response — never list `proposals/` yourself or guess which file is "latest."
+2. **No managed proposal yet?** If `STATUS` reports zero managed revisions, take the user's idea (per the decision tree) and create v1 explicitly via `CREATE_INITIAL_REVISION` (see below) — never implicitly, never overwriting or duplicating an existing one. The engine itself loads the paper-guide for this one call; you do not need to pass it in.
+3. **After that, work from the latest version only.** Every further deliberation and edit in this session targets the most recent managed revision (`STATUS`'s `latest`), never a stale one. If `STATUS` reports `multipleActive: true`, ask the user for the exact `sourceFilename` rather than guessing, exactly as the engine itself would (see Limits).
+4. **Load once, reuse.** Whichever base the decision tree resolves you to, load its content once at the start of the deliberation — never per turn. See [context-loading rule](#context-loading-rule) below for exactly what to (re)load for an initial creation versus an existing version.
+
+## Resolving the base version
+
+Before reading `guidance/paper-guide`, loading a document, or touching any proposal file, call the engine's `STATUS` operation once to get the deterministic ground truth of `proposals/` — never eyeball the directory listing yourself:
+
+```json
+{ "operation": "STATUS" }
+```
+
+or, if you already have a candidate base file in mind:
+
+```json
+{ "operation": "STATUS", "sourceFilename": "<candidate-filename>.md" }
+```
+
+`STATUS` is read-only, keyless, makes no model call, and needs no `ANTHROPIC_API_KEY`. It reports `managedRevisions` (every recognized managed revision, each with `lineage`/`revisionNumber`/`isLatest`), `latest`, `multipleActive`/`candidates` (when the latest is tied across lineages), `nonManagedFiles`, and — only when `sourceFilename` was supplied — a deterministic `sourceClassification` of `LATEST`, `OLDER_MANAGED` (with `newerRevisionNumbers`), `UNMANAGED`, or `NOT_FOUND`. See [usage examples](references/usage.md) for a worked transcript. Run exactly the decision tree below against that response.
+
+### Backups: agent-performed, user-confirmed, never the engine's job
+
+Whenever a branch below says "move," the destination is always `backup/proposals/<timestamp>/` at the **repository root** — a fresh timestamped subdirectory per reconciliation (e.g. `backup/proposals/2026-08-01T12-30-00Z/`). You perform that move yourself with a plain file-move (Bash `mv`), and only after the user explicitly confirms — the engine has no operation that moves, backs up, or deletes proposal files, and `STATUS` itself performs no mutation. If a moved managed revision has per-revision sidecars (`.paper-proposal/state/<filename>.json`, `.paper-proposal/receipts/<filename>.json`), move those alongside its `.md` too, so the backup stays internally consistent — none exist for a plain unmanaged file, but never leave a sidecar behind for a managed one.
+
+### The decision tree
+
+1. **You have a path in mind, and `sourceClassification` is `LATEST`.** Proceed — it is already the latest managed revision; work on it directly.
+2. **You have a path in mind, and `sourceClassification` is `OLDER_MANAGED`.** `newerRevisionNumbers` lists the revision(s) that exist above it in the same lineage (`r(N+1)…rM`). Ask the user: move those newer revisions to `backup/proposals/<timestamp>/` and resume work from `rN` (the path you had in mind), or keep working on the actual current latest (`rM`) instead? On "move," relocate exactly `r(N+1)…rM` (and their sidecars) and treat `rN` as the latest from now on. On "keep," drop the older path and continue on the real latest.
+3. **You have a path in mind, and it does not match the managed format (`sourceClassification` is `UNMANAGED`).** Ask the user: move the current managed revision(s) to `backup/proposals/<timestamp>/` and START FRESH, using that file's content as the new v1 base — or ADOPT it as v1 directly, by adding the marker and renaming it to `research-concept-r01.md`? Adoption preserves the file's real structure and is the better choice for an already-rich, developed document, versus re-rendering a generic seed from scratch. Either choice is the user's call — never default silently.
+4. **No path in mind, and a latest managed revision exists (`latest` is non-null, `multipleActive: false`).** Work on `latest` directly.
+5. **No path in mind, zero managed revisions, and `proposals/` is otherwise empty (`nonManagedFiles: []`).** A pure initial creation — ask the user for their idea and proceed to `CREATE_INITIAL_REVISION`.
+6. **No path in mind, zero managed revisions, and exactly one non-managed file exists.** Ask the user: "is `<that file>` your initial idea/base for this proposal?" — do not assume it.
+7. **No path in mind, zero managed revisions, and several non-managed files exist.** Ask the user which one (by name or path) to start from — never guess among them.
+
+If `multipleActive` is `true` (a tied latest across lineages), stop and ask the user for the exact `sourceFilename` before doing anything else in any branch above — never treat one of `candidates` as authoritative on your own.
+
+### Context-loading rule
+
+- **Initial case only — creating v1 (decision tree branches 3's "START FRESH" choice, 5, 6, 7):** load `guidance/paper-guide/normalized` once, exactly as `CREATE_INITIAL_REVISION` itself already does internally. This ingest exists only to seed a brand-new proposal.
+- **Any existing version (`r ≥ 1`) — branches 1, 2, 3's "ADOPT" choice, and 4:** load the latest version's document plus a brief general objective/framing for the deliberation. **Never** reload the paper-guide for an existing version — that ingest is spent only once, at true v1 creation.
 
 ## Deliberate, then decide
 
@@ -83,6 +121,12 @@ which returns:
 For `move`/`copy`: the kind, source, destination, and position are whatever the user's own instruction asked for — you review and refute them, you do not invent them. A `LITERAL` relocation carries the source content byte-for-byte (omit `transformedContent`). An `ADAPTIVE` relocation (the moved/copied text must be reworded to fit its new context) requires you to supply that reworded text yourself in `transformedContent` — never leave it to the engine, and never fabricate wording you have no basis for.
 
 **Never alter text you were not authorized to touch.** For every kind, everything outside the declared locus is left completely untouched — this is enforced by the engine, not by convention.
+
+**Keep your replacement/inserted content well-formed Markdown, or the engine will reject it.** The candidate validator refuses a successor that fuses or malforms Markdown/display blocks (`successor-markdown-block-safety`). Concretely, when you write `replacementText`/`content`:
+- **Preserve block-boundary blank lines.** End a block-scoped replacement with the same trailing blank-line separation the original block had, so it does not fuse with the following block (e.g. a section body that ends before the next `## ` heading keeps its terminating `\n\n`).
+- **Display math is its own block.** Write a `$$ … $$` display equation on its own lines with blank lines around it — never inline inside a prose sentence — and keep every `$$` balanced and every LaTeX command well-formed. Inline or unbalanced display math is rejected.
+- Patch only complete Markdown blocks; do not cut a replacement off mid-block.
+If the engine returns `successor-markdown-block-safety`, the fix is a well-formed replacement (fix the spacing / make the equation a standalone block), never a workaround.
 
 ### 3. Call the engine: `CREATE_SUCCESSOR` + `resolvedDecisions`
 
@@ -151,11 +195,12 @@ None of this is negotiable and none of it is something you should work around �
 
 | Operation | Use it for |
 | --- | --- |
+| `STATUS` | Read-only, keyless inventory of `proposals/` — managed revisions, the latest, tie/ambiguity detection, non-managed files, and (with `sourceFilename`) a deterministic classification of one candidate path. Never mutates. Use it at the start of every deliberation — see [Resolving the base version](#resolving-the-base-version). |
 | `CREATE_INITIAL_REVISION` | Creates the first managed proposal (v1) from the user's idea plus the paper-guide. Only when no managed proposal exists yet; never automatic, never overwrites or duplicates one. |
 | `WITHDRAW_REVISION` | Safely withdraws one eligible managed revision, preserving an audited recovery copy. Not content deletion. |
 | `RESTORE_WITHDRAWN_REVISION` | Restores a previously withdrawn managed revision from its audited recovery copy. |
 
-These three are deterministic and were never model-backed; they are unchanged by the ambient-model rewrite. See [usage examples](references/usage.md) for request shapes.
+`STATUS` is additive and read-only, handled directly by the CLI host (like `RESOLVE_TARGET`); the other three are deterministic and were never model-backed. None of the four are changed by the ambient-model rewrite. See [usage examples](references/usage.md) for request shapes.
 
 ## Limits
 

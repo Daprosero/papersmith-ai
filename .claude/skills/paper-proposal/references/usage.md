@@ -1,6 +1,51 @@
 # Paper Proposal — examples and help
 
-See [SKILL.md](../SKILL.md) for the full tutor-role conditioning and workflow discipline. This page is worked examples only: creating the first managed version, resolving a locus, building `resolvedDecisions`, and the preview → accept → publish cycle. Every call below is a real, verified invocation of `node .claude/skills/paper-proposal/engine/cli.mjs` — none of it requires `ANTHROPIC_API_KEY` or any model configuration.
+See [SKILL.md](../SKILL.md) for the full tutor-role conditioning and workflow discipline. This page is worked examples only: checking `STATUS` before deciding a base, creating the first managed version, resolving a locus, building `resolvedDecisions`, and the preview → accept → publish cycle. Every call below is a real, verified invocation of `node .claude/skills/paper-proposal/engine/cli.mjs` — none of it requires `ANTHROPIC_API_KEY` or any model configuration.
+
+## Checking `STATUS` before deciding a base
+
+Before running the decision tree in [SKILL.md's "Resolving the base version"](../SKILL.md#resolving-the-base-version), call `STATUS` — read-only, keyless, no model call:
+
+```bash
+node .claude/skills/paper-proposal/engine/cli.mjs '{ "operation": "STATUS" }'
+```
+
+Against a `proposals/` directory holding a managed `r01`/`r02` pair, one managed-looking-but-unmarked `r03` (missing the `<!-- proposal-workspace:artifact:v1 -->` marker, so it does NOT count as managed), and an unrelated `initial-idea.md`:
+
+```json
+{
+  "status": "ok",
+  "operation": "STATUS",
+  "managedRevisions": [
+    { "filename": "research-concept-r01.md", "lineage": "ROOT", "revisionNumber": 1, "isLatest": false },
+    { "filename": "research-concept-r02.md", "lineage": "ROOT", "revisionNumber": 2, "isLatest": true }
+  ],
+  "latest": "research-concept-r02.md",
+  "multipleActive": false,
+  "candidates": [],
+  "nonManagedFiles": ["initial-idea.md", "research-concept-r03.md"]
+}
+```
+
+Pass `sourceFilename` to classify one candidate base against that same inventory in the same call:
+
+```bash
+node .claude/skills/paper-proposal/engine/cli.mjs '{ "operation": "STATUS", "sourceFilename": "research-concept-r01.md" }'
+```
+
+```json
+{ "...": "same fields as above, plus:", "sourceClassification": "OLDER_MANAGED", "newerRevisionNumbers": [2] }
+```
+
+```bash
+node .claude/skills/paper-proposal/engine/cli.mjs '{ "operation": "STATUS", "sourceFilename": "initial-idea.md" }'
+```
+
+```json
+{ "...": "same fields as above, plus:", "sourceClassification": "UNMANAGED" }
+```
+
+`sourceClassification` is one of `LATEST`, `OLDER_MANAGED` (with `newerRevisionNumbers`), `UNMANAGED`, or `NOT_FOUND` (the filename is not present in `proposals/` at all, or it is not a real basename). Never mutating: no `proposals/` file is ever created, moved, or changed by a `STATUS` call — a confirmed backup move (SKILL.md's decision tree) is something *you* do afterward with a plain file move, never the engine.
 
 ## Creating the first managed version
 

@@ -42,11 +42,35 @@
 //   { "operation": "RESOLVE_TARGET", "sourceFilename": "<file>.md", "queries": [{ "query": "..." }, ...] }
 //   -> { "status": "resolved", "operation": "RESOLVE_TARGET", "results": [{ "query": "...", "entryId": "...", "blocked": false, "question": null }, ...] }
 //
+// `STATUS` (design `sdd/paper-proposal-base-reconciliation`) is another
+// read-only, additive, keyless operation handled directly in this host. It
+// gives an ambient agent a deterministic inventory of `proposals/` instead of
+// eyeballing the directory before deciding which base version to resume work
+// on. It reuses `parseManagedRevisionFilename` and `resolveLatestManagedRevision`
+// from `revision-lifecycle-store.ts` (the SAME functions `CREATE_SUCCESSOR`'s
+// own withdrawal/inventory paths use) for filename-shape recognition and
+// canonical latest/tie-break resolution -- no divergent regex or tie-break
+// rule. It performs no mutation, no publish, and no model call, and needs no
+// ANTHROPIC_API_KEY.
+//
+//   { "operation": "STATUS" }
+//   { "operation": "STATUS", "sourceFilename": "<file>.md" }
+//   -> {
+//        "status": "ok", "operation": "STATUS",
+//        "managedRevisions": [{ "filename": "...", "lineage": "...", "revisionNumber": 1, "isLatest": true }, ...],
+//        "latest": "research-concept-r03.md" | null,
+//        "multipleActive": false, "candidates": [],
+//        "nonManagedFiles": ["notes.md"],
+//        "sourceClassification"?: "LATEST" | "OLDER_MANAGED" | "UNMANAGED" | "NOT_FOUND",
+//        "newerRevisionNumbers"?: [2, 3]   // only present when sourceClassification is OLDER_MANAGED
+//      }
+//
 // Environment:
 //   PAPER_PROPOSAL_PROJECT_ROOT  managed project root (default: process.cwd())
 //   PAPER_PROPOSAL_SESSION_ID    stable session identity (default: cli session)
 
 import { createInterface } from 'node:readline';
+import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createJiti } from 'jiti';
@@ -91,6 +115,7 @@ if (!tool) {
 const documentStateModule = await jiti.import(path.join(engineDir, 'document-state.ts'));
 const targetResolverModule = await jiti.import(path.join(engineDir, 'target-resolver.ts'));
 const ambiguityGateModule = await jiti.import(path.join(engineDir, 'ambiguity-gate.ts'));
+const revisionLifecycleModule = await jiti.import(path.join(engineDir, 'revision-lifecycle-store.ts'));
 
 // Deliberately NOT memoizing `loadDocumentState` results across calls within a
 // `--serve` session (would-be item 2 of the amortization design): the real
@@ -136,9 +161,93 @@ async function runResolveTarget(request) {
 	return { status: 'resolved', operation: 'RESOLVE_TARGET', ...resolved };
 }
 
+// Same literal byte marker every other engine module (draft-materialization.ts,
+// orchestrator.ts, initial-revision-creation.ts, patch-compiler.ts,
+// proposal-workspace.ts, revision-lifecycle-store.ts) already defines as its
+// own local constant -- an established codebase convention, not a new
+// divergence risk. The filename-shape recognition and canonical latest/tie-
+// break rule themselves are NOT reimplemented here: they come straight from
+// `parseManagedRevisionFilename`/`resolveLatestManagedRevision` below.
+const STATUS_MARKER = Buffer.from('<!-- proposal-workspace:artifact:v1 -->\n');
+
+function classifySourceFilename(sourceFilename, { proposalEntryNames, managedRevisions, latest }) {
+	if (typeof sourceFilename !== 'string' || !sourceFilename || path.basename(sourceFilename) !== sourceFilename) {
+		return { sourceClassification: 'NOT_FOUND' };
+	}
+	if (!proposalEntryNames.has(sourceFilename)) return { sourceClassification: 'NOT_FOUND' };
+	const managedEntry = managedRevisions.find((revision) => revision.filename === sourceFilename);
+	if (!managedEntry) return { sourceClassification: 'UNMANAGED' };
+	if (latest !== null && managedEntry.filename === latest) return { sourceClassification: 'LATEST' };
+	const newerRevisionNumbers = managedRevisions
+		.filter((revision) => revision.lineage === managedEntry.lineage && revision.revisionNumber > managedEntry.revisionNumber)
+		.map((revision) => revision.revisionNumber)
+		.sort((a, b) => a - b);
+	return { sourceClassification: 'OLDER_MANAGED', newerRevisionNumbers };
+}
+
+async function runStatus(request) {
+	const proposalsDir = path.join(projectRoot, 'proposals');
+	const entries = await readdir(proposalsDir, { withFileTypes: true });
+	const proposalEntryNames = new Set();
+	const managedRevisions = [];
+	const nonManagedFiles = [];
+	for (const entry of entries) {
+		if (!entry.isFile()) continue;
+		proposalEntryNames.add(entry.name);
+		if (entry.name === '.gitkeep' || entry.name === '.DS_Store' || entry.name.startsWith('.')) continue;
+		let identity;
+		try {
+			identity = revisionLifecycleModule.parseManagedRevisionFilename(entry.name);
+		} catch {
+			nonManagedFiles.push(entry.name);
+			continue;
+		}
+		let bytes;
+		try {
+			bytes = await readFile(path.join(proposalsDir, entry.name));
+		} catch {
+			nonManagedFiles.push(entry.name);
+			continue;
+		}
+		if (!bytes.subarray(0, STATUS_MARKER.length).equals(STATUS_MARKER)) {
+			nonManagedFiles.push(entry.name);
+			continue;
+		}
+		managedRevisions.push({ filename: entry.name, lineage: identity.lineage, revisionNumber: identity.revisionNumber });
+	}
+	managedRevisions.sort((a, b) => a.revisionNumber - b.revisionNumber || a.filename.localeCompare(b.filename));
+	nonManagedFiles.sort((a, b) => a.localeCompare(b));
+
+	// Same canonical resolver every other "latest managed revision" call site
+	// (CREATE_SUCCESSOR's orchestrator, draft-materialization) shares -- no
+	// divergent tie-break rule here.
+	const resolution = await revisionLifecycleModule.resolveLatestManagedRevision(projectRoot, { markerOwned: true });
+	const latest = resolution.status === 'empty' ? null : resolution.latest.filename;
+	const multipleActive = resolution.status === 'multiple';
+	const candidates = multipleActive ? [...resolution.candidates.map((candidate) => candidate.filename)].sort() : [];
+
+	const managedRevisionsWithLatest = managedRevisions.map((revision) => ({ ...revision, isLatest: latest !== null && revision.filename === latest }));
+
+	const result = {
+		status: 'ok',
+		operation: 'STATUS',
+		managedRevisions: managedRevisionsWithLatest,
+		latest,
+		multipleActive,
+		candidates,
+		nonManagedFiles,
+	};
+
+	if (request.sourceFilename !== undefined) {
+		Object.assign(result, classifySourceFilename(request.sourceFilename, { proposalEntryNames, managedRevisions: managedRevisionsWithLatest, latest }));
+	}
+	return result;
+}
+
 let sequence = 0;
 async function run(request) {
 	if (request?.operation === 'RESOLVE_TARGET') return runResolveTarget(request);
+	if (request?.operation === 'STATUS') return runStatus(request);
 	const result = await tool.execute(`cli-${++sequence}`, request, undefined, undefined, ctx);
 	return result.details ?? result;
 }
