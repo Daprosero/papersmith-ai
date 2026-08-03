@@ -43,7 +43,8 @@ async function writeManagedProposal(projectRoot, filename, body) {
 }
 
 async function writeGuideFile(projectRoot, filename, content) {
-	const directory = path.join(projectRoot, 'guidance', 'paper-guide', 'normalized');
+	const stem = filename.replace(/\.md$/, '');
+	const directory = path.join(projectRoot, 'guidance', 'paper-guide', stem);
 	await mkdir(directory, { recursive: true });
 	await writeFile(path.join(directory, filename), content);
 }

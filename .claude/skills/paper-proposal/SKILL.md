@@ -68,7 +68,7 @@ If `multipleActive` is `true` (a tied latest across lineages), stop and ask the 
 
 ### Context-loading rule
 
-- **Initial case only — creating v1 (decision tree branches 3's "START FRESH" choice, 5, 6, 7):** load `guidance/paper-guide/normalized` once, exactly as `CREATE_INITIAL_REVISION` itself already does internally. This ingest exists only to seed a brand-new proposal.
+- **Initial case only — creating v1 (decision tree branches 3's "START FRESH" choice, 5, 6, 7):** load `guidance/paper-guide` once, exactly as `CREATE_INITIAL_REVISION` itself already does internally. This ingest exists only to seed a brand-new proposal.
 - **Any existing version (`r ≥ 1`) — branches 1, 2, 3's "ADOPT" choice, and 4:** load the latest version's document plus a brief general objective/framing for the deliberation. **Never** reload the paper-guide for an existing version — that ingest is spent only once, at true v1 creation.
 
 ## Deliberate, then decide

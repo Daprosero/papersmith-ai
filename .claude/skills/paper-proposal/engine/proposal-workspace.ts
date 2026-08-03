@@ -21,9 +21,8 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path
 import { fileURLToPath } from "node:url";
 import { type Static, Type } from "typebox";
 
-const GUIDE_DIRECTORY = "guidance/paper-guide/normalized";
+const GUIDE_DIRECTORY = "guidance/paper-guide";
 const PROPOSAL_DIRECTORY = "proposals";
-const TEMPLATE_PATH = ".pi/skills/paper-proposal/assets/research-concept-template.md";
 const MAX_READ_BYTES = 64 * 1024;
 const MAX_WRITE_BYTES = 256 * 1024;
 const MAX_APPEND_BYTES = 64 * 1024;
@@ -376,10 +375,10 @@ const proposalWorkspaceSchema = Type.Object(
 			},
 		),
 		resource: StringEnum(
-			["guides", "bases", "displays", "sections", "guide", "base", "display", "template", "managed_target", "proposal"] as const,
+			["guides", "bases", "displays", "sections", "guide", "base", "display", "managed_target", "proposal"] as const,
 			{
 				description:
-					"inventory: guides|bases|displays|sections; read: guide|base|display|template|managed_target; authorize_overwrite/write/append/derive/derive_revision: proposal. displays/display and sections always target the fixed CREDA base.",
+					"inventory: guides|bases|displays|sections; read: guide|base|display|managed_target; authorize_overwrite/write/append/derive/derive_revision: proposal. displays/display and sections always target the fixed CREDA base.",
 			},
 		),
 		name: Type.Optional(
@@ -706,23 +705,17 @@ async function canonicalRegularFile(directory: string, name: string, label: stri
 
 async function authorizeGuide(projectRoot: string, rawName: string | undefined): Promise<{ path: string; name: string }> {
 	const isMarkdown = rawName ? GUIDE_MARKDOWN.test(rawName) && !GUIDE_MANIFEST.test(rawName) : false;
-	const isManifest = rawName ? GUIDE_MANIFEST.test(rawName) : false;
-	if (!isMarkdown && !isManifest) {
+	if (!isMarkdown) {
 		throw blocked(
-			"guide reads accept only a normalized .md filename or its paired .manifest.json filename.",
+			"guide reads accept only a .md filename.",
 			"Run guide inventory and pass one returned filename exactly.",
 		);
 	}
-	const name = validateFilename(rawName, isManifest ? GUIDE_MANIFEST : GUIDE_MARKDOWN, "guide");
-	const stem = isManifest ? name.slice(0, -".manifest.json".length) : name.slice(0, -".md".length);
-	const markdownName = `${stem}.md`;
-	const manifestName = `${stem}.manifest.json`;
-	const directory = await canonicalDirectory(projectRoot, GUIDE_DIRECTORY);
-	const [markdownPath, manifestPath] = await Promise.all([
-		canonicalRegularFile(directory, markdownName, "normalized guide Markdown"),
-		canonicalRegularFile(directory, manifestName, "paired guide manifest"),
-	]);
-	return { path: isManifest ? manifestPath : markdownPath, name };
+	const name = validateFilename(rawName, GUIDE_MARKDOWN, "guide");
+	const stem = name.slice(0, -".md".length);
+	const directory = await canonicalDirectory(projectRoot, `${GUIDE_DIRECTORY}/${stem}`);
+	const markdownPath = await canonicalRegularFile(directory, name, "guide Markdown");
+	return { path: markdownPath, name };
 }
 
 async function authorizeBase(projectRoot: string, rawName: string | undefined): Promise<{ path: string; name: string }> {
@@ -760,12 +753,6 @@ async function authorizeManagedTarget(
 	const name = validateManagedTargetFilename(rawName);
 	const directory = await canonicalDirectory(projectRoot, PROPOSAL_DIRECTORY);
 	return { path: await canonicalRegularFile(directory, name, "managed proposal target"), name };
-}
-
-async function authorizeTemplate(projectRoot: string): Promise<{ path: string; name: string }> {
-	const templateDirectory = await canonicalDirectory(projectRoot, dirname(TEMPLATE_PATH));
-	const name = TEMPLATE_PATH.slice(TEMPLATE_PATH.lastIndexOf("/") + 1);
-	return { path: await canonicalRegularFile(templateDirectory, name, "research concept template"), name: TEMPLATE_PATH };
 }
 
 function noFollowFlag(): number {
@@ -883,28 +870,35 @@ function boundedResult(text: string): { text: string; truncated: boolean } {
 async function inventoryGuides(projectRoot: string): Promise<ToolResult> {
 	const directory = await canonicalDirectory(projectRoot, GUIDE_DIRECTORY);
 	const entries = await readdir(directory, { withFileTypes: true });
-	const names = new Set(entries.filter((entry) => entry.isFile()).map((entry) => entry.name));
-	const markdownNames = [...names]
-		.filter((name) => GUIDE_MARKDOWN.test(name) && !GUIDE_MANIFEST.test(name))
+	const folders = entries
+		.filter((entry) => entry.isDirectory())
+		.map((entry) => entry.name)
 		.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-	const pairs: Array<{ markdown: string; manifest: string }> = [];
-	for (const markdown of markdownNames) {
-		const manifest = `${markdown.slice(0, -".md".length)}.manifest.json`;
-		if (!names.has(manifest)) continue;
-		await Promise.all([
-			canonicalRegularFile(directory, markdown, "normalized guide Markdown"),
-			canonicalRegularFile(directory, manifest, "paired guide manifest"),
-		]);
-		pairs.push({ markdown, manifest });
+	const guides: Array<{ markdown: string }> = [];
+	for (const folder of folders) {
+		const markdown = `${folder}.md`;
+		if (!GUIDE_MARKDOWN.test(markdown)) continue;
+		let paperDir: string;
+		try {
+			paperDir = await canonicalDirectory(projectRoot, `${GUIDE_DIRECTORY}/${folder}`);
+		} catch {
+			continue;
+		}
+		try {
+			await canonicalRegularFile(paperDir, markdown, "guide Markdown");
+		} catch {
+			continue;
+		}
+		guides.push({ markdown });
 	}
-	const selected = pairs.slice(0, MAX_INVENTORY_ENTRIES);
+	const selected = guides.slice(0, MAX_INVENTORY_ENTRIES);
 	const rendered = boundedResult(JSON.stringify(selected, null, 2));
 	return {
 		content: [{ type: "text", text: rendered.text }],
 		details: {
 			resource: "guides",
-			count: pairs.length,
-			truncated: rendered.truncated || pairs.length > selected.length,
+			count: guides.length,
+			truncated: rendered.truncated || guides.length > selected.length,
 		},
 	};
 }
@@ -1023,16 +1017,6 @@ function assertShape(params: ProposalWorkspaceInput): void {
 			!hasContent &&
 			!hasCapability &&
 			hasDisplayId &&
-			!hasOffset &&
-			!hasLimit &&
-			noDeriveFields) ||
-		(params.action === "read" &&
-			params.resource === "template" &&
-			!hasName &&
-			!hasSlug &&
-			!hasContent &&
-			!hasCapability &&
-			!hasDisplayId &&
 			!hasOffset &&
 			!hasLimit &&
 			noDeriveFields) ||
@@ -5236,9 +5220,7 @@ export function createProposalWorkspaceTool(
 						? await authorizeGuide(root, params.name)
 						: params.resource === "base"
 							? await authorizeBase(root, params.name)
-							: params.resource === "managed_target"
-								? await authorizeManagedTarget(root, params.name)
-								: await authorizeTemplate(root);
+							: await authorizeManagedTarget(root, params.name);
 				if (params.resource === "managed_target") {
 					return withFileMutationQueue(authorized.path, () =>
 						readBounded(authorized.path, authorized.name, signal, true),
@@ -5358,9 +5340,10 @@ export function resolveChatDocumentFilename(rawFilename: unknown): { filename?: 
  * guide (or existing fixtures that never configured one) are unaffected.
  */
 async function loadGuideDirectoryFragments(projectRoot: string): Promise<ChatGuideFragment[]> {
+ let root: string;
  let directory: string;
  try {
-  const root = await canonicalProjectRoot(projectRoot);
+  root = await canonicalProjectRoot(projectRoot);
   directory = await canonicalDirectory(root, GUIDE_DIRECTORY);
  } catch {
   return [];
@@ -5371,17 +5354,20 @@ async function loadGuideDirectoryFragments(projectRoot: string): Promise<ChatGui
  } catch {
   return [];
  }
- const markdownNames = entries
-  .filter((entry) => entry.isFile() && GUIDE_MARKDOWN.test(entry.name) && !GUIDE_MANIFEST.test(entry.name))
+ const folders = entries
+  .filter((entry) => entry.isDirectory())
   .map((entry) => entry.name)
   .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
  const fragments: ChatGuideFragment[] = [];
  let bytes = 0;
- for (const name of markdownNames) {
+ for (const folder of folders) {
   if (bytes >= MAX_CHAT_GUIDE_CONTEXT_BYTES) break;
+  const markdownName = `${folder}.md`;
+  if (!GUIDE_MARKDOWN.test(markdownName)) continue;
   let canonicalPath: string;
   try {
-   canonicalPath = await canonicalRegularFile(directory, name, "normalized guide Markdown");
+   const paperDir = await canonicalDirectory(root, `${GUIDE_DIRECTORY}/${folder}`);
+   canonicalPath = await canonicalRegularFile(paperDir, markdownName, "guide Markdown");
   } catch {
    continue;
   }
@@ -5389,7 +5375,7 @@ async function loadGuideDirectoryFragments(projectRoot: string): Promise<ChatGui
   const text = buffer.subarray(0, MAX_CHAT_GUIDE_CONTEXT_BYTES - bytes).toString("utf8");
   if (!text) continue;
   bytes += Buffer.byteLength(text);
-  fragments.push({ path: `${GUIDE_DIRECTORY}/${name}`, content: text });
+  fragments.push({ path: `${GUIDE_DIRECTORY}/${folder}/${markdownName}`, content: text });
  }
  return fragments;
 }

@@ -291,22 +291,11 @@ $$
 
 async function fixture() {
 	const root = await mkdtemp(path.join(os.tmpdir(), "proposal-workspace-"));
-	await mkdir(path.join(root, "guidance/paper-guide/normalized"), { recursive: true });
+	await mkdir(path.join(root, "guidance/paper-guide/guide"), { recursive: true });
 	await mkdir(path.join(root, "guidance/reference-papers"), { recursive: true });
-	await mkdir(path.join(root, ".pi/skills/paper-proposal/assets"), { recursive: true });
 	await mkdir(path.join(root, "proposals"), { recursive: true });
-	await writeFile(path.join(root, "guidance/paper-guide/normalized/guide.md"), "eligible guide\n", "utf8");
-	await writeFile(
-		path.join(root, "guidance/paper-guide/normalized/guide.manifest.json"),
-		'{"source":"guide.pdf"}\n',
-		"utf8",
-	);
+	await writeFile(path.join(root, "guidance/paper-guide/guide/guide.md"), "eligible guide\n", "utf8");
 	await writeFile(path.join(root, "guidance/reference-papers/secret.md"), "forbidden corpus\n", "utf8");
-	await writeFile(
-		path.join(root, ".pi/skills/paper-proposal/assets/research-concept-template.md"),
-		"# Template\n",
-		"utf8",
-	);
 	await writeFile(path.join(root, "proposals/base.md"), "immutable base\n", "utf8");
 	await writeFile(path.join(root, "proposals/matematica_propuesta_CREDA.md"), fixedCredaBase, "utf8");
 	return root;
@@ -369,23 +358,14 @@ async function candidateFailure(promise, target, code) {
 	return failure;
 }
 
-test("allows paired guide and exact template reads", async () => {
+test("inventories and reads a guide", async () => {
 	const root = await fixture();
 	const tool = toolFor(root);
 	const inventory = await execute(tool, { action: "inventory", resource: "guides" });
 	assert.match(await text(inventory), /guide\.md/);
-	assert.match(await text(inventory), /guide\.manifest\.json/);
 
 	const guide = await execute(tool, { action: "read", resource: "guide", name: "guide.md" });
 	assert.equal(await text(guide), "eligible guide\n");
-	const manifest = await execute(tool, {
-		action: "read",
-		resource: "guide",
-		name: "guide.manifest.json",
-	});
-	assert.match(await text(manifest), /guide\.pdf/);
-	const template = await execute(tool, { action: "read", resource: "template" });
-	assert.equal(await text(template), "# Template\n");
 });
 
 test("reads only a marker-owned generated draft with its exact complete-file SHA through the bounded managed target route", async () => {
@@ -488,14 +468,10 @@ test("blocks file and directory symlink escapes", async () => {
 	const root = await fixture();
 	const external = await mkdtemp(path.join(os.tmpdir(), "proposal-workspace-external-"));
 	await writeFile(path.join(external, "escape.md"), "external\n", "utf8");
-	await writeFile(path.join(external, "escape.manifest.json"), "{}\n", "utf8");
+	await mkdir(path.join(root, "guidance/paper-guide/escape"), { recursive: true });
 	await symlink(
 		path.join(external, "escape.md"),
-		path.join(root, "guidance/paper-guide/normalized/escape.md"),
-	);
-	await symlink(
-		path.join(external, "escape.manifest.json"),
-		path.join(root, "guidance/paper-guide/normalized/escape.manifest.json"),
+		path.join(root, "guidance/paper-guide/escape/escape.md"),
 	);
 	const tool = toolFor(root);
 	await assert.rejects(
@@ -504,10 +480,9 @@ test("blocks file and directory symlink escapes", async () => {
 	);
 
 	const linkedRoot = await mkdtemp(path.join(os.tmpdir(), "proposal-workspace-linked-"));
-	await mkdir(path.join(linkedRoot, "guidance/paper-guide"), { recursive: true });
+	await mkdir(path.join(linkedRoot, "guidance"), { recursive: true });
 	await mkdir(path.join(linkedRoot, "proposals"), { recursive: true });
-	await mkdir(path.join(linkedRoot, ".pi/skills/paper-proposal/assets"), { recursive: true });
-	await symlink(path.join(root, "guidance/paper-guide/normalized"), path.join(linkedRoot, "guidance/paper-guide/normalized"));
+	await symlink(path.join(root, "guidance/paper-guide"), path.join(linkedRoot, "guidance/paper-guide"));
 	const linkedTool = toolFor(linkedRoot);
 	await assert.rejects(
 		execute(linkedTool, { action: "inventory", resource: "guides" }),
