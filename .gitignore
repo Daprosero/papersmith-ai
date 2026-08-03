@@ -26,6 +26,7 @@ guidance/reference-papers/*
 proposals/*
 !proposals/.gitkeep
 .paper-proposal/
+.paper-proposal-v2/
 
 # Copias de respaldo de reconciliación de base
 backup/
