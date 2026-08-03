@@ -6,7 +6,7 @@
   "description": "Papersmith AI — native Claude Code skills for paper ingestion and paper-proposal.",
   "scripts": {
     "paper-proposal": "node .claude/skills/paper-proposal/engine/cli.mjs",
-    "test": "node --test tests/"
+    "test": "node --test \"tests/**/*.mjs\""
   },
   "dependencies": {
     "jiti": "^2.4.2",

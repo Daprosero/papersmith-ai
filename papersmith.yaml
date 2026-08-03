@@ -1,13 +1,15 @@
 paper_ingestion:
-  model_profile: paper-ingestion
-  page_render_dpi: 200
-  confidence_threshold: 0.85
+  engine: marker
+  # Conversion mode:
+  #   fast     -> lightweight layout/table detectors, OCR only garbled/empty blocks (recommended on CPU/MPS)
+  #   balanced -> VLM layout model + full-page OCR (highest fidelity, best on GPU, slow on Mac)
+  mode: fast
+  # true -> drop the references/bibliography section at the end of each paper (no
+  # information value, and it inflates token cost).
+  strip_references: true
+  # Each source root holds loose PDFs. Ingestion moves each PDF into its own
+  # <stem>/ folder alongside its .md and figure images. A loose PDF = not yet
+  # ingested; a PDF already inside its folder is skipped.
   source_roots:
-    - guidance/paper-guide/source
-    - guidance/reference-papers/source
-  extract:
-    text: true
-    figures: true
-    # Lite evidence only: retain exact raw page text and rendered pages; never infer table structure.
-    tables: true
-    equations: true
+    - guidance/paper-guide
+    - guidance/reference-papers
