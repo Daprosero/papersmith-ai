@@ -7,3 +7,29 @@ research-concept-r02(1) 2.md
 .gga
 # Node dependencies
 node_modules/
+
+# Paper-ingestion (Marker) local environment and model cache
+.claude/skills/paper-ingestion/.venv/
+
+# --- Contenido específico de cada usuario ---
+# Versionamos solo el scaffold de carpetas (los `.gitkeep`); cada usuario arma
+# el suyo: agrega sus PDFs, los ingiere, delibera con el tutor, y todo eso
+# genera sus propios archivos. No se publican los del autor original.
+
+# Papers guía y de referencia: PDFs, Markdown ingerido, figuras
+guidance/paper-guide/*
+!guidance/paper-guide/.gitkeep
+guidance/reference-papers/*
+!guidance/reference-papers/.gitkeep
+
+# Propuestas gestionadas y su estado interno del motor
+proposals/*
+!proposals/.gitkeep
+.paper-proposal/
+
+# Copias de respaldo de reconciliación de base
+backup/
+
+# Caché de bytecode de Python
+__pycache__/
+
