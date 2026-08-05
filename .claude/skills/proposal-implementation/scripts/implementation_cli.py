@@ -469,6 +469,23 @@ def read_findings(target: Path) -> list[dict]:
     return []
 
 
+IGNORE_ENTRIES = (".venv/", "__pycache__/", ".ipynb_checkpoints/")
+
+
+def ignore_gaps(target: Path) -> list[str]:
+    """Entries the target's own .gitignore must carry.
+
+    The skill creates a virtualenv inside the target, so it owns keeping it out
+    of the index. A repository scaffolded from scratch has no .gitignore at all,
+    and one `git add -A` commits the entire site-packages tree — measured at
+    5935 files and 98 MB before this check existed. A clone only escapes it by
+    inheriting an ignore file that happens to cover .venv.
+    """
+    path = target / ".gitignore"
+    text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+    return [entry for entry in IGNORE_ENTRIES if entry.rstrip("/") not in text]
+
+
 def scaffold_gaps(target: Path, name: str) -> list[str]:
     wanted = [f"src/{package_name(name)}/__init__.py", "tests/test_smoke.py",
               "tests/findings.py", "tests/test_audit.py", "tests/test_remedies.py",
@@ -476,6 +493,9 @@ def scaffold_gaps(target: Path, name: str) -> list[str]:
     gaps = [w for w in wanted if not (target / w).exists()]
     if pytest_anchor_missing(target):
         gaps.insert(0, "pyproject.toml [tool.pytest.ini_options] pythonpath")
+    missing_ignores = ignore_gaps(target)
+    if missing_ignores:
+        gaps.insert(0, f".gitignore ({', '.join(missing_ignores)})")
     return gaps
 
 
@@ -674,6 +694,20 @@ def migrate(target: Path, current: dict) -> None:
                         file.read_text(encoding="utf-8")),
             encoding="utf-8",
         )
+    # Before anything can be committed: the virtualenv this skill is about to
+    # create must never enter the index.
+    missing_ignores = ignore_gaps(target)
+    if missing_ignores:
+        ignore_file = target / ".gitignore"
+        existing = ignore_file.read_text(encoding="utf-8") if ignore_file.exists() else ""
+        prefix = "" if not existing or existing.endswith("\n") else "\n"
+        ignore_file.write_text(
+            existing + prefix
+            + "\n# Created by proposal-implementation: the target's own environment\n"
+            + "\n".join(missing_ignores) + "\n",
+            encoding="utf-8",
+        )
+
     for rel in current["createDirs"]:
         directory = target / rel
         directory.mkdir(parents=True, exist_ok=True)
@@ -704,9 +738,12 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     paths = tracked_files(target)
     with_data = (target / name / "Data").is_dir()
     missing_dirs = [d for d in expected_dirs(name, with_data) if not (target / d).is_dir()]
+    # The same ignore list `classify` uses. Without it a tracked virtualenv
+    # reports thousands of stray modules and buries the one that matters.
     stray = [
         p for p in paths
-        if p.endswith(".py") and not p.startswith(("src/", "tests/")) and Path(p).name != "setup.py"
+        if p.endswith(".py") and not p.startswith(("src/", "tests/"))
+        and Path(p).parts[0] not in IGNORED_DIRS and Path(p).name != "setup.py"
     ]
     # Static check, nothing is executed: does anything still address a product
     # folder that no longer exists?
