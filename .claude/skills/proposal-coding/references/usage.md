@@ -108,11 +108,35 @@ plan proposes a single directory rename instead of reclassifying its contents:
 
 ```json
 {
-  "renames": [{ "from": "Images", "to": "CREDA",
+  "renames": [{ "from": "Images", "to": "MIL-CREDA",
                 "reason": "product folder has the right shape but the wrong name; renaming preserves every subtree" }],
-  "createDirs": ["tests"], "moves": [], "conflicts": []
+  "createDirs": ["src/MIL_CREDA", "tests"], "moves": [], "conflicts": [],
+  "referenceUpdates": [
+    { "file": "src/CREDA/artifacts.py", "occurrences": 2,
+      "kind": "path prefix", "replace": "Images/", "with": "MIL-CREDA/" },
+    { "file": "src/CREDA/artifacts.py", "occurrences": 1,
+      "kind": "quoted path segment", "replace": "\"Images\"", "with": "\"MIL-CREDA\"" }
+  ]
 }
 ```
+
+Note `createDirs`: with a hyphenated name the product folder is `MIL-CREDA/`
+but the package is `src/MIL_CREDA/`, because `import MIL-CREDA` is a syntax
+error. The two forms are derived, never asked twice.
+
+### `referenceUpdates` — a rename is half a migration
+
+Renaming the directory leaves every notebook, module and doc that addresses the
+old path pointing at nothing. `apply` rewrites them inside the same commit,
+mapping the planned pre-rename paths through the rename first.
+
+Two forms are detected, and the second matters most:
+
+- **path prefix** — `Images/Results/...` in a string, a URL or prose.
+- **quoted path segment** — `root / "Images"`. It contains no slash, so the
+  prefix pattern cannot see it, yet it is the form that actually breaks at
+  runtime. On the real target, this was the single functional break of the
+  whole rename.
 
 This is not cosmetic. Reclassifying those files individually flattens
 `Results/Resnet18/`, `Results/Resnet50/` and `Results/Transformer/` into one
@@ -150,7 +174,8 @@ python3 .claude/skills/proposal-coding/scripts/coding_cli.py verify \
 
 ```json
 {
-  "structure": { "status": "ok", "missingDirs": [], "strayModules": [], "scaffoldGaps": [] },
+  "structure": { "status": "ok", "missingDirs": [], "strayModules": [],
+                 "staleReferences": [], "scaffoldGaps": [] },
   "fidelity": {
     "status": "drift",
     "latestRevision": "research-concept-r12.md",
@@ -168,7 +193,12 @@ python3 .claude/skills/proposal-coding/scripts/coding_cli.py verify \
 
 Two independent findings, reported separately:
 
-- **structure drift** — the layout no longer matches. Fix with `plan` → `apply`.
+- **structure drift** — the layout no longer matches, or `staleReferences` lists
+  a file addressing `<folder>/<Category>` under a parent that does not exist.
+  That check is deliberately narrow: a quoted single segment (`root / "data"`)
+  is never flagged, because fallback probes for optional dataset roots are
+  legitimately absent and burying the real finding is worse. Fix with
+  `plan` → `apply`.
 - **fidelity drift** — `staleModules` implement an older revision than the one
   in `--revision`; `invariantsWithoutTest` are claims declared in code with no
   test enforcing them. Both need the user's decision before you touch anything.

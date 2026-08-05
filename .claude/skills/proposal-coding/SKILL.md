@@ -33,6 +33,8 @@ proposal itself — that is `paper-proposal`.
 - Migration is `git mv` in its own separate commit, before any new code.
 - Never flatten an organized subtree. A product folder with the right shape and
   the wrong name is one rename, not one move per file.
+- A rename is not finished until the references move with it. Present
+  `referenceUpdates` with the moves and never apply one without the other.
 - Clone with `GIT_LFS_SKIP_SMUDGE=1` **and** persist the skip in the clone's
   local config. Pointers are enough to reorganize; the env var only covers the
   clone, so any later checkout or reset re-downloads gigabytes and burns the
@@ -51,13 +53,16 @@ proposal itself — that is `paper-proposal`.
 ```
 <repo>/
 ├── <Name>/            Notebooks/  Data/ (only if data exists)  Results/  Models/
-├── src/<Name>/        the implementation (.py), one module per mathematical object
+├── src/<Package>/     the implementation (.py), one module per mathematical object
 ├── tests/             test_smoke.py, test_invariants.py
 └── pyproject.toml     isolation marker: anchors pytest/ruff to this repo
 ```
 
-`<Name>` is chosen by the user. Pre-existing code moves to its own package
-under `src/`, never into `src/<Name>/`. `pyproject.toml` must carry
+`<Name>` is chosen by the user. `<Package>` is its importable form: a hyphen is
+legal in a directory but not in a Python identifier, so `MIL-CREDA/` pairs with
+`src/MIL_CREDA/`. Never scaffold `src/<Name>/` when the two differ — nothing
+could import it. Pre-existing code moves to its own package under `src/`, never
+into `src/<Package>/`. `pyproject.toml` must carry
 `[tool.pytest.ini_options]` with `pythonpath = ["src"]`: without it the suite
 cannot import the package offline, and an existing file that lacks the table
 counts as a gap, not as compliance.
@@ -71,6 +76,8 @@ counts as a gap, not as compliance.
 | Layout already compliant, code present | Verification mode only |
 | Layout drift | `plan` → present the map → user approves → `apply` |
 | Product folder right shape, wrong name | `plan` proposes one rename; subtrees stay intact |
+| Plan reports `referenceUpdates` | Show them; `apply` rewrites them in the same commit |
+| `verify` reports `staleReferences` | A path points nowhere: report before writing any code |
 | Plan reports `unclassified` or `conflicts` | Ask where those files belong; never guess |
 | `verify` reports structure drift | Report it as its own finding, ask before fixing |
 | `verify` reports stale modules | Report revision drift separately; ask before rewriting |
@@ -83,7 +90,8 @@ counts as a gap, not as compliance.
 3. `GIT_LFS_SKIP_SMUDGE=1 git clone <url> coding/<repo>` (or `git init`), pin the
    LFS skip in the clone's local config (see `references/usage.md`), then `env`.
 4. Install dev dependencies with the printed target `pip`, never the forge's.
-5. `plan` → show every move with its reason → get explicit approval → `apply`.
+5. `plan` → show every rename, move and reference update with its reason → get
+   explicit approval → `apply`, which lands all three in one commit.
 6. Fill scaffold gaps from `assets/` (pyproject, `__init__.py`, smoke test, notebook).
 7. Present the object → module map. Wait for approval. Only then write code.
 8. Write one module per object with `__provenance__`, plus its invariant tests.
