@@ -185,6 +185,12 @@ REFERENCE_RE = re.compile(
 # breaks at runtime after a rename.
 PATH_JOIN_RE = re.compile(r"/\s*[\"']([A-Za-z][A-Za-z0-9_-]*)[\"']")
 
+# The same thing chained onto a category: `root / "Alpha" / "Results"`. Requiring
+# the category keeps optional dataset probes (`root / "data" / "SomeSet"`) out.
+PATH_CHAIN_RE = re.compile(
+    r"[\"']([A-Za-z][A-Za-z0-9_-]*)[\"']\s*/\s*[\"'](" + "|".join(PRODUCT_DIRS) + r")[\"']"
+)
+
 
 def text_files(target: Path, paths: list[str]) -> list[str]:
     return [p for p in paths if Path(p).suffix.lower() in TEXT_EXT]
@@ -197,30 +203,81 @@ def read_text(target: Path, rel: str) -> str | None:
         return None
 
 
-def scan_reference_updates(target: Path, renames: list[dict], paths: list[str]) -> list[dict]:
-    """Files that name the old folder and would break after the rename.
+def prefix_mappings(renames: list[dict], moves: list[dict]) -> list[tuple[str, str]]:
+    """Every `old prefix -> new prefix` a migration implies.
 
-    Renaming a directory is not the whole migration: notebooks and modules that
-    address `Images/Results/...` keep pointing at a path that no longer exists.
+    A rename gives one directly. Moves give one too, and forgetting them breaks
+    exactly as much: after `Alpha/Results/x.csv -> <Name>/Results/x.csv`, code
+    addressing `Alpha/Results` points nowhere. The prefix is derived by
+    stripping the longest common suffix, so a move that only nests a folder
+    deeper yields `Results -> <Name>/Results`, not a bare rename.
     """
-    updates: list[dict] = []
+    mappings: dict[str, set[str]] = {}
     for rename in renames:
-        old, new = rename["from"], rename["to"]
-        patterns = [
-            (f"{old}/", f"{new}/", "path prefix"),
-            (f'"{old}"', f'"{new}"', "quoted path segment"),
-            (f"'{old}'", f"'{new}'", "quoted path segment"),
-        ]
+        mappings.setdefault(rename["from"], set()).add(rename["to"])
+
+    for move in moves:
+        source, dest = Path(move["from"]).parts, Path(move["to"]).parts
+        common = 0
+        while (common < min(len(source), len(dest))
+               and source[-1 - common] == dest[-1 - common]):
+            common += 1
+        keep = max(1, len(source) - common)
+        mappings.setdefault("/".join(source[:keep]), set()).add(
+            "/".join(dest[:len(dest) - len(source) + keep])
+        )
+
+    # An ambiguous prefix (two destinations) is left alone: rewriting it would
+    # have to guess, and a wrong rewrite is worse than a reported one.
+    return sorted((old, next(iter(new))) for old, new in mappings.items() if len(new) == 1)
+
+
+def reference_pattern(needle: str, kind: str, anchored: bool) -> re.Pattern:
+    """Match `needle`, anchored to a path boundary only when nesting demands it.
+
+    Two mappings behave differently. A pure rename (`Images -> <Name>`) is safe
+    to replace anywhere: the new value cannot contain the old one, so a nested
+    occurrence such as a URL `.../blob/main/Images/Notebooks/` is a genuine hit
+    and must be rewritten. A nesting mapping (`Results -> <Name>/Results`) must
+    be anchored, or `Images/Results/` becomes `Images/<Name>/Results/`.
+    """
+    if kind == "path prefix" and anchored:
+        return re.compile(r"(?<![\w./-])" + re.escape(needle))
+    return re.compile(re.escape(needle))
+
+
+def is_nesting(old: str, new: str) -> bool:
+    """True when the new prefix merely nests the old one deeper."""
+    return new.endswith(f"/{old}")
+
+
+def scan_reference_updates(target: Path, mappings: list[tuple[str, str]],
+                           paths: list[str]) -> list[dict]:
+    """Files naming an old path that the migration is about to invalidate."""
+    updates: list[dict] = []
+    for old, new in mappings:
+        if old == new:
+            continue
+        patterns = [(f"{old}/", f"{new}/", "path prefix")]
+        # Only a pure one-segment rename is safe to rewrite in quoted form;
+        # substituting a multi-segment path into a quoted literal would match
+        # unrelated strings.
+        if "/" not in old and "/" not in new:
+            patterns += [(f'"{old}"', f'"{new}"', "quoted path segment"),
+                         (f"'{old}'", f"'{new}'", "quoted path segment")]
         for rel in text_files(target, paths):
             content = read_text(target, rel)
             if not content:
                 continue
             for needle, replacement, kind in patterns:
-                if needle in content:
+                anchored = is_nesting(old, new)
+                hits = len(reference_pattern(needle, kind, anchored).findall(content))
+                if hits:
                     updates.append({
                         "file": rel,
-                        "occurrences": content.count(needle),
+                        "occurrences": hits,
                         "kind": kind,
+                        "anchored": anchored,
                         "replace": needle,
                         "with": replacement,
                     })
@@ -236,13 +293,26 @@ def scan_stale_references(target: Path, name: str, paths: list[str]) -> list[dic
     That form is still rewritten during a rename, where the exact old name is
     known and the user approves the list first.
     """
+    def resolves(folder: str, category: str) -> bool:
+        """An empty directory is not a destination: the content it named is gone.
+
+        `git mv` leaves the old parents behind as empty shells, so existence
+        alone would report a broken path as healthy.
+        """
+        directory = target / folder / category
+        if not directory.is_dir():
+            return False
+        return any(entry.name != ".gitkeep" for entry in directory.iterdir())
+
     stale: list[dict] = []
     for rel in text_files(target, paths):
         content = read_text(target, rel)
         if not content:
             continue
-        folders = {m.group(1) for m in REFERENCE_RE.finditer(content)}
-        broken = sorted(f for f in folders if f != name and not (target / f).is_dir())
+        pairs = {(m.group(1), m.group(2)) for m in REFERENCE_RE.finditer(content)}
+        pairs |= {(m.group(1), m.group(2)) for m in PATH_CHAIN_RE.finditer(content)}
+        broken = sorted(f"{folder}/{category}" for folder, category in pairs
+                        if folder != name and not resolves(folder, category))
         if broken:
             stale.append({"file": rel, "references": broken})
     return stale
@@ -353,7 +423,8 @@ def build_plan(target: Path, name: str) -> dict:
         "renames": renames,
         "createDirs": missing,
         "moves": moves,
-        "referenceUpdates": scan_reference_updates(target, renames, paths),
+        "referenceUpdates": scan_reference_updates(
+            target, prefix_mappings(renames, moves), paths),
         "conflicts": conflicts,
         "unclassified": unclassified,
         "scaffoldFiles": gaps,
@@ -501,8 +572,10 @@ def cmd_apply(args: argparse.Namespace) -> dict:
             if rel == rename["from"] or rel.startswith(f"{rename['from']}/"):
                 rel = rename["to"] + rel[len(rename["from"]):]
         file = target / rel
+        pattern = reference_pattern(update["replace"], update["kind"], update["anchored"])
         file.write_text(
-            file.read_text(encoding="utf-8").replace(update["replace"], update["with"]),
+            pattern.sub(update["with"].replace("\\", r"\\"),
+                        file.read_text(encoding="utf-8")),
             encoding="utf-8",
         )
     for rel in current["createDirs"]:
@@ -512,6 +585,16 @@ def cmd_apply(args: argparse.Namespace) -> dict:
     for move in current["moves"]:
         (target / move["to"]).parent.mkdir(parents=True, exist_ok=True)
         git(target, "mv", move["from"], move["to"])
+
+    # git does not track directories, so a move leaves the old ones behind as
+    # empty shells. They make a vanished path look like it still exists.
+    emptied = sorted({str(Path(m["from"]).parent) for m in current["moves"]},
+                     key=len, reverse=True)
+    for rel in emptied:
+        directory = target / rel
+        while directory != target and directory.is_dir() and not any(directory.iterdir()):
+            directory.rmdir()
+            directory = directory.parent
 
     git(target, "add", "-A")
     git(target, "commit", "-m", f"chore(structure): normalize repository layout for {name}")

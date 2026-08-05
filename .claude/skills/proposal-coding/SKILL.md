@@ -33,8 +33,11 @@ proposal itself — that is `paper-proposal`.
 - Migration is `git mv` in its own separate commit, before any new code.
 - Never flatten an organized subtree. A product folder with the right shape and
   the wrong name is one rename, not one move per file.
-- A rename is not finished until the references move with it. Present
-  `referenceUpdates` with the moves and never apply one without the other.
+- A migration is not finished until the references move with it. Moves break
+  paths exactly as renames do. Present `referenceUpdates` alongside the moves
+  and never apply one without the other.
+- Rewrite only what is unambiguous; report the rest. A path the skill cannot
+  remap safely belongs in `staleReferences`, not in a guessed substitution.
 - Clone with `GIT_LFS_SKIP_SMUDGE=1` **and** persist the skip in the clone's
   local config. Pointers are enough to reorganize; the env var only covers the
   clone, so any later checkout or reset re-downloads gigabytes and burns the

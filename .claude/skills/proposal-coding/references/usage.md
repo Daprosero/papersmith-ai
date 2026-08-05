@@ -126,9 +126,15 @@ error. The two forms are derived, never asked twice.
 
 ### `referenceUpdates` — a rename is half a migration
 
-Renaming the directory leaves every notebook, module and doc that addresses the
-old path pointing at nothing. `apply` rewrites them inside the same commit,
-mapping the planned pre-rename paths through the rename first.
+Renaming or moving a directory leaves every notebook, module and doc that
+addresses the old path pointing at nothing. `apply` rewrites them inside the
+same commit, mapping the planned pre-rename paths through the rename first.
+
+Mappings come from renames **and** from moves. A move's prefix is derived by
+stripping the longest common suffix, so `Alpha/Results/x.csv -> <Name>/Results/x.csv`
+yields `Alpha -> <Name>`, while `Results/x.csv -> <Name>/Results/x.csv` yields
+`Results -> <Name>/Results`. An ambiguous prefix (two destinations) is reported
+rather than rewritten.
 
 Two forms are detected, and the second matters most:
 
@@ -137,6 +143,19 @@ Two forms are detected, and the second matters most:
   prefix pattern cannot see it, yet it is the form that actually breaks at
   runtime. On the real target, this was the single functional break of the
   whole rename.
+
+`anchored` says how the match is made, and the distinction is not cosmetic:
+
+- A **pure rename** (`Images -> <Name>`) matches anywhere, because the new value
+  cannot contain the old one. This is what rewrites a Colab URL such as
+  `.../blob/main/Images/Notebooks/`.
+- A **nesting** mapping (`Results -> <Name>/Results`) is anchored to a path
+  boundary. Without that, `Images/Results/` would become
+  `Images/<Name>/Results/` — measured, not hypothetical.
+
+`apply` also removes directories left empty by the moves. `git` does not track
+directories, so the old parents survive as empty shells and make a vanished
+path look like it still exists.
 
 This is not cosmetic. Reclassifying those files individually flattens
 `Results/Resnet18/`, `Results/Resnet50/` and `Results/Transformer/` into one
@@ -194,11 +213,12 @@ python3 .claude/skills/proposal-coding/scripts/coding_cli.py verify \
 Two independent findings, reported separately:
 
 - **structure drift** — the layout no longer matches, or `staleReferences` lists
-  a file addressing `<folder>/<Category>` under a parent that does not exist.
-  That check is deliberately narrow: a quoted single segment (`root / "data"`)
-  is never flagged, because fallback probes for optional dataset roots are
-  legitimately absent and burying the real finding is worse. Fix with
-  `plan` → `apply`.
+  a file addressing `<folder>/<Category>` that does not resolve. Both the
+  textual form and the chained quoted form (`root / "Alpha" / "Results"`) are
+  detected, and an **empty** directory counts as unresolved: the content it
+  named is gone. A lone quoted segment (`root / "data"`) is never flagged,
+  because fallback probes for optional dataset roots are legitimately absent
+  and burying the real finding is worse. Fix with `plan` → `apply`.
 - **fidelity drift** — `staleModules` implement an older revision than the one
   in `--revision`; `invariantsWithoutTest` are claims declared in code with no
   test enforcing them. Both need the user's decision before you touch anything.
