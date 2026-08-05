@@ -402,7 +402,11 @@ def build_plan(target: Path, name: str) -> dict:
         if move["to"] in seen:
             collisions.append(move["to"])
         seen[move["to"]] = move["from"]
-    conflicts = sorted({m["to"] for m in moves if (target / m["to"]).exists()} | set(collisions))
+    # A rename onto an existing path is the same class of clash: `git mv A B`
+    # with B present does not rename, it moves A *inside* B.
+    occupied = {r["to"] for r in renames if (target / r["to"]).exists()}
+    conflicts = sorted({m["to"] for m in moves if (target / m["to"]).exists()}
+                       | set(collisions) | occupied)
 
     with_data = dir_exists_after(target, f"{name}/Data", renames, name) or any(
         m["to"].startswith(f"{name}/Data/") for m in moves
@@ -560,6 +564,36 @@ def cmd_apply(args: argparse.Namespace) -> dict:
             f"No rule covers: {current['unclassified']}. Ask where they belong; never guess.",
         )
 
+    try:
+        migrate(target, current)
+    except Exception as failure:  # noqa: BLE001 - the repository must not stay half-migrated
+        # The tree was verified clean before any mutation, so discarding the
+        # partial work restores exactly the reviewed starting point.
+        git(target, "reset", "-q", "--hard", check=False)
+        git(target, "clean", "-qfd", check=False)
+        raise Refused(
+            "APPLY_ABORTED",
+            f"{failure}. Nothing was committed and the working tree was restored "
+            "to its pre-migration state; re-run `plan` to see the current situation.",
+        ) from failure
+
+    head = git(target, "rev-parse", "HEAD").strip()
+    return {
+        "command": "apply",
+        "target": str(target),
+        "name": name,
+        "status": "applied",
+        "commit": head,
+        "renamed": current["renames"],
+        "referencesRewritten": current["referenceUpdates"],
+        "moved": len(current["moves"]),
+        "createdDirs": current["createDirs"],
+        "note": "Structure only. Revert this single commit to undo the whole migration.",
+    }
+
+
+def migrate(target: Path, current: dict) -> None:
+    """Perform the whole migration. Any failure leaves it to the caller to undo."""
     # Renames first: createDirs and moves were computed against the post-rename tree.
     for rename in current["renames"]:
         git(target, "mv", rename["from"], rename["to"])
@@ -597,20 +631,8 @@ def cmd_apply(args: argparse.Namespace) -> dict:
             directory = directory.parent
 
     git(target, "add", "-A")
-    git(target, "commit", "-m", f"chore(structure): normalize repository layout for {name}")
-    head = git(target, "rev-parse", "HEAD").strip()
-    return {
-        "command": "apply",
-        "target": str(target),
-        "name": name,
-        "status": "applied",
-        "commit": head,
-        "renamed": current["renames"],
-        "referencesRewritten": current["referenceUpdates"],
-        "moved": len(current["moves"]),
-        "createdDirs": current["createDirs"],
-        "note": "Structure only. Revert this single commit to undo the whole migration.",
-    }
+    git(target, "commit", "-m",
+        f"chore(structure): normalize repository layout for {current['name']}")
 
 
 def cmd_verify(args: argparse.Namespace) -> dict:

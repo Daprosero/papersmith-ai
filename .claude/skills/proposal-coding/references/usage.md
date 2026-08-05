@@ -236,5 +236,14 @@ implementation as up to date from an `unknown` run.
 | `DIRTY_WORKTREE` | Uncommitted or untracked changes. Commit or stash first. |
 | `FORGE_INTERPRETER` | The CLI is running from a forge venv. Use system `python3`. |
 | `PLAN_STALE` | The repository changed after approval. Re-plan, re-approve. |
-| `DESTINATION_CONFLICT` | A destination already exists. Resolve with the user. |
+| `DESTINATION_CONFLICT` | A destination is taken, or two sources target one path. |
 | `UNCLASSIFIED_FILES` | No rule covers some files. Ask where they belong. |
+| `APPLY_ABORTED` | Something failed mid-migration. Nothing was committed and the tree was restored; re-run `plan`. |
+
+`DESTINATION_CONFLICT` also covers a rename whose destination already exists.
+That case is not cosmetic: `git mv A B` with `B` present does not rename, it
+moves `A` *inside* `B`, which silently produces `<Name>/Images/Results/...`.
+
+`apply` is all-or-nothing. The tree is verified clean before any mutation, so a
+failure discards the partial work and restores exactly the reviewed starting
+point instead of leaving a half-migrated repository.
