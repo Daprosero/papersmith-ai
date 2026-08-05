@@ -21,6 +21,7 @@ import argparse
 import ast
 import json
 import os
+import re
 import subprocess
 import sys
 import venv
@@ -123,8 +124,18 @@ def require_non_forge_interpreter() -> None:
 
 def validate_name(name: str) -> str:
     if not name or not name.replace("_", "").replace("-", "").isalnum():
-        raise Refused("INVALID_NAME", f"Package name {name!r} must be alphanumeric (- and _ allowed).")
+        raise Refused("INVALID_NAME", f"Name {name!r} must be alphanumeric (- and _ allowed).")
     return name
+
+
+def package_name(name: str) -> str:
+    """The importable form of the name.
+
+    A hyphen is legal in a directory but not in a Python identifier, so
+    `MIL-CREDA/` pairs with `src/MIL_CREDA/`. The correspondence the layout
+    exists to make visible survives; `import MIL-CREDA` would not.
+    """
+    return name.replace("-", "_")
 
 
 # --------------------------------------------------------------------------
@@ -133,7 +144,7 @@ def validate_name(name: str) -> str:
 
 def expected_dirs(name: str, with_data: bool) -> list[str]:
     dirs = [f"{name}/{d}" for d in PRODUCT_DIRS if d != "Data" or with_data]
-    dirs += [f"src/{name}", "tests"]
+    dirs += [f"src/{package_name(name)}", "tests"]
     return dirs
 
 
@@ -156,8 +167,85 @@ def detect_product_dir(target: Path, name: str, paths: list[str]) -> str | None:
         Path(p).parts[0] for p in paths
         if len(Path(p).parts) > 2 and Path(p).parts[1] in PRODUCT_DIRS
     }
-    candidates -= {name, "src", "tests", "docs", *IGNORED_DIRS}
+    candidates -= {name, package_name(name), "src", "tests", "docs", *IGNORED_DIRS}
     return candidates.pop() if len(candidates) == 1 else None
+
+
+TEXT_EXT = {".py", ".ipynb", ".md", ".rst", ".txt", ".toml", ".cfg", ".ini",
+            ".yaml", ".yml", ".json", ".sh"}
+
+# `<folder>/<Category>` written inside source, notebooks or docs. Anchored so a
+# longer path segment (`.../Images/Results`) does not match on its tail.
+REFERENCE_RE = re.compile(
+    r"(?<![\w.-])([A-Za-z][A-Za-z0-9_-]*)/(" + "|".join(PRODUCT_DIRS) + r")(?![A-Za-z0-9_])"
+)
+
+# A folder used as a single path segment: `root / "Images"`. This never contains
+# a slash, so the pattern above cannot see it, yet it is the form that actually
+# breaks at runtime after a rename.
+PATH_JOIN_RE = re.compile(r"/\s*[\"']([A-Za-z][A-Za-z0-9_-]*)[\"']")
+
+
+def text_files(target: Path, paths: list[str]) -> list[str]:
+    return [p for p in paths if Path(p).suffix.lower() in TEXT_EXT]
+
+
+def read_text(target: Path, rel: str) -> str | None:
+    try:
+        return (target / rel).read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError):
+        return None
+
+
+def scan_reference_updates(target: Path, renames: list[dict], paths: list[str]) -> list[dict]:
+    """Files that name the old folder and would break after the rename.
+
+    Renaming a directory is not the whole migration: notebooks and modules that
+    address `Images/Results/...` keep pointing at a path that no longer exists.
+    """
+    updates: list[dict] = []
+    for rename in renames:
+        old, new = rename["from"], rename["to"]
+        patterns = [
+            (f"{old}/", f"{new}/", "path prefix"),
+            (f'"{old}"', f'"{new}"', "quoted path segment"),
+            (f"'{old}'", f"'{new}'", "quoted path segment"),
+        ]
+        for rel in text_files(target, paths):
+            content = read_text(target, rel)
+            if not content:
+                continue
+            for needle, replacement, kind in patterns:
+                if needle in content:
+                    updates.append({
+                        "file": rel,
+                        "occurrences": content.count(needle),
+                        "kind": kind,
+                        "replace": needle,
+                        "with": replacement,
+                    })
+    return updates
+
+
+def scan_stale_references(target: Path, name: str, paths: list[str]) -> list[dict]:
+    """Textual `<folder>/<Category>` paths under a parent that does not exist.
+
+    Deliberately narrow. A quoted single segment (`root / "data"`) is NOT
+    flagged: fallback probes for optional dataset roots are legitimately absent,
+    so treating every missing directory as breakage buries the real finding.
+    That form is still rewritten during a rename, where the exact old name is
+    known and the user approves the list first.
+    """
+    stale: list[dict] = []
+    for rel in text_files(target, paths):
+        content = read_text(target, rel)
+        if not content:
+            continue
+        folders = {m.group(1) for m in REFERENCE_RE.finditer(content)}
+        broken = sorted(f for f in folders if f != name and not (target / f).is_dir())
+        if broken:
+            stale.append({"file": rel, "references": broken})
+    return stale
 
 
 def classify(path: str, name: str, product_dir: str | None = None) -> tuple[str | None, str]:
@@ -265,6 +353,7 @@ def build_plan(target: Path, name: str) -> dict:
         "renames": renames,
         "createDirs": missing,
         "moves": moves,
+        "referenceUpdates": scan_reference_updates(target, renames, paths),
         "conflicts": conflicts,
         "unclassified": unclassified,
         "scaffoldFiles": gaps,
@@ -286,7 +375,7 @@ def pytest_anchor_missing(target: Path) -> bool:
 
 
 def scaffold_gaps(target: Path, name: str) -> list[str]:
-    wanted = [f"src/{name}/__init__.py", "tests/test_smoke.py",
+    wanted = [f"src/{package_name(name)}/__init__.py", "tests/test_smoke.py",
               f"{name}/Notebooks/verification.ipynb"]
     gaps = [w for w in wanted if not (target / w).exists()]
     if pytest_anchor_missing(target):
@@ -403,6 +492,19 @@ def cmd_apply(args: argparse.Namespace) -> dict:
     # Renames first: createDirs and moves were computed against the post-rename tree.
     for rename in current["renames"]:
         git(target, "mv", rename["from"], rename["to"])
+    # A rename that leaves notebooks and modules pointing at the old path is an
+    # unfinished migration, so the references move in the same transaction.
+    for update in current["referenceUpdates"]:
+        # The plan lists pre-rename paths; the rename already happened above.
+        rel = update["file"]
+        for rename in current["renames"]:
+            if rel == rename["from"] or rel.startswith(f"{rename['from']}/"):
+                rel = rename["to"] + rel[len(rename["from"]):]
+        file = target / rel
+        file.write_text(
+            file.read_text(encoding="utf-8").replace(update["replace"], update["with"]),
+            encoding="utf-8",
+        )
     for rel in current["createDirs"]:
         directory = target / rel
         directory.mkdir(parents=True, exist_ok=True)
@@ -421,6 +523,7 @@ def cmd_apply(args: argparse.Namespace) -> dict:
         "status": "applied",
         "commit": head,
         "renamed": current["renames"],
+        "referencesRewritten": current["referenceUpdates"],
         "moved": len(current["moves"]),
         "createdDirs": current["createDirs"],
         "note": "Structure only. Revert this single commit to undo the whole migration.",
@@ -431,15 +534,20 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     target = resolve_target(args.target)
     name = validate_name(args.name)
 
+    paths = tracked_files(target)
     with_data = (target / name / "Data").is_dir()
     missing_dirs = [d for d in expected_dirs(name, with_data) if not (target / d).is_dir()]
     stray = [
-        p for p in tracked_files(target)
+        p for p in paths
         if p.endswith(".py") and not p.startswith(("src/", "tests/")) and Path(p).name != "setup.py"
     ]
-    structure_ok = not missing_dirs and not stray and not scaffold_gaps(target, name)
+    # Static check, nothing is executed: does anything still address a product
+    # folder that no longer exists?
+    stale_refs = scan_stale_references(target, name, paths)
+    structure_ok = (not missing_dirs and not stray and not stale_refs
+                    and not scaffold_gaps(target, name))
 
-    package = target / "src" / name
+    package = target / "src" / package_name(name)
     modules: list[dict] = []
     missing_provenance: list[str] = []
     declared_invariants: set[str] = set()
@@ -479,6 +587,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "status": "ok" if structure_ok else "drift",
             "missingDirs": missing_dirs,
             "strayModules": stray,
+            "staleReferences": stale_refs,
             "scaffoldGaps": scaffold_gaps(target, name),
         },
         "fidelity": {
