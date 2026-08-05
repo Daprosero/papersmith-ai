@@ -499,6 +499,47 @@ def read_provenance(path: Path) -> dict | None:
     return None
 
 
+def notebook_execution(path: Path) -> dict:
+    """Was the notebook run, or is the file merely present?
+
+    Existence proves nothing: a template copied into place is indistinguishable
+    from an executed report. The .ipynb records its own state — every code cell
+    carries an `execution_count`, null until it runs, and an `outputs` list that
+    keeps any error it raised. So the question is answerable without executing
+    anything, and answering it is the difference between a report and a claim.
+    """
+    if not path.exists():
+        return {"status": "missing", "codeCells": 0, "unexecuted": [], "errors": []}
+    try:
+        notebook = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return {"status": "unreadable", "detail": str(exc)[:160],
+                "codeCells": 0, "unexecuted": [], "errors": []}
+
+    code_cells = [
+        (index, cell) for index, cell in enumerate(notebook.get("cells", []))
+        if cell.get("cell_type") == "code" and "".join(cell.get("source", [])).strip()
+    ]
+    unexecuted = [index for index, cell in code_cells if cell.get("execution_count") is None]
+    errors = [
+        f"cell {index}: {output.get('ename', 'error')}"
+        for index, cell in code_cells
+        for output in cell.get("outputs", [])
+        if output.get("output_type") == "error"
+    ]
+
+    if not code_cells:
+        status = "empty"
+    elif errors:
+        status = "errored"
+    elif unexecuted:
+        status = "stale"
+    else:
+        status = "executed"
+    return {"status": status, "codeCells": len(code_cells),
+            "unexecuted": unexecuted, "errors": errors}
+
+
 def test_function_names(tests_dir: Path) -> set[str]:
     names: set[str] = set()
     if not tests_dir.is_dir():
@@ -707,6 +748,9 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     audit_status = "none" if not findings else (
         "incomplete" if without_evidence or without_remedy or unvalidated else "ok")
 
+    smoke_present = (target / "tests" / "test_smoke.py").exists()
+    notebook = notebook_execution(target / name / "Notebooks" / "verification.ipynb")
+
     if not args.revision:
         fidelity_status = "unknown"
     elif stale or missing_provenance or untested:
@@ -746,9 +790,10 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "remediesWithoutValidation": unvalidated,
         },
         "validation": {
-            "smokeTest": (target / "tests" / "test_smoke.py").exists(),
+            "status": "ok" if smoke_present and notebook["status"] == "executed" else "incomplete",
+            "smokeTest": smoke_present,
             "invariantTests": sorted(t for t in tests if t.startswith("test_")),
-            "notebook": (target / name / "Notebooks" / "verification.ipynb").exists(),
+            "notebook": notebook,
         },
     }
 

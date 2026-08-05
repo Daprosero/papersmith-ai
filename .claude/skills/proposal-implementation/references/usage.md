@@ -206,9 +206,34 @@ python3 .claude/skills/proposal-implementations/scripts/implementation_cli.py ve
         "sections": ["3"], "invariants": ["kernel_is_psd"], "stale": true }
     ]
   },
-  "validation": { "smokeTest": true, "invariantTests": ["test_kernel_is_psd"], "notebook": true }
+  "validation": {
+    "status": "ok",
+    "smokeTest": true, "invariantTests": ["test_kernel_is_psd"],
+    "notebook": { "status": "executed", "codeCells": 3, "unexecuted": [], "errors": [] }
+  }
 }
 ```
+
+### The notebook is read, not counted
+
+`notebook.status` answers whether the report was produced, not whether the file
+is on disk — a template copied into place is indistinguishable from an executed
+report by existence alone, and that is exactly the mistake `pyproject.toml`
+already taught. The `.ipynb` records its own state, so the question is
+answerable without running anything:
+
+| status | meaning |
+| --- | --- |
+| `executed` | every non-empty code cell has an `execution_count` and none raised |
+| `stale` | the file is there but some cells never ran — `unexecuted` lists them |
+| `errored` | a cell raised; `errors` names the cell and the exception |
+| `missing` / `unreadable` / `empty` | no file, unparsable JSON, or no code cells |
+
+`errored` is caught even when the notebook was executed with `--allow-errors`,
+which otherwise writes a red cell and exits zero.
+
+`validation.status` is `ok` only when the smoke test exists and the notebook is
+`executed`. Never report the ladder as run on anything else.
 
 ## The audit bridge
 

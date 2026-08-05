@@ -44,6 +44,9 @@ proposal itself — that is `proposal-deliberation`.
   LFS quota.
 - `tests/*.py` is the source of truth and is fail-closed. The notebook is the
   executed report, never the only place a claim is checked.
+- Check that a thing works, not that it is there. A notebook that exists but was
+  never run is a claim, not a report; `verify` reads its `execution_count` and
+  its error outputs and says `stale`, `errored` or `executed`.
 - Every module under `src/<Name>/` declares `__provenance__`; every id in its
   `invariants` has a matching `test_<id>`. No provenance, no merge.
 - Never fabricate mathematics. A test whose claim is not traceable to the
@@ -119,7 +122,7 @@ counts as a gap, not as compliance.
 
 Report: the bound revision, the target path, the migration commit hash (if
 any), the object → module map, the test result, and the three verification
-statuses (`structure`, `fidelity`, `audit`) separately. For each finding give
+statuses (`structure`, `fidelity`, `audit`, `validation`) separately. For each finding give
 its kind, the equations it touches, its status with the measured rate, and the
 remedy with the equations the remedy would change. State scope left out. Never
 claim verification passed without the `verify` output and a green suite, and
