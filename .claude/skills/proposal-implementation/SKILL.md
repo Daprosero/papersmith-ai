@@ -21,11 +21,11 @@ create a venv from a forge interpreter.
 
 Activate when the user asks to implement, code, scaffold, reorganize or verify
 the implementation of the managed proposal. Do not activate for edits to the
-proposal itself — that is `paper-proposal`.
+proposal itself — that is `proposal-deliberation`.
 
 ## Hard Rules
 
-- Bind to the revision `paper-proposal`'s `STATUS` reports as `latest`. Never
+- Bind to the revision `proposal-deliberation`'s `STATUS` reports as `latest`. Never
   guess the base and never read `proposals/` by hand.
 - Never write implementation code before the user approves the mapping from
   mathematical object to module.
@@ -98,7 +98,7 @@ counts as a gap, not as compliance.
 
 ## Execution Steps
 
-1. `node .claude/skills/paper-proposal/engine/cli.mjs '{ "operation": "STATUS" }'` → take `latest`.
+1. `node .claude/skills/proposal-deliberation/engine/cli.mjs '{ "operation": "STATUS" }'` → take `latest`.
 2. Ask the user for `<Name>` and the repository (new or existing URL).
 3. `GIT_LFS_SKIP_SMUDGE=1 git clone <url> implementations/<repo>` (or `git init`), pin the
    LFS skip in the clone's local config (see `references/usage.md`), then `env`.

@@ -36,7 +36,7 @@ implementations/*
 # copian al repo destino tras clonarlo para no volver a descargarlos por LFS.
 # Es material de prueba del usuario, no un artefacto de la forja.
 Models/
-.paper-proposal/
+.proposal-deliberation/
 .paper-proposal-v2/
 
 # Copias de respaldo de reconciliación de base

@@ -11,7 +11,7 @@ forge virtualenv, so it can never hand the forge's interpreter to a target venv.
 ## 0. Bind the revision
 
 ```bash
-node .claude/skills/paper-proposal/engine/cli.mjs '{ "operation": "STATUS" }'
+node .claude/skills/proposal-deliberation/engine/cli.mjs '{ "operation": "STATUS" }'
 ```
 
 Take `latest` (e.g. `research-concept-r12.md`). That string is what modules

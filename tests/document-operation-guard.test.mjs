@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'; import test from 'node:test'; import { readFile } from 'node:fs/promises';
-const source = await readFile('.claude/skills/paper-proposal/engine/proposal-workspace.ts', 'utf8');
-const intents = await readFile('.claude/skills/paper-proposal/engine/types.ts', 'utf8');
+const source = await readFile('.claude/skills/proposal-deliberation/engine/proposal-workspace.ts', 'utf8');
+const intents = await readFile('.claude/skills/proposal-deliberation/engine/types.ts', 'utf8');
 test('V2 guard exposes only semantic document operations', () => {
 	// Concrete, user-facing document operations are surfaced by the host tool.
 	for (const operation of ['MODIFY', 'INSERT', 'DELETE', 'MOVE', 'CONCEPTUAL_REVISION', 'REVIEW', 'DELIBERATE'])
