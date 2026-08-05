@@ -1,5 +1,5 @@
 ---
-name: paper-implementation
+name: proposal-implementation
 description: "Trigger: turn the latest managed mathematical proposal into working Python, scaffold or reorganize a target repository, or verify an existing implementation's layout and revision fidelity. Isolated venv, keyless, fail-closed."
 ---
 

@@ -26,13 +26,13 @@ guidance/reference-papers/*
 proposals/*
 !proposals/.gitkeep
 
-# Repos destino de paper-implementation: cada uno trae su propio .git y su propio
+# Repos destino de proposal-implementation: cada uno trae su propio .git y su propio
 # .venv. Ignorarlos evita gitlinks accidentales en el índice de la forja y que
 # el entorno del destino se mezcle con el de marker.
 implementations/*
 !implementations/.gitkeep
 
-# Pesos de modelos usados solo para pruebas locales de paper-implementation: se
+# Pesos de modelos usados solo para pruebas locales de proposal-implementation: se
 # copian al repo destino tras clonarlo para no volver a descargarlos por LFS.
 # Es material de prueba del usuario, no un artefacto de la forja.
 Models/

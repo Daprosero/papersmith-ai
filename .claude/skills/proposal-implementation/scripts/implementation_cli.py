@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""paper-implementation: deterministic workspace, migration and fidelity checks.
+"""proposal-implementation: deterministic workspace, migration and fidelity checks.
 
 Standard library only, keyless, offline. Target code is never imported or
 executed: provenance is read statically with `ast`.
