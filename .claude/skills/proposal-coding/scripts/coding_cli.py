@@ -449,8 +449,29 @@ def pytest_anchor_missing(target: Path) -> bool:
     return "[tool.pytest.ini_options]" not in text or "pythonpath" not in text
 
 
+def read_findings(target: Path) -> list[dict]:
+    """The declared audit findings, read statically from tests/findings.py."""
+    path = target / "tests" / "findings.py"
+    if not path.exists():
+        return []
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (SyntaxError, UnicodeDecodeError):
+        return []
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "FINDINGS" for t in node.targets
+        ):
+            try:
+                return ast.literal_eval(node.value)
+            except ValueError:
+                return []
+    return []
+
+
 def scaffold_gaps(target: Path, name: str) -> list[str]:
     wanted = [f"src/{package_name(name)}/__init__.py", "tests/test_smoke.py",
+              "tests/findings.py", "tests/test_audit.py", "tests/test_remedies.py",
               f"{name}/Notebooks/verification.ipynb"]
     gaps = [w for w in wanted if not (target / w).exists()]
     if pytest_anchor_missing(target):
@@ -677,6 +698,15 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     untested = sorted(i for i in declared_invariants if f"test_{i}" not in tests)
     stale = [m["module"] for m in modules if m["stale"]]
 
+    # The audit bridge: a defect in the mathematics is only reported when its
+    # evidence AND the validation of its proposed correction both exist.
+    findings = read_findings(target)
+    without_evidence = sorted(f["id"] for f in findings if f"test_finding_{f['id']}" not in tests)
+    without_remedy = sorted(f["id"] for f in findings if not f.get("remedy"))
+    unvalidated = sorted(f["id"] for f in findings if f"test_remedy_{f['id']}" not in tests)
+    audit_status = "none" if not findings else (
+        "incomplete" if without_evidence or without_remedy or unvalidated else "ok")
+
     if not args.revision:
         fidelity_status = "unknown"
     elif stale or missing_provenance or untested:
@@ -702,6 +732,18 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "missingProvenance": missing_provenance,
             "invariantsWithoutTest": untested,
             "modules": modules,
+        },
+        "audit": {
+            "status": audit_status,
+            "findings": [
+                {"id": f["id"], "kind": f.get("kind"), "status": f.get("status"),
+                 "rate": f.get("rate"), "equations": f.get("equations"),
+                 "remedyEquations": f.get("remedy_equations")}
+                for f in findings
+            ],
+            "findingsWithoutEvidence": without_evidence,
+            "findingsWithoutRemedy": without_remedy,
+            "remediesWithoutValidation": unvalidated,
         },
         "validation": {
             "smokeTest": (target / "tests" / "test_smoke.py").exists(),

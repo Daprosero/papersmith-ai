@@ -48,8 +48,18 @@ proposal itself — that is `paper-proposal`.
   `invariants` has a matching `test_<id>`. No provenance, no merge.
 - Never fabricate mathematics. A test whose claim is not traceable to the
   proposal does not belong in the suite.
-- v1 scope is smoke + invariants + synthetic data. Classic SOTA datasets and
-  baseline comparison are out of scope; say so instead of improvising them.
+- Audit the mathematics, not the code. A finding is an ill-formed term, a claim
+  stated more strongly than the construction supports, a missing complement, or
+  a constant that does not hold up.
+- No finding without a remedy, and no remedy without validation. Both are
+  measured over the same randomized sweep of 200 configurations.
+- Classify every finding. `theorem` demands the full sweep; `tendency` must
+  declare its measured rate and must never be asserted as a law.
+- Remedies live in `tests/`, never in `src/`. Establishing that a correction is
+  sound is not the same as adopting it.
+- v1 scope is smoke + invariants + synthetic + audit + remedies. Classic SOTA
+  datasets and baseline comparison are out of scope; say so instead of
+  improvising them.
 
 ## Target layout
 
@@ -57,7 +67,7 @@ proposal itself — that is `paper-proposal`.
 <repo>/
 ├── <Name>/            Notebooks/  Data/ (only if data exists)  Results/  Models/
 ├── src/<Package>/     the implementation (.py), one module per mathematical object
-├── tests/             test_smoke.py, test_invariants.py
+├── tests/             smoke, invariants, synthetic, findings + audit + remedies
 └── pyproject.toml     isolation marker: anchors pytest/ruff to this repo
 ```
 
@@ -98,15 +108,22 @@ counts as a gap, not as compliance.
 6. Fill scaffold gaps from `assets/` (pyproject, `__init__.py`, smoke test, notebook).
 7. Present the object → module map. Wait for approval. Only then write code.
 8. Write one module per object with `__provenance__`, plus its invariant tests.
-9. Run the suite with the target interpreter, then execute the notebook.
-10. `verify --revision <latest>` and report both statuses.
+9. Audit: sweep 200 configurations, declare each finding in `tests/findings.py`
+   with its kind, status, measured rate and proposed remedy.
+10. Validate every remedy over the same sweep: it must resolve its finding and
+    preserve the properties already established.
+11. Run the suite with the target interpreter, then execute the notebook.
+12. `verify --revision <latest>` and report structure, fidelity and audit.
 
 ## Output Contract
 
 Report: the bound revision, the target path, the migration commit hash (if
-any), the object → module map, the test result, and the two verification
-statuses (`structure`, `fidelity`) separately. State scope left out. Never
-claim verification passed without the `verify` output and a green suite.
+any), the object → module map, the test result, and the three verification
+statuses (`structure`, `fidelity`, `audit`) separately. For each finding give
+its kind, the equations it touches, its status with the measured rate, and the
+remedy with the equations the remedy would change. State scope left out. Never
+claim verification passed without the `verify` output and a green suite, and
+never report a finding whose remedy validation did not run.
 
 ## References
 

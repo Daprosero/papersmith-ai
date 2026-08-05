@@ -210,6 +210,41 @@ python3 .claude/skills/proposal-coding/scripts/coding_cli.py verify \
 }
 ```
 
+## The audit bridge
+
+`verify` also reads `tests/findings.py` statically and reports an `audit`
+section. The contract mirrors the invariant bridge: every declared finding needs
+a `test_finding_<id>` proving the defect is real and a `test_remedy_<id>`
+proving the proposed correction resolves it without breaking anything already
+established.
+
+```json
+{
+  "audit": {
+    "status": "ok",
+    "findings": [
+      { "id": "local_penalty_guarantee_is_vacuous", "kind": "overstated-claim",
+        "status": "theorem", "rate": "200/200",
+        "equations": ["38"], "remedyEquations": ["38"] }
+    ],
+    "findingsWithoutEvidence": [], "findingsWithoutRemedy": [],
+    "remediesWithoutValidation": []
+  }
+}
+```
+
+`kind` is one of `ill-formed`, `underspecified`, `missing-complement`,
+`overstated-claim`, `ill-posed-objective`, `loose-constant`. `status` is
+`theorem` (holds across the whole sweep) or `tendency` (holds at the declared
+rate and must not be asserted as a law).
+
+Both halves matter. Validating the remedy is what caught the second finding in
+this repository: the first proposed fix mirrored the shape of Eq. (38), and the
+sweep showed that shape cannot damp anything — which turned out to be a defect
+in Eq. (38) itself, not in the fix.
+
+## Reading `verify`
+
 Two independent findings, reported separately:
 
 - **structure drift** — the layout no longer matches, or `staleReferences` lists
