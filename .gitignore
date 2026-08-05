@@ -25,6 +25,12 @@ guidance/reference-papers/*
 # Propuestas gestionadas y su estado interno del motor
 proposals/*
 !proposals/.gitkeep
+
+# Repos destino de proposal-coding: cada uno trae su propio .git y su propio
+# .venv. Ignorarlos evita gitlinks accidentales en el índice de la forja y que
+# el entorno del destino se mezcle con el de marker.
+coding/*
+!coding/.gitkeep
 .paper-proposal/
 .paper-proposal-v2/
 
