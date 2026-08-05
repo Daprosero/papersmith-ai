@@ -519,6 +519,42 @@ def read_provenance(path: Path) -> dict | None:
     return None
 
 
+def trivial_assertions(tests_dir: Path) -> list[str]:
+    """Assertions that cannot fail, and therefore prove nothing.
+
+    Two shapes are caught: asserting a truthy constant, and comparing an
+    expression with itself. The second is the dangerous one — it reads exactly
+    like a real check. `adaptation(w) == adaptation(w)` survived three full
+    rounds of the battery, green every time, until it was read by hand.
+
+    A suite is only fail-closed if its assertions can actually fail.
+    """
+    # Self-comparison is scanned everywhere, not only inside `assert`: the one
+    # that got through fed a counter — `hits += f(w) == f(w)` — and the assert
+    # on that counter was perfectly legitimate. Looking only at assertions finds
+    # the comfortable case, not the dangerous one.
+    # `!=` is exempt: `x != x` is the standard NaN test, not a mistake.
+    always_true = (ast.Eq, ast.Is, ast.LtE, ast.GtE, ast.Lt, ast.Gt, ast.IsNot)
+    trivial: list[str] = []
+    if not tests_dir.is_dir():
+        return trivial
+    for file in sorted(tests_dir.rglob("test_*.py")):
+        try:
+            tree = ast.parse(file.read_text(encoding="utf-8"), filename=str(file))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assert):
+                if isinstance(node.test, ast.Constant) and node.test.value:
+                    trivial.append(f"{file.name}:{node.lineno}: asserts a constant")
+            elif isinstance(node, ast.Compare) and len(node.comparators) == 1:
+                if (isinstance(node.ops[0], always_true)
+                        and ast.dump(node.left) == ast.dump(node.comparators[0])):
+                    trivial.append(
+                        f"{file.name}:{node.lineno}: compares an expression with itself")
+    return trivial
+
+
 def notebook_execution(path: Path) -> dict:
     """Was the notebook run, or is the file merely present?
 
@@ -787,6 +823,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
 
     smoke_present = (target / "tests" / "test_smoke.py").exists()
     notebook = notebook_execution(target / name / "Notebooks" / "verification.ipynb")
+    trivial = trivial_assertions(target / "tests")
 
     if not args.revision:
         fidelity_status = "unknown"
@@ -827,9 +864,11 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "remediesWithoutValidation": unvalidated,
         },
         "validation": {
-            "status": "ok" if smoke_present and notebook["status"] == "executed" else "incomplete",
+            "status": ("ok" if smoke_present and notebook["status"] == "executed"
+                       and not trivial else "incomplete"),
             "smokeTest": smoke_present,
             "invariantTests": sorted(t for t in tests if t.startswith("test_")),
+            "trivialAssertions": trivial,
             "notebook": notebook,
         },
     }

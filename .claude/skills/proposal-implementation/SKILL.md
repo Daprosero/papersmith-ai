@@ -42,8 +42,17 @@ proposal itself — that is `proposal-deliberation`.
   local config. Pointers are enough to reorganize; the env var only covers the
   clone, so any later checkout or reset re-downloads gigabytes and burns the
   LFS quota.
+- Every test of the implementation lives in the target repository and nowhere
+  else. The forge's own `tests/` cover the forge's tooling — the deliberation
+  engine, the ingestion helpers — and never the materialized proposal. Deleting
+  the target deletes its tests, and the next implementation starts without any:
+  that is the intended consequence, not an accident.
 - `tests/*.py` is the source of truth and is fail-closed. The notebook is the
   executed report, never the only place a claim is checked.
+- An assertion that cannot fail is worse than no assertion: it reads as
+  coverage. Never compare an expression with itself, in an assert or in the
+  counter that feeds one, and never assert a constant. `verify` reports them
+  as `trivialAssertions`.
 - Check that a thing works, not that it is there. A notebook that exists but was
   never run is a claim, not a report; `verify` reads its `execution_count` and
   its error outputs and says `stale`, `errored` or `executed`.

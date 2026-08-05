@@ -232,8 +232,25 @@ answerable without running anything:
 `errored` is caught even when the notebook was executed with `--allow-errors`,
 which otherwise writes a red cell and exits zero.
 
-`validation.status` is `ok` only when the smoke test exists and the notebook is
-`executed`. Never report the ladder as run on anything else.
+### Assertions that cannot fail
+
+`validation.trivialAssertions` lists two shapes: asserting a truthy constant,
+and comparing an expression with itself. The scan covers the whole test module,
+not only `assert` statements — the one that got through this repository fed a
+counter,
+
+```python
+frozen_unchanged += adaptation(w) == adaptation(w)   # always true
+assert frozen_unchanged == SWEEP_SIZE                # perfectly legitimate
+```
+
+and stayed green through three full rounds of the scenario battery. Looking only
+inside assertions finds the comfortable case, not the dangerous one. `!=` is
+exempt: `x != x` is the standard NaN test.
+
+`validation.status` is `ok` only when the smoke test exists, the notebook is
+`executed`, and no trivial assertion is present. Never report the ladder as run
+on anything else.
 
 ## The audit bridge
 
