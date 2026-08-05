@@ -1,7 +1,7 @@
 """{{ONE_LINE_STATEMENT_OF_THE_MATHEMATICAL_OBJECT}}.
 
 Every module under src/{{NAME}}/ declares `__provenance__`. It is read
-statically by `coding_cli.py verify` — the module is never imported to obtain
+statically by `implementation_cli.py verify` — the module is never imported to obtain
 it — and it is the only thing that makes revision drift detectable.
 
 Rules:

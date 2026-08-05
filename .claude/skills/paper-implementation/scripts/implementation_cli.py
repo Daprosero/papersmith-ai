@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""proposal-coding: deterministic workspace, migration and fidelity checks.
+"""paper-implementation: deterministic workspace, migration and fidelity checks.
 
 Standard library only, keyless, offline. Target code is never imported or
 executed: provenance is read statically with `ast`.
@@ -27,10 +27,10 @@ import sys
 import venv
 from pathlib import Path
 
-# The forge root: <root>/.claude/skills/proposal-coding/scripts/coding_cli.py
+# The forge root: <root>/.claude/skills/proposal-implementations/scripts/implementation_cli.py
 FORGE_ROOT = Path(__file__).resolve().parents[4]
 SKILL_ROOT = Path(__file__).resolve().parents[1]
-WORKSPACE = FORGE_ROOT / "coding"
+WORKSPACE = FORGE_ROOT / "implementations"
 
 PRODUCT_DIRS = ("Notebooks", "Data", "Results", "Models")
 
@@ -757,12 +757,12 @@ COMMANDS = {"env": cmd_env, "plan": cmd_plan, "apply": cmd_apply, "verify": cmd_
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="coding_cli", description=__doc__)
+    parser = argparse.ArgumentParser(prog="implementation_cli", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
     for name in COMMANDS:
         p = sub.add_parser(name)
-        p.add_argument("--target", required=True, help="cloned repository under coding/")
+        p.add_argument("--target", required=True, help="cloned repository under implementations/")
         if name == "env":
             p.add_argument("--python", default=None,
                            help="interpreter to build the venv from (default: this one). "

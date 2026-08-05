@@ -1,5 +1,5 @@
 ---
-name: proposal-coding
+name: paper-implementation
 description: "Trigger: turn the latest managed mathematical proposal into working Python, scaffold or reorganize a target repository, or verify an existing implementation's layout and revision fidelity. Isolated venv, keyless, fail-closed."
 ---
 
@@ -12,9 +12,9 @@ mathematics is.
 
 ## Non-negotiable isolation
 
-Every run works inside `coding/<repo>/` and uses **that repository's own
+Every run works inside `implementations/<repo>/` and uses **that repository's own
 `.venv`**. Never the forge's virtualenv, never system Python for target code.
-`coding/` is gitignored; the CLI refuses any target outside it, and refuses to
+`implementations/` is gitignored; the CLI refuses any target outside it, and refuses to
 create a venv from a forge interpreter.
 
 ## Activation Contract
@@ -94,13 +94,13 @@ counts as a gap, not as compliance.
 | Plan reports `unclassified` or `conflicts` | Ask where those files belong; never guess |
 | `verify` reports structure drift | Report it as its own finding, ask before fixing |
 | `verify` reports stale modules | Report revision drift separately; ask before rewriting |
-| Target outside `coding/`, or dirty tree | Refuse and report the guard |
+| Target outside `implementations/`, or dirty tree | Refuse and report the guard |
 
 ## Execution Steps
 
 1. `node .claude/skills/paper-proposal/engine/cli.mjs '{ "operation": "STATUS" }'` → take `latest`.
 2. Ask the user for `<Name>` and the repository (new or existing URL).
-3. `GIT_LFS_SKIP_SMUDGE=1 git clone <url> coding/<repo>` (or `git init`), pin the
+3. `GIT_LFS_SKIP_SMUDGE=1 git clone <url> implementations/<repo>` (or `git init`), pin the
    LFS skip in the clone's local config (see `references/usage.md`), then `env`.
 4. Install dev dependencies with the printed target `pip`, never the forge's.
 5. `plan` → show every rename, move and reference update with its reason → get
@@ -128,5 +128,5 @@ never report a finding whose remedy validation did not run.
 ## References
 
 - `references/usage.md` — worked invocations of every command.
-- `scripts/coding_cli.py` — `env`, `plan`, `apply`, `verify`. Stdlib only.
+- `scripts/implementation_cli.py` — `env`, `plan`, `apply`, `verify`. Stdlib only.
 - `assets/` — pyproject, module, test and notebook templates.

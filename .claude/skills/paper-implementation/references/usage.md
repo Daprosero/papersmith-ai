@@ -1,7 +1,7 @@
 # Proposal Coding — worked invocations
 
 See [SKILL.md](../SKILL.md) for the contract. Everything below is a real
-invocation of `scripts/coding_cli.py`: standard library only, no keys, no
+invocation of `scripts/implementation_cli.py`: standard library only, no keys, no
 network. Each command prints one JSON object; exit code `2` means a guard
 refused and nothing was touched.
 
@@ -18,14 +18,14 @@ Take `latest` (e.g. `research-concept-r12.md`). That string is what modules
 declare in `__provenance__["revision"]` and what `verify --revision` compares
 against. Everything downstream is bound to it.
 
-## 1. Land the repository under `coding/`
+## 1. Land the repository under `implementations/`
 
 ```bash
-GIT_LFS_SKIP_SMUDGE=1 git clone <url> coding/<repo>   # existing repository
-git init coding/<repo>                                # new one
+GIT_LFS_SKIP_SMUDGE=1 git clone <url> implementations/<repo>   # existing repository
+git init implementations/<repo>                                # new one
 ```
 
-`coding/` is gitignored in the forge, so the clone's own `.git` never becomes a
+`implementations/` is gitignored in the forge, so the clone's own `.git` never becomes a
 stray gitlink in the forge's index.
 
 On a repository that tracks weights, pin the skip in the clone as well — the
@@ -33,8 +33,8 @@ environment variable covers the clone and nothing else, so a later `git reset
 --hard` or branch switch starts downloading again:
 
 ```bash
-git -C coding/<repo> config --local filter.lfs.smudge "git-lfs smudge --skip -- %f"
-git -C coding/<repo> config --local filter.lfs.process "git-lfs filter-process --skip"
+git -C implementations/<repo> config --local filter.lfs.smudge "git-lfs smudge --skip -- %f"
+git -C implementations/<repo> config --local filter.lfs.process "git-lfs filter-process --skip"
 ```
 
 Measured: without this, `git reset --hard` on the migration commit hung
@@ -50,8 +50,8 @@ stays untouched. Fetch real blobs only when the user actually runs a model.
 ## 2. The isolated environment
 
 ```bash
-python3 .claude/skills/proposal-coding/scripts/coding_cli.py env \
-  --target coding/<repo> [--python python3.12]
+python3 .claude/skills/proposal-implementations/scripts/implementation_cli.py env \
+  --target implementations/<repo> [--python python3.12]
 ```
 
 Without `--python` the venv is built from the interpreter running the CLI.
@@ -63,8 +63,8 @@ Check `pythonVersion` in the response: the templates declare `requires-python
   "command": "env",
   "status": "created",
   "pythonVersion": "Python 3.12.4",
-  "interpreter": "…/coding/<repo>/.venv/bin/python",
-  "pip": "…/coding/<repo>/.venv/bin/pip",
+  "interpreter": "…/implementations/<repo>/.venv/bin/python",
+  "pip": "…/implementations/<repo>/.venv/bin/pip",
   "nextCommand": "…/pip install -r …/assets/requirements-dev.txt"
 }
 ```
@@ -75,8 +75,8 @@ code goes through the returned `interpreter`.
 ## 3. Plan the migration (read-only)
 
 ```bash
-python3 .claude/skills/proposal-coding/scripts/coding_cli.py plan \
-  --target coding/<repo> --name CREDA > /tmp/plan.json
+python3 .claude/skills/proposal-implementations/scripts/implementation_cli.py plan \
+  --target implementations/<repo> --name CREDA > /tmp/plan.json
 ```
 
 ```json
@@ -171,8 +171,8 @@ is a result, not a dataset.
 ## 4. Apply, as one separate commit
 
 ```bash
-python3 .claude/skills/proposal-coding/scripts/coding_cli.py apply \
-  --target coding/<repo> --name CREDA --plan /tmp/plan.json
+python3 .claude/skills/proposal-implementations/scripts/implementation_cli.py apply \
+  --target implementations/<repo> --name CREDA --plan /tmp/plan.json
 ```
 
 The plan is recomputed and compared before anything moves: if the repository
@@ -186,9 +186,9 @@ and `{{INVARIANT_ID}}`.
 ## 5. Verify
 
 ```bash
-coding/<repo>/.venv/bin/python -m pytest -q
-python3 .claude/skills/proposal-coding/scripts/coding_cli.py verify \
-  --target coding/<repo> --name CREDA --revision research-concept-r12.md
+implementations/<repo>/.venv/bin/python -m pytest -q
+python3 .claude/skills/proposal-implementations/scripts/implementation_cli.py verify \
+  --target implementations/<repo> --name CREDA --revision research-concept-r12.md
 ```
 
 ```json
@@ -266,7 +266,7 @@ implementation as up to date from an `unknown` run.
 
 | Code | Meaning |
 | --- | --- |
-| `OUTSIDE_WORKSPACE` | Target is not under `coding/`. Clone it there. |
+| `OUTSIDE_WORKSPACE` | Target is not under `implementations/`. Clone it there. |
 | `NOT_A_GIT_REPO` | No `.git`. Migration needs a revertible commit. |
 | `DIRTY_WORKTREE` | Uncommitted or untracked changes. Commit or stash first. |
 | `FORGE_INTERPRETER` | The CLI is running from a forge venv. Use system `python3`. |
