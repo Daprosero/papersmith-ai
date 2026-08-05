@@ -67,6 +67,12 @@ proposal itself — that is `proposal-deliberation`.
   measured over the same randomized sweep of 200 configurations.
 - Classify every finding. `theorem` demands the full sweep; `tendency` must
   declare its measured rate and must never be asserted as a law.
+- A remedy is not complete because it is sound. It must be expressible inside
+  the proposal as it stands: every equation it cites must exist, and every
+  symbol it relies on must be declared in `uses` and present in the revision.
+  Notation it would add goes in `introduces`, and a non-empty `introduces`
+  makes the audit `needs-deliberation` — never `ok`. Adding notation is the
+  deliberation's decision, not this skill's.
 - Remedies live in `tests/`, never in `src/`. Establishing that a correction is
   sound is not the same as adopting it.
 - v1 scope is smoke + invariants + synthetic + audit + remedies. Classic SOTA

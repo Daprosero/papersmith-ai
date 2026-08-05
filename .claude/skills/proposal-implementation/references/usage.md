@@ -285,6 +285,27 @@ this repository: the first proposed fix mirrored the shape of Eq. (38), and the
 sweep showed that shape cannot damp anything — which turned out to be a defect
 in Eq. (38) itself, not in the fix.
 
+### Sound is not the same as complete
+
+`audit.compatibility` answers a different question from the sweep: can the
+remedy be written inside the proposal as it stands? Each finding declares `uses`
+— notation the remedy leans on, which must appear verbatim in the bound
+revision — and `introduces`, notation it would add.
+
+| status | meaning |
+| --- | --- |
+| `ok` | every cited equation exists, all notation is already defined, nothing new |
+| `needs-deliberation` | sound and validated, but it would add notation |
+| `incompatible` | cites an equation the revision does not have, or leans on undefined notation |
+| `unknown` | the revision could not be read; nothing is concluded |
+
+`needs-deliberation` propagates to `audit.status`, so a remedy that would extend
+the notation can never be reported as settled. On this repository three remedies
+are expressible as they stand, and the fourth — freezing the confidence with
+`sg[·]` and adding `L_conf` with its own coefficient — introduces three symbols
+the revision does not define. That is a decision for the deliberation, not a
+verdict this skill may issue.
+
 ## Reading `verify`
 
 Two independent findings, reported separately:

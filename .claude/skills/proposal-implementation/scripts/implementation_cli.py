@@ -519,6 +519,63 @@ def read_provenance(path: Path) -> dict | None:
     return None
 
 
+def revision_source(revision: str | None) -> str | None:
+    """The bound revision's text, read from the forge's proposals directory."""
+    if not revision:
+        return None
+    path = FORGE_ROOT / "proposals" / revision
+    if not path.exists():
+        return None
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def remedy_compatibility(findings: list[dict], revision: str | None) -> dict:
+    """Is each remedy expressible inside the proposal as it stands?
+
+    A correction that is sound in isolation is still half a remedy if it cites
+    an equation that does not exist, leans on notation the document never
+    defines, or quietly introduces symbols of its own. Those are not defects to
+    be validated away by a sweep — they are decisions that belong to the
+    deliberation, and the skill must not report them as settled.
+
+    Every finding declares `uses` (notation the remedy relies on, which must
+    appear verbatim in the revision) and `introduces` (notation it would add).
+    A non-empty `introduces` is not a failure: it is a remedy that cannot be
+    called complete until the deliberation accepts the new notation.
+    """
+    source = revision_source(revision)
+    if source is None:
+        return {"status": "unknown", "reason": f"revision {revision!r} not readable",
+                "unknownEquations": [], "undefinedNotation": [], "introducesNotation": []}
+
+    tags = set(re.findall(r"\\tag\{(\d+)\}", source))
+    unknown_equations: list[str] = []
+    undefined_notation: list[str] = []
+    introduces: list[str] = []
+
+    for finding in findings:
+        for field in ("equations", "remedy_equations"):
+            missing = [e for e in finding.get(field, []) if e not in tags]
+            if missing:
+                unknown_equations.append(f"{finding['id']}.{field}: {missing}")
+        absent = [s for s in finding.get("uses", []) if s not in source]
+        if absent:
+            undefined_notation.append(f"{finding['id']}: {absent}")
+        if not finding.get("uses"):
+            undefined_notation.append(f"{finding['id']}: declares no notation at all")
+        if finding.get("introduces"):
+            introduces.append(f"{finding['id']}: {finding['introduces']}")
+
+    if unknown_equations or undefined_notation:
+        status = "incompatible"
+    elif introduces:
+        status = "needs-deliberation"
+    else:
+        status = "ok"
+    return {"status": status, "unknownEquations": unknown_equations,
+            "undefinedNotation": undefined_notation, "introducesNotation": introduces}
+
+
 def trivial_assertions(tests_dir: Path) -> list[str]:
     """Assertions that cannot fail, and therefore prove nothing.
 
@@ -818,8 +875,17 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     without_evidence = sorted(f["id"] for f in findings if f"test_finding_{f['id']}" not in tests)
     without_remedy = sorted(f["id"] for f in findings if not f.get("remedy"))
     unvalidated = sorted(f["id"] for f in findings if f"test_remedy_{f['id']}" not in tests)
-    audit_status = "none" if not findings else (
-        "incomplete" if without_evidence or without_remedy or unvalidated else "ok")
+    compatibility = remedy_compatibility(findings, args.revision)
+    if not findings:
+        audit_status = "none"
+    elif without_evidence or without_remedy or unvalidated:
+        audit_status = "incomplete"
+    elif compatibility["status"] in {"incompatible", "unknown"}:
+        audit_status = "incomplete"
+    elif compatibility["status"] == "needs-deliberation":
+        audit_status = "needs-deliberation"
+    else:
+        audit_status = "ok"
 
     smoke_present = (target / "tests" / "test_smoke.py").exists()
     notebook = notebook_execution(target / name / "Notebooks" / "verification.ipynb")
@@ -862,6 +928,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "findingsWithoutEvidence": without_evidence,
             "findingsWithoutRemedy": without_remedy,
             "remediesWithoutValidation": unvalidated,
+            "compatibility": compatibility,
         },
         "validation": {
             "status": ("ok" if smoke_present and notebook["status"] == "executed"
