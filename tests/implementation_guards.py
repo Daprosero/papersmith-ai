@@ -14,6 +14,7 @@ reports success while testing nothing.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import subprocess
@@ -29,6 +30,9 @@ WORK = FORGE / "implementations"
 REVISION = "neutral-concept-r01.md"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 KIT = FIXTURES / "implementation_kit"
+# The harness binds to its own neutral fixture. It must never read the forge's
+# proposals/, which is unversioned and holds whatever research the clone owns.
+os.environ.setdefault("IMPLEMENTATION_PROPOSALS", str(FIXTURES))
 
 RESULTS: list[tuple[str, bool, str]] = []
 
