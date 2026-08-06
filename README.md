@@ -72,7 +72,7 @@ Surya, ~1.5 GB, cacheados a partir de ahí.)
 
 | Carpeta | Qué va acá |
 |---------|------------|
-| `guidance/paper-guide/` | **Papers guía** — las referencias metodológicas / de estilo. `paper-proposal` las carga como contexto al inicio de cada deliberación. |
+| `guidance/paper-guide/` | **Papers guía** — las referencias metodológicas / de estilo. `proposal-deliberation` las carga como contexto al inicio de cada deliberación. |
 | `guidance/reference-papers/` | **Corpus de referencia** — papers de apoyo, ingeridos a Markdown para consulta. No se cargan automáticamente en la deliberación. |
 | `guidance/data/` (paper del dataset) | **⏳ Pendiente — todavía no conectado.** El paper que describe la base de datos de la investigación. Planeado; dejar para más adelante. |
 
@@ -101,12 +101,12 @@ que ya está dentro de su carpeta se saltea. Para re-ingerir, borrar la carpeta
 del paper (dejando el PDF suelto) y volver a ejecutar la skill. La configuración
 vive en `papersmith.yaml` (`source_roots`, `mode`, `strip_references`).
 
-### Paso 3 — Deliberar sobre una propuesta (`paper-proposal`)
+### Paso 3 — Deliberar sobre una propuesta (`proposal-deliberation`)
 
 En **Claude Code**, invocar la skill:
 
 ```
-/paper-proposal
+/proposal-deliberation
 ```
 
 En el primer turno carga automáticamente los Markdown de `guidance/paper-guide/`
@@ -116,8 +116,43 @@ como contexto y actúa como tutor matemático. Desde ahí se puede:
 - pedir ediciones a una propuesta gestionada,
 - ejecutar el ciclo de vida de revisiones gestionadas.
 
-Las propuestas viven en `proposals/`. Ver el `SKILL.md` de cada skill para el
-contrato completo.
+Las propuestas viven en `proposals/`, una por revisión gestionada
+(`research-concept-rNN.md`).
+
+### Paso 4 — Llevar la propuesta a código (`proposal-implementation`)
+
+En **Claude Code**, invocar la skill:
+
+```
+/proposal-implementation
+```
+
+Toma la revisión vigente y la materializa en un repositorio destino, que vive en
+`implementations/` con su propio git y su propio entorno virtual. El flujo tiene
+dos fases separadas:
+
+1. **Estructura.** Si el repo trae contenido, lo lleva al layout y verifica
+   —sin ejecutar nada— que cuadernos, rutas y referencias sigan resolviendo. No
+   audita ni valida el código que ya estaba: es lo que hay, ordenado.
+2. **Materialización.** Recién entonces implementa la matemática y la somete a
+   la escalera de validación.
+
+```
+<repo>/
+├── <Name>/            Notebooks/  Data/  Results/  Models/
+├── src/<Package>/     una implementación por objeto matemático
+├── tests/             smoke · invariantes · sintéticos · auditoría · remedios
+└── pyproject.toml
+```
+
+La escalera tiene cinco niveles, del más barato al más caro: **smoke**,
+**invariantes** (cada afirmación de la propuesta anclada a un test),
+**sintéticos** (deterministas, semilla fija), **auditoría** (hallazgos sobre la
+matemática, medidos sobre 200 configuraciones aleatorias) y **remedios** (cada
+corrección propuesta validada con el mismo rigor). Un hallazgo sin remedio
+validado no se reporta.
+
+Ver el `SKILL.md` de cada skill para el contrato completo.
 
 ---
 
@@ -150,10 +185,60 @@ preamble
 front_matter
 ```
 
+### Editar una revisión publicada a mano rompe la auditoría
+
+Cada publicación deja un recibo en `.proposal-deliberation/receipts/` con el
+sha256 del documento. La auditoría relee el archivo de `proposals/`, lo hashea y
+exige que sea byte-idéntico a lo que el motor publicó
+(`consistency-audit.ts`, `RECEIPT_SHA_MISMATCH`). Si se edita a mano una
+revisión ya publicada, el archivo deja de coincidir con su recibo y la siguiente
+operación reporta `auditStatus: FAIL`.
+
+**No es un defecto: es la garantía funcionando.** Sin recibos el motor no puede
+afirmar que una revisión es lo que dice ser, y el linaje byte-exacto deja de
+tener respaldo. Quitarlos no es una opción.
+
+**Lo que falta es una operación de re-base autorizada** — algo como
+`ADOPT_MANUAL_EDIT`: "edité esta revisión a propósito, adoptá los bytes actuales
+como nueva línea base", que actualice el recibo tras confirmación explícita del
+investigador. Hoy no existe y la reconciliación hay que hacerla a mano. Con esa
+operación, editar a mano dejaría de ser una ruptura y pasaría a ser un acto
+declarado.
+
+### El directorio de estado está hardcodeado
+
+El nombre `.proposal-deliberation` aparece literal en 11 puntos de 7 archivos
+del motor (`derived-state-store.ts`, `consistency-audit.ts`,
+`lifecycle-state-store.ts`, …). En ejecución no rompe nada, pero cualquier
+cambio de nombre obliga a tocarlos uno por uno. Se resuelve con un único
+`stateRoot(root)`; es higiene, no urgencia.
+
 ---
 
 ## Tests
 
 ```bash
-npm test
+npm test              # motor de proposal-deliberation (489)
+npm run test:guards   # guards del CLI de proposal-implementation (27)
 ```
+
+Los escenarios de `proposal-implementation` son más pesados: crean repos destino,
+sus entornos y ejecutan la escalera completa.
+
+```bash
+python3 tests/implementation_scenarios.py                    # los 14
+python3 tests/implementation_scenarios.py empty full-clone   # algunos
+```
+
+Los que clonan necesitan un espejo local, para no gastar red ni cuota de LFS.
+No se versiona —es el repositorio de alguien, no de la forja—:
+
+```bash
+GIT_LFS_SKIP_SMUDGE=1 git clone --mirror <url> /tmp/da-mirror.git
+export IMPLEMENTATION_MIRROR=/tmp/da-mirror.git
+```
+
+Lo que prueba cada cosa: `tests/` cubre **el tooling de la forja** — el motor de
+deliberación, los helpers de ingestión, el CLI de implementación. Los tests de
+una implementación materializada viven en su repositorio destino y en ningún
+otro lado; borrarlo borra sus tests.

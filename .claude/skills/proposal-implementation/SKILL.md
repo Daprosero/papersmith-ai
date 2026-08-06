@@ -3,7 +3,7 @@ name: proposal-implementation
 description: "Trigger: turn the latest managed mathematical proposal into working Python, scaffold or reorganize a target repository, or verify an existing implementation's layout and revision fidelity. Isolated venv, keyless, fail-closed."
 ---
 
-# Proposal Coding
+# Proposal Implementation
 
 Turn the current managed revision (`research-concept-rNN.md`) into Python that
 runs, in a target repository, and then prove it: smoke, invariants, synthetic
@@ -42,8 +42,28 @@ proposal itself — that is `proposal-deliberation`.
   local config. Pointers are enough to reorganize; the env var only covers the
   clone, so any later checkout or reset re-downloads gigabytes and burns the
   LFS quota.
+- Every test of the implementation lives in the target repository and nowhere
+  else. The forge's own `tests/` cover the forge's tooling — the deliberation
+  engine, the ingestion helpers — and never the materialized proposal. Deleting
+  the target deletes its tests, and the next implementation starts without any:
+  that is the intended consequence, not an accident.
 - `tests/*.py` is the source of truth and is fail-closed. The notebook is the
   executed report, never the only place a claim is checked.
+- A green result means something only when red was reachable. Two ways it is
+  not: an assertion that cannot fail — never compare an expression with itself,
+  in an assert or in the counter feeding one, and never assert a constant — and
+  a remedy test that measures its own proposal without ever exercising the
+  declared formulation it corrects. `verify` reports them as
+  `trivialAssertions` and `remediesWithoutControl`.
+- Every remedy test carries both poles: the remedy satisfies the criterion AND
+  the declared formulation fails it. One pole alone cannot distinguish an
+  improvement from a measurement that would have passed anything.
+- When probing a guard adversarially, assert that the fixture actually changed
+  before believing the result. A negative test whose mutation silently failed
+  reports success while testing nothing.
+- Check that a thing works, not that it is there. A notebook that exists but was
+  never run is a claim, not a report; `verify` reads its `execution_count` and
+  its error outputs and says `stale`, `errored` or `executed`.
 - Every module under `src/<Name>/` declares `__provenance__`; every id in its
   `invariants` has a matching `test_<id>`. No provenance, no merge.
 - Never fabricate mathematics. A test whose claim is not traceable to the
@@ -55,8 +75,45 @@ proposal itself — that is `proposal-deliberation`.
   measured over the same randomized sweep of 200 configurations.
 - Classify every finding. `theorem` demands the full sweep; `tendency` must
   declare its measured rate and must never be asserted as a law.
+- Rule on admissibility BEFORE measuring efficacy, never after. Run `admit`
+  first: every equation a remedy cites must exist in the revision, and every
+  symbol it relies on must be declared in `uses` and present there. Measuring a
+  remedy that fails this produces numbers that read as evidence and lend the
+  sweep's rigour to something that should never have reached the bench. The
+  remedy suite refuses to run without the ruling.
+- Notation the remedy would add goes in `introduces`. A non-empty `introduces`
+  is admissible but makes the audit `needs-deliberation` — never `ok`. Adding
+  notation is the deliberation's decision, not this skill's.
 - Remedies live in `tests/`, never in `src/`. Establishing that a correction is
   sound is not the same as adopting it.
+- This skill proposes; `proposal-deliberation` decides and publishes. Never
+  write to `proposals/`. `handoff` hands the open findings over sized by their
+  reach into the document: a remedy touching one equation, adding no notation
+  and cited nowhere else settles inline; anything wider comes back as a prompt
+  for a session of its own, because a change with implications deserves
+  unhurried deliberation rather than a decision taken in passing.
+- A remedy settles inline only if the finding declares `remedy_block`: the
+  corrected equation written out, with the same `\tag{n}`. Prose is not a
+  correction. Without it the reach may be local but the handoff still defers —
+  writing the mathematics is the work, and nothing here paraphrases a
+  description into a document. `verify` lists these under
+  `audit.localRemediesNotWritten` so the omission is a decision, not a silence.
+- To settle one inline, drive `proposal-deliberation` with the item's
+  `deliberation` payload: `RESOLVE_TARGET` with its `selectedEntryId` returns
+  the entry's `text`; pipe that text into `implementation_cli.py compose
+  --finding <id> --entry-text -`; send the returned `replacementText` as a
+  `replace` decision to `CREATE_SUCCESSOR`. Composition substitutes inside the
+  entry rather than handing back the bare block, because an entry usually holds
+  more than the one equation and replacing it wholesale would delete the rest.
+- Adoption is read from the published revision, never assumed. The reliable
+  signal is that the text the remedy replaces is gone; if nothing recognizable
+  took its place the state is `changed-unrecognized` and a human confirms.
+- An adopted remedy stops being a proposal and becomes the formulation, so it
+  moves: its remedy test retires, its claim lands in the invariant suite as
+  `test_<becomes_invariant>`, and the module implementing it declares that
+  invariant. Until it does, `audit` stays `incomplete` — leaving it in the
+  remedy suite would keep reporting a defect the revision no longer has, and
+  would keep its claim outside the contract every other claim is held to.
 - v1 scope is smoke + invariants + synthetic + audit + remedies. Classic SOTA
   datasets and baseline comparison are out of scope; say so instead of
   improvising them.
@@ -72,8 +129,8 @@ proposal itself — that is `proposal-deliberation`.
 ```
 
 `<Name>` is chosen by the user. `<Package>` is its importable form: a hyphen is
-legal in a directory but not in a Python identifier, so `MIL-CREDA/` pairs with
-`src/MIL_CREDA/`. Never scaffold `src/<Name>/` when the two differ — nothing
+legal in a directory but not in a Python identifier, so `Example-Method/` pairs with
+`src/Example_Method/`. Never scaffold `src/<Name>/` when the two differ — nothing
 could import it. Pre-existing code moves to its own package under `src/`, never
 into `src/<Package>/`. `pyproject.toml` must carry
 `[tool.pytest.ini_options]` with `pythonpath = ["src"]`: without it the suite
@@ -110,16 +167,19 @@ counts as a gap, not as compliance.
 8. Write one module per object with `__provenance__`, plus its invariant tests.
 9. Audit: sweep 200 configurations, declare each finding in `tests/findings.py`
    with its kind, status, measured rate and proposed remedy.
-10. Validate every remedy over the same sweep: it must resolve its finding and
-    preserve the properties already established.
-11. Run the suite with the target interpreter, then execute the notebook.
-12. `verify --revision <latest>` and report structure, fidelity and audit.
+10. `admit --revision <latest>`: rule on admissibility before anything is
+    measured. Only admitted remedies proceed.
+11. Validate every admitted remedy over the same sweep: it must resolve its
+    finding and preserve the properties already established.
+12. Run the suite with the target interpreter, then execute the notebook.
+13. `verify --revision <latest>` and report structure, fidelity, audit and
+    validation.
 
 ## Output Contract
 
 Report: the bound revision, the target path, the migration commit hash (if
 any), the object → module map, the test result, and the three verification
-statuses (`structure`, `fidelity`, `audit`) separately. For each finding give
+statuses (`structure`, `fidelity`, `audit`, `validation`) separately. For each finding give
 its kind, the equations it touches, its status with the measured rate, and the
 remedy with the equations the remedy would change. State scope left out. Never
 claim verification passed without the `verify` output and a green suite, and
@@ -128,5 +188,5 @@ never report a finding whose remedy validation did not run.
 ## References
 
 - `references/usage.md` — worked invocations of every command.
-- `scripts/implementation_cli.py` — `env`, `plan`, `apply`, `verify`. Stdlib only.
+- `scripts/implementation_cli.py` — `env`, `plan`, `apply`, `admit`, `verify`. Stdlib only.
 - `assets/` — pyproject, module, test and notebook templates.
