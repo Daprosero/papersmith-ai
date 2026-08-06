@@ -4,7 +4,10 @@
 Plays the part of the agent's step 6-8: fills the scaffold gaps the skill
 reports, parameterized by the scenario's name and seed.
 
-    python3 materialize.py <target> <Name> <seed>
+    python3 materialize.py <target> <Name> <seed> [kit-directory]
+
+The kit defaults to the skill's own templates. The forge's harness passes a
+neutral fixture kit instead: a paper forge must not carry one paper's content.
 """
 
 from __future__ import annotations
@@ -12,10 +15,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-KIT = Path(__file__).resolve().parents[1] / "assets" / "kit"
+DEFAULT_KIT = Path(__file__).resolve().parents[1] / "assets" / "kit"
 
 
-def main(target: str, name: str, seed: str) -> int:
+def main(target: str, name: str, seed: str, kit: str | None = None) -> int:
+    KIT = Path(kit).resolve() if kit else DEFAULT_KIT
     root = Path(target).resolve()
     pkg = name.replace("-", "_")
 
@@ -70,4 +74,4 @@ def main(target: str, name: str, seed: str) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(*sys.argv[1:4]))
+    raise SystemExit(main(*sys.argv[1:5]))

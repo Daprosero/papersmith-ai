@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import shutil
 import subprocess
 import sys
@@ -22,12 +23,19 @@ from pathlib import Path
 FORGE = Path(__file__).resolve().parents[1]
 CLI = FORGE / ".claude/skills/proposal-implementation/scripts/implementation_cli.py"
 SCRATCH = Path(__file__).resolve().parent
+# Intermediate plans are scratch, never repository content.
+TMP = Path(tempfile.mkdtemp(prefix="implementation-harness-"))
 # A local bare mirror of the target repository, so a full round costs no network
 # and no LFS quota. It is not versioned — it is somebody's repository, not the
 # forge's. Point IMPLEMENTATION_MIRROR at one, or create it with:
 #   GIT_LFS_SKIP_SMUDGE=1 git clone --mirror <url> /tmp/da-mirror.git
 MIRROR = Path(os.environ.get("IMPLEMENTATION_MIRROR", "/tmp/da-mirror.git"))
 CODING = FORGE / "implementations"
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+KIT = FIXTURES / "implementation_kit"
+# The harness drives the skill from a neutral fixture, never from proposals/:
+# a paper forge must not have its test suite depend on one paper.
+REVISION = "neutral-concept-r01.md"
 
 CATEGORY_BY_EXT = {
     ".csv": "Results", ".tsv": "Results", ".pdf": "Results", ".png": "Results",
@@ -277,7 +285,7 @@ def run(scenario_id: str, setup, name: str, seed: int) -> dict:
             if resolve(target, name, plan, log):
                 continue
             return {"id": scenario_id, "result": "BLOCKED", "detail": plan, "log": log}
-        plan_file = SCRATCH / f"plan-{scenario_id}.json"
+        plan_file = TMP / f"plan-{scenario_id}.json"
         plan_file.write_text(json.dumps(plan))
         applied = cli("apply", "--target", rel, "--name", name, "--plan", str(plan_file))
         if applied.get("status") != "applied":
@@ -300,11 +308,11 @@ def run(scenario_id: str, setup, name: str, seed: int) -> dict:
     suite = next((line for line in tail if "passed" in line or "failed" in line), "no suite output")
     notebook = "executed OK" in out.stdout
 
-    verify = cli("verify", "--target", rel, "--name", name, "--revision", "research-concept-r12.md")
+    verify = cli("verify", "--target", rel, "--name", name, "--revision", REVISION)
     if verify["structure"]["staleReferences"]:
         resolve_stale(target, name, verify["structure"]["staleReferences"], log)
         verify = cli("verify", "--target", rel, "--name", name,
-                     "--revision", "research-concept-r12.md")
+                     "--revision", REVISION)
 
     commit_all(target, "materialize the proposal")
     idem = cli("plan", "--target", rel, "--name", name)

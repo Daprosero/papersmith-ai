@@ -1,1 +1,44 @@
-# Withdrawn from history: this revision held research content.
+"""Audit findings on the proposal, each with the remedy it proposes.
+
+A finding is a defect in the mathematics itself: a term that is ill-formed, a
+claim stated more strongly than the construction supports, a missing complement
+the rest of the development assumes, or a constant that does not hold up. It is
+not a bug in this code.
+
+The contract, checked statically by `implementation_cli.py verify`:
+
+- every `id` has a `test_finding_<id>` proving the defect is real, measured over
+  the sweep, and a `test_remedy_<id>` proving the fix resolves it AND preserves
+  what was already established;
+- `status` is `theorem` (holds across the whole sweep) or `tendency` (declares
+  its measured rate and is never asserted as a law);
+- `uses` is notation the remedy leans on and must appear verbatim in the
+  revision; `introduces` is notation it would add, which keeps the audit at
+  `needs-deliberation` because adding notation is the deliberation's call;
+- `adoption.absent` is text present in the revision today whose disappearance
+  signals the remedy was taken in; `expect` are forms that confirm it;
+- `becomes_invariant` names what the remedy turns into once published: at that
+  point the remedy test retires and the claim moves to the invariant suite.
+
+Remedies live in the tests, never in src/. Establishing that a correction is
+sound is not the same as adopting it.
+"""
+
+FINDINGS = [
+    # {
+    #     "id": "<short_snake_case_id>",
+    #     "kind": "loose-constant",   # or ill-formed | underspecified |
+    #                                 # missing-complement | overstated-claim |
+    #                                 # ill-posed-objective
+    #     "equations": ["<n>"],            # where the defect lives
+    #     "remedy_equations": ["<n>"],     # what the correction would rewrite
+    #     "uses": [r"<symbol present in the revision>"],
+    #     "introduces": [],                # notation the remedy would add
+    #     "adoption": {"absent": r"<text present today>", "expect": [r"<what replaces it>"]},
+    #     "becomes_invariant": "<invariant_id_once_adopted>",
+    #     "status": "theorem",
+    #     "rate": "<measured rate over the sweep>",
+    #     "statement": "<the defect, stated precisely>",
+    #     "remedy": "<the correction, and why it is expressible in the proposal>",
+    # },
+]

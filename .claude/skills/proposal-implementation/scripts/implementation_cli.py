@@ -520,11 +520,22 @@ def read_provenance(path: Path) -> dict | None:
     return None
 
 
+def proposals_root() -> Path:
+    """Where managed revisions live.
+
+    Overridable so the forge's own tests can drive the skill from a neutral
+    fixture instead of somebody's research. A paper forge must not have its test
+    suite depend on one paper.
+    """
+    override = os.environ.get("IMPLEMENTATION_PROPOSALS")
+    return Path(override) if override else FORGE_ROOT / "proposals"
+
+
 def revision_source(revision: str | None) -> str | None:
-    """The bound revision's text, read from the forge's proposals directory."""
+    """The bound revision's text, read from the proposals directory."""
     if not revision:
         return None
-    path = FORGE_ROOT / "proposals" / revision
+    path = proposals_root() / revision
     if not path.exists():
         return None
     return path.read_text(encoding="utf-8", errors="replace")

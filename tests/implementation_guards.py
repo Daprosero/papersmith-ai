@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import tempfile
 import subprocess
 import sys
 from pathlib import Path
@@ -22,8 +23,12 @@ from pathlib import Path
 FORGE = Path(__file__).resolve().parents[1]
 CLI = FORGE / ".claude/skills/proposal-implementation/scripts/implementation_cli.py"
 SCRATCH = Path(__file__).resolve().parent
+# Intermediate plans are scratch, never repository content.
+TMP = Path(tempfile.mkdtemp(prefix="implementation-harness-"))
 WORK = FORGE / "implementations"
-REVISION = "research-concept-r12.md"
+REVISION = "neutral-concept-r01.md"
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+KIT = FIXTURES / "implementation_kit"
 
 RESULTS: list[tuple[str, bool, str]] = []
 
@@ -65,11 +70,11 @@ def scaffolded(name: str, materialize: bool = True, admit: bool = True) -> Path:
     """A target taken through the normal flow, ready to be broken."""
     target = fresh(name)
     rel = f"implementations/{target.name}"
-    plan = SCRATCH / f"plan-{name}.json"
+    plan = TMP / f"plan-{name}.json"
     plan.write_text(json.dumps(cli("plan", "--target", rel, "--name", "MIL-CREDA")))
     cli("apply", "--target", rel, "--name", "MIL-CREDA", "--plan", str(plan))
     if materialize:
-        subprocess.run([sys.executable, str(FORGE / ".claude/skills/proposal-implementation/scripts/materialize.py"), rel, "MIL-CREDA", "9"],
+        subprocess.run([sys.executable, str(FORGE / ".claude/skills/proposal-implementation/scripts/materialize.py"), rel, "MIL-CREDA", "9", str(KIT)],
                        capture_output=True, cwd=FORGE)
     if admit:
         cli("admit", "--target", rel, "--name", "MIL-CREDA", "--revision", REVISION)
@@ -118,7 +123,7 @@ def guard_plan_stale() -> None:
     (target / "a.ipynb").write_text("{}\n")
     commit(target)
     rel = f"implementations/{target.name}"
-    plan = SCRATCH / "plan-stale.json"
+    plan = TMP / "plan-stale.json"
     plan.write_text(json.dumps(cli("plan", "--target", rel, "--name", "MIL-CREDA")))
     (target / "b.ipynb").write_text("{}\n")   # the repository moves under the plan
     commit(target)
@@ -135,7 +140,7 @@ def guard_destination_conflict_rename() -> None:
     (target / "MIL-CREDA" / "unrelated.txt").write_text("taken\n")
     commit(target)
     rel = f"implementations/{target.name}"
-    plan = SCRATCH / "plan-occupied.json"
+    plan = TMP / "plan-occupied.json"
     plan.write_text(json.dumps(cli("plan", "--target", rel, "--name", "MIL-CREDA")))
     out = cli("apply", "--target", rel, "--name", "MIL-CREDA", "--plan", str(plan))
     record("DESTINATION_CONFLICT (rename onto existing)",
@@ -158,7 +163,7 @@ def guard_unclassified() -> None:
     (target / "notes.docx").write_text("binary-ish\n")
     commit(target)
     rel = f"implementations/{target.name}"
-    plan = SCRATCH / "plan-unclassified.json"
+    plan = TMP / "plan-unclassified.json"
     plan.write_text(json.dumps(cli("plan", "--target", rel, "--name", "MIL-CREDA")))
     out = cli("apply", "--target", rel, "--name", "MIL-CREDA", "--plan", str(plan))
     record("UNCLASSIFIED_FILES", out.get("code") == "UNCLASSIFIED_FILES", str(out.get("code")))
@@ -216,11 +221,11 @@ def guard_admissibility_stale() -> None:
 
 def guard_inadmissible_not_measured() -> None:
     target = scaffolded("inadmissible", admit=False)
-    mutated(target / "tests" / "findings.py", '"equations": ["27", "32", "33", "37"]',
-            '"equations": ["27", "77", "33", "37"]')
+    mutated(target / "tests" / "findings.py", '"equations": ["4", "5"]',
+            '"equations": ["4", "77"]')
     out = cli("admit", "--target", f"implementations/{target.name}", "--name", "MIL-CREDA",
               "--revision", REVISION)
-    flagged = "global_term_survives_worthless_pseudo_labels" in out.get("inadmissible", {})
+    flagged = "discrepancy_constant_is_unattainable" in out.get("inadmissible", {})
     record("inadmissible finding is refused", out.get("status") == "inadmissible" and flagged,
            str(out.get("status")))
 
@@ -250,8 +255,8 @@ def guard_remedy_without_control() -> None:
     target = scaffolded("nocontrol")
     path = target / "tests" / "test_remedies.py"
     text = path.read_text()
-    for old, new in (("declared_full = local_loss(distances, w)", "declared_full = full"),
-                     ("declared_half = local_loss(distances, 0.5 * w)", "declared_half = full")):
+    for old, new in (("declared_full = weighted_mean(discrepancies, confidences)", "declared_full = full"),
+                     ("declared_half = weighted_mean(discrepancies, 0.5 * confidences)", "declared_half = full")):
         if old not in text:
             raise AssertionError(f"fixture unchanged: {old!r} never matched")
         text = text.replace(old, new)
@@ -308,7 +313,7 @@ def guard_stale_references() -> None:
     (target / "docs" / "guide.md").write_text("results live in Beta/Results\n")
     commit(target)
     rel = f"implementations/{target.name}"
-    plan = SCRATCH / "plan-staleref.json"
+    plan = TMP / "plan-staleref.json"
     plan.write_text(json.dumps(cli("plan", "--target", rel, "--name", "MIL-CREDA")))
     cli("apply", "--target", rel, "--name", "MIL-CREDA", "--plan", str(plan))
     out = cli("verify", "--target", rel, "--name", "MIL-CREDA", "--revision", REVISION)
@@ -334,7 +339,7 @@ def guard_apply_aborts_atomically() -> None:
 
     head_before = sh("git rev-parse HEAD", target).strip()
     rel = f"implementations/{target.name}"
-    plan = SCRATCH / "plan-abort.json"
+    plan = TMP / "plan-abort.json"
     plan.write_text(json.dumps(cli("plan", "--target", rel, "--name", "MIL-CREDA")))
     out = cli("apply", "--target", rel, "--name", "MIL-CREDA", "--plan", str(plan))
 
@@ -356,7 +361,7 @@ def guard_handoff_sizes_by_reach() -> None:
     prompt = (out.get("deferToOwnSession") or [{}])[0].get("prompt", "")
     record("handoff defers the structural remedy to its own session",
            structural in deferred and structural not in inline
-           and len(inline) == 3 and "sesión propia" in prompt,
+           and len(inline) == 2 and "sesión propia" in prompt,
            f"inline={len(inline)} deferred={len(deferred)}")
 
 
@@ -381,12 +386,12 @@ def guard_adoption_inference() -> None:
     from findings import FINDINGS  # noqa: E402
     sys.path.pop(0)
 
-    source = (FORGE / "proposals" / REVISION).read_text()
-    finding = next(f for f in FINDINGS if f["id"] == "local_normalization_constant_is_unattainable")
+    source = (FIXTURES / REVISION).read_text()
+    finding = next(f for f in FINDINGS if f["id"] == "discrepancy_constant_is_unattainable")
     marker = finding["adoption"]["absent"]
 
     taken = source.replace(marker, finding["adoption"]["expect"][0])
-    other = source.replace(marker, marker.replace("{4}", "{\\pi}"))
+    other = source.replace(marker, marker.replace("= 4", "= 9"))
     if taken == source or other == source:
         raise AssertionError("the simulated revisions did not change")
 
@@ -405,11 +410,11 @@ def guard_invalid_adoption_marker() -> None:
     `open` — absence indistinguishable from adoption.
     """
     target = scaffolded("badmarker", admit=False)
-    mutated(target / "tests" / "findings.py", r'"absent": r"d_j^{2}}{4}"',
-            r'"absent": r"d_j^{2}}{47}"')
+    mutated(target / "tests" / "findings.py", '"absent": r"\\kappa = 4"',
+            '"absent": r"\\kappa = 47"')
     out = cli("admit", "--target", f"implementations/{target.name}", "--name", "MIL-CREDA",
               "--revision", REVISION)
-    flagged = out.get("inadmissible", {}).get("local_normalization_constant_is_unattainable", [])
+    flagged = out.get("inadmissible", {}).get("discrepancy_constant_is_unattainable", [])
     record("adoption marker absent from the revision is inadmissible",
            out.get("status") == "inadmissible" and any("marker" in r for r in flagged),
            str(out.get("status")))
@@ -443,8 +448,8 @@ def guard_adopted_remedy_must_migrate() -> None:
     sys.path.pop(0)
 
     finding = next(f for f in FINDINGS
-                   if f["id"] == "local_normalization_constant_is_unattainable")
-    source = (FORGE / "proposals" / REVISION).read_text()
+                   if f["id"] == "discrepancy_constant_is_unattainable")
+    source = (FIXTURES / REVISION).read_text()
     adopted = source.replace(finding["adoption"]["absent"], finding["adoption"]["expect"][0])
     if adopted == source:
         raise AssertionError("the simulated adoption changed nothing")
@@ -464,10 +469,10 @@ def guard_adopted_remedy_must_migrate() -> None:
     (target / "tests" / "test_invariants.py").write_text(
         (target / "tests" / "test_invariants.py").read_text()
         + f"\n\ndef test_{invariant}() -> None:\n    assert 2.0 > 0.0\n")
-    module = target / "src" / "MIL_CREDA" / "local_term.py"
+    module = target / "src" / "MIL_CREDA" / "discrepancy.py"
     module.write_text(module.read_text().replace(
-        '"local_loss_lies_in_the_unit_interval",',
-        f'"local_loss_lies_in_the_unit_interval",\n        "{invariant}",'))
+        '"weighted_mean_lies_in_the_unit_interval",',
+        f'"weighted_mean_lies_in_the_unit_interval",\n        "{invariant}",'))
 
     after = mod.migration_state(target, [finding], adopted, "MIL_CREDA")
     record("adopted remedy must migrate, and clears once it has",

@@ -1,1 +1,17 @@
-# Withdrawn from history: this revision held research content.
+"""Level 3 - synthetic data. Deterministic, fixed seed, ground truth by construction.
+
+State each expectation in the docstring BEFORE the assertion, so a passing test
+cannot be mistaken for a hypothesis fitted after seeing the output.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+
+SEED = {{SEED}}
+
+
+def test_{{EXPECTATION}}() -> None:
+    """Expectation: <what must happen, and why, stated before running>."""
+    rng = np.random.default_rng(SEED)  # noqa: F841
+    raise NotImplementedError
