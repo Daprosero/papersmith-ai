@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drop the r12 materialization kit into a target repository.
+"""Drop the materialization kit into a target repository.
 
 Plays the part of the agent's step 6-8: fills the scaffold gaps the skill
 reports, parameterized by the scenario's name and seed.
@@ -25,13 +25,17 @@ def main(target: str, name: str, seed: str, kit: str | None = None) -> int:
 
     package = root / "src" / pkg
     package.mkdir(parents=True, exist_ok=True)
+    # Read the module list off the kit. Naming them literally described one
+    # formulation's modules, so any other kit produced an __init__ that
+    # exported names its own package does not define.
+    modules = [module.stem for module in sorted((KIT / "src").glob("*.py"))]
     (package / "__init__.py").write_text(
-        '"""Reference implementation of the MIL-CREDA formulation.\n\n'
-        "Materializes research-concept-r12.md. Each module declares the sections\n"
-        "and equations it implements in `__provenance__`, and every invariant\n"
-        "listed there has a matching test under tests/.\n"
+        f'"""Reference implementation of the {name} formulation.\n\n'
+        "Each module declares the sections and equations it implements in\n"
+        "`__provenance__`, and every invariant listed there has a matching\n"
+        "test under tests/.\n"
         '"""\n\n'
-        '__all__ = ["bags", "entropy", "global_term", "kernels", "local_term", "objective"]\n'
+        f"__all__ = {sorted(modules)!r}\n"
     )
     for module in sorted((KIT / "src").glob("*.py")):
         (package / module.name).write_text(module.read_text())

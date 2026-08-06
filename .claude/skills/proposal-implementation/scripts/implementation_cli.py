@@ -133,8 +133,8 @@ def package_name(name: str) -> str:
     """The importable form of the name.
 
     A hyphen is legal in a directory but not in a Python identifier, so
-    `MIL-CREDA/` pairs with `src/MIL_CREDA/`. The correspondence the layout
-    exists to make visible survives; `import MIL-CREDA` would not.
+    `Example-Method/` pairs with `src/Example_Method/`. The correspondence the layout
+    exists to make visible survives; `import Example-Method` would not.
     """
     return name.replace("-", "_")
 

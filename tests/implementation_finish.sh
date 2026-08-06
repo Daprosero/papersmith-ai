@@ -9,6 +9,11 @@ SCRATCH="$(cd "$(dirname "$0")" && pwd)"
 
 TARGET="$1"; NAME="$2"; SEED="$3"
 
+# Bind to the harness fixture so a direct invocation resolves the revision the
+# same way the battery does. Under `set -e` an unresolved revision aborts the
+# script at admit, and every later step reports as if it had never run.
+export IMPLEMENTATION_PROPOSALS="${IMPLEMENTATION_PROPOSALS:-$FORGE/tests/fixtures}"
+
 cd "$FORGE"
 python3 "$CLI" env --target "$TARGET" >/dev/null
 "$TARGET/.venv/bin/pip" install -q pytest numpy ipykernel nbconvert 2>&1 \

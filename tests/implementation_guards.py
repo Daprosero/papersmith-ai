@@ -75,13 +75,13 @@ def scaffolded(name: str, materialize: bool = True, admit: bool = True) -> Path:
     target = fresh(name)
     rel = f"implementations/{target.name}"
     plan = TMP / f"plan-{name}.json"
-    plan.write_text(json.dumps(cli("plan", "--target", rel, "--name", "MIL-CREDA")))
-    cli("apply", "--target", rel, "--name", "MIL-CREDA", "--plan", str(plan))
+    plan.write_text(json.dumps(cli("plan", "--target", rel, "--name", "Example-Method")))
+    cli("apply", "--target", rel, "--name", "Example-Method", "--plan", str(plan))
     if materialize:
-        subprocess.run([sys.executable, str(FORGE / ".claude/skills/proposal-implementation/scripts/materialize.py"), rel, "MIL-CREDA", "9", str(KIT)],
+        subprocess.run([sys.executable, str(FORGE / ".claude/skills/proposal-implementation/scripts/materialize.py"), rel, "Example-Method", "9", str(KIT)],
                        capture_output=True, cwd=FORGE)
     if admit:
-        cli("admit", "--target", rel, "--name", "MIL-CREDA", "--revision", REVISION)
+        cli("admit", "--target", rel, "--name", "Example-Method", "--revision", REVISION)
     return target
 
 
@@ -118,7 +118,7 @@ def guard_invalid_name() -> None:
 def guard_dirty_worktree() -> None:
     target = fresh("dirty")
     (target / "loose.txt").write_text("uncommitted\n")
-    out = cli("plan", "--target", f"implementations/{target.name}", "--name", "MIL-CREDA")
+    out = cli("plan", "--target", f"implementations/{target.name}", "--name", "Example-Method")
     record("DIRTY_WORKTREE", out.get("code") == "DIRTY_WORKTREE", str(out.get("code")))
 
 
@@ -128,10 +128,10 @@ def guard_plan_stale() -> None:
     commit(target)
     rel = f"implementations/{target.name}"
     plan = TMP / "plan-stale.json"
-    plan.write_text(json.dumps(cli("plan", "--target", rel, "--name", "MIL-CREDA")))
+    plan.write_text(json.dumps(cli("plan", "--target", rel, "--name", "Example-Method")))
     (target / "b.ipynb").write_text("{}\n")   # the repository moves under the plan
     commit(target)
-    out = cli("apply", "--target", rel, "--name", "MIL-CREDA", "--plan", str(plan))
+    out = cli("apply", "--target", rel, "--name", "Example-Method", "--plan", str(plan))
     record("PLAN_STALE", out.get("code") == "PLAN_STALE", str(out.get("code")))
 
 
@@ -140,13 +140,13 @@ def guard_destination_conflict_rename() -> None:
     for sub in ("Notebooks", "Results"):
         (target / "Legacy" / sub).mkdir(parents=True)
         (target / "Legacy" / sub / "f.csv").write_text("a,b\n")
-    (target / "MIL-CREDA").mkdir()
-    (target / "MIL-CREDA" / "unrelated.txt").write_text("taken\n")
+    (target / "Example-Method").mkdir()
+    (target / "Example-Method" / "unrelated.txt").write_text("taken\n")
     commit(target)
     rel = f"implementations/{target.name}"
     plan = TMP / "plan-occupied.json"
-    plan.write_text(json.dumps(cli("plan", "--target", rel, "--name", "MIL-CREDA")))
-    out = cli("apply", "--target", rel, "--name", "MIL-CREDA", "--plan", str(plan))
+    plan.write_text(json.dumps(cli("plan", "--target", rel, "--name", "Example-Method")))
+    out = cli("apply", "--target", rel, "--name", "Example-Method", "--plan", str(plan))
     record("DESTINATION_CONFLICT (rename onto existing)",
            out.get("code") == "DESTINATION_CONFLICT", str(out.get("code")))
 
@@ -157,7 +157,7 @@ def guard_destination_collision_moves() -> None:
         (target / sub).mkdir()
         (target / sub / "same.csv").write_text("a,b\n")
     commit(target)
-    plan = cli("plan", "--target", f"implementations/{target.name}", "--name", "MIL-CREDA")
+    plan = cli("plan", "--target", f"implementations/{target.name}", "--name", "Example-Method")
     record("DESTINATION_CONFLICT (two sources, one path)",
            bool(plan.get("conflicts")), str(plan.get("conflicts")))
 
@@ -168,8 +168,8 @@ def guard_unclassified() -> None:
     commit(target)
     rel = f"implementations/{target.name}"
     plan = TMP / "plan-unclassified.json"
-    plan.write_text(json.dumps(cli("plan", "--target", rel, "--name", "MIL-CREDA")))
-    out = cli("apply", "--target", rel, "--name", "MIL-CREDA", "--plan", str(plan))
+    plan.write_text(json.dumps(cli("plan", "--target", rel, "--name", "Example-Method")))
+    out = cli("apply", "--target", rel, "--name", "Example-Method", "--plan", str(plan))
     record("UNCLASSIFIED_FILES", out.get("code") == "UNCLASSIFIED_FILES", str(out.get("code")))
 
 
@@ -186,14 +186,14 @@ def guard_forge_interpreter() -> None:
 
 def guard_revision_unreadable() -> None:
     target = scaffolded("norev", admit=False)
-    out = cli("admit", "--target", f"implementations/{target.name}", "--name", "MIL-CREDA",
+    out = cli("admit", "--target", f"implementations/{target.name}", "--name", "Example-Method",
               "--revision", "research-concept-r99.md")
     record("REVISION_UNREADABLE", out.get("code") == "REVISION_UNREADABLE", str(out.get("code")))
 
 
 def guard_no_findings() -> None:
     target = scaffolded("nofindings", materialize=False, admit=False)
-    out = cli("admit", "--target", f"implementations/{target.name}", "--name", "MIL-CREDA",
+    out = cli("admit", "--target", f"implementations/{target.name}", "--name", "Example-Method",
               "--revision", REVISION)
     record("NO_FINDINGS", out.get("code") == "NO_FINDINGS", str(out.get("code")))
 
@@ -202,7 +202,7 @@ def guard_no_findings() -> None:
 
 def guard_admissibility_missing() -> None:
     target = scaffolded("noruling", admit=False)
-    out = cli("verify", "--target", f"implementations/{target.name}", "--name", "MIL-CREDA",
+    out = cli("verify", "--target", f"implementations/{target.name}", "--name", "Example-Method",
               "--revision", REVISION)
     audit = out.get("audit", {})
     record("admissibility missing -> audit incomplete",
@@ -215,7 +215,7 @@ def guard_admissibility_stale() -> None:
     target = scaffolded("staleruling")
     ruling = target / "tests" / "admissibility.json"
     mutated(ruling, '"revisionSha256": "', '"revisionSha256": "0000')
-    out = cli("verify", "--target", f"implementations/{target.name}", "--name", "MIL-CREDA",
+    out = cli("verify", "--target", f"implementations/{target.name}", "--name", "Example-Method",
               "--revision", REVISION)
     audit = out.get("audit", {})
     record("admissibility stale -> audit incomplete",
@@ -227,7 +227,7 @@ def guard_inadmissible_not_measured() -> None:
     target = scaffolded("inadmissible", admit=False)
     mutated(target / "tests" / "findings.py", '"equations": ["4", "5"]',
             '"equations": ["4", "77"]')
-    out = cli("admit", "--target", f"implementations/{target.name}", "--name", "MIL-CREDA",
+    out = cli("admit", "--target", f"implementations/{target.name}", "--name", "Example-Method",
               "--revision", REVISION)
     flagged = "discrepancy_constant_is_unattainable" in out.get("inadmissible", {})
     record("inadmissible finding is refused", out.get("status") == "inadmissible" and flagged,
@@ -238,7 +238,7 @@ def guard_trivial_assertion() -> None:
     target = scaffolded("trivial")
     mutated(target / "tests" / "test_smoke.py", "def test_package_imports() -> None:",
             "def test_bogus() -> None:\n    assert True\n\n\ndef test_package_imports() -> None:")
-    out = cli("verify", "--target", f"implementations/{target.name}", "--name", "MIL-CREDA",
+    out = cli("verify", "--target", f"implementations/{target.name}", "--name", "Example-Method",
               "--revision", REVISION)
     trivial = out.get("validation", {}).get("trivialAssertions", [])
     record("trivial assertion detected", bool(trivial), str(trivial[:1]))
@@ -249,7 +249,7 @@ def guard_self_comparison() -> None:
     mutated(target / "tests" / "test_smoke.py", "def test_package_imports() -> None:",
             "def test_counter() -> None:\n    hits = 0\n    hits += len(MODULES) == len(MODULES)\n"
             "    assert hits == 1\n\n\ndef test_package_imports() -> None:")
-    out = cli("verify", "--target", f"implementations/{target.name}", "--name", "MIL-CREDA",
+    out = cli("verify", "--target", f"implementations/{target.name}", "--name", "Example-Method",
               "--revision", REVISION)
     trivial = out.get("validation", {}).get("trivialAssertions", [])
     record("self-comparison in a counter detected", bool(trivial), str(trivial[:1]))
@@ -265,7 +265,7 @@ def guard_remedy_without_control() -> None:
             raise AssertionError(f"fixture unchanged: {old!r} never matched")
         text = text.replace(old, new)
     path.write_text(text)
-    out = cli("verify", "--target", f"implementations/{target.name}", "--name", "MIL-CREDA",
+    out = cli("verify", "--target", f"implementations/{target.name}", "--name", "Example-Method",
               "--revision", REVISION)
     uncontrolled = out.get("audit", {}).get("remediesWithoutControl", [])
     record("remedy without control detected", bool(uncontrolled), str(uncontrolled))
@@ -273,13 +273,13 @@ def guard_remedy_without_control() -> None:
 
 def guard_notebook_states() -> None:
     target = scaffolded("notebook")
-    out = cli("verify", "--target", f"implementations/{target.name}", "--name", "MIL-CREDA",
+    out = cli("verify", "--target", f"implementations/{target.name}", "--name", "Example-Method",
               "--revision", REVISION)
     notebook = out.get("validation", {}).get("notebook", {})
     record("notebook never executed -> stale", notebook.get("status") == "stale",
            str(notebook.get("status")))
 
-    path = target / "MIL-CREDA" / "Notebooks" / "verification.ipynb"
+    path = target / "Example-Method" / "Notebooks" / "verification.ipynb"
     notebook_json = json.loads(path.read_text())
     for cell in notebook_json["cells"]:
         if cell["cell_type"] == "code":
@@ -291,7 +291,7 @@ def guard_notebook_states() -> None:
                      "evalue": "x", "traceback": []}],
         "source": ["raise ValueError('x')"]})
     path.write_text(json.dumps(notebook_json))
-    out = cli("verify", "--target", f"implementations/{target.name}", "--name", "MIL-CREDA",
+    out = cli("verify", "--target", f"implementations/{target.name}", "--name", "Example-Method",
               "--revision", REVISION)
     notebook = out.get("validation", {}).get("notebook", {})
     record("notebook with a raised cell -> errored", notebook.get("status") == "errored",
@@ -318,9 +318,9 @@ def guard_stale_references() -> None:
     commit(target)
     rel = f"implementations/{target.name}"
     plan = TMP / "plan-staleref.json"
-    plan.write_text(json.dumps(cli("plan", "--target", rel, "--name", "MIL-CREDA")))
-    cli("apply", "--target", rel, "--name", "MIL-CREDA", "--plan", str(plan))
-    out = cli("verify", "--target", rel, "--name", "MIL-CREDA", "--revision", REVISION)
+    plan.write_text(json.dumps(cli("plan", "--target", rel, "--name", "Example-Method")))
+    cli("apply", "--target", rel, "--name", "Example-Method", "--plan", str(plan))
+    out = cli("verify", "--target", rel, "--name", "Example-Method", "--revision", REVISION)
     stale = out.get("structure", {}).get("staleReferences", [])
     record("reference to a vanished product folder detected", bool(stale), str(stale[:1]))
 
@@ -334,18 +334,18 @@ def guard_apply_aborts_atomically() -> None:
     has already begun.
     """
     target = fresh("abort")
-    (target / ".gitignore").write_text("blocker\nMIL-CREDA\n")
+    (target / ".gitignore").write_text("blocker\nExample-Method\n")
     (target / "a.ipynb").write_text("{}\n")
     commit(target)
-    (target / "MIL-CREDA").write_text("a file where the product folder must go\n")
-    assert (target / "MIL-CREDA").is_file(), "the blocker was not created"
+    (target / "Example-Method").write_text("a file where the product folder must go\n")
+    assert (target / "Example-Method").is_file(), "the blocker was not created"
     assert not sh("git status --porcelain", target).strip(), "the blocker must stay invisible"
 
     head_before = sh("git rev-parse HEAD", target).strip()
     rel = f"implementations/{target.name}"
     plan = TMP / "plan-abort.json"
-    plan.write_text(json.dumps(cli("plan", "--target", rel, "--name", "MIL-CREDA")))
-    out = cli("apply", "--target", rel, "--name", "MIL-CREDA", "--plan", str(plan))
+    plan.write_text(json.dumps(cli("plan", "--target", rel, "--name", "Example-Method")))
+    out = cli("apply", "--target", rel, "--name", "Example-Method", "--plan", str(plan))
 
     head_after = sh("git rev-parse HEAD", target).strip()
     dirty = sh("git status --porcelain", target).strip()
@@ -357,7 +357,7 @@ def guard_apply_aborts_atomically() -> None:
 def guard_handoff_sizes_by_reach() -> None:
     """Local remedies settle inline; a structural one gets a session of its own."""
     target = scaffolded("handoff", admit=False)
-    out = cli("handoff", "--target", f"implementations/{target.name}", "--name", "MIL-CREDA",
+    out = cli("handoff", "--target", f"implementations/{target.name}", "--name", "Example-Method",
               "--revision", REVISION)
     inline = {i["id"] for i in out.get("settleInline", [])}
     deferred = {i["id"] for i in out.get("deferToOwnSession", [])}
@@ -371,7 +371,7 @@ def guard_handoff_sizes_by_reach() -> None:
 
 def guard_handoff_needs_a_revision() -> None:
     target = scaffolded("handoffrev", materialize=False, admit=False)
-    out = cli("handoff", "--target", f"implementations/{target.name}", "--name", "MIL-CREDA",
+    out = cli("handoff", "--target", f"implementations/{target.name}", "--name", "Example-Method",
               "--revision", "research-concept-r99.md")
     record("handoff refuses without a readable revision",
            out.get("code") == "REVISION_UNREADABLE", str(out.get("code")))
@@ -416,7 +416,7 @@ def guard_invalid_adoption_marker() -> None:
     target = scaffolded("badmarker", admit=False)
     mutated(target / "tests" / "findings.py", '"absent": r"\\kappa = 4"',
             '"absent": r"\\kappa = 47"')
-    out = cli("admit", "--target", f"implementations/{target.name}", "--name", "MIL-CREDA",
+    out = cli("admit", "--target", f"implementations/{target.name}", "--name", "Example-Method",
               "--revision", REVISION)
     flagged = out.get("inadmissible", {}).get("discrepancy_constant_is_unattainable", [])
     record("adoption marker absent from the revision is inadmissible",
@@ -427,7 +427,7 @@ def guard_invalid_adoption_marker() -> None:
 def guard_every_marker_matches_today() -> None:
     """Every declared marker must be found in the bound revision, right now."""
     target = scaffolded("markers", admit=False)
-    out = cli("admit", "--target", f"implementations/{target.name}", "--name", "MIL-CREDA",
+    out = cli("admit", "--target", f"implementations/{target.name}", "--name", "Example-Method",
               "--revision", REVISION)
     record("every finding's marker describes the current revision",
            out.get("status") == "admitted" and not out.get("inadmissible"),
@@ -458,9 +458,9 @@ def guard_adopted_remedy_must_migrate() -> None:
     if adopted == source:
         raise AssertionError("the simulated adoption changed nothing")
 
-    before = mod.migration_state(target, [finding], adopted, "MIL_CREDA")
+    before = mod.migration_state(target, [finding], adopted, "Example_Method")
     owed = before["pending"][0] if before["pending"] else ""
-    still_open = mod.migration_state(target, [finding], source, "MIL_CREDA")
+    still_open = mod.migration_state(target, [finding], source, "Example_Method")
 
     # now do what the agent would: retire the remedy, land the invariant
     invariant = finding["becomes_invariant"]
@@ -473,12 +473,12 @@ def guard_adopted_remedy_must_migrate() -> None:
     (target / "tests" / "test_invariants.py").write_text(
         (target / "tests" / "test_invariants.py").read_text()
         + f"\n\ndef test_{invariant}() -> None:\n    assert 2.0 > 0.0\n")
-    module = target / "src" / "MIL_CREDA" / "discrepancy.py"
+    module = target / "src" / "Example_Method" / "discrepancy.py"
     module.write_text(module.read_text().replace(
         '"weighted_mean_lies_in_the_unit_interval",',
         f'"weighted_mean_lies_in_the_unit_interval",\n        "{invariant}",'))
 
-    after = mod.migration_state(target, [finding], adopted, "MIL_CREDA")
+    after = mod.migration_state(target, [finding], adopted, "Example_Method")
     record("adopted remedy must migrate, and clears once it has",
            still_open["status"] == "clear" and before["status"] == "pending"
            and after["status"] == "clear" and "remedy test is still in place" in owed,

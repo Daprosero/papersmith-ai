@@ -116,8 +116,8 @@ proposal itself — that is `proposal-deliberation`.
 ```
 
 `<Name>` is chosen by the user. `<Package>` is its importable form: a hyphen is
-legal in a directory but not in a Python identifier, so `MIL-CREDA/` pairs with
-`src/MIL_CREDA/`. Never scaffold `src/<Name>/` when the two differ — nothing
+legal in a directory but not in a Python identifier, so `Example-Method/` pairs with
+`src/Example_Method/`. Never scaffold `src/<Name>/` when the two differ — nothing
 could import it. Pre-existing code moves to its own package under `src/`, never
 into `src/<Package>/`. `pyproject.toml` must carry
 `[tool.pytest.ini_options]` with `pythonpath = ["src"]`: without it the suite

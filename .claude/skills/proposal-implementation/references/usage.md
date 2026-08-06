@@ -108,20 +108,20 @@ plan proposes a single directory rename instead of reclassifying its contents:
 
 ```json
 {
-  "renames": [{ "from": "Images", "to": "MIL-CREDA",
+  "renames": [{ "from": "Images", "to": "Example-Method",
                 "reason": "product folder has the right shape but the wrong name; renaming preserves every subtree" }],
-  "createDirs": ["src/MIL_CREDA", "tests"], "moves": [], "conflicts": [],
+  "createDirs": ["src/Example_Method", "tests"], "moves": [], "conflicts": [],
   "referenceUpdates": [
     { "file": "src/CREDA/artifacts.py", "occurrences": 2,
-      "kind": "path prefix", "replace": "Images/", "with": "MIL-CREDA/" },
+      "kind": "path prefix", "replace": "Images/", "with": "Example-Method/" },
     { "file": "src/CREDA/artifacts.py", "occurrences": 1,
-      "kind": "quoted path segment", "replace": "\"Images\"", "with": "\"MIL-CREDA\"" }
+      "kind": "quoted path segment", "replace": "\"Images\"", "with": "\"Example-Method\"" }
   ]
 }
 ```
 
-Note `createDirs`: with a hyphenated name the product folder is `MIL-CREDA/`
-but the package is `src/MIL_CREDA/`, because `import MIL-CREDA` is a syntax
+Note `createDirs`: with a hyphenated name the product folder is `Example-Method/`
+but the package is `src/Example_Method/`, because `import Example-Method` is a syntax
 error. The two forms are derived, never asked twice.
 
 ### `referenceUpdates` — a rename is half a migration

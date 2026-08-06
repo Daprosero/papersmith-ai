@@ -2,7 +2,7 @@
 """Scenario battery for proposal-coding.
 
 Every scenario is a situation a clone can land in. Each one must reach the
-final MIL-CREDA validation: structure ok, fidelity ok, suite green, notebook
+final Example-Method validation: structure ok, fidelity ok, suite green, notebook
 executed. When the skill refuses or reports something, the resolver plays the
 part of the user deciding, and the flow continues — a refusal is a checkpoint,
 not an end state.
@@ -34,8 +34,11 @@ CODING = FORGE / "implementations"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 KIT = FIXTURES / "implementation_kit"
 # The harness drives the skill from a neutral fixture, never from proposals/:
-# a paper forge must not have its test suite depend on one paper.
+# a paper forge must not have its test suite depend on one paper. Naming the
+# revision is not enough — the CLI resolves it under IMPLEMENTATION_PROPOSALS,
+# which without this default points at the forge's unversioned proposals/.
 REVISION = "neutral-concept-r01.md"
+os.environ.setdefault("IMPLEMENTATION_PROPOSALS", str(FIXTURES))
 
 CATEGORY_BY_EXT = {
     ".csv": "Results", ".tsv": "Results", ".pdf": "Results", ".png": "Results",
@@ -142,15 +145,15 @@ def s_ambiguous(t: Path) -> None:
 
 def s_name_taken(t: Path) -> None:
     clone(t)
-    sh("mkdir -p MIL-CREDA", t)
-    (t / "MIL-CREDA/unrelated.txt").write_text("something else already lives here\n")
-    commit_all(t, "add an unrelated MIL-CREDA folder")
+    sh("mkdir -p Example-Method", t)
+    (t / "Example-Method/unrelated.txt").write_text("something else already lives here\n")
+    commit_all(t, "add an unrelated Example-Method folder")
 
 
 def s_pkg_taken(t: Path) -> None:
     clone(t)
-    sh("mkdir -p src/MIL_CREDA", t)
-    (t / "src/MIL_CREDA/legacy.py").write_text('"""Foreign code already using the package name."""\n\nVALUE = 1\n')
+    sh("mkdir -p src/Example_Method", t)
+    (t / "src/Example_Method/legacy.py").write_text('"""Foreign code already using the package name."""\n\nVALUE = 1\n')
     commit_all(t, "occupy the package name")
 
 
@@ -185,20 +188,20 @@ def s_submodule(t: Path) -> None:
 
 
 SCENARIOS = [
-    ("empty", s_empty, "MIL-CREDA", 101),
-    ("untracked", s_untracked, "MIL-CREDA", 102),
-    ("full-clone", s_full_clone, "MIL-CREDA", 103),
-    ("shallow", s_shallow, "MIL-CREDA", 104),
-    ("detached", s_detached, "MIL-CREDA", 105),
-    ("branch", s_branch, "MIL-CREDA", 106),
+    ("empty", s_empty, "Example-Method", 101),
+    ("untracked", s_untracked, "Example-Method", 102),
+    ("full-clone", s_full_clone, "Example-Method", 103),
+    ("shallow", s_shallow, "Example-Method", 104),
+    ("detached", s_detached, "Example-Method", 105),
+    ("branch", s_branch, "Example-Method", 106),
     ("flattened", s_flattened, "MILCREDA", 107),
-    ("ambiguous", s_ambiguous, "MIL-CREDA", 108),
-    ("name-taken", s_name_taken, "MIL-CREDA", 109),
-    ("pkg-taken", s_pkg_taken, "MIL_CREDA2", 110),
-    ("ignored-products", s_ignored_products, "MIL-CREDA", 111),
-    ("spaces", s_spaces, "MIL-CREDA", 112),
-    ("symlink", s_symlink, "MIL-CREDA", 113),
-    ("submodule", s_submodule, "MIL-CREDA", 114),
+    ("ambiguous", s_ambiguous, "Example-Method", 108),
+    ("name-taken", s_name_taken, "Example-Method", 109),
+    ("pkg-taken", s_pkg_taken, "Example_Method2", 110),
+    ("ignored-products", s_ignored_products, "Example-Method", 111),
+    ("spaces", s_spaces, "Example-Method", 112),
+    ("symlink", s_symlink, "Example-Method", 113),
+    ("submodule", s_submodule, "Example-Method", 114),
 ]
 
 
