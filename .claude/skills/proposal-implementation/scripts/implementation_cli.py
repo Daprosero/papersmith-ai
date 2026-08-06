@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import os
 import re
@@ -824,6 +825,91 @@ def migrate(target: Path, current: dict) -> None:
         f"chore(structure): normalize repository layout for {current['name']}")
 
 
+def cmd_admit(args: argparse.Namespace) -> dict:
+    """Rule on each remedy's admissibility, before anything is measured.
+
+    Efficacy is the second question. Measuring a remedy that cites an equation
+    the revision lacks, or leans on notation it never defines, produces numbers
+    that look like evidence for something that should never have reached the
+    bench — and the rigour of the sweep ends up lending it credibility.
+
+    Writes the verdict into the target so the remedy suite can refuse to run
+    without it. Only the verdict travels: the proposal's text stays in the forge.
+    """
+    target = resolve_target(args.target)
+    source = revision_source(args.revision)
+    if source is None:
+        raise Refused("REVISION_UNREADABLE",
+                      f"{args.revision!r} is not readable under {FORGE_ROOT / 'proposals'}; "
+                      "admissibility cannot be ruled on and no remedy may be measured.")
+
+    tags = set(re.findall(r"\\tag\{(\d+)\}", source))
+    findings = read_findings(target)
+    if not findings:
+        raise Refused("NO_FINDINGS", "tests/findings.py declares no finding to rule on.")
+
+    verdicts = {}
+    for finding in findings:
+        reasons = []
+        for field in ("equations", "remedy_equations"):
+            missing = [e for e in finding.get(field, []) if e not in tags]
+            if missing:
+                reasons.append(f"{field} cites equations absent from the revision: {missing}")
+        if not finding.get("uses"):
+            reasons.append("declares no notation, so compatibility cannot be ruled on")
+        else:
+            absent = [s for s in finding["uses"] if s not in source]
+            if absent:
+                reasons.append(f"relies on notation the revision does not define: {absent}")
+        verdicts[finding["id"]] = {
+            "admissible": not reasons,
+            "reasons": reasons,
+            "introduces": finding.get("introduces", []),
+        }
+
+    record = {
+        "revision": args.revision,
+        "revisionSha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+        "findings": verdicts,
+    }
+    path = target / "tests" / "admissibility.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    inadmissible = sorted(i for i, v in verdicts.items() if not v["admissible"])
+    return {
+        "command": "admit",
+        "target": str(target),
+        "revision": args.revision,
+        "status": "inadmissible" if inadmissible else "admitted",
+        "admitted": sorted(i for i, v in verdicts.items() if v["admissible"]),
+        "inadmissible": {i: verdicts[i]["reasons"] for i in inadmissible},
+        "introducesNotation": {i: v["introduces"] for i, v in verdicts.items() if v["introduces"]},
+        "record": str(path.relative_to(target)),
+        "note": "Only admitted remedies may be measured. Efficacy comes after this.",
+    }
+
+
+def admissibility_record(target: Path, revision: str | None) -> dict:
+    """The verdict on file, and whether it still applies to the bound revision."""
+    path = target / "tests" / "admissibility.json"
+    if not path.exists():
+        return {"status": "missing", "detail": "no ruling; no remedy may be measured"}
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {"status": "unreadable", "detail": "the ruling cannot be parsed"}
+    source = revision_source(revision)
+    if source is not None:
+        current = hashlib.sha256(source.encode("utf-8")).hexdigest()
+        if record.get("revisionSha256") != current:
+            return {"status": "stale",
+                    "detail": f"ruled against {record.get('revision')}, "
+                              f"whose bytes no longer match"}
+    return {"status": "present", "revision": record.get("revision"),
+            "findings": record.get("findings", {})}
+
+
 def cmd_verify(args: argparse.Namespace) -> dict:
     target = resolve_target(args.target)
     name = validate_name(args.name)
@@ -876,9 +962,14 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     without_remedy = sorted(f["id"] for f in findings if not f.get("remedy"))
     unvalidated = sorted(f["id"] for f in findings if f"test_remedy_{f['id']}" not in tests)
     compatibility = remedy_compatibility(findings, args.revision)
+    ruling = admissibility_record(target, args.revision)
+    unruled = sorted(f["id"] for f in findings
+                     if f["id"] not in ruling.get("findings", {})) if findings else []
     if not findings:
         audit_status = "none"
     elif without_evidence or without_remedy or unvalidated:
+        audit_status = "incomplete"
+    elif ruling["status"] != "present" or unruled:
         audit_status = "incomplete"
     elif compatibility["status"] in {"incompatible", "unknown"}:
         audit_status = "incomplete"
@@ -928,6 +1019,9 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "findingsWithoutEvidence": without_evidence,
             "findingsWithoutRemedy": without_remedy,
             "remediesWithoutValidation": unvalidated,
+            "admissibility": {"status": ruling["status"],
+                              "detail": ruling.get("detail"),
+                              "unruled": unruled},
             "compatibility": compatibility,
         },
         "validation": {
@@ -941,7 +1035,8 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     }
 
 
-COMMANDS = {"env": cmd_env, "plan": cmd_plan, "apply": cmd_apply, "verify": cmd_verify}
+COMMANDS = {"env": cmd_env, "plan": cmd_plan, "apply": cmd_apply,
+            "admit": cmd_admit, "verify": cmd_verify}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -959,7 +1054,7 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--name", required=True, help="package name chosen by the user")
         if name == "apply":
             p.add_argument("--plan", required=True, help="path to the approved plan JSON")
-        if name == "verify":
+        if name in {"verify", "admit"}:
             p.add_argument("--revision", default=None, help="latest research-concept-rNN.md")
 
     args = parser.parse_args(argv)

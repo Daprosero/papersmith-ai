@@ -3,7 +3,7 @@ name: proposal-implementation
 description: "Trigger: turn the latest managed mathematical proposal into working Python, scaffold or reorganize a target repository, or verify an existing implementation's layout and revision fidelity. Isolated venv, keyless, fail-closed."
 ---
 
-# Proposal Coding
+# Proposal Implementation
 
 Turn the current managed revision (`research-concept-rNN.md`) into Python that
 runs, in a target repository, and then prove it: smoke, invariants, synthetic
@@ -67,12 +67,15 @@ proposal itself — that is `proposal-deliberation`.
   measured over the same randomized sweep of 200 configurations.
 - Classify every finding. `theorem` demands the full sweep; `tendency` must
   declare its measured rate and must never be asserted as a law.
-- A remedy is not complete because it is sound. It must be expressible inside
-  the proposal as it stands: every equation it cites must exist, and every
-  symbol it relies on must be declared in `uses` and present in the revision.
-  Notation it would add goes in `introduces`, and a non-empty `introduces`
-  makes the audit `needs-deliberation` — never `ok`. Adding notation is the
-  deliberation's decision, not this skill's.
+- Rule on admissibility BEFORE measuring efficacy, never after. Run `admit`
+  first: every equation a remedy cites must exist in the revision, and every
+  symbol it relies on must be declared in `uses` and present there. Measuring a
+  remedy that fails this produces numbers that read as evidence and lend the
+  sweep's rigour to something that should never have reached the bench. The
+  remedy suite refuses to run without the ruling.
+- Notation the remedy would add goes in `introduces`. A non-empty `introduces`
+  is admissible but makes the audit `needs-deliberation` — never `ok`. Adding
+  notation is the deliberation's decision, not this skill's.
 - Remedies live in `tests/`, never in `src/`. Establishing that a correction is
   sound is not the same as adopting it.
 - v1 scope is smoke + invariants + synthetic + audit + remedies. Classic SOTA
@@ -128,10 +131,13 @@ counts as a gap, not as compliance.
 8. Write one module per object with `__provenance__`, plus its invariant tests.
 9. Audit: sweep 200 configurations, declare each finding in `tests/findings.py`
    with its kind, status, measured rate and proposed remedy.
-10. Validate every remedy over the same sweep: it must resolve its finding and
-    preserve the properties already established.
-11. Run the suite with the target interpreter, then execute the notebook.
-12. `verify --revision <latest>` and report structure, fidelity and audit.
+10. `admit --revision <latest>`: rule on admissibility before anything is
+    measured. Only admitted remedies proceed.
+11. Validate every admitted remedy over the same sweep: it must resolve its
+    finding and preserve the properties already established.
+12. Run the suite with the target interpreter, then execute the notebook.
+13. `verify --revision <latest>` and report structure, fidelity, audit and
+    validation.
 
 ## Output Contract
 
@@ -146,5 +152,5 @@ never report a finding whose remedy validation did not run.
 ## References
 
 - `references/usage.md` — worked invocations of every command.
-- `scripts/implementation_cli.py` — `env`, `plan`, `apply`, `verify`. Stdlib only.
+- `scripts/implementation_cli.py` — `env`, `plan`, `apply`, `admit`, `verify`. Stdlib only.
 - `assets/` — pyproject, module, test and notebook templates.

@@ -1,4 +1,4 @@
-# Proposal Coding — worked invocations
+# Proposal Implementation — worked invocations
 
 See [SKILL.md](../SKILL.md) for the contract. Everything below is a real
 invocation of `scripts/implementation_cli.py`: standard library only, no keys, no
@@ -50,7 +50,7 @@ stays untouched. Fetch real blobs only when the user actually runs a model.
 ## 2. The isolated environment
 
 ```bash
-python3 .claude/skills/proposal-implementations/scripts/implementation_cli.py env \
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py env \
   --target implementations/<repo> [--python python3.12]
 ```
 
@@ -75,7 +75,7 @@ code goes through the returned `interpreter`.
 ## 3. Plan the migration (read-only)
 
 ```bash
-python3 .claude/skills/proposal-implementations/scripts/implementation_cli.py plan \
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py plan \
   --target implementations/<repo> --name CREDA > /tmp/plan.json
 ```
 
@@ -171,7 +171,7 @@ is a result, not a dataset.
 ## 4. Apply, as one separate commit
 
 ```bash
-python3 .claude/skills/proposal-implementations/scripts/implementation_cli.py apply \
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py apply \
   --target implementations/<repo> --name CREDA --plan /tmp/plan.json
 ```
 
@@ -187,7 +187,7 @@ and `{{INVARIANT_ID}}`.
 
 ```bash
 implementations/<repo>/.venv/bin/python -m pytest -q
-python3 .claude/skills/proposal-implementations/scripts/implementation_cli.py verify \
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py verify \
   --target implementations/<repo> --name CREDA --revision research-concept-r12.md
 ```
 
@@ -284,6 +284,34 @@ Both halves matter. Validating the remedy is what caught the second finding in
 this repository: the first proposed fix mirrored the shape of Eq. (38), and the
 sweep showed that shape cannot damp anything — which turned out to be a defect
 in Eq. (38) itself, not in the fix.
+
+### `admit` — admissibility is ruled on first
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py admit \
+  --target implementations/<repo> --name <Name> --revision research-concept-r12.md
+```
+
+```json
+{ "status": "admitted",
+  "admitted": ["local_penalty_guarantee_is_vacuous", "..."],
+  "inadmissible": {},
+  "introducesNotation": { "confidence_is_an_unconstrained_decision_variable":
+                          ["\\operatorname{sg}", "\\lambda_{\\mathrm{conf}}"] },
+  "record": "tests/admissibility.json" }
+```
+
+The ruling is written into the target and the remedy suite reads it before
+measuring anything: without it every `test_remedy_<id>` fails immediately, and a
+finding ruled inadmissible is never measured while the others still run. Only
+the verdict travels — the revision's text stays in the forge.
+
+Order is the whole point. A remedy that cites a missing equation or leans on
+undefined notation would otherwise be swept over 200 configurations, and those
+numbers would read as evidence for something that should not have reached the
+bench. `verify` requires the ruling to exist, to cover every declared finding,
+and to have been issued against the same revision bytes; anything else leaves
+`audit` at `incomplete`.
 
 ### Sound is not the same as complete
 
