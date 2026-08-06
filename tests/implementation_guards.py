@@ -425,6 +425,57 @@ def guard_every_marker_matches_today() -> None:
            str(out.get("inadmissible") or "all four match"))
 
 
+def guard_adopted_remedy_must_migrate() -> None:
+    """An adopted remedy owes its claim to the invariant suite.
+
+    Exercised against a synthetic revision rather than the real one: the
+    proposal belongs to the deliberation and is never written from here.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("cli_migr", CLI)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    target = scaffolded("migration", admit=False)
+    sys.path.insert(0, str(target / "tests"))
+    sys.modules.pop("findings", None)
+    from findings import FINDINGS  # noqa: E402
+    sys.path.pop(0)
+
+    finding = next(f for f in FINDINGS
+                   if f["id"] == "local_normalization_constant_is_unattainable")
+    source = (FORGE / "proposals" / REVISION).read_text()
+    adopted = source.replace(finding["adoption"]["absent"], finding["adoption"]["expect"][0])
+    if adopted == source:
+        raise AssertionError("the simulated adoption changed nothing")
+
+    before = mod.migration_state(target, [finding], adopted, "MIL_CREDA")
+    owed = before["pending"][0] if before["pending"] else ""
+    still_open = mod.migration_state(target, [finding], source, "MIL_CREDA")
+
+    # now do what the agent would: retire the remedy, land the invariant
+    invariant = finding["becomes_invariant"]
+    remedies = target / "tests" / "test_remedies.py"
+    text = remedies.read_text().replace(
+        f"def test_remedy_{finding['id']}(", f"def _retired_remedy_{finding['id']}(")
+    if text == remedies.read_text():
+        raise AssertionError("the remedy test was not retired")
+    remedies.write_text(text)
+    (target / "tests" / "test_invariants.py").write_text(
+        (target / "tests" / "test_invariants.py").read_text()
+        + f"\n\ndef test_{invariant}() -> None:\n    assert 2.0 > 0.0\n")
+    module = target / "src" / "MIL_CREDA" / "local_term.py"
+    module.write_text(module.read_text().replace(
+        '"local_loss_lies_in_the_unit_interval",',
+        f'"local_loss_lies_in_the_unit_interval",\n        "{invariant}",'))
+
+    after = mod.migration_state(target, [finding], adopted, "MIL_CREDA")
+    record("adopted remedy must migrate, and clears once it has",
+           still_open["status"] == "clear" and before["status"] == "pending"
+           and after["status"] == "clear" and "remedy test is still in place" in owed,
+           f"open={still_open['status']} adopted={before['status']} migrated={after['status']}")
+
+
 GUARDS = [
     guard_outside_workspace, guard_not_a_git_repo, guard_invalid_name,
     guard_dirty_worktree, guard_plan_stale, guard_destination_conflict_rename,
@@ -436,6 +487,7 @@ GUARDS = [
     guard_apply_aborts_atomically, guard_handoff_sizes_by_reach,
     guard_handoff_needs_a_revision, guard_adoption_inference,
     guard_invalid_adoption_marker, guard_every_marker_matches_today,
+    guard_adopted_remedy_must_migrate,
 ]
 
 

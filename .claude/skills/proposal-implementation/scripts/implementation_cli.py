@@ -910,6 +910,62 @@ def adoption_state(finding: dict, source: str) -> dict:
                       "confirm by hand before treating it as adopted"}
 
 
+def declared_invariants(package_dir: Path) -> set[str]:
+    """Every invariant the implementation's modules claim."""
+    invariants: set[str] = set()
+    if not package_dir.is_dir():
+        return invariants
+    for file in sorted(package_dir.rglob("*.py")):
+        if file.name == "__init__.py":
+            continue
+        provenance = read_provenance(file)
+        if provenance and "__error__" not in provenance:
+            invariants.update(provenance.get("invariants", []))
+    return invariants
+
+
+def migration_state(target: Path, findings: list[dict], source: str | None,
+                    package: str) -> dict:
+    """What an adopted remedy still owes.
+
+    Once the deliberation publishes a remedy, it stops being a proposal: it is
+    the formulation. Leaving it in the remedy suite would keep reporting a
+    defect the document no longer has, and would leave its claim outside the
+    contract every other claim of the proposal is held to.
+
+    So an adopted finding must have moved: its remedy test retired, the claim
+    living in the invariant suite, and the invariant declared by the module that
+    now implements it. The skill checks the move happened; writing it is the
+    agent's work, as with any other code.
+    """
+    if source is None:
+        return {"status": "unknown", "pending": [],
+                "reason": "the revision could not be read"}
+
+    tests = test_function_names(target / "tests")
+    declared = declared_invariants(target / "src" / package)
+    pending: list[str] = []
+
+    for finding in findings:
+        if adoption_state(finding, source).get("state") != "adopted":
+            continue
+        invariant = finding.get("becomes_invariant")
+        if not invariant:
+            pending.append(f"{finding['id']}: adopted, but declares no invariant to become")
+            continue
+        owed = []
+        if f"test_remedy_{finding['id']}" in tests:
+            owed.append("its remedy test is still in place")
+        if f"test_{invariant}" not in tests:
+            owed.append(f"test_{invariant} is missing from the invariant suite")
+        if invariant not in declared:
+            owed.append(f"no module declares {invariant} in __provenance__")
+        if owed:
+            pending.append(f"{finding['id']} -> {invariant}: " + "; ".join(owed))
+
+    return {"status": "pending" if pending else "clear", "pending": pending}
+
+
 def cmd_handoff(args: argparse.Namespace) -> dict:
     """Hand the open findings to the deliberation, sized by their reach.
 
@@ -1118,6 +1174,8 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     compatibility = remedy_compatibility(findings, args.revision)
     ruling = admissibility_record(target, args.revision)
     uncontrolled = remedies_without_control(target / "tests", package_name(name))
+    migration = migration_state(target, findings, revision_source(args.revision),
+                                package_name(name))
     unruled = sorted(f["id"] for f in findings
                      if f["id"] not in ruling.get("findings", {})) if findings else []
     if not findings:
@@ -1125,6 +1183,10 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     elif without_evidence or without_remedy or unvalidated:
         audit_status = "incomplete"
     elif ruling["status"] != "present" or unruled or uncontrolled:
+        audit_status = "incomplete"
+    elif migration["status"] == "pending":
+        # An adopted remedy still sitting in the remedy suite would keep
+        # reporting a defect the revision no longer has.
         audit_status = "incomplete"
     elif compatibility["status"] in {"incompatible", "unknown"}:
         audit_status = "incomplete"
@@ -1175,6 +1237,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "findingsWithoutRemedy": without_remedy,
             "remediesWithoutValidation": unvalidated,
             "remediesWithoutControl": uncontrolled,
+            "migration": migration,
             "admissibility": {"status": ruling["status"],
                               "detail": ruling.get("detail"),
                               "unruled": unruled},

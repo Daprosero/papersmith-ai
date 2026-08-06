@@ -407,6 +407,25 @@ Inference is textual, so it is built to fail toward `open`. An adopted finding
 stops counting as introducing notation: the deliberation settled that when it
 published.
 
+### After adoption: the remedy becomes an invariant
+
+`audit.migration` closes the loop. Once the deliberation publishes a remedy it
+is no longer a correction under consideration — it is what the proposal says,
+and it belongs where every other claim of the proposal lives.
+
+Each finding declares `becomes_invariant`. When its adoption reads `adopted`,
+three things must have happened:
+
+```
+test_remedy_<id>            retired
+test_<becomes_invariant>    present in the invariant suite
+__provenance__["invariants"] declares <becomes_invariant> in the module
+```
+
+`audit.status` stays `incomplete` until all three hold. The skill checks the
+move; writing it is the agent's work, as with any other code. Leaving the
+remedy in place would keep reporting a defect the revision no longer has.
+
 ## Guard codes
 
 A guard's failure is silent by definition: when one stops working, every happy

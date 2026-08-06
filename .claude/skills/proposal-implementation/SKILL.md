@@ -95,6 +95,12 @@ proposal itself — that is `proposal-deliberation`.
 - Adoption is read from the published revision, never assumed. The reliable
   signal is that the text the remedy replaces is gone; if nothing recognizable
   took its place the state is `changed-unrecognized` and a human confirms.
+- An adopted remedy stops being a proposal and becomes the formulation, so it
+  moves: its remedy test retires, its claim lands in the invariant suite as
+  `test_<becomes_invariant>`, and the module implementing it declares that
+  invariant. Until it does, `audit` stays `incomplete` — leaving it in the
+  remedy suite would keep reporting a defect the revision no longer has, and
+  would keep its claim outside the contract every other claim is held to.
 - v1 scope is smoke + invariants + synthetic + audit + remedies. Classic SOTA
   datasets and baseline comparison are out of scope; say so instead of
   improvising them.
