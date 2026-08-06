@@ -92,6 +92,19 @@ proposal itself — that is `proposal-deliberation`.
   and cited nowhere else settles inline; anything wider comes back as a prompt
   for a session of its own, because a change with implications deserves
   unhurried deliberation rather than a decision taken in passing.
+- A remedy settles inline only if the finding declares `remedy_block`: the
+  corrected equation written out, with the same `\tag{n}`. Prose is not a
+  correction. Without it the reach may be local but the handoff still defers —
+  writing the mathematics is the work, and nothing here paraphrases a
+  description into a document. `verify` lists these under
+  `audit.localRemediesNotWritten` so the omission is a decision, not a silence.
+- To settle one inline, drive `proposal-deliberation` with the item's
+  `deliberation` payload: `RESOLVE_TARGET` with its `selectedEntryId` returns
+  the entry's `text`; pipe that text into `implementation_cli.py compose
+  --finding <id> --entry-text -`; send the returned `replacementText` as a
+  `replace` decision to `CREATE_SUCCESSOR`. Composition substitutes inside the
+  entry rather than handing back the bare block, because an entry usually holds
+  more than the one equation and replacing it wholesale would delete the rest.
 - Adoption is read from the published revision, never assumed. The reliable
   signal is that the text the remedy replaces is gone; if nothing recognizable
   took its place the state is `changed-unrecognized` and a human confirms.

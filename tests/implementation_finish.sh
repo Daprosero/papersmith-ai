@@ -22,7 +22,7 @@ python3 "$CLI" env --target "$TARGET" >/dev/null
 python3 "$FORGE/.claude/skills/proposal-implementation/scripts/materialize.py" "$TARGET" "$NAME" "$SEED" "$FORGE/tests/fixtures/implementation_kit"
 
 echo "--- admissibility (before any efficacy is measured) ---"
-python3 "$CLI" admit --target "$TARGET" --name "$NAME" --revision neutral-concept-r01.md \
+python3 "$CLI" admit --target "$TARGET" --name "$NAME" --revision research-concept-neutral-r01.md \
   | jq -c '{status, admitted: (.admitted|length), inadmissible: (.inadmissible|keys)}'
 
 echo "--- suite ---"
@@ -34,5 +34,5 @@ echo "--- notebook (executed) ---"
    && echo "executed OK" || echo "NOTEBOOK FAILED")
 
 echo "--- verify ---"
-python3 "$CLI" verify --target "$TARGET" --name "$NAME" --revision neutral-concept-r01.md \
+python3 "$CLI" verify --target "$TARGET" --name "$NAME" --revision research-concept-neutral-r01.md \
   | jq -c '{structure: .structure.status, gaps: .structure.scaffoldGaps, stale: (.structure.staleReferences|length), fidelity: .fidelity.status, invariants: (.validation.invariantTests|length), notebook: .validation.notebook}'

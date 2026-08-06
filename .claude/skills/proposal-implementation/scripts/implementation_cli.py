@@ -1005,15 +1005,42 @@ def cmd_handoff(args: argparse.Namespace) -> dict:
                 "statement": finding.get("statement"), "remedy": finding.get("remedy")}
         if adoption["state"] == "adopted":
             settled.append(item)
-        elif impact["class"] == "local":
+        elif impact["class"] == "local" and finding.get("remedy_block"):
+            # Local and written out: hand the deliberation a request it can act
+            # on. The locus travels as the equation's own tag rather than as a
+            # quote of the text being corrected — a bare fragment like a symbol
+            # and its value occurs in prose as readily as in the equation, and
+            # the resolver then lands on a neighbour. The tag is the document's
+            # label for that equation, so it names the one the finding rewrites.
+            #
+            # The corrected text is not attached here. It has to be substituted
+            # into whatever entry the resolver returns, which only the caller
+            # knows; `compose` does that once the entry is in hand.
+            item["deliberation"] = {
+                "instruction": finding.get("remedy"),
+                "selectedEntryId": f"\\tag{{{finding['remedy_equations'][0]}}}",
+                "compose": {"command": "compose", "finding": finding["id"],
+                            "entryTextFrom": "RESOLVE_TARGET.text"},
+            }
             inline.append(item)
         else:
+            if impact["class"] == "local":
+                # Local reach, but nobody wrote the corrected block. Deferring is
+                # the honest outcome; saying "not local" here would be false.
+                reason = ("Este cambio es de alcance local, pero el hallazgo no trae el "
+                          "bloque corregido escrito (`remedy_block`). La redacción de la "
+                          "matemática es la decisión, y no se infiere de la prosa.")
+                item["deferredBecause"] = "remedy-text-missing"
+            else:
+                reason = (
+                    f"Este cambio NO es local: reescribe {impact['equations']} ecuación(es), "
+                    f"agrega {impact['introducesNotation']} símbolo(s) de notación y toca "
+                    f"ecuaciones citadas {impact['citedElsewhere']} vez/veces en el resto del "
+                    "documento. Merece una sesión propia.")
+                item["deferredBecause"] = "structural-reach"
             item["prompt"] = (
                 f"Deliberar sobre {args.revision}: {finding['id']}.\n\n"
-                f"Este cambio NO es local: reescribe {impact['equations']} ecuación(es), "
-                f"agrega {impact['introducesNotation']} símbolo(s) de notación y toca "
-                f"ecuaciones citadas {impact['citedElsewhere']} vez/veces en el resto del "
-                f"documento. Merece una sesión propia.\n\n"
+                f"{reason}\n\n"
                 f"DEFECTO ({finding.get('kind')}, {finding.get('status')} — "
                 f"{finding.get('rate')}):\n{finding.get('statement')}\n\n"
                 f"CORRECCIÓN PROPUESTA (validada, no adoptada):\n{finding.get('remedy')}\n\n"
@@ -1031,6 +1058,66 @@ def cmd_handoff(args: argparse.Namespace) -> dict:
         "alreadyAdopted": [i["id"] for i in settled],
         "note": "This skill proposes; proposal-deliberation decides and publishes.",
     }
+
+
+DISPLAY_BLOCK_RE = re.compile(r"\$\$.*?\$\$", re.DOTALL)
+TAG_RE = re.compile(r"\\tag\{([^}]+)\}")
+
+
+def cmd_compose(args: argparse.Namespace) -> dict:
+    """Rewrite one resolved entry so a finding's remedy takes its place.
+
+    The deliberation replaces a whole entry, and an entry is usually more than
+    the equation at issue. Composing the new text therefore means substituting
+    inside it, never handing back the bare block: doing that would delete every
+    neighbouring line the entry happens to carry.
+
+    The equation's own `\\tag{n}` is the identity used to find it. That is the
+    document's label for it, so the substitution lands on the equation the
+    finding names rather than on whatever happens to look similar.
+    """
+    target = resolve_target(args.target)
+    findings = {f["id"]: f for f in read_findings(target)}
+    finding = findings.get(args.finding)
+    if finding is None:
+        raise Refused("NO_SUCH_FINDING",
+                      f"{args.finding!r} is not among {sorted(findings)}.")
+
+    block = finding.get("remedy_block")
+    if not block:
+        raise Refused("NO_REMEDY_BLOCK",
+                      f"{args.finding} declares no remedy_block; its correction was "
+                      "never written, so there is nothing to compose.")
+
+    entry = sys.stdin.read() if args.entry_text == "-" else args.entry_text
+    if not entry.strip():
+        raise Refused("EMPTY_ENTRY", "The resolved entry text is empty.")
+
+    tags = TAG_RE.findall(block)
+    if len(set(tags)) != 1:
+        raise Refused("AMBIGUOUS_REMEDY_TAG",
+                      f"remedy_block must carry exactly one equation tag, found {tags}.")
+    tag = tags[0]
+
+    matches = [m for m in DISPLAY_BLOCK_RE.finditer(entry) if tag in TAG_RE.findall(m.group(0))]
+    if len(matches) != 1:
+        raise Refused("TAG_NOT_UNIQUE_IN_ENTRY",
+                      f"equation ({tag}) appears in {len(matches)} display blocks of the "
+                      "resolved entry; the locus is not the one the remedy corrects.")
+
+    composed = entry[:matches[0].start()] + block + entry[matches[0].end():]
+    if composed == entry:
+        raise Refused("COMPOSITION_IS_A_NO_OP",
+                      "The composed text equals the current text; nothing would change.")
+
+    absent = (finding.get("adoption") or {}).get("absent")
+    if absent and absent in composed:
+        raise Refused("REMEDY_LEAVES_THE_DEFECT",
+                      f"The composed text still carries {absent!r}, which the remedy "
+                      "declares it removes.")
+
+    return {"command": "compose", "finding": args.finding, "equation": tag,
+            "replacementText": composed}
 
 
 def cmd_admit(args: argparse.Namespace) -> dict:
@@ -1185,8 +1272,8 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     compatibility = remedy_compatibility(findings, args.revision)
     ruling = admissibility_record(target, args.revision)
     uncontrolled = remedies_without_control(target / "tests", package_name(name))
-    migration = migration_state(target, findings, revision_source(args.revision),
-                                package_name(name))
+    source = revision_source(args.revision)
+    migration = migration_state(target, findings, source, package_name(name))
     unruled = sorted(f["id"] for f in findings
                      if f["id"] not in ruling.get("findings", {})) if findings else []
     if not findings:
@@ -1246,6 +1333,15 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             ],
             "findingsWithoutEvidence": without_evidence,
             "findingsWithoutRemedy": without_remedy,
+            # A local remedy nobody wrote out is not a defect in the audit, but
+            # it is the difference between a change that settles inline and one
+            # that costs a session. Reported so it is a decision, not a silence.
+            "localRemediesNotWritten": [
+                f["id"] for f in findings
+                if finding_impact(f, source or "")["class"] == "local"
+                and not f.get("remedy_block")
+                and adoption_state(f, source or "")["state"] != "adopted"
+            ],
             "remediesWithoutValidation": unvalidated,
             "remediesWithoutControl": uncontrolled,
             "migration": migration,
@@ -1266,7 +1362,8 @@ def cmd_verify(args: argparse.Namespace) -> dict:
 
 
 COMMANDS = {"env": cmd_env, "plan": cmd_plan, "apply": cmd_apply,
-            "admit": cmd_admit, "handoff": cmd_handoff, "verify": cmd_verify}
+            "admit": cmd_admit, "handoff": cmd_handoff, "compose": cmd_compose,
+            "verify": cmd_verify}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1280,6 +1377,11 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--python", default=None,
                            help="interpreter to build the venv from (default: this one). "
                                 "The layout templates assume 3.10+")
+        elif name == "compose":
+            # Composition reads the findings and the entry, nothing layout-shaped.
+            p.add_argument("--finding", required=True, help="id of the finding to compose")
+            p.add_argument("--entry-text", required=True,
+                           help="the resolved entry's current text, or - to read stdin")
         else:
             p.add_argument("--name", required=True, help="package name chosen by the user")
         if name == "apply":

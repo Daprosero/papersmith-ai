@@ -12,7 +12,12 @@ The contract, checked statically by `implementation_cli.py verify`:
 - `uses` must appear verbatim in the revision, `introduces` is notation the
   remedy would add, `adoption.absent` is text present today whose disappearance
   signals adoption, and `becomes_invariant` names what the remedy turns into
-  once the deliberation publishes it.
+  once the deliberation publishes it;
+- a finding whose remedy is local must carry `remedy_block`: the corrected block
+  exactly as it should read in the document. Prose describing a correction is
+  not a correction. Without it the handoff cannot settle the change inline and
+  defers it to a session of its own, which is the honest outcome — writing the
+  mathematics is the work, and no tool should guess it from a description.
 """
 
 FINDINGS = [
@@ -37,6 +42,15 @@ FINDINGS = [
             "Normalize by the attainable bound: kappa = 1. The numerator's supremum is one, "
             "reached as the two aggregates separate to the ends of the interval, so the whole "
             "[0,1] range becomes usable and the bound stays sound."
+        ),
+        "remedy_block": (
+            "$$\n"
+            "\\delta\n"
+            "=\n"
+            "\\frac{\\lvert A_n - A_m \\rvert}{\\kappa},\n"
+            "\\qquad \\kappa = 1 .\n"
+            "\\tag{5}\n"
+            "$$"
         ),
     },
     {
@@ -63,6 +77,14 @@ FINDINGS = [
             "M = (1/m) sum_j c_j delta_j. It needs no stabilizer, keeps the relative weighting "
             "among terms, stays in [0,1], and now genuinely scales: halving every confidence "
             "halves the value."
+        ),
+        "remedy_block": (
+            "$$\n"
+            "M\n"
+            "=\n"
+            "\\frac{1}{m} \\sum_{j=1}^{m} c_j \\delta_j .\n"
+            "\\tag{6}\n"
+            "$$"
         ),
     },
     {

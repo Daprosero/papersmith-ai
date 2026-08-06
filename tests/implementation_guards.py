@@ -27,7 +27,7 @@ SCRATCH = Path(__file__).resolve().parent
 # Intermediate plans are scratch, never repository content.
 TMP = Path(tempfile.mkdtemp(prefix="implementation-harness-"))
 WORK = FORGE / "implementations"
-REVISION = "neutral-concept-r01.md"
+REVISION = "research-concept-neutral-r01.md"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 KIT = FIXTURES / "implementation_kit"
 # The harness binds to its own neutral fixture. It must never read the forge's

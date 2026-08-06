@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 __provenance__ = {
-    "revision": "neutral-concept-r01.md",
+    "revision": "research-concept-neutral-r01.md",
     "sections": ["3", "4"],
     "equations": ["5", "6"],
     "invariants": [

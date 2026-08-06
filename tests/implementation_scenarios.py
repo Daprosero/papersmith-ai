@@ -37,7 +37,7 @@ KIT = FIXTURES / "implementation_kit"
 # a paper forge must not have its test suite depend on one paper. Naming the
 # revision is not enough — the CLI resolves it under IMPLEMENTATION_PROPOSALS,
 # which without this default points at the forge's unversioned proposals/.
-REVISION = "neutral-concept-r01.md"
+REVISION = "research-concept-neutral-r01.md"
 os.environ.setdefault("IMPLEMENTATION_PROPOSALS", str(FIXTURES))
 
 CATEGORY_BY_EXT = {
@@ -194,7 +194,7 @@ SCENARIOS = [
     ("shallow", s_shallow, "Example-Method", 104),
     ("detached", s_detached, "Example-Method", 105),
     ("branch", s_branch, "Example-Method", 106),
-    ("flattened", s_flattened, "MILCREDA", 107),
+    ("flattened", s_flattened, "ExampleMethod", 107),
     ("ambiguous", s_ambiguous, "Example-Method", 108),
     ("name-taken", s_name_taken, "Example-Method", 109),
     ("pkg-taken", s_pkg_taken, "Example_Method2", 110),

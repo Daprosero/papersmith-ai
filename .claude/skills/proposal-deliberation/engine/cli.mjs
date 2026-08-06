@@ -145,7 +145,25 @@ async function resolveOneTarget(sourceFilename, query) {
 	}
 	const resolution = targetResolverModule.resolveSuccessorTarget(state, query);
 	const gate = ambiguityGateModule.ambiguityGate(resolution.candidates);
-	return { entryId: gate.candidate?.entryId ?? null, blocked: gate.blocked, question: gate.question ?? null };
+	return {
+		entryId: gate.candidate?.entryId ?? null,
+		blocked: gate.blocked,
+		question: gate.question ?? null,
+		// A `replace` decision must carry the entry's WHOLE new text, so a caller
+		// that cannot read the current text cannot write a faithful one: it either
+		// guesses the boundaries or silently drops whatever else the entry holds.
+		// The resolver already computes this for composites; simple entries come
+		// from their own byte range in the same state.
+		text: gate.blocked ? null : candidateText(state, gate.candidate),
+	};
+}
+
+function candidateText(state, candidate) {
+	if (!candidate) return null;
+	if (typeof candidate.composite?.exactProvidedText === 'string') return candidate.composite.exactProvidedText;
+	const entry = state.structuralIndex?.entries?.find(item => item.entryId === candidate.entryId);
+	if (!entry || typeof entry.startByte !== 'number' || typeof entry.endByte !== 'number') return null;
+	return state.documentBytes.subarray(entry.startByte, entry.endByte).toString('utf8');
 }
 
 async function runResolveTarget(request) {

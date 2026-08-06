@@ -18,7 +18,7 @@ def test_every_module_declares_provenance() -> None:
     for module in MODULES:
         provenance = getattr(importlib.import_module(module), "__provenance__", None)
         assert provenance is not None, f"{module} has no __provenance__"
-        assert provenance["revision"] == "neutral-concept-r01.md"
+        assert provenance["revision"] == "research-concept-neutral-r01.md"
 
 
 def test_runs_on_a_single_value() -> None:
