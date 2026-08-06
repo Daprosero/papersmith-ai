@@ -6,8 +6,7 @@
   "description": "Papersmith AI \u2014 native Claude Code skills for paper ingestion and paper-proposal.",
   "scripts": {
     "test": "node --test \"tests/**/*.mjs\"",
-    "proposal-deliberation": "node .claude/skills/proposal-deliberation/engine/cli.mjs",
-    "test:guards": "python3 tests/implementation_guards.py"
+    "proposal-deliberation": "node .claude/skills/proposal-deliberation/engine/cli.mjs"
   },
   "dependencies": {
     "jiti": "^2.4.2",
