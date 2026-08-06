@@ -996,6 +996,14 @@ def cmd_admit(args: argparse.Namespace) -> dict:
             missing = [e for e in finding.get(field, []) if e not in tags]
             if missing:
                 reasons.append(f"{field} cites equations absent from the revision: {missing}")
+        marker = (finding.get("adoption") or {}).get("absent")
+        if not marker:
+            reasons.append("declares no adoption marker, so adoption could never be read back")
+        elif marker not in source:
+            # A marker that does not describe the document today is meaningless:
+            # its absence later would be indistinguishable from adoption.
+            reasons.append("its adoption marker is not present in the revision, so the "
+                           "finding does not describe this document")
         if not finding.get("uses"):
             reasons.append("declares no notation, so compatibility cannot be ruled on")
         else:
