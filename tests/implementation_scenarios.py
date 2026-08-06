@@ -274,6 +274,21 @@ def resolve_stale(target: Path, name: str, stale: list[dict], log: list[str]) ->
 # --- the flow ------------------------------------------------------------
 
 def run(scenario_id: str, setup, name: str, seed: int) -> dict:
+    """One scenario, leaving nothing behind.
+
+    The removal is in a `finally` because the flow returns from several places:
+    a scenario that blocks early used to leave its repository on disk, and a
+    materialized one carries a virtualenv with it. Set IMPLEMENTATION_KEEP=1 to
+    keep them when a failure needs an autopsy.
+    """
+    try:
+        return _run(scenario_id, setup, name, seed)
+    finally:
+        if not os.environ.get("IMPLEMENTATION_KEEP"):
+            shutil.rmtree(CODING / f"sc-{scenario_id}", ignore_errors=True)
+
+
+def _run(scenario_id: str, setup, name: str, seed: int) -> dict:
     target = CODING / f"sc-{scenario_id}"
     shutil.rmtree(target, ignore_errors=True)
     log: list[str] = []
