@@ -14,7 +14,7 @@ forge virtualenv, so it can never hand the forge's interpreter to a target venv.
 node .claude/skills/proposal-deliberation/engine/cli.mjs '{ "operation": "STATUS" }'
 ```
 
-Take `latest` (e.g. `research-concept-r12.md`). That string is what modules
+Take `latest` (e.g. `research-concept-r05.md`). That string is what modules
 declare in `__provenance__["revision"]` and what `verify --revision` compares
 against. Everything downstream is bound to it.
 
@@ -76,23 +76,23 @@ code goes through the returned `interpreter`.
 
 ```bash
 python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py plan \
-  --target implementations/<repo> --name CREDA > /tmp/plan.json
+  --target implementations/<repo> --name Example-Method > /tmp/plan.json
 ```
 
 ```json
 {
   "status": "drift",
   "renames": [],
-  "createDirs": ["CREDA/Notebooks", "CREDA/Results", "CREDA/Models", "src/CREDA", "tests"],
+  "createDirs": ["Example-Method/Notebooks", "Example-Method/Results", "Example-Method/Models", "src/Example_Method", "tests"],
   "moves": [
-    { "from": "analysis.ipynb", "to": "CREDA/Notebooks/analysis.ipynb", "reason": "notebook" },
+    { "from": "analysis.ipynb", "to": "Example-Method/Notebooks/analysis.ipynb", "reason": "notebook" },
     { "from": "utils.py", "to": "src/legacy/utils.py",
       "reason": "pre-existing implementation moves into its own package under src/" }
   ],
   "conflicts": [],
   "unclassified": ["notes.docx"],
-  "scaffoldFiles": ["pyproject.toml", "src/CREDA/__init__.py", "tests/test_smoke.py",
-                    "CREDA/Notebooks/verification.ipynb"]
+  "scaffoldFiles": ["pyproject.toml", "src/Example_Method/__init__.py", "tests/test_smoke.py",
+                    "Example-Method/Notebooks/verification.ipynb"]
 }
 ```
 
@@ -112,9 +112,9 @@ plan proposes a single directory rename instead of reclassifying its contents:
                 "reason": "product folder has the right shape but the wrong name; renaming preserves every subtree" }],
   "createDirs": ["src/Example_Method", "tests"], "moves": [], "conflicts": [],
   "referenceUpdates": [
-    { "file": "src/CREDA/artifacts.py", "occurrences": 2,
+    { "file": "src/Example_Method/artifacts.py", "occurrences": 2,
       "kind": "path prefix", "replace": "Images/", "with": "Example-Method/" },
-    { "file": "src/CREDA/artifacts.py", "occurrences": 1,
+    { "file": "src/Example_Method/artifacts.py", "occurrences": 1,
       "kind": "quoted path segment", "replace": "\"Images\"", "with": "\"Example-Method\"" }
   ]
 }
@@ -172,7 +172,7 @@ is a result, not a dataset.
 
 ```bash
 python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py apply \
-  --target implementations/<repo> --name CREDA --plan /tmp/plan.json
+  --target implementations/<repo> --name Example-Method --plan /tmp/plan.json
 ```
 
 The plan is recomputed and compared before anything moves: if the repository
@@ -188,7 +188,7 @@ and `{{INVARIANT_ID}}`.
 ```bash
 implementations/<repo>/.venv/bin/python -m pytest -q
 python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py verify \
-  --target implementations/<repo> --name CREDA --revision research-concept-r12.md
+  --target implementations/<repo> --name Example-Method --revision research-concept-r05.md
 ```
 
 ```json
@@ -197,12 +197,12 @@ python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py ver
                  "staleReferences": [], "scaffoldGaps": [] },
   "fidelity": {
     "status": "drift",
-    "latestRevision": "research-concept-r12.md",
-    "staleModules": ["src/CREDA/kernel.py"],
+    "latestRevision": "research-concept-r05.md",
+    "staleModules": ["src/Example_Method/kernel.py"],
     "missingProvenance": [],
     "invariantsWithoutTest": ["entropy_non_negative"],
     "modules": [
-      { "module": "src/CREDA/kernel.py", "revision": "research-concept-r10.md",
+      { "module": "src/Example_Method/kernel.py", "revision": "research-concept-r03.md",
         "sections": ["3"], "invariants": ["kernel_is_psd"], "stale": true }
     ]
   },
@@ -310,7 +310,7 @@ in Eq. (38) itself, not in the fix.
 
 ```bash
 python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py admit \
-  --target implementations/<repo> --name <Name> --revision research-concept-r12.md
+  --target implementations/<repo> --name <Name> --revision research-concept-r05.md
 ```
 
 ```json
@@ -378,7 +378,7 @@ implementation as up to date from an `unknown` run.
 
 ```bash
 python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py handoff \
-  --target implementations/<repo> --name <Name> --revision research-concept-r12.md
+  --target implementations/<repo> --name <Name> --revision research-concept-r05.md
 ```
 
 Every open finding is measured against the document itself: how many equations
