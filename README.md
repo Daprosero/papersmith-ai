@@ -218,5 +218,27 @@ cambio de nombre obliga a tocarlos uno por uno. Se resuelve con un único
 ## Tests
 
 ```bash
-npm test
+npm test              # motor de proposal-deliberation (489)
+npm run test:guards   # guards del CLI de proposal-implementation (27)
 ```
+
+Los escenarios de `proposal-implementation` son más pesados: crean repos destino,
+sus entornos y ejecutan la escalera completa.
+
+```bash
+python3 tests/implementation_scenarios.py                    # los 14
+python3 tests/implementation_scenarios.py empty full-clone   # algunos
+```
+
+Los que clonan necesitan un espejo local, para no gastar red ni cuota de LFS.
+No se versiona —es el repositorio de alguien, no de la forja—:
+
+```bash
+GIT_LFS_SKIP_SMUDGE=1 git clone --mirror <url> /tmp/da-mirror.git
+export IMPLEMENTATION_MIRROR=/tmp/da-mirror.git
+```
+
+Lo que prueba cada cosa: `tests/` cubre **el tooling de la forja** — el motor de
+deliberación, los helpers de ingestión, el CLI de implementación. Los tests de
+una implementación materializada viven en su repositorio destino y en ningún
+otro lado; borrarlo borra sus tests.

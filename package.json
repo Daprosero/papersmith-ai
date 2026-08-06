@@ -3,10 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Papersmith AI — native Claude Code skills for paper ingestion and paper-proposal.",
+  "description": "Papersmith AI \u2014 native Claude Code skills for paper ingestion and paper-proposal.",
   "scripts": {
-    "paper-proposal": "node .claude/skills/paper-proposal/engine/cli.mjs",
-    "test": "node --test \"tests/**/*.mjs\""
+    "test": "node --test \"tests/**/*.mjs\"",
+    "proposal-deliberation": "node .claude/skills/proposal-deliberation/engine/cli.mjs",
+    "test:guards": "python3 tests/implementation_guards.py"
   },
   "dependencies": {
     "jiti": "^2.4.2",
