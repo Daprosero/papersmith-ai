@@ -46,5 +46,10 @@ backup/
 __pycache__/
 
 
-# Fuente de la propuesta: contenido de investigación, nunca se versiona
-Target.md
+# Fuente de la propuesta: contenido de investigación, nunca se versiona.
+# El glob cubre los duplicados que crea Finder ("Target 2.md"), que son copias
+# byte a byte y quedaban fuera de una regla con el nombre exacto.
+Target*.md
+
+# Permisos locales de Claude Code: rutas de máquina y comandos de una sesión
+.claude/settings.json
