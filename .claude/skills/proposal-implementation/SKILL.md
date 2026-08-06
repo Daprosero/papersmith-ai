@@ -49,10 +49,18 @@ proposal itself — that is `proposal-deliberation`.
   that is the intended consequence, not an accident.
 - `tests/*.py` is the source of truth and is fail-closed. The notebook is the
   executed report, never the only place a claim is checked.
-- An assertion that cannot fail is worse than no assertion: it reads as
-  coverage. Never compare an expression with itself, in an assert or in the
-  counter that feeds one, and never assert a constant. `verify` reports them
-  as `trivialAssertions`.
+- A green result means something only when red was reachable. Two ways it is
+  not: an assertion that cannot fail — never compare an expression with itself,
+  in an assert or in the counter feeding one, and never assert a constant — and
+  a remedy test that measures its own proposal without ever exercising the
+  declared formulation it corrects. `verify` reports them as
+  `trivialAssertions` and `remediesWithoutControl`.
+- Every remedy test carries both poles: the remedy satisfies the criterion AND
+  the declared formulation fails it. One pole alone cannot distinguish an
+  improvement from a measurement that would have passed anything.
+- When probing a guard adversarially, assert that the fixture actually changed
+  before believing the result. A negative test whose mutation silently failed
+  reports success while testing nothing.
 - Check that a thing works, not that it is there. A notebook that exists but was
   never run is a claim, not a report; `verify` reads its `execution_count` and
   its error outputs and says `stale`, `errored` or `executed`.

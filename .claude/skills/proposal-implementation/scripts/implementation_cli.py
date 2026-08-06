@@ -577,6 +577,44 @@ def remedy_compatibility(findings: list[dict], revision: str | None) -> dict:
             "undefinedNotation": undefined_notation, "introducesNotation": introduces}
 
 
+def remedies_without_control(tests_dir: Path, package: str) -> list[str]:
+    """Remedy tests that never exercise the formulation they are correcting.
+
+    A remedy test measures a proposed replacement. If it never also exercises
+    the declared formulation, nothing in it can distinguish a real improvement
+    from a measurement that would pass whatever it was handed — and a check
+    incapable of going red reads exactly like a check that went green.
+
+    The control is the other pole: the declared form must be shown to fail the
+    same criterion the remedy satisfies. Requiring the test to call into the
+    package is the machine-checkable part of that.
+    """
+    missing: list[str] = []
+    if not tests_dir.is_dir():
+        return missing
+    for file in sorted(tests_dir.glob("test_remedies*.py")):
+        try:
+            tree = ast.parse(file.read_text(encoding="utf-8"), filename=str(file))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        declared = {
+            alias.name for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            and (node.module or "").split(".")[0] == package
+            for alias in node.names
+        }
+        for node in tree.body:
+            if not isinstance(node, ast.FunctionDef) or not node.name.startswith("test_remedy_"):
+                continue
+            called = {
+                inner.func.id for inner in ast.walk(node)
+                if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+            }
+            if not called & declared:
+                missing.append(node.name)
+    return missing
+
+
 def trivial_assertions(tests_dir: Path) -> list[str]:
     """Assertions that cannot fail, and therefore prove nothing.
 
@@ -963,13 +1001,14 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     unvalidated = sorted(f["id"] for f in findings if f"test_remedy_{f['id']}" not in tests)
     compatibility = remedy_compatibility(findings, args.revision)
     ruling = admissibility_record(target, args.revision)
+    uncontrolled = remedies_without_control(target / "tests", package_name(name))
     unruled = sorted(f["id"] for f in findings
                      if f["id"] not in ruling.get("findings", {})) if findings else []
     if not findings:
         audit_status = "none"
     elif without_evidence or without_remedy or unvalidated:
         audit_status = "incomplete"
-    elif ruling["status"] != "present" or unruled:
+    elif ruling["status"] != "present" or unruled or uncontrolled:
         audit_status = "incomplete"
     elif compatibility["status"] in {"incompatible", "unknown"}:
         audit_status = "incomplete"
@@ -1019,6 +1058,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "findingsWithoutEvidence": without_evidence,
             "findingsWithoutRemedy": without_remedy,
             "remediesWithoutValidation": unvalidated,
+            "remediesWithoutControl": uncontrolled,
             "admissibility": {"status": ruling["status"],
                               "detail": ruling.get("detail"),
                               "unruled": unruled},

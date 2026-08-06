@@ -232,6 +232,27 @@ answerable without running anything:
 `errored` is caught even when the notebook was executed with `--allow-errors`,
 which otherwise writes a red cell and exits zero.
 
+### A green result needs a reachable red
+
+Two independent ways a check proves nothing while looking like coverage.
+
+`validation.trivialAssertions` catches the syntactic one. `audit.remediesWithoutControl`
+catches the structural one: a remedy test that measures its own proposed
+replacement and never exercises the declared formulation it corrects. With one
+pole only, nothing in the measurement distinguishes a real improvement from a
+number that would have passed whatever it was handed.
+
+Every remedy test must show both poles on the same sweep:
+
+```python
+declared_survives += global_loss(losses) > 0.1        # Eq. (37) still penalizes
+vanishes          += remedy_global_loss(losses, means) < 1e-5   # the remedy does not
+```
+
+Measured on this repository, one of the four remedy tests had no control: it
+only ever called its own proposal. `audit.status` is `incomplete` while any
+remains.
+
 ### Assertions that cannot fail
 
 `validation.trivialAssertions` lists two shapes: asserting a truthy constant,
