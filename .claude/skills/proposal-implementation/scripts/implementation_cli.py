@@ -863,6 +863,109 @@ def migrate(target: Path, current: dict) -> None:
         f"chore(structure): normalize repository layout for {current['name']}")
 
 
+CITATION_RE = re.compile(r"Ecs?\.?\s*\(?(\d+)\)?|Eq\.?\s*\(?(\d+)\)?|Ecuaciones?\s*\((\d+)\)")
+
+
+def finding_impact(finding: dict, source: str) -> dict:
+    """How far into the proposal a remedy would reach.
+
+    Three measurements, all read from the document rather than judged: how many
+    equations the remedy rewrites, how much notation it adds, and how often the
+    rest of the text cites those equations. A change that touches one equation
+    nobody else refers to, adding nothing, is local. Anything else carries
+    implications the deliberation has to weigh with time, not inline.
+    """
+    equations = finding.get("remedy_equations", [])
+    citations = 0
+    for match in CITATION_RE.finditer(source):
+        number = match.group(1) or match.group(2) or match.group(3)
+        if number in equations:
+            citations += 1
+    introduces = len(finding.get("introduces", []))
+    local = len(equations) <= 1 and introduces == 0 and citations <= 1
+    return {"equations": len(equations), "introducesNotation": introduces,
+            "citedElsewhere": citations, "class": "local" if local else "structural"}
+
+
+def adoption_state(finding: dict, source: str) -> dict:
+    """Has the revision taken this remedy in?
+
+    Inference is textual, so it is built to fail toward `open`. The reliable
+    signal is the disappearance of what the remedy replaces — a literal that is
+    in the document today. If that text is gone but nothing recognizable took
+    its place, the equation changed in a way this cannot read, and it says so
+    instead of claiming adoption.
+    """
+    markers = finding.get("adoption") or {}
+    absent, expect = markers.get("absent"), markers.get("expect") or []
+    if not absent:
+        return {"state": "unknown", "reason": "the finding declares no adoption marker"}
+    if absent in source:
+        return {"state": "open", "reason": "the text the remedy replaces is still there"}
+    matched = [candidate for candidate in expect if candidate in source]
+    if matched:
+        return {"state": "adopted", "matched": matched}
+    return {"state": "changed-unrecognized",
+            "reason": "the replaced text is gone but no expected form was found; "
+                      "confirm by hand before treating it as adopted"}
+
+
+def cmd_handoff(args: argparse.Namespace) -> dict:
+    """Hand the open findings to the deliberation, sized by their reach.
+
+    A local remedy travels as an agenda item to settle inline. A structural one
+    does not: it goes back as a prompt for a session of its own, because a
+    change that adds notation or rewrites an equation the rest of the document
+    leans on deserves unhurried deliberation, not a decision taken while
+    finishing something else.
+    """
+    target = resolve_target(args.target)
+    source = revision_source(args.revision)
+    if source is None:
+        raise Refused("REVISION_UNREADABLE",
+                      f"{args.revision!r} is not readable; nothing can be handed off.")
+
+    inline, deferred, settled = [], [], []
+    for finding in read_findings(target):
+        impact = finding_impact(finding, source)
+        adoption = adoption_state(finding, source)
+        item = {"id": finding["id"], "kind": finding.get("kind"),
+                "status": finding.get("status"), "rate": finding.get("rate"),
+                "equations": finding.get("equations"),
+                "remedyEquations": finding.get("remedy_equations"),
+                "introduces": finding.get("introduces", []),
+                "impact": impact, "adoption": adoption,
+                "statement": finding.get("statement"), "remedy": finding.get("remedy")}
+        if adoption["state"] == "adopted":
+            settled.append(item)
+        elif impact["class"] == "local":
+            inline.append(item)
+        else:
+            item["prompt"] = (
+                f"Deliberar sobre {args.revision}: {finding['id']}.\n\n"
+                f"Este cambio NO es local: reescribe {impact['equations']} ecuación(es), "
+                f"agrega {impact['introducesNotation']} símbolo(s) de notación y toca "
+                f"ecuaciones citadas {impact['citedElsewhere']} vez/veces en el resto del "
+                f"documento. Merece una sesión propia.\n\n"
+                f"DEFECTO ({finding.get('kind')}, {finding.get('status')} — "
+                f"{finding.get('rate')}):\n{finding.get('statement')}\n\n"
+                f"CORRECCIÓN PROPUESTA (validada, no adoptada):\n{finding.get('remedy')}\n\n"
+                f"NOTACIÓN QUE AGREGARÍA: {', '.join(finding.get('introduces', [])) or 'ninguna'}\n"
+                f"ECUACIONES A TOCAR: {', '.join(finding.get('remedy_equations', []))}")
+            deferred.append(item)
+
+    return {
+        "command": "handoff",
+        "target": str(target),
+        "revision": args.revision,
+        "status": "clear" if not inline and not deferred else "pending",
+        "settleInline": inline,
+        "deferToOwnSession": deferred,
+        "alreadyAdopted": [i["id"] for i in settled],
+        "note": "This skill proposes; proposal-deliberation decides and publishes.",
+    }
+
+
 def cmd_admit(args: argparse.Namespace) -> dict:
     """Rule on each remedy's admissibility, before anything is measured.
 
@@ -899,10 +1002,15 @@ def cmd_admit(args: argparse.Namespace) -> dict:
             absent = [s for s in finding["uses"] if s not in source]
             if absent:
                 reasons.append(f"relies on notation the revision does not define: {absent}")
+        adoption = adoption_state(finding, source)
         verdicts[finding["id"]] = {
             "admissible": not reasons,
             "reasons": reasons,
-            "introduces": finding.get("introduces", []),
+            # A remedy already taken into the revision no longer introduces
+            # anything: the deliberation settled that when it published.
+            "introduces": [] if adoption["state"] == "adopted" else finding.get("introduces", []),
+            "adoption": adoption,
+            "impact": finding_impact(finding, source),
         }
 
     record = {
@@ -1076,7 +1184,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
 
 
 COMMANDS = {"env": cmd_env, "plan": cmd_plan, "apply": cmd_apply,
-            "admit": cmd_admit, "verify": cmd_verify}
+            "admit": cmd_admit, "handoff": cmd_handoff, "verify": cmd_verify}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1094,7 +1202,7 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--name", required=True, help="package name chosen by the user")
         if name == "apply":
             p.add_argument("--plan", required=True, help="path to the approved plan JSON")
-        if name in {"verify", "admit"}:
+        if name in {"verify", "admit", "handoff"}:
             p.add_argument("--revision", default=None, help="latest research-concept-rNN.md")
 
     args = parser.parse_args(argv)

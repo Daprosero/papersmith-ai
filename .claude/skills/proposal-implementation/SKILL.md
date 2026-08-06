@@ -86,6 +86,15 @@ proposal itself — that is `proposal-deliberation`.
   notation is the deliberation's decision, not this skill's.
 - Remedies live in `tests/`, never in `src/`. Establishing that a correction is
   sound is not the same as adopting it.
+- This skill proposes; `proposal-deliberation` decides and publishes. Never
+  write to `proposals/`. `handoff` hands the open findings over sized by their
+  reach into the document: a remedy touching one equation, adding no notation
+  and cited nowhere else settles inline; anything wider comes back as a prompt
+  for a session of its own, because a change with implications deserves
+  unhurried deliberation rather than a decision taken in passing.
+- Adoption is read from the published revision, never assumed. The reliable
+  signal is that the text the remedy replaces is gone; if nothing recognizable
+  took its place the state is `changed-unrecognized` and a human confirms.
 - v1 scope is smoke + invariants + synthetic + audit + remedies. Classic SOTA
   datasets and baseline comparison are out of scope; say so instead of
   improvising them.

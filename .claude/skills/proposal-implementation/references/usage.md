@@ -374,6 +374,39 @@ Omit `--revision` and `fidelity.status` is `unknown`: the modules' declared
 revisions are still listed, but nothing is compared. Never report an
 implementation as up to date from an `unknown` run.
 
+## `handoff` — back to the deliberation, sized by reach
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py handoff \
+  --target implementations/<repo> --name <Name> --revision research-concept-r12.md
+```
+
+Every open finding is measured against the document itself: how many equations
+the remedy rewrites, how much notation it adds, and how often the rest of the
+text cites those equations. Nothing is judged — all three are read.
+
+| class | condition | what happens |
+| --- | --- | --- |
+| `local` | one equation, no new notation, cited at most once elsewhere | `settleInline`: an agenda item for the current deliberation |
+| `structural` | anything wider | `deferToOwnSession`: a ready prompt saying why it needs its own session |
+
+Measured on this repository: three remedies are local, and the confidence one is
+not — it rewrites two equations, adds three symbols, and touches Eq. (24), which
+the text cites three times.
+
+`adoption` is read from the revision rather than assumed:
+
+| state | meaning |
+| --- | --- |
+| `open` | the text the remedy replaces is still there |
+| `adopted` | it is gone and an expected form is present |
+| `changed-unrecognized` | it is gone but nothing expected appeared — confirm by hand |
+| `unknown` | the finding declares no marker |
+
+Inference is textual, so it is built to fail toward `open`. An adopted finding
+stops counting as introducing notation: the deliberation settled that when it
+published.
+
 ## Guard codes
 
 A guard's failure is silent by definition: when one stops working, every happy
