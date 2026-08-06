@@ -53,3 +53,7 @@ Target*.md
 
 # Permisos locales de Claude Code: rutas de máquina y comandos de una sesión
 .claude/settings.json
+
+# Material de referencia externo clonado para estudio: se lee, se destila y se
+# borra. Nunca se versiona código de terceros dentro de la forja.
+tmp-reference/
