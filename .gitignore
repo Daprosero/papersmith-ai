@@ -45,3 +45,6 @@ backup/
 # Caché de bytecode de Python
 __pycache__/
 
+
+# Fuente de la propuesta: contenido de investigación, nunca se versiona
+Target.md
