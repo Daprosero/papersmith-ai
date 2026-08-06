@@ -376,6 +376,12 @@ implementation as up to date from an `unknown` run.
 
 ## Guard codes
 
+A guard's failure is silent by definition: when one stops working, every happy
+path stays green. They are exercised as a suite, each driven to its failure
+state, alongside the scenarios — not verified by hand once.
+
+
+
 | Code | Meaning |
 | --- | --- |
 | `OUTSIDE_WORKSPACE` | Target is not under `implementations/`. Clone it there. |
