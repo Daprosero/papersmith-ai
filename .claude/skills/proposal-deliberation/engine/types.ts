@@ -1,6 +1,21 @@
 import { createHash } from 'node:crypto';
 
 export const PARSER_VERSION = 'proposal-deliberation/1';
+/**
+ * Identifiers this parser answered to before, which derived state committed under them may still carry.
+ *
+ * The version exists to invalidate stored state when PARSING changes, so it may only be widened when
+ * the change was demonstrably a rename. `paper-proposal/1` qualifies: the commit that introduced the
+ * current name (691d9a2) moved every index module — block plan, document, reference, symbol, concept —
+ * with zero line changes, and edited exactly this constant. State written under the old name was
+ * produced by byte-identical parsing code, so rejecting it invalidated correct history.
+ *
+ * Reads accept these; writes always record PARSER_VERSION.
+ */
+export const SUPERSEDED_PARSER_VERSIONS = Object.freeze(['paper-proposal/1']);
+export function isAcceptedParserVersion(stored: unknown, current: string = PARSER_VERSION): boolean {
+	return stored === current || (typeof stored === 'string' && SUPERSEDED_PARSER_VERSIONS.includes(stored));
+}
 export const LIMITS = Object.freeze({ maxCandidates: 8, maxContextFragments: 8, maxContextBytesLocal: 32000, maxContextBytesSection: 32000, maxPatchCountLocal: 4, maxCleanupRanges: 3, maxModelCallsLocal: 1, maxModelCallsConceptual: 2, maxParallelReadTasks: 4, maxParallelValidationTasks: 6, maxParallelWriteTasks: 1 });
 export type Intent = 'MODIFY'|'INSERT'|'DELETE'|'MOVE'|'COPY'|'CONCEPTUAL_REVISION'|'REVIEW'|'DELIBERATE'|'WITHDRAW_REVISION'|'RESTORE_WITHDRAWN_REVISION'|'CLOSE_DELIBERATION'|'AMBIGUOUS';
 /** Explicit public route: derives the only permitted target from the managed source. */
