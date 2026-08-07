@@ -422,8 +422,12 @@ def build_plan(target: Path, name: str) -> dict:
         "name": name,
         # Same definition of compliant as `verify`: layout AND scaffold. A repo
         # missing pyproject.toml is not compliant just because nothing moves.
+        # Conflicts and unclassified files count too: `apply` refuses on both,
+        # so calling that tree compliant would report as settled exactly the
+        # situation the next command is about to stop on.
         "status": ("compliant"
                    if not moves and not renames and not missing and not gaps
+                   and not conflicts and not unclassified
                    else "drift"),
         "renames": renames,
         "createDirs": missing,
@@ -450,6 +454,31 @@ def pytest_anchor_missing(target: Path) -> bool:
     return "[tool.pytest.ini_options]" not in text or "pythonpath" not in text
 
 
+def well_formed(declared: object) -> list[dict]:
+    """Every entry must be a mapping carrying an id, or nothing downstream holds.
+
+    `id` is the key the whole audit bridge is addressed by: the evidence test,
+    the remedy test, the admissibility verdict and the handoff item are all
+    named after it. An entry without one cannot be ruled on, so reading the file
+    as if it declared nothing would be the worst answer available — it reports
+    `audit: none`, which is what a repository with no findings at all reports.
+    """
+    if not isinstance(declared, list):
+        raise Refused("MALFORMED_FINDINGS",
+                      "tests/findings.py assigns FINDINGS something that is not a list.")
+    for index, finding in enumerate(declared):
+        if not isinstance(finding, dict):
+            raise Refused("MALFORMED_FINDINGS",
+                          f"FINDINGS[{index}] is not a mapping, so it declares nothing "
+                          "this command can rule on.")
+        if not isinstance(finding.get("id"), str) or not finding["id"].strip():
+            raise Refused("MALFORMED_FINDINGS",
+                          f"FINDINGS[{index}] carries no `id`; the evidence test, the "
+                          "remedy test and the admissibility verdict are all addressed "
+                          "by it, so nothing about this finding can be checked.")
+    return declared
+
+
 def read_findings(target: Path) -> list[dict]:
     """The declared audit findings, read statically from tests/findings.py."""
     path = target / "tests" / "findings.py"
@@ -457,16 +486,23 @@ def read_findings(target: Path) -> list[dict]:
         return []
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    except (SyntaxError, UnicodeDecodeError):
-        return []
+    except (SyntaxError, UnicodeDecodeError) as exc:
+        # The file exists, so somebody declared findings here. Reading it as an
+        # empty list would answer `audit: none` — indistinguishable from a
+        # repository that has been audited and found nothing.
+        raise Refused("MALFORMED_FINDINGS",
+                      f"tests/findings.py cannot be parsed: {exc}") from exc
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
             isinstance(t, ast.Name) and t.id == "FINDINGS" for t in node.targets
         ):
             try:
-                return ast.literal_eval(node.value)
-            except ValueError:
-                return []
+                declared = ast.literal_eval(node.value)
+            except ValueError as exc:
+                raise Refused("MALFORMED_FINDINGS",
+                              "FINDINGS is not a literal, so it cannot be read without "
+                              "executing the target's code.") from exc
+            return well_formed(declared)
     return []
 
 
@@ -679,16 +715,20 @@ def notebook_execution(path: Path) -> dict:
         return {"status": "unreadable", "detail": str(exc)[:160],
                 "codeCells": 0, "unexecuted": [], "errors": []}
 
+    # `or []` rather than a default: nbformat writes an explicit null for an
+    # absent list often enough, and a crash here would answer nothing at all
+    # about a notebook whose only fault is being written that way.
     code_cells = [
-        (index, cell) for index, cell in enumerate(notebook.get("cells", []))
-        if cell.get("cell_type") == "code" and "".join(cell.get("source", [])).strip()
+        (index, cell) for index, cell in enumerate(notebook.get("cells") or [])
+        if isinstance(cell, dict) and cell.get("cell_type") == "code"
+        and "".join(cell.get("source") or []).strip()
     ]
     unexecuted = [index for index, cell in code_cells if cell.get("execution_count") is None]
     errors = [
         f"cell {index}: {output.get('ename', 'error')}"
         for index, cell in code_cells
-        for output in cell.get("outputs", [])
-        if output.get("output_type") == "error"
+        for output in (cell.get("outputs") or [])
+        if isinstance(output, dict) and output.get("output_type") == "error"
     ]
 
     if not code_cells:
@@ -772,7 +812,12 @@ def cmd_apply(args: argparse.Namespace) -> dict:
         raise Refused("PLAN_MISMATCH", "The approved plan was produced for a different target or name.")
 
     current = build_plan(target, name)
-    if any(current[key] != approved.get(key) for key in ("renames", "moves", "createDirs")):
+    # `referenceUpdates` belongs in this comparison as much as the moves do: a
+    # commit that only edits a file's *contents* leaves renames, moves and
+    # createDirs identical, so nothing would refuse — and `apply` would then
+    # rewrite a file the user never saw in the list they approved.
+    if any(current[key] != approved.get(key)
+           for key in ("renames", "moves", "createDirs", "referenceUpdates")):
         raise Refused(
             "PLAN_STALE",
             "The repository changed since the plan was approved. Re-run `plan` and get approval again.",
@@ -1005,7 +1050,8 @@ def cmd_handoff(args: argparse.Namespace) -> dict:
                 "statement": finding.get("statement"), "remedy": finding.get("remedy")}
         if adoption["state"] == "adopted":
             settled.append(item)
-        elif impact["class"] == "local" and finding.get("remedy_block"):
+        elif (impact["class"] == "local" and finding.get("remedy_block")
+                and finding.get("remedy_equations")):
             # Local and written out: hand the deliberation a request it can act
             # on. The locus travels as the equation's own tag rather than as a
             # quote of the text being corrected — a bare fragment like a symbol
@@ -1024,7 +1070,15 @@ def cmd_handoff(args: argparse.Namespace) -> dict:
             }
             inline.append(item)
         else:
-            if impact["class"] == "local":
+            if impact["class"] == "local" and not finding.get("remedy_equations"):
+                # Local by measurement only because it names no equation at all.
+                # There is no locus to resolve in the document, so there is
+                # nothing the deliberation could be asked to replace.
+                reason = ("Este hallazgo mide como local, pero no declara qué ecuación "
+                          "reescribiría (`remedy_equations` está vacío), así que no hay "
+                          "un locus que resolver en el documento.")
+                item["deferredBecause"] = "remedy-locus-missing"
+            elif impact["class"] == "local":
                 # Local reach, but nobody wrote the corrected block. Deferring is
                 # the honest outcome; saying "not local" here would be false.
                 reason = ("Este cambio es de alcance local, pero el hallazgo no trae el "

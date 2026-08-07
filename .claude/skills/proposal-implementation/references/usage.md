@@ -100,6 +100,10 @@ Present `moves` to the user file by file. `unclassified` means no rule covers
 those files — ask, never invent a destination. `apply` refuses while the list is
 non-empty.
 
+`status` is `compliant` only when there is nothing left to decide: no move, no
+rename, no missing directory, no scaffold gap **and** no `conflicts` or
+`unclassified`. A tree `apply` is about to refuse is never reported as settled.
+
 ### `renames` beats a pile of moves
 
 When one top-level folder already groups `Notebooks/`, `Results/` or `Models/`
@@ -176,8 +180,12 @@ python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py app
 ```
 
 The plan is recomputed and compared before anything moves: if the repository
-changed since approval, it refuses with `PLAN_STALE`. On success everything
-lands in one commit — `git revert <commit>` undoes the whole migration.
+changed since approval, it refuses with `PLAN_STALE`. The comparison covers the
+`referenceUpdates` too, not only the renames, moves and directories — a commit
+that edits nothing but a file's *contents* leaves all three identical, and
+without that check `apply` would rewrite a file that was never on the list the
+user approved. On success everything lands in one commit — `git revert <commit>`
+undoes the whole migration.
 
 Then write the files listed in `scaffoldFiles` from `../assets/`, substituting
 `{{NAME}}`, `{{NAME_LOWER}}`, `{{REVISION}}`, `{{MODULE}}`, `{{FUNCTION_NAME}}`
@@ -390,6 +398,14 @@ text cites those equations. Nothing is judged — all three are read.
 | `local` | one equation, no new notation, cited at most once elsewhere | `settleInline`: an agenda item for the current deliberation |
 | `structural` | anything wider | `deferToOwnSession`: a ready prompt saying why it needs its own session |
 
+A deferred item says why in `deferredBecause`:
+
+| value | meaning |
+| --- | --- |
+| `structural-reach` | the remedy rewrites more than one equation, adds notation, or touches an equation the text leans on |
+| `remedy-text-missing` | local reach, but nobody wrote the corrected block (`remedy_block`) |
+| `remedy-locus-missing` | it measures as local only because `remedy_equations` is empty, so there is no equation to resolve against |
+
 Measured on this repository: three remedies are local, and the confidence one is
 not — it rewrites two equations, adds three symbols, and touches Eq. (24), which
 the text cites three times.
@@ -440,7 +456,8 @@ state, alongside the scenarios — not verified by hand once.
 | `NOT_A_GIT_REPO` | No `.git`. Migration needs a revertible commit. |
 | `DIRTY_WORKTREE` | Uncommitted or untracked changes. Commit or stash first. |
 | `FORGE_INTERPRETER` | The CLI is running from a forge venv. Use system `python3`. |
-| `PLAN_STALE` | The repository changed after approval. Re-plan, re-approve. |
+| `PLAN_STALE` | The repository changed after approval — a rename, a move, a directory **or a reference update**. Re-plan, re-approve. |
+| `MALFORMED_FINDINGS` | `tests/findings.py` exists but cannot be read as a list of mappings each carrying an `id`. Reading it as empty would answer `audit: none`, which is what an audited, clean repository answers. |
 | `DESTINATION_CONFLICT` | A destination is taken, or two sources target one path. |
 | `UNCLASSIFIED_FILES` | No rule covers some files. Ask where they belong. |
 | `APPLY_ABORTED` | Something failed mid-migration. Nothing was committed and the tree was restored; re-run `plan`. |
