@@ -1,4 +1,4 @@
-import type { EditAction, EditPlan } from './types.js';
+import type { CompiledPatch, EditAction, EditPlan } from './types.js';
 
 /**
  * The vocabulary of a managed revision: what a revision is, what it was published from,
@@ -74,6 +74,26 @@ export type CreateSuccessorPayloadV1 = {
 	payloadVersion: 1;
 	expectedBase: RevisionEvidence;
 	patches: readonly FrozenEditPlan[];
+};
+
+/** A revision rendered in memory from a plan, before anything is written. */
+export type ExactDocumentCandidate = {
+	filename: string;
+	revision: string;
+	bytes: Buffer;
+	digest: string;
+	/** Present only for successor publication; produced while executing frozen patches in memory. */
+	patches?: CompiledPatch[];
+};
+
+export type CandidateValidation = {
+	operation: MaterializationPlan['operation'];
+	planDigest: string;
+	payloadVersion: 1;
+	inputDocumentSha256?: string;
+	candidateDocumentSha256: string;
+	patchIds: string[];
+	validationResults: Record<string, boolean>;
 };
 
 export type MaterializationPlan = {

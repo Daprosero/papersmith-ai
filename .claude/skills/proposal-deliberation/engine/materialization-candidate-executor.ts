@@ -5,24 +5,9 @@ import { validateCandidate } from './candidate-validator.js';
 import { sha256, type CompiledPatch, type DocumentState } from './types.js';
 import type { FrozenDecisionSelection, MaterializationClaimProvenance, MaterializationPlan, MaterializationRecord, RevisionEvidence } from './scientific-domain.js';
 
-export type ExactDocumentCandidate = {
-	filename: string;
-	revision: string;
-	bytes: Buffer;
-	digest: string;
-	/** Present only for successor publication; produced while executing frozen patches in memory. */
-	patches?: CompiledPatch[];
-};
+import type { CandidateValidation, ExactDocumentCandidate } from './revision-domain.js';
 
-export type CandidateValidation = {
-	operation: MaterializationPlan['operation'];
-	planDigest: string;
-	payloadVersion: 1;
-	inputDocumentSha256?: string;
-	candidateDocumentSha256: string;
-	patchIds: string[];
-	validationResults: Record<string, boolean>;
-};
+export type { CandidateValidation, ExactDocumentCandidate } from './revision-domain.js';
 
 export type CandidateExecutionFailureCode =
 	| 'MATERIALIZATION_PLAN_MISSING'
