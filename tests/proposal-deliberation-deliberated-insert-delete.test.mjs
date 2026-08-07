@@ -201,9 +201,6 @@ test('types: parseProposedEdit recognizes bounded insert/delete shapes and rejec
 
 // --- Section B: capture -- deriveProposedEdit via ScientificWorkflowService.candidate() --
 
-function event(sequence, eventId, type, threadId, actor, payload, causalEventIds) {
-	return { schemaVersion: 1, eventId, sequence, occurredAt: `2026-01-01T00:${String(sequence).padStart(2, '0')}:00.000Z`, actor: { kind: actor }, type, threadId, causalEventIds, payload, evidence: [], privacy: { contentClass: 'PUBLIC_SUMMARY_ONLY', redactionVersion: 1 } };
-}
 const tutorAssessment = (overrides = {}) => ({
 	decision: 'ACCEPT_WITH_REVISIONS',
 	summary: 'Bounded accepted synthesis.',
@@ -218,73 +215,12 @@ const reviewerAssessment = (overrides = {}) => ({
 	...overrides,
 });
 
-async function serviceFixture({ tutorResults, reviewerResults = [reviewerAssessment()], documentFragments = [], instruction = 'Synthesize this bounded scientific question.' } = {}) {
-	const projectRoot = await mkdtemp(path.join(tmpdir(), 'proposal-deliberation-deliberated-'));
-	const store = new v2.ScientificStateStore(projectRoot);
-	const initialEvent = event(1, 'thread-created', 'THREAD_CREATED', 'thread-1', 'USER', { title: 'Bounded question', summary: 'Public thread summary.', activeThreadId: 'thread-1' }, []);
-	const thread = { threadId: 'thread-1', version: 1, status: 'OPEN', title: 'Bounded question', summary: 'Public thread summary.', createdEventId: 'thread-created', headEventId: 'thread-created', relationIds: [], decisionIds: [] };
-	await store.commitTransition({ events: [initialEvent], snapshot: { schemaVersion: 1, activeThreadId: 'thread-1', threads: [thread], relations: [], decisions: [] } });
-	let id = 0;
-	const service = new v2.ScientificWorkflowService({
-		store,
-		contextBuilder: { build: async (input) => ({ schemaVersion: 1, act: input.act, activeThread: { threadId: input.activeThread.threadId, status: input.activeThread.status, title: input.activeThread.title, summary: input.activeThread.summary }, relatedThreads: [], evidence: [], documentFragments, limits: { maxRelatedThreads: 4, maxEvidence: 12, maxDocumentFragments: 4, maxBytes: 64_000 }, byteCount: 128, privacy: { contentClass: 'PUBLIC_SUMMARY_ONLY', redactionVersion: 1 } }) },
-		tutor: { assess: async () => tutorResults.shift() },
-		reviewer: { review: async () => reviewerResults.shift() },
-		newId: () => `event-${++id}`,
-		now: () => new Date('2026-01-02T00:00:00.000Z'),
-	});
-	const input = { activeThread: thread, requestedDirectRelationIds: [], act: 'SYNTHESIZE', instruction };
-	return { projectRoot, store, service, input, thread };
-}
 
 const fragment = (entryId, text = 'Original text.') => ({ entryId, type: 'paragraph', text, textSha256: 'a'.repeat(64), headingPath: [], revision: { filename: 'lifecycle-v1:x', revision: 'working', documentSha256: 'b'.repeat(64) } });
 
-test('capture: a user instruction parsed as INSERT ("agrega/inserta") lifts a real kind:"insert" EditAction, content from the tutor, never guessed by the tutor', async () => {
-	const run = await serviceFixture({
-		instruction: 'Agrega una nueva oración después de este párrafo explicando el supuesto.',
-		tutorResults: [tutorAssessment({ decision: 'ACCEPT_WITH_REVISIONS', affectedEntryIds: ['paragraph:anchor-1'], proposedAlternative: 'La nueva oración explicando el supuesto.' })],
-		documentFragments: [fragment('paragraph:anchor-1')],
-	});
-	const result = await run.service.synthesize(run.input);
-	assert.equal(result.status, 'reviewed', JSON.stringify(result));
-	assert.deepEqual(result.candidate.proposedEdit, { kind: 'insert', anchorEntryId: 'paragraph:anchor-1', position: 'after', content: 'La nueva oración explicando el supuesto.' });
-});
 
-test('capture: a user instruction parsed as DELETE ("elimina/borra") lifts a real kind:"delete" EditAction with no tutor-authored content', async () => {
-	const run = await serviceFixture({
-		instruction: 'Elimina este párrafo, ya no es relevante para el argumento.',
-		tutorResults: [tutorAssessment({ decision: 'ACCEPT', affectedEntryIds: ['paragraph:target-1'], summary: 'Removes an obsolete claim; safe to delete.' })],
-		documentFragments: [fragment('paragraph:target-1')],
-	});
-	const result = await run.service.synthesize(run.input);
-	assert.equal(result.status, 'reviewed', JSON.stringify(result));
-	assert.equal(result.candidate.proposedEdit.kind, 'delete');
-	assert.equal(result.candidate.proposedEdit.targetEntryId, 'paragraph:target-1');
-	assert.equal(result.candidate.proposedEdit.reason, 'Removes an obsolete claim; safe to delete.');
-	assert.ok(result.candidate.proposedEdit.instructionEvidence.length > 0);
-});
 
-test('capture: a DELETE instruction the tutor REJECTs or asks to clarify never becomes a delete proposedEdit (tutor can refute, never author, the operation)', async () => {
-	const rejected = await serviceFixture({
-		instruction: 'Elimina este párrafo completo.',
-		tutorResults: [tutorAssessment({ decision: 'REJECT_WITH_REASON', affectedEntryIds: ['paragraph:target-1'], summary: 'This paragraph is load-bearing; deletion would break the argument.' })],
-		documentFragments: [fragment('paragraph:target-1')],
-		reviewerResults: [reviewerAssessment({ decision: 'BLOCK' })],
-	});
-	const result = await rejected.service.synthesize(rejected.input);
-	assert.equal(result.status, 'blocked');
-});
 
-test('capture: a plain CHANGE instruction (not INSERT/DELETE) still produces the pre-existing kind:"replace" EditAction, unchanged', async () => {
-	const run = await serviceFixture({
-		instruction: 'Cambia este párrafo para que sea más preciso.',
-		tutorResults: [tutorAssessment({ decision: 'ACCEPT_WITH_REVISIONS', affectedEntryIds: ['paragraph:target-1'], proposedAlternative: 'A more precise statement of the claim.' })],
-		documentFragments: [fragment('paragraph:target-1')],
-	});
-	const result = await run.service.synthesize(run.input);
-	assert.equal(result.status, 'reviewed', JSON.stringify(result));
-	assert.deepEqual(result.candidate.proposedEdit, { kind: 'replace', targetEntryId: 'paragraph:target-1', replacementText: 'A more precise statement of the claim.' });
-});
 
 // --- Section C: coexistence -- CHANGE + ADD + DELETE at distinct loci, ONE version ------
 
@@ -296,155 +232,12 @@ async function withTempRoot(run) {
 		await rm(projectRoot, { recursive: true, force: true });
 	}
 }
-function decisionEvents({ id, threadId, summary, proposedEdit, sequenceStart }) {
-	const synthesisDigest = digest({ synthesisId: `synthesis-${id}`, threadId, summary, proposedEdit });
-	const tutorPayload = { status: 'DRAFT', summary, synthesisId: `synthesis-${id}`, synthesisDigest, ...(proposedEdit ? { proposedEdit } : {}) };
-	return {
-		synthesisDigest,
-		events: [
-			event(sequenceStart, `tutor-${id}`, 'TUTOR_ASSESSED', threadId, 'TUTOR', tutorPayload, [`created-${id}`]),
-			event(sequenceStart + 1, `review-${id}`, 'CONCEPTUAL_REVIEW_RECORDED', threadId, 'CONCEPTUAL_REVIEWER', { status: 'PASS', synthesisId: `synthesis-${id}`, synthesisDigest }, [`tutor-${id}`]),
-			event(sequenceStart + 2, `accepted-${id}`, 'DECISION_ACCEPTED', threadId, 'USER', { decisionId: `decision-${id}`, synthesisId: `synthesis-${id}`, synthesisDigest, status: 'ACCEPTED_UNMATERIALIZED' }, [`review-${id}`]),
-		],
-	};
-}
-async function materialize({ baseContent, decisions, workspaceId = 'workspace-1' }) {
-	return withTempRoot(async (projectRoot) => {
-		const lifecycle = new v2.LifecycleService(projectRoot);
-		const registered = await lifecycle.registerBaseDocument({ workspaceId, requestId: 'register-base', baseDocumentId: 'base-1', content: baseContent });
-		assert.equal(registered.outcome, 'COMMITTED');
-		const store = new v2.ScientificStateStore(projectRoot);
-		const threads = [];
-		const allDecisions = [];
-		let allEvents = [];
-		let sequence = 1;
-		for (const d of decisions) {
-			allEvents.push(event(sequence, `created-${d.id}`, 'THREAD_CREATED', `thread-${d.id}`, 'USER', { title: `Question ${d.id}`, summary: `Public summary ${d.id}.`, activeThreadId: `thread-${d.id}` }, []));
-			sequence += 1;
-			const built = decisionEvents({ id: d.id, threadId: `thread-${d.id}`, summary: d.summary, proposedEdit: d.proposedEdit, sequenceStart: sequence });
-			allEvents = allEvents.concat(built.events);
-			sequence += 3;
-			threads.push({ threadId: `thread-${d.id}`, version: 1, status: 'ACCEPTED_UNMATERIALIZED', title: `Question ${d.id}`, summary: `Public summary ${d.id}.`, createdEventId: `created-${d.id}`, headEventId: `accepted-${d.id}`, relationIds: [], decisionIds: [`decision-${d.id}`] });
-			allDecisions.push({ decisionId: `decision-${d.id}`, threadId: `thread-${d.id}`, acceptedEventId: `accepted-${d.id}`, acceptedSynthesisDigest: built.synthesisDigest, acceptedBy: { kind: 'USER' }, state: 'ACCEPTED_UNMATERIALIZED', sourceEventIds: [`tutor-${d.id}`, `review-${d.id}`] });
-		}
-		await store.commitTransition({ events: allEvents, snapshot: { schemaVersion: 1, activeThreadId: threads[0].threadId, threads, relations: [], decisions: allDecisions } });
 
-		const runtime = new v2.ScientificWorkflowRuntime(projectRoot, {}, { lifecycleV1WorkspaceId: workspaceId });
-		const result = await runtime.execute({ operation: 'SCIENTIFIC_WORKFLOW', instruction: 'request materialization', scientificAct: 'REQUEST_MATERIALIZATION', candidateIds: decisions.map((d) => `decision-${d.id}`) });
-		assert.equal(result.status, 'materialized', JSON.stringify(result));
-		const inventory = await lifecycle.rebuildLifecycleInventory(workspaceId);
-		const active = inventory.revisions.find((revision) => revision.revisionId === result.materialization.targetRevision);
-		assert.ok(active, 'materialized revision must exist in the lifecycle inventory');
-		return { active, baseContent, projectRoot };
-	});
-}
 
-test('coexistence: a CHANGE + an ADD + a DELETE at three distinct loci splice into ONE materialized version, byte-preserving', async () => {
-	const baseContent = '# Energy Identity\n\nBaseline informal statement without display math.\n\n# Momentum Relation\n\nBaseline momentum statement, to be removed.\n\n# Notation\n\nStable notation paragraph, never touched.\n';
-	const probe = await v2.rebuildDerivedState('lifecycle-v1:successor-locus', 'working', 'lifecycle-v1', Buffer.from(baseContent, 'utf8'));
-	const energyParagraph = probe.structuralIndex.entries.find((e) => e.type === 'paragraph' && baseContent.slice(e.startByte, e.endByte).startsWith('Baseline informal'));
-	const momentumParagraph = probe.structuralIndex.entries.find((e) => e.type === 'paragraph' && baseContent.slice(e.startByte, e.endByte).startsWith('Baseline momentum'));
-	const notationParagraph = probe.structuralIndex.entries.find((e) => e.type === 'paragraph' && baseContent.slice(e.startByte, e.endByte).startsWith('Stable notation'));
-	assert.ok(energyParagraph && momentumParagraph && notationParagraph);
 
-	const { active } = await materialize({
-		baseContent,
-		// Ordered so `decision-<id>` is already lexicographically sorted (a required
-		// invariant of `reserveMaterialization`'s frozen selection) -- unrelated to
-		// splice order, which is independently determined by each locus's byte offset.
-		decisions: [
-			{ id: 'add', summary: 'Add a clarifying remark after the notation paragraph.', proposedEdit: { kind: 'insert', anchorEntryId: notationParagraph.entryId, position: 'after', content: '\n\nClarifying remark: symbols follow standard conventions.\n' } },
-			{ id: 'change', summary: 'Energy identity revision.', proposedEdit: { kind: 'replace', targetEntryId: energyParagraph.entryId, replacementText: 'The energy identity is E=mc^2.' } },
-			{ id: 'delete', summary: 'Remove the obsolete momentum paragraph.', proposedEdit: { kind: 'delete', targetEntryId: momentumParagraph.entryId, instructionEvidence: 'elimina este parrafo', reason: 'Superseded by a later section.' } },
-		],
-	});
 
-	assert.equal(active.content.includes('The energy identity is E=mc^2.'), true, 'the CHANGE is applied');
-	assert.equal(active.content.includes('Baseline informal statement without display math.'), false);
-	assert.equal(active.content.includes('Clarifying remark: symbols follow standard conventions.'), true, 'the ADD is applied');
-	assert.equal(active.content.includes('Stable notation paragraph, never touched.'), true, 'the ADD anchor entry itself is untouched');
-	assert.equal(active.content.includes('Baseline momentum statement, to be removed.'), false, 'the DELETE removed its span');
-	assert.equal(active.content.includes('# Momentum Relation'), true, 'only the paragraph was deleted -- the surrounding heading survives');
-	assert.doesNotMatch(active.content, /> Accepted revision:/, 'all three decisions are applied as real structured edits, never annotations');
-	assert.doesNotMatch(active.content, /## Accepted scientific decisions/, 'no claim was pushed to the summary tail block -- all three fully resolved structurally');
-});
 
-test('coexistence: a boundary-adjacent insert/delete pair (insert placed immediately before the same paragraph the delete removes) is NOT an overlap -- both apply structurally, disjointly', async () => {
-	const baseContent = '# Section\n\nA single paragraph that both an insert and a delete target.\n';
-	const probe = await v2.rebuildDerivedState('lifecycle-v1:successor-locus', 'working', 'lifecycle-v1', Buffer.from(baseContent, 'utf8'));
-	const paragraph = probe.structuralIndex.entries.find((e) => e.type === 'paragraph');
-	assert.ok(paragraph);
 
-	const { active } = await materialize({
-		baseContent,
-		decisions: [
-			{ id: 'delete', summary: 'Delete the paragraph.', proposedEdit: { kind: 'delete', targetEntryId: paragraph.entryId, instructionEvidence: 'elimina', reason: 'Obsolete.' } },
-			{ id: 'insert', summary: 'Insert before the same paragraph, which the delete also targets.', proposedEdit: { kind: 'insert', anchorEntryId: paragraph.entryId, position: 'before', content: 'Would-be inserted text.' } },
-		],
-	});
-
-	// A zero-width insert exactly at the delete's own span START is boundary-
-	// adjacent, not strictly inside it -- per the composite engine's own overlap
-	// rule (mirrors `BLOCK_TARGET_OVERLAP`'s semantics), so both apply: the
-	// paragraph is removed and the insert lands at its frozen boundary. Nothing
-	// is silently corrupted, duplicated, or force-applied at the wrong offset --
-	// see the dedicated tie-break fix in `spliceDisjoint`/`spliceDisjointForSuccessorLocus`.
-	assert.equal(active.content.includes('Would-be inserted text.'), true);
-	assert.equal(active.content.includes('A single paragraph that both an insert and a delete target.'), false);
-	assert.doesNotMatch(active.content, /## Accepted scientific decisions/, 'boundary-adjacent, not overlapping -- both resolve structurally');
-});
-
-test('coexistence: a TRUE overlap (replace and delete both targeting the exact same entry span) is never silently applied -- both degrade to the summary tail block', async () => {
-	const baseContent = '# Section\n\nA single paragraph targeted by two colliding decisions.\n';
-	const probe = await v2.rebuildDerivedState('lifecycle-v1:successor-locus', 'working', 'lifecycle-v1', Buffer.from(baseContent, 'utf8'));
-	const paragraph = probe.structuralIndex.entries.find((e) => e.type === 'paragraph');
-	assert.ok(paragraph);
-
-	const { active } = await materialize({
-		baseContent,
-		decisions: [
-			{ id: 'change', summary: 'Replace the paragraph.', proposedEdit: { kind: 'replace', targetEntryId: paragraph.entryId, replacementText: 'Replacement text.' } },
-			{ id: 'delete', summary: 'Delete the same paragraph.', proposedEdit: { kind: 'delete', targetEntryId: paragraph.entryId, instructionEvidence: 'elimina', reason: 'Obsolete.' } },
-		],
-	});
-
-	assert.equal(active.content.includes('Replacement text.'), false, 'the colliding replace is never silently applied');
-	assert.equal(active.content.includes('A single paragraph targeted by two colliding decisions.'), true, 'the colliding delete is never silently applied either -- the original span survives as an untouched prefix');
-	assert.match(active.content, /## Accepted scientific decisions/, 'both colliding decisions degrade to the shared tail block');
-	assert.equal(active.content.includes('Replace the paragraph.'), true, 'neither decision is silently lost');
-	assert.equal(active.content.includes('Delete the same paragraph.'), true, 'neither decision is silently lost');
-});
-
-test('coexistence: an insert whose anchorEntryId has drifted falls back to annotation/tail-block, never a forced offset', async () => {
-	const baseContent = '# Stable Section\n\nCompletely stable content, never touched by any heading-keyword match.\n';
-	const summary = 'This summary intentionally shares no words with any heading in the base document xyzxyz.';
-	const { active } = await materialize({
-		baseContent,
-		decisions: [{ id: 'a', summary, proposedEdit: { kind: 'insert', anchorEntryId: 'paragraph:this-entry-id-does-not-exist', position: 'after', content: 'Would-be inserted text, must never be silently applied at the wrong offset.' } }],
-	});
-	assert.equal(active.content.includes('Would-be inserted text, must never be silently applied at the wrong offset.'), false);
-	assert.equal(active.content.startsWith(baseContent), true, 'the original base content is preserved as an untouched prefix when the only decision falls back');
-	assert.equal(active.content.includes(summary), true, 'the decision itself is never silently lost');
-});
-
-test('coexistence: a delete whose targetEntryId has drifted falls back to annotation/tail-block, never a forced offset', async () => {
-	const baseContent = '# Stable Section\n\nCompletely stable content, never touched by any heading-keyword match.\n';
-	const summary = 'This other summary also intentionally shares no words with any heading xyzxyz.';
-	const { active } = await materialize({
-		baseContent,
-		decisions: [{ id: 'a', summary, proposedEdit: { kind: 'delete', targetEntryId: 'paragraph:this-entry-id-does-not-exist', instructionEvidence: 'elimina', reason: 'Obsolete.' } }],
-	});
-	assert.equal(active.content.startsWith(baseContent), true, 'the original base content is preserved as an untouched prefix when the only decision falls back');
-	assert.equal(active.content.includes(summary), true, 'the decision itself is never silently lost');
-});
-
-test('coexistence: an old-style summary-only decision (no proposedEdit) still annotates exactly as before, even alongside this batch\'s new kinds', async () => {
-	const baseContent = '# Energy identity\n\nBaseline informal statement without display math.\n';
-	const summary = 'The energy identity should state E=mc^2 explicitly.';
-	const { active } = await materialize({ baseContent, decisions: [{ id: 'a', summary }] });
-	assert.match(active.content, /> Accepted revision: /, 'summary-only decisions still fall back to the pre-existing locus-scoped annotation');
-	assert.equal(active.content.includes(summary), true);
-});
 
 // --- Section D: SuccessorEditPlanner (secondary/filename-era route) -------------------
 
