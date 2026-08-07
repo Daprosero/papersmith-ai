@@ -247,6 +247,24 @@ If your resolution or decision was wrong, the engine rejects it instead of silen
 - `NO_MATCHING_DECISION` / `AMBIGUOUS_MATCHING_DECISIONS` — every resolved locus in the request needs exactly one decision claiming it.
 - `SOURCE_EQUALS_DESTINATION` / `HIERARCHY_CYCLE_DESTINATION_DESCENDANT` / `NO_OP_PLAN` — the described relocation or replacement is structurally impossible; go back to the user rather than forcing a shape that would satisfy validation without satisfying the request.
 
+## The operations this host accepts
+
+`STATUS`, `RESOLVE_TARGET`, `CREATE_INITIAL_REVISION`, `CREATE_SUCCESSOR`, `WITHDRAW_REVISION`,
+`RESTORE_WITHDRAWN_REVISION`, `CHAT_DELIBERATION`, `CLOSE_DELIBERATION`, `MAINTENANCE`. Anything
+else is refused by name with `UNKNOWN_OPERATION` rather than routed as something else.
+
+Three of them are accepted but outside this skill's flow, and the distinction matters when reading
+a response:
+
+- `CHAT_DELIBERATION` / `CLOSE_DELIBERATION` hand a deliberation turn to the engine. SKILL.md tells
+  you to hold the thread yourself instead, so you never open one. Their state is in memory only —
+  nothing is written, nothing survives the process, and no conversation can reach another.
+- `MAINTENANCE` answers `delegation_permitted` for external upkeep work. It carries no authority
+  over the proposal (`documentAuthority: "FORBIDDEN"`) and mutates nothing.
+
+`tests/proposal-deliberation-cli-operation-surface.test.mjs` pins this list. Adding or removing an
+operation is a public change and must edit that test too.
+
 ## Managed revision lifecycle
 
 To withdraw an eligible managed revision:

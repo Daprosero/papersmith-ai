@@ -27,7 +27,7 @@ Once you open a deliberation with the user about this proposal, **stay in this r
 
 ## Context
 
-Deliberation is now entirely yours — there is no engine-side `CHAT_DELIBERATION` call backing it, so you are responsible for loading your own context once, not per turn.
+Deliberation is entirely yours: you do not hand a turn to the engine, so you are responsible for loading your own context once, not per turn.
 
 1. **Run `STATUS` first.** At the start of a deliberation (and any time you are unsure which file is the current base), call the engine's read-only `STATUS` operation and run the decision tree in [Resolving the base version](#resolving-the-base-version) below against its response — never list `proposals/` yourself or guess which file is "latest."
 2. **No managed proposal yet?** If `STATUS` reports zero managed revisions, take the user's idea (per the decision tree) and create v1 explicitly via `CREATE_INITIAL_REVISION` (see below) — never implicitly, never overwriting or duplicating an existing one. The engine itself loads the paper-guide for this one call; you do not need to pass it in.
@@ -73,7 +73,9 @@ If `multipleActive` is `true` (a tied latest across lineages), stop and ask the 
 
 ## Deliberate, then decide
 
-Deliberation state (turns, what has been discussed, what the user has approved) lives in **this conversation** — not in the engine. There is no `CHAT_DELIBERATION` engine call to make and no server-side conversation to resume; you hold the thread.
+Deliberation state (turns, what has been discussed, what the user has approved) lives in **this conversation** — not in the engine. You hold the thread.
+
+The engine does accept a `CHAT_DELIBERATION` operation, and a `CLOSE_DELIBERATION` to end it. **Do not use them.** They are not deprecated and not broken — their state is a map in memory that dies with the process, so they never persist a conversation or leak one deliberation into another. They are simply not this skill's way of working: deliberation belongs in this conversation, where the reasoning stays visible to the user instead of becoming an engine turn they cannot read. A revision you publish while a conversation is open carries that conversation's latest conclusion into the edit as advisory evidence, which is exactly the coupling this skill avoids by holding the thread itself.
 
 - Discuss each proposed change against the rigor criteria above. Refute what does not hold up; refine what is close; accept explicitly what is sound.
 - Keep a running tally, in your own working notes, of every change the user has explicitly approved but not yet applied to the document.
