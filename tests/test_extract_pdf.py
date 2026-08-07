@@ -59,26 +59,74 @@ class StripReferencesTests(unittest.TestCase):
 
 
 class LoadConfigTests(unittest.TestCase):
+    """A malformed or missing configuration is reported, never silently
+    downgraded to "nothing to ingest" — that reads exactly like a healthy
+    no-op run and hides the real problem."""
+
+    def _config(self, tmp: str, body: str) -> Path:
+        path = Path(tmp) / "papersmith.yaml"
+        path.write_text(body, encoding="utf-8")
+        return path
+
     def test_reads_paper_ingestion_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "papersmith.yaml"
-            path.write_text(
-                "paper_ingestion:\n  engine: marker\n  mode: fast\n  strip_references: true\n",
-                encoding="utf-8",
+            path = self._config(
+                tmp, "paper_ingestion:\n  engine: marker\n  mode: fast\n  strip_references: true\n"
             )
             cfg = EXTRACTOR.load_config(path)
             self.assertEqual(cfg["engine"], "marker")
             self.assertEqual(cfg["mode"], "fast")
             self.assertTrue(cfg["strip_references"])
 
-    def test_missing_file_returns_empty_dict(self) -> None:
-        self.assertEqual(EXTRACTOR.load_config(Path("/no/such/papersmith.yaml")), {})
+    def test_missing_file_is_a_config_error(self) -> None:
+        with self.assertRaises(EXTRACTOR.ConfigError):
+            EXTRACTOR.load_config(Path("/no/such/papersmith.yaml"))
 
-    def test_file_without_block_returns_empty_dict(self) -> None:
+    def test_file_without_block_is_a_config_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "papersmith.yaml"
-            path.write_text("other_section:\n  key: value\n", encoding="utf-8")
-            self.assertEqual(EXTRACTOR.load_config(path), {})
+            path = self._config(tmp, "other_section:\n  key: value\n")
+            with self.assertRaises(EXTRACTOR.ConfigError):
+                EXTRACTOR.load_config(path)
+
+    def test_unparseable_yaml_is_a_config_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._config(tmp, "paper_ingestion:\n  mode: [unclosed\n")
+            with self.assertRaises(EXTRACTOR.ConfigError):
+                EXTRACTOR.load_config(path)
+
+    def test_scalar_block_is_a_config_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._config(tmp, "paper_ingestion: marker\n")
+            with self.assertRaises(EXTRACTOR.ConfigError):
+                EXTRACTOR.load_config(path)
+
+    def test_unknown_mode_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._config(tmp, "paper_ingestion:\n  mode: turbo\n")
+            with self.assertRaises(EXTRACTOR.ConfigError):
+                EXTRACTOR.load_config(path)
+
+    def test_unknown_engine_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._config(tmp, "paper_ingestion:\n  engine: docling\n")
+            with self.assertRaises(EXTRACTOR.ConfigError):
+                EXTRACTOR.load_config(path)
+
+    def test_source_roots_must_be_a_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._config(tmp, "paper_ingestion:\n  source_roots: guidance/papers\n")
+            with self.assertRaises(EXTRACTOR.ConfigError):
+                EXTRACTOR.load_config(path)
+
+    def test_strip_references_must_be_boolean(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._config(tmp, "paper_ingestion:\n  strip_references: sometimes\n")
+            with self.assertRaises(EXTRACTOR.ConfigError):
+                EXTRACTOR.load_config(path)
+
+    def test_the_repository_configuration_is_valid(self) -> None:
+        cfg = EXTRACTOR.load_config(REPOSITORY_ROOT / "papersmith.yaml")
+        self.assertIsInstance(cfg["source_roots"], list)
 
 
 class FindLoosePdfsTests(unittest.TestCase):
@@ -101,6 +149,58 @@ class FindLoosePdfsTests(unittest.TestCase):
     def test_empty_source_roots_yields_no_pdfs(self) -> None:
         self.assertEqual(EXTRACTOR.find_loose_pdfs([]), [])
         self.assertEqual(EXTRACTOR.find_loose_pdfs(None), [])
+
+    def test_an_uppercase_extension_is_still_a_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "SHOUTY.PDF").write_bytes(b"%PDF-s")
+            self.assertEqual([p.name for p in EXTRACTOR.find_loose_pdfs([str(root)])], ["SHOUTY.PDF"])
+
+    def test_a_directory_named_like_a_pdf_is_not_a_paper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "trap.pdf").mkdir()
+            self.assertEqual(EXTRACTOR.find_loose_pdfs([str(root)]), [])
+
+
+class SingleTargetTests(unittest.TestCase):
+    """An explicit ``<loose-pdf>`` argument is validated before the engine
+    loads, so a mistyped path can never displace a file that is not a paper."""
+
+    def test_accepts_a_loose_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf = Path(tmp) / "paper.pdf"
+            pdf.write_bytes(b"%PDF-p")
+            self.assertEqual(EXTRACTOR.resolve_single_target(str(pdf)), pdf.resolve())
+
+    def test_rejects_a_missing_path(self) -> None:
+        with self.assertRaises(EXTRACTOR.ConfigError):
+            EXTRACTOR.resolve_single_target("/no/such/paper.pdf")
+
+    def test_rejects_a_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(EXTRACTOR.ConfigError):
+                EXTRACTOR.resolve_single_target(tmp)
+
+    def test_rejects_a_non_pdf_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            notes = Path(tmp) / "notes.txt"
+            notes.write_text("research notes", encoding="utf-8")
+            with self.assertRaises(EXTRACTOR.ConfigError):
+                EXTRACTOR.resolve_single_target(str(notes))
+
+    def test_rejects_an_already_ingested_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "paper"
+            folder.mkdir()
+            pdf = folder / "paper.pdf"
+            pdf.write_bytes(b"%PDF-p")
+            with self.assertRaises(EXTRACTOR.ConfigError):
+                EXTRACTOR.resolve_single_target(str(pdf))
+
+    def test_is_loose_recognises_the_ingested_layout(self) -> None:
+        self.assertTrue(EXTRACTOR.is_loose(Path("/papers/foo.pdf")))
+        self.assertFalse(EXTRACTOR.is_loose(Path("/papers/foo/foo.pdf")))
 
 
 if __name__ == "__main__":

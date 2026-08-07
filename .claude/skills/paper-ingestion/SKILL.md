@@ -57,9 +57,23 @@ Always invoke through the venv interpreter:
 **Loose PDF = not yet ingested.** A PDF sitting directly in a source root is
 pending; once ingested it lives inside its own `<stem>/` folder, so it is no
 longer loose and is skipped. To re-ingest, delete the paper's folder (leaving the
-PDF loose) and run again.
+PDF loose) and run again — that deletion is the only forced re-ingestion path,
+because an existing non-empty `<stem>/` folder is refused rather than merged
+into.
 
 First run downloads the Surya layout/OCR models (~1–2 GB), cached thereafter.
+
+## Failure Semantics
+
+Ingestion is **transactional per paper**. Conversion runs in a staging directory
+beside the paper and the PDF is moved in only once its `.md` and figures exist.
+A paper that fails to convert stays **loose**, so the next run retries it — a
+failure never leaves a PDF stranded in a folder with no `.md`, which the next
+run would read as "already ingested".
+
+Exit codes: `0` success or nothing to do, `1` at least one paper failed (the
+rest were still ingested), `2` configuration, argument, or environment error —
+nothing was touched.
 
 ## Output Contract
 
@@ -101,9 +115,13 @@ mode when fidelity matters more than speed.
 | Situation | Action |
 | --- | --- |
 | Malformed/missing configuration | Report the error; do nothing |
+| Unknown `engine`/`mode`, or a value of the wrong type | Report the error before loading the engine; do nothing |
 | Loose PDFs present | Ingest them without prompting |
 | No loose PDFs (all in folders) | Report nothing to do; do not re-ingest |
-| A single file fails | Report that file; continue with the rest |
+| Argument that is missing, not a PDF, a directory, or already ingested | Refuse before loading the engine; move nothing |
+| A paper's `<stem>/` folder already exists and is not empty | Refuse that paper; say to delete the folder to re-ingest |
+| Marker not installed in the interpreter | Report it and point at `setup.sh`; move nothing |
+| A single file fails | Report that file; leave it loose; continue with the rest |
 
 ## Output Reporting
 

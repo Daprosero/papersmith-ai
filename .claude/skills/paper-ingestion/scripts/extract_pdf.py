@@ -2,13 +2,18 @@
 """Paper ingestion via Marker — one self-contained folder per paper.
 
 For each **loose** ``<root>/<stem>.pdf`` (a PDF sitting directly in a source
-root), this creates ``<root>/<stem>/``, moves the PDF inside, converts it with
-Marker, strips the references/bibliography section, writes each figure as its
-own image file, and writes ``<stem>.md`` that references those files. So a
-paper's whole footprint lives in one folder: ``pdf + md + figure images``.
+root), this creates ``<root>/<stem>/``, converts the PDF with Marker, strips the
+references/bibliography section, writes each figure as its own image file,
+writes ``<stem>.md`` that references those files, and finally moves the PDF in.
+So a paper's whole footprint lives in one folder: ``pdf + md + figure images``.
 
 A loose PDF = not yet ingested. Once ingested, the PDF lives inside its folder,
 so it is no longer loose and is skipped on the next run.
+
+Ingestion is transactional: conversion happens in a staging directory and the
+PDF is moved only once the Markdown and figures are safely in place. A paper
+that fails to convert is left **loose**, so the next run retries it instead of
+silently reporting "nothing to ingest".
 
 The ``.md`` stays lean (text + LaTeX equations + Markdown tables); figures are
 referenced, not embedded — an agent loads a specific figure only when it needs
@@ -17,6 +22,9 @@ it. Local and keyless: no API keys and no LLM service.
 Usage:
     python extract_pdf.py                 # ingest every loose PDF under source_roots
     python extract_pdf.py <pdf>           # ingest one loose PDF
+
+Exit codes: 0 success (or nothing to do), 1 at least one paper failed,
+2 configuration/usage/environment error (nothing was touched).
 """
 from __future__ import annotations
 
@@ -25,6 +33,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 # Apple Silicon (MPS) needs CPU fallback for the handful of ops surya/torch
@@ -36,6 +45,10 @@ import yaml
 # .../.claude/skills/paper-ingestion/scripts/extract_pdf.py -> repo root is parents[4]
 REPO_ROOT = Path(__file__).resolve().parents[4]
 CONFIG_PATH = REPO_ROOT / "papersmith.yaml"
+SETUP_SCRIPT = "./.claude/skills/paper-ingestion/setup.sh"
+
+VALID_MODES = ("fast", "balanced")
+VALID_ENGINES = ("marker",)
 
 # A references/bibliography heading (EN or ES). Marker decorates headings with
 # bold (**References**), anchor <span> wrappers, and leading numbers, so match
@@ -48,12 +61,71 @@ _REFERENCES_TITLE = re.compile(
 _MARKDOWN_DECOR = re.compile(r"[*_`~]|<[^>]+>")
 
 
-def load_config(path: Path = CONFIG_PATH) -> dict:
+class ConfigError(Exception):
+    """The `paper_ingestion` configuration is missing or malformed."""
+
+
+class EngineError(Exception):
+    """The Marker engine is not usable in this environment."""
+
+
+class IngestionError(Exception):
+    """A single paper could not be ingested; the run continues with the rest."""
+
+
+def load_config(path: Path | None = None) -> dict:
+    """Read and validate the `paper_ingestion` block. Raises `ConfigError`.
+
+    Fail closed: a missing file, unparseable YAML, a missing block, or a value
+    of the wrong shape is reported instead of being silently treated as "no
+    papers to ingest", which is indistinguishable from a healthy no-op.
+    """
+    path = CONFIG_PATH if path is None else path
     if not path.exists():
-        return {}
-    with open(path) as fh:
-        data = yaml.safe_load(fh) or {}
-    return data.get("paper_ingestion", {}) or {}
+        raise ConfigError(f"{path} not found")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+    except yaml.YAMLError as exc:
+        detail = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
+        raise ConfigError(f"{path} is not valid YAML: {detail}") from None
+    if data is None:
+        raise ConfigError(f"{path} is empty")
+    if not isinstance(data, dict):
+        raise ConfigError(f"{path} must be a YAML mapping")
+
+    cfg = data.get("paper_ingestion")
+    if cfg is None:
+        raise ConfigError(f"{path} has no 'paper_ingestion' block")
+    if not isinstance(cfg, dict):
+        raise ConfigError("'paper_ingestion' must be a mapping of settings")
+
+    engine = cfg.get("engine")
+    if engine is not None and engine not in VALID_ENGINES:
+        raise ConfigError(f"unknown engine {engine!r}; expected one of {', '.join(VALID_ENGINES)}")
+
+    mode = cfg.get("mode")
+    if mode is not None and mode not in VALID_MODES:
+        raise ConfigError(f"unknown mode {mode!r}; expected one of {', '.join(VALID_MODES)}")
+
+    strip_refs = cfg.get("strip_references")
+    if strip_refs is not None and not isinstance(strip_refs, bool):
+        raise ConfigError(f"strip_references must be true or false, got {strip_refs!r}")
+
+    roots = cfg.get("source_roots")
+    if roots is not None:
+        if not isinstance(roots, list) or not all(isinstance(r, str) for r in roots):
+            raise ConfigError("source_roots must be a list of folder paths")
+    return cfg
+
+
+def is_pdf(path: Path) -> bool:
+    return path.suffix.lower() == ".pdf"
+
+
+def is_loose(pdf: Path) -> bool:
+    """A PDF is loose until it lives inside its own `<stem>/` folder."""
+    return pdf.parent.name != pdf.stem
 
 
 def find_loose_pdfs(source_roots) -> list[Path]:
@@ -61,9 +133,35 @@ def find_loose_pdfs(source_roots) -> list[Path]:
     pdfs: list[Path] = []
     for root in source_roots or []:
         root_path = (REPO_ROOT / root).resolve()
-        if root_path.is_dir():
-            pdfs.extend(sorted(root_path.glob("*.pdf")))
+        if not root_path.is_dir():
+            continue
+        pdfs.extend(sorted(
+            entry for entry in root_path.iterdir() if entry.is_file() and is_pdf(entry)
+        ))
     return pdfs
+
+
+def resolve_single_target(raw: str) -> Path:
+    """Validate an explicit `<loose-pdf>` argument. Raises `ConfigError`.
+
+    Checked before the engine loads so a mistyped argument never costs a model
+    load, and — more importantly — never displaces a file that is not a paper.
+    """
+    pdf = Path(raw).expanduser().resolve()
+    if not pdf.exists():
+        raise ConfigError(f"{pdf} does not exist")
+    if pdf.is_dir():
+        raise ConfigError(f"{pdf} is a directory, not a PDF")
+    if not pdf.is_file():
+        raise ConfigError(f"{pdf} is not a regular file")
+    if not is_pdf(pdf):
+        raise ConfigError(f"{pdf.name} is not a PDF")
+    if not is_loose(pdf):
+        raise ConfigError(
+            f"{pdf.name} is already ingested (it lives in {pdf.parent.name}/); "
+            "delete that folder to re-ingest"
+        )
+    return pdf
 
 
 def strip_references(text: str) -> str:
@@ -80,9 +178,16 @@ def strip_references(text: str) -> str:
 
 def build_converter(mode: str | None):
     """Construct a keyless Marker PDF->markdown converter (models loaded once)."""
-    from marker.converters.pdf import PdfConverter
-    from marker.models import create_model_dict
-    from marker.config.parser import ConfigParser
+    try:
+        from marker.converters.pdf import PdfConverter
+        from marker.models import create_model_dict
+        from marker.config.parser import ConfigParser
+    except ImportError as exc:
+        raise EngineError(
+            f"the Marker engine is not available in this interpreter ({exc}). "
+            f"Provision it with {SETUP_SCRIPT} and run the script through "
+            ".claude/skills/paper-ingestion/.venv/bin/python"
+        ) from None
 
     cli: dict = {"output_format": "markdown"}
     if mode:
@@ -109,28 +214,56 @@ def write_figures(images: dict, folder: Path) -> None:
         image.save(folder / name, format=fmt)
 
 
-def convert_into_folder(converter, pdf_path: Path, strip_refs: bool) -> Path:
+def render_paper(converter, pdf_path: Path, strip_refs: bool, staging: Path) -> None:
+    """Convert ``pdf_path`` and write the `.md` + figures into ``staging``."""
     from marker.output import text_from_rendered
 
     rendered = converter(str(pdf_path))
     text, _ext, images = text_from_rendered(rendered)
     if strip_refs:
         text = strip_references(text)
-    folder = pdf_path.parent
     if images:
-        write_figures(images, folder)
-    md_path = folder / f"{pdf_path.stem}.md"
-    md_path.write_text(text, encoding="utf-8")
-    return md_path
+        write_figures(images, staging)
+    (staging / f"{pdf_path.stem}.md").write_text(text, encoding="utf-8")
 
 
 def ingest_loose(converter, loose_pdf: Path, strip_refs: bool) -> Path:
-    """Move a loose PDF into its own folder, then convert it there."""
+    """Ingest one loose PDF into its own folder, transactionally.
+
+    Conversion happens in a staging directory beside the paper; only when the
+    Markdown and figures exist is the destination folder populated and the PDF
+    moved in. Any failure leaves the PDF loose and the source root clean, so the
+    next run retries the paper instead of skipping it as "already ingested".
+    """
     folder = loose_pdf.parent / loose_pdf.stem
-    folder.mkdir(exist_ok=True)
-    dest_pdf = folder / loose_pdf.name
-    shutil.move(str(loose_pdf), str(dest_pdf))
-    return convert_into_folder(converter, dest_pdf, strip_refs)
+    if folder.exists():
+        if not folder.is_dir():
+            raise IngestionError(f"{folder.name} already exists and is not a folder")
+        if any(folder.iterdir()):
+            raise IngestionError(
+                f"{folder.name}/ already exists and is not empty; "
+                "delete that folder to re-ingest this paper"
+            )
+
+    # Only a folder this run created may be rolled back; one the operator had
+    # already put there is never deleted on our behalf.
+    pre_existing = folder.exists()
+    staging = Path(tempfile.mkdtemp(prefix=f".{loose_pdf.stem}-ingest-", dir=loose_pdf.parent))
+    try:
+        render_paper(converter, loose_pdf, strip_refs, staging)
+        folder.mkdir(exist_ok=True)
+        for produced in sorted(staging.iterdir()):
+            shutil.move(str(produced), str(folder / produced.name))
+        # The PDF moves last: until it does, the paper is still loose and a
+        # retry is a plain re-run.
+        shutil.move(str(loose_pdf), str(folder / loose_pdf.name))
+    except Exception:
+        if not pre_existing:
+            shutil.rmtree(folder, ignore_errors=True)
+        raise
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return folder / f"{loose_pdf.stem}.md"
 
 
 def main() -> int:
@@ -138,31 +271,44 @@ def main() -> int:
     parser.add_argument("pdf", nargs="?", help="a single loose PDF to ingest")
     args = parser.parse_args()
 
-    cfg = load_config()
-    mode = cfg.get("mode")  # None -> Marker auto-selects by device
-    strip_refs = bool(cfg.get("strip_references", True))
-
-    if args.pdf:
-        targets = [Path(args.pdf).resolve()]
-    else:
-        targets = find_loose_pdfs(cfg.get("source_roots", []))
+    try:
+        cfg = load_config()
+        mode = cfg.get("mode")  # None -> Marker auto-selects by device
+        strip_refs = bool(cfg.get("strip_references", True))
+        if args.pdf:
+            targets = [resolve_single_target(args.pdf)]
+        else:
+            roots = cfg.get("source_roots") or []
+            if not roots:
+                raise ConfigError("no source_roots configured; nothing can be discovered")
+            targets = find_loose_pdfs(roots)
+    except ConfigError as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        return 2
 
     if not targets:
         print("Nothing to ingest: no loose PDFs found (every paper is already in its folder).")
         return 0
 
-    converter = build_converter(mode)
+    try:
+        converter = build_converter(mode)
+    except EngineError as exc:
+        print(f"Environment error: {exc}", file=sys.stderr)
+        return 2
+
     done: list[str] = []
+    failed = 0
     for loose_pdf in targets:
         try:
             md_path = ingest_loose(converter, loose_pdf, strip_refs)
             done.append(md_path.parent.name)
         except Exception as exc:  # keep going; report the failure for this file only
+            failed += 1
             print(f"FAILED {loose_pdf.name}: {exc}", file=sys.stderr)
 
     if done:
         print(f"Ingested {len(done)}: " + ", ".join(done))
-    return 0 if done else 1
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
