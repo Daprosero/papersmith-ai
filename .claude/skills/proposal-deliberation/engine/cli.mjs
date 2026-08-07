@@ -303,7 +303,6 @@ const TOOL_OPERATIONS = new Set([
 	'CHAT_DELIBERATION',
 	'CLOSE_DELIBERATION',
 	'MAINTENANCE',
-	'SCIENTIFIC_WORKFLOW',
 ]);
 
 class RequestRejected extends Error {}
