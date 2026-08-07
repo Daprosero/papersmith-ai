@@ -1,4 +1,4 @@
-import type { CreateSuccessorPayloadV1, MaterializationClaimProvenance, RevisionEvidence } from './scientific-domain.js';
+import type { CreateSuccessorPayloadV1, MaterializationClaimProvenance, RevisionEvidence } from './revision-domain.js';
 import { sha256, type DocumentState, type EditAction, type EditPlan, type StructuralEntry } from './types.js';
 import { materializeCompositeTarget, resolveSuccessorTarget } from './target-resolver.js';
 

@@ -1,6 +1,6 @@
 import { sha256, type LocalContext } from './types.js';
 import type { CandidateValidation, ExactDocumentCandidate } from './materialization-candidate-executor.js';
-import type { MaterializationClaimProvenance, MaterializationPlan } from './scientific-domain.js';
+import type { MaterializationClaimProvenance, MaterializationPlan } from './revision-domain.js';
 import type { ReviewerAdapter, ReviewerAssessment } from './reviewer-adapter.js';
 import { validateReviewerAssessment } from './reviewer-adapter.js';
 

@@ -1,5 +1,5 @@
 import { sha256, type DocumentState, type StructuralPatchSelector } from './types.js';
-import type { RevisionEvidence } from './scientific-domain.js';
+import type { RevisionEvidence } from './revision-domain.js';
 
 const BLOCK_ID = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const SHA256 = /^[a-f0-9]{64}$/;

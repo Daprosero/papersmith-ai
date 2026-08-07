@@ -1,4 +1,33 @@
-import type { EditAction, EditPlan } from './types.js';
+import type { EditAction } from './types.js';
+import type {
+	FrozenDecisionSelection,
+	MaterializationPlan,
+	RevisionEvidence,
+	ScientificDecisionId,
+	ScientificEventId,
+	ScientificThreadId,
+} from './revision-domain.js';
+
+/**
+ * The durable deliberation record: threads, syntheses, decisions and the event log that
+ * relates them. The revision vocabulary this builds on lives in `revision-domain.ts`, which
+ * the ordinary publication path depends on and this module does not own.
+ */
+export type {
+	CanonicalProposalMetadata,
+	CreateR01PayloadV1,
+	CreateSuccessorPayloadV1,
+	FrozenDecisionSelection,
+	FrozenEditPlan,
+	FrozenPatchPreconditions,
+	MaterializationClaimProvenance,
+	MaterializationPlan,
+	MaterializationPlanKind,
+	RevisionEvidence,
+	ScientificDecisionId,
+	ScientificEventId,
+	ScientificThreadId,
+} from './revision-domain.js';
 
 export const SCIENTIFIC_WORKFLOW_OPERATION = 'SCIENTIFIC_WORKFLOW' as const;
 
@@ -78,7 +107,6 @@ export type MaterializationState =
 	| 'COMMITTED'
 	| 'BLOCKED'
 	| 'RECOVERY_REQUIRED';
-export type MaterializationPlanKind = 'CREATE_R01' | 'CREATE_SUCCESSOR';
 export type ScientificActorKind =
 	| 'USER'
 	| 'SYSTEM'
@@ -91,21 +119,9 @@ export type ConceptualReviewOutcome = 'PASS' | 'REPAIR_REQUIRED' | 'BLOCK' | 'NE
 export type ScientificResolutionStatus = 'resolved' | 'needs_clarification' | 'blocked';
 export type ScientificAuditStatus = 'PASS' | 'WARN' | 'FAIL' | 'NOT_RUN';
 
-export type ScientificThreadId = string;
-export type ScientificDecisionId = string;
-export type ScientificEventId = string;
 export type ThreadRelationId = string;
 export type ThreadSynthesisId = string;
 
-export type RevisionEvidence = {
-	filename: string;
-	revision: string;
-	/** Stable lifecycle-v1 identity when this is explicit authority rather than a legacy projection. */
-	revisionId?: string;
-	baseDocumentId?: string;
-	lineage?: { sourceKind: 'BASE_DOCUMENT'|'REVISION'; sourceId: string; sourceContentHash: string };
-	documentSha256: string;
-};
 export type EvidenceReference = { kind: string; id: string; sha256?: string };
 export type PublicBlocker = { code: string; message: string; nextAction?: string };
 export type ScientificPrivacy = { contentClass: 'PUBLIC_SUMMARY_ONLY'; redactionVersion: 1 };
@@ -165,12 +181,6 @@ export type ScientificDecision = {
 	state: ScientificDecisionStatus;
 	sourceEventIds: ScientificEventId[];
 };
-export type FrozenDecisionSelection = {
-	policyVersion: 1;
-	decisionIds: ScientificDecisionId[];
-	acceptedEventIds: ScientificEventId[];
-	selectionKey: string;
-};
 export type MaterializationReservedDecision = Pick<ScientificDecision, 'decisionId' | 'threadId' | 'acceptedEventId' | 'acceptedSynthesisDigest' | 'sourceEventIds'> & {
 	revisionEvidence?: RevisionEvidence;
 };
@@ -218,57 +228,6 @@ export type MaterializationRecord = {
 	/** The sole semantic-publication route for explicitly registered lifecycle-v1 workspaces. */
 	lifecycle?: LifecycleMaterializationEvidence;
 	outcome?: MaterializationOutcome;
-};
-export type MaterializationClaimProvenance = {
-	claimId: string;
-	decisionId: ScientificDecisionId;
-	threadId: ScientificThreadId;
-	acceptedEventId: ScientificEventId;
-	acceptedSynthesisDigest: string;
-	summary: string;
-	/** Present only when the accepted decision carries a real, single-locus structured edit (see `parseProposedEdit`). Absent decisions fall back to the pre-existing summary annotation. */
-	proposedEdit?: EditAction;
-};
-export type CanonicalProposalMetadata = {
-	schemaVersion: 1;
-	title: string;
-	sectionHeading: string;
-};
-export type FrozenPatchPreconditions = {
-	expectedRevision: RevisionEvidence;
-	baseDocumentSha256: string;
-	anchorEntryId: string;
-	anchorTextSha256: string;
-};
-export type FrozenEditPlan = {
-	order: number;
-	plan: EditPlan;
-	preconditions: FrozenPatchPreconditions;
-};
-export type CreateR01PayloadV1 = {
-	kind: 'CREATE_R01';
-	payloadVersion: 1;
-	markdown: string;
-	target: { filename: 'research-concept-r01.md'; revision: 'r01' };
-	canonicalMetadata: CanonicalProposalMetadata;
-};
-export type CreateSuccessorPayloadV1 = {
-	kind: 'CREATE_SUCCESSOR';
-	payloadVersion: 1;
-	expectedBase: RevisionEvidence;
-	patches: readonly FrozenEditPlan[];
-};
-export type MaterializationPlan = {
-	schemaVersion: 1;
-	materializationId: string;
-	selectionKey: string;
-	operation: MaterializationPlanKind;
-	frozenSelection: FrozenDecisionSelection;
-	source?: RevisionEvidence;
-	expectedRevisionIdentity?: RevisionEvidence;
-	payload: CreateR01PayloadV1 | CreateSuccessorPayloadV1;
-	claimProvenance: MaterializationClaimProvenance[];
-	digest: string;
 };
 export type ThreadSynthesis = {
 	synthesisId: ThreadSynthesisId;

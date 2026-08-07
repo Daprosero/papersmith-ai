@@ -1,4 +1,4 @@
-import type { CanonicalProposalMetadata, CreateR01PayloadV1, MaterializationClaimProvenance } from './scientific-domain.js';
+import type { CanonicalProposalMetadata, CreateR01PayloadV1, MaterializationClaimProvenance } from './revision-domain.js';
 
 /** Read-only paper-guide reference fragment, mirroring `ChatGuideFragment`'s shape without importing chat-only types. */
 export type InitialRevisionGuideFragment = { path: string; content: string };

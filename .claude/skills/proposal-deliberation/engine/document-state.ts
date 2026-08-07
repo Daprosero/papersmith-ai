@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'; import { join } from 'node:path'; import { rebuildDerivedState } from './derived-state-builder.js'; import { loadDerivedState,saveDerivedState } from './derived-state-store.js'; import { PARSER_VERSION,sha256,type ContextFragment,type DocumentState } from './types.js'; import type { RevisionEvidence } from './scientific-domain.js';
+import { readFile } from 'node:fs/promises'; import { join } from 'node:path'; import { rebuildDerivedState } from './derived-state-builder.js'; import { loadDerivedState,saveDerivedState } from './derived-state-store.js'; import { PARSER_VERSION,sha256,type ContextFragment,type DocumentState } from './types.js'; import type { RevisionEvidence } from './revision-domain.js';
 const identity=(name:string)=>name.match(/^research-concept-(?:(.+)-)?r(\d+)\.md$/);
 export type DocumentStateLoadOptions = Readonly<{ readOnly?: boolean }>;
 

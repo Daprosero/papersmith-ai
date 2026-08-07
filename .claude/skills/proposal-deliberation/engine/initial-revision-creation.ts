@@ -3,7 +3,7 @@ import { lstat, mkdir, open, realpath, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { InitialRevisionRenderer, type InitialRevisionGuideFragment } from './initial-revision-renderer.js';
-import type { CanonicalProposalMetadata } from './scientific-domain.js';
+import type { CanonicalProposalMetadata } from './revision-domain.js';
 import { commitDerivedState, saveRevisionReceipt } from './derived-state-store.js';
 import { rebuildDerivedState } from './derived-state-builder.js';
 import { parseManagedRevisionFilename } from './revision-lifecycle-store.js';
