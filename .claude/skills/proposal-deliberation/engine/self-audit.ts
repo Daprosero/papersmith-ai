@@ -9,8 +9,6 @@ export async function runProposalDeliberationSelfAudit(input:{projectRoot:string
   const runtime=input.runtimeSnapshot??{};
   const checks:any[]=[];
   checks.push({id:'consistency',status:consistency.status,category:'persistence',evidence:consistency,details:consistency.failures.join(', ')});
-  const scientific=consistency.scientific??{status:'NOT_RUN',failures:[],warnings:[]};
-  checks.push({id:'scientific-consistency',status:scientific.status==='NOT_RUN'?'PASS':scientific.status,category:'persistence',evidence:scientific,details:scientific.failures.concat(scientific.warnings).join(', ')});
   const matchingLifecycleOperation=input.auditContext?await hasActivePendingAuditLifecycleOperation({projectRoot:input.projectRoot,auditContext:input.auditContext}):false;
   const lockStatus=input.auditContext?matchingLifecycleOperation:locks.activeMutationLocks===0;
   checks.push({id:'locks-released',status:lockStatus?'PASS':'FAIL',category:'runtime',evidence:{...locks,matchingLifecycleOperation},details:input.auditContext?'pending lifecycle audit must retain its matching lifecycle lock owner':'mutation locks must be released'});
