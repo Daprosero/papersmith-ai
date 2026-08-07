@@ -78,11 +78,9 @@ async function fixture() {
 	};
 }
 
-test('CHAT_DELIBERATION is multi-turn, bounded, non-mutating, and available without scientific persistence or a managed proposal', async () => {
+test('CHAT_DELIBERATION is multi-turn, bounded, non-mutating, and available without a managed proposal', async () => {
 	const run = await fixture();
-	const previous = process.env.PROPOSAL_DELIBERATION_SCIENTIFIC_WORKFLOW_ENABLED;
 	try {
-		delete process.env.PROPOSAL_DELIBERATION_SCIENTIFIC_WORKFLOW_ENABLED;
 		const first = await run.execute({ operation: 'CHAT_DELIBERATION', instruction: '¿Qué hipótesis conviene usar para la definición de bolsas?' });
 		assert.equal(first.status, 'deliberated', JSON.stringify(first));
 		assert.ok(first.conversationId);
@@ -97,8 +95,6 @@ test('CHAT_DELIBERATION is multi-turn, bounded, non-mutating, and available with
 		assert.deepEqual(await readdir(run.projectRoot), ['proposals']);
 		assert.deepEqual(run.guardCalls, []);
 	} finally {
-		if (previous === undefined) delete process.env.PROPOSAL_DELIBERATION_SCIENTIFIC_WORKFLOW_ENABLED;
-		else process.env.PROPOSAL_DELIBERATION_SCIENTIFIC_WORKFLOW_ENABLED = previous;
 		await run.dispose();
 	}
 });
@@ -120,40 +116,6 @@ test('explicit CHAT_DELIBERATION overrides document-like scientific terminology 
 	} finally { await run.dispose(); }
 });
 
-test('chat remains principal-only for candidate-equation analysis regardless of scientific persistence or active maintenance state', async () => {
-	const previous = process.env.PROPOSAL_DELIBERATION_SCIENTIFIC_WORKFLOW_ENABLED;
-	try {
-		for (const persistence of [undefined, 'true']) {
-			const run = await fixture();
-			try {
-				if (persistence === undefined) delete process.env.PROPOSAL_DELIBERATION_SCIENTIFIC_WORKFLOW_ENABLED;
-				else process.env.PROPOSAL_DELIBERATION_SCIENTIFIC_WORKFLOW_ENABLED = persistence;
-				const maintenance = await run.execute({ operation: 'MAINTENANCE', maintenanceTaskId: 'maintenance-task-1', instruction: 'Inspect extension infrastructure.' });
-				assert.equal(maintenance.status, 'delegation_permitted');
-				assert.equal(maintenance.authority.taskDelegation, 'PERMITTED');
-				const chat = await run.execute({ operation: 'CHAT_DELIBERATION', activeThreadId: 'maintenance-task-1', maintenanceTaskId: 'maintenance-task-1', instruction: 'Analiza la ecuación candidata y sus supuestos, pero no modifiques el documento.' });
-				assert.equal(chat.status, 'deliberated', JSON.stringify(chat));
-				assert.match(chat.conversationId, /^chat-/);
-				assert.equal(chat.routeStage, 'CHAT_DELIBERATION');
-				assert.equal(chat.authority.taskDelegation, 'FORBIDDEN');
-				assert.equal(chat.authority.durableState, 'FORBIDDEN');
-				assert.equal('activeThreadId' in chat, false);
-				assert.equal('maintenanceTaskId' in chat, false);
-				const reservedMaintenance = await run.execute({ operation: 'MAINTENANCE', maintenanceTaskId: chat.conversationId, instruction: 'Inspect extension infrastructure.' });
-				assert.equal(reservedMaintenance.status, 'blocked');
-				assert.equal(reservedMaintenance.blockers[0].code, 'MAINTENANCE_TASK_ID_INVALID');
-				const reservedScientific = await run.execute({ operation: 'SCIENTIFIC_WORKFLOW', activeThreadId: chat.conversationId, instruction: 'Construct a scientific idea.' });
-				assert.equal(reservedScientific.status, 'blocked');
-				assert.equal(reservedScientific.blockers[0].code, 'SCIENTIFIC_THREAD_ID_RESERVED_FOR_CHAT');
-				assert.deepEqual(run.guardCalls, []);
-				assert.deepEqual(await readdir(run.projectRoot), ['proposals']);
-			} finally { await run.dispose(); }
-		}
-	} finally {
-		if (previous === undefined) delete process.env.PROPOSAL_DELIBERATION_SCIENTIFIC_WORKFLOW_ENABLED;
-		else process.env.PROPOSAL_DELIBERATION_SCIENTIFIC_WORKFLOW_ENABLED = previous;
-	}
-});
 
 test('CHAT_DELIBERATION loads either canonical managed-document spelling as immutable tutor context without mutation', async () => {
 	const run = await fixture();

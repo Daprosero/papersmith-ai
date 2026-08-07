@@ -99,7 +99,7 @@ test('public lifecycle routing uses configured v1 authority without legacy propo
  await service.createSuccessor({workspaceId:'workspace-1',requestId:'create-2',operation:'CREATE_SUCCESSOR',revisionId:'revision-2',locator:'research-concept-r02.md',source:{sourceKind:'REVISION',sourceId:'revision-1',sourceContentHash:first.revision.contentHash,baseDocumentId:'base-1'},approvedChanges:[]});
  const tools=[];
  v2.resetRuntimeMetrics();
- workspace.createProposalDeliberationExtension({projectRoot:root,scientificWorkflow:{lifecycleV1WorkspaceId:'workspace-1'}})({registerTool:(tool)=>tools.push(tool),on:()=>{}});
+ workspace.createProposalDeliberationExtension({projectRoot:root,lifecycleV1:{workspaceId:'workspace-1'}})({registerTool:(tool)=>tools.push(tool),on:()=>{}});
  const execute=tools.find((tool)=>tool.name==='proposal_deliberation_execute');
  const withdrawn=(await execute.execute('withdraw-v1',{operation:'WITHDRAW_REVISION',instruction:'withdraw research-concept-r02.md',sourceFilename:'research-concept-r02.md',idempotencyKey:'withdraw-v1'})).details;
  assert.deepEqual({status:withdrawn.status,operation:withdrawn.operation,revisionId:withdrawn.revisionId,lifecycleState:withdrawn.lifecycleState,activeRevisionId:withdrawn.activeRevisionId},{status:'withdrawn',operation:'WITHDRAW_REVISION',revisionId:'revision-2',lifecycleState:'WITHDRAWN_ONLY',activeRevisionId:null});
@@ -251,7 +251,7 @@ test('public lifecycle composition blocks an explicitly configured legacy worksp
  const before=await readFile(legacyProposal,'utf8');
  const tools=[];
  v2.resetRuntimeMetrics();
- workspace.createProposalDeliberationExtension({projectRoot:root,scientificWorkflow:{lifecycleV1WorkspaceId:'legacy-workspace'}})({registerTool:(tool)=>tools.push(tool),on:()=>{}});
+ workspace.createProposalDeliberationExtension({projectRoot:root,lifecycleV1:{workspaceId:'legacy-workspace'}})({registerTool:(tool)=>tools.push(tool),on:()=>{}});
  const execute=tools.find((tool)=>tool.name==='proposal_deliberation_execute');
  const result=(await execute.execute('legacy-public-withdraw',{operation:'WITHDRAW_REVISION',instruction:'withdraw research-concept-r99.md',sourceFilename:'research-concept-r99.md',idempotencyKey:'legacy-public-withdraw'})).details;
  assert.deepEqual({status:result.status,semanticCode:result.semanticCode,lifecycleState:result.lifecycleState},{status:'blocked',semanticCode:'LIFECYCLE_V1_UNREGISTERED',lifecycleState:null});
@@ -260,27 +260,7 @@ test('public lifecycle composition blocks an explicitly configured legacy worksp
  assert.deepEqual(v2.getRuntimeMetrics().lifecycleMetrics,{withdrawal_committed:0,withdrawal_rejected:1,restore_committed:0,restore_rejected:0});
 });
 
-test('lifecycle materialization planner uses only explicit base bytes and the resolved active revision',async()=>{
- const {root,service}=await fixture();
- const planner=new v2.LifecycleMaterializationPlanner({projectRoot:root,workspaceId:'workspace-1',service});
- const legacy=await planner.materialize({requestId:'legacy-request',revisionId:'revision-legacy',approvedChanges:[]});
- assert.deepEqual({status:legacy.status,code:legacy.code},{status:'blocked',code:'BASE_DOCUMENT_NOT_REGISTERED'});
- const base=await service.registerBaseDocument({workspaceId:'workspace-1',requestId:'register-1',baseDocumentId:'base-1',content:'Title\nStable text\n'});
- const first=await planner.materialize({requestId:'materialize-1',revisionId:'revision-1',approvedChanges:[{from:'Stable',to:'Approved'}]});
- assert.deepEqual({status:first.status,operation:first.result?.operation,content:first.revision?.content,lineage:first.revision?.lineage},{status:'ready',operation:'CREATE_FROM_BASE',content:'Title\nApproved text\n',lineage:{sourceKind:'BASE_DOCUMENT',sourceId:'base-1',sourceContentHash:base.base.contentHash,baseDocumentId:'base-1'}});
- const successor=await planner.materialize({requestId:'materialize-2',revisionId:'revision-2',approvedChanges:[{from:'Approved',to:'Approved twice'}]});
- assert.deepEqual({status:successor.status,operation:successor.result?.operation,active:successor.inventory?.activeRevisionId,states:successor.inventory?.revisions.map(item=>[item.revisionId,item.state])},{status:'ready',operation:'CREATE_SUCCESSOR',active:'revision-2',states:[['revision-1','SUPERSEDED'],['revision-2','ACTIVE']]});
-});
 
-test('lifecycle materialization planner rejects a withdrawn lifecycle rather than reinterpreting it as a first materialization',async()=>{
- const {root,service,base}=await registeredWorkspace();
- const first=await service.createFromBase({workspaceId:'workspace-1',requestId:'create-1',operation:'CREATE_FROM_BASE',revisionId:'revision-1',source:{sourceKind:'BASE_DOCUMENT',sourceId:'base-1',sourceContentHash:base.base.contentHash,baseDocumentId:'base-1'},approvedChanges:[]});
- const successor=await service.createSuccessor({workspaceId:'workspace-1',requestId:'create-2',operation:'CREATE_SUCCESSOR',revisionId:'revision-2',source:{sourceKind:'REVISION',sourceId:'revision-1',sourceContentHash:first.revision.contentHash,baseDocumentId:'base-1'},approvedChanges:[]});
- assert.equal((await service.withdrawRevision({workspaceId:'workspace-1',requestId:'withdraw-2',revisionId:successor.revision.revisionId})).outcome,'COMMITTED');
- const blocked=await new v2.LifecycleMaterializationPlanner({projectRoot:root,workspaceId:'workspace-1'}).materialize({requestId:'create-after-withdrawal',revisionId:'revision-3',approvedChanges:[]});
- assert.deepEqual({status:blocked.status,code:blocked.code},{status:'blocked',code:'ACTIVE_REVISION_NOT_FOUND'});
- assert.deepEqual((await new v2.LifecycleService(root).rebuildLifecycleInventory('workspace-1')).revisions.map(item=>[item.revisionId,item.state]),[['revision-1','SUPERSEDED'],['revision-2','WITHDRAWN']]);
-});
 
 test('successor creation rejects stale, superseded, withdrawn, and non-revision source evidence without changing the inventory',async()=>{
  const {service,base}=await registeredWorkspace();

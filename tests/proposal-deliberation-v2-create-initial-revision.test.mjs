@@ -154,8 +154,6 @@ async function fixture() {
 }
 
 test('CREATE_INITIAL_REVISION is reachable via the registered tool and produces a managed r01 when no managed proposal exists, independent of the scientific-workflow flag', async () => {
-	const before = process.env.PROPOSAL_DELIBERATION_SCIENTIFIC_WORKFLOW_ENABLED;
-	delete process.env.PROPOSAL_DELIBERATION_SCIENTIFIC_WORKFLOW_ENABLED;
 	const run = await fixture();
 	try {
 		const result = await run.execute({ operation: 'CREATE_INITIAL_REVISION', instruction: 'A tutor that catches unjustified inference steps in a proof draft.' });
@@ -168,7 +166,6 @@ test('CREATE_INITIAL_REVISION is reachable via the registered tool and produces 
 		assert.match(written, /A tutor that catches unjustified inference steps in a proof draft\./);
 	} finally {
 		await run.dispose();
-		if (before !== undefined) process.env.PROPOSAL_DELIBERATION_SCIENTIFIC_WORKFLOW_ENABLED = before;
 	}
 });
 

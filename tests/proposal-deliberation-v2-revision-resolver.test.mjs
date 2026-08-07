@@ -86,17 +86,6 @@ test('readCanonicalManagedRevisionInventory surfaces every tied candidate as an 
 	assert.deepEqual(inventory.activeRevisions.map((r) => r.filename).sort(), ['research-concept-idea-b-r01.md', 'research-concept-r01.md']);
 });
 
-test('ProjectEntryResolver reports MULTIPLE_ACTIVE_REVISIONS end-to-end when fed the unsuppressed canonical inventory', async () => {
-	const root = await tempProjectRoot();
-	await writeCommittedRevision(root, 'research-concept-r01.md', '# Concept A\n\nFirst idea.\n');
-	await writeCommittedRevision(root, 'research-concept-idea-b-r01.md', '# Concept B\n\nSecond idea.\n');
-	const revisionPort = { read: () => v2.readCanonicalManagedRevisionInventory(root) };
-	const scientificPort = { read: async () => ({ status: 'absent', auditEvidence: ['scientific-state:absent'] }) };
-	const resolver = new v2.ProjectEntryResolver(revisionPort, scientificPort);
-	const entry = await resolver.resolve();
-	assert.equal(entry.state, 'MULTIPLE_ACTIVE_REVISIONS');
-	assert.equal(entry.recovery.code, 'MULTIPLE_ACTIVE_REVISIONS');
-});
 
 test('ProposalDeliberationOrchestrator.execute() surfaces MULTIPLE_ACTIVE_REVISIONS instead of NO_MANAGED_PROPOSAL when the managed proposal base is ambiguous', async () => {
 	const root = await tempProjectRoot();

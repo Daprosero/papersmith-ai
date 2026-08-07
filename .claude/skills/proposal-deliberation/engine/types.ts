@@ -89,7 +89,7 @@ export type EditAction = { kind:'replace'; targetEntryId:string; replacementText
  * The public byte cap for a persisted scientific `proposedEdit.replacementText`
  * (or `.content`) leaf ONLY. Every other public payload string (including every
  * OTHER field nested inside `proposedEdit` itself) stays bounded at the
- * pre-existing 2,000-byte guard -- see `scientific-state-store.ts`'s
+ * pre-existing 2,000-byte guard -- see the durable-state
  * `assertPublicValue`, which is the sole enforcement point.
  */
 export const PROPOSED_EDIT_REPLACEMENT_MAX_BYTES = 20_000;
@@ -199,4 +199,4 @@ export type MaterializationRequest={requestId:string;workspaceId:string;operatio
 export type MaterializationResult={resultId:string;requestId:string;workspaceId:string;operation:'CREATE_FROM_BASE'|'CREATE_SUCCESSOR';revisionId:string;contentHash:string;source:LineageReference;outcome:'COMMITTED'|'ALREADY_COMMITTED'|'REJECTED'|'INCONSISTENT'|'RECOVERY_REQUIRED';code?:LifecycleV1ErrorCode;transitionId?:string};
 export type WorkspaceLifecycleState={schemaVersion:'lifecycle-v1';workspaceId:string;lifecycleState:LifecycleV1WorkspaceState;base?:BaseDocument;revisions:Array<LifecycleRevision&{state:LifecycleV1RecordState}>;withdrawals:WithdrawalRecord[];activeRevisionId?:string;integrityDigest:string};
 export type LifecycleTransitionEvidence={schemaVersion:'lifecycle-v1';transitionId:string;workspaceId:string;sequence:number;operation:string;requestId:string;outcome:'COMMITTED'|'REJECTED'|'RECOVERY_REQUIRED';recordPaths:string[];stateChanges:Array<{revisionId:string;state:LifecycleV1RecordState}>;committedAt:string};
-export type { ScientificThread, ScientificDecision, ScientificEvent, ThreadRelation, ThreadSynthesis, ScientificAct, ScientificActResolution, BoundedScientificSeed, ThreadTransitionIntent, ThreadResolution, ProjectEntryState, ScientificWorkflowOperation, ScientificWorkflowPublicStatus, ScientificActKind, ScientificThreadStatus, ScientificDecisionStatus, ScientificEventType, ThreadRelationKind, ThreadSynthesisStatus, MaterializationState, MaterializationPlanKind, FrozenDecisionSelection, MaterializationRecord, MaterializationReservedDecision, MaterializationClaimProvenance, CanonicalProposalMetadata, FrozenPatchPreconditions, FrozenEditPlan, CreateR01PayloadV1, CreateSuccessorPayloadV1, MaterializationPlan, ScientificActorKind, ConceptualReviewOutcome, ScientificResolutionStatus, ScientificAuditStatus, ScientificWorkflowRequest, ScientificWorkflowPublicResult } from './scientific-domain.js';
+export type { RevisionEvidence, CanonicalProposalMetadata, CreateR01PayloadV1, CreateSuccessorPayloadV1, MaterializationClaimProvenance, MaterializationPlan, MaterializationPlanKind, FrozenDecisionSelection, FrozenEditPlan, FrozenPatchPreconditions, CandidateValidation, ExactDocumentCandidate } from './revision-domain.js';
