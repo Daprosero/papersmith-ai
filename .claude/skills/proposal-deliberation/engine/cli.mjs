@@ -203,9 +203,27 @@ function classifySourceFilename(sourceFilename, { proposalEntryNames, managedRev
 	return { sourceClassification: 'OLDER_MANAGED', newerRevisionNumbers };
 }
 
-async function runStatus(request) {
+/** The empty inventory a project that has not created `proposals/` yet must report.
+ * A brand-new project is exactly the state `CREATE_INITIAL_REVISION` exists for, and
+ * SKILL.md tells the agent to run `STATUS` FIRST -- before anything has been created.
+ * Reporting a raw `ENOENT ... scandir <abs path>` there would both break that documented
+ * first step and leak an absolute filesystem path into the agent's transcript. */
+function emptyStatusInventory() {
+	return { managedRevisions: [], latest: null, multipleActive: false, candidates: [], nonManagedFiles: [], proposalEntryNames: new Set() };
+}
+
+async function readProposalsInventory() {
 	const proposalsDir = path.join(projectRoot, 'proposals');
-	const entries = await readdir(proposalsDir, { withFileTypes: true });
+	let entries;
+	try {
+		entries = await readdir(proposalsDir, { withFileTypes: true });
+	} catch (error) {
+		// Only a genuinely ABSENT directory is the benign pre-creation state. An existing
+		// but unreadable `proposals/` (a file in its place, a permission failure) still
+		// fails closed -- STATUS must never report "empty" for a workspace it could not read.
+		if (error?.code === 'ENOENT') return emptyStatusInventory();
+		throw error;
+	}
 	const proposalEntryNames = new Set();
 	const managedRevisions = [];
 	const nonManagedFiles = [];
@@ -245,11 +263,16 @@ async function runStatus(request) {
 	const candidates = multipleActive ? [...resolution.candidates.map((candidate) => candidate.filename)].sort() : [];
 
 	const managedRevisionsWithLatest = managedRevisions.map((revision) => ({ ...revision, isLatest: latest !== null && revision.filename === latest }));
+	return { managedRevisions: managedRevisionsWithLatest, latest, multipleActive, candidates, nonManagedFiles, proposalEntryNames };
+}
+
+async function runStatus(request) {
+	const { managedRevisions, latest, multipleActive, candidates, nonManagedFiles, proposalEntryNames } = await readProposalsInventory();
 
 	const result = {
 		status: 'ok',
 		operation: 'STATUS',
-		managedRevisions: managedRevisionsWithLatest,
+		managedRevisions,
 		latest,
 		multipleActive,
 		candidates,
@@ -257,15 +280,60 @@ async function runStatus(request) {
 	};
 
 	if (request.sourceFilename !== undefined) {
-		Object.assign(result, classifySourceFilename(request.sourceFilename, { proposalEntryNames, managedRevisions: managedRevisionsWithLatest, latest }));
+		Object.assign(result, classifySourceFilename(request.sourceFilename, { proposalEntryNames, managedRevisions, latest }));
 	}
 	return result;
 }
 
+// The CLOSED public operation set. The two host-handled read-only operations plus the
+// exact enum `proposal_deliberation_execute` declares for its `operation` parameter.
+// The tool's TypeBox schema is NOT enforced on this path (the host calls `tool.execute`
+// directly, not through a validating dispatcher), so an unrecognized `operation` used to
+// be carried straight into the orchestrator, where `request.operation` becomes the
+// resolved `intent` WITH `destructiveIntent:true` and the natural-language classifier's
+// pending/unresolved questions cleared (`orchestrator.ts` `execute()`). Accepting an
+// operation outside this set is therefore not a cosmetic echo -- it is an unvalidated
+// path into destructive intent. Reject it here instead.
+const HOST_OPERATIONS = new Set(['STATUS', 'RESOLVE_TARGET']);
+const TOOL_OPERATIONS = new Set([
+	'WITHDRAW_REVISION',
+	'RESTORE_WITHDRAWN_REVISION',
+	'CREATE_SUCCESSOR',
+	'CREATE_INITIAL_REVISION',
+	'CHAT_DELIBERATION',
+	'CLOSE_DELIBERATION',
+	'MAINTENANCE',
+	'SCIENTIFIC_WORKFLOW',
+]);
+
+class RequestRejected extends Error {}
+
+/** Validates the request ENVELOPE only -- never an operation's own semantics, which stay
+ * entirely the engine's concern. Without this the host dereferenced caller-controlled
+ * fields directly and surfaced internal `TypeError`s (`Cannot read properties of
+ * undefined (reading 'toLowerCase')`) as the public answer to a malformed payload. */
+function validateRequest(request) {
+	if (typeof request !== 'object' || request === null || Array.isArray(request)) {
+		throw new RequestRejected('MALFORMED_REQUEST: the request must be a JSON object');
+	}
+	const { operation } = request;
+	if (operation !== undefined && (typeof operation !== 'string' || (!HOST_OPERATIONS.has(operation) && !TOOL_OPERATIONS.has(operation)))) {
+		throw new RequestRejected(`UNKNOWN_OPERATION: ${JSON.stringify(operation)} is not one of ${[...HOST_OPERATIONS, ...TOOL_OPERATIONS].join(', ')}`);
+	}
+	if (HOST_OPERATIONS.has(operation)) return;
+	// `instruction` is a required, minLength-1 string in the tool's own declared schema.
+	// A blank-but-present string still reaches the engine, which answers with its own
+	// typed blocker (for example INITIAL_IDEA_REQUIRED) -- that stays unchanged.
+	if (typeof request.instruction !== 'string' || request.instruction.length < 1) {
+		throw new RequestRejected('INSTRUCTION_REQUIRED: every operation except STATUS and RESOLVE_TARGET needs a non-empty instruction string');
+	}
+}
+
 let sequence = 0;
 async function run(request) {
-	if (request?.operation === 'RESOLVE_TARGET') return runResolveTarget(request);
-	if (request?.operation === 'STATUS') return runStatus(request);
+	validateRequest(request);
+	if (request.operation === 'RESOLVE_TARGET') return runResolveTarget(request);
+	if (request.operation === 'STATUS') return runStatus(request);
 	const result = await tool.execute(`cli-${++sequence}`, request, undefined, undefined, ctx);
 	return result.details ?? result;
 }

@@ -45,7 +45,7 @@ node .claude/skills/proposal-deliberation/engine/cli.mjs '{ "operation": "STATUS
 { "...": "same fields as above, plus:", "sourceClassification": "UNMANAGED" }
 ```
 
-`sourceClassification` is one of `LATEST`, `OLDER_MANAGED` (with `newerRevisionNumbers`), `UNMANAGED`, or `NOT_FOUND` (the filename is not present in `proposals/` at all, or it is not a real basename). Never mutating: no `proposals/` file is ever created, moved, or changed by a `STATUS` call — a confirmed backup move (SKILL.md's decision tree) is something *you* do afterward with a plain file move, never the engine.
+`sourceClassification` is one of `LATEST`, `OLDER_MANAGED` (with `newerRevisionNumbers`), `UNMANAGED`, or `NOT_FOUND` (the filename is not present in `proposals/` at all, or it is not a real basename). Never mutating: no `proposals/` file is ever created, moved, or changed by a `STATUS` call — a confirmed backup move (SKILL.md's decision tree) is something *you* do afterward with a plain file move, never the engine. `STATUS` also answers on a project that has **no `proposals/` directory yet** — the exact pre-creation state `CREATE_INITIAL_REVISION` exists for — with the same empty inventory (`latest: null`, empty `managedRevisions`/`nonManagedFiles`), so the "run `STATUS` first" step never has a chicken-and-egg failure. A `proposals/` that exists but cannot be read still fails closed with an error instead of reporting "empty."
 
 ## Creating the first managed version
 
