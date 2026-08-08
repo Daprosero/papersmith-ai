@@ -35,6 +35,13 @@ WORKSPACE = FORGE_ROOT / "implementations"
 
 PRODUCT_DIRS = ("Notebooks", "Data", "Results", "Models")
 
+# A reorganization is "large" when the user can no longer review it. Eight moves you
+# read and decide on; forty you approve without reading, and the authorization stops
+# being one. Both limits are needed: renaming a directory is a single move that can
+# carry hundreds of files, so a count of moves alone lets exactly that through.
+LARGE_PLAN_MOVES = 10
+LARGE_PLAN_FILES = 25
+
 IGNORED_DIRS = {
     ".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".ipynb_checkpoints",
     ".mypy_cache", ".ruff_cache", ".idea", ".vscode", "node_modules", ".codegraph",
@@ -372,6 +379,70 @@ def dir_exists_after(target: Path, rel: str, renames: list[dict], name: str) -> 
     return False
 
 
+class NameRefused(Exception):
+    """The name the user typed cannot become a directory and a package."""
+
+
+def normalize_name(raw: str) -> dict:
+    """Turn whatever the user typed into the `<Name>/` + `src/<Package>/` pair.
+
+    The user types `mil creda`, `MIL-CREDA` or `milCreda` and means the same thing.
+    Splitting happens on any separator and on a lower-to-upper boundary; an all-caps
+    token of two or more letters is an acronym and survives untouched, because
+    lowercasing `MIL-CREDA` into `Mil-Creda` renames the method, not the folder.
+    """
+    text = (raw or "").strip()
+    if not text:
+        raise NameRefused("NAME_EMPTY")
+    # Split first on explicit separators, then inside each piece on camel boundaries.
+    tokens: list[str] = []
+    for piece in re.split(r"[\s\-_]+", text):
+        if not piece:
+            continue
+        tokens.extend(re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+", piece))
+    if not tokens:
+        raise NameRefused("NAME_HAS_NO_WORDS")
+    for token in tokens:
+        if not token.isalnum():
+            raise NameRefused(f"NAME_NOT_ALPHANUMERIC:{token}")
+    if tokens[0][0].isdigit():
+        raise NameRefused("NAME_STARTS_WITH_DIGIT")
+    parts = [token if token.isupper() and len(token) >= 2 else token.capitalize()
+             for token in tokens]
+    return {"input": raw, "directory": "-".join(parts), "package": "_".join(parts)}
+
+
+def cmd_name(args) -> dict:
+    """Report the normalized pair so the agent can show it before writing anything."""
+    try:
+        resolved = normalize_name(args.name)
+    except NameRefused as refused:
+        code, _, detail = str(refused).partition(":")
+        raise Refused(code, detail or f"{args.name!r} cannot become a package name")
+    return {"status": "ok", **resolved}
+
+
+def plan_scale(plan: dict, target: Path) -> dict:
+    """How much of the repository the plan disturbs, and whether that is reviewable.
+
+    `apply` is allowed to run either way — this only tells the agent which gate to
+    open: apply the moves now, or hand the user a prompt for a separate session.
+    """
+    moves = len(plan.get("moves", [])) + len(plan.get("renames", []))
+    touched = {move["from"] for move in plan.get("moves", [])}
+    for rename in plan.get("renames", []):
+        prefix = f"{rename['from'].rstrip('/')}/"
+        touched.update(path for path in tracked_files(target) if path.startswith(prefix))
+    files = len(touched)
+    large = moves > LARGE_PLAN_MOVES or files > LARGE_PLAN_FILES
+    return {
+        "moveCount": moves,
+        "affectedFiles": files,
+        "limits": {"moves": LARGE_PLAN_MOVES, "files": LARGE_PLAN_FILES},
+        "scale": "large" if large else "reviewable",
+    }
+
+
 def build_plan(target: Path, name: str) -> dict:
     paths = tracked_files(target)
     product_dir = detect_product_dir(target, name, paths)
@@ -416,7 +487,7 @@ def build_plan(target: Path, name: str) -> dict:
                if not dir_exists_after(target, d, renames, name)]
     gaps = scaffold_gaps(target, name)
 
-    return {
+    plan = {
         "command": "plan",
         "target": str(target),
         "name": name,
@@ -438,6 +509,8 @@ def build_plan(target: Path, name: str) -> dict:
         "unclassified": unclassified,
         "scaffoldFiles": gaps,
     }
+    plan["reorganization"] = plan_scale(plan, target)
+    return plan
 
 
 def pytest_anchor_missing(target: Path) -> bool:
@@ -1415,7 +1488,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     }
 
 
-COMMANDS = {"env": cmd_env, "plan": cmd_plan, "apply": cmd_apply,
+COMMANDS = {"env": cmd_env, "name": cmd_name, "plan": cmd_plan, "apply": cmd_apply,
             "admit": cmd_admit, "handoff": cmd_handoff, "compose": cmd_compose,
             "verify": cmd_verify}
 
@@ -1426,6 +1499,10 @@ def main(argv: list[str] | None = None) -> int:
 
     for name in COMMANDS:
         p = sub.add_parser(name)
+        if name == "name":
+            # Normalizing a name needs no repository: it runs before one exists.
+            p.add_argument("--name", required=True, help="the name as the user typed it")
+            continue
         p.add_argument("--target", required=True, help="cloned repository under implementations/")
         if name == "env":
             p.add_argument("--python", default=None,

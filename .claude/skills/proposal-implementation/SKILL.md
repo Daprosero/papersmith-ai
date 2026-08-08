@@ -153,27 +153,93 @@ counts as a gap, not as compliance.
 | `verify` reports stale modules | Report revision drift separately; ask before rewriting |
 | Target outside `implementations/`, or dirty tree | Refuse and report the guard |
 
-## Execution Steps
+## Where to start: the repository is the memory
+
+**Every invocation begins the same way — look at `src/` before asking anything.**
+Nothing about a previous session is stored anywhere; the repository itself is the
+record. An implementation sitting in `src/` is the evidence that this skill already
+ran here, which means the layout question was already put to the user and answered.
+Whether they accepted or declined it is not worth recovering: either way it is
+settled, and asking again treats a decision as if it had never been made.
+
+That state is *read*, never *remembered*. Nothing is carried forward except facts
+about the repository as it is now, so nothing can drift out of date and nothing a
+past session concluded can bias this one.
+
+- **`src/` has no implementation of the current proposal** → this is a first pass.
+  Run [Flow A](#flow-a--first-pass).
+- **`src/` already implements it** → run [Flow B](#flow-b--every-later-pass).
+
+## Flow A — first pass
 
 1. `node .claude/skills/proposal-deliberation/engine/cli.mjs '{ "operation": "STATUS" }'` → take `latest`.
-2. Ask the user for `<Name>` and the repository (new or existing URL).
-3. `GIT_LFS_SKIP_SMUDGE=1 git clone <url> implementations/<repo>` (or `git init`), pin the
+2. **Ask for the repository URL** and clone it:
+   `GIT_LFS_SKIP_SMUDGE=1 git clone <url> implementations/<repo>` (or `git init`), pin the
    LFS skip in the clone's local config (see `references/usage.md`), then `env`.
-4. Install dev dependencies with the printed target `pip`, never the forge's.
-5. `plan` → show every rename, move and reference update with its reason → get
-   explicit approval → `apply`, which lands all three in one commit.
-6. Fill scaffold gaps from `assets/` (pyproject, `__init__.py`, smoke test, notebook).
-7. Present the object → module map. Wait for approval. Only then write code.
-8. Write one module per object with `__provenance__`, plus its invariant tests.
-9. Audit: sweep 200 configurations, declare each finding in `tests/findings.py`
-   with its kind, status, measured rate and proposed remedy.
-10. `admit --revision <latest>`: rule on admissibility before anything is
+3. Install dev dependencies with the printed target `pip`, never the forge's.
+4. **Is there prior work, and does its layout already comply?** Run `plan`. If
+   `status` is `compliant`, go to step 6. Otherwise present every rename, move and
+   reference update with its reason, and read `reorganization`:
+   - **`scale: "reviewable"`** → **[GATE]** ask whether to reorganize. On approval,
+     `apply` lands renames, moves and reference updates in one commit. On refusal,
+     continue without touching the layout — that refusal needs no record, because
+     the next session reads the tree, not a note about it.
+   - **`scale: "large"`** → **do not apply it, even if the user says yes.** A list
+     this long is approved without being read, and an unread approval is not one.
+     Say so, and hand the user a self-contained prompt that performs exactly this
+     reorganization in a separate session. Then continue without it.
+5. Fill scaffold gaps from `assets/` (pyproject, `__init__.py`, smoke test, notebook).
+6. **Ask for the name.** Run `name --name "<whatever they typed>"` and show both
+   forms it returns — the `<Name>/` directory and the `src/<Package>/` package —
+   then **[GATE]** confirm before writing anything with them.
+7. **[GATE] Ask for authorization to implement.** Nothing below writes code until
+   this is given.
+8. Present the object → module map. Wait for approval. Only then write code.
+9. Write one module per object with `__provenance__`, plus its invariant tests.
+10. Audit: sweep 200 configurations, declare each finding in `tests/findings.py`
+    with its kind, status, measured rate and proposed remedy.
+11. `admit --revision <latest>`: rule on admissibility before anything is
     measured. Only admitted remedies proceed.
-11. Validate every admitted remedy over the same sweep: it must resolve its
+12. Validate every admitted remedy over the same sweep: it must resolve its
     finding and preserve the properties already established.
-12. Run the suite with the target interpreter, then execute the notebook.
-13. `verify --revision <latest>` and report structure, fidelity, audit and
-    validation.
+13. **Report the findings and say what they cost to establish.** For each one:
+    what is wrong, what the remedy is, and that it was **detected over 200
+    configurations and confirmed over the same 200**. A remedy presented without
+    that number reads as an opinion; it is a measurement, and the user is entitled
+    to know it before authorizing anything.
+14. **[GATE] Ask for authorization to apply the corrections to the proposal and to
+    the code.** On approval this session drives the deliberation engine itself:
+    `handoff` sizes each finding, `RESOLVE_TARGET` locates the entry, `compose`
+    builds the replacement, and `CREATE_SUCCESSOR` publishes the next revision.
+    See `references/usage.md`. Publishing advances the user's real lineage, so it
+    happens only behind this gate.
+15. Run the suite with the target interpreter, then execute the notebook.
+16. **Final check.** `verify --revision <latest>` → report `structure`, `fidelity`,
+    `audit` and `validation`.
+    - **Faithful** → stop here.
+    - **Not faithful** → correct the code and re-enter from step 15. **At most
+      three passes.** If the third still is not faithful, stop and hand the user
+      the decision, with what the three attempts established. A loop with no bound
+      does not fail — it keeps trying, and nobody notices.
+
+## Flow B — every later pass
+
+1. Read `src/` and take `latest` from `STATUS`.
+2. `verify --revision <latest>`. This is the whole state of the repository in one
+   answer: `structure` covers the layout, `fidelity` covers whether the code still
+   matches the mathematics, plus `audit` and `validation`.
+3. **No differences** → report all four as green and **ask the user what they want
+   to do next**. Do not invent work.
+4. **Differences in fidelity** → **[GATE] ask whether the user made those changes.**
+   - **They did** → the code is ahead of the proposal. Remind them to update the
+     mathematics and hand them the prompt that does it. Do not edit their code to
+     match an older proposal.
+   - **They did not** → the code has drifted. Correct it and re-run the validations,
+     bounded by the same three passes as Flow A step 16.
+5. **Report the layout, never gate on it.** `structure` is part of the answer in
+   step 2, so drift is always visible. But it does not stop the flow and it is not
+   asked about again: that question belongs to the first pass, and it was answered
+   there — including when the answer was "no".
 
 ## Output Contract
 
