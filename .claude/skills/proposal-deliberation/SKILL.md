@@ -54,6 +54,10 @@ or, if you already have a candidate base file in mind:
 
 Whenever a branch below says "move," the destination is always `backup/proposals/<timestamp>/` at the **repository root** — a fresh timestamped subdirectory per reconciliation (e.g. `backup/proposals/2026-08-01T12-30-00Z/`). You perform that move yourself with a plain file-move (Bash `mv`), and only after the user explicitly confirms — the engine has no operation that moves, backs up, or deletes proposal files, and `STATUS` itself performs no mutation. If a moved managed revision has per-revision sidecars (`.proposal-deliberation/state/<filename>.json`, `.proposal-deliberation/receipts/<filename>.json`), move those alongside its `.md` too, so the backup stays internally consistent — none exist for a plain unmanaged file, but never leave a sidecar behind for a managed one.
 
+**Verify the move before you continue — this step is not optional.** Run the consistency audit against the project root and require `status: "PASS"`. `STATUS` will not tell you the move went wrong: leave a sidecar behind and it still answers `ok` with the new latest, as if nothing happened. Only the audit names the damage, as `ORPHAN_STATE` / `ORPHAN_RECEIPTS`. A reconciliation that ends at `STATUS` leaves orphans that surface much later, when whatever trips over them has lost all connection to the move that caused them.
+
+Restoring is the same procedure in reverse — move the `.md` and both sidecars back, then audit again. A revision and its sidecars return byte-identical; nothing is ever re-deliberated to undo a reconciliation.
+
 ### The decision tree
 
 1. **You have a path in mind, and `sourceClassification` is `LATEST`.** Proceed — it is already the latest managed revision; work on it directly.
