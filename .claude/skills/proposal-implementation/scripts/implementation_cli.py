@@ -35,12 +35,18 @@ WORKSPACE = FORGE_ROOT / "implementations"
 
 PRODUCT_DIRS = ("Notebooks", "Data", "Results", "Models")
 
-# A reorganization is "large" when the user can no longer review it. Eight moves you
-# read and decide on; forty you approve without reading, and the authorization stops
-# being one. Both limits are needed: renaming a directory is a single move that can
-# carry hundreds of files, so a count of moves alone lets exactly that through.
-LARGE_PLAN_MOVES = 10
-LARGE_PLAN_FILES = 25
+# A reorganization is "large" when the user can no longer review it, and what a user
+# reviews is a list of decisions: this file goes there, this folder is renamed, this
+# reference is rewritten. Eight of those you read and decide on; forty you approve
+# without reading, and the authorization stops being one.
+#
+# The files a rename carries are deliberately NOT counted. Renaming a folder holding
+# two hundred files is one decision, not two hundred: git moves the subtree atomically
+# and one command puts it back. Counting them measures blast radius and calls it
+# reviewability, which forces a separate session for a change the user reads in a
+# single line. What the rename really costs is its reference rewrites — each one edits
+# the inside of a file and can be wrong on its own — and those are counted.
+LARGE_PLAN_DECISIONS = 15
 
 IGNORED_DIRS = {
     ".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".ipynb_checkpoints",
@@ -423,23 +429,30 @@ def cmd_name(args) -> dict:
 
 
 def plan_scale(plan: dict, target: Path) -> dict:
-    """How much of the repository the plan disturbs, and whether that is reviewable.
+    """Whether the plan is still something the user can read before approving it.
 
     `apply` is allowed to run either way — this only tells the agent which gate to
     open: apply the moves now, or hand the user a prompt for a separate session.
+
+    `carriedFiles` is reported because knowing a rename sweeps thirty-seven files is
+    worth saying out loud, but it is not a limit: see the note on LARGE_PLAN_DECISIONS.
     """
-    moves = len(plan.get("moves", [])) + len(plan.get("renames", []))
-    touched = {move["from"] for move in plan.get("moves", [])}
+    moves = len(plan.get("moves", []))
+    renames = len(plan.get("renames", []))
+    references = len(plan.get("referenceUpdates", []))
+    decisions = moves + renames + references
+
+    carried = {move["from"] for move in plan.get("moves", [])}
     for rename in plan.get("renames", []):
         prefix = f"{rename['from'].rstrip('/')}/"
-        touched.update(path for path in tracked_files(target) if path.startswith(prefix))
-    files = len(touched)
-    large = moves > LARGE_PLAN_MOVES or files > LARGE_PLAN_FILES
+        carried.update(path for path in tracked_files(target) if path.startswith(prefix))
+
     return {
-        "moveCount": moves,
-        "affectedFiles": files,
-        "limits": {"moves": LARGE_PLAN_MOVES, "files": LARGE_PLAN_FILES},
-        "scale": "large" if large else "reviewable",
+        "decisionCount": decisions,
+        "breakdown": {"moves": moves, "renames": renames, "referenceUpdates": references},
+        "carriedFiles": len(carried),
+        "limit": LARGE_PLAN_DECISIONS,
+        "scale": "large" if decisions > LARGE_PLAN_DECISIONS else "reviewable",
     }
 
 

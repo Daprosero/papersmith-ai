@@ -98,48 +98,60 @@ class NameCommandTests(unittest.TestCase):
 
 
 class PlanScaleTests(unittest.TestCase):
-    """`plan` must say whether its own output is still reviewable by a human."""
+    """`plan` must say whether its own output is still readable before approval."""
 
     def scale(self, plan, tracked=()):
         with tempfile.TemporaryDirectory() as box:
-            target = Path(box)
             original = impl.tracked_files
             impl.tracked_files = lambda _target: list(tracked)
             try:
-                return impl.plan_scale(plan, target)
+                return impl.plan_scale(plan, Path(box))
             finally:
                 impl.tracked_files = original
 
-    def test_a_short_move_list_is_reviewable(self):
+    def test_a_short_list_is_reviewable(self):
         result = self.scale({"moves": [{"from": f"f{n}.py", "to": "src/x.py"} for n in range(4)],
-                             "renames": []})
+                             "renames": [], "referenceUpdates": []})
         self.assertEqual(result["scale"], "reviewable")
-        self.assertEqual(result["moveCount"], 4)
+        self.assertEqual(result["decisionCount"], 4)
 
-    def test_crossing_the_move_limit_makes_it_large(self):
-        result = self.scale({"moves": [{"from": f"f{n}.py", "to": "src/x.py"} for n in range(11)],
-                             "renames": []})
+    def test_crossing_the_decision_limit_makes_it_large(self):
+        result = self.scale({"moves": [{"from": f"f{n}.py", "to": "src/x.py"} for n in range(16)],
+                             "renames": [], "referenceUpdates": []})
         self.assertEqual(result["scale"], "large")
 
-    def test_a_single_rename_carrying_many_files_is_large_even_though_it_is_one_move(self):
-        # This is why a move count alone is not enough: one rename, hundreds of files.
-        tracked = [f"Images/Results/plot{n}.png" for n in range(40)]
-        result = self.scale({"moves": [], "renames": [{"from": "Images", "to": "Creda"}]},
-                            tracked=tracked)
-        self.assertEqual(result["moveCount"], 1)
-        self.assertEqual(result["affectedFiles"], 40)
-        self.assertEqual(result["scale"], "large")
-
-    def test_a_rename_carrying_few_files_stays_reviewable(self):
-        tracked = [f"Images/Results/plot{n}.png" for n in range(3)]
-        result = self.scale({"moves": [], "renames": [{"from": "Images", "to": "Creda"}]},
-                            tracked=tracked)
+    def test_a_rename_carrying_many_files_is_still_one_decision(self):
+        # The whole point: renaming a folder of 200 files is one line the user reads,
+        # not 200. Counting the carried files measures blast radius, not reviewability,
+        # and would force a separate session for a trivial change.
+        tracked = [f"Images/Results/plot{n}.png" for n in range(200)]
+        result = self.scale({"moves": [], "renames": [{"from": "Images", "to": "Creda"}],
+                             "referenceUpdates": []}, tracked=tracked)
+        self.assertEqual(result["decisionCount"], 1)
+        self.assertEqual(result["carriedFiles"], 200)
         self.assertEqual(result["scale"], "reviewable")
 
-    def test_the_limits_travel_with_the_answer(self):
-        result = self.scale({"moves": [], "renames": []})
-        self.assertEqual(result["limits"], {"moves": impl.LARGE_PLAN_MOVES,
-                                            "files": impl.LARGE_PLAN_FILES})
+    def test_reference_rewrites_are_decisions_because_each_edits_a_file(self):
+        # These are what a rename really costs: each one can be wrong on its own.
+        result = self.scale({"moves": [], "renames": [{"from": "Images", "to": "Creda"}],
+                             "referenceUpdates": [{"file": f"src/m{n}.py"} for n in range(20)]})
+        self.assertEqual(result["decisionCount"], 21)
+        self.assertEqual(result["scale"], "large")
+
+    def test_the_real_repository_shape_stays_reviewable(self):
+        # One rename of a product folder plus six reference rewrites: seven lines.
+        tracked = [f"Images/Results/plot{n}.png" for n in range(37)]
+        result = self.scale({"moves": [], "renames": [{"from": "Images", "to": "Neutral-Method"}],
+                             "referenceUpdates": [{"file": f"src/m{n}.py"} for n in range(6)]},
+                            tracked=tracked)
+        self.assertEqual(result["decisionCount"], 7)
+        self.assertEqual(result["carriedFiles"], 37)
+        self.assertEqual(result["scale"], "reviewable")
+
+    def test_the_breakdown_and_limit_travel_with_the_answer(self):
+        result = self.scale({"moves": [], "renames": [], "referenceUpdates": []})
+        self.assertEqual(result["limit"], impl.LARGE_PLAN_DECISIONS)
+        self.assertEqual(result["breakdown"], {"moves": 0, "renames": 0, "referenceUpdates": 0})
 
 
 if __name__ == "__main__":

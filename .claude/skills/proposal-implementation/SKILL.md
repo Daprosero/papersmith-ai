@@ -180,6 +180,12 @@ past session concluded can bias this one.
 4. **Is there prior work, and does its layout already comply?** Run `plan`. If
    `status` is `compliant`, go to step 6. Otherwise present every rename, move and
    reference update with its reason, and read `reorganization`:
+   `decisionCount` is what the user actually reads: every move, every rename, every
+   reference rewrite. `carriedFiles` is reported alongside it and is worth saying out
+   loud — "this renames one folder and sweeps thirty-seven files with it" — but it is
+   not what decides the branch. Renaming a folder of two hundred files is one line to
+   read and one command to undo; counting those files would measure blast radius and
+   call it reviewability, forcing a separate session for a trivial change.
    - **`scale: "reviewable"`** → **[GATE]** ask whether to reorganize. On approval,
      `apply` lands renames, moves and reference updates in one commit. On refusal,
      continue without touching the layout — that refusal needs no record, because
