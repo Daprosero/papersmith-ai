@@ -281,9 +281,13 @@ modules carry the terms, where a backbone's features enter them, what the classi
 head predicts over. That is the user's mathematics, and this skill proposes rather
 than decides, exactly as it does with the migration plan and the object→module map.
 
-The draft also offers backbones and datasets to choose from — a small one for a
-screening run, the field's usual reference for a practical measurement. Offer them;
-do not pick for the user.
+The draft's `offer` starts from `fromBaseline`: the backbones, datasets and trained
+weights the prior work actually uses, read from its own code. That environment is
+where its published results were obtained, so it is the one a comparison means
+something in — proposing a set of well-known benchmarks instead would be a guess
+about the field, and would measure both implementations somewhere neither has been
+measured before. `lighterAlternatives` is offered beside it for when the baseline's
+own setting is too slow to screen with. Offer both; do not pick for the user.
 
 Write the completed wiring as `<Name>/Notebooks/wiring.py`, exposing `build_new` and
 `build_baseline`. `build_baseline` may be `None` when the prior work cannot run under

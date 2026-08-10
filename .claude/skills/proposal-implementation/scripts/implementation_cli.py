@@ -509,19 +509,107 @@ def probe_state(target: Path, name: str, revision: str | None) -> dict:
     }
 
 
-# Trainable backbones and datasets a comparison can be proposed over. Deliberately
-# small and deliberately plural: the point is to offer the user a starting set to
-# correct, not to decide the experiment for them.
-SOTA_BACKBONES = {
-    "resnet18": {"params": "11.7M", "note": "small; the default for a screening run"},
-    "resnet50": {"params": "25.6M", "note": "the usual reference in domain-adaptation work"},
-    "vit_b_16": {"params": "86.6M", "note": "transformer reference; slow on CPU"},
+# Lighter alternatives to offer *alongside* whatever the baseline already uses. This
+# list is never the primary suggestion: a comparison belongs in the environment the
+# prior work was actually measured in, and that environment is read from the
+# repository rather than assumed here.
+SCREENING_ALTERNATIVES = {
+    "backbones": {"resnet18": "smaller than most references; finishes a screening run"},
+    "datasets": {"MNIST": "fastest; a sanity setting rather than a result"},
 }
-SOTA_DATASETS = {
-    "MNIST": {"classes": 10, "note": "fastest; a sanity setting rather than a result"},
-    "CIFAR10": {"classes": 10, "note": "the usual screening set"},
-    "CIFAR100": {"classes": 100, "note": "many classes: stresses per-class coverage"},
-}
+
+# Names that mark a string literal as naming a dataset or task, used to read the
+# baseline's own vocabulary instead of matching against a list of datasets someone
+# thought of in advance.
+ENVIRONMENT_HINTS = ("dataset", "datasets", "data", "task", "tasks", "benchmark",
+                     "benchmarks", "domain", "domains", "corpus")
+
+
+def _module_aliases(tree: ast.Module) -> dict[str, str]:
+    """Names in this file that refer to an imported *module*, not to an instance.
+
+    This is the distinction that decides whether the reading is useful. `models.resnet50()`
+    names a backbone; `model.eval()` names nothing — and matching on the holder alone
+    cannot tell them apart, so it buries the two real names under every method call in
+    the file.
+    """
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                aliases[alias.asname or alias.name.split(".")[0]] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return aliases
+
+
+def _names_a_dataset(text: str) -> bool:
+    """Whether a string literal reads as the name of a dataset rather than a word.
+
+    A hyphen or a second capital is what separates `MNIST-USPS-SVHN` and `ImageCLEF`
+    from `classes`, `labels` and `Dataset`. Deliberately not a list of known datasets:
+    the baseline names its own tasks and may name ones nobody here has heard of.
+    """
+    return len(text) > 4 and ("-" in text or sum(c.isupper() for c in text) >= 2)
+
+
+def baseline_environment(target: Path, baselines: list[str]) -> dict:
+    """What the prior work already trains on: its backbones, its datasets, its weights.
+
+    A comparison is only common if both sides meet in one environment, and the one that
+    already has meaning is the baseline's — it is where its results were obtained.
+    Reading it beats offering a list: a list is somebody's guess about the field, this
+    is what the repository does.
+
+    Everything is read statically. Nothing here knows which datasets exist in the
+    world; it knows how code names them.
+    """
+    backbones: dict[str, str] = {}
+    datasets: dict[str, str] = {}
+    weights: list[str] = []
+
+    for baseline in baselines:
+        root = target / "src" / baseline
+        if not root.is_dir():
+            continue
+        for file in sorted(root.rglob("*.py")):
+            rel = str(file.relative_to(target))
+            try:
+                tree = ast.parse(file.read_text(encoding="utf-8"), filename=str(file))
+            except (SyntaxError, UnicodeDecodeError, OSError):
+                continue
+            aliases = _module_aliases(tree)
+            for node in ast.walk(tree):
+                # Only an attribute of an imported module, and only when called:
+                # `models.resnet50(...)`, never `model.eval()`.
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                        and isinstance(node.func.value, ast.Name):
+                    origin = aliases.get(node.func.value.id, "")
+                    if origin.endswith("models"):
+                        backbones.setdefault(node.func.attr, rel)
+                    elif origin.endswith("datasets"):
+                        datasets.setdefault(node.func.attr, rel)
+                elif isinstance(node, ast.Assign):
+                    targets = [n.id.lower() for n in node.targets if isinstance(n, ast.Name)]
+                    if any(hint in name for name in targets for hint in ENVIRONMENT_HINTS):
+                        for literal in ast.walk(node.value):
+                            if isinstance(literal, ast.Constant) \
+                                    and isinstance(literal.value, str) \
+                                    and _names_a_dataset(literal.value):
+                                datasets.setdefault(literal.value, rel)
+
+    # Trained weights the prior work left behind name their own backbone and task.
+    for product in target.glob("*/Models/**/*"):
+        if product.is_file() and product.suffix.lower() in MODEL_EXT:
+            weights.append(product.name)
+
+    return {
+        "backbones": [{"name": n, "seenIn": w} for n, w in sorted(backbones.items())],
+        "datasets": [{"name": n, "seenIn": w} for n, w in sorted(datasets.items())],
+        "weights": sorted(weights)[:12],
+        "discovered": bool(backbones or datasets or weights),
+    }
 
 
 def wiring_proposal(target: Path, name: str, baselines: list[str]) -> dict:
@@ -579,11 +667,13 @@ def wiring_proposal(target: Path, name: str, baselines: list[str]) -> dict:
                       "baseline is never modified to make a comparison possible"],
         },
         "offer": {
-            "backbones": SOTA_BACKBONES,
-            "datasets": SOTA_DATASETS,
-            "note": "Pick one of each, or name your own. A screening run uses the "
-                    "smallest that can still show the difference; a practical "
-                    "measurement uses the reference the field would expect.",
+            "fromBaseline": baseline_environment(target, baselines),
+            "lighterAlternatives": SCREENING_ALTERNATIVES,
+            "note": "Start from what the baseline already trains on: that is where its "
+                    "results were obtained, so it is the environment a comparison "
+                    "means something in. The lighter alternatives are for a screening "
+                    "run when the baseline's own setting is too slow. Either way the "
+                    "user picks — this proposes.",
         },
     }
 

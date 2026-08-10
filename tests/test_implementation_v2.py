@@ -423,12 +423,17 @@ class WiringProposalTests(unittest.TestCase):
         for asked in ("trainable terms", "backbone", "head", "entry point"):
             self.assertIn(asked, needs, asked)
 
-    def test_it_offers_sota_backbones_and_datasets_to_choose_from(self):
-        draft = impl.wiring_proposal(self.repo(), "Creda", [])
-        self.assertIn("resnet18", draft["offer"]["backbones"])
-        self.assertIn("resnet50", draft["offer"]["backbones"])
-        for dataset in ("MNIST", "CIFAR10", "CIFAR100"):
-            self.assertIn(dataset, draft["offer"]["datasets"], dataset)
+    def test_the_offer_starts_from_what_the_baseline_already_trains_on(self):
+        # Not a list somebody guessed about the field: what this repository does.
+        box = self.repo(baseline_files=["src/CREDA/models.py"])
+        (box / "src/CREDA/models.py").write_text(
+            "from torchvision import models\n"
+            "def build():\n"
+            "    return models.resnet50(weights=None)\n")
+        draft = impl.wiring_proposal(box, "Creda", ["CREDA"])
+        found = [b["name"] for b in draft["offer"]["fromBaseline"]["backbones"]]
+        self.assertEqual(found, ["resnet50"])
+        self.assertIn("resnet18", draft["offer"]["lighterAlternatives"]["backbones"])
 
     def test_the_baseline_is_offered_as_a_candidate_never_as_editable(self):
         box = self.repo(baseline_files=["src/CREDA/models.py", "src/CREDA/train.py"])
@@ -447,3 +452,53 @@ class WiringProposalTests(unittest.TestCase):
         self.assertIn("SystemExit", source, "a missing wiring must stop the run")
         self.assertNotIn('"baseline": None,', source,
                          "the baseline must never be hardcoded as not applicable")
+
+
+class BaselineEnvironmentTests(unittest.TestCase):
+    """Read the environment the prior results were obtained in, do not assume one."""
+
+    def repo(self, files):
+        box = Path(tempfile.mkdtemp(prefix="pp-env-"))
+        for path, source in files.items():
+            full = box / path
+            full.parent.mkdir(parents=True, exist_ok=True)
+            full.write_text(source)
+        return box
+
+    def test_a_called_module_attribute_is_a_backbone(self):
+        box = self.repo({"src/CREDA/models.py":
+                         "from torchvision import models\n"
+                         "net = models.resnet50(weights=None)\n"})
+        found = [b["name"] for b in impl.baseline_environment(box, ["CREDA"])["backbones"]]
+        self.assertEqual(found, ["resnet50"])
+
+    def test_a_method_call_on_an_instance_is_not_a_backbone(self):
+        # The distinction that decides whether the reading is useful at all: matching
+        # on the holder alone buries the real names under every .eval() and .to().
+        box = self.repo({"src/CREDA/train.py":
+                         "def run(model, device):\n"
+                         "    model.eval()\n"
+                         "    model.to(device)\n"
+                         "    model.parameters()\n"})
+        self.assertEqual(impl.baseline_environment(box, ["CREDA"])["backbones"], [])
+
+    def test_dataset_names_are_read_from_the_baselines_own_vocabulary(self):
+        box = self.repo({"src/CREDA/artifacts.py":
+                         'DATASETS = ["MNIST-USPS-SVHN", "Office-Caltech", "ImageCLEF"]\n'})
+        found = [d["name"] for d in impl.baseline_environment(box, ["CREDA"])["datasets"]]
+        self.assertEqual(found, ["ImageCLEF", "MNIST-USPS-SVHN", "Office-Caltech"])
+
+    def test_ordinary_words_near_a_dataset_variable_are_not_datasets(self):
+        box = self.repo({"src/CREDA/train.py":
+                         'dataset_keys = ["classes", "labels", "domain", "loader"]\n'})
+        self.assertEqual(impl.baseline_environment(box, ["CREDA"])["datasets"], [])
+
+    def test_trained_weights_left_behind_are_reported(self):
+        box = self.repo({"src/CREDA/m.py": "x = 1\n",
+                         "Creda/Models/resnet50/resnet50_ADDA.pth": "binary"})
+        self.assertEqual(impl.baseline_environment(box, ["CREDA"])["weights"],
+                         ["resnet50_ADDA.pth"])
+
+    def test_an_empty_baseline_says_it_discovered_nothing(self):
+        box = self.repo({"src/CREDA/m.py": "x = 1\n"})
+        self.assertFalse(impl.baseline_environment(box, ["CREDA"])["discovered"])
