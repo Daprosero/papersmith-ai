@@ -156,3 +156,70 @@ class PlanScaleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProbeStateTests(unittest.TestCase):
+    """The probe reads its own state from the repository, and stores nothing else."""
+
+    def repo(self, packages=(), results=None, name="Creda"):
+        box = Path(tempfile.mkdtemp(prefix="pp-probe-"))
+        for package in packages:
+            (box / "src" / package).mkdir(parents=True)
+            (box / "src" / package / "mod.py").write_text("x = 1\n")
+        if results is not None:
+            out = box / name / "Results"
+            out.mkdir(parents=True)
+            (out / impl.PROBE_RESULTS).write_text(json.dumps(results))
+        return box
+
+    def test_a_leftover_package_is_the_baseline_a_probe_compares_against(self):
+        box = self.repo(packages=["Creda", "legacy"])
+        self.assertEqual(impl.previous_implementations(box, "Creda"), ["legacy"])
+
+    def test_our_own_package_is_never_its_own_baseline(self):
+        box = self.repo(packages=["Creda"])
+        self.assertEqual(impl.previous_implementations(box, "Creda"), [])
+
+    def test_the_hyphen_form_still_resolves_to_our_package(self):
+        # <Name>/ is Mil-Creda, src/<Package>/ is Mil_Creda: the pair must not
+        # make the implementation look like somebody else's leftover.
+        box = self.repo(packages=["Mil_Creda", "legacy"])
+        self.assertEqual(impl.previous_implementations(box, "Mil-Creda"), ["legacy"])
+
+    def test_a_directory_with_no_python_is_not_an_implementation(self):
+        box = Path(tempfile.mkdtemp(prefix="pp-probe-"))
+        (box / "src" / "assets").mkdir(parents=True)
+        (box / "src" / "assets" / "notes.md").write_text("nothing here\n")
+        self.assertEqual(impl.previous_implementations(box, "Creda"), [])
+
+    def test_no_summary_means_no_probe_has_run(self):
+        box = self.repo(packages=["Creda"])
+        self.assertEqual(impl.probe_state(box, "Creda", "r16.md")["status"], "absent")
+
+    def test_a_summary_naming_the_current_revision_is_current(self):
+        box = self.repo(results={"revision": "r16.md", "reduction": {}, "comparison": []})
+        self.assertEqual(impl.probe_state(box, "Creda", "r16.md")["status"], "current")
+
+    def test_a_summary_naming_an_older_revision_is_stale_by_inspection(self):
+        # Nothing is stored to know this: the artifact carries the revision it
+        # was obtained under, so staleness is read, not remembered.
+        state = impl.probe_state(
+            self.repo(results={"revision": "r13.md", "reduction": {}, "comparison": []}),
+            "Creda", "r16.md")
+        self.assertEqual(state["status"], "stale")
+        self.assertEqual(state["revision"], "r13.md")
+        self.assertEqual(state["expectedRevision"], "r16.md")
+
+    def test_an_unreadable_summary_refuses_instead_of_reading_as_absent(self):
+        box = self.repo(results={"revision": "r16.md"})
+        (box / "Creda" / "Results" / impl.PROBE_RESULTS).write_text("{not json")
+        self.assertEqual(impl.probe_state(box, "Creda", "r16.md")["status"], "unreadable")
+
+    def test_the_shipped_notebook_template_carries_its_placeholders(self):
+        template = (Path(impl.SKILL_ROOT) / "assets/kit/nb" / impl.PROBE_NOTEBOOK)
+        self.assertTrue(template.exists(), "the probe notebook must ship with the kit")
+        text = template.read_text(encoding="utf-8")
+        for token in ("{{NAME}}", "{{BASELINE}}", "{{REVISION}}", "{{PROBE_RESULTS}}"):
+            self.assertIn(token, text, token)
+        self.assertIn("screening", text, "the notebook must say it is not a benchmark")
+        self.assertIn("STRATIFIED", text, "the slice must be stratified, and say why")

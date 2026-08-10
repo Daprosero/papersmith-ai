@@ -385,6 +385,75 @@ def dir_exists_after(target: Path, rel: str, renames: list[dict], name: str) -> 
     return False
 
 
+PROBE_NOTEBOOK = "probe.ipynb"
+PROBE_RESULTS = "Probe_results.json"
+
+
+def previous_implementations(target: Path, name: str) -> list[str]:
+    """Packages under `src/` that are not ours.
+
+    The layout rule keeps pre-existing code in its own package and never merges it
+    into `src/<Package>/`, precisely so the work that was already here survives the
+    reorganization intact. Whatever is left over is the baseline a probe compares
+    against — it is found by reading the tree, not by remembering that it was there.
+    """
+    ours = package_name(name)
+    src = target / "src"
+    if not src.is_dir():
+        return []
+    return sorted(
+        entry.name for entry in src.iterdir()
+        if entry.is_dir() and entry.name != ours and entry.name not in IGNORED_DIRS
+        and any(entry.rglob("*.py"))
+    )
+
+
+def probe_state(target: Path, name: str, revision: str | None) -> dict:
+    """Whether a probe already ran here, and whether it still describes this revision.
+
+    The result file is the whole record. A summary naming an older revision is stale
+    by inspection, so nothing has to be stored to know it: the artifact carries the
+    reduction it was obtained under, and a number that cannot be read together with
+    its reduction is a number that will be misquoted.
+    """
+    results = target / name / "Results" / PROBE_RESULTS
+    if not results.exists():
+        return {"status": "absent"}
+    try:
+        recorded = json.loads(results.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as error:
+        return {"status": "unreadable", "detail": str(error)[:200]}
+    against = recorded.get("revision")
+    return {
+        "status": "current" if (revision and against == revision) else "stale",
+        "revision": against,
+        "expectedRevision": revision,
+        "reduction": recorded.get("reduction"),
+        "dimensions": [row.get("dimension") for row in recorded.get("comparison", [])],
+    }
+
+
+def cmd_probe(args) -> dict:
+    """Report what a comparative probe would have to work with, and run nothing."""
+    target = resolve_target(args.target)
+    name = validate_name(args.name)
+    baselines = previous_implementations(target, name)
+    state = probe_state(target, name, args.revision)
+    notebook = target / name / "Notebooks" / PROBE_NOTEBOOK
+    return {
+        "status": "ok",
+        "target": str(target),
+        "name": name,
+        "baselines": baselines,
+        "comparable": bool(baselines),
+        "notebook": str(notebook.relative_to(target)) if notebook.exists() else None,
+        "results": state,
+        # A probe is a screening run, never the benchmark. Saying so here keeps the
+        # word out of the caller's own vocabulary.
+        "kind": "screening",
+    }
+
+
 class NameRefused(Exception):
     """The name the user typed cannot become a directory and a package."""
 
@@ -1503,6 +1572,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
 
 COMMANDS = {"env": cmd_env, "name": cmd_name, "plan": cmd_plan, "apply": cmd_apply,
             "admit": cmd_admit, "handoff": cmd_handoff, "compose": cmd_compose,
+            "probe": cmd_probe,
             "verify": cmd_verify}
 
 
@@ -1530,7 +1600,7 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--name", required=True, help="package name chosen by the user")
         if name == "apply":
             p.add_argument("--plan", required=True, help="path to the approved plan JSON")
-        if name in {"verify", "admit", "handoff"}:
+        if name in {"verify", "admit", "handoff", "probe"}:
             p.add_argument("--revision", default=None, help="latest research-concept-rNN.md")
 
     args = parser.parse_args(argv)

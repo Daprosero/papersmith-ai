@@ -234,14 +234,56 @@ past session concluded can bias this one.
 2. `verify --revision <latest>`. This is the whole state of the repository in one
    answer: `structure` covers the layout, `fidelity` covers whether the code still
    matches the mathematics, plus `audit` and `validation`.
-3. **No differences** → report all four as green and **ask the user what they want
-   to do next**. Do not invent work.
+3. **No differences** → report all four as green, then run `probe` before asking
+   anything. See [The comparative probe](#the-comparative-probe). If it reports no
+   baseline, or a summary that is already `current`, **ask the user what they want
+   to do next** and invent no work.
 4. **Differences in fidelity** → **[GATE] ask whether the user made those changes.**
    - **They did** → the code is ahead of the proposal. Remind them to update the
      mathematics and hand them the prompt that does it. Do not edit their code to
      match an older proposal.
    - **They did not** → the code has drifted. Correct it and re-run the validations,
      bounded by the same three passes as Flow A step 16.
+## The comparative probe
+
+The layout keeps pre-existing code in its own package under `src/`, so a repository
+that had an implementation before still has it after the reorganization. That
+leftover package is a baseline, and `probe` finds it by reading the tree.
+
+Offer the probe only when `comparable` is true and `results.status` is `absent` or
+`stale`. **[GATE]** ask before running it: it is quick by design, but it is still the
+user's machine.
+
+Scaffold `<Name>/Notebooks/probe.ipynb` from `assets/kit/nb/`, fill it in, execute it,
+and let it write `<Name>/Results/Probe_results.json`. That summary is the record —
+a later session reads it to learn that a probe ran, under which reduction, and
+against which revision. A summary naming an older revision is stale by inspection,
+so nothing is stored outside the repository and nothing can fall out of sync.
+
+Four things decide whether the result means anything:
+
+- **It is a screening run, never the benchmark.** Small backbone, a slice of the data.
+  A reduced setting can invert a result — a method needing capacity or volume to show
+  its advantage loses here and wins at full scale. Say `probe`, `screening`, never
+  "results", and print the reduction beside every number. A number that can be read
+  without its reduction is a number that will be misquoted.
+- **Speed buys repetition.** Several seeds on a small setting beat one slow run,
+  because one run cannot separate a difference from its own noise. Report dispersion.
+- **The slice is stratified, not random.** The proposal requires every class to be
+  present in the source collection the local correspondence uses; a random slice can
+  drop one, leaving that correspondence undefined. The failure would look like a
+  defect of the method and be a defect of the sampling.
+- **The reduction is identical for both, and the baseline is never edited to fit it.**
+  It is the user's prior work. If it cannot be driven into the common setting as it
+  stands, that is a `not applicable`, with the reason.
+
+Dimensions come from what the proposal claims to improve, not from a generic
+checklist. Cost — time per epoch, peak memory, parameters, inference latency —
+compares cleanly even when the two predict on different statistical units. Accuracy
+does not: if one predicts per instance and the other per bag, a single number would
+require inventing an aggregation rule that can dominate what it claims to measure.
+**`not applicable` is a legitimate cell; filling it with a number is not.**
+
 5. **Report the layout, never gate on it.** `structure` is part of the answer in
    step 2, so drift is always visible. But it does not stop the flow and it is not
    asked about again: that question belongs to the first pass, and it was answered
