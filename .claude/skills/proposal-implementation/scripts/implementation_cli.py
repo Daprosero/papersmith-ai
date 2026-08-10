@@ -387,6 +387,68 @@ def dir_exists_after(target: Path, rel: str, renames: list[dict], name: str) -> 
 
 PROBE_NOTEBOOK = "probe.ipynb"
 PROBE_RESULTS = "Probe_results.json"
+BENCHMARK_MODULE = "benchmark.py"
+BASELINE_SOURCE_EXT = {".py", ".ipynb", ".r", ".m", ".jl", ".cpp", ".cu"}
+
+# Array backends, read statically. A module that computes with numpy cannot be
+# trained: there is no autograd and nothing to put on a device, so a benchmark
+# against a trained baseline has nothing to run. The conversion is therefore the
+# first thing to settle once the implementation is faithful, not an optimization
+# to consider later.
+TENSOR_BACKENDS = {"torch": "torch", "jax": "jax", "tensorflow": "tensorflow"}
+
+
+def imported_modules(path: Path) -> set[str]:
+    """Top-level module names a file imports, without importing anything itself."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (SyntaxError, UnicodeDecodeError, OSError):
+        return set()
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            found.add(node.module.split(".")[0])
+    return found
+
+
+def backend_state(target: Path, name: str) -> dict:
+    """Which array backend the implementation and its tests actually compute with.
+
+    Reported per file, because a half-converted implementation is the dangerous
+    state: the modules train and the tests still assert over numpy, so the suite
+    passes while measuring something the trained model never touched.
+    """
+    package = target / "src" / package_name(name)
+    tests = target / "tests"
+    numpy_files: list[str] = []
+    tensor_files: list[str] = []
+    for root in (package, tests):
+        if not root.is_dir():
+            continue
+        for file in sorted(root.rglob("*.py")):
+            modules = imported_modules(file)
+            rel = str(file.relative_to(target))
+            if modules & set(TENSOR_BACKENDS):
+                tensor_files.append(rel)
+            elif "numpy" in modules:
+                numpy_files.append(rel)
+    if not numpy_files and not tensor_files:
+        state = "unknown"
+    elif numpy_files and tensor_files:
+        state = "mixed"
+    elif tensor_files:
+        state = "tensor"
+    else:
+        state = "numpy"
+    return {
+        "state": state,
+        "numpyFiles": numpy_files,
+        "tensorFiles": tensor_files,
+        # Only a tensor backend can be trained, so only that state can be benchmarked.
+        "trainable": state == "tensor",
+    }
 
 
 def previous_implementations(target: Path, name: str) -> list[str]:
@@ -404,7 +466,10 @@ def previous_implementations(target: Path, name: str) -> list[str]:
     return sorted(
         entry.name for entry in src.iterdir()
         if entry.is_dir() and entry.name != ours and entry.name not in IGNORED_DIRS
-        and any(entry.rglob("*.py"))
+        # Any source at all: a baseline is somebody else's prior work and may be
+        # notebooks, R or MATLAB. Requiring Python would make it invisible.
+        and any(child.is_file() and child.suffix.lower() in BASELINE_SOURCE_EXT
+                for child in entry.rglob("*"))
     )
 
 
@@ -424,32 +489,63 @@ def probe_state(target: Path, name: str, revision: str | None) -> dict:
     except (json.JSONDecodeError, OSError) as error:
         return {"status": "unreadable", "detail": str(error)[:200]}
     against = recorded.get("revision")
+    rows = recorded.get("comparison")
+    if not isinstance(rows, (list, dict)):
+        return {"status": "unreadable",
+                "detail": "comparison is neither a list nor a mapping"}
+    if not revision:
+        # Without a revision to compare against, staleness cannot be established.
+        # Reporting "stale" here would assert a state nobody checked.
+        status = "unknown"
+    else:
+        status = "current" if against == revision else "stale"
     return {
-        "status": "current" if (revision and against == revision) else "stale",
+        "status": status,
         "revision": against,
         "expectedRevision": revision,
         "reduction": recorded.get("reduction"),
-        "dimensions": [row.get("dimension") for row in recorded.get("comparison", [])],
+        "labels": sorted(rows) if isinstance(rows, dict) else
+                  [row.get("dimension") for row in rows if isinstance(row, dict)],
     }
 
 
 def cmd_probe(args) -> dict:
-    """Report what a comparative probe would have to work with, and run nothing."""
+    """Report what stands between this repository and a benchmark, and run nothing.
+
+    Order matters and is reported as `nextStep`: an implementation that computes with
+    numpy cannot be trained at all, so converting it is settled before a comparison is
+    even discussed. Proposing a benchmark first would ask the user to approve a run
+    that cannot happen.
+    """
     target = resolve_target(args.target)
     name = validate_name(args.name)
+    backend = backend_state(target, name)
     baselines = previous_implementations(target, name)
     state = probe_state(target, name, args.revision)
+
+    if not backend["trainable"]:
+        next_step = "convert"
+    elif not baselines:
+        next_step = "nothing-to-compare"
+    elif state["status"] == "current":
+        next_step = "already-benchmarked"
+    else:
+        next_step = "benchmark"
+
+    harness = target / name / "Notebooks" / BENCHMARK_MODULE
     notebook = target / name / "Notebooks" / PROBE_NOTEBOOK
     return {
         "status": "ok",
         "target": str(target),
         "name": name,
+        "backend": backend,
         "baselines": baselines,
         "comparable": bool(baselines),
+        "harness": str(harness.relative_to(target)) if harness.exists() else None,
         "notebook": str(notebook.relative_to(target)) if notebook.exists() else None,
         "results": state,
-        # A probe is a screening run, never the benchmark. Saying so here keeps the
-        # word out of the caller's own vocabulary.
+        "nextStep": next_step,
+        # A probe is a screening run, never the benchmark it screens for.
         "kind": "screening",
     }
 

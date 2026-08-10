@@ -186,11 +186,22 @@ class ProbeStateTests(unittest.TestCase):
         box = self.repo(packages=["Mil_Creda", "legacy"])
         self.assertEqual(impl.previous_implementations(box, "Mil-Creda"), ["legacy"])
 
-    def test_a_directory_with_no_python_is_not_an_implementation(self):
+    def test_a_directory_with_no_source_is_not_an_implementation(self):
         box = Path(tempfile.mkdtemp(prefix="pp-probe-"))
         (box / "src" / "assets").mkdir(parents=True)
         (box / "src" / "assets" / "notes.md").write_text("nothing here\n")
         self.assertEqual(impl.previous_implementations(box, "Creda"), [])
+
+    def test_a_baseline_that_is_not_python_is_still_a_baseline(self):
+        # Prior work arrives in whatever shape it was written in. Requiring .py
+        # would make a notebook or MATLAB baseline invisible to the comparison.
+        box = Path(tempfile.mkdtemp(prefix="pp-probe-"))
+        for package, filename in (("Creda", "m.py"), ("old_matlab", "run.m"),
+                                  ("old_notebooks", "study.ipynb")):
+            (box / "src" / package).mkdir(parents=True)
+            (box / "src" / package / filename).write_text("x\n")
+        self.assertEqual(impl.previous_implementations(box, "Creda"),
+                         ["old_matlab", "old_notebooks"])
 
     def test_no_summary_means_no_probe_has_run(self):
         box = self.repo(packages=["Creda"])
@@ -199,6 +210,17 @@ class ProbeStateTests(unittest.TestCase):
     def test_a_summary_naming_the_current_revision_is_current(self):
         box = self.repo(results={"revision": "r16.md", "reduction": {}, "comparison": []})
         self.assertEqual(impl.probe_state(box, "Creda", "r16.md")["status"], "current")
+
+    def test_without_a_revision_to_compare_it_says_unknown_not_stale(self):
+        # Reporting "stale" here would assert a state nobody established.
+        box = self.repo(results={"revision": "r16.md", "comparison": []})
+        self.assertEqual(impl.probe_state(box, "Creda", None)["status"], "unknown")
+
+    def test_a_malformed_comparison_refuses_instead_of_raising(self):
+        # The same defect read_findings carried: malformed input must produce a
+        # typed refusal, never a traceback.
+        box = self.repo(results={"revision": "r16.md", "comparison": "not a list"})
+        self.assertEqual(impl.probe_state(box, "Creda", "r16.md")["status"], "unreadable")
 
     def test_a_summary_naming_an_older_revision_is_stale_by_inspection(self):
         # Nothing is stored to know this: the artifact carries the revision it
@@ -219,7 +241,70 @@ class ProbeStateTests(unittest.TestCase):
         template = (Path(impl.SKILL_ROOT) / "assets/kit/nb" / impl.PROBE_NOTEBOOK)
         self.assertTrue(template.exists(), "the probe notebook must ship with the kit")
         text = template.read_text(encoding="utf-8")
-        for token in ("{{NAME}}", "{{BASELINE}}", "{{REVISION}}", "{{PROBE_RESULTS}}"):
+        for token in ("{{NAME}}", "{{BASELINE}}", "{{REVISION}}", "{{PROBE_RESULTS}}",
+                      "{{DATASET}}", "{{SEEDS}}"):
             self.assertIn(token, text, token)
         self.assertIn("screening", text, "the notebook must say it is not a benchmark")
-        self.assertIn("STRATIFIED", text, "the slice must be stratified, and say why")
+        self.assertIn("stratified", text, "the slice must be stratified, and say why")
+        # The notebook must RUN the harness. A notebook that only describes a
+        # comparison is a form, and handing back a form is not the capability.
+        self.assertIn(impl.BENCHMARK_MODULE, text,
+                      "the notebook must drive the benchmark, not describe it")
+        self.assertIn("subprocess", text, "it has to actually execute something")
+        self.assertIn("parents[1]", text,
+                      "the output path must be anchored to the repository, never a "
+                      "bare ../ that resolves outside it")
+
+
+class BackendStateTests(unittest.TestCase):
+    """numpy cannot be trained, so the backend decides whether a benchmark can run."""
+
+    def repo(self, package_files=(), test_files=(), name="Creda"):
+        box = Path(tempfile.mkdtemp(prefix="pp-backend-"))
+        pkg = box / "src" / impl.package_name(name)
+        pkg.mkdir(parents=True)
+        (box / "tests").mkdir()
+        for filename, source in package_files:
+            (pkg / filename).write_text(source)
+        for filename, source in test_files:
+            (box / "tests" / filename).write_text(source)
+        return box
+
+    def test_numpy_only_is_not_trainable(self):
+        state = impl.backend_state(
+            self.repo([("kernel.py", "import numpy as np\n")]), "Creda")
+        self.assertEqual(state["state"], "numpy")
+        self.assertFalse(state["trainable"])
+
+    def test_torch_is_trainable(self):
+        state = impl.backend_state(
+            self.repo([("kernel.py", "import torch\n")]), "Creda")
+        self.assertEqual(state["state"], "tensor")
+        self.assertTrue(state["trainable"])
+
+    def test_a_half_converted_repository_is_mixed_and_not_trainable(self):
+        # The dangerous state: modules train while the tests still assert over
+        # numpy, so the suite passes while measuring what the model never touched.
+        state = impl.backend_state(
+            self.repo([("kernel.py", "import torch\n")],
+                      [("test_kernel.py", "import numpy as np\n")]), "Creda")
+        self.assertEqual(state["state"], "mixed")
+        self.assertFalse(state["trainable"])
+        self.assertTrue(state["numpyFiles"] and state["tensorFiles"])
+
+    def test_an_unparsable_file_does_not_crash_the_reading(self):
+        state = impl.backend_state(
+            self.repo([("broken.py", "def (:\n")]), "Creda")
+        self.assertEqual(state["state"], "unknown")
+
+    def test_the_benchmark_harness_ships_with_the_kit_and_compiles(self):
+        import ast
+        harness = Path(impl.SKILL_ROOT) / "assets/kit/nb" / impl.BENCHMARK_MODULE
+        self.assertTrue(harness.exists(), "the benchmark must ship with the kit")
+        source = harness.read_text(encoding="utf-8")
+        ast.parse(source)
+        self.assertIn("resnet18", source)
+        self.assertIn("stratified_indices", source, "the slice must be stratified")
+        self.assertIn("stdev", source, "a bare mean over seeds hides what seeds reveal")
+        for dataset in ("CIFAR10", "CIFAR100", "MNIST"):
+            self.assertIn(dataset, source, dataset)
