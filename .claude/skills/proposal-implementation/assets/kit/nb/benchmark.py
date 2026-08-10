@@ -212,11 +212,29 @@ def main(argv: list[str] | None = None) -> int:
     if reduction.dataset not in DATASETS:
         raise SystemExit(f"unknown dataset {reduction.dataset!r}: pick one of {sorted(DATASETS)}")
 
-    # The agent fills these in: the new implementation, and the baseline package that
-    # the layout preserved under src/. Either may be None — see `compare`.
+    # Filled in from the wiring `probe` proposed and the user completed. A bare
+    # backbone is not either implementation: training one and reporting it would
+    # measure the backbone and call it the method.
+    #
+    # Both stay unset here on purpose. `build_wiring` is written into the target
+    # repository as part of the flow, and its absence is refused below rather than
+    # silently producing a table about nothing.
+    try:
+        from wiring import build_baseline, build_new  # written for this repository
+    except ImportError as missing:
+        raise SystemExit(
+            "wiring.py is missing: this benchmark has nothing to compare.\n"
+            f"  ({missing})\n"
+            "Run `probe` and complete the wiring it proposes — which modules carry "
+            "the trainable terms, where the backbone enters, what the head predicts "
+            "over — then write it as wiring.py beside this file. Running without it "
+            "would train a bare backbone and report it as the method."
+        )
+
     builders: dict[str, Callable[[int], nn.Module] | None] = {
-        "new": lambda classes: backbone(reduction.backbone, classes),
-        "baseline": None,
+        "new": lambda classes: build_new(classes, reduction.backbone),
+        "baseline": (lambda classes: build_baseline(classes, reduction.backbone))
+                    if build_baseline is not None else None,
     }
 
     measured = compare(builders, reduction, Path(args.data))

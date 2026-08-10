@@ -509,6 +509,85 @@ def probe_state(target: Path, name: str, revision: str | None) -> dict:
     }
 
 
+# Trainable backbones and datasets a comparison can be proposed over. Deliberately
+# small and deliberately plural: the point is to offer the user a starting set to
+# correct, not to decide the experiment for them.
+SOTA_BACKBONES = {
+    "resnet18": {"params": "11.7M", "note": "small; the default for a screening run"},
+    "resnet50": {"params": "25.6M", "note": "the usual reference in domain-adaptation work"},
+    "vit_b_16": {"params": "86.6M", "note": "transformer reference; slow on CPU"},
+}
+SOTA_DATASETS = {
+    "MNIST": {"classes": 10, "note": "fastest; a sanity setting rather than a result"},
+    "CIFAR10": {"classes": 10, "note": "the usual screening set"},
+    "CIFAR100": {"classes": 100, "note": "many classes: stresses per-class coverage"},
+}
+
+
+def wiring_proposal(target: Path, name: str, baselines: list[str]) -> dict:
+    """A draft of how each implementation would become a trainable model.
+
+    This is a proposal, never a decision. The harness knows how to train and measure;
+    it cannot know what makes *this* method trainable — which modules carry the terms,
+    where a backbone enters, what the classifier head predicts over. That is the
+    user's mathematics, so it is read, drafted, and handed back to be completed.
+
+    Every module already declares what it implements in `__provenance__`, so the draft
+    is assembled from the repository rather than guessed, and nothing here needs to
+    know what the method is about.
+    """
+    package = target / "src" / package_name(name)
+    modules = []
+    for file in sorted(package.glob("*.py")) if package.is_dir() else []:
+        if file.name == "__init__.py":
+            continue
+        provenance = read_provenance(file) or {}
+        modules.append({
+            "module": f"src/{package_name(name)}/{file.name}",
+            "sections": provenance.get("sections", []),
+            "equations": provenance.get("equations", []),
+            "invariants": provenance.get("invariants", []),
+        })
+
+    baseline_modules = []
+    for baseline in baselines:
+        root = target / "src" / baseline
+        baseline_modules.append({
+            "package": baseline,
+            "files": sorted(str(f.relative_to(target)) for f in root.rglob("*.py"))[:20],
+            "provenance": "absent — this package predates the managed lineage",
+        })
+
+    return {
+        "status": "draft",
+        "instruction": "Complete both builders, then the harness trains and measures "
+                       "them in one common setting. Nothing runs until you do: a "
+                       "builder left empty is reported as not applicable, never as a "
+                       "result.",
+        "new": {
+            "package": f"src/{package_name(name)}",
+            "modules": modules,
+            "needs": ["which module(s) carry the trainable terms",
+                      "where the backbone's features enter them",
+                      "what the classifier head is and what it predicts over"],
+        },
+        "baseline": {
+            "candidates": baseline_modules,
+            "needs": ["the entry point that builds its model",
+                      "whether it runs under the common reduction unedited — if it "
+                      "cannot, that is a not-applicable with a reason, and the "
+                      "baseline is never modified to make a comparison possible"],
+        },
+        "offer": {
+            "backbones": SOTA_BACKBONES,
+            "datasets": SOTA_DATASETS,
+            "note": "Pick one of each, or name your own. A screening run uses the "
+                    "smallest that can still show the difference; a practical "
+                    "measurement uses the reference the field would expect.",
+        },
+    }
+
+
 def cmd_probe(args) -> dict:
     """Report what stands between this repository and a benchmark, and run nothing.
 
@@ -532,6 +611,7 @@ def cmd_probe(args) -> dict:
     else:
         next_step = "benchmark"
 
+    proposal = wiring_proposal(target, name, baselines) if next_step == "benchmark" else None
     harness = target / name / "Notebooks" / BENCHMARK_MODULE
     notebook = target / name / "Notebooks" / PROBE_NOTEBOOK
     return {
@@ -545,6 +625,7 @@ def cmd_probe(args) -> dict:
         "notebook": str(notebook.relative_to(target)) if notebook.exists() else None,
         "results": state,
         "nextStep": next_step,
+        "wiring": proposal,
         # A probe is a screening run, never the benchmark it screens for.
         "kind": "screening",
     }

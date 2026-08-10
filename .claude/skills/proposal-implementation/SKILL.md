@@ -270,15 +270,33 @@ The mathematics does not change — this is a change of backend, not of method �
 invariant test must still hold. Re-run the audit: a remedy established over the numpy
 sweep has not been established over the converted one.
 
-### `nextStep: "benchmark"` — train both and measure
+### `nextStep: "benchmark"` — propose the wiring, then train both and measure
 
-Only reachable once `backend.trainable` is true and a baseline exists. **[GATE]** ask
-before running: it is quick by design, but it is still the user's machine, and it
-downloads a dataset.
+Only reachable once `backend.trainable` is true and a baseline exists.
 
-Copy `benchmark.py` and `probe.ipynb` from `assets/kit/nb/` into
-`<Name>/Notebooks/`, fill in the reduction and both builders, and execute the
-notebook. It trains each implementation over every seed, measures accuracy, wall
+`probe` returns a `wiring` draft, assembled from each module's `__provenance__`
+rather than guessed. **Present it and let the user complete it.** The harness knows
+how to train and measure; it cannot know what makes *this* method trainable — which
+modules carry the terms, where a backbone's features enter them, what the classifier
+head predicts over. That is the user's mathematics, and this skill proposes rather
+than decides, exactly as it does with the migration plan and the object→module map.
+
+The draft also offers backbones and datasets to choose from — a small one for a
+screening run, the field's usual reference for a practical measurement. Offer them;
+do not pick for the user.
+
+Write the completed wiring as `<Name>/Notebooks/wiring.py`, exposing `build_new` and
+`build_baseline`. `build_baseline` may be `None` when the prior work cannot run under
+the common reduction as it stands: that is a `not applicable` with its reason, and
+the baseline is never edited to make a comparison possible.
+
+**[GATE]** then ask before running: it is quick by design, but it is still the user's
+machine, and it downloads a dataset.
+
+Copy `benchmark.py`, `verdict.py` and `probe.ipynb` from `assets/kit/nb/` into
+`<Name>/Notebooks/`, fill in the reduction, and execute the notebook. Without
+`wiring.py` the harness refuses and says what is missing — running anyway would train
+a bare backbone and report it as the method. It trains each implementation over every seed, measures accuracy, wall
 time, peak memory and parameter count, and writes `<Name>/Results/Probe_results.json`.
 
 That summary is the record. A later session reads it to learn that a screening ran,

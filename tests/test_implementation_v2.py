@@ -387,3 +387,63 @@ class VerdictTests(unittest.TestCase):
         judged = vd.judge([synthetic, trained])
         self.assertEqual(judged[0]["verdict"]["winner"], "baseline")
         self.assertEqual(judged[1]["verdict"]["winner"], "new")
+
+
+class WiringProposalTests(unittest.TestCase):
+    """The gap where a comparison belongs is a proposal, not a placeholder."""
+
+    def repo(self, modules=(), baseline_files=(), name="Creda"):
+        box = Path(tempfile.mkdtemp(prefix="pp-wiring-"))
+        pkg = box / "src" / impl.package_name(name)
+        pkg.mkdir(parents=True)
+        for filename, source in modules:
+            (pkg / filename).write_text(source)
+        for path in baseline_files:
+            full = box / path
+            full.parent.mkdir(parents=True, exist_ok=True)
+            full.write_text("x = 1\n")
+        return box
+
+    MODULE = ('__provenance__ = {"revision": "r16.md", "sections": ["5"],\n'
+              '                  "equations": ["32", "33"], "invariants": ["bounded"]}\n')
+
+    def test_the_draft_is_assembled_from_provenance_not_guessed(self):
+        box = self.repo(modules=[("global_term.py", self.MODULE)],
+                        baseline_files=["src/CREDA/models.py"])
+        draft = impl.wiring_proposal(box, "Creda", ["CREDA"])
+        module = draft["new"]["modules"][0]
+        self.assertEqual(module["sections"], ["5"])
+        self.assertEqual(module["equations"], ["32", "33"])
+        self.assertEqual(module["invariants"], ["bounded"])
+
+    def test_it_says_what_it_needs_from_the_user_rather_than_deciding(self):
+        draft = impl.wiring_proposal(self.repo(), "Creda", [])
+        self.assertEqual(draft["status"], "draft")
+        needs = " ".join(draft["new"]["needs"] + draft["baseline"]["needs"]).lower()
+        for asked in ("trainable terms", "backbone", "head", "entry point"):
+            self.assertIn(asked, needs, asked)
+
+    def test_it_offers_sota_backbones_and_datasets_to_choose_from(self):
+        draft = impl.wiring_proposal(self.repo(), "Creda", [])
+        self.assertIn("resnet18", draft["offer"]["backbones"])
+        self.assertIn("resnet50", draft["offer"]["backbones"])
+        for dataset in ("MNIST", "CIFAR10", "CIFAR100"):
+            self.assertIn(dataset, draft["offer"]["datasets"], dataset)
+
+    def test_the_baseline_is_offered_as_a_candidate_never_as_editable(self):
+        box = self.repo(baseline_files=["src/CREDA/models.py", "src/CREDA/train.py"])
+        draft = impl.wiring_proposal(box, "Creda", ["CREDA"])
+        candidate = draft["baseline"]["candidates"][0]
+        self.assertEqual(candidate["package"], "CREDA")
+        self.assertEqual(len(candidate["files"]), 2)
+        self.assertIn("never modified", " ".join(draft["baseline"]["needs"]))
+
+    def test_the_harness_refuses_without_wiring_instead_of_training_a_bare_backbone(self):
+        # The defect this replaces: a placeholder that trained a generic backbone,
+        # reported the baseline as not applicable, and produced a table about nothing.
+        harness = (Path(impl.SKILL_ROOT) / "assets/kit/nb" / impl.BENCHMARK_MODULE)
+        source = harness.read_text(encoding="utf-8")
+        self.assertIn("wiring.py is missing", source)
+        self.assertIn("SystemExit", source, "a missing wiring must stop the run")
+        self.assertNotIn('"baseline": None,', source,
+                         "the baseline must never be hardcoded as not applicable")
