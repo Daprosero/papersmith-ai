@@ -308,3 +308,82 @@ class BackendStateTests(unittest.TestCase):
         self.assertIn("stdev", source, "a bare mean over seeds hides what seeds reveal")
         for dataset in ("CIFAR10", "CIFAR100", "MNIST"):
             self.assertIn(dataset, source, dataset)
+
+
+sys.path.insert(0, str(CLI.parent.parent / "assets/kit/nb"))
+import verdict as vd  # noqa: E402
+
+
+class VerdictTests(unittest.TestCase):
+    """Values are not an answer. These rules turn them into one, or refuse to."""
+
+    def spread(self, mean, stdev=0.0, n=10):
+        return {"mean": mean, "stdev": stdev, "n": n}
+
+    def test_a_clear_gap_names_the_winner(self):
+        result = vd.decide(self.spread(0.60, 0.01), self.spread(0.80, 0.01), vd.HIGHER)
+        self.assertEqual(result["winner"], "new")
+
+    def test_direction_decides_who_wins_not_the_larger_number(self):
+        # Lower is better for time: the smaller side wins.
+        result = vd.decide(self.spread(120.0, 1.0), self.spread(40.0, 1.0), vd.LOWER)
+        self.assertEqual(result["winner"], "new")
+        result = vd.decide(self.spread(40.0, 1.0), self.spread(120.0, 1.0), vd.LOWER)
+        self.assertEqual(result["winner"], "baseline")
+
+    def test_overlapping_means_are_indistinguishable_not_a_win(self):
+        # The whole reason several seeds are run. Two bare means always differ at
+        # enough decimal places, and calling that a result is reading noise aloud.
+        result = vd.decide(self.spread(0.700, 0.05), self.spread(0.702, 0.05), vd.HIGHER)
+        self.assertEqual(result["winner"], vd.TIE)
+
+    def test_more_seeds_can_turn_a_tie_into_a_verdict(self):
+        # Same means and spread, more repetitions: the standard error shrinks.
+        loose = vd.decide(self.spread(0.70, 0.05, n=2), self.spread(0.76, 0.05, n=2), vd.HIGHER)
+        tight = vd.decide(self.spread(0.70, 0.05, n=200), self.spread(0.76, 0.05, n=200), vd.HIGHER)
+        self.assertEqual(loose["winner"], vd.TIE)
+        self.assertEqual(tight["winner"], "new")
+
+    def test_a_missing_side_is_not_applicable_never_a_walkover(self):
+        self.assertEqual(vd.decide(None, self.spread(0.9), vd.HIGHER)["winner"],
+                         vd.NOT_APPLICABLE)
+        self.assertEqual(vd.decide(self.spread(0.9), None, vd.HIGHER)["winner"],
+                         vd.NOT_APPLICABLE)
+
+    def test_a_descriptive_dimension_is_reported_and_not_contested(self):
+        result = vd.decide(self.spread(11_000_000), self.spread(240_000), vd.DESCRIPTIVE)
+        self.assertIsNone(result["winner"])
+
+    def test_the_tally_says_where_each_side_wins(self):
+        rows = [
+            {"dimension": "accuracy", "better": vd.HIGHER,
+             "baseline": self.spread(0.60, 0.01), "new": self.spread(0.80, 0.01)},
+            {"dimension": "seconds", "better": vd.LOWER,
+             "baseline": self.spread(10.0, 0.1), "new": self.spread(40.0, 0.1)},
+            {"dimension": "peakMiB", "better": vd.LOWER,
+             "baseline": self.spread(100.0, 20.0), "new": self.spread(101.0, 20.0)},
+        ]
+        counts = vd.tally(vd.judge(rows))
+        self.assertEqual(counts["new"], ["accuracy"])
+        self.assertEqual(counts["baseline"], ["seconds"])
+        self.assertEqual(counts[vd.TIE], ["peakMiB"])
+
+    def test_the_table_carries_the_reduction_and_a_winner_column(self):
+        rows = [{"dimension": "accuracy", "better": vd.HIGHER,
+                 "baseline": self.spread(0.60, 0.01), "new": self.spread(0.80, 0.01)}]
+        text = vd.render(vd.judge(rows), {"setting": "trained", "backbone": "resnet18",
+                                          "dataset": "CIFAR10", "seeds": 5,
+                                          "revision": "r16.md"})
+        for token in ("trained", "resnet18", "CIFAR10", "r16.md", "winner", "new"):
+            self.assertIn(token, text, token)
+
+    def test_both_settings_share_these_rules(self):
+        # A synthetic sweep and a trained run measure different instruments and
+        # answer the same question, so they share one shape and one verdict rule.
+        synthetic = {"dimension": "separation d", "better": vd.HIGHER,
+                     "baseline": self.spread(4.36, 0.10), "new": self.spread(3.29, 0.10)}
+        trained = {"dimension": "accuracy", "better": vd.HIGHER,
+                   "baseline": self.spread(0.60, 0.01), "new": self.spread(0.80, 0.01)}
+        judged = vd.judge([synthetic, trained])
+        self.assertEqual(judged[0]["verdict"]["winner"], "baseline")
+        self.assertEqual(judged[1]["verdict"]["winner"], "new")

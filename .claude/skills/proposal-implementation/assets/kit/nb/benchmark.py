@@ -26,6 +26,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from verdict import DESCRIPTIVE, HIGHER, LOWER, judge, render, tally
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
@@ -33,10 +35,22 @@ from torch.utils.data import DataLoader, Subset
 DATASETS = {"CIFAR10": 10, "CIFAR100": 100, "MNIST": 10}
 
 
+# The dimensions the trained setting measures, and which direction wins each. The
+# synthetic sweep reports its own dimensions through the same shape and the same
+# rules, so both settings produce one comparable table.
+DIMENSIONS = {
+    "accuracy": HIGHER,
+    "seconds": LOWER,
+    "peakMiB": LOWER,
+    "parameters": DESCRIPTIVE,
+}
+
+
 @dataclass
 class Reduction:
     """Everything that makes this a screening run rather than the benchmark."""
 
+    setting: str = "trained"
     dataset: str = "CIFAR10"
     backbone: str = "resnet18"
     fraction: float = 0.1
@@ -205,12 +219,30 @@ def main(argv: list[str] | None = None) -> int:
         "baseline": None,
     }
 
+    measured = compare(builders, reduction, Path(args.data))
+    # One row per dimension, both sides side by side, so the verdict rules that serve
+    # the synthetic sweep serve this one unchanged.
+    rows = []
+    for dimension, better in DIMENSIONS.items():
+        def side(label):
+            entry = measured.get(label, {})
+            if not entry.get("applicable"):
+                return None
+            value = entry.get(dimension)
+            return value if isinstance(value, dict) else {"mean": value, "stdev": 0.0, "n": 1}
+        rows.append({"dimension": dimension, "better": better,
+                     "baseline": side("baseline"), "new": side("new")})
+
+    judged = judge(rows)
     summary = {
         "kind": "screening",
+        "setting": reduction.setting,
         "revision": reduction.revision,
         "reduction": asdict(reduction),
-        "comparison": compare(builders, reduction, Path(args.data)),
+        "comparison": judged,
+        "tally": tally(judged),
     }
+    print(render(judged, {**asdict(reduction), "seeds": len(reduction.seeds)}))
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(summary, indent=2), encoding="utf-8")

@@ -114,9 +114,15 @@ proposal itself — that is `proposal-deliberation`.
   invariant. Until it does, `audit` stays `incomplete` — leaving it in the
   remedy suite would keep reporting a defect the revision no longer has, and
   would keep its claim outside the contract every other claim is held to.
-- v1 scope is smoke + invariants + synthetic + audit + remedies. Classic SOTA
-  datasets and baseline comparison are out of scope; say so instead of
-  improvising them.
+- Comparison against a baseline happens only after the implementation is faithful
+  and only through `probe`, never improvised mid-implementation. It reports
+  `nextStep` and that order is binding: an implementation computing with numpy
+  cannot be trained at all, so the PyTorch conversion is settled before a
+  comparison is discussed. See [Conversion, then benchmark](#conversion-then-benchmark).
+- A screening result is never reported as the benchmark, and a winner is never
+  declared from two bare means. Both settings — the fast unit-free sweep and the
+  trained run over real data — carry the reduction that produced them and grant a
+  verdict only past the combined standard error.
 
 ## Target layout
 
@@ -299,12 +305,32 @@ Four things decide whether the numbers mean anything:
   It is the user's prior work. If it cannot be driven into the common setting as it
   stands, pass `None` as its builder: the run records `not applicable` with the reason.
 
+### One table, two settings, and a winner per row
+
+Both settings answer the same question — where does each implementation hold — so
+they share one shape and one set of rules, in `verdict.py`. The synthetic sweep is
+fast and unit-free; the trained run swaps in a real model over real data. Same table,
+different instrument.
+
+Every row declares which direction wins it, and **a verdict is only granted when the
+means differ by more than their combined standard error.** Anything closer is
+`indistinguishable`. That threshold is the whole reason several seeds are run:
+comparing two bare means always produces a winner, because every measurement differs
+from every other at enough decimal places, and reporting that is reading noise out
+loud. A dimension with no better direction — a parameter count — is reported and not
+contested.
+
 Dimensions come from what the proposal claims to improve, not from a generic
-checklist. Cost — wall time, peak memory, parameters — compares cleanly even when the
-two predict on different statistical units. Accuracy does not: if one predicts per
-instance and the other per bag, a single number would require inventing an
-aggregation rule that can dominate what it claims to measure. **`not applicable` is a
-legitimate cell; filling it with a number is not.**
+checklist. Cost — wall time, peak memory — compares cleanly even when the two predict
+on different statistical units. Accuracy needs a metric both sides can carry: the
+existing probe in this lineage used a unit-free separation statistic precisely so it
+could compare across units, which is worth reaching for before declaring anything
+incomparable. Where no such metric exists, the row is `not applicable` with its
+reason. **`not applicable` is a legitimate cell; filling it with a number is not.**
+
+Close with the tally: where the new implementation wins, where the baseline does,
+what was indistinguishable, and what could not be compared. The reader should not
+have to count rows to learn the answer.
 
 5. **Report the layout, never gate on it.** `structure` is part of the answer in
    step 2, so drift is always visible. But it does not stop the flow and it is not
