@@ -192,6 +192,16 @@ class ProbeStateTests(unittest.TestCase):
         (box / "src" / "assets" / "notes.md").write_text("nothing here\n")
         self.assertEqual(impl.previous_implementations(box, "Creda"), [])
 
+    def test_our_own_package_is_not_a_baseline_even_spelled_differently(self):
+        # macOS folds case, so src/Creda and src/CREDA are one directory: an exact
+        # comparison hands our own package back as somebody else's prior work. On a
+        # case-sensitive filesystem they are two, but a package differing from ours
+        # only in case is a naming accident, not a baseline.
+        box = Path(tempfile.mkdtemp(prefix="pp-probe-"))
+        (box / "src" / "CREDA").mkdir(parents=True)
+        (box / "src" / "CREDA" / "m.py").write_text("x = 1\n")
+        self.assertEqual(impl.previous_implementations(box, "Creda"), [])
+
     def test_a_baseline_that_is_not_python_is_still_a_baseline(self):
         # Prior work arrives in whatever shape it was written in. Requiring .py
         # would make a notebook or MATLAB baseline invisible to the comparison.

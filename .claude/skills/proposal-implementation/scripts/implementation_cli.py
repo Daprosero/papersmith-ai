@@ -459,13 +459,18 @@ def previous_implementations(target: Path, name: str) -> list[str]:
     reorganization intact. Whatever is left over is the baseline a probe compares
     against — it is found by reading the tree, not by remembering that it was there.
     """
-    ours = package_name(name)
+    # Case-folded: on a case-insensitive filesystem `src/Creda` and `src/CREDA` are one
+    # directory, so an exact comparison would hand our own package back as somebody
+    # else's baseline. On a case-sensitive one they are two, but a package differing
+    # from ours only in case is a naming accident rather than prior work.
+    ours = package_name(name).casefold()
     src = target / "src"
     if not src.is_dir():
         return []
     return sorted(
         entry.name for entry in src.iterdir()
-        if entry.is_dir() and entry.name != ours and entry.name not in IGNORED_DIRS
+        if entry.is_dir() and entry.name.casefold() != ours
+        and entry.name not in IGNORED_DIRS
         # Any source at all: a baseline is somebody else's prior work and may be
         # notebooks, R or MATLAB. Requiring Python would make it invisible.
         and any(child.is_file() and child.suffix.lower() in BASELINE_SOURCE_EXT
