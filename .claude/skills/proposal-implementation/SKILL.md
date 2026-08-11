@@ -64,6 +64,11 @@ proposal itself — that is `proposal-deliberation`.
 - Check that a thing works, not that it is there. A notebook that exists but was
   never run is a claim, not a report; `verify` reads its `execution_count` and
   its error outputs and says `stale`, `errored` or `executed`.
+- `verify` reads; it never executes a test. It proves the code *says* what it
+  should — the revision it is bound to, an invariant declared for every claim, a
+  matching test for every invariant, no assertion that cannot fail. Only running
+  the suite proves the code *does* it. Never treat a clean `verify` as a green
+  repository, and never compare, benchmark or publish from one that was not run.
 - Every module under `src/<Name>/` declares `__provenance__`; every id in its
   `invariants` has a matching `test_<id>`. No provenance, no merge.
 - Never fabricate mathematics. A test whose claim is not traceable to the
@@ -309,15 +314,29 @@ Then gate on the result, as a decision: this draft is right · correct it first.
 ## Flow B — every later pass
 
 1. Read `src/` and take `latest` from `STATUS`.
-2. `verify --revision <latest>`. This is the whole state of the repository in one
-   answer: `structure` covers the layout, `fidelity` covers whether the code still
-   matches the mathematics, plus `audit` and `validation`.
-3. **No differences** → report all four as green, then run `probe --revision <latest>`
+2. **Run the suite with the target interpreter, then `verify --revision <latest>`.**
+   Both, and in that order — they answer different questions and neither substitutes
+   for the other.
+
+   `verify` **reads**: it checks the layout, that every module still declares the
+   revision it was written against, that every invariant it names has a matching
+   test, that no assertion is one that cannot fail, and that the notebook was
+   actually executed. What it cannot tell you is whether any of those tests pass.
+   Running the suite is what proves the code *does* what it says; `verify` proves it
+   *says* what it should.
+
+   Skipping the run is how a repository reaches a benchmark while an invariant is
+   broken: every provenance intact, every id matched, `fidelity` clean, and a claim
+   failing underneath. That gap is widest right after a change of backend, which
+   rewrites how every number is computed while leaving every declaration untouched.
+3. **Suite green and no differences** → report both, then run `probe --revision <latest>`
    before asking anything and follow its `nextStep`. See
    [Conversion, then benchmark](#conversion-then-benchmark). On `nothing-to-compare`
    or `already-benchmarked`, **ask the user what they want to do next** and invent
    no work.
-4. **Differences in fidelity** → **[GATE] ask whether the user made those changes.**
+4. **A failing test** → that is the finding, before any question about fidelity. Report
+   which claim broke and stop; a red suite is not a state to compare from.
+5. **Differences in fidelity** → **[GATE] ask whether the user made those changes.**
    - **They did** → the code is ahead of the proposal. Remind them to update the
      mathematics and hand them the prompt that does it. Do not edit their code to
      match an older proposal.
@@ -462,7 +481,7 @@ Close with the tally: where the new implementation wins, where the baseline does
 what was indistinguishable, and what could not be compared. The reader should not
 have to count rows to learn the answer.
 
-5. **Report the layout, never gate on it.** `structure` is part of the answer in
+6. **Report the layout, never gate on it.** `structure` is part of the answer in
    step 2, so drift is always visible. But it does not stop the flow and it is not
    asked about again: that question belongs to the first pass, and it was answered
    there — including when the answer was "no".
