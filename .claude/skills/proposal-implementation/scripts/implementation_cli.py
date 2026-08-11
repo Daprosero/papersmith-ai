@@ -537,8 +537,16 @@ ACQUISITION_PATTERNS = (
     (r"\bwget\b|\bcurl\b", "fetched over the network"),
     (r"https?://[^\s\"']{6,}", "names a remote source"),
     (r"zipfile|tarfile|extractall", "unpacked from an archive"),
-    (r"kaggle/input|/content/", "read from a mounted runtime directory"),
+    # Any absolute path outside the repository: a hosted runtime, a cluster scratch,
+    # a mounted share. Naming the platforms instead would only catch the two this was
+    # written against.
+    (r"[\"'](/(?!Users|home\b)[A-Za-z][\w./-]{4,})[\"']", "read from a path outside the repository"),
 )
+
+# The list above is fixed and therefore partial: a repository fetching through a cloud
+# SDK, a data-versioning tool or a hosting client matches none of it. That is
+# survivable only because an empty reading is reported as a miss rather than as an
+# absence — see `foundNothingFor`.
 
 
 def notebook_sources(path: Path) -> list[str]:
@@ -706,7 +714,10 @@ def baseline_environment(target: Path, baselines: list[str], name_of_ours: str =
     # user can answer in one line.
     missed = [kind for kind, found in
               (("backbones", backbones), ("datasets", datasets),
-               ("dataEntryPoints", entry_points), ("notebooks", notebooks))
+               ("dataEntryPoints", entry_points), ("notebooks", notebooks),
+               # Included deliberately: an empty acquisition reading is exactly the
+               # one that must never be mistaken for "this cannot be obtained".
+               ("acquisition", acquisition))
               if not found]
     return {
         "backbones": [{"name": n, "seenIn": w} for n, w in sorted(backbones.items())],
@@ -725,6 +736,10 @@ def baseline_environment(target: Path, baselines: list[str], name_of_ours: str =
             "dataEntryPoints": f"a function whose name contains one of "
                                f"{list(DATA_ENTRY_HINTS)}",
             "notebooks": "any .ipynb outside the proposal's own product directory",
+            "acquisition": "a fixed and therefore partial set of patterns: a download "
+                           "flag, a fetch tool, a clone, an archive, a URL, an absolute "
+                           "path outside the repository. A cloud SDK or a "
+                           "data-versioning tool matches none of them.",
         },
         "note": "These are heuristics over English word-stems. Where `foundNothingFor` "
                 "names a kind, ask the user to point at it rather than concluding the "

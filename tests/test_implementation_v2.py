@@ -660,6 +660,7 @@ class DiscoveryHonestyTests(unittest.TestCase):
                          "from torchvision import models\n"
                          'DATASETS = ["Some-Task"]\n'
                          "def load_data(x):\n    return x\n"
+                         'SOURCE = "https://example.org/corpus.zip"\n'
                          "def build():\n    return models.vgg16()\n",
                          "Legacy/Notebooks/e.ipynb": "{}"})
         env = impl.baseline_environment(box, ["Legacy"], "Method")
@@ -749,12 +750,12 @@ class AcquisitionTests(unittest.TestCase):
         env = impl.baseline_environment(box, ["Prior"], "Method")
         self.assertIn("downloads itself", {a["how"] for a in env["acquisition"]})
 
-    def test_a_mounted_directory_is_reported_as_what_it_is(self):
-        # Read from a runtime directory is a real constraint, and a different one
-        # from unobtainable — it says where it runs, not that it cannot.
+    def test_a_path_outside_the_repository_is_reported_as_what_it_is(self):
+        # Reading from somewhere else is a real constraint, and a different one from
+        # unobtainable — it says where it runs, not that it cannot.
         box = self.repo({"src/Prior/paths.py": 'P = "/kaggle/input/some-set/images"\n'})
         env = impl.baseline_environment(box, ["Prior"], "Method")
-        self.assertIn("read from a mounted runtime directory",
+        self.assertIn("read from a path outside the repository",
                       {a["how"] for a in env["acquisition"]})
 
     def test_definitions_inside_a_notebook_count_as_entry_points(self):
@@ -773,3 +774,45 @@ class AcquisitionTests(unittest.TestCase):
                              'sets = datasets.MNIST(root=R, download=True)\n')})
         env = impl.baseline_environment(box, ["Prior"], "Method")
         self.assertIn("downloads itself", {a["how"] for a in env["acquisition"]})
+
+
+class AcquisitionHonestyTests(unittest.TestCase):
+    """The pattern list is fixed, so its silence must never read as an absence."""
+
+    def repo(self, files):
+        box = Path(tempfile.mkdtemp(prefix="pp-acqh-"))
+        for path, source in files.items():
+            full = box / path
+            full.parent.mkdir(parents=True, exist_ok=True)
+            full.write_text(source)
+        return box
+
+    def test_a_mechanism_the_list_does_not_know_is_reported_as_a_miss(self):
+        # A cloud SDK, a data-versioning tool, a hosting client: none are in the list,
+        # and returning [] silently is how "we could not read it" becomes "it cannot
+        # be obtained" — the mistake this whole reading exists to prevent.
+        box = self.repo({"src/Prior/m.py":
+                         "import dvc.api\n"
+                         'def load():\n    return dvc.api.read("data.csv")\n'})
+        env = impl.baseline_environment(box, ["Prior"], "Method")
+        self.assertEqual(env["acquisition"], [])
+        self.assertIn("acquisition", env["foundNothingFor"])
+
+    def test_the_reading_says_it_is_partial_so_the_user_can_point(self):
+        box = self.repo({"src/Prior/m.py": "x = 1\n"})
+        env = impl.baseline_environment(box, ["Prior"], "Method")
+        self.assertIn("partial", env["readBy"]["acquisition"])
+
+    def test_an_absolute_path_outside_the_repository_is_recognized_anywhere(self):
+        # Not the two hosted runtimes this was written against: any of them, plus a
+        # cluster scratch or a mounted share.
+        for path in ("/kaggle/input/some-set/images", "/content/Data/images",
+                     "/mnt/shared/corpus", "/gpfs/scratch/experiment"):
+            box = self.repo({"src/Prior/paths.py": f'ROOT = "{path}"\n'})
+            how = {a["how"] for a in impl.baseline_environment(box, ["Prior"], "M")["acquisition"]}
+            self.assertIn("read from a path outside the repository", how, path)
+
+    def test_an_ordinary_relative_path_is_not_mistaken_for_a_mount(self):
+        box = self.repo({"src/Prior/paths.py": 'ROOT = "data/images"\n'})
+        how = {a["how"] for a in impl.baseline_environment(box, ["Prior"], "M")["acquisition"]}
+        self.assertNotIn("read from a path outside the repository", how)
