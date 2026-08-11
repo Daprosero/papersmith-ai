@@ -228,11 +228,47 @@ past session concluded can bias this one.
 15. Run the suite with the target interpreter, then execute the notebook.
 16. **Final check.** `verify --revision <latest>` → report `structure`, `fidelity`,
     `audit` and `validation`.
-    - **Faithful** → stop here.
     - **Not faithful** → correct the code and re-enter from step 15. **At most
       three passes.** If the third still is not faithful, stop and hand the user
       the decision, with what the three attempts established. A loop with no bound
       does not fail — it keeps trying, and nobody notices.
+    - **Faithful** → **do not stop here.** Continue into Flow B step 3: the
+      repository is now in exactly the state a later invocation would find, so it
+      gets the same answer. Ending here would make the reply depend on how the user
+      arrived rather than on what the repository holds, and would leave them to
+      re-invoke just to be told what comes next. `probe` is read-only and instant;
+      what it reports is a question, not work, and the gate is where they stop.
+
+## How a gate is asked
+
+Every step marked **[GATE]** is a decision with a known set of answers, so **ask it
+as a choice, not as prose**. Use the runtime's interactive question UI when it has
+one, with the outcomes as explicit options; where it does not, write the same options
+out and say which answers are accepted, then stop.
+
+An open question — "do you want me to reorganize?" — leaves the user guessing what
+the alternatives are and what each costs. Every gate here has more than two outcomes,
+and the third is usually the interesting one:
+
+| gate | the options that must be visible |
+|---|---|
+| reorganize | apply it · leave the layout alone · **too large: take it to its own session** |
+| the name | use `<Name>`/`<Package>` as normalized · type a different one |
+| implement | go ahead · stop here |
+| corrections to the proposal | publish them · leave the findings open · review them one by one first |
+| convert to PyTorch | convert implementation and tests · not now |
+| the wiring | this draft is right · complete or correct it first |
+| run the benchmark | run it · not now (it downloads a dataset and uses the machine) |
+
+Two rules for every one of them:
+
+- **Never present an option the flow cannot honour.** A reorganization above the
+  limit is not offered as "apply it": that answer would be refused after the user
+  chose it, which is worse than not offering it.
+- **Say what each option costs before it is chosen**, not after. Publishing advances
+  the real lineage; the benchmark downloads data and occupies the machine; declining
+  the layout leaves drift that every later run will report. A choice made without its
+  consequence is not a decision, and the authorization it produces is not one either.
 
 ## Flow B — every later pass
 
