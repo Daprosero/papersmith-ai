@@ -320,6 +320,20 @@ So narrate the work:
   every role is used for. **Do not carve a role you will not use** — it costs material
   and buys nothing.
 
+  **And choose those proportions, do not inherit them.** A conventional division copied
+  because it is conventional is not a decision, and it meets the letter of this rule
+  while deciding nothing. The share that goes to judging follows from what the
+  measurement has to resolve — the next paragraph — and the two are one thought: work
+  out the difference worth detecting, work out how many units that takes, give the
+  judging role at least those, and let what remains fund the rest. If the material
+  cannot fund every role at that size, that is the finding, and it is said before
+  anything runs rather than discovered after a scale has already been proposed.
+
+  Say how each role is composed, not only how large it is. Whatever has to be present
+  in every one of them for the comparison to be defined must be present in every one
+  of them; a division drawn without regard for that produces a failure that reads as a
+  defect of the method and is a defect of the division.
+
   **Say what the measurement can resolve, before running it.** Count the units the
   verdict will rest on and state the difference that many can separate from noise. A
   protocol whose verdict rests on too few will answer "indistinguishable" whatever
