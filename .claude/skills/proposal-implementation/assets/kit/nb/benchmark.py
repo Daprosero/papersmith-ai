@@ -58,10 +58,10 @@ DIMENSIONS = {
 class Reduction:
     """The bounds this run was carried out under, recorded beside its numbers.
 
-    Not "a screening, so do not trust it": the scale is chosen to resolve the
-    difference worth detecting, so what it answers, it answers. These are the limits
-    of that answer — how much material, how long, how many repetitions — and a number
-    read without them will be taken for more than it is.
+    The scale is chosen to resolve the difference worth detecting, so what this
+    answers, it answers. These are the limits of that answer — how much material, how
+    long, how many repetitions — and a number read without them will be taken for more
+    than it is.
     """
 
     setting: str = "trained"
