@@ -253,9 +253,13 @@ date. Drift is Flow B's fourth step, not a reason to start over.
 
 ## How a gate is asked
 
-**Ask in the language the user is speaking.** The repository, the code, the commits
-and every file written stay in English; the conversation does not. A skill that
-answers a Spanish session in English has changed the subject.
+**Speak the language the user is speaking.** The repository, the code, the commits and
+every file written stay in English; the conversation does not. A skill that answers a
+Spanish session in English has changed the subject.
+
+**And speak plainly.** Command names, JSON fields and status codes are this skill's
+plumbing, not the user's. Say what was found and what it means; name a command only
+when the user has to run it themselves.
 
 Two kinds of gate, and treating them alike is the mistake to avoid.
 
@@ -283,33 +287,39 @@ one:
   every later run will report. A choice made without its consequence is not a
   decision, and the authorization it produces is not one either.
 
-### Design — put a plan on the table and refine it
+### Design — a conversation, and one question at the end of it
 
-The wiring and the object→module map are **not** decisions with options. They are
-proposals, and the skill has already read everything it needs to make one: the
-provenance of each module, the baseline's own code, its backbones and datasets.
+The wiring and the object→module map are **not** decisions, and they are not
+questionnaires either. They are things to work out together, and the skill already
+holds what it takes to open the conversation: the provenance of each module, the
+baseline's own code, what it trains on and how it loads it.
 
-So propose. Say what you would wire to what and **why the repository suggests it**,
-name the assumption you are least sure of, and invite correction. This is the
-deliberation tutor's posture at a smaller scale: propose, argue, accept refutation —
-never rubber-stamp and never hand the question back.
+**No options, no menu, no "how do you want to handle this".** Offering approaches to
+choose between returns the work to the user while holding the context that would have
+answered it, and a menu is that same evasion wearing a structure. This is the
+deliberation tutor's posture at a smaller scale: propose, say what you are unsure of,
+listen, argue back when the answer does not hold, and keep going until it settles.
 
-**Asking "how do you want to handle this?" is the failure mode.** It returns the work
-to the user while holding the context that would have answered it, and offering a
-menu of approaches is the same evasion wearing a structure. The user should be
-correcting a draft, not choosing how a draft gets made.
+**Tell it, do not report it.** Narrate what you found and what you would do with it —
+not which commands you ran, not what the JSON came back with, not a list of fields.
+The user does not need the mechanics to judge the idea; the mechanics are this
+skill's problem. Say what the repository turned out to contain, what that suggests,
+and what still worries you.
 
-What a good proposal carries:
+What the conversation carries:
 
-- **The draft itself**, concrete enough to argue with — which modules carry the
-  trainable terms, where the backbone's features enter, what the head predicts over.
-- **Where each part came from**: read from provenance, inferred from the baseline, or
-  assumed. The three are not equally trustworthy and the user is entitled to know
-  which is which.
-- **The weakest link, named by you.** A proposal that hides its own soft spot is
-  asking for approval, not for review.
+- **The proposal**, concrete enough to argue with. Vague is not humble: a draft too
+  soft to be wrong cannot be corrected either.
+- **Where each part came from** — read, inferred, or assumed. The three are not
+  equally trustworthy and the user is entitled to know which is which.
+- **Your own doubts, raised by you.** Not "let me know if this is right", but the
+  specific thing you could not settle from the repository and why it matters. A
+  proposal that hides its soft spot is asking for approval, not for review.
 
-Then gate on the result, as a decision: this draft is right · correct it first.
+**Only ask when the conversation has converged.** You decide when your doubts are
+answered and the design is reasonable, and you say what changed your mind. Then, one
+question and only one: implement this? Not before — asking earlier turns a
+deliberation into a form, which is what this section exists to prevent.
 
 ## Flow B — every later pass
 
@@ -382,18 +392,19 @@ sweep has not been established over the converted one.
 Only reachable once `backend.trainable` is true and a baseline exists.
 
 `probe` returns a `wiring` draft assembled from each module's `__provenance__` and
-from the baseline's own code. **Turn it into a proposal, not a questionnaire** — see
-[Design — put a plan on the table](#design--put-a-plan-on-the-table-and-refine-it).
+from the baseline's own code — the modules with their sections and equations, the
+baseline package, what it trains on and how it loads it.
 
-The draft is raw material: it lists the modules with their sections and equations, the
-baseline package, its backbones and datasets. Read it and say what you would wire to
-what — which modules carry the trainable terms, where the backbone's features enter,
-what the head predicts over — marking what you read, what you inferred, and what you
-assumed. The harness knows how to train and measure; it cannot know what makes *this*
-method trainable, and that is the one part worth the user's attention.
+That is raw material for you, not output for the user. **Open a conversation with it**
+— see [Design — a conversation](#design--a-conversation-and-one-question-at-the-end-of-it).
+Say what you found in their repository and what you would wire to what: which modules
+carry the trainable terms, where the backbone's features enter, what the head predicts
+over. Mark what you read, what you inferred and what you assumed, and raise whatever
+you could not settle. Then work it out with them.
 
-Asking them to answer those three questions from scratch wastes the context the skill
-already holds. They should be correcting a draft.
+The harness knows how to train and measure; it cannot know what makes *this* method
+trainable, and that is the one part worth the user's attention. Handing them the three
+questions unanswered wastes the context this skill is already holding.
 
 The draft's `offer` is `fromBaseline` and nothing else: the backbones, task names,
 trained weights, **data entry points** and notebooks the prior work actually uses,
