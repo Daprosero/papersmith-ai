@@ -665,3 +665,51 @@ class DiscoveryHonestyTests(unittest.TestCase):
         env = impl.baseline_environment(box, ["Legacy"], "Method")
         self.assertEqual(env["foundNothingFor"], [])
         self.assertEqual(env["note"], "")
+
+
+class BackendIsAStageTests(unittest.TestCase):
+    """numpy is where the mathematics is proved, not a defect to be fixed."""
+
+    def repo(self, backend="numpy", baseline=False, name="Method"):
+        box = Path(tempfile.mkdtemp(prefix="pp-stage-"))
+        pkg = box / "src" / impl.package_name(name)
+        pkg.mkdir(parents=True)
+        (box / "tests").mkdir()
+        source = "import torch\n" if backend == "tensor" else "import numpy as np\n"
+        (pkg / "k.py").write_text(source)
+        (box / "tests" / "test_k.py").write_text(source)
+        if baseline:
+            (box / "src" / "Prior").mkdir()
+            (box / "src" / "Prior" / "m.py").write_text("x = 1\n")
+        return box
+
+    def step(self, box, name="Method", revision="r16.md"):
+        backend = impl.backend_state(box, name)
+        baselines = impl.previous_implementations(box, name)
+        state = impl.probe_state(box, name, revision)
+        if not baselines:
+            return "nothing-to-compare"
+        if not backend["trainable"]:
+            return "convert"
+        return "already-benchmarked" if state["status"] == "current" else "benchmark"
+
+    def test_numpy_without_a_baseline_is_finished_not_unconverted(self):
+        # Asking for a conversion here would demand work with no purpose and read as
+        # though the implementation were unfinished when it is done.
+        self.assertEqual(self.step(self.repo("numpy", baseline=False)),
+                         "nothing-to-compare")
+
+    def test_numpy_with_a_baseline_needs_converting_because_it_cannot_train(self):
+        self.assertEqual(self.step(self.repo("numpy", baseline=True)), "convert")
+
+    def test_torch_without_a_baseline_is_still_nothing_to_compare(self):
+        self.assertEqual(self.step(self.repo("tensor", baseline=False)),
+                         "nothing-to-compare")
+
+    def test_the_reading_itself_does_not_care_which_backend_it_finds(self):
+        # verify is static: provenance, invariant ids, trivial assertions. Only
+        # backend_state looks at numpy or torch, and that is its whole job.
+        for backend in ("numpy", "tensor"):
+            state = impl.backend_state(self.repo(backend), "Method")
+            self.assertEqual(state["state"], backend)
+            self.assertEqual(state["trainable"], backend == "tensor")

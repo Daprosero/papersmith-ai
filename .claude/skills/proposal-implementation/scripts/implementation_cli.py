@@ -729,10 +729,12 @@ def wiring_proposal(target: Path, name: str, baselines: list[str]) -> dict:
 def cmd_probe(args) -> dict:
     """Report what stands between this repository and a benchmark, and run nothing.
 
-    Order matters and is reported as `nextStep`: an implementation that computes with
-    numpy cannot be trained at all, so converting it is settled before a comparison is
-    even discussed. Proposing a benchmark first would ask the user to approve a run
-    that cannot happen.
+    Order matters and is reported as `nextStep`. A comparison needs something to
+    compare against, so that is asked first: without a baseline the backend is nobody's
+    business — numpy is where the mathematics is proved and may be exactly where this
+    proposal belongs. With a baseline, an implementation computing with numpy cannot be
+    trained at all, so the conversion is settled before the comparison is discussed;
+    proposing a benchmark first would ask the user to approve a run that cannot happen.
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
@@ -740,10 +742,16 @@ def cmd_probe(args) -> dict:
     baselines = previous_implementations(target, name)
     state = probe_state(target, name, args.revision)
 
-    if not backend["trainable"]:
-        next_step = "convert"
-    elif not baselines:
+    # Nothing to compare against is checked first, and on purpose. numpy is a stage,
+    # not a defect: it is where the mathematics is proved, with no optimizer to mask a
+    # wrong formula, and for a proposal nobody is going to train it can be the last
+    # stage. The conversion exists to make a comparison possible — asking for it when
+    # there is nothing to compare would demand work with no purpose and read as though
+    # the implementation were unfinished when it is done.
+    if not baselines:
         next_step = "nothing-to-compare"
+    elif not backend["trainable"]:
+        next_step = "convert"
     elif state["status"] == "current":
         next_step = "already-benchmarked"
     else:

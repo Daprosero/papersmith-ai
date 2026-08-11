@@ -345,9 +345,25 @@ Then gate on the result, as a decision: this draft is right · correct it first.
 ## Conversion, then benchmark
 
 Run `probe --revision <latest>` and follow its `nextStep`. The order it reports is
-not a preference: an implementation that computes with numpy **cannot be trained**.
-There is no autograd and nothing to place on a device, so proposing a comparison
+not a preference.
+
+**A baseline is asked about first.** Without one there is nothing to compare, and
+then the backend is nobody's business: numpy is where the mathematics is proved —
+no autograd, no device, no optimizer to mask a wrong formula — and for a proposal
+nobody is going to train, that is where it belongs and where it can stay. Demanding a
+conversion there would ask for work with no purpose and make a finished
+implementation read as unfinished.
+
+**With a baseline, the conversion comes before the comparison**, because an
+implementation computing with numpy cannot be trained at all. Proposing a benchmark
 first would ask the user to approve a run that cannot happen.
+
+The verification before all of this does not care which backend it finds. It is a
+static reading — the revision each module is bound to, an invariant for every claim,
+a test for every invariant, no assertion that cannot fail — and the suite is run with
+whatever interpreter the target has. Both work the same whether the implementation
+computes with arrays or with tensors, because which one is right depends on the stage
+the proposal is at, not on this skill's preference.
 
 ### `nextStep: "convert"` — port the implementation to PyTorch
 
