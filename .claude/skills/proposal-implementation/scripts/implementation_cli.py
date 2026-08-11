@@ -861,8 +861,8 @@ def cmd_probe(args) -> dict:
         "results": state,
         "nextStep": next_step,
         "wiring": proposal,
-        # A probe is a screening run, never the benchmark it screens for.
-        "kind": "screening",
+        # `probe` looks and reports; it never runs anything itself.
+        "kind": "read-only",
     }
 
 

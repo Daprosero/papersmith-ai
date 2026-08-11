@@ -131,10 +131,10 @@ proposal itself — that is `proposal-deliberation`.
   `nextStep` and that order is binding: an implementation computing with numpy
   cannot be trained at all, so the PyTorch conversion is settled before a
   comparison is discussed. See [Conversion, then benchmark](#conversion-then-benchmark).
-- A screening result is never reported as the benchmark, and a winner is never
-  declared from two bare means. Both settings — the fast unit-free sweep and the
-  trained run over real data — carry the reduction that produced them and grant a
-  verdict only past the combined standard error.
+- A result is never reported as more than the bounds it was obtained under, and a
+  winner is never declared from two bare means. Both settings — the fast unit-free
+  sweep and the trained run over real material — carry those bounds beside their
+  numbers and grant a verdict only past the combined standard error.
 
 ## Target layout
 
@@ -591,7 +591,7 @@ Copy `benchmark.py`, `verdict.py` and `probe.ipynb` from `assets/kit/nb/` into
 `wiring.py` the harness refuses and says what is missing. It trains each implementation over every seed, measures accuracy, wall
 time, peak memory and parameter count, and writes `<Name>/Results/Probe_results.json`.
 
-That summary is the record. A later session reads it to learn that a screening ran,
+That summary is the record. A later session reads it to learn that a run happened,
 under which reduction, and against which revision — a summary naming an older
 revision is stale by inspection, so nothing is stored outside the repository and
 nothing can fall out of sync.
@@ -618,11 +618,11 @@ once. A comparison whose sides saw different material is not measuring the metho
 
 Four things decide whether the numbers mean anything:
 
-- **It is a screening run, never the benchmark.** ResNet-18 and a slice of the data.
-  A reduced setting can invert a result — a method needing capacity or volume to show
-  its advantage loses here and wins at full scale. Say `probe`, `screening`, never
-  "results", and print the reduction beside every number. A number that can be read
-  without its reduction is a number that will be misquoted.
+- **It is bounded, not shrunk.** The scale comes from what the verdict has to resolve,
+  so what it answers, it answers — but it answers one question. A setting sized to
+  separate a three-point gap says nothing about an advantage that only appears further
+  up, and a number read without its bounds beside it will be taken for more than it
+  is. Print them together, every time.
 - **Speed buys repetition.** Several seeds on a small setting beat one slow run,
   because one run cannot separate a difference from its own noise. Report dispersion,
   never a bare mean.

@@ -1,12 +1,13 @@
-"""Screening benchmark: train both implementations in one reduced environment.
+"""Bounded benchmark: train both implementations in one common setting.
 
 This runs in the target repository, with the target's interpreter and its torch —
-never the forge's. It is deliberately small: a ResNet-18 backbone and a stratified
-slice, sized so several seeds finish in the time one full run would take.
+never the forge's. It is small, but sized rather than merely shrunk: enough to resolve
+the difference worth detecting, and no larger.
 
-Read every number together with the reduction printed beside it. A reduced setting
-can invert a result: a method that needs capacity or volume to show its advantage
-loses here and wins at full scale. This screens; it does not decide.
+Read every number together with the bounds printed beside it. Being sized for one
+question does not make it an answer to every question — a setting that resolves a
+three-point gap says nothing about a method whose advantage appears only at a scale
+this never reached.
 
 What speed buys is repetition. One run cannot separate a difference from its own
 noise, so the default is several seeds and the report carries dispersion, never a
@@ -55,7 +56,13 @@ DIMENSIONS = {
 
 @dataclass
 class Reduction:
-    """Everything that makes this a screening run rather than the benchmark."""
+    """The bounds this run was carried out under, recorded beside its numbers.
+
+    Not "a screening, so do not trust it": the scale is chosen to resolve the
+    difference worth detecting, so what it answers, it answers. These are the limits
+    of that answer — how much material, how long, how many repetitions — and a number
+    read without them will be taken for more than it is.
+    """
 
     setting: str = "trained"
     dataset: str = ""      # named by the wiring, not chosen here
@@ -94,7 +101,7 @@ def stratified_indices(targets: list[int], fraction: float, classes: int,
 
 
 def reduce_split(dataset, fraction: float, classes: int, seed: int):
-    """Cut the wiring's own dataset down to a screening size, keeping every class.
+    """Cut the wiring's own material down to the agreed size, keeping every class.
 
     The data comes from the baseline's world; this only makes it small enough to run
     several seeds. The slice is drawn per class because the proposal requires every
@@ -283,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
 
     judged = judge(rows)
     summary = {
-        "kind": "screening",
+        "kind": "bounded",
         "setting": reduction.setting,
         "revision": reduction.revision,
         "reduction": asdict(reduction),

@@ -32,9 +32,9 @@ def standard_error(entry: dict) -> float:
 def decide(baseline: dict | None, new: dict | None, better: str | None) -> dict:
     """Who wins this dimension, or nobody.
 
-    The rule is deliberately plain and is a screening heuristic, not a significance
-    test: a winner is declared only when the means differ by more than their combined
-    standard error. Anything closer is reported as indistinguishable.
+    The rule is deliberately plain and is a heuristic, not a significance test: a
+    winner is declared only when the means differ by more than their combined standard
+    error. Anything closer is reported as indistinguishable.
 
     That threshold is the whole reason several seeds are run. Comparing two bare means
     always produces a winner — every measurement differs from every other at enough
