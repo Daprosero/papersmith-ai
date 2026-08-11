@@ -271,6 +271,12 @@ elsewhere and do not need it restated here. A draft carrying either is asking th
 decode before they can judge, and every symbol it spends is a place they stop to
 recall instead.
 
+**Do not open with a status report.** When the verification came back clean, that is a
+precondition, not news: one sentence saying the implementation matches the latest
+revision and the suite passes, and move on. Listing what was checked, how many tests
+ran and which fields came back green spends the reader's attention before the proposal
+starts. A report is owed when something is *wrong* — then it is the whole message.
+
 So narrate the work:
 
 - **What will be built and in what order.** Plainly, as steps.
@@ -284,6 +290,18 @@ So narrate the work:
   they steer. Ending on "how would you like to handle this?" after correctly finding
   the hardest part is the same evasion as a menu, one level deeper: it does the
   diagnosis and stops before the prescription.
+- **The experiment itself, stated as a protocol.** This is what the user is actually
+  agreeing to, and it is where a draft most often goes vague. Say, with numbers:
+  which data and where it comes from; which model and why that size; how the data is
+  split and in what proportions; how the two conditions being compared are separated,
+  and how the second one is constructed when the data does not already contain it;
+  how many repetitions and what changes between them.
+
+- **What is held identical across both sides.** A comparison means something only when
+  one thing differs. Name what both share — the same model, the same data, the same
+  split, the same everything-but-one — and name the one thing that does not. Without
+  this the measurement is of whatever else drifted.
+
 - **What it depends on that might not hold** — data that has to be present, something
   that has to download, something assumed about their setup.
 
