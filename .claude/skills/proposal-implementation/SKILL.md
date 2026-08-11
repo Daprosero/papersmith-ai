@@ -291,16 +291,23 @@ So narrate the work:
   the hardest part is the same evasion as a menu, one level deeper: it does the
   diagnosis and stops before the prescription.
 - **The experiment itself, stated as a protocol.** This is what the user is actually
-  agreeing to, and it is where a draft most often goes vague. Say, with numbers:
-  which data and where it comes from; which model and why that size; how the data is
-  split and in what proportions; how the two conditions being compared are separated,
-  and how the second one is constructed when the data does not already contain it;
-  how many repetitions and what changes between them.
+  agreeing to, and it is where a draft most often goes vague. The standard is two
+  things: someone else could run it and get the same thing, and the user can disagree
+  with a *specific* choice rather than with a mood.
+
+  What that takes depends entirely on the experiment, and the repository has already
+  been read by the time a draft exists, so write it from what is there. Whatever the
+  inputs are, say which ones and where they come from. Whatever has to be built or
+  configured to run it, say which and at what size, and why that size. However the
+  material is divided, say the proportions and the rule. Whatever the comparison needs
+  that the material does not already contain, say how it is constructed. However many
+  times it runs, say how many and what changes between runs. Numbers, not adjectives.
 
 - **What is held identical across both sides.** A comparison means something only when
-  one thing differs. Name what both share — the same model, the same data, the same
-  split, the same everything-but-one — and name the one thing that does not. Without
-  this the measurement is of whatever else drifted.
+  one thing differs. Name everything the two share and the single thing they do not —
+  whatever those turn out to be for this experiment. Without it the measurement is of
+  whatever else drifted, and no result can be attributed to the difference it claims
+  to be about.
 
 - **What it depends on that might not hold** — data that has to be present, something
   that has to download, something assumed about their setup.
@@ -315,11 +322,15 @@ method hardcoded anywhere. It is not a property of the conversation. By the time
 draft is written the repository has been read: what the prior work trains on, how it
 loads it, what shape each side expects. Use it.
 
-So the recipe is specific. How many seeds and why that many. How the groups are built
-and with what proportions. Which split, which ratio, what a second domain is made from
-when the data does not already have one. Numbers the user can disagree with. A
-proposal that stays abstract to remain general has confused generality with vagueness:
-generality means the *skill* works for any paper, not that its *plan* works for none.
+So the recipe is specific — in whatever terms this experiment is made of. How many
+repetitions and why that many. Every proportion, ratio and threshold, named. Anything
+the comparison needs that the material does not already provide, and how it gets
+built. Numbers the user can disagree with, not adjectives they can only nod at.
+
+A proposal that stays abstract to remain general has confused generality with
+vagueness: generality means the *skill* works for any paper, not that its *plan* works
+for none. The skill carries no assumption about what an experiment is made of; the
+draft carries every detail of this one.
 
 Two kinds of gate, and treating them alike is the mistake to avoid.
 
