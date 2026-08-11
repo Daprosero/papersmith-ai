@@ -305,16 +305,41 @@ So narrate the work:
   What that takes depends entirely on the experiment, and the repository has already
   been read by the time a draft exists, so write it from what is there. Whatever the
   inputs are, say which ones and where they come from. Whatever has to be built or
-  configured to run it, say which and at what size, and why that size. However the
-  material is divided, say the proportions and the rule. Whatever the comparison needs
-  that the material does not already contain, say how it is constructed. However many
-  times it runs, say how many and what changes between runs. Numbers, not adjectives.
+  configured to run it, say which and at what size, and why that size. Whatever the
+  comparison needs that the material does not already contain, say how it is
+  constructed. However many times it runs, say how many and what changes between runs.
+  Numbers, not adjectives.
+
+  **Give the material its roles, and keep them disjoint.** Wherever something is fitted
+  to the material, at least two roles exist — what it is fitted on and what it is
+  judged on — and they must not overlap: judging on what was fitted measures how well
+  it absorbed that material, and it flatters each side by a different amount, most of
+  all the side that absorbs best. If anything at all is chosen by looking at outcomes,
+  that choosing needs a third role of its own, or the judgement is reading a decision
+  it already made. Say the proportions, say how the division is drawn, and say what
+  every role is used for. **Do not carve a role you will not use** — it costs material
+  and buys nothing.
+
+  **Say what the measurement can resolve, before running it.** Count the units the
+  verdict will rest on and state the difference that many can separate from noise. A
+  protocol whose verdict rests on too few will answer "indistinguishable" whatever
+  happens, and the user pays the whole run to learn nothing. That arithmetic is
+  cheaper than the run, so it happens first, and it is what decides the scale rather
+  than a number that felt reasonable.
 
 - **What is held identical across both sides.** A comparison means something only when
   one thing differs. Name everything the two share and the single thing they do not —
   whatever those turn out to be for this experiment. Without it the measurement is of
   whatever else drifted, and no result can be attributed to the difference it claims
   to be about.
+
+  **Free choices count as part of what differs.** Any knob left open — a coefficient, a
+  threshold, a stopping point — is a choice, and if one side's is tuned while the
+  other's is guessed or left at whatever its author defaulted to, then the sides differ
+  in two things and the claim that only one changed is false. Either both are chosen
+  the same way, on the same material, by the same rule, or both are fixed at a declared
+  value and the report says so. Tuning one side is the easiest way to produce a result
+  that survives every other check and means nothing.
 
 - **What it depends on that might not hold** — data that has to be present, something
   that has to download, something assumed about their setup.
