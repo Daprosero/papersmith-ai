@@ -261,6 +261,19 @@ Spanish session in English has changed the subject.
 plumbing, not the user's. Say what was found and what it means; name a command only
 when the user has to run it themselves.
 
+**Speak in the proposal's vocabulary, not the code's.** This is the difference between
+a conversation the user can join and one they have to decode. They wrote the code
+once; they deliberate the mathematics continually — so the objects they hold in mind
+are the ones the revision names, not the identifiers a module happens to use. Say
+"the relevance selector" and cite the equation, not `relevance_logits` in
+`attention.py`; say "the bandwidth rule the prior work already uses", not
+`_compute_sigma`. Where a file has to be named because they will open it, anchor it
+to what it implements.
+
+A draft written for someone with the source in their head cannot be corrected by the
+person who wrote it a month ago. Every function name a proposal spends is a place the
+user has to stop and recall instead of judging.
+
 Two kinds of gate, and treating them alike is the mistake to avoid.
 
 ### Decisions — offer the options
@@ -320,6 +333,14 @@ What the conversation carries:
 answered and the design is reasonable, and you say what changed your mind. Then, one
 question and only one: implement this? Not before — asking earlier turns a
 deliberation into a form, which is what this section exists to prevent.
+
+**"Correct something else first" is not a request for a menu.** When the user pushes
+back without naming the piece, do not answer with a list of the parts in play for
+them to pick from: that is the questionnaire returning in another shape, and it asks
+them to do the locating. Go back to the part you were least sure of, say why it is
+still bothering you, and open there. If you genuinely cannot tell which piece they
+mean, ask that — one question, in their words, not a numbered inventory of your own
+design decisions.
 
 ## Flow B — every later pass
 
