@@ -459,7 +459,7 @@ def previous_implementations(target: Path, name: str) -> list[str]:
     reorganization intact. Whatever is left over is the baseline a probe compares
     against — it is found by reading the tree, not by remembering that it was there.
     """
-    # Case-folded: on a case-insensitive filesystem `src/Creda` and `src/CREDA` are one
+    # Case-folded: on a case-insensitive filesystem `src/Method` and `src/METHOD` are one
     # directory, so an exact comparison would hand our own package back as somebody
     # else's baseline. On a case-sensitive one they are two, but a package differing
     # from ours only in case is a naming accident rather than prior work.
@@ -514,29 +514,26 @@ def probe_state(target: Path, name: str, revision: str | None) -> dict:
     }
 
 
-# Lighter alternatives to offer *alongside* whatever the baseline already uses. This
-# list is never the primary suggestion: a comparison belongs in the environment the
-# prior work was actually measured in, and that environment is read from the
-# repository rather than assumed here.
-SCREENING_ALTERNATIVES = {
-    "backbones": {"resnet18": "smaller than most references; finishes a screening run"},
-    "datasets": {"MNIST": "fastest; a sanity setting rather than a result"},
-}
-
 # Names that mark a string literal as naming a dataset or task, used to read the
 # baseline's own vocabulary instead of matching against a list of datasets someone
 # thought of in advance.
 ENVIRONMENT_HINTS = ("dataset", "datasets", "data", "task", "tasks", "benchmark",
                      "benchmarks", "domain", "domains", "corpus")
 
+# Function names that mean "this is where the data comes from". The wiring needs an
+# entry point, not a dataset name: a task name says what was measured, a loader says
+# how to measure it again.
+DATA_ENTRY_HINTS = ("load", "loader", "dataset", "datasets", "split", "splits",
+                    "fetch", "read_data", "get_data", "prepare")
+
 
 def _module_aliases(tree: ast.Module) -> dict[str, str]:
     """Names in this file that refer to an imported *module*, not to an instance.
 
-    This is the distinction that decides whether the reading is useful. `models.resnet50()`
-    names a backbone; `model.eval()` names nothing — and matching on the holder alone
-    cannot tell them apart, so it buries the two real names under every method call in
-    the file.
+    This is the distinction that decides whether the reading is useful. An attribute
+    of an imported `models` module names an architecture; the same attribute access on
+    an instance names nothing — and matching on the holder alone cannot tell them
+    apart, so it buries the real names under every method call in the file.
     """
     aliases: dict[str, str] = {}
     for node in ast.walk(tree):
@@ -552,14 +549,14 @@ def _module_aliases(tree: ast.Module) -> dict[str, str]:
 def _names_a_dataset(text: str) -> bool:
     """Whether a string literal reads as the name of a dataset rather than a word.
 
-    A hyphen or a second capital is what separates `MNIST-USPS-SVHN` and `ImageCLEF`
-    from `classes`, `labels` and `Dataset`. Deliberately not a list of known datasets:
-    the baseline names its own tasks and may name ones nobody here has heard of.
+    A hyphen or a second capital is what separates a task name from `classes`,
+    `labels` and `Dataset`. Deliberately not a list of known datasets: the baseline
+    names its own tasks, and may name ones nobody here has heard of.
     """
     return len(text) > 4 and ("-" in text or sum(c.isupper() for c in text) >= 2)
 
 
-def baseline_environment(target: Path, baselines: list[str]) -> dict:
+def baseline_environment(target: Path, baselines: list[str], name_of_ours: str = "") -> dict:
     """What the prior work already trains on: its backbones, its datasets, its weights.
 
     A comparison is only common if both sides meet in one environment, and the one that
@@ -572,7 +569,21 @@ def baseline_environment(target: Path, baselines: list[str]) -> dict:
     """
     backbones: dict[str, str] = {}
     datasets: dict[str, str] = {}
+    entry_points: list[dict] = []
     weights: list[str] = []
+    notebooks: list[str] = []
+
+    # Notebooks that are not the proposal's are where the prior experiments were
+    # actually run. They name the data the published results came from, so they are
+    # read alongside the package rather than treated as documentation.
+    ours = f"{name_of_ours}/" if name_of_ours else None
+    for notebook in sorted(target.rglob("*.ipynb")):
+        rel = str(notebook.relative_to(target))
+        if any(part.startswith(".") for part in notebook.parts):
+            continue
+        if ours and rel.startswith(ours):
+            continue  # the proposal's own notebooks are not prior work
+        notebooks.append(rel)
 
     for baseline in baselines:
         root = target / "src" / baseline
@@ -586,8 +597,15 @@ def baseline_environment(target: Path, baselines: list[str]) -> dict:
                 continue
             aliases = _module_aliases(tree)
             for node in ast.walk(tree):
+                # An entry point is what the wiring can call; a dataset name is only
+                # what to call it about.
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                        and any(hint in node.name.lower() for hint in DATA_ENTRY_HINTS):
+                    entry_points.append({"function": node.name, "seenIn": rel,
+                                         "line": node.lineno,
+                                         "args": [a.arg for a in node.args.args][:6]})
                 # Only an attribute of an imported module, and only when called:
-                # `models.resnet50(...)`, never `model.eval()`.
+                # an architecture from an imported module, never a method on an object.
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
                         and isinstance(node.func.value, ast.Name):
                     origin = aliases.get(node.func.value.id, "")
@@ -612,8 +630,10 @@ def baseline_environment(target: Path, baselines: list[str]) -> dict:
     return {
         "backbones": [{"name": n, "seenIn": w} for n, w in sorted(backbones.items())],
         "datasets": [{"name": n, "seenIn": w} for n, w in sorted(datasets.items())],
+        "dataEntryPoints": entry_points[:12],
+        "notebooks": notebooks[:12],
         "weights": sorted(weights)[:12],
-        "discovered": bool(backbones or datasets or weights),
+        "discovered": bool(backbones or datasets or weights or entry_points),
     }
 
 
@@ -672,13 +692,13 @@ def wiring_proposal(target: Path, name: str, baselines: list[str]) -> dict:
                       "baseline is never modified to make a comparison possible"],
         },
         "offer": {
-            "fromBaseline": baseline_environment(target, baselines),
-            "lighterAlternatives": SCREENING_ALTERNATIVES,
+            "fromBaseline": baseline_environment(target, baselines, name),
             "note": "Start from what the baseline already trains on: that is where its "
                     "results were obtained, so it is the environment a comparison "
-                    "means something in. The lighter alternatives are for a screening "
-                    "run when the baseline's own setting is too slow. Either way the "
-                    "user picks — this proposes.",
+                    "means something in. If that setting is too heavy to screen with, "
+                    "say so and let the user name a lighter one — a forge for papers "
+                    "cannot know which models or datasets are reasonable for a field "
+                    "it has not read, and suggesting from a list would be guessing.",
         },
     }
 
@@ -733,10 +753,10 @@ class NameRefused(Exception):
 def normalize_name(raw: str) -> dict:
     """Turn whatever the user typed into the `<Name>/` + `src/<Package>/` pair.
 
-    The user types `mil creda`, `MIL-CREDA` or `milCreda` and means the same thing.
+    The user types `deep set`, `DEEP-SET` or `deepSet` and means the same thing.
     Splitting happens on any separator and on a lower-to-upper boundary; an all-caps
     token of two or more letters is an acronym and survives untouched, because
-    lowercasing `MIL-CREDA` into `Mil-Creda` renames the method, not the folder.
+    lowercasing an acronym renames the method rather than tidying the folder.
     """
     text = (raw or "").strip()
     if not text:

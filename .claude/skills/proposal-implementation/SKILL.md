@@ -360,13 +360,21 @@ method trainable, and that is the one part worth the user's attention.
 Asking them to answer those three questions from scratch wastes the context the skill
 already holds. They should be correcting a draft.
 
-The draft's `offer` starts from `fromBaseline`: the backbones, datasets and trained
-weights the prior work actually uses, read from its own code. That environment is
-where its published results were obtained, so it is the one a comparison means
-something in — proposing a set of well-known benchmarks instead would be a guess
-about the field, and would measure both implementations somewhere neither has been
-measured before. `lighterAlternatives` is offered beside it for when the baseline's
-own setting is too slow to screen with. Offer both; do not pick for the user.
+The draft's `offer` is `fromBaseline` and nothing else: the backbones, task names,
+trained weights, **data entry points** and notebooks the prior work actually uses,
+read from its own code. That environment is where its published results were
+obtained, so it is the one a comparison means something in.
+
+The entry points matter more than the names. A task name says what was measured; a
+loader says how to measure it again, and the wiring needs the second. Notebooks
+outside the proposal are read too — that is usually where the prior experiments
+actually ran.
+
+Nothing is suggested from a list. This is a forge for papers, not for one field: it
+cannot know which models or datasets are reasonable for mathematics it has not read,
+and offering a catalogue of well-known benchmarks would push both implementations
+into a setting neither has been measured in. If the baseline's own environment is too
+heavy to screen with, say so and let the user name a lighter one.
 
 Write the completed wiring as `<Name>/Notebooks/wiring.py`, exposing `build_new` and
 `build_baseline`. `build_baseline` may be `None` when the prior work cannot run under
@@ -382,10 +390,17 @@ is not a hygiene rule but the measurement itself: wall time and peak memory desc
 whichever environment ran them, so a foreign interpreter produces a correct
 measurement of the wrong thing and the summary would attribute it to this repository.
 
+Write the completed wiring as `<Name>/Notebooks/wiring.py`, exposing `build_new`,
+`build_baseline` and **`build_data`**. The harness owns training and measuring and
+nothing else: it names no dataset and no architecture, because a catalogue there
+would dictate the experiment — the wiring would be forced to pick whichever
+well-known set the baseline happens to touch, and the reported common environment
+would be an intersection with that list rather than the environment the prior results
+came from.
+
 Copy `benchmark.py`, `verdict.py` and `probe.ipynb` from `assets/kit/nb/` into
 `<Name>/Notebooks/`, fill in the reduction, and execute the notebook. Without
-`wiring.py` the harness refuses and says what is missing — running anyway would train
-a bare backbone and report it as the method. It trains each implementation over every seed, measures accuracy, wall
+`wiring.py` the harness refuses and says what is missing. It trains each implementation over every seed, measures accuracy, wall
 time, peak memory and parameter count, and writes `<Name>/Results/Probe_results.json`.
 
 That summary is the record. A later session reads it to learn that a screening ran,

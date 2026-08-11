@@ -314,11 +314,12 @@ class BackendStateTests(unittest.TestCase):
         self.assertTrue(harness.exists(), "the benchmark must ship with the kit")
         source = harness.read_text(encoding="utf-8")
         ast.parse(source)
-        self.assertIn("resnet18", source)
         self.assertIn("stratified_indices", source, "the slice must be stratified")
         self.assertIn("stdev", source, "a bare mean over seeds hides what seeds reveal")
-        for dataset in ("CIFAR10", "CIFAR100", "MNIST"):
-            self.assertIn(dataset, source, dataset)
+        # This test used to require the harness to name resnet18, CIFAR10, CIFAR100
+        # and MNIST. It was asserting the defect: a catalogue here dictates the
+        # experiment instead of serving it. The opposite is now pinned in
+        # InterpreterGuardTests.test_the_harness_names_no_dataset_and_no_backbone_of_its_own.
 
 
 sys.path.insert(0, str(CLI.parent.parent / "assets/kit/nb"))
@@ -444,7 +445,9 @@ class WiringProposalTests(unittest.TestCase):
         draft = impl.wiring_proposal(box, "Creda", ["CREDA"])
         found = [b["name"] for b in draft["offer"]["fromBaseline"]["backbones"]]
         self.assertEqual(found, ["resnet50"])
-        self.assertIn("resnet18", draft["offer"]["lighterAlternatives"]["backbones"])
+        # Nothing is suggested from a list: a forge for papers cannot know which
+        # models are reasonable for a field it has not read.
+        self.assertNotIn("lighterAlternatives", draft["offer"])
 
     def test_the_baseline_is_offered_as_a_candidate_never_as_editable(self):
         box = self.repo(baseline_files=["src/CREDA/models.py", "src/CREDA/train.py"])
@@ -503,6 +506,26 @@ class BaselineEnvironmentTests(unittest.TestCase):
         box = self.repo({"src/CREDA/train.py":
                          'dataset_keys = ["classes", "labels", "domain", "loader"]\n'})
         self.assertEqual(impl.baseline_environment(box, ["CREDA"])["datasets"], [])
+
+    def test_the_data_entry_points_are_found_because_a_name_is_not_a_loader(self):
+        # Naming Office-Caltech says what was measured; load_office_caltech() says
+        # how to measure it again. The wiring needs the second one.
+        box = self.repo({"src/CREDA/pipeline.py":
+                         "def split_stratified(dataset, val_ratio):\n    return dataset\n"
+                         "def load_dataset_results(backbone, dataset):\n    return None\n"
+                         "def train_model(x):\n    return x\n"})
+        found = impl.baseline_environment(box, ["CREDA"])["dataEntryPoints"]
+        names = sorted(e["function"] for e in found)
+        self.assertEqual(names, ["load_dataset_results", "split_stratified"])
+        self.assertIn("dataset", found[0]["args"] + found[1]["args"])
+
+    def test_notebooks_outside_the_proposal_are_prior_experiments(self):
+        box = self.repo({"src/CREDA/m.py": "x = 1\n",
+                         "CREDA/Notebooks/Results_Generator.ipynb": "{}",
+                         "MIL-CREDA/Notebooks/probe.ipynb": "{}"})
+        found = impl.baseline_environment(box, ["CREDA"], "MIL-CREDA")["notebooks"]
+        self.assertEqual(found, ["CREDA/Notebooks/Results_Generator.ipynb"],
+                         "the proposal's own notebooks are not prior work")
 
     def test_trained_weights_left_behind_are_reported(self):
         box = self.repo({"src/CREDA/m.py": "x = 1\n",
@@ -571,3 +594,15 @@ class InterpreterGuardTests(unittest.TestCase):
         source = (self.KIT / impl.BENCHMARK_MODULE).read_text(encoding="utf-8")
         self.assertIn("require_target_interpreter", source)
         self.assertIn("sys.prefix", source, "the check must look at the running prefix")
+
+    def test_the_harness_names_no_dataset_and_no_backbone_of_its_own(self):
+        # A catalogue here would dictate the experiment: the wiring would be forced
+        # to pick whichever well-known set the baseline happens to touch, and the
+        # "common environment" would be an intersection with somebody's list rather
+        # than the environment the prior results came from.
+        source = (self.KIT / impl.BENCHMARK_MODULE).read_text(encoding="utf-8")
+        for name in ("CIFAR10", "CIFAR100", "MNIST", "torchvision", "resnet18"):
+            self.assertNotIn(name, source,
+                             f"{name} is named by the harness: the data and the model "
+                             f"must come from the wiring")
+        self.assertIn("build_data", source, "the data has to arrive from the wiring")

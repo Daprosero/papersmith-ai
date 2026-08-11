@@ -33,7 +33,13 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
 
-DATASETS = {"CIFAR10": 10, "CIFAR100": 100, "MNIST": 10}
+# No dataset catalogue lives here. The comparison only happens when a baseline is
+# present, and a baseline arrives with the data it was actually measured on — its
+# loaders, its splits, its task names. Hardcoding a list of well-known sets would let
+# this file dictate the experiment: the wiring would be forced to pick whichever of
+# them the baseline happens to touch, and the reported "common environment" would be
+# the intersection of somebody's catalogue with the real work, rather than the real
+# work. `build_data` comes from the wiring, like the builders.
 
 
 # The dimensions the trained setting measures, and which direction wins each. The
@@ -52,8 +58,8 @@ class Reduction:
     """Everything that makes this a screening run rather than the benchmark."""
 
     setting: str = "trained"
-    dataset: str = "CIFAR10"
-    backbone: str = "resnet18"
+    dataset: str = ""      # named by the wiring, not chosen here
+    backbone: str = ""     # named by the wiring, not chosen here
     fraction: float = 0.1
     epochs: int = 1
     batch_size: int = 64
@@ -87,32 +93,24 @@ def stratified_indices(targets: list[int], fraction: float, classes: int,
     return chosen
 
 
-def load_split(reduction: Reduction, root: Path, train: bool, seed: int):
-    """The common environment. Both implementations see exactly this."""
-    from torchvision import datasets, transforms  # imported late: optional dependency
+def reduce_split(dataset, fraction: float, classes: int, seed: int):
+    """Cut the wiring's own dataset down to a screening size, keeping every class.
 
-    classes = DATASETS[reduction.dataset]
-    grayscale = reduction.dataset == "MNIST"
-    steps = [transforms.Resize(32), transforms.ToTensor()]
-    if grayscale:
-        steps.insert(1, transforms.Grayscale(num_output_channels=3))
-    factory = getattr(datasets, reduction.dataset)
-    full = factory(root=str(root), train=train, download=True,
-                   transform=transforms.Compose(steps))
-
-    targets = full.targets.tolist() if torch.is_tensor(full.targets) else list(full.targets)
+    The data comes from the baseline's world; this only makes it small enough to run
+    several seeds. The slice is drawn per class because the proposal requires every
+    class present in the source collection the local correspondence uses — a random
+    slice can drop one and leave that correspondence undefined, and the failure would
+    look like a defect of the method while being a defect of the sampling.
+    """
+    if fraction >= 1.0:
+        return dataset
+    targets = getattr(dataset, "targets", None)
+    if targets is None:
+        targets = [int(label) for _, label in dataset]
+    elif torch.is_tensor(targets):
+        targets = targets.tolist()
     generator = torch.Generator().manual_seed(seed)
-    indices = stratified_indices(targets, reduction.fraction, classes, generator)
-    return Subset(full, indices), classes
-
-
-def backbone(name: str, classes: int) -> nn.Module:
-    from torchvision import models
-
-    if name != "resnet18":
-        raise ValueError(f"unsupported backbone {name!r}: the probe is deliberately small")
-    model = models.resnet18(weights=None, num_classes=classes)
-    return model
+    return Subset(dataset, stratified_indices(list(targets), fraction, classes, generator))
 
 
 @dataclass
@@ -123,12 +121,13 @@ class RunMetrics:
     parameters: int
 
 
-def train_and_score(build: Callable[[int], nn.Module], reduction: Reduction,
-                    root: Path, seed: int) -> RunMetrics:
+def train_and_score(build: Callable[[int], nn.Module], build_data: Callable,
+                    reduction: Reduction, root: Path, seed: int) -> RunMetrics:
     """One seed, end to end, with cost measured around the whole thing."""
     torch.manual_seed(seed)
-    train_set, classes = load_split(reduction, root, train=True, seed=seed)
-    test_set, _ = load_split(reduction, root, train=False, seed=seed)
+    raw_train, raw_test, classes = build_data(reduction.dataset, root, seed)
+    train_set = reduce_split(raw_train, reduction.fraction, classes, seed)
+    test_set = reduce_split(raw_test, reduction.fraction, classes, seed)
     device = torch.device(reduction.device)
 
     model = build(classes).to(device)
@@ -182,7 +181,7 @@ def summarize(runs: list[RunMetrics]) -> dict:
 
 
 def compare(builders: dict[str, Callable[[int], nn.Module] | None],
-            reduction: Reduction, root: Path) -> dict:
+            build_data: Callable, reduction: Reduction, root: Path) -> dict:
     """Run every implementation that can be driven into this exact setting.
 
     A builder of None means the implementation could not be brought into the common
@@ -197,7 +196,8 @@ def compare(builders: dict[str, Callable[[int], nn.Module] | None],
                                         "as it stands, and a baseline is never edited "
                                         "to make a comparison possible"}
             continue
-        runs = [train_and_score(build, reduction, root, seed) for seed in reduction.seeds]
+        runs = [train_and_score(build, build_data, reduction, root, seed)
+                for seed in reduction.seeds]
         results[label] = {"applicable": True, **summarize(runs)}
     return results
 
@@ -239,9 +239,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     reduction = Reduction(**json.loads(Path(args.config).read_text(encoding="utf-8")))
-    if reduction.dataset not in DATASETS:
-        raise SystemExit(f"unknown dataset {reduction.dataset!r}: pick one of {sorted(DATASETS)}")
-
     # Filled in from the wiring `probe` proposed and the user completed. A bare
     # backbone is not either implementation: training one and reporting it would
     # measure the backbone and call it the method.
@@ -250,15 +247,18 @@ def main(argv: list[str] | None = None) -> int:
     # repository as part of the flow, and its absence is refused below rather than
     # silently producing a table about nothing.
     try:
-        from wiring import build_baseline, build_new  # written for this repository
+        # `build_data` is part of the wiring for the same reason the builders are:
+        # the data belongs to the baseline's world, not to this file.
+        from wiring import build_baseline, build_data, build_new
     except ImportError as missing:
         raise SystemExit(
             "wiring.py is missing: this benchmark has nothing to compare.\n"
             f"  ({missing})\n"
             "Run `probe` and complete the wiring it proposes — which modules carry "
             "the trainable terms, where the backbone enters, what the head predicts "
-            "over — then write it as wiring.py beside this file. Running without it "
-            "would train a bare backbone and report it as the method."
+            "over, and how the baseline's own data is loaded — then write it as "
+            "wiring.py beside this file. Running without it would train a bare "
+            "backbone on a dataset this file chose, and report it as the method."
         )
 
     builders: dict[str, Callable[[int], nn.Module] | None] = {
@@ -267,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
                     if build_baseline is not None else None,
     }
 
-    measured = compare(builders, reduction, Path(args.data))
+    measured = compare(builders, build_data, reduction, Path(args.data))
     # One row per dimension, both sides side by side, so the verdict rules that serve
     # the synthetic sweep serve this one unchanged.
     rows = []

@@ -163,7 +163,7 @@ path look like it still exists.
 
 This is not cosmetic. Reclassifying those files individually flattens
 `Results/Resnet18/`, `Results/Resnet50/` and `Results/Transformer/` into one
-directory — on a real target that meant three different `ImageCLEF.csv` landing
+directory — on a real target that meant three different `results.csv` files landing
 on the same path. `conflicts` catches both clash kinds (onto an existing file,
 and two sources onto one destination) and `apply` refuses, because a cascade of
 `git mv` onto one path destroys files silently.
