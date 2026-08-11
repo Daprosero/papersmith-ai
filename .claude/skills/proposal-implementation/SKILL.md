@@ -276,14 +276,32 @@ So narrate the work:
 - **What will be built and in what order.** Plainly, as steps.
 - **Where the two sides do not line up, and how that is resolved.** This is the part
   worth their attention: prior work and new work were built for different shapes, and
-  making them meet always costs something. Say what does not fit and what the fix
-  gives up.
+  making them meet always costs something. Say what does not fit, **propose the way
+  through**, and say what that way gives up.
+
+  A friction named without a proposed resolution is the problem handed back. The user
+  cannot argue with a question — they argue with a proposal, and rejecting one is how
+  they steer. Ending on "how would you like to handle this?" after correctly finding
+  the hardest part is the same evasion as a menu, one level deeper: it does the
+  diagnosis and stops before the prescription.
 - **What it depends on that might not hold** — data that has to be present, something
   that has to download, something assumed about their setup.
 
 Mathematics enters only when a constraint forces a decision, and then as one plain
 sentence about what is required, never as an equation. A file or a function is named
 only when the user will open it themselves.
+
+**Generic in the source, concrete in the proposal.** That this skill knows nothing
+about any particular field is a property of its code — no dataset, no architecture, no
+method hardcoded anywhere. It is not a property of the conversation. By the time a
+draft is written the repository has been read: what the prior work trains on, how it
+loads it, what shape each side expects. Use it.
+
+So the recipe is specific. How many seeds and why that many. How the groups are built
+and with what proportions. Which split, which ratio, what a second domain is made from
+when the data does not already have one. Numbers the user can disagree with. A
+proposal that stays abstract to remain general has confused generality with vagueness:
+generality means the *skill* works for any paper, not that its *plan* works for none.
 
 Two kinds of gate, and treating them alike is the mistake to avoid.
 
