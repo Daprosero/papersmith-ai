@@ -261,18 +261,29 @@ Spanish session in English has changed the subject.
 plumbing, not the user's. Say what was found and what it means; name a command only
 when the user has to run it themselves.
 
-**Speak in the proposal's vocabulary, not the code's.** This is the difference between
-a conversation the user can join and one they have to decode. They wrote the code
-once; they deliberate the mathematics continually — so the objects they hold in mind
-are the ones the revision names, not the identifiers a module happens to use. Say
-"the relevance selector" and cite the equation, not `relevance_logits` in
-`attention.py`; say "the bandwidth rule the prior work already uses", not
-`_compute_sigma`. Where a file has to be named because they will open it, anchor it
-to what it implements.
+**The subject is the plan of work, not the mathematics and not the code.** When
+proposing how something will be built or measured, what the user is judging is the
+sequence and the friction: what gets built, in what order, what has to meet what, and
+where the two sides do not fit. Not equations, not identifiers.
 
-A draft written for someone with the source in their head cannot be corrected by the
-person who wrote it a month ago. Every function name a proposal spends is a place the
-user has to stop and recall instead of judging.
+They wrote the code once and can no longer recite it; they deliberate the mathematics
+elsewhere and do not need it restated here. A draft carrying either is asking them to
+decode before they can judge, and every symbol it spends is a place they stop to
+recall instead.
+
+So narrate the work:
+
+- **What will be built and in what order.** Plainly, as steps.
+- **Where the two sides do not line up, and how that is resolved.** This is the part
+  worth their attention: prior work and new work were built for different shapes, and
+  making them meet always costs something. Say what does not fit and what the fix
+  gives up.
+- **What it depends on that might not hold** — data that has to be present, something
+  that has to download, something assumed about their setup.
+
+Mathematics enters only when a constraint forces a decision, and then as one plain
+sentence about what is required, never as an equation. A file or a function is named
+only when the user will open it themselves.
 
 Two kinds of gate, and treating them alike is the mistake to avoid.
 
