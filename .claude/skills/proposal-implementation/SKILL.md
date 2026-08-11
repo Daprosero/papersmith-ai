@@ -241,14 +241,19 @@ past session concluded can bias this one.
 
 ## How a gate is asked
 
-Every step marked **[GATE]** is a decision with a known set of answers, so **ask it
-as a choice, not as prose**. Use the runtime's interactive question UI when it has
-one, with the outcomes as explicit options; where it does not, write the same options
-out and say which answers are accepted, then stop.
+**Ask in the language the user is speaking.** The repository, the code, the commits
+and every file written stay in English; the conversation does not. A skill that
+answers a Spanish session in English has changed the subject.
 
-An open question — "do you want me to reorganize?" — leaves the user guessing what
-the alternatives are and what each costs. Every gate here has more than two outcomes,
-and the third is usually the interesting one:
+Two kinds of gate, and treating them alike is the mistake to avoid.
+
+### Decisions — offer the options
+
+A decision has a knowable set of outcomes: reorganize or not, convert or not, run or
+not. Ask it as a choice, using the runtime's interactive question UI when there is
+one. An open "do you want me to reorganize?" leaves the user guessing what the
+alternatives are and what each costs. The third outcome is usually the interesting
+one:
 
 | gate | the options that must be visible |
 |---|---|
@@ -257,18 +262,42 @@ and the third is usually the interesting one:
 | implement | go ahead · stop here |
 | corrections to the proposal | publish them · leave the findings open · review them one by one first |
 | convert to PyTorch | convert implementation and tests · not now |
-| the wiring | this draft is right · complete or correct it first |
 | run the benchmark | run it · not now (it downloads a dataset and uses the machine) |
 
-Two rules for every one of them:
+- **Never offer an option the flow cannot honour.** A reorganization above the limit
+  is not offered as "apply it": that answer would be refused after the user chose it.
+- **State each option's cost before it is chosen**, not after. Publishing advances the
+  real lineage; the benchmark occupies the machine; declining the layout leaves drift
+  every later run will report. A choice made without its consequence is not a
+  decision, and the authorization it produces is not one either.
 
-- **Never present an option the flow cannot honour.** A reorganization above the
-  limit is not offered as "apply it": that answer would be refused after the user
-  chose it, which is worse than not offering it.
-- **Say what each option costs before it is chosen**, not after. Publishing advances
-  the real lineage; the benchmark downloads data and occupies the machine; declining
-  the layout leaves drift that every later run will report. A choice made without its
-  consequence is not a decision, and the authorization it produces is not one either.
+### Design — put a plan on the table and refine it
+
+The wiring and the object→module map are **not** decisions with options. They are
+proposals, and the skill has already read everything it needs to make one: the
+provenance of each module, the baseline's own code, its backbones and datasets.
+
+So propose. Say what you would wire to what and **why the repository suggests it**,
+name the assumption you are least sure of, and invite correction. This is the
+deliberation tutor's posture at a smaller scale: propose, argue, accept refutation —
+never rubber-stamp and never hand the question back.
+
+**Asking "how do you want to handle this?" is the failure mode.** It returns the work
+to the user while holding the context that would have answered it, and offering a
+menu of approaches is the same evasion wearing a structure. The user should be
+correcting a draft, not choosing how a draft gets made.
+
+What a good proposal carries:
+
+- **The draft itself**, concrete enough to argue with — which modules carry the
+  trainable terms, where the backbone's features enter, what the head predicts over.
+- **Where each part came from**: read from provenance, inferred from the baseline, or
+  assumed. The three are not equally trustworthy and the user is entitled to know
+  which is which.
+- **The weakest link, named by you.** A proposal that hides its own soft spot is
+  asking for approval, not for review.
+
+Then gate on the result, as a decision: this draft is right · correct it first.
 
 ## Flow B — every later pass
 
@@ -310,12 +339,19 @@ sweep has not been established over the converted one.
 
 Only reachable once `backend.trainable` is true and a baseline exists.
 
-`probe` returns a `wiring` draft, assembled from each module's `__provenance__`
-rather than guessed. **Present it and let the user complete it.** The harness knows
-how to train and measure; it cannot know what makes *this* method trainable — which
-modules carry the terms, where a backbone's features enter them, what the classifier
-head predicts over. That is the user's mathematics, and this skill proposes rather
-than decides, exactly as it does with the migration plan and the object→module map.
+`probe` returns a `wiring` draft assembled from each module's `__provenance__` and
+from the baseline's own code. **Turn it into a proposal, not a questionnaire** — see
+[Design — put a plan on the table](#design--put-a-plan-on-the-table-and-refine-it).
+
+The draft is raw material: it lists the modules with their sections and equations, the
+baseline package, its backbones and datasets. Read it and say what you would wire to
+what — which modules carry the trainable terms, where the backbone's features enter,
+what the head predicts over — marking what you read, what you inferred, and what you
+assumed. The harness knows how to train and measure; it cannot know what makes *this*
+method trainable, and that is the one part worth the user's attention.
+
+Asking them to answer those three questions from scratch wastes the context the skill
+already holds. They should be correcting a draft.
 
 The draft's `offer` starts from `fromBaseline`: the backbones, datasets and trained
 weights the prior work actually uses, read from its own code. That environment is
