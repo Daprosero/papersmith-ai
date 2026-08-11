@@ -23,6 +23,7 @@ import statistics
 import time
 import tracemalloc
 from dataclasses import asdict, dataclass, field
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -201,7 +202,36 @@ def compare(builders: dict[str, Callable[[int], nn.Module] | None],
     return results
 
 
+def require_target_interpreter() -> Path:
+    """Refuse to run under any interpreter that is not this repository's own.
+
+    The contract has said this in prose in three places, and nothing checked it. For a
+    benchmark it is not a hygiene rule: wall time and peak memory *are* the
+    measurement, so an interpreter from somewhere else does not give a slightly
+    inaccurate result — it gives a correct measurement of the wrong environment, and
+    the summary would attribute it to this repository.
+
+    The file sits at <repo>/<Name>/Notebooks/benchmark.py, so the repository is two
+    levels up, and the interpreter has to live inside it.
+    """
+    repository = Path(__file__).resolve().parents[2]
+    prefix = Path(sys.prefix).resolve()
+    try:
+        prefix.relative_to(repository)
+    except ValueError:
+        raise SystemExit(
+            f"refusing to run under {prefix}\n"
+            f"  this benchmark must use {repository}'s own virtualenv, because wall "
+            f"time and peak memory are the measurement: another interpreter would "
+            f"measure a different environment correctly and report it as this one.\n"
+            f"  run the notebook with {repository}/.venv/bin/python, or invoke this "
+            f"file with it directly."
+        )
+    return repository
+
+
 def main(argv: list[str] | None = None) -> int:
+    require_target_interpreter()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, help="JSON holding the reduction")
     parser.add_argument("--data", default="./.benchmark-data", help="dataset cache")

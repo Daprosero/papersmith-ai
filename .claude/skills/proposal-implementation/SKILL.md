@@ -333,6 +333,12 @@ the baseline is never edited to make a comparison possible.
 **[GATE]** then ask before running: it is quick by design, but it is still the user's
 machine, and it downloads a dataset.
 
+Execute the notebook with the target repository's own interpreter, as with the suite.
+`benchmark.py` refuses under any other and says which one to use — for this file that
+is not a hygiene rule but the measurement itself: wall time and peak memory describe
+whichever environment ran them, so a foreign interpreter produces a correct
+measurement of the wrong thing and the summary would attribute it to this repository.
+
 Copy `benchmark.py`, `verdict.py` and `probe.ipynb` from `assets/kit/nb/` into
 `<Name>/Notebooks/`, fill in the reduction, and execute the notebook. Without
 `wiring.py` the harness refuses and says what is missing — running anyway would train

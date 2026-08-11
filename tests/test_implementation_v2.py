@@ -7,6 +7,7 @@ declares whether the user can still review it.
 """
 
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -512,3 +513,61 @@ class BaselineEnvironmentTests(unittest.TestCase):
     def test_an_empty_baseline_says_it_discovered_nothing(self):
         box = self.repo({"src/CREDA/m.py": "x = 1\n"})
         self.assertFalse(impl.baseline_environment(box, ["CREDA"])["discovered"])
+
+
+class InterpreterGuardTests(unittest.TestCase):
+    """The benchmark must run under the repository's own interpreter, or not at all."""
+
+    KIT = None  # set in setUp
+
+    def setUp(self):
+        self.KIT = Path(impl.SKILL_ROOT) / "assets/kit/nb"
+
+    def stage(self, root_name="repo"):
+        """Lay the harness out where it expects to be: <repo>/<Name>/Notebooks/."""
+        box = Path(tempfile.mkdtemp(prefix="pp-interp-"))
+        notebooks = box / root_name / "Name" / "Notebooks"
+        notebooks.mkdir(parents=True)
+        for asset in (impl.BENCHMARK_MODULE, "verdict.py"):
+            shutil.copy(self.KIT / asset, notebooks / asset)
+        (notebooks / "config.json").write_text("{}")
+        return box / root_name, notebooks
+
+    def run_harness(self, notebooks, executable=sys.executable):
+        return subprocess.run(
+            [executable, impl.BENCHMARK_MODULE, "--config", "config.json",
+             "--out", "out.json"],
+            cwd=str(notebooks), capture_output=True, text=True)
+
+    def test_a_foreign_interpreter_is_refused_before_anything_is_measured(self):
+        # Not hygiene: wall time and peak memory ARE the measurement, so another
+        # interpreter measures a different environment correctly and the summary
+        # would attribute it to this repository.
+        repository, notebooks = self.stage()
+        proc = self.run_harness(notebooks)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("refusing to run under", proc.stdout + proc.stderr)
+        self.assertFalse((notebooks / "out.json").exists(),
+                         "a refused run must not leave a summary behind")
+
+    def test_the_refusal_names_the_interpreter_the_user_should_use(self):
+        repository, notebooks = self.stage()
+        output = "".join(self.run_harness(notebooks)[1:3] if False else
+                         [self.run_harness(notebooks).stdout,
+                          self.run_harness(notebooks).stderr])
+        self.assertIn(str(repository / ".venv"), output,
+                      "a refusal that does not say what to run instead is a dead end")
+
+    def test_the_guard_runs_before_the_missing_wiring_is_reported(self):
+        # Order matters: under a foreign interpreter the wiring question is not yet
+        # the user's problem, and reporting it first would send them to fix the
+        # wrong thing.
+        repository, notebooks = self.stage()
+        output = self.run_harness(notebooks).stdout + self.run_harness(notebooks).stderr
+        self.assertIn("refusing to run under", output)
+        self.assertNotIn("wiring.py is missing", output)
+
+    def test_the_contract_and_the_harness_agree_that_it_is_enforced(self):
+        source = (self.KIT / impl.BENCHMARK_MODULE).read_text(encoding="utf-8")
+        self.assertIn("require_target_interpreter", source)
+        self.assertIn("sys.prefix", source, "the check must look at the running prefix")
