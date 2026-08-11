@@ -526,6 +526,51 @@ ENVIRONMENT_HINTS = ("dataset", "datasets", "data", "task", "tasks", "benchmark"
 DATA_ENTRY_HINTS = ("load", "loader", "dataset", "datasets", "split", "splits",
                     "fetch", "read_data", "get_data", "prepare")
 
+# How prior work gets hold of what it trains on. Reading this is what separates "the
+# material is not in the repository" — true and useless — from "here is what fetches
+# it", which is the difference between an environment being unavailable and merely
+# being absent until something runs.
+ACQUISITION_PATTERNS = (
+    (r"download\s*=\s*True", "downloads itself"),
+    (r"\bgdown\b", "fetched with gdown"),
+    (r"git\s+clone|\"clone\"", "cloned from a repository"),
+    (r"\bwget\b|\bcurl\b", "fetched over the network"),
+    (r"https?://[^\s\"']{6,}", "names a remote source"),
+    (r"zipfile|tarfile|extractall", "unpacked from an archive"),
+    (r"kaggle/input|/content/", "read from a mounted runtime directory"),
+)
+
+
+def notebook_sources(path: Path) -> list[str]:
+    """The code cells of a notebook, as plain text.
+
+    Notebooks are where prior experiments were actually run, so they are read like any
+    other source rather than counted as documentation. A cell may hold shell magics
+    that no parser accepts, so callers treat this as text and parse what they can.
+    """
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return []
+    cells = document.get("cells")
+    if not isinstance(cells, list):
+        return []
+    sources = []
+    for cell in cells:
+        if isinstance(cell, dict) and cell.get("cell_type") == "code":
+            body = cell.get("source")
+            sources.append("".join(body) if isinstance(body, list) else str(body or ""))
+    return sources
+
+
+def acquisition_evidence(text: str, where: str) -> list[dict]:
+    """What this text shows about how material is obtained."""
+    found = []
+    for pattern, meaning in ACQUISITION_PATTERNS:
+        if re.search(pattern, text):
+            found.append({"how": meaning, "seenIn": where})
+    return found
+
 
 def _module_aliases(tree: ast.Module) -> dict[str, str]:
     """Names in this file that refer to an imported *module*, not to an instance.
@@ -572,6 +617,7 @@ def baseline_environment(target: Path, baselines: list[str], name_of_ours: str =
     entry_points: list[dict] = []
     weights: list[str] = []
     notebooks: list[str] = []
+    acquisition: list[dict] = []
 
     # Notebooks that are not the proposal's are where the prior experiments were
     # actually run. They name the data the published results came from, so they are
@@ -584,6 +630,30 @@ def baseline_environment(target: Path, baselines: list[str], name_of_ours: str =
         if ours and rel.startswith(ours):
             continue  # the proposal's own notebooks are not prior work
         notebooks.append(rel)
+        # Read them, do not merely list them. A package can resolve a directory it
+        # never creates; what creates it usually lives here, and a reading that stops
+        # at the package concludes the material is unobtainable while the thing that
+        # obtains it sits one file away.
+        for cell in notebook_sources(notebook):
+            acquisition.extend(acquisition_evidence(cell, rel))
+            try:
+                tree = ast.parse(cell)
+            except SyntaxError:
+                continue  # shell magics and fragments: read as text above, not here
+            aliases = _module_aliases(tree)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                        and isinstance(node.func.value, ast.Name):
+                    origin = aliases.get(node.func.value.id, "")
+                    if origin.endswith("models"):
+                        backbones.setdefault(node.func.attr, rel)
+                    elif origin.endswith("datasets"):
+                        datasets.setdefault(node.func.attr, rel)
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                        and any(hint in node.name.lower() for hint in DATA_ENTRY_HINTS):
+                    entry_points.append({"function": node.name, "seenIn": rel,
+                                         "line": node.lineno,
+                                         "args": [a.arg for a in node.args.args][:6]})
 
     for baseline in baselines:
         root = target / "src" / baseline
@@ -595,6 +665,8 @@ def baseline_environment(target: Path, baselines: list[str], name_of_ours: str =
                 tree = ast.parse(file.read_text(encoding="utf-8"), filename=str(file))
             except (SyntaxError, UnicodeDecodeError, OSError):
                 continue
+            acquisition.extend(acquisition_evidence(file.read_text(encoding="utf-8",
+                                                                    errors="ignore"), rel))
             aliases = _module_aliases(tree)
             for node in ast.walk(tree):
                 # An entry point is what the wiring can call; a dataset name is only
@@ -641,6 +713,8 @@ def baseline_environment(target: Path, baselines: list[str], name_of_ours: str =
         "datasets": [{"name": n, "seenIn": w} for n, w in sorted(datasets.items())],
         "dataEntryPoints": entry_points[:12],
         "notebooks": notebooks[:12],
+        # Never conclude the material cannot be obtained without this in hand.
+        "acquisition": [dict(s) for s in {tuple(sorted(a.items())) for a in acquisition}][:12],
         "weights": sorted(weights)[:12],
         "discovered": bool(backbones or datasets or weights or entry_points),
         "foundNothingFor": missed,

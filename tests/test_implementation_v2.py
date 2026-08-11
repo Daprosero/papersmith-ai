@@ -713,3 +713,63 @@ class BackendIsAStageTests(unittest.TestCase):
             state = impl.backend_state(self.repo(backend), "Method")
             self.assertEqual(state["state"], backend)
             self.assertEqual(state["trainable"], backend == "tensor")
+
+
+class AcquisitionTests(unittest.TestCase):
+    """Absent until something runs is not the same as impossible to obtain."""
+
+    def repo(self, files):
+        box = Path(tempfile.mkdtemp(prefix="pp-acq-"))
+        for path, source in files.items():
+            full = box / path
+            full.parent.mkdir(parents=True, exist_ok=True)
+            full.write_text(source)
+        return box
+
+    def notebook(self, *cells):
+        return json.dumps({"cells": [{"cell_type": "code", "source": [c]} for c in cells],
+                           "nbformat": 4, "nbformat_minor": 5, "metadata": {}})
+
+    def test_a_notebook_is_read_not_merely_listed(self):
+        # The package resolves a directory it never creates; what creates it is here.
+        box = self.repo({"src/Prior/paths.py":
+                         'def resolve_root():\n    return "/mounted/somewhere"\n',
+                         "Prior/Notebooks/Bootstrap.ipynb": self.notebook(
+                             'run_command("git", "clone", REPO, str(CACHE))\n'
+                             'import gdown\n')})
+        env = impl.baseline_environment(box, ["Prior"], "Method")
+        how = {a["how"] for a in env["acquisition"]}
+        self.assertIn("cloned from a repository", how)
+        self.assertIn("fetched with gdown", how)
+
+    def test_a_self_downloading_source_is_recognized_as_obtainable(self):
+        box = self.repo({"src/Prior/m.py": "x = 1\n",
+                         "Prior/Notebooks/Run.ipynb": self.notebook(
+                             'sets = datasets.MNIST(root=R, download=True)\n')})
+        env = impl.baseline_environment(box, ["Prior"], "Method")
+        self.assertIn("downloads itself", {a["how"] for a in env["acquisition"]})
+
+    def test_a_mounted_directory_is_reported_as_what_it_is(self):
+        # Read from a runtime directory is a real constraint, and a different one
+        # from unobtainable — it says where it runs, not that it cannot.
+        box = self.repo({"src/Prior/paths.py": 'P = "/kaggle/input/some-set/images"\n'})
+        env = impl.baseline_environment(box, ["Prior"], "Method")
+        self.assertIn("read from a mounted runtime directory",
+                      {a["how"] for a in env["acquisition"]})
+
+    def test_definitions_inside_a_notebook_count_as_entry_points(self):
+        box = self.repo({"src/Prior/m.py": "x = 1\n",
+                         "Prior/Notebooks/Run.ipynb": self.notebook(
+                             "def load_everything(root):\n    return root\n")})
+        env = impl.baseline_environment(box, ["Prior"], "Method")
+        self.assertEqual([e["function"] for e in env["dataEntryPoints"]],
+                         ["load_everything"])
+
+    def test_a_cell_that_cannot_be_parsed_does_not_stop_the_reading(self):
+        # Shell magics are ordinary in notebooks and must not silence the rest.
+        box = self.repo({"src/Prior/m.py": "x = 1\n",
+                         "Prior/Notebooks/Run.ipynb": self.notebook(
+                             "!pip install torch\n",
+                             'sets = datasets.MNIST(root=R, download=True)\n')})
+        env = impl.baseline_environment(box, ["Prior"], "Method")
+        self.assertIn("downloads itself", {a["how"] for a in env["acquisition"]})

@@ -73,6 +73,13 @@ proposal itself — that is `proposal-deliberation`.
   `invariants` has a matching `test_<id>`. No provenance, no merge.
 - Never fabricate mathematics. A test whose claim is not traceable to the
   proposal does not belong in the suite.
+- **Never assert an absence you did not go looking for.** "There is no bootstrap",
+  "that cannot be obtained", "the prior work has no data layer" are claims about the
+  whole repository, and a reading that stopped at one file cannot support any of them.
+  Before saying something is missing, look where it would live — and if the answer
+  still is nothing, say where you looked, so the user can point at the place you did
+  not. A plausible reason invented to explain what you failed to find is worse than
+  saying you did not find it: it sounds like a finding and gets acted on like one.
 - Audit the mathematics, not the code. A finding is an ill-formed term, a claim
   stated more strongly than the construction supports, a missing complement, or
   a constant that does not hold up.
@@ -494,6 +501,15 @@ The entry points matter more than the names. A task name says what was measured;
 loader says how to measure it again, and the wiring needs the second. Notebooks
 outside the proposal are read too — that is usually where the prior experiments
 actually ran.
+
+**Read `acquisition` before saying anything is unavailable.** A package can resolve a
+directory it never creates; what creates it usually lives in a notebook, and a reading
+that stopped at the package would conclude the material is unobtainable while the
+thing that obtains it sits one file away. `acquisition` reports what was found about
+how each side gets hold of what it trains on — a download, a clone, an archive, a
+mounted directory. Material that is absent until something runs is not material that
+cannot be had, and treating the two alike discards most of a user's experimental
+ground for no reason.
 
 **Read `foundNothingFor` before concluding anything.** The reading is a heuristic over
 English word-stems and structure, so it misses a plausible variant and misses a
