@@ -596,6 +596,26 @@ under which reduction, and against which revision — a summary naming an older
 revision is stale by inspection, so nothing is stored outside the repository and
 nothing can fall out of sync.
 
+### The partition, when the comparison trains
+
+This section is about training, so it says the ordinary thing plainly rather than
+leaving it to be rediscovered: **propose a training / selection / evaluation split, by
+name, in the first draft.** Whatever is fitted learns from the first; anything chosen
+by looking at outcomes — a coefficient, a stopping point, a threshold — is chosen on
+the second; the verdict is read only from the third. They are disjoint, and nothing
+from the third is seen before the verdict.
+
+The general rule this instantiates is in
+[Design — a conversation](#design--a-conversation-and-one-question-at-the-end-of-it):
+roles kept disjoint, sizes derived from what the measurement must resolve rather than
+copied from convention, composition stated and not only size. Here that means: say the
+proportions and where they came from, say how each part is drawn, and say what happens
+to any part you would carve and not use — if nothing is chosen by looking, the middle
+one is not needed and taking it costs material for nothing.
+
+When there are two sides being compared, the split is the same for both and drawn
+once. A comparison whose sides saw different material is not measuring the method.
+
 Four things decide whether the numbers mean anything:
 
 - **It is a screening run, never the benchmark.** ResNet-18 and a slice of the data.
