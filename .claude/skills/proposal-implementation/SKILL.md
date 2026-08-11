@@ -172,9 +172,16 @@ That state is *read*, never *remembered*. Nothing is carried forward except fact
 about the repository as it is now, so nothing can drift out of date and nothing a
 past session concluded can bias this one.
 
-- **`src/` has no implementation of the current proposal** → this is a first pass.
-  Run [Flow A](#flow-a--first-pass).
-- **`src/` already implements it** → run [Flow B](#flow-b--every-later-pass).
+Route on **existence, not on fidelity**. Whether the implementation still matches the
+latest revision is a measurement, and `verify` is what makes it — asking it here
+would send a repository whose code is bound to `r14` while `latest` is `r16` through a
+full first pass, re-implementing from scratch something that only needs bringing up to
+date. Drift is Flow B's fourth step, not a reason to start over.
+
+- **`src/` holds no implementation at all** → first pass. Run
+  [Flow A](#flow-a--first-pass).
+- **`src/` holds one, whatever revision it is bound to** → run
+  [Flow B](#flow-b--every-later-pass), which measures the drift and handles it.
 
 ## Flow A — first pass
 
