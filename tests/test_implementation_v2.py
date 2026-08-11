@@ -606,3 +606,62 @@ class InterpreterGuardTests(unittest.TestCase):
                              f"{name} is named by the harness: the data and the model "
                              f"must come from the wiring")
         self.assertIn("build_data", source, "the data has to arrive from the wiring")
+
+
+class DiscoveryHonestyTests(unittest.TestCase):
+    """An empty reading must announce itself as a miss, never as a clean result."""
+
+    def repo(self, files):
+        box = Path(tempfile.mkdtemp(prefix="pp-honest-"))
+        for path, source in files.items():
+            full = box / path
+            full.parent.mkdir(parents=True, exist_ok=True)
+            full.write_text(source)
+        return box
+
+    def test_paths_and_names_are_discovered_not_assumed(self):
+        # A different field, a different package, different file names: the reading
+        # is over structure, so none of it is anchored to any one repository.
+        box = self.repo({"src/LegacyTransformer/corpus_io.py":
+                         "from torchvision import models\n"
+                         "def load_corpus(name):\n    return None\n"
+                         "def prepare_splits(corpus):\n    return corpus\n"
+                         "def build():\n    return models.vgg16(weights=None)\n",
+                         "LegacyTransformer/Notebooks/Experiments.ipynb": "{}",
+                         "Method/Notebooks/mine.ipynb": "{}"})
+        env = impl.baseline_environment(box, ["LegacyTransformer"], "Method")
+        self.assertEqual([b["name"] for b in env["backbones"]], ["vgg16"])
+        self.assertEqual(sorted(e["function"] for e in env["dataEntryPoints"]),
+                         ["load_corpus", "prepare_splits"])
+        self.assertEqual(env["notebooks"], ["LegacyTransformer/Notebooks/Experiments.ipynb"])
+
+    def test_what_it_could_not_read_is_named_rather_than_returned_empty(self):
+        # `CORPORA` misses the stem `corpus`, and a Spanish name misses everything.
+        # Returning [] would read as "this baseline has no data layer", which is a
+        # conclusion the reading never established.
+        box = self.repo({"src/Legacy/io.py":
+                         'CORPORA = ["WikiText-103"]\n'
+                         "def cargar_datos(x):\n    return x\n"})
+        env = impl.baseline_environment(box, ["Legacy"], "Method")
+        self.assertIn("datasets", env["foundNothingFor"])
+        self.assertIn("dataEntryPoints", env["foundNothingFor"])
+        self.assertTrue(env["note"], "a miss with no explanation is indistinguishable "
+                                     "from an absence")
+        self.assertIn("another language", env["note"])
+
+    def test_it_says_how_it_looked_so_the_user_can_point_at_what_it_missed(self):
+        box = self.repo({"src/Legacy/io.py": "x = 1\n"})
+        env = impl.baseline_environment(box, ["Legacy"], "Method")
+        for kind in ("backbones", "datasets", "dataEntryPoints", "notebooks"):
+            self.assertIn(kind, env["readBy"], kind)
+
+    def test_a_full_reading_leaves_the_note_empty(self):
+        box = self.repo({"src/Legacy/io.py":
+                         "from torchvision import models\n"
+                         'DATASETS = ["Some-Task"]\n'
+                         "def load_data(x):\n    return x\n"
+                         "def build():\n    return models.vgg16()\n",
+                         "Legacy/Notebooks/e.ipynb": "{}"})
+        env = impl.baseline_environment(box, ["Legacy"], "Method")
+        self.assertEqual(env["foundNothingFor"], [])
+        self.assertEqual(env["note"], "")

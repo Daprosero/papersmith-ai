@@ -627,6 +627,15 @@ def baseline_environment(target: Path, baselines: list[str], name_of_ours: str =
         if product.is_file() and product.suffix.lower() in MODEL_EXT:
             weights.append(product.name)
 
+    # An empty list must not read as "this baseline has no data layer". The reading is
+    # a heuristic over English word-stems, so it misses a plausible variant (`CORPORA`
+    # against the stem `corpus`) and misses anything named in another language
+    # entirely. Saying what was looked for turns a silent miss into a question the
+    # user can answer in one line.
+    missed = [kind for kind, found in
+              (("backbones", backbones), ("datasets", datasets),
+               ("dataEntryPoints", entry_points), ("notebooks", notebooks))
+              if not found]
     return {
         "backbones": [{"name": n, "seenIn": w} for n, w in sorted(backbones.items())],
         "datasets": [{"name": n, "seenIn": w} for n, w in sorted(datasets.items())],
@@ -634,6 +643,20 @@ def baseline_environment(target: Path, baselines: list[str], name_of_ours: str =
         "notebooks": notebooks[:12],
         "weights": sorted(weights)[:12],
         "discovered": bool(backbones or datasets or weights or entry_points),
+        "foundNothingFor": missed,
+        "readBy": {
+            "backbones": "a called attribute of an imported models module",
+            "datasets": f"a name-shaped string assigned to a variable whose name "
+                        f"contains one of {list(ENVIRONMENT_HINTS)}",
+            "dataEntryPoints": f"a function whose name contains one of "
+                               f"{list(DATA_ENTRY_HINTS)}",
+            "notebooks": "any .ipynb outside the proposal's own product directory",
+        },
+        "note": "These are heuristics over English word-stems. Where `foundNothingFor` "
+                "names a kind, ask the user to point at it rather than concluding the "
+                "baseline has none — a repository written in another language, or "
+                "using its own vocabulary, is invisible to this reading and not "
+                "missing anything." if missed else "",
     }
 
 

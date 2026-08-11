@@ -370,6 +370,14 @@ loader says how to measure it again, and the wiring needs the second. Notebooks
 outside the proposal are read too — that is usually where the prior experiments
 actually ran.
 
+**Read `foundNothingFor` before concluding anything.** The reading is a heuristic over
+English word-stems and structure, so it misses a plausible variant and misses a
+repository named in another language entirely. Where it reports finding nothing for a
+kind, `readBy` says how it looked: put that to the user and ask them to point, rather
+than telling them their baseline has no data layer. An empty list is a miss, and
+presenting it as an absence would be the flow concluding something it never
+established.
+
 Nothing is suggested from a list. This is a forge for papers, not for one field: it
 cannot know which models or datasets are reasonable for mathematics it has not read,
 and offering a catalogue of well-known benchmarks would push both implementations
