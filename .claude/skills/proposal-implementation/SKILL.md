@@ -42,6 +42,15 @@ proposal itself — that is `proposal-deliberation`.
   local config. Pointers are enough to reorganize; the env var only covers the
   clone, so any later checkout or reset re-downloads gigabytes and burns the
   LFS quota.
+- **And then say which files are placeholders.** `env` reports them right after the
+  clone, which is precisely when a repository full of pointers looks complete: the
+  patterns, how many stand unmaterialized, and the one command that would fetch them.
+  Treat every one as missing material — nothing in the flow reads them, no test or
+  notebook is written against them, and a failure to load one is reported as an
+  absent file rather than as a corrupt one, because the error it actually raises
+  names the file format and never the reason.
+  **Fetching is the user's decision and is never taken for them.** The quota is
+  theirs, it does not come back, and the command is printed rather than run.
 - Every test of the implementation lives in the target repository and nowhere
   else. The forge's own `tests/` cover the forge's tooling — the deliberation
   engine, the ingestion helpers — and never the materialized proposal. Deleting

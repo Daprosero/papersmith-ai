@@ -207,6 +207,30 @@ class ProbeStateTests(unittest.TestCase):
         self.assertIn("--out", harness,
                       "the harness must write the record, not only compute it")
 
+    def test_a_repository_of_placeholders_is_told_apart_from_a_complete_one(self):
+        # A clone that skipped the smudge filter looks finished: the paths are all
+        # there and every one of them is a few hundred bytes of text. Whatever opens
+        # one fails with an error about the file format, nowhere near the reason.
+        box = Path(tempfile.mkdtemp(prefix="pp-lfs-"))
+        (box / ".gitattributes").write_text("*.pth filter=lfs diff=lfs merge=lfs -text\n")
+        (box / "Models").mkdir()
+        (box / "Models" / "placeholder.pth").write_bytes(
+            impl.LFS_POINTER_PREFIX + b"v1\noid sha256:abc\nsize 4\n")
+        (box / "Models" / "real.pth").write_bytes(b"\x80\x02\x8a\nreal weights")
+
+        state = impl.lfs_state(box)
+        self.assertEqual(state["status"], "pointers")
+        self.assertEqual(state["pointerCount"], 1)
+        self.assertEqual(state["materializedCount"], 1)
+        self.assertIn("Models/placeholder.pth", state["pointers"])
+        self.assertIn("git lfs pull", state["fetchCommand"])
+
+    def test_a_repository_with_no_lfs_says_so_rather_than_guessing(self):
+        box = Path(tempfile.mkdtemp(prefix="pp-lfs-"))
+        self.assertEqual(impl.lfs_state(box)["status"], "none")
+        (box / ".gitattributes").write_text("*.md text\n")
+        self.assertEqual(impl.lfs_state(box)["status"], "none")
+
     def test_what_exists_is_inspected_even_before_anybody_commits_it(self):
         # The index is the wrong enumerator: a misplaced module invisible until it is
         # committed gets reported after it has entered the history, which is the

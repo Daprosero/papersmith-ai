@@ -158,6 +158,34 @@ Ver el `SKILL.md` de cada skill para el contrato completo.
 
 ## Limitaciones conocidas
 
+### Archivos grandes bajo Git LFS: se avisan, no se resuelven
+
+Cuando la implementación clona un repositorio que usa Git LFS, el clon se hace
+saltando el filtro de materialización y ese salto queda fijado en la configuración
+local del clon. Es deliberado: los punteros alcanzan para reorganizar y para leer
+el código, y materializar gigabytes para moverlos de carpeta gasta una cuota que
+no vuelve.
+
+La consecuencia es que **un repositorio recién clonado parece completo y no lo
+está**. Cada archivo bajo LFS existe, tiene su ruta correcta y pesa unos cientos
+de bytes de texto. Lo que lo abra como datos falla con un error sobre el formato
+del archivo, que no se parece en nada a la causa.
+
+Lo que la forja **sí** hace hoy: `env` los reporta apenas termina el clon — qué
+patrones están bajo LFS, cuántos archivos quedaron sin materializar, cuáles, y el
+único comando que los bajaría. Nada del flujo los lee, ninguna prueba ni cuaderno
+se escribe contra ellos, y **la descarga nunca se hace sola**: la cuota es del
+usuario, gastarla es su decisión, y el comando se imprime en vez de ejecutarse.
+
+Lo que **no** hace: impedir que un cableado escrito a mano intente cargar uno. Si
+eso pasa, el error habla del formato del archivo; el reporte de `env` es donde
+está la razón. Y no distingue un puntero de un archivo genuinamente corrupto —
+los dos se leen como material ausente, que es la lectura conservadora.
+
+Si necesitás esos archivos, bajalos a mano con el comando que reporta `env`,
+sabiendo lo que cuesta. Desde ese momento la verificación los ve materializados y
+el flujo sigue normal.
+
 ### Edición por locus: el bloque raíz del documento
 
 El resolvedor de locus actual localiza y modifica correctamente las secciones

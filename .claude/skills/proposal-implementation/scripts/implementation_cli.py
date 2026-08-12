@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import fnmatch
 import hashlib
 import json
 import os
@@ -93,6 +94,67 @@ def git(target: Path, *args: str, check: bool = True) -> str:
 def tracked_files(target: Path) -> list[str]:
     out = git(target, "ls-files", "-z")
     return [p for p in out.split("\0") if p]
+
+
+#: The first bytes of a Git LFS pointer. A pointer is a few hundred bytes of text
+#: standing where a large file is declared to be; anything that opens it as data
+#: gets a parse error that names the format it expected and not the reason.
+LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/"
+
+
+def lfs_state(target: Path) -> dict:
+    """Which files are placeholders, and what fetching them would cost.
+
+    Cloning with the smudge filter skipped is already the rule — pointers are enough
+    to reorganize a repository, and materializing gigabytes to move them around burns
+    a quota that does not come back. What was missing is saying so. A four-kilobyte
+    text file sitting where a model checkpoint is expected fails at load time with an
+    error about the file format, and the reason is nowhere near the symptom.
+
+    Nothing here fetches anything. The quota is the user's, spending it is their
+    decision, and the command that would do it is reported rather than run.
+    """
+    attributes = target / ".gitattributes"
+    if not attributes.exists():
+        return {"status": "none", "patterns": []}
+
+    patterns = [line.split()[0] for line in attributes.read_text(
+        encoding="utf-8", errors="replace").splitlines()
+        if "filter=lfs" in line and line.split()]
+    if not patterns:
+        return {"status": "none", "patterns": []}
+
+    pointers, materialized = [], 0
+    for path in target.rglob("*"):
+        if not path.is_file() or ".git" in path.parts:
+            continue
+        relative = str(path.relative_to(target))
+        if not any(fnmatch.fnmatch(relative, p) or fnmatch.fnmatch(path.name, p)
+                   for p in patterns):
+            continue
+        try:
+            head = path.open("rb").read(len(LFS_POINTER_PREFIX))
+        except OSError:
+            continue
+        if head == LFS_POINTER_PREFIX:
+            pointers.append(relative)
+        else:
+            materialized += 1
+
+    return {
+        "status": "pointers" if pointers else "materialized",
+        "patterns": patterns,
+        "pointerCount": len(pointers),
+        "materializedCount": materialized,
+        "pointers": sorted(pointers)[:20],
+        "truncated": max(0, len(pointers) - 20),
+        # Reported, never run: fetching spends a quota that does not come back.
+        "fetchCommand": "git lfs pull --include=" + ",".join(f'"{p}"' for p in patterns),
+        "note": ("These files are placeholders of a few hundred bytes. Anything that "
+                 "opens one as data fails with an error about its format rather than "
+                 "about its absence, so treat them as missing material: the flow reads "
+                 "none of them, and fetching them is a decision with a cost attached."),
+    }
 
 
 def present_files(target: Path) -> list[str]:
@@ -1555,6 +1617,9 @@ def cmd_env(args: argparse.Namespace) -> dict:
         "interpreter": str(interpreter),
         "pip": str(pip),
         "nextCommand": f"{pip} install -r {SKILL_ROOT / 'assets' / 'requirements-dev.txt'}",
+        # Reported here because this is the command that runs first after a clone,
+        # which is exactly when a repository full of placeholders looks complete.
+        "lfs": lfs_state(target),
         "note": "Run every target command through this interpreter. Never the forge's.",
     }
 
