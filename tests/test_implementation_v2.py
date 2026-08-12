@@ -173,6 +173,40 @@ class ProbeStateTests(unittest.TestCase):
             (out / impl.PROBE_RESULTS).write_text(json.dumps(results))
         return box
 
+    def test_a_run_below_the_declared_scale_is_a_pilot_and_not_a_finished_campaign(self):
+        # The reduction was always read and returned here; nothing looked at it, so a
+        # point estimate from one repetition reported as a completed benchmark.
+        box = self.repo(results={
+            "revision": "r05.md", "comparison": [{"dimension": "accuracy"}],
+            "reduction": {"epochs": 3, "seeds": [0]},
+            "targetScale": {"epochs": 20, "seeds": list(range(30))},
+        })
+        state = impl.probe_state(box, "Creda", "r05.md")
+        self.assertEqual(state["status"], "piloted")
+        self.assertEqual(state["belowTargetScale"]["seeds"], {"ran": 1, "declared": 30})
+
+    def test_a_run_at_the_declared_scale_is_finished(self):
+        box = self.repo(results={
+            "revision": "r05.md", "comparison": [{"dimension": "accuracy"}],
+            "reduction": {"epochs": 20, "seeds": list(range(30))},
+            "targetScale": {"epochs": 20, "seeds": list(range(30))},
+        })
+        self.assertEqual(impl.probe_state(box, "Creda", "r05.md")["status"], "current")
+
+    def test_a_record_the_checker_wrote_itself_proves_only_half_the_path(self):
+        # The join, crossed. Every test above hands `probe_state` a record this file
+        # authored, which verifies the reader and says nothing about whether anything
+        # produces one — and that is exactly how a repository ended up with a correct
+        # summary at a path nobody opens. So: the contract says where the record goes,
+        # and the harness the skill ships has to name that same place.
+        root = Path(impl.SKILL_ROOT)
+        self.assertIn(impl.PROBE_RESULTS, (root / "SKILL.md").read_text(encoding="utf-8"),
+                      "the contract must name the file the probe opens")
+        harness = (root / "assets/kit/nb" / impl.BENCHMARK_MODULE).read_text(
+            encoding="utf-8")
+        self.assertIn("--out", harness,
+                      "the harness must write the record, not only compute it")
+
     def test_a_leftover_package_is_the_baseline_a_probe_compares_against(self):
         box = self.repo(packages=["Creda", "legacy"])
         self.assertEqual(impl.previous_implementations(box, "Creda"), ["legacy"])
@@ -351,10 +385,30 @@ class VerdictTests(unittest.TestCase):
 
     def test_more_seeds_can_turn_a_tie_into_a_verdict(self):
         # Same means and spread, more repetitions: the standard error shrinks.
-        loose = vd.decide(self.spread(0.70, 0.05, n=2), self.spread(0.76, 0.05, n=2), vd.HIGHER)
-        tight = vd.decide(self.spread(0.70, 0.05, n=200), self.spread(0.76, 0.05, n=200), vd.HIGHER)
+        loose = vd.decide(self.spread(0.70, 0.06, n=3), self.spread(0.76, 0.06, n=3), vd.HIGHER)
+        tight = vd.decide(self.spread(0.70, 0.06, n=200), self.spread(0.76, 0.06, n=200), vd.HIGHER)
         self.assertEqual(loose["winner"], vd.TIE)
         self.assertEqual(tight["winner"], "new")
+
+    def test_below_the_floor_the_threshold_inverts_so_no_verdict_is_granted(self):
+        # One repetition gives a dispersion of zero, hence a threshold of zero, hence
+        # a winner on every row from a bare difference — the rule turning into its
+        # own opposite exactly where the protection matters most.
+        alone = vd.decide(self.spread(0.72, 0.0, n=1), self.spread(0.78, 0.0, n=1), vd.HIGHER)
+        self.assertEqual(alone["winner"], vd.UNRESOLVED)
+        self.assertAlmostEqual(alone["margin"], 0.06)
+        self.assertIn("point estimate", alone["reason"])
+
+    def test_the_measurement_is_still_reported_when_the_verdict_is_withheld(self):
+        # Suppressing the table would make the pilot a different program from the
+        # campaign, which is the one thing the pilot may not be.
+        rows = [{"dimension": "accuracy", "better": vd.HIGHER,
+                 "baseline": self.spread(0.72, 0.0, n=1),
+                 "new": self.spread(0.78, 0.0, n=1)}]
+        rendered = vd.render(vd.judge(rows), {"seeds": 1})
+        self.assertIn("0.72", rendered)
+        self.assertIn("0.78", rendered)
+        self.assertIn("point estimates, not verdicts", rendered)
 
     def test_a_missing_side_is_not_applicable_never_a_walkover(self):
         self.assertEqual(vd.decide(None, self.spread(0.9), vd.HIGHER)["winner"],
@@ -592,8 +646,13 @@ class InterpreterGuardTests(unittest.TestCase):
 
     def test_the_contract_and_the_harness_agree_that_it_is_enforced(self):
         source = (self.KIT / impl.BENCHMARK_MODULE).read_text(encoding="utf-8")
-        self.assertIn("require_target_interpreter", source)
+        self.assertIn("def environment(", source)
         self.assertIn("sys.prefix", source, "the check must look at the running prefix")
+        # The relaxation for notebook services must be a positive test for one, never
+        # an inference from a missing virtualenv: a repository where nobody has made
+        # one yet also lacks it, and there the guard is exactly right to refuse.
+        self.assertIn("def hosted_runtime(", source)
+        self.assertNotIn('".venv").is_dir()', source)
 
     def test_the_harness_names_no_dataset_and_no_backbone_of_its_own(self):
         # A catalogue here would dictate the experiment: the wiring would be forced

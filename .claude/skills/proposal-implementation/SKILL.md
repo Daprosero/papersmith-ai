@@ -135,15 +135,70 @@ proposal itself — that is `proposal-deliberation`.
   winner is never declared from two bare means. Both settings — the fast unit-free
   sweep and the trained run over real material — carry those bounds beside their
   numbers and grant a verdict only past the combined standard error.
+- **And below a declared floor of repetitions, no verdict at all.** With one
+  repetition the dispersion is zero and the threshold is zero, so the rule that
+  exists to suppress noise declares a winner on every row instead. Stamp the reason
+  and print the table; never suppress it, because the pilot has to run the same code
+  the campaign will.
+- The benchmark lives in its own package beside the method's, never inside it. A
+  harness declares no `__provenance__` because it implements no equation, and
+  stamping one on it to satisfy the check empties the check.
+- Two arms differ in what they compute **and in everything they touch**. Shared
+  mutable state — running statistics, caches, how much of the generator each
+  consumes — is a difference nobody declared, and a rung that ignores it credits a
+  term with what the exposure did.
+- **Never credit a mechanism without trying to take the credit away.** When a
+  difference is attributed to something, switch that something off and re-run. Two
+  runs settle what an argument cannot, and they happen before the claim is written
+  down, not after somebody doubts it.
+- A run below the scale the protocol declares is a **pilot**, and its numbers are
+  never quoted as results — not in the report, not in the summary, not in
+  conversation. Only an explicit authorization releases the full run: not a clean
+  verification, not a green pilot, not the agent's own conclusion that it is ready.
+  Green is not permission.
+- **The checklist is made of the agreements, not of the plan of work.** Every design
+  decision reached in conversation becomes an item that gets ticked off. A checklist
+  derived from how the agent intends to build can be completed in full while an
+  agreement never reaches the code, and nothing anywhere will say so — the omission
+  arrives as a silence, and silences are not read.
+- **A decision already agreed is never re-decided while implementing.** When the work
+  runs into something that makes it awkward — a dependency that is not installed, a
+  thing easier to print than to draw, an interface that does not fit — that is not a
+  detail to resolve in passing. Say it plainly: this was agreed, this is what blocks
+  it, this is what I would put in its place, this is what the substitution costs. Then
+  wait. A change mentioned inside a progress report reads as housekeeping and gets
+  nodded through, and afterwards nobody decided it.
+- **And when something agreed turns out to be missing, find out when it went missing
+  before explaining why.** A reconstruction that sounds coherent is worse than "I have
+  not checked yet": it lands as a finding and gets acted on like one. The rule against
+  asserting an absence nobody looked for applies to the session's own history exactly
+  as it applies to a repository.
+- **When a rule joins two ends — something writes, something reads — the check has to
+  cross the join.** Testing each side against a fixture you wrote yourself verifies
+  both halves and never the connection, which is the only thing the rule was about.
+  The fixture always passes: the same hand wrote it and reads it. Run the thing, then
+  ask the tool what it sees.
+- **Revision drift is sized by reach, not only located.** Some changes are local — an
+  equation gains a stabilizer, a constant moves — and the implementation adjusts.
+  Others change what the experiment *is*: what is predicted, over which statistical
+  unit, what counts as correct. Those do not oblige an adjustment, they oblige a new
+  protocol, and every result, checkpoint and dimension stops meaning anything rather
+  than merely going stale. Never adjust the code and re-run without ruling on which of
+  the two it is; a table of the old metric computed over the new formulation is
+  arithmetically correct and answers a question that no longer exists.
+- **Saved models are verified like everything else.** They carry the revision they
+  were trained under in their manifest, so it gets read. A checkpoint from an earlier
+  revision is named as such and never analysed silently beside current ones.
 
 ## Target layout
 
 ```
 <repo>/
-├── <Name>/            Notebooks/  Data/ (only if data exists)  Results/  Models/
-├── src/<Package>/     the implementation (.py), one module per mathematical object
-├── tests/             smoke, invariants, synthetic, findings + audit + remedies
-└── pyproject.toml     isolation marker: anchors pytest/ruff to this repo
+├── <Name>/                    Notebooks/  Data/ (only if data exists)  Results/  Models/
+├── src/<Package>/             the implementation (.py), one module per mathematical object
+├── src/<Package>_Benchmark/   the harness: configuration, material, wiring, verdict
+├── tests/                     smoke, invariants, synthetic, findings + audit + remedies
+└── pyproject.toml             isolation marker: anchors pytest/ruff to this repo
 ```
 
 `<Name>` is chosen by the user. `<Package>` is its importable form: a hyphen is
@@ -154,6 +209,19 @@ into `src/<Package>/`. `pyproject.toml` must carry
 `[tool.pytest.ini_options]` with `pythonpath = ["src"]`: without it the suite
 cannot import the package offline, and an existing file that lacks the table
 counts as a gap, not as compliance.
+
+**The benchmark is a sibling package, never a subfolder of the method's.** Two rules
+already in force decide this between them, and there is exactly one place left that
+satisfies both: `verify` recurses into `src/<Package>/` demanding `__provenance__`
+from every module, and it counts any tracked `.py` outside `src/` and `tests/` as a
+stray module. So a harness beside the notebooks breaks the structure at the first
+commit, and a harness inside the method's package breaks the fidelity — unless
+somebody stamps a provenance on it, which is worse than either: provenance says
+"this module implements these equations", a harness implements none, and falsifying
+it hollows out the one check that keeps the code tied to the mathematics.
+
+Nothing in the benchmark package is part of the formulation. Deleting it leaves the
+method intact, which is the property the name is promising.
 
 ## Decision Gates
 
@@ -380,6 +448,29 @@ draft carries every detail of this one.
 
 Two kinds of gate, and treating them alike is the mistake to avoid.
 
+### What happens to an agreement after it is made
+
+A gate produces agreements, and agreements are the thing this flow loses. They are
+reached in conversation, they live in nobody's file, and by the time the code is
+being written the only record of them is a memory that re-decides freely.
+
+**Write them down as the checklist.** Not the steps of the build — those are the
+agent's own plan, and it can finish every one of them while an agreed thing quietly
+never happens. The items are what was settled: this figure, that instrument, this
+proportion, that ordering. Then an agreement that never reached the code shows up as
+an unticked item instead of as nothing at all.
+
+**And when implementation collides with one, that is a gate, not a detail.** The
+collision is real and worth reporting — a package missing, a rendering that is far
+easier as text than as a picture, an interface that will not take the shape agreed.
+What is not allowed is resolving it alone and mentioning it on the way past. Name the
+agreement, name what blocks it, name the replacement and what it gives up, and wait
+for a yes.
+
+The substitution is usually the more defensible engineering choice, and that is
+exactly why it slips through: it looks like tidiness rather than a decision. It was
+still the user's to make.
+
 ### Decisions — offer the options
 
 A decision has a knowable set of outcomes: reorganize or not, convert or not, run or
@@ -469,9 +560,28 @@ design decisions.
    [Conversion, then benchmark](#conversion-then-benchmark). On `nothing-to-compare`
    or `already-benchmarked`, **ask the user what they want to do next** and invent
    no work.
+
+   **`piloted` is its own state and never reads as finished.** A record whose scale
+   sits below the one the protocol declares is neither absent nor done. Report it
+   precisely — how many repetitions and how long it ran, what the protocol asks for,
+   what the full run costs from the measured time, and what the configuration declares
+   but has never exercised — and then leave the question open. Not a menu: the pilot
+   exists to be the place where somebody looks, adds a test, moves a proportion, and
+   runs it short again, and a list of three buttons closes exactly the door it was
+   built to hold open. The decision to release the full run appears only after the user
+   says there is nothing left to change.
 4. **A failing test** → that is the finding, before any question about fidelity. Report
    which claim broke and stop; a red suite is not a state to compare from.
 5. **Differences in fidelity** → **[GATE] ask whether the user made those changes.**
+
+   Read `drift` before saying anything: it crosses the sections that actually differ
+   between the revision a module declares and the current one with the sections that
+   module declares. A module bound to an older revision whose own sections never moved
+   needs re-binding, not rewriting — bookkeeping, not mathematics — and saying "nine
+   modules are stale" when one equation changed tells the reader there is work and
+   nothing about where. `benchmark` answers the same question for the bench: which
+   arms a changed section reaches, so the experiment is re-run because something it
+   depends on moved rather than because a string did.
    - **They did** → the code is ahead of the proposal. Remind them to update the
      mathematics and hand them the prompt that does it. Do not edit their code to
      match an older proposal.
@@ -564,12 +674,28 @@ and offering a catalogue of well-known benchmarks would push both implementation
 into a setting neither has been measured in. If the baseline's own environment is too
 heavy to screen with, say so and let the user name a lighter one.
 
-Write the completed wiring as `<Name>/Notebooks/wiring.py`, exposing `build_new` and
-`build_baseline`. `build_baseline` may be `None` when the prior work cannot run under
-the common reduction as it stands: that is a `not applicable` with its reason, and
-the baseline is never edited to make a comparison possible.
+Write the completed wiring as `src/<Package>_Benchmark/wiring.py`, exposing
+`build_new`, `build_baseline` and **`build_data`**. `build_baseline` may be `None`
+when the prior work cannot run under the common reduction as it stands: that is a
+`not applicable` with its reason, and the baseline is never edited to make a
+comparison possible.
 
-**[GATE]** then ask before running: it is quick by design, but it is still the user's
+The harness owns training and measuring and nothing else: it names no dataset and no
+architecture, because a catalogue there would dictate the experiment — the wiring
+would be forced to pick whichever well-known set the baseline happens to touch, and
+the reported common environment would be an intersection with that list rather than
+the environment the prior results came from. `build_data` belongs to the wiring for
+the same reason the builders do.
+
+Copy `benchmark.py`, `verdict.py` and `probe.ipynb` from `assets/kit/nb/` — the two
+modules into `src/<Package>_Benchmark/`, the notebook into `<Name>/Notebooks/` — fill
+in the reduction, and execute the notebook. Python that lives beside a notebook is a
+stray module the moment it is committed; see [Target layout](#target-layout). Without
+`wiring.py` the harness refuses and says what is missing. It trains each
+implementation over every seed, measures accuracy, wall time, peak memory and
+parameter count, and writes `<Name>/Results/Probe_results.json`.
+
+**[GATE]** ask before running: it is quick by design, but it is still the user's
 machine, and it downloads a dataset.
 
 Execute the notebook with the target repository's own interpreter, as with the suite.
@@ -577,24 +703,140 @@ Execute the notebook with the target repository's own interpreter, as with the s
 is not a hygiene rule but the measurement itself: wall time and peak memory describe
 whichever environment ran them, so a foreign interpreter produces a correct
 measurement of the wrong thing and the summary would attribute it to this repository.
+Where there is no interpreter of its own to compare against — a hosted runtime with no
+virtualenv in the checkout — it stamps interpreter, platform and device into the
+summary instead of refusing, so a table produced elsewhere is labelled as produced
+elsewhere rather than attributed to this machine.
 
-Write the completed wiring as `<Name>/Notebooks/wiring.py`, exposing `build_new`,
-`build_baseline` and **`build_data`**. The harness owns training and measuring and
-nothing else: it names no dataset and no architecture, because a catalogue there
-would dictate the experiment — the wiring would be forced to pick whichever
-well-known set the baseline happens to touch, and the reported common environment
-would be an intersection with that list rather than the environment the prior results
-came from.
+### The record a later session reads
 
-Copy `benchmark.py`, `verdict.py` and `probe.ipynb` from `assets/kit/nb/` into
-`<Name>/Notebooks/`, fill in the reduction, and execute the notebook. Without
-`wiring.py` the harness refuses and says what is missing. It trains each implementation over every seed, measures accuracy, wall
-time, peak memory and parameter count, and writes `<Name>/Results/Probe_results.json`.
+That summary is the record, and it is the only one. A later session reads it to learn
+that a run happened, under which reduction, and against which revision — nothing is
+stored outside the repository, so nothing can fall out of sync.
 
-That summary is the record. A later session reads it to learn that a run happened,
-under which reduction, and against which revision — a summary naming an older
-revision is stale by inspection, so nothing is stored outside the repository and
-nothing can fall out of sync.
+Three properties make it usable rather than merely present:
+
+- **It lives where the verification looks.** A correct record at a path nobody opens
+  protects nothing.
+- **Its revision declares it stale by inspection**, with no bookkeeping anywhere else.
+- **The readable summary beside it is generated, never written by hand.** It is emitted
+  by the notebook along with the results, carrying the revision, the protocol read from
+  the configuration, the arms and the numbers. Regenerated on every run, it cannot
+  drift from what it describes, because it *is* what it describes. A hand-written
+  summary is a second source of truth: it goes stale in silence and is believed anyway,
+  which is the same failure as a notebook that exists and never ran.
+
+The benchmark package declares, like every module of the method, **which revision it
+was built against and which sections and equations each arm exercises**. It carries no
+`__provenance__` — it implements no equation — but without that declaration nobody can
+answer the question a new revision immediately raises: does this change oblige the
+bench to change? With it, the drift report names the arms a changed section reaches.
+
+**And it declares its own premises beside them**: what kind of prediction the protocol
+assumes, over which statistical unit, by which metric and in which direction. Those
+are what a change of reach destroys — a formulation that moves from deciding a class
+to estimating a quantity leaves every arm intact and every dimension meaningless.
+Nothing can rule on that automatically, and nothing should try. What the tool can do
+is put the premises beside what changed, so the question *is this still the same
+experiment* gets asked with them in view instead of not getting asked at all.
+
+### What has to survive the session, and what cannot be recovered later
+
+- **Two phases, two notebooks: one trains and measures, the other loads and analyses.**
+  The split is what makes a later question cheap — anything computable from weights and
+  data can be added whenever it occurs to somebody. It comes with a consequence that
+  has to be said out loud rather than discovered: **whatever exists only while training
+  runs must be recorded now or it is gone.** Loss trajectories, per-epoch measurements,
+  what a quantity did on its way to its final value — none of that can be recovered
+  from a checkpoint, and re-running the campaign is the only way back.
+- **A manifest with explicit indices beside every kept artefact.** Rebuilding the
+  material by re-running the draw depends on every library involved producing the same
+  permutation it produced the first time, which nobody promises across versions. Write
+  down which inputs went where. A model that travels without its material can only be
+  measured on something else.
+- **The formulation's preconditions are guaranteed by the sampler.** Where the
+  mathematics requires a non-empty index set, a positive trace, a class present on both
+  sides, the pipeline arranges it by construction. The code that raises is right to
+  raise; the mistake is letting a draw provoke it in the middle of an epoch and reading
+  the crash as a defect of the method.
+
+### A ladder, not a duel
+
+Two complete methods measured against each other answer *which one wins* and cannot
+answer *which piece did the work*. The second question is the one a paper has to
+answer, and it costs almost nothing to ask at the same time: the arms differ from one
+another by one thing at a time, and the pairs are written down before anything runs.
+
+- **A floor for every statistical unit, not one floor.** The arm with its adaptation,
+  correction or auxiliary term switched off — everything else identical — is what a
+  gain is read against. When the two sides predict over different units, each family
+  needs its own floor, or a gain cannot be separated from the representation that
+  produced it.
+- **One rung, one difference, and its reading declared.** Write what each pair is
+  supposed to reveal next to the pair. A ladder whose rungs differ in two things is a
+  table of numbers nobody can attribute.
+- **Equalize what the arms *touch*, not only what they *compute*.** This is the
+  expensive one. An arm that looks at data another arm never looks at is already
+  different, even when it computes nothing from it: shared mutable state — the running
+  statistics of a normalization layer, a cache, a moving estimate, how much of the
+  random generator each arm consumes — is a channel through which arms differ without
+  anyone declaring it. Enumerate that state and make every arm touch it identically,
+  including the floors that have no use for it. Otherwise the rung credits the term
+  with what the exposure did.
+- **Equalize the unit of work per step.** Material per update and number of updates,
+  fixed and declared. Two sides fed different amounts per step are being compared on
+  their optimizer.
+
+### Proving the comparison measures anything at all
+
+A rung can read zero for two reasons that look identical on paper and are not: the
+mechanism does nothing, or the mechanism was given no weight. Three habits keep them
+apart, and each is cheap enough that skipping it is never the economical choice.
+
+- **Refute a result with the smallest decisive experiment.** When a difference is
+  credited to a mechanism, switch that mechanism off and see whether the difference
+  survives. Two runs settle what an argument cannot, and the answer arrives before
+  anything is written down. This is the audit's adversarial refuter, pointed at
+  results instead of findings.
+- **Report each declared component's share of the objective.** A term that is
+  correctly implemented and multiplied by something tiny produces a table of exact
+  zeros that reads like a result. Without the share, "it had no effect" and "it had no
+  weight" are indistinguishable.
+- **Calibrate the free scalars by measurement, not by inheritance.** A coefficient
+  taken from prior work was calibrated for prior work's scale. Sweep it over decades
+  on a single cell and find where the term begins to move the outcome, before the grid
+  runs. It costs minutes and decides whether the whole campaign says anything.
+
+### The pilot, and never launching the long run blind
+
+A campaign that takes a day to run has to be wrong cheaply first. The pilot is not a
+rehearsal of the campaign — it *is* the campaign, at a scale small enough to be wrong
+in ten minutes.
+
+- **Two knobs separate the pilot from the full run, and nothing else does.** Every
+  number that defines the experiment lives in one configuration; the pilot is that
+  configuration with the repetition count and the length lowered. If the pilot is a
+  different program it proves nothing about the program that matters.
+- **The configuration declares the scale the verdict requires, not only the scale
+  running now.** Without both, a record of the pilot and the configuration agree with
+  each other and everything looks finished.
+- **Time one cell before committing the grid.** An estimate of the cost is cheaper
+  than the cost, and it belongs as the notebook's first step rather than as a sentence
+  in conversation. Report the measured figure, never the guessed one.
+- **Repetitions go in the outermost loop**, so a repetition varies the material it
+  draws and not merely the initialization.
+- **Every change is exercised at pilot scale.** Adding an arm, adding a test, moving a
+  proportion: change it, run it short, look, change it again. That cycle is what the
+  pilot exists for.
+- **After a revision changes, the short run comes back before the long one.** The arms
+  may have moved with the mathematics, and the temptation once the code is adjusted is
+  to release the whole thing.
+- **Nothing releases the full run except an explicit authorization.** Not a clean
+  verification, not a green pilot, not the agent concluding it is ready. Green is not
+  permission.
+
+While a run stands at pilot scale, its numbers are never quoted as results — not in
+the report, not in the summary, not in conversation.
 
 ### The partition, when the comparison trains
 
@@ -649,6 +891,34 @@ comparing two bare means always produces a winner, because every measurement dif
 from every other at enough decimal places, and reporting that is reading noise out
 loud. A dimension with no better direction — a parameter count — is reported and not
 contested.
+
+**And the threshold needs a floor under it, because below one it inverts.** With a
+single repetition the dispersion is zero, so the combined standard error is zero, so
+*every* row declares a winner from a bare difference — the rule turns into its own
+opposite exactly where the protection was most needed. Declare a minimum number of
+repetitions; below it, grant no verdicts, stamp the reason in the header and in the
+record, and print the table anyway. Suppressing it would make the pilot a different
+program from the campaign, which is the one thing the pilot may not be.
+
+Four more things separate a table that informs from one that flatters:
+
+- **When a claim can be satisfied by degenerating, measure the complement.** A
+  distance that falls may be alignment or collapse, and the first number alone calls
+  both a success. The measurement that tells them apart is reported beside it, always,
+  and neither is reported alone.
+- **Report the observed range and how it varies across settings, not only the mean.**
+  A claim about scale — that a quantity stays bounded, that it behaves the same
+  everywhere — is only a claim until its range is printed. The variation across
+  settings is the sharper half: a common scale means the same quantity lands in the
+  same range whichever configuration it is measuring.
+- **Use paired differences when no single setting resolves anything.** Averaging raw
+  values across settings folds each setting's difficulty into the dispersion and
+  drowns the effect. The difference between two arms measured within the same setting
+  cancels that difficulty, and agreement across settings is what carries a reading
+  that no single setting could support.
+- **Keep the median artefact, never the best.** Whatever is saved for later inspection
+  represents the method only if it is typical. The best of thirty is an extreme of
+  thirty draws, and what gets inspected afterwards describes the luckiest run.
 
 Dimensions come from what the proposal claims to improve, not from a generic
 checklist. Cost — wall time, peak memory — compares cleanly even when the two predict

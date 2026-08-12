@@ -504,11 +504,30 @@ def probe_state(target: Path, name: str, revision: str | None) -> dict:
         status = "unknown"
     else:
         status = "current" if against == revision else "stale"
+
+    # Scale, not only revision. A record obtained below the scale the protocol
+    # declares is neither absent nor done: it is a pilot, and calling it done is how
+    # a point estimate gets quoted as a result. The reduction was always read and
+    # returned here; nothing looked at it.
+    reduction = recorded.get("reduction") or {}
+    target_scale = recorded.get("targetScale") or {}
+    below = {
+        key: {"ran": _scale_of(reduction.get(key)), "declared": _scale_of(value)}
+        for key, value in target_scale.items()
+        if _scale_of(reduction.get(key)) is not None
+        and _scale_of(value) is not None
+        and _scale_of(reduction.get(key)) < _scale_of(value)
+    }
+    if status == "current" and below:
+        status = "piloted"
+
     return {
         "status": status,
         "revision": against,
         "expectedRevision": revision,
-        "reduction": recorded.get("reduction"),
+        "reduction": reduction,
+        "targetScale": target_scale or None,
+        "belowTargetScale": below or None,
         "labels": sorted(rows) if isinstance(rows, dict) else
                   [row.get("dimension") for row in rows if isinstance(row, dict)],
     }
@@ -841,6 +860,11 @@ def cmd_probe(args) -> dict:
         next_step = "nothing-to-compare"
     elif not backend["trainable"]:
         next_step = "convert"
+    elif state["status"] == "piloted":
+        # Neither absent nor done. The flow reports the scale precisely and leaves the
+        # question open: the pilot is where somebody looks, adds a test, moves a
+        # proportion and runs it short again, and a menu closes that door.
+        next_step = "piloted"
     elif state["status"] == "current":
         next_step = "already-benchmarked"
     else:
@@ -1265,6 +1289,108 @@ def trivial_assertions(tests_dir: Path) -> list[str]:
     return trivial
 
 
+#: The line an executed report prints so its evidence can be tied to the code that
+#: produced it. `execution_count` proves a cell ran once; it says nothing about what
+#: it ran against, and a report that ran once and was never re-run stays green while
+#: the code moves out from under it.
+DIGEST_MARKER = "SOURCES-SHA256"
+
+
+#: What the benchmark package declares instead of `__provenance__`. It implements no
+#: equation, so provenance would be a lie; but without any declaration nobody can
+#: answer the question a new revision immediately raises — does this change oblige the
+#: bench to change?
+BENCHMARK_DECLARATION = "__benchmark__"
+
+
+def read_declaration(path: Path, name: str) -> dict | None:
+    """A module-level literal, read without importing anything."""
+    if not path.exists():
+        return None
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (SyntaxError, UnicodeDecodeError) as exc:
+        return {"__error__": f"unparsable: {exc}"}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == name for t in node.targets
+        ):
+            try:
+                return ast.literal_eval(node.value)
+            except ValueError:
+                return {"__error__": f"{name} is not a literal"}
+    return None
+
+
+def revision_sections(source: str | None) -> dict[str, str]:
+    """Each numbered section of a revision, keyed by its number, hashed by content.
+
+    Sections are what modules declare, so sections are the unit a drift report has to
+    speak in. Anything before the first numbered heading belongs to no section and is
+    ignored rather than attributed to one.
+    """
+    if not source:
+        return {}
+    sections: dict[str, list[str]] = {}
+    current = None
+    for line in source.splitlines():
+        heading = re.match(r"^#{1,6}\s+(\d+)[.)]?\s", line)
+        if heading:
+            current = heading.group(1)
+            sections.setdefault(current, [])
+            continue
+        if current is not None:
+            sections[current].append(line)
+    return {number: hashlib.sha256("\n".join(body).encode("utf-8")).hexdigest()
+            for number, body in sections.items()}
+
+
+def changed_sections(old: str | None, new: str | None) -> list[str]:
+    """Which numbered sections differ between two revisions, added and removed too."""
+    before, after = revision_sections(old), revision_sections(new)
+    if not before or not after:
+        return []
+    numbers = set(before) | set(after)
+    return sorted((n for n in numbers if before.get(n) != after.get(n)),
+                  key=lambda n: (len(n), n))
+
+
+def _scale_of(value: object) -> int | None:
+    """How much of something a record names: a count, or the size of a list of them.
+
+    The two knobs that separate a pilot from a campaign are of both kinds — a number
+    of epochs and a list of seeds — and the comparison is the same either way.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, (list, tuple, set)):
+        return len(value)
+    return None
+
+
+def source_digest(target: Path, package: str) -> str:
+    """One hash over everything a report's claims depend on.
+
+    Modification times cannot serve here: a clone rewrites all of them with the
+    checkout time and the ordering is gone. Content can, and the skill already
+    settles the same question this way for the revision behind an admissibility
+    ruling — the ruling stores the revision's digest and `verify` recomputes it.
+    """
+    digest = hashlib.sha256()
+    roots = [target / "src" / package, target / "tests"]
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for file in sorted(root.rglob("*.py")):
+            if "__pycache__" in file.parts:
+                continue
+            digest.update(str(file.relative_to(target)).encode("utf-8"))
+            digest.update(file.read_bytes())
+    return digest.hexdigest()
+
+
 def notebook_execution(path: Path) -> dict:
     """Was the notebook run, or is the file merely present?
 
@@ -1298,6 +1424,16 @@ def notebook_execution(path: Path) -> dict:
         if isinstance(output, dict) and output.get("output_type") == "error"
     ]
 
+    # The digest the report printed when it ran, if it printed one.
+    recorded = None
+    for _, cell in code_cells:
+        for output in (cell.get("outputs") or []):
+            if not isinstance(output, dict):
+                continue
+            text = "".join(output.get("text") or [])
+            if DIGEST_MARKER in text:
+                recorded = text.split(DIGEST_MARKER, 1)[1].strip().split()[0]
+
     if not code_cells:
         status = "empty"
     elif errors:
@@ -1307,7 +1443,38 @@ def notebook_execution(path: Path) -> dict:
     else:
         status = "executed"
     return {"status": status, "codeCells": len(code_cells),
-            "unexecuted": unexecuted, "errors": errors}
+            "unexecuted": unexecuted, "errors": errors, "recordedDigest": recorded}
+
+
+def notebooks_state(target: Path, name: str, package: str) -> dict:
+    """Every notebook of the product, and whether its evidence is still current.
+
+    Reading one file with a reserved name leaves every other notebook unchecked:
+    they could be unexecuted, or full of errors, and the validation would still
+    report `ok`. And `executed` alone answers the wrong question — it says a cell
+    ran once, not that it ran against this code.
+    """
+    root = target / name / "Notebooks"
+    current = source_digest(target, package)
+    reports = []
+    for notebook in sorted(root.glob("*.ipynb")) if root.is_dir() else []:
+        state = notebook_execution(notebook)
+        recorded = state.get("recordedDigest")
+        if state["status"] == "executed" and recorded and recorded != current:
+            state["status"] = "stale-sources"
+        state["notebook"] = str(notebook.relative_to(target))
+        state["sourcesMatch"] = None if not recorded else recorded == current
+        reports.append(state)
+    return {
+        "sourcesDigest": current,
+        "reports": reports,
+        # An executed report that never stamped what it ran against cannot be told
+        # apart from a relic, so it is named rather than counted as fine.
+        "unstamped": [r["notebook"] for r in reports
+                      if r["status"] == "executed" and r["sourcesMatch"] is None],
+        "status": "ok" if reports and all(
+            r["status"] == "executed" for r in reports) else "drift",
+    }
 
 
 def test_function_names(tests_dir: Path) -> set[str]:
@@ -1884,6 +2051,62 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     untested = sorted(i for i in declared_invariants if f"test_{i}" not in tests)
     stale = [m["module"] for m in modules if m["stale"]]
 
+    # What actually changed, rather than "the revision string is different".
+    # Marking every module stale because one equation moved tells the reader there is
+    # work to do and nothing about where, which is the part they have to find anyway.
+    target_source = revision_source(args.revision) if args.revision else None
+    drift_detail = []
+    for module in modules:
+        if not module["stale"]:
+            continue
+        moved = changed_sections(revision_source(module["revision"]), target_source)
+        touched = sorted(set(module["sections"]) & set(moved), key=lambda n: (len(n), n))
+        drift_detail.append({
+            "module": module["module"],
+            "declaredRevision": module["revision"],
+            "changedSections": moved,
+            # A module whose own sections are untouched is bound to an older revision
+            # and implements nothing that moved: re-binding it is bookkeeping, not
+            # mathematics, and saying so is what keeps the two apart.
+            "touchedSections": touched,
+            "reason": "sections it declares have changed" if touched
+                      else "bound to an older revision, but none of its sections moved",
+        })
+
+    # The bench declares no provenance — it implements no equation — but it does
+    # declare which revision it was built against and which sections each arm
+    # exercises, so a changed section can name the arms it reaches.
+    bench_package = f"{package_name(name)}_Benchmark"
+    bench_root = target / "src" / bench_package
+    declaration = None
+    for candidate in ("__init__.py", "config.py"):
+        declaration = declaration or read_declaration(bench_root / candidate,
+                                                      BENCHMARK_DECLARATION)
+    if not bench_root.is_dir():
+        benchmark = {"status": "absent", "package": f"src/{bench_package}"}
+    elif declaration is None or "__error__" in (declaration or {}):
+        benchmark = {"status": "undeclared", "package": f"src/{bench_package}",
+                     "detail": (declaration or {}).get(
+                         "__error__",
+                         f"no {BENCHMARK_DECLARATION} in __init__.py or config.py: "
+                         f"nothing says which sections its arms exercise")}
+    else:
+        built_against = declaration.get("revision")
+        moved = changed_sections(revision_source(built_against), target_source)
+        arms = declaration.get("arms") or {}
+        reached = {arm: sorted(set(spec.get("sections", [])) & set(moved),
+                               key=lambda n: (len(n), n))
+                   for arm, spec in arms.items()
+                   if isinstance(spec, dict) and set(spec.get("sections", [])) & set(moved)}
+        benchmark = {
+            "status": "stale" if (args.revision and built_against != args.revision)
+                      else "ok",
+            "package": f"src/{bench_package}",
+            "revision": built_against,
+            "changedSections": moved,
+            "armsReached": reached or None,
+        }
+
     # The audit bridge: a defect in the mathematics is only reported when its
     # evidence AND the validation of its proposed correction both exist.
     findings = read_findings(target)
@@ -1915,7 +2138,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         audit_status = "ok"
 
     smoke_present = (target / "tests" / "test_smoke.py").exists()
-    notebook = notebook_execution(target / name / "Notebooks" / "verification.ipynb")
+    notebooks = notebooks_state(target, name, package_name(name))
     trivial = trivial_assertions(target / "tests")
 
     if not args.revision:
@@ -1940,6 +2163,8 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "status": fidelity_status,
             "latestRevision": args.revision,
             "staleModules": stale,
+            "drift": drift_detail,
+            "benchmark": benchmark,
             "missingProvenance": missing_provenance,
             "invariantsWithoutTest": untested,
             "modules": modules,
@@ -1972,12 +2197,18 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "compatibility": compatibility,
         },
         "validation": {
-            "status": ("ok" if smoke_present and notebook["status"] == "executed"
+            # Every notebook of the product, not one with a reserved name, and each
+            # one measured against the code it claims to report on.
+            "status": ("ok" if smoke_present and notebooks["status"] == "ok"
                        and not trivial else "incomplete"),
             "smokeTest": smoke_present,
             "invariantTests": sorted(t for t in tests if t.startswith("test_")),
             "trivialAssertions": trivial,
-            "notebook": notebook,
+            "notebook": next((r for r in notebooks["reports"]
+                              if r["notebook"].endswith("verification.ipynb")),
+                             {"status": "missing", "codeCells": 0,
+                              "unexecuted": [], "errors": []}),
+            "notebooks": notebooks,
         },
     }
 

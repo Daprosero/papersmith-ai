@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import platform
 import statistics
 import time
 import tracemalloc
@@ -120,6 +122,29 @@ def reduce_split(dataset, fraction: float, classes: int, seed: int):
     return Subset(dataset, stratified_indices(list(targets), fraction, classes, generator))
 
 
+def resolve_device() -> torch.device:
+    """Whatever this machine has, in the order that costs least to try."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def synchronize(device: torch.device) -> None:
+    """Wait for the device before reading the clock.
+
+    CUDA and MPS queue their kernels and return immediately, so a timer stopped
+    without this measures when the work was *submitted*. The number that comes out
+    looks precise and describes nothing — and wall time is half of what this file
+    exists to report.
+    """
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    elif device.type == "mps":
+        torch.mps.synchronize()
+
+
 @dataclass
 class RunMetrics:
     accuracy: float
@@ -143,6 +168,7 @@ def train_and_score(build: Callable[[int], nn.Module], build_data: Callable,
     loader = DataLoader(train_set, batch_size=reduction.batch_size, shuffle=True)
 
     tracemalloc.start()
+    synchronize(device)
     started = time.perf_counter()
     model.train()
     for _ in range(reduction.epochs):
@@ -151,6 +177,7 @@ def train_and_score(build: Callable[[int], nn.Module], build_data: Callable,
             optimizer.zero_grad()
             loss_fn(model(images), labels).backward()
             optimizer.step()
+    synchronize(device)
     seconds = time.perf_counter() - started
     peak = tracemalloc.get_traced_memory()[1] / (1024 * 1024)
     tracemalloc.stop()
@@ -209,23 +236,45 @@ def compare(builders: dict[str, Callable[[int], nn.Module] | None],
     return results
 
 
-def require_target_interpreter() -> Path:
-    """Refuse to run under any interpreter that is not this repository's own.
+def hosted_runtime() -> str | None:
+    """Is this a notebook service, where there is no interpreter of our own to use?
 
-    The contract has said this in prose in three places, and nothing checked it. For a
-    benchmark it is not a hygiene rule: wall time and peak memory *are* the
-    measurement, so an interpreter from somewhere else does not give a slightly
-    inaccurate result — it gives a correct measurement of the wrong environment, and
-    the summary would attribute it to this repository.
+    Asked positively, and that matters. The tempting shortcut is to infer it from a
+    missing virtualenv — but a repository where nobody has created one yet also has
+    no virtualenv, and there the guard is exactly right to refuse. Inferring from the
+    absence would drop the protection on the user's own machine to buy portability
+    somewhere else.
+    """
+    if "google.colab" in sys.modules or Path("/content").is_dir():
+        return "colab"
+    if os.environ.get("KAGGLE_KERNEL_RUN_TYPE") or Path("/kaggle").is_dir():
+        return "kaggle"
+    if os.environ.get("BINDER_SERVICE_HOST") or os.environ.get("CODESPACES"):
+        return "hosted"
+    return None
 
-    The file sits at <repo>/<Name>/Notebooks/benchmark.py, so the repository is two
-    levels up, and the interpreter has to live inside it.
+
+def environment() -> dict:
+    """Where this ran — refused when it is the wrong place, stamped when it is elsewhere.
+
+    Wall time and peak memory *are* the measurement, so an interpreter from somewhere
+    else does not give a slightly inaccurate result: it gives a correct measurement of
+    a different environment, and the summary would attribute it to this repository.
+
+    So when the repository has a virtualenv of its own and something else is running,
+    that is a mistake and it stops here. But on a hosted runtime — a notebook service
+    where the checkout has no virtualenv — there is nothing to compare against, and
+    refusing would only mean the benchmark cannot run there at all. There the
+    environment is recorded instead: a table produced elsewhere is labelled as produced
+    elsewhere rather than attributed to a machine that never saw it.
+
+    The file sits at <repo>/src/<Package>_Benchmark/benchmark.py, so the repository is
+    two levels up.
     """
     repository = Path(__file__).resolve().parents[2]
     prefix = Path(sys.prefix).resolve()
-    try:
-        prefix.relative_to(repository)
-    except ValueError:
+    inside = prefix.is_relative_to(repository)
+    if not inside and not hosted_runtime():
         raise SystemExit(
             f"refusing to run under {prefix}\n"
             f"  this benchmark must use {repository}'s own virtualenv, because wall "
@@ -234,11 +283,19 @@ def require_target_interpreter() -> Path:
             f"  run the notebook with {repository}/.venv/bin/python, or invoke this "
             f"file with it directly."
         )
-    return repository
+    return {
+        "repository": str(repository),
+        "interpreter": str(prefix),
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "torch": torch.__version__,
+        "selfHosted": inside,
+        "hostedRuntime": hosted_runtime(),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
-    require_target_interpreter()
+    where = environment()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, help="JSON holding the reduction")
     parser.add_argument("--data", default="./.benchmark-data", help="dataset cache")
@@ -294,6 +351,7 @@ def main(argv: list[str] | None = None) -> int:
         "setting": reduction.setting,
         "revision": reduction.revision,
         "reduction": asdict(reduction),
+        "environment": where,
         "comparison": judged,
         "tally": tally(judged),
     }

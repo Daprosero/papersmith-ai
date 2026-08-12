@@ -21,6 +21,19 @@ HIGHER, LOWER, DESCRIPTIVE = "higher", "lower", None
 
 TIE = "indistinguishable"
 NOT_APPLICABLE = "not applicable"
+UNRESOLVED = "no verdict"
+
+#: Below this many repetitions the rule below inverts, so it is not applied at all.
+#: One repetition gives a dispersion of zero, hence a threshold of zero, hence a
+#: winner on every row from a bare difference — the opposite of what the threshold
+#: exists to do, at exactly the scale where the protection matters most. Two is no
+#: better: a standard error from two samples is a number, not an estimate.
+MINIMUM_REPETITIONS = 3
+
+
+def resolved(entry: dict | None) -> bool:
+    """Did this measurement come from enough repetitions to be contested?"""
+    return entry is not None and int(entry.get("n", 1)) >= MINIMUM_REPETITIONS
 
 
 def standard_error(entry: dict) -> float:
@@ -46,6 +59,17 @@ def decide(baseline: dict | None, new: dict | None, better: str | None) -> dict:
     if better is DESCRIPTIVE:
         return {"winner": None, "margin": None,
                 "reason": "descriptive: reported, not contested"}
+
+    if not (resolved(baseline) and resolved(new)):
+        # The row is still printed, with its numbers: a pilot has to run the same
+        # code the campaign will, and hiding the table would make it a different
+        # program. What is withheld is the verdict, not the measurement.
+        return {"winner": UNRESOLVED,
+                "margin": float(new["mean"]) - float(baseline["mean"]),
+                "repetitions": min(int(baseline.get("n", 1)), int(new.get("n", 1))),
+                "reason": f"fewer than {MINIMUM_REPETITIONS} repetitions: the "
+                          f"dispersion is zero, so the threshold is zero and any "
+                          f"difference would win. This is a point estimate."}
 
     left, right = float(baseline["mean"]), float(new["mean"])
     difference = right - left
@@ -73,7 +97,7 @@ def judge(comparison: Iterable[dict]) -> list[dict]:
 
 def tally(judged: Iterable[dict]) -> dict:
     """Where each side wins, so the reader is not left to count rows by eye."""
-    counts = {"new": [], "baseline": [], TIE: [], NOT_APPLICABLE: []}
+    counts = {"new": [], "baseline": [], TIE: [], NOT_APPLICABLE: [], UNRESOLVED: []}
     for row in judged:
         winner = row["verdict"]["winner"]
         if winner in counts:
@@ -103,12 +127,16 @@ def render(judged: Iterable[dict], reduction: dict) -> str:
         lines.append(f"{str(row.get('dimension','?')):<34}"
                      f"{cell(row.get('baseline')):>16}"
                      f"{cell(row.get('new')):>16}  {winner}")
-        if verdict["winner"] in (TIE, NOT_APPLICABLE):
+        if verdict["winner"] in (TIE, NOT_APPLICABLE, UNRESOLVED):
             lines.append(f"{'':<34}{'':>32}  ({verdict['reason']})")
 
     counts = tally(judged)
+    if counts[UNRESOLVED]:
+        lines.insert(1, f"!! {len(counts[UNRESOLVED])} row(s) below "
+                        f"{MINIMUM_REPETITIONS} repetitions: point estimates, not verdicts")
     lines += ["", f"new wins on {len(counts['new'])}, baseline on {len(counts['baseline'])}, "
-                  f"{len(counts[TIE])} indistinguishable, {len(counts[NOT_APPLICABLE])} not applicable"]
+                  f"{len(counts[TIE])} indistinguishable, {len(counts[NOT_APPLICABLE])} not applicable, "
+                  f"{len(counts[UNRESOLVED])} unresolved"]
     if counts["new"]:
         lines.append("  new:      " + ", ".join(map(str, counts["new"])))
     if counts["baseline"]:
