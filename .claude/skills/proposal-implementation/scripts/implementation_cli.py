@@ -95,6 +95,36 @@ def tracked_files(target: Path) -> list[str]:
     return [p for p in out.split("\0") if p]
 
 
+def present_files(target: Path) -> list[str]:
+    """What the repository actually holds, minus what it deliberately ignores.
+
+    The index is the wrong enumerator for an inspection. A file that exists, is not
+    ignored and is doing real work stays invisible until somebody commits it — so a
+    misplaced module is reported after it has entered the history rather than before,
+    which is the opposite of useful.
+
+    Two questions were being answered by one list, and they are different: *does this
+    exist* is answered by the disk, and *is this part of the record* is answered by
+    the ignore rules. Both are local; nothing here reaches a remote.
+    """
+    candidates = [
+        path for path in sorted(target.rglob("*"))
+        if path.is_file() and not any(part in IGNORED_DIRS or part == ".git"
+                                      for part in path.relative_to(target).parts)
+    ]
+    if not candidates:
+        return []
+    relative = [str(path.relative_to(target)) for path in candidates]
+    # One call rather than one per file; `check-ignore` reads the same rules git
+    # itself does, including any nested .gitignore.
+    proc = subprocess.run(
+        ["git", "check-ignore", "--stdin", "-z"], cwd=target,
+        input="\0".join(relative), capture_output=True, text=True,
+    )
+    ignored = {p for p in proc.stdout.split("\0") if p}
+    return [p for p in relative if p not in ignored]
+
+
 def require_clean_worktree(target: Path) -> None:
     if git(target, "status", "--porcelain").strip():
         raise Refused(
@@ -2010,7 +2040,9 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     target = resolve_target(args.target)
     name = validate_name(args.name)
 
-    paths = tracked_files(target)
+    # From the disk, not from the index: a misplaced module is worth reporting before
+    # it enters the history, not after. See `present_files`.
+    paths = present_files(target)
     with_data = (target / name / "Data").is_dir()
     missing_dirs = [d for d in expected_dirs(name, with_data) if not (target / d).is_dir()]
     # The same ignore list `classify` uses. Without it a tracked virtualenv

@@ -189,6 +189,12 @@ proposal itself — that is `proposal-deliberation`.
 - **Saved models are verified like everything else.** They carry the revision they
   were trained under in their manifest, so it gets read. A checkpoint from an earlier
   revision is named as such and never analysed silently beside current ones.
+- **The inspection enumerates from the disk, not from the index.** *Does this exist*
+  is the filesystem's question; *is this part of the record* is the ignore rules'.
+  Answering both with the list of committed files makes "not added yet" mean the same
+  as "deliberately excluded", and a misplaced module then gets reported after it has
+  entered the history instead of before. Both sources are local: no inspection has any
+  business depending on a remote, and none does.
 
 ## Target layout
 

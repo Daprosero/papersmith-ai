@@ -207,6 +207,27 @@ class ProbeStateTests(unittest.TestCase):
         self.assertIn("--out", harness,
                       "the harness must write the record, not only compute it")
 
+    def test_what_exists_is_inspected_even_before_anybody_commits_it(self):
+        # The index is the wrong enumerator: a misplaced module invisible until it is
+        # committed gets reported after it has entered the history, which is the
+        # opposite of useful. Two questions, two sources — does this exist is the
+        # disk's to answer, is this part of the record is the ignore rules'.
+        box = Path(tempfile.mkdtemp(prefix="pp-present-"))
+        subprocess.run(["git", "init", "-q", str(box)], check=True)
+        (box / "src" / "Creda").mkdir(parents=True)
+        (box / "Creda" / "Notebooks").mkdir(parents=True)
+        stray = box / "Creda" / "Notebooks" / "helper.py"
+        stray.write_text("x = 1\n")
+
+        self.assertNotIn("Creda/Notebooks/helper.py", impl.tracked_files(box),
+                         "nothing has been committed, so the index cannot know")
+        self.assertIn("Creda/Notebooks/helper.py", impl.present_files(box),
+                      "but it is on disk and nobody said to ignore it")
+
+        (box / ".gitignore").write_text("Creda/Notebooks/helper.py\n")
+        self.assertNotIn("Creda/Notebooks/helper.py", impl.present_files(box),
+                         "deliberately ignored is not the same as not yet added")
+
     def test_a_leftover_package_is_the_baseline_a_probe_compares_against(self):
         box = self.repo(packages=["Creda", "legacy"])
         self.assertEqual(impl.previous_implementations(box, "Creda"), ["legacy"])
