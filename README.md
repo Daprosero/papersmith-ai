@@ -158,88 +158,110 @@ Ver el `SKILL.md` de cada skill para el contrato completo.
 
 ## Limitaciones conocidas
 
-### Archivos grandes bajo Git LFS: se avisan, no se resuelven
+Cada una dice qué pasa, qué podés hacer igual, qué no, y cómo se arreglaría.
 
-Cuando la implementación clona un repositorio que usa Git LFS, el clon se hace
-saltando el filtro de materialización y ese salto queda fijado en la configuración
-local del clon. Es deliberado: los punteros alcanzan para reorganizar y para leer
-el código, y materializar gigabytes para moverlos de carpeta gasta una cuota que
-no vuelve.
+### `proposal-implementation` — los archivos bajo Git LFS llegan vacíos
 
-La consecuencia es que **un repositorio recién clonado parece completo y no lo
-está**. Cada archivo bajo LFS existe, tiene su ruta correcta y pesa unos cientos
-de bytes de texto. Lo que lo abra como datos falla con un error sobre el formato
-del archivo, que no se parece en nada a la causa.
+**Qué pasa.** Clonás un repositorio que usa Git LFS y parece completo: todas las
+rutas están, todos los archivos existen. Pero cada archivo bajo LFS pesa unos cientos
+de bytes — es un marcador de texto, no el archivo. Lo primero que lo abra como datos
+falla con un error sobre el **formato del archivo**, que no se parece en nada a la
+causa real.
 
-Lo que la forja **sí** hace hoy: `env` los reporta apenas termina el clon — qué
-patrones están bajo LFS, cuántos archivos quedaron sin materializar, cuáles, y el
-único comando que los bajaría. Nada del flujo los lee, ninguna prueba ni cuaderno
-se escribe contra ellos, y **la descarga nunca se hace sola**: la cuota es del
-usuario, gastarla es su decisión, y el comando se imprime en vez de ejecutarse.
+**Por qué es a propósito.** El clon salta el filtro que materializa esos archivos, y
+el salto queda fijado en la configuración local del clon. Los marcadores alcanzan
+para reorganizar el repositorio y leer el código, y bajar gigabytes sólo para moverlos
+de carpeta gasta una cuota de LFS que no vuelve.
 
-Lo que **no** hace: impedir que un cableado escrito a mano intente cargar uno. Si
-eso pasa, el error habla del formato del archivo; el reporte de `env` es donde
-está la razón. Y no distingue un puntero de un archivo genuinamente corrupto —
-los dos se leen como material ausente, que es la lectura conservadora.
+**Qué hace la forja.** `env` te los reporta apenas termina el clon —el momento en que
+la ilusión es más fuerte—: qué patrones están bajo LFS, cuántos archivos quedaron
+vacíos, cuáles, y el único comando que los bajaría. Nada del flujo los lee, ninguna
+prueba ni cuaderno se escribe contra ellos, y **la descarga nunca se hace sola**: la
+cuota es tuya, gastarla es tu decisión, y el comando se imprime en vez de ejecutarse.
 
-Si necesitás esos archivos, bajalos a mano con el comando que reporta `env`,
-sabiendo lo que cuesta. Desde ese momento la verificación los ve materializados y
-el flujo sigue normal.
+**Qué podés hacer.** Si los necesitás, bajalos a mano con ese comando, sabiendo lo que
+cuesta. Desde ahí la verificación los ve completos y todo sigue normal.
 
-### Edición por locus: el bloque raíz del documento
+**Qué no hace.** No puede impedir que un cableado escrito a mano intente cargar uno —
+si pasa, el error habla del formato y el reporte de `env` es donde está la razón. Y no
+distingue un marcador de un archivo genuinamente corrupto: los dos se leen como
+material ausente, que es la lectura conservadora.
 
-El resolvedor de locus actual localiza y modifica correctamente las secciones
-encabezadas por `##`, pero **no puede seleccionar de forma fiable el bloque raíz
-del documento** situado antes del primer encabezado de segundo nivel.
+### `proposal-deliberation` — no se puede editar el título ni la introducción
 
-Ese bloque raíz incluye:
+**Qué pasa.** Pedile que cambie una sección con `##` y la edita sin problema. Pedile
+que cambie el **título** o el **párrafo de introducción** y no puede: el resolvedor
+que ubica dónde aplicar un cambio no sabe seleccionar de forma fiable el bloque que
+está antes del primer `##`.
 
-- el título principal `#`;
-- la introducción inmediatamente posterior;
-- cualquier contenido situado entre el título principal y el primer `##`.
+**Qué incluye ese bloque.** El título con `#`, la introducción que le sigue, y
+cualquier cosa que haya entre los dos y el primer encabezado de segundo nivel.
 
-Como consecuencia, en la versión actual los cambios sobre el **título** y la
-**introducción** pueden requerir **edición manual**, mientras que las secciones
-encabezadas por `##` sí pueden gestionarse mediante el flujo normal de revisión.
+**Qué podés hacer y qué no.** Todo el cuerpo del documento se gestiona por el flujo
+normal de revisiones. Título e introducción hay que **editarlos a mano** en el
+archivo — y ojo, porque eso choca de frente con la limitación siguiente: editar a
+mano una revisión ya publicada rompe la auditoría. En la práctica significa que el
+título y la introducción conviene dejarlos como quedaron en la primera versión.
 
-### Mejora prevista (segunda iteración)
+**Cómo se arregla.** Dándole al resolvedor identificadores explícitos para ese
+bloque — algo como `document_root`, `preamble` o `front_matter` — para que se pueda
+apuntar a él igual que a cualquier sección.
 
-El resolvedor podría ampliarse con identificadores explícitos para el bloque
-raíz, por ejemplo:
+### `proposal-deliberation` — editar una revisión publicada a mano rompe la auditoría
 
-```text
-document_root
-preamble
-front_matter
-```
+**Qué pasa.** Abrís `proposals/research-concept-r14.md` en el editor, corregís una
+palabra, guardás. La próxima operación de la skill reporta `auditStatus: FAIL` y no
+te deja seguir.
 
-### Editar una revisión publicada a mano rompe la auditoría
-
-Cada publicación deja un recibo en `.proposal-deliberation/receipts/` con el
-sha256 del documento. La auditoría relee el archivo de `proposals/`, lo hashea y
-exige que sea byte-idéntico a lo que el motor publicó
-(`consistency-audit.ts`, `RECEIPT_SHA_MISMATCH`). Si se edita a mano una
-revisión ya publicada, el archivo deja de coincidir con su recibo y la siguiente
-operación reporta `auditStatus: FAIL`.
+**Por qué.** Cada publicación deja un recibo en `.proposal-deliberation/receipts/`
+con el sha256 del documento. Antes de cualquier operación, la auditoría relee el
+archivo, lo vuelve a hashear y exige que sea byte-idéntico a lo que el motor publicó
+(`consistency-audit.ts`, `RECEIPT_SHA_MISMATCH`). Una palabra distinta cambia el
+hash y el recibo deja de respaldar nada.
 
 **No es un defecto: es la garantía funcionando.** Sin recibos el motor no puede
-afirmar que una revisión es lo que dice ser, y el linaje byte-exacto deja de
-tener respaldo. Quitarlos no es una opción.
+afirmar que una revisión sea lo que dice ser, y el linaje byte-exacto se queda sin
+respaldo. Sacarlos no es una opción.
 
-**Lo que falta es una operación de re-base autorizada** — algo como
-`ADOPT_MANUAL_EDIT`: "edité esta revisión a propósito, adoptá los bytes actuales
-como nueva línea base", que actualice el recibo tras confirmación explícita del
-investigador. Hoy no existe y la reconciliación hay que hacerla a mano. Con esa
-operación, editar a mano dejaría de ser una ruptura y pasaría a ser un acto
-declarado.
+**Qué podés hacer.** Hoy, o revertís la edición manual hasta que el archivo vuelva a
+coincidir, o reconciliás el recibo a mano. Lo segundo es delicado y conviene evitarlo:
+un recibo actualizado sin cuidado deja al linaje afirmando algo que nadie comprobó.
 
-### El directorio de estado está hardcodeado
+**Cómo se arregla.** Con una operación de re-base autorizada — algo como
+`ADOPT_MANUAL_EDIT`: *"edité esta revisión a propósito, adoptá los bytes actuales
+como nueva línea base"*, que actualice el recibo tras confirmación explícita. Con
+eso, editar a mano dejaría de ser una ruptura y pasaría a ser un acto declarado.
 
-El nombre `.proposal-deliberation` aparece literal en 11 puntos de 7 archivos
-del motor (`derived-state-store.ts`, `consistency-audit.ts`,
-`lifecycle-state-store.ts`, …). En ejecución no rompe nada, pero cualquier
-cambio de nombre obliga a tocarlos uno por uno. Se resuelve con un único
-`stateRoot(root)`; es higiene, no urgencia.
+---
+
+## Deuda de mantenimiento
+
+No limitan a quien usa las skills; limitan a quien las modifique.
+
+### `proposal-deliberation` — el nombre del directorio de estado está repetido
+
+**Qué pasa.** Nada, en uso normal. La carpeta `.proposal-deliberation/` guarda la
+contabilidad de la deliberación —`receipts/` y `state/`— en la raíz del repositorio,
+y su nombre está escrito como texto literal en **21 puntos repartidos en 7 archivos**
+del motor (`consistency-audit.ts` sola tiene 7). Los 21 dicen lo mismo, así que la
+carpeta siempre se encuentra.
+
+**Qué sí funciona.** Dos propuestas distintas conviven sin problema: tanto los
+recibos como el estado se guardan en **un archivo por revisión, nombrado con el
+archivo de la propuesta** (`state/research-concept-r01.md.json`). Nombres distintos,
+archivos distintos, cero colisión. Un paper nuevo funciona idéntico.
+
+**Qué no se puede.** Tener el **mismo documento bajo dos deliberaciones
+independientes** — dos estados aislados sobre los mismos archivos, para explorar dos
+caminos en paralelo — ni mover el estado fuera de la raíz del repositorio. Las dos
+cosas necesitan que la ubicación sea configurable, y hoy no lo es.
+
+**Y el modo de fallar es feo.** Si alguien renombra la carpeta y se olvida de uno de
+los 21 lugares, no falla nada: la mitad de la contabilidad queda escribiéndose en la
+carpeta vieja, en silencio, hasta que alguien nota que faltan recibos.
+
+**Cómo se arregla.** Con un único `stateRoot(root)` del que salgan los 21. Es un
+refactor chico y desbloquea las dos cosas de arriba.
 
 ---
 
