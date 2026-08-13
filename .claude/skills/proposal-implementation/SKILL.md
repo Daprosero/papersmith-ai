@@ -42,15 +42,28 @@ proposal itself — that is `proposal-deliberation`.
   local config. Pointers are enough to reorganize; the env var only covers the
   clone, so any later checkout or reset re-downloads gigabytes and burns the
   LFS quota.
-- **And then say which files are placeholders.** `env` reports them right after the
-  clone, which is precisely when a repository full of pointers looks complete: the
-  patterns, how many stand unmaterialized, and the one command that would fetch them.
-  Treat every one as missing material — nothing in the flow reads them, no test or
-  notebook is written against them, and a failure to load one is reported as an
-  absent file rather than as a corrupt one, because the error it actually raises
-  names the file format and never the reason.
-  **Fetching is the user's decision and is never taken for them.** The quota is
-  theirs, it does not come back, and the command is printed rather than run.
+- **And then say which files are placeholders, and what they would cost.** `env`
+  reports them right after the clone — precisely when a repository full of pointers
+  looks complete — and `verify` repeats it on every later pass, because the one thing
+  worse than not knowing is forgetting. Each pointer states the real file's size, so
+  the report carries a total rather than a warning. Treat every one as missing
+  material: nothing in the flow reads them, no test or notebook is written against
+  them, and a failure to load one is reported as an absent file rather than a corrupt
+  one, because the error it actually raises names the file format and never the
+  reason.
+- **There is no free route, and saying otherwise is worse than the cost.** Every
+  download counts against the repository owner's bandwidth — the command, the web
+  interface's download button, even a source archive that happens to contain those
+  objects. Clicking download in a browser costs exactly what fetching them costs.
+  Report that plainly whenever the subject comes up, because the belief that the
+  browser is free is the one that gets a month's allowance spent by accident.
+  **Fetching is the user's decision and is never taken for them**: the command is
+  printed, never run.
+- **Before spending it, say where the material might come from instead.** `probe`
+  already reads how the repository gets hold of what it works on — a download, a
+  clone, an archive, a mounted directory. Material the repository fetches by itself
+  costs nothing, and anything training produced can be produced again. A quota is
+  spent only on what genuinely exists nowhere else.
 - Every test of the implementation lives in the target repository and nowhere
   else. The forge's own `tests/` cover the forge's tooling — the deliberation
   engine, the ingestion helpers — and never the materialized proposal. Deleting

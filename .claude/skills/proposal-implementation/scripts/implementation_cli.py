@@ -133,27 +133,52 @@ def lfs_state(target: Path) -> dict:
                    for p in patterns):
             continue
         try:
-            head = path.open("rb").read(len(LFS_POINTER_PREFIX))
+            head = path.open("rb").read(256)
         except OSError:
             continue
-        if head == LFS_POINTER_PREFIX:
-            pointers.append(relative)
+        if head.startswith(LFS_POINTER_PREFIX):
+            # The pointer states the real file's size. Reading it is what turns
+            # "some files are missing" into a number the user can weigh.
+            declared = 0
+            for line in head.decode("utf-8", "replace").splitlines():
+                if line.startswith("size "):
+                    declared = int(line.split()[1]) if line.split()[1].isdigit() else 0
+            pointers.append({"path": relative, "bytes": declared})
         else:
             materialized += 1
 
+    total = sum(p["bytes"] for p in pointers)
     return {
         "status": "pointers" if pointers else "materialized",
         "patterns": patterns,
         "pointerCount": len(pointers),
         "materializedCount": materialized,
-        "pointers": sorted(pointers)[:20],
+        "bytesToFetch": total,
+        "humanBytesToFetch": f"{total / 1024**3:.2f} GiB" if total else "0",
+        "pointers": sorted(pointers, key=lambda p: -p["bytes"])[:20],
         "truncated": max(0, len(pointers) - 20),
-        # Reported, never run: fetching spends a quota that does not come back.
+        # Reported, never run.
         "fetchCommand": "git lfs pull --include=" + ",".join(f'"{p}"' for p in patterns),
         "note": ("These files are placeholders of a few hundred bytes. Anything that "
                  "opens one as data fails with an error about its format rather than "
                  "about its absence, so treat them as missing material: the flow reads "
-                 "none of them, and fetching them is a decision with a cost attached."),
+                 "none of them."),
+        # The tempting workaround does not exist, and believing it does is worse than
+        # knowing the cost. GitHub counts every download against the repository
+        # owner's bandwidth — the command below, the browser's download button, even a
+        # source archive that happens to contain LFS objects. The free allowance is
+        # 1 GiB a month. There is no route that avoids it.
+        "quota": ("Every download counts against the repository owner's LFS bandwidth, "
+                  "by any route: the command below, the web interface's download "
+                  "button, or a source archive containing these objects. Clicking "
+                  "download in a browser costs exactly the same as fetching them here."),
+        # Where the material might come from instead — read from the repository's own
+        # code, not guessed. Weights fetched from a drive, unpacked from an archive or
+        # produced by training do not touch the quota at all.
+        "insteadOfFetching": ("Before spending it, check what `probe` reports under "
+                              "`acquisition`: material this repository downloads, "
+                              "clones or unpacks by itself costs nothing, and anything "
+                              "training produced can be produced again."),
     }
 
 
@@ -2266,6 +2291,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "invariantsWithoutTest": untested,
             "modules": modules,
         },
+        "lfs": lfs_state(target),
         "audit": {
             "status": audit_status,
             "findings": [

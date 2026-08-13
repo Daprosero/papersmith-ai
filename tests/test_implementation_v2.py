@@ -215,15 +215,22 @@ class ProbeStateTests(unittest.TestCase):
         (box / ".gitattributes").write_text("*.pth filter=lfs diff=lfs merge=lfs -text\n")
         (box / "Models").mkdir()
         (box / "Models" / "placeholder.pth").write_bytes(
-            impl.LFS_POINTER_PREFIX + b"v1\noid sha256:abc\nsize 4\n")
+            impl.LFS_POINTER_PREFIX + b"v1\noid sha256:abc\nsize 1073741824\n")
         (box / "Models" / "real.pth").write_bytes(b"\x80\x02\x8a\nreal weights")
 
         state = impl.lfs_state(box)
         self.assertEqual(state["status"], "pointers")
         self.assertEqual(state["pointerCount"], 1)
         self.assertEqual(state["materializedCount"], 1)
-        self.assertIn("Models/placeholder.pth", state["pointers"])
+        self.assertEqual([p["path"] for p in state["pointers"]], ["Models/placeholder.pth"])
         self.assertIn("git lfs pull", state["fetchCommand"])
+        # The pointer declares the real size, so the cost is a number rather than a
+        # warning. Fetching this one would spend the whole free monthly allowance.
+        self.assertEqual(state["bytesToFetch"], 1073741824)
+        self.assertIn("1.00 GiB", state["humanBytesToFetch"])
+        # And the tempting workaround must be named as not existing: every route
+        # costs the same, the browser's download button included.
+        self.assertIn("download button", state["quota"])
 
     def test_a_repository_with_no_lfs_says_so_rather_than_guessing(self):
         box = Path(tempfile.mkdtemp(prefix="pp-lfs-"))

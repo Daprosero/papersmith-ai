@@ -174,13 +174,27 @@ para reorganizar el repositorio y leer el código, y bajar gigabytes sólo para 
 de carpeta gasta una cuota de LFS que no vuelve.
 
 **Qué hace la forja.** `env` te los reporta apenas termina el clon —el momento en que
-la ilusión es más fuerte—: qué patrones están bajo LFS, cuántos archivos quedaron
-vacíos, cuáles, y el único comando que los bajaría. Nada del flujo los lee, ninguna
-prueba ni cuaderno se escribe contra ellos, y **la descarga nunca se hace sola**: la
-cuota es tuya, gastarla es tu decisión, y el comando se imprime en vez de ejecutarse.
+la ilusión es más fuerte— y `verify` lo repite en cada pasada posterior, porque lo
+único peor que no saberlo es olvidarlo. Cada marcador declara el tamaño del archivo
+real, así que el reporte trae **un total, no una advertencia**. En este repositorio,
+por ejemplo: 18 marcadores, **5,09 GiB** si se bajaran.
 
-**Qué podés hacer.** Si los necesitás, bajalos a mano con ese comando, sabiendo lo que
-cuesta. Desde ahí la verificación los ve completos y todo sigue normal.
+Nada del flujo los lee, ninguna prueba ni cuaderno se escribe contra ellos, y **la
+descarga nunca se hace sola**: el comando se imprime en vez de ejecutarse.
+
+**Ojo con el atajo que no existe.** Bajarlos desde la página de GitHub con el botón de
+descarga **cuesta exactamente lo mismo**. GitHub cuenta todas las descargas contra el
+ancho de banda del dueño del repositorio, por cualquier vía — el comando, el navegador,
+y hasta el zip del código fuente si contiene esos objetos. La franquicia gratuita es de
+1 GiB por mes. No hay ruta que la evite, y creer que la hay es la forma más común de
+gastarse el mes sin querer.
+
+**Qué podés hacer antes de gastarla.** Mirá lo que `probe` reporta bajo `acquisition`:
+el material que el repositorio se baja, clona o desempaqueta **por su cuenta** no
+cuesta cuota, y lo que salió de un entrenamiento se vuelve a producir entrenando. La
+cuota se gasta sólo en lo que de verdad no existe en ningún otro lado — y si lo
+necesitás, bajalo sabiendo el número. Desde ahí la verificación los ve completos y todo
+sigue normal.
 
 **Qué no hace.** No puede impedir que un cableado escrito a mano intente cargar uno —
 si pasa, el error habla del formato y el reporte de `env` es donde está la razón. Y no
