@@ -987,6 +987,16 @@ def cmd_probe(args) -> dict:
     else:
         next_step = "benchmark"
 
+    # The report is read before any of this is offered, and a report in drift is
+    # reason not to offer the full run. Every other check here answers whether the
+    # numbers would be sound; this one answers whether the document that carries
+    # them says what they say. A campaign measured in hours can otherwise print a
+    # wrong conclusion with the authority of thirty repetitions — and correcting it
+    # afterwards costs the campaign, not the sentence.
+    report = report_state(target, name, package_name(name))
+    if next_step in ("benchmark", "piloted") and report["status"] != "ok":
+        next_step = "report-first"
+
     proposal = wiring_proposal(target, name, baselines) if next_step == "benchmark" else None
     harness = target / name / "Notebooks" / BENCHMARK_MODULE
     notebook = target / name / "Notebooks" / PROBE_NOTEBOOK
@@ -1000,6 +1010,7 @@ def cmd_probe(args) -> dict:
         "harness": str(harness.relative_to(target)) if harness.exists() else None,
         "notebook": str(notebook.relative_to(target)) if notebook.exists() else None,
         "results": state,
+        "report": report,
         "nextStep": next_step,
         "wiring": proposal,
         # `probe` looks and reports; it never runs anything itself.
@@ -1419,6 +1430,354 @@ DIGEST_MARKER = "SOURCES-SHA256"
 #: bench to change?
 BENCHMARK_DECLARATION = "__benchmark__"
 
+#: What the benchmark declares about the document a human reads, rather than about
+#: the numbers it produces. Everything else in this file checks that the run was
+#: sound; without this, nothing checks that the report of it is.
+#:
+#: It is a declaration and not a list of names in this file, and that is the whole
+#: point: `verify` must not learn what a metric is called in somebody's field. The
+#: target says which functions render, which produce conclusions, and which way each
+#: dimension wins; the checks below read only that.
+#:
+#:     "report": {
+#:         "renderers":   ["tables.render", "harness.render_panorama"],
+#:         "conclusions": ["tables.conclusion", "tables.conclusion_rungs"],
+#:         "dimensions":  {"targetAccuracy": "higher", "seconds": "lower"},
+#:     }
+REPORT_KEY = "report"
+
+#: A decimal with two or more places in prose is a measurement somebody typed. One
+#: place, or a bare integer, is usually structure — a count of panels, a section
+#: number — and flagging those would train the reader to ignore the check.
+PROSE_NUMBER = re.compile(r"\d+[.,]\d{2,}")
+
+
+def _dotted_calls(source: str) -> list[str]:
+    """Every `module.function` and bare `function` called in one cell."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return []
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            if isinstance(func.value, ast.Name):
+                names.append(f"{func.value.id}.{func.attr}")
+            # `(root / "report.txt").write_text(...)` has an expression on the left,
+            # so the dotted form never appears. The bare attribute is added too:
+            # a call is still a call when what it is called on was computed.
+            names.append(func.attr)
+        elif isinstance(func, ast.Name):
+            names.append(func.id)
+    return names
+
+
+def _notebook_cells(path: Path) -> list[dict]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        return []
+    cells = document.get("cells")
+    return cells if isinstance(cells, list) else []
+
+
+def _source_of(cell: dict) -> str:
+    source = cell.get("source")
+    return "".join(source) if isinstance(source, list) else str(source or "")
+
+
+#: Read inside the target's own interpreter, because both questions below need the
+#: real values and neither can be answered from the text of the file. A constant
+#: built by a comprehension has no literal to compare, and a conclusion that cannot
+#: come out different can only be caught by making it try.
+#:
+#: It imports the target's benchmark package and nothing of this skill, runs in the
+#: target's virtualenv, and prints one JSON object. It never writes.
+INTROSPECT = r'''
+import importlib, json, random, sys
+
+package = sys.argv[1]
+record = sys.argv[2]
+config = importlib.import_module(f"{package}_Benchmark.config")
+declaration = importlib.import_module(f"{package}_Benchmark")
+contract = getattr(declaration, "__benchmark__", {}).get("report", {})
+
+def frozen(value):
+    """A collection as a comparable set, or nothing if it is not one."""
+    if isinstance(value, (list, tuple, set)) and value:
+        try:
+            return frozenset(value)
+        except TypeError:
+            return None
+    return None
+
+# Constants that are a proper subset of another constant: a selection somebody
+# wrote out. Legitimate when the rule that fixed it looks at no outcome — and that
+# is a claim a human makes, so it is declared rather than inferred.
+values = {n: frozen(getattr(config, n)) for n in dir(config) if n.isupper()}
+values = {n: v for n, v in values.items() if v}
+subsets = []
+for name, value in sorted(values.items()):
+    for other, whole in sorted(values.items()):
+        if name != other and value < whole:
+            subsets.append({"constant": name, "of": other, "size": len(value),
+                            "whole": len(whole)})
+            break
+
+# A conclusion that says the same thing about different numbers is tied to nothing.
+# Its input is permuted rather than replaced, so the shapes and the keys survive and
+# only the correspondence between them moves.
+def shuffled(value, rng):
+    if isinstance(value, list):
+        copy = [shuffled(v, rng) for v in value]
+        rng.shuffle(copy)
+        return copy
+    if isinstance(value, dict):
+        # Keys keep their own values. Moving a value to another key changes the
+        # *shape* of the record, and a conclusion that then raises would be
+        # reported as untied when it was only handed something malformed. What has
+        # to move is the numbers, not the structure they hang from.
+        return {k: shuffled(v, rng) for k, v in value.items()}
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, (int, float)):
+        return type(value)(value * rng.uniform(1.5, 4.0) + rng.uniform(1.0, 5.0))
+    return value
+
+# One entry point and not a list of functions, because guessing at signatures is
+# how a check ends up reporting "could not exercise" and being read as a pass. The
+# target wires its own conclusions behind one call that takes the record and gives
+# back {label: text}; this only has to invoke it twice.
+inert = []
+entry = contract.get("conclusionEntry")
+payload = json.load(open(record, encoding="utf-8")) if record else {}
+if not entry:
+    inert.append({"conclusion": "*", "reason": "el contrato no declara conclusionEntry"})
+elif not payload:
+    inert.append({"conclusion": entry, "reason": "sin registro sobre el que probar"})
+else:
+    module_name, _, function_name = entry.rpartition(".")
+    try:
+        module = importlib.import_module(f"{package}_Benchmark.{module_name}")
+        produce = getattr(module, function_name)
+        rng = random.Random(0)
+        first = produce(payload)
+        second = produce(shuffled(payload, rng))
+    except Exception as exc:
+        inert.append({"conclusion": entry, "reason": f"no se pudo ejercitar: {exc}"})
+    else:
+        for label in sorted(set(first) | set(second)):
+            if first.get(label) == second.get(label):
+                inert.append({"conclusion": label,
+                              "reason": "el texto no cambia cuando cambian los números"})
+
+print(json.dumps({"subsets": subsets, "inertConclusions": inert}))
+'''
+
+
+def introspect(target: Path, package: str, record: Path | None) -> dict:
+    """Run the two live checks inside the target's interpreter, or say why not.
+
+    Never the forge's: the whole isolation rule of this skill, and here it is also
+    the only interpreter where the target's own package imports at all.
+    """
+    bin_dir = "Scripts" if os.name == "nt" else "bin"
+    interpreter = target / ".venv" / bin_dir / ("python.exe" if os.name == "nt"
+                                                else "python")
+    if not interpreter.exists():
+        return {"status": "unavailable",
+                "detail": f"no hay intérprete en {interpreter}: corré `env` primero"}
+    proc = subprocess.run(
+        [str(interpreter), "-c", INTROSPECT, package,
+         str(record) if record and record.exists() else ""],
+        capture_output=True, text=True, cwd=str(target),
+        env={**os.environ, "PYTHONPATH": str(target / "src")},
+    )
+    if proc.returncode != 0:
+        return {"status": "unavailable",
+                "detail": (proc.stderr.strip().splitlines() or ["falló sin mensaje"])[-1]}
+    try:
+        return {"status": "ok", **json.loads(proc.stdout or "{}")}
+    except json.JSONDecodeError:
+        return {"status": "unavailable", "detail": "salida ilegible del intérprete"}
+
+
+def report_contract(target: Path, package: str) -> dict:
+    """What the benchmark declares about its own report, or nothing."""
+    declaration = read_declaration(
+        target / "src" / f"{package}_Benchmark" / "__init__.py", BENCHMARK_DECLARATION)
+    if not isinstance(declaration, dict):
+        return {}
+    contract = declaration.get(REPORT_KEY)
+    return contract if isinstance(contract, dict) else {}
+
+
+def report_state(target: Path, name: str, package: str) -> dict:
+    """Whether the document a human reads obeys the rules the numbers already do.
+
+    Five findings, and each one is a way a report can be wrong while every number
+    behind it is right:
+
+    `proseNumbers`      a measurement typed into prose. It cannot be recomputed, so
+                        it survives the run that contradicts it. This is the sharpest
+                        of the five: it catches a hand-written conclusion, a caption
+                        left over from an earlier campaign, and a figure the text
+                        already disagrees with.
+    `duplicated`        the same measurement rendered twice. Two renderings of one
+                        number are two things that can drift apart, and the reader
+                        has no way to know which one moved.
+    `unframed`          a table with nothing before it saying what it measures and
+                        which direction wins. A reader should not have to reverse
+                        engineer the direction of a column.
+    `unconcluded`       a table with no conclusion after it, or one that is a string
+                        literal rather than a computed statement. A conclusion typed
+                        by hand is the `proseNumbers` failure wearing a sentence.
+    `undeclared`        a dimension rendered whose direction the package never
+                        declared, so nothing could have checked its framing.
+
+    Nothing here judges whether a conclusion is *correct*. That would need to know
+    what the numbers mean, which is exactly what this file may not know.
+    """
+    contract = report_contract(target, package)
+    renderers = set(contract.get("renderers") or [])
+    conclusions = set(contract.get("conclusions") or [])
+    dimensions = dict(contract.get("dimensions") or {})
+
+    root = target / name / "Notebooks"
+    notebooks = sorted(root.glob("*.ipynb")) if root.is_dir() else []
+    if not contract:
+        return {
+            "status": "undeclared",
+            "detail": (f"src/{package}_Benchmark/__init__.py declares no "
+                       f"{BENCHMARK_DECLARATION}[{REPORT_KEY!r}], so nothing states "
+                       f"which calls render and which conclude, and no check below "
+                       f"could run without guessing at somebody's field"),
+            "notebooks": [str(p.relative_to(target)) for p in notebooks],
+        }
+
+    prose_numbers: list[dict] = []
+    duplicated: list[dict] = []
+    unframed: list[dict] = []
+    unconcluded: list[dict] = []
+    undeclared: set[str] = set()
+
+    for notebook in notebooks:
+        cells = _notebook_cells(notebook)
+        rel = str(notebook.relative_to(target))
+        seen: dict[str, int] = {}
+
+        for index, cell in enumerate(cells):
+            source = _source_of(cell)
+            if cell.get("cell_type") == "markdown":
+                for match in PROSE_NUMBER.finditer(source):
+                    line = source[:match.start()].count("\n") + 1
+                    prose_numbers.append({"notebook": rel, "cell": index,
+                                          "line": line, "value": match.group(0)})
+                continue
+            if cell.get("cell_type") != "code":
+                continue
+
+            calls = _dotted_calls(source)
+            rendered = sorted(set(c for c in calls if c in renderers))
+            if not rendered:
+                continue
+
+            # A cell that writes to disk is the record, and the record is supposed
+            # to hold everything the notebook showed. Counting it as a second
+            # reading would make the one file a later session depends on look like
+            # the defect, and the only way to satisfy the check would be to stop
+            # writing it.
+            writes_record = any(call.endswith(("write_text", "write_bytes", "write"))
+                                for call in calls)
+
+            # Which declared dimensions this rendering names, so the same table is
+            # recognised as the same table wherever it is printed.
+            named = sorted(d for d in dimensions
+                           if f'"{d}"' in source or f"'{d}'" in source)
+            if not writes_record:
+                for key in named or ["<sin dimensión>"]:
+                    for call in rendered:
+                        signature = f"{call}({key})"
+                        if signature in seen:
+                            duplicated.append({"notebook": rel, "cell": index,
+                                               "first": seen[signature],
+                                               "rendering": signature})
+                        else:
+                            seen[signature] = index
+
+                if len(rendered) > 1:
+                    duplicated.append({"notebook": rel, "cell": index,
+                                       "rendering": " + ".join(rendered),
+                                       "reason": "más de una medición en una celda"})
+
+            frame = next((cells[back] for back in range(index - 1, -1, -1)
+                          if cells[back].get("cell_type") == "markdown"), None)
+            gap = any(cells[back].get("cell_type") == "code"
+                      for back in range(index - 1, -1, -1)
+                      if _dotted_calls(_source_of(cells[back])))
+            if frame is None or not _source_of(frame).strip():
+                unframed.append({"notebook": rel, "cell": index,
+                                 "rendering": ", ".join(sorted(set(rendered)))})
+            elif gap and index and cells[index - 1].get("cell_type") != "markdown":
+                unframed.append({"notebook": rel, "cell": index,
+                                 "rendering": ", ".join(sorted(set(rendered))),
+                                 "reason": "la explicación no está inmediatamente antes"})
+
+            concluded = any(c in conclusions for c in calls)
+            if not concluded and index + 1 < len(cells):
+                follower = cells[index + 1]
+                concluded = (follower.get("cell_type") == "code"
+                             and any(c in conclusions
+                                     for c in _dotted_calls(_source_of(follower))))
+            if not concluded:
+                unconcluded.append({"notebook": rel, "cell": index,
+                                    "rendering": ", ".join(sorted(set(rendered)))})
+
+    # The two that need real values. A constant built by a comprehension has no
+    # literal to compare, and a conclusion that cannot come out different can only
+    # be caught by making it try.
+    fixed = dict(contract.get("selections") or {})
+    record = next((p for p in sorted((target / name).rglob("*.json"))
+                   if p.name in (contract.get("record") or "latent.json")), None)
+    live = introspect(target, package, record)
+    written_selections = [
+        {**row, "rule": None} for row in live.get("subsets", [])
+        if row["constant"] not in fixed
+    ]
+    inert = live.get("inertConclusions", [])
+
+    findings = {"proseNumbers": prose_numbers, "duplicated": duplicated,
+                "unframed": unframed, "unconcluded": unconcluded,
+                "undeclared": sorted(undeclared),
+                # A subset written by hand is a selection nobody had to justify.
+                # It is legitimate when the rule that fixed it looks at no outcome,
+                # and that is a claim a human makes — so it is declared in the
+                # contract rather than inferred from the shape of a list.
+                "writtenSelections": written_selections,
+                # `trivialAssertions` for the report: a conclusion that says the
+                # same thing about different numbers is tied to nothing, exactly
+                # as an assertion that cannot fail proves nothing.
+                "inertConclusions": inert}
+    clean = all(not value for value in findings.values())
+    status = "ok" if clean else "drift"
+    if live.get("status") != "ok":
+        # An unavailable check is never a pass. Two of the five findings could not
+        # be looked for, and saying `ok` would report their absence as their
+        # answer.
+        status = "incomplete" if clean else "drift"
+    return {"status": status,
+            "live": live.get("status"),
+            "liveDetail": live.get("detail"),
+            "declared": {"renderers": sorted(renderers),
+                         "conclusions": sorted(conclusions),
+                         "dimensions": dimensions,
+                         "selections": fixed},
+            "notebooks": [str(p.relative_to(target)) for p in notebooks],
+            **findings}
+
 
 def read_declaration(path: Path, name: str) -> dict | None:
     """A module-level literal, read without importing anything."""
@@ -1496,7 +1855,13 @@ def source_digest(target: Path, package: str) -> str:
     ruling — the ruling stores the revision's digest and `verify` recomputes it.
     """
     digest = hashlib.sha256()
-    roots = [target / "src" / package, target / "tests"]
+    # The benchmark package belongs here as much as the method's does, and leaving
+    # it out was a hole with a name: the module that renders the tables and writes
+    # the conclusions is exactly what a report's claims depend on. Without it, a
+    # conclusion could be corrected in code while the record kept asserting the old
+    # one and the notebook stayed `executed` — observed, not imagined.
+    roots = [target / "src" / package, target / "src" / f"{package}_Benchmark",
+             target / "tests"]
     for root in roots:
         if not root.is_dir():
             continue
@@ -1586,11 +1951,14 @@ def notebooks_state(target: Path, name: str, package: str) -> dict:
         "sourcesDigest": current,
         "reports": reports,
         # An executed report that never stamped what it ran against cannot be told
-        # apart from a relic, so it is named rather than counted as fine.
+        # apart from a relic, so it is named — and it counts. Naming it and then
+        # reporting `ok` anyway said the quiet part twice: the skill knows the
+        # difference cannot be told and passes it regardless, which is the same
+        # failure as a green suite whose red was never reachable.
         "unstamped": [r["notebook"] for r in reports
                       if r["status"] == "executed" and r["sourcesMatch"] is None],
         "status": "ok" if reports and all(
-            r["status"] == "executed" for r in reports) else "drift",
+            r["status"] == "executed" and r["sourcesMatch"] for r in reports) else "drift",
     }
 
 
@@ -2292,6 +2660,10 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "modules": modules,
         },
         "lfs": lfs_state(target),
+        # Whether the document a human reads obeys the rules the numbers already do.
+        # Every other section here checks that the run was sound; a run can be sound
+        # and its report still assert the opposite, which is worse than no report.
+        "report": report_state(target, name, package_name(name)),
         "audit": {
             "status": audit_status,
             "findings": [

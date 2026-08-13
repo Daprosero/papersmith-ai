@@ -162,6 +162,35 @@ proposal itself — that is `proposal-deliberation`.
   exists to suppress noise declares a winner on every row instead. Stamp the reason
   and print the table; never suppress it, because the pilot has to run the same code
   the campaign will.
+- **Every rule that governs a measurement governs every statement derived from
+  it.** A number is checked and then a sentence is written about it, and the
+  sentence is where the rules quietly stop being applied — the same pooling that
+  would be caught in a table passes unnoticed inside the line that summarizes it.
+  Whatever is computed from a measurement is bound by the measurement's rules: its
+  bounds, its dispersion, its pairing, its floor. A derived statement that breaks
+  one of them is worse than no statement, because it arrives with the authority of
+  the measurement it contradicts.
+- **Every aggregation names the axis it collapses, and collapses one.** Folding a
+  second axis without saying so produces something that reads like the first:
+  repetitions laid end to end read as one long run, settings averaged together read
+  as one setting, instances pooled read as subjects. The failure is silent by
+  construction — the output has the right shape and the wrong meaning — so the axis
+  is declared where the aggregation happens, and anything that would flatten two is
+  refused rather than explained afterwards.
+- **Equalize what is drawn, not only what the arms touch.** Panels that differ in
+  how many points they carry differ in something nobody declared, and the eye reads
+  density as coverage. Two arms measured in different statistical units do not
+  become comparable by being placed side by side; either the figure puts them in a
+  space they both have, or it does not put them together.
+- **When a figure's composition rests on a claim about the data, the code that
+  draws it measures that claim.** "These two panels would show the same thing" and
+  "this column is redundant" are measurements wearing the clothes of a design
+  decision. Left as beliefs they are never revisited and quietly stop being true;
+  measured by the drawing code, the figure adjusts itself and says why.
+- **A finding is explained in the language the user is speaking**, in a neutral
+  professional register. Identifiers, equation numbers, record keys and code stay
+  as they are — they are a data contract. What is being handed over is a judgement
+  about their mathematics, and a judgement nobody can read has not been handed over.
 - The benchmark lives in its own package beside the method's, never inside it. A
   harness declares no `__provenance__` because it implements no equation, and
   stamping one on it to satisfy the check empties the check.
@@ -735,6 +764,63 @@ Where there is no interpreter of its own to compare against — a hosted runtime
 virtualenv in the checkout — it stamps interpreter, platform and device into the
 summary instead of refusing, so a table produced elsewhere is labelled as produced
 elsewhere rather than attributed to this machine.
+
+### The report contract, and why `verify` reads the document too
+
+Every other check in this skill asks whether the run was sound. None of them asks
+whether the document a human reads says what the run says — and a sound run with a
+report that contradicts it is worse than no report, because the contradiction
+arrives with the run's authority.
+
+So the benchmark package declares its report alongside its arms, and `verify`
+checks the notebooks against that declaration. It is a declaration and not a list
+of names in the skill, and that is the whole point: nothing here may learn what a
+metric is called in somebody's field.
+
+```python
+"report": {
+    "renderers":       ["tables.render", "harness.render_panorama"],
+    "conclusions":     ["tables.conclusion", "tables.conclusion_geometry"],
+    "conclusionEntry": "tables.conclusions",
+    "dimensions":      {"targetAccuracy": "higher", "seconds": "lower"},
+    "selections":      {"SEEDS": "the pilot, a prefix of FULL_SEEDS"},
+    "record":          "latent.json",
+}
+```
+
+What that buys, and each one is a way a report goes wrong while every number
+behind it is right:
+
+- **No measurement typed into prose.** A number written by hand cannot be
+  recomputed, so it survives the run that contradicts it. This is the sharpest of
+  the checks: it catches a conclusion written by hand, a caption left from an
+  earlier campaign, and a sentence the figure beside it already disagrees with.
+- **One measurement, one place.** Two renderings of one number are two things that
+  can drift apart, and the reader cannot tell which one moved. The cell that
+  writes the record is exempt — the record is supposed to hold everything.
+- **Framing before, conclusion after.** What is measured, why, and which direction
+  wins; then a conclusion that comes from a function. A reader should not have to
+  reverse-engineer the direction of a column, and a conclusion typed by hand is
+  the first failure wearing a sentence.
+- **Selections computed, or declared with the rule that fixed them.** A constant
+  naming a subset of another constant is a choice somebody made. It is legitimate
+  when the rule looks at no outcome — and that is a claim a human makes, so it is
+  stated where it can be argued with rather than inferred from the shape of a list.
+- **A conclusion must be able to come out different.** `conclusionEntry` is run
+  over the record and over the same record with its numbers permuted; identical
+  text means the conclusion is tied to nothing. This is `trivialAssertions` pointed
+  at the report — a conclusion that cannot come out wrong is measuring nothing, for
+  exactly the reason an assertion that cannot fail proves nothing.
+
+One entry point rather than a list of callables, and the reason is worth keeping:
+a check that has to guess at signatures ends up reporting *could not exercise*,
+and that reads as a pass.
+
+`verify` reports this as `report`, beside `structure`, `fidelity`, `audit` and
+`validation`. **A report in drift is reason not to offer the full run** — `probe`
+answers `report-first` instead of `benchmark`. A campaign measured in hours can
+otherwise print a wrong conclusion with the authority of thirty repetitions, and
+correcting it afterwards costs the campaign rather than the sentence.
 
 ### The record a later session reads
 

@@ -927,3 +927,198 @@ class AcquisitionHonestyTests(unittest.TestCase):
         box = self.repo({"src/Prior/paths.py": 'ROOT = "data/images"\n'})
         how = {a["how"] for a in impl.baseline_environment(box, ["Prior"], "M")["acquisition"]}
         self.assertNotIn("read from a path outside the repository", how)
+
+
+# --------------------------------------------------------------------- el sello
+
+import importlib.util  # noqa: E402
+
+_digest_spec = importlib.util.spec_from_file_location(
+    "report_digest",
+    FORGE / ".claude/skills/proposal-implementation/assets/kit/nb/report_digest.py",
+)
+report_digest = importlib.util.module_from_spec(_digest_spec)
+_digest_spec.loader.exec_module(report_digest)
+
+
+class ReportDigestJoinTests(unittest.TestCase):
+    """Las dos mitades del sello, corridas sobre el mismo árbol.
+
+    Una la escribe el destino y la otra la recomputa la verificación. Probar cada
+    una contra un fixture propio verificaría las dos mitades y nunca la unión, que
+    es lo único que el sello es: si dan números distintos, todo informe queda
+    marcado como reliquia y nadie sabe por qué.
+    """
+
+    def build(self, root: Path) -> None:
+        for relative, body in (
+            ("src/Method/kernels.py", "K = 1\n"),
+            ("src/Method_Benchmark/tables.py", "def render():\n    return 'x'\n"),
+            ("src/Method_Benchmark/__init__.py", "__benchmark__ = {}\n"),
+            ("tests/test_smoke.py", "def test_ok():\n    assert True\n"),
+            ("Method/Notebooks/.gitkeep", ""),
+        ):
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
+
+    def test_both_halves_agree_on_the_same_tree(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root)
+            self.assertEqual(report_digest.source_digest(root, "Method"),
+                             impl.source_digest(root, "Method"))
+
+    def test_the_benchmark_package_is_inside_what_the_stamp_covers(self):
+        """El módulo que escribe las conclusiones cuenta como fuente del informe.
+
+        Dejarlo afuera permitía corregir una conclusión y que el registro siguiera
+        afirmando la vieja con la verificación en verde. Rojo alcanzable: si el
+        digest ignorara el paquete del banco, este test no distinguiría los dos
+        árboles y fallaría.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root)
+            before = impl.source_digest(root, "Method")
+            (root / "src/Method_Benchmark/tables.py").write_text(
+                "def render():\n    return 'y'\n", encoding="utf-8")
+            after = impl.source_digest(root, "Method")
+            self.assertNotEqual(before, after)
+            self.assertNotEqual(report_digest.source_digest(root, "Method"), before)
+
+    def test_the_marker_is_the_one_the_verification_looks_for(self):
+        """Otra unión: el destino imprime un prefijo y la verificación lo busca."""
+        self.assertEqual(report_digest.MARKER, impl.DIGEST_MARKER)
+
+    def test_the_stamp_line_parses_the_way_the_verification_reads_it(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root)
+            line = report_digest.stamp(root, "Method")
+            recovered = line.split(impl.DIGEST_MARKER, 1)[1].strip().split()[0]
+            self.assertEqual(recovered, impl.source_digest(root, "Method"))
+
+
+# ------------------------------------------------------- el contrato de informe
+
+def _cell(kind, text):
+    cell = {"cell_type": kind, "metadata": {}, "source": [text]}
+    if kind == "code":
+        cell |= {"execution_count": 1, "outputs": []}
+    return cell
+
+
+class ReportContractTests(unittest.TestCase):
+    """Los cinco chequeos estáticos del informe, cada uno con su rojo alcanzable.
+
+    Un chequeo que no puede fallar es el defecto que fue escrito para atrapar, así
+    que ninguno se da por bueno sin construir el árbol que lo dispara.
+    """
+
+    DECLARATION = (
+        "__benchmark__ = {\n"
+        "    'revision': 'r01.md',\n"
+        "    'arms': {},\n"
+        "    'report': {\n"
+        "        'renderers': ['tables.render'],\n"
+        "        'conclusions': ['tables.conclusion'],\n"
+        "        'dimensions': {'accuracy': 'higher', 'seconds': 'lower'},\n"
+        "    },\n"
+        "}\n"
+    )
+
+    def build(self, root: Path, cells, declaration=None):
+        (root / "src/Method_Benchmark").mkdir(parents=True, exist_ok=True)
+        (root / "src/Method_Benchmark/__init__.py").write_text(
+            self.DECLARATION if declaration is None else declaration, encoding="utf-8")
+        notebooks = root / "Method/Notebooks"
+        notebooks.mkdir(parents=True, exist_ok=True)
+        (notebooks / "Report.ipynb").write_text(
+            json.dumps({"cells": cells, "metadata": {}, "nbformat": 4,
+                        "nbformat_minor": 5}), encoding="utf-8")
+
+    def state(self, cells, declaration=None):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root, cells, declaration)
+            return impl.report_state(root, "Method", "Method")
+
+    WELL_FORMED = [
+        _cell("markdown", "Qué mide: la exactitud. Más alto es mejor."),
+        _cell("code", "print(tables.render(runs, 'accuracy', reduction))\n"
+                      "print(tables.conclusion(runs, 'accuracy', reduction))"),
+    ]
+
+    def test_a_well_formed_report_passes_every_static_check(self):
+        state = self.state(self.WELL_FORMED)
+        for finding in ("proseNumbers", "duplicated", "unframed", "unconcluded"):
+            self.assertEqual(state[finding], [], f"{finding}: {state[finding]}")
+
+    def test_a_number_typed_into_prose_is_caught(self):
+        cells = [_cell("markdown", "La exactitud sube 2,78 puntos."),
+                 *self.WELL_FORMED]
+        found = self.state(cells)["proseNumbers"]
+        self.assertEqual([f["value"] for f in found], ["2,78"])
+
+    def test_one_decimal_place_is_not_treated_as_a_measurement(self):
+        """Un entero o un decimal corto suele ser estructura — un número de sección,
+        una cantidad de paneles — y marcarlos entrenaría al lector a ignorar el
+        chequeo entero."""
+        cells = [_cell("markdown", "Son 3 paneles y la seccion 5.1."), *self.WELL_FORMED]
+        self.assertEqual(self.state(cells)["proseNumbers"], [])
+
+    def test_the_same_measurement_rendered_twice_is_caught(self):
+        cells = [*self.WELL_FORMED,
+                 _cell("markdown", "otra vez"),
+                 _cell("code", "print(tables.render(runs, 'accuracy', reduction))\n"
+                               "print(tables.conclusion(runs, 'accuracy', reduction))")]
+        self.assertTrue(self.state(cells)["duplicated"])
+
+    def test_two_measurements_in_one_cell_are_caught(self):
+        cells = [_cell("markdown", "dos juntas"),
+                 _cell("code", "print(tables.render(runs, 'accuracy', reduction))\n"
+                               "print(harness.render_panorama(summary))\n"
+                               "print(tables.conclusion(runs, 'accuracy', reduction))")]
+        state = self.state(cells, self.DECLARATION.replace(
+            "'renderers': ['tables.render']",
+            "'renderers': ['tables.render', 'harness.render_panorama']"))
+        self.assertTrue(state["duplicated"])
+
+    def test_a_table_with_nothing_explaining_it_is_caught(self):
+        cells = [_cell("code", "print(tables.render(runs, 'accuracy', reduction))\n"
+                               "print(tables.conclusion(runs, 'accuracy', reduction))")]
+        self.assertTrue(self.state(cells)["unframed"])
+
+    def test_a_table_with_no_computed_conclusion_is_caught(self):
+        cells = [_cell("markdown", "Qué mide: la exactitud. Más alto es mejor."),
+                 _cell("code", "print(tables.render(runs, 'accuracy', reduction))")]
+        self.assertTrue(self.state(cells)["unconcluded"])
+
+    def test_a_conclusion_in_the_following_cell_still_counts(self):
+        cells = [_cell("markdown", "Qué mide: la exactitud. Más alto es mejor."),
+                 _cell("code", "print(tables.render(runs, 'accuracy', reduction))"),
+                 _cell("code", "print(tables.conclusion(runs, 'accuracy', reduction))")]
+        self.assertEqual(self.state(cells)["unconcluded"], [])
+
+    def test_the_cell_that_writes_the_record_may_render_everything_again(self):
+        """El registro tiene que contener todo lo que el cuaderno mostró. Contarlo
+        como segunda lectura haría que el único archivo del que depende una sesión
+        posterior sea el defecto, y la forma de aprobar sería dejar de escribirlo."""
+        cells = [*self.WELL_FORMED,
+                 _cell("markdown", "el registro"),
+                 _cell("code", "(root / 'report.txt').write_text("
+                               "tables.render(runs, 'accuracy', reduction))")]
+        self.assertEqual(self.state(cells)["duplicated"], [])
+
+    def test_without_a_declaration_nothing_is_reported_as_fine(self):
+        """No poder buscar algo no es lo mismo que no encontrarlo."""
+        state = self.state(self.WELL_FORMED, declaration="__benchmark__ = {}\n")
+        self.assertEqual(state["status"], "undeclared")
+
+    def test_an_unavailable_live_check_never_reports_ok(self):
+        """Sin intérprete del destino, dos de los chequeos no pudieron correr, y
+        decir `ok` informaría su ausencia como su respuesta."""
+        state = self.state(self.WELL_FORMED)
+        self.assertEqual(state["live"], "unavailable")
+        self.assertEqual(state["status"], "incomplete")
