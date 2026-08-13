@@ -991,6 +991,22 @@ class ReportDigestJoinTests(unittest.TestCase):
         """Otra unión: el destino imprime un prefijo y la verificación lo busca."""
         self.assertEqual(report_digest.MARKER, impl.DIGEST_MARKER)
 
+    def test_the_stamp_needs_no_context_from_the_notebook_that_prints_it(self):
+        """Cualquier cuaderno lo llama sin argumentos, incluso el que no comparte
+        el molde de los demás.
+
+        La primera versión los pedía, y el primer cuaderno que no definía las
+        mismas variables que el resto falló al estampar y quedó informado como
+        rancio — el sello dejaba afuera justo al que se salía del molde, que es el
+        que más falta hace vigilar.
+        """
+        import inspect
+
+        signature = inspect.signature(report_digest.stamp)
+        for parameter in signature.parameters.values():
+            self.assertIsNot(parameter.default, inspect.Parameter.empty,
+                             f"stamp() exige {parameter.name} a quien lo llame")
+
     def test_the_stamp_line_parses_the_way_the_verification_reads_it(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

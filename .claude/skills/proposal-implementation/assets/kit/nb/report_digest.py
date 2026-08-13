@@ -51,6 +51,29 @@ def source_digest(repository: Path, package: str) -> str:
     return digest.hexdigest()
 
 
-def stamp(repository: Path, package: str) -> str:
-    """La línea que el cuaderno imprime para dejar constancia de contra qué corrió."""
+def _here() -> tuple[Path, str]:
+    """El repositorio y el paquete, deducidos de dónde vive este archivo.
+
+    Sin argumentos a propósito. La versión anterior los pedía, y el primer cuaderno
+    que no usaba exactamente los mismos nombres que los demás falló al estampar y
+    quedó informado como rancio — el sello dejaba afuera justo al cuaderno que se
+    salía del molde, que es el que más falta hace vigilar.
+
+    Este archivo vive en `<repo>/src/<Paquete>_Benchmark/`, así que las dos cosas
+    están en su propia ruta y ningún cuaderno tiene que saberlas.
+    """
+    package_dir = Path(__file__).resolve().parent
+    return package_dir.parents[1], package_dir.name.removesuffix("_Benchmark")
+
+
+def stamp(repository: Path | None = None, package: str | None = None) -> str:
+    """La línea que el cuaderno imprime para dejar constancia de contra qué corrió.
+
+    Se llama sin argumentos desde cualquier cuaderno; los admite solo para poder
+    probarla contra un árbol que no es este.
+    """
+    if repository is None or package is None:
+        found_repository, found_package = _here()
+        repository = repository or found_repository
+        package = package or found_package
     return f"{MARKER} {source_digest(repository, package)}"
