@@ -1518,6 +1518,7 @@ def _produced(cell: dict) -> dict:
     """
     mimes: set[str] = set()
     bare: list[str] = []
+    shown: list[str] = []
     streamed = False
     for output in cell.get("outputs") or []:
         if not isinstance(output, dict):
@@ -1525,6 +1526,8 @@ def _produced(cell: dict) -> dict:
         kind = output.get("output_type")
         if kind == "stream":
             streamed = True
+            text = output.get("text")
+            shown.append("".join(text) if isinstance(text, list) else str(text or ""))
         elif kind in ("display_data", "execute_result"):
             data = output.get("data")
             if isinstance(data, dict):
@@ -1540,14 +1543,35 @@ def _produced(cell: dict) -> dict:
                 if plain is not None and set(data) == {"text/plain"}:
                     bare.append("".join(plain) if isinstance(plain, list)
                                 else str(plain))
+                for key in ("text/markdown", "text/plain"):
+                    payload = data.get(key)
+                    if payload is not None:
+                        shown.append("".join(payload) if isinstance(payload, list)
+                                     else str(payload))
+                        break
         elif kind == "error":
             # An error is its own finding, reported by `notebook_execution`. Left
             # unmarked here it would also read as a cell that showed nothing, and
             # one defect would be reported as two.
-            return {"mimes": set(), "bare": [], "streamed": True,
+            return {"mimes": set(), "bare": [], "shown": "", "streamed": True,
                     "any": True, "errored": True}
-    return {"mimes": mimes, "bare": bare, "streamed": streamed,
-            "any": bool(mimes or streamed), "errored": False}
+    return {"mimes": mimes, "bare": bare, "shown": "\n".join(shown),
+            "streamed": streamed, "any": bool(mimes or streamed), "errored": False}
+
+
+#: A number a cell put in front of a reader: a decimal, or a count over a total
+#: like `7/10`. Integers alone are left out — a year, a seed or a count of rows is
+#: not a measurement, and treating every digit as one would make the check below
+#: fire on any sentence that mentions how many transfers there are.
+MEASUREMENT = re.compile(r"\d+\.\d+|\b\d+/\d+\b")
+
+#: How many of its table's measurements a conclusion may restate before it stops
+#: concluding and starts re-rendering. The number is not arbitrary: a conclusion
+#: exists to say what the table cannot — who is ahead and what that rests on — and
+#: naming the value it rests on is part of saying it. One or two values is a
+#: conclusion showing its evidence. Three or more is the table again, in prose,
+#: which is the duplication rule with a sentence in front of it.
+RESTATED_LIMIT = 2
 
 
 def _shows_image(produced: dict) -> bool:
@@ -1781,11 +1805,17 @@ def report_state(target: Path, name: str, package: str) -> dict:
     unrendered: list[dict] = []
     described_not_shown: list[dict] = []
     undeclared_drawings: list[dict] = []
+    restated: list[dict] = []
 
     for notebook in notebooks:
         cells = _notebook_cells(notebook)
         rel = str(notebook.relative_to(target))
         seen: dict[str, int] = {}
+        # The measurements the most recent table put on screen, and which cell put
+        # them there. Reset per notebook so a conclusion is never matched against a
+        # table from a different document.
+        table_numbers: set[str] = set()
+        table_cell: int | None = None
 
         for index, cell in enumerate(cells):
             source = _source_of(cell)
@@ -1863,6 +1893,28 @@ def report_state(target: Path, name: str, package: str) -> dict:
                         unrendered.append({"notebook": rel, "cell": index,
                                            "rendering": ", ".join(rendered)})
 
+                    # A conclusion that says the table again. Every other reading
+                    # of duplication compares one rendering with another; this one
+                    # crosses from a rendering to the sentence about it, which is
+                    # where the same measurement most easily ends up living twice.
+                    # It can only be asked of what the cells *emitted*: the number
+                    # is not in either source, it is in both outputs.
+                    concluded = sorted(set(c for c in calls if c in conclusions))
+                    if rendered and not writes_record:
+                        table_numbers = set(MEASUREMENT.findall(produced["shown"]))
+                    elif concluded and table_numbers:
+                        repeated = table_numbers & set(
+                            MEASUREMENT.findall(produced["shown"]))
+                        if len(repeated) > RESTATED_LIMIT:
+                            restated.append({
+                                "notebook": rel, "cell": index,
+                                "conclusion": ", ".join(concluded),
+                                "table": table_cell,
+                                "repeated": sorted(repeated)[:8],
+                                "count": len(repeated),
+                            })
+                    if rendered and not writes_record:
+                        table_cell = index
 
             if not rendered:
                 continue
@@ -1937,6 +1989,11 @@ def report_state(target: Path, name: str, package: str) -> dict:
                 # without it, a package that declares no `figures` is indistinguishable
                 # from a package whose figures are all fine.
                 "undeclaredDrawings": undeclared_drawings,
+                # A conclusion that restated its own table instead of concluding
+                # from it. `duplicated` compares renderings with renderings and
+                # cannot see this one: the second copy is not a rendering, it is a
+                # sentence, and the number lives only in what both cells emitted.
+                "restated": restated,
                 # A subset written by hand is a selection nobody had to justify.
                 # It is legitimate when the rule that fixed it looks at no outcome,
                 # and that is a claim a human makes — so it is declared in the

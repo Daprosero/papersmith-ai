@@ -1355,6 +1355,63 @@ class CellOutputTests(unittest.TestCase):
         # Lo que esta prueba defiende es que declarar y mostrar no produce deriva.
         self.assertNotEqual(state["status"], "drift")
 
+    def _table_then_conclusion(self, table_out, conclusion_out):
+        return [self.FRAME,
+                _cell("code", "print(tables.render(runs, 'accuracy', reduction))",
+                      outputs=[_shown("text/plain", table_out)]),
+                _cell("code", "print(tables.conclusion(runs, 'accuracy', reduction))",
+                      outputs=[_shown("text/plain", conclusion_out)])]
+
+    def test_a_conclusion_that_restates_its_own_table_is_caught(self):
+        """Encontrado leyendo un informe real, no razonando sobre el código.
+
+        `duplicated` compara un renderizado con otro y no puede ver este caso: la
+        segunda copia no es un renderizado, es una frase. Y el número no está en
+        ninguna de las dos fuentes — está en lo que las dos celdas emitieron, así
+        que solo se ve leyendo las salidas.
+        """
+        state = self.state(self._table_then_conclusion(
+            "A 0.81 · B 0.74 · C 0.69 · D 0.55",
+            "Los aciertos: A 0.81, B 0.74, C 0.69, D 0.55."))
+        self.assertEqual(len(state["restated"]), 1, state["restated"])
+        found = state["restated"][0]
+        self.assertEqual(found["table"], 1)
+        self.assertEqual(found["count"], 4)
+        self.assertEqual(state["status"], "drift")
+
+    def test_a_conclusion_may_name_the_value_it_rests_on(self):
+        """El verde tiene que quedar alcanzable, o el hallazgo no pide una
+        conclusión: pide una conclusión sin evidencia. Nombrar quién va adelante y
+        con cuánto es el trabajo de la conclusión, no una segunda tabla."""
+        state = self.state(self._table_then_conclusion(
+            "A 0.81 · B 0.74 · C 0.69 · D 0.55",
+            "Mejor: **A** con 0.81; peor: D con 0.55."))
+        self.assertEqual(state["restated"], [])
+
+    def test_a_conclusion_is_never_matched_against_another_notebook_table(self):
+        """El emparejamiento se reinicia por cuaderno. Sin eso, la primera
+        conclusión de un cuaderno se compararía contra la última tabla del
+        anterior, y el hallazgo señalaría dos celdas que nunca se vieron."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "src/Method_Benchmark").mkdir(parents=True)
+            (root / "src/Method_Benchmark/__init__.py").write_text(
+                self.DECLARATION, encoding="utf-8")
+            notebooks = root / "Method/Notebooks"
+            notebooks.mkdir(parents=True)
+            (notebooks / "A_tabla.ipynb").write_text(json.dumps({
+                "cells": [self.FRAME,
+                          _cell("code", "print(tables.render(runs, 'accuracy', reduction))",
+                                outputs=[_shown("text/plain", "A 0.81 B 0.74 C 0.69")])],
+                "metadata": {}, "nbformat": 4, "nbformat_minor": 5}), encoding="utf-8")
+            (notebooks / "B_conclusion.ipynb").write_text(json.dumps({
+                "cells": [self.FRAME,
+                          _cell("code", "print(tables.conclusion(runs, 'accuracy', reduction))",
+                                outputs=[_shown("text/plain", "A 0.81 B 0.74 C 0.69")])],
+                "metadata": {}, "nbformat": 4, "nbformat_minor": 5}), encoding="utf-8")
+            state = impl.report_state(root, "Method", "Method")
+        self.assertEqual(state["restated"], [])
+
     def test_the_echo_still_shows_the_key_when_nothing_was_declared(self):
         """Declarar ninguna llamada no es lo mismo que no dibujar, y el eco lo
         tiene que dejar ver en vez de callar."""

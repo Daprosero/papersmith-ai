@@ -820,6 +820,15 @@ behind it is right:
   emits a line of text like `<Figure size 640x480>`. The cell ran, raised nothing,
   produced an output, and anything reading `execution_count` and the error list
   calls it green. `verify` reports these as `unrendered` and `describedNotShown`.
+- **A conclusion that restates its table has not concluded.** `restated` crosses
+  from a rendering to the sentence written about it — the one direction every other
+  duplication check is blind to, because the second copy is not a rendering. It is
+  answerable only from what the two cells *emitted*: the number appears in neither
+  source. A conclusion may name the value it rests on; past two it has stopped
+  saying what the table cannot and started saying the table again. This one was
+  also measured rather than argued: five conclusions in a real report were
+  enumerating their own tables, one of them twenty-one numbers deep, with every
+  other check clean.
 - **A picture nobody declared is a contract that is short.** `undeclaredDrawings`
   names a cell that showed an image through no declared call. Without it the two
   findings above would be a courtesy rather than a net: they can only fire on a
