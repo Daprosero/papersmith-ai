@@ -173,3 +173,10 @@ mode when fidelity matters more than speed.
 
 On success, emit only a brief confirmation of which papers were ingested. On
 error, report only the error. No config dumps, path listings, or per-page tables.
+
+**Speak the user's language.** Everything addressed to the user — the pending
+list, the confirmation question and its options, the success or error report —
+goes in the language the user is writing in, not in the language of this
+document. The script's own stdout stays English: it is data to read, not a
+message to relay verbatim. Paths, filenames, flags, and exit codes are never
+translated.
