@@ -19,8 +19,12 @@ The ``.md`` stays lean (text + LaTeX equations + Markdown tables); figures are
 referenced, not embedded — an agent loads a specific figure only when it needs
 it. Local and keyless: no API keys and no LLM service.
 
+Source roots are discovered on every run: each folder directly under
+``source_base`` that already holds a loose PDF is one, so a new paper folder
+needs no configuration edit.
+
 Usage:
-    python extract_pdf.py                 # ingest every loose PDF under source_roots
+    python extract_pdf.py                 # ingest every loose PDF under every source root
     python extract_pdf.py <pdf>           # ingest one loose PDF
 
 Exit codes: 0 success (or nothing to do), 1 at least one paper failed,
@@ -116,6 +120,10 @@ def load_config(path: Path | None = None) -> dict:
     if roots is not None:
         if not isinstance(roots, list) or not all(isinstance(r, str) for r in roots):
             raise ConfigError("source_roots must be a list of folder paths")
+
+    base = cfg.get("source_base")
+    if base is not None and not isinstance(base, str):
+        raise ConfigError(f"source_base must be a folder path, got {base!r}")
     return cfg
 
 
@@ -128,16 +136,61 @@ def is_loose(pdf: Path) -> bool:
     return pdf.parent.name != pdf.stem
 
 
-def find_loose_pdfs(source_roots) -> list[Path]:
+def loose_pdfs_in(folder: Path) -> list[Path]:
+    """Loose PDFs sitting directly in `folder` (never a nested folder's)."""
+    return sorted(
+        entry for entry in folder.iterdir()
+        if entry.is_file() and is_pdf(entry) and is_loose(entry)
+    )
+
+
+def discover_source_roots(cfg: dict) -> list[Path]:
+    """Resolve the folders to scan: auto-discovered under `source_base`, plus
+    any explicit `source_roots`. Raises `ConfigError`.
+
+    A direct child of `source_base` is promoted to a source root only when it
+    already holds a loose PDF. Ingestion *moves* files, so that loose PDF is the
+    signal that the folder was stocked on purpose — an unrelated folder that
+    happens to live under the base is never touched.
+
+    Only one level down: a folder nested inside a root stays invisible, which
+    keeps the skill's core rule intact — a subfolder means "paper already
+    ingested", not "more papers to find".
+    """
+    roots: list[Path] = []
+    seen: set[Path] = set()
+
+    def add(path: Path) -> None:
+        if path not in seen:
+            seen.add(path)
+            roots.append(path)
+
+    base = cfg.get("source_base")
+    if base:
+        base_path = (REPO_ROOT / base).resolve()
+        # Fail closed: a base that is not a folder is a typo, and silently
+        # discovering nothing would read exactly like "all papers ingested".
+        if not base_path.is_dir():
+            raise ConfigError(f"source_base {base} is not a folder")
+        for child in sorted(base_path.iterdir()):
+            if child.is_dir() and not child.name.startswith(".") and loose_pdfs_in(child):
+                add(child)
+
+    for root in cfg.get("source_roots") or []:
+        root_path = (REPO_ROOT / root).resolve()
+        if root_path.is_dir():
+            add(root_path)
+
+    if not base and not cfg.get("source_roots"):
+        raise ConfigError("no source_base or source_roots configured; nothing can be discovered")
+    return roots
+
+
+def find_loose_pdfs(source_roots: list[Path]) -> list[Path]:
     """PDFs sitting directly in a source root (not yet moved into their folder)."""
     pdfs: list[Path] = []
-    for root in source_roots or []:
-        root_path = (REPO_ROOT / root).resolve()
-        if not root_path.is_dir():
-            continue
-        pdfs.extend(sorted(
-            entry for entry in root_path.iterdir() if entry.is_file() and is_pdf(entry)
-        ))
+    for root_path in source_roots:
+        pdfs.extend(loose_pdfs_in(root_path))
     return pdfs
 
 
@@ -278,10 +331,7 @@ def main() -> int:
         if args.pdf:
             targets = [resolve_single_target(args.pdf)]
         else:
-            roots = cfg.get("source_roots") or []
-            if not roots:
-                raise ConfigError("no source_roots configured; nothing can be discovered")
-            targets = find_loose_pdfs(roots)
+            targets = find_loose_pdfs(discover_source_roots(cfg))
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2

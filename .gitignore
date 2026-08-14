@@ -16,11 +16,12 @@ node_modules/
 # el suyo: agrega sus PDFs, los ingiere, delibera con el tutor, y todo eso
 # genera sus propios archivos. No se publican los del autor original.
 
-# Papers guía y de referencia: PDFs, Markdown ingerido, figuras
-guidance/paper-guide/*
-!guidance/paper-guide/.gitkeep
-guidance/reference-papers/*
-!guidance/reference-papers/.gitkeep
+# Papers guía y de referencia: PDFs, Markdown ingerido, figuras.
+# Por carpeta, no por nombre: la ingesta descubre sus raíces bajo `guidance/` en
+# cada corrida, así que una carpeta nueva ya queda cubierta sin tocar esto. Si se
+# nombraran una por una, la primera raíz nueva publicaría sus PDFs y figuras.
+guidance/*/*
+!guidance/*/.gitkeep
 
 # Propuestas gestionadas y su estado interno del motor
 proposals/*

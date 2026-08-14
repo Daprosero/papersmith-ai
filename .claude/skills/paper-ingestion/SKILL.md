@@ -14,9 +14,10 @@ with no API keys.
 
 ## Activation Contract
 
-Accept an optional loose PDF path, or scan `source_roots` from `papersmith.yaml`.
-Validate configuration before doing any work. Extraction is performed by the
-bundled script running inside the skill's dedicated virtualenv.
+Accept an optional loose PDF path, or discover the source roots from
+`papersmith.yaml` and scan them. Validate configuration before doing any work.
+Extraction is performed by the bundled script running inside the skill's
+dedicated virtualenv.
 
 ## Environment (one-time)
 
@@ -51,7 +52,7 @@ Always invoke through the venv interpreter:
   .claude/skills/paper-ingestion/scripts/extract_pdf.py [<loose-pdf>]
 ```
 
-- No argument: scan every `source_roots` folder and ingest every **loose** PDF.
+- No argument: discover the source roots, then ingest every **loose** PDF in them.
 - `<loose-pdf>`: ingest that single loose PDF.
 
 **Loose PDF = not yet ingested.** A PDF sitting directly in a source root is
@@ -94,13 +95,34 @@ paper_ingestion:
   engine: marker
   mode: fast              # fast (CPU/MPS) | balanced (highest fidelity, GPU-oriented)
   strip_references: true  # drop the references/bibliography section at the end
-  source_roots:
-    - guidance/paper-guide
-    - guidance/reference-papers
+  source_base: guidance   # source roots are discovered under here, every run
+  source_roots: []        # optional: extra roots outside source_base
 ```
 
-Add a new source root (e.g. a `data`/`database` paper describing the research
-dataset) by creating the folder with its PDFs and appending one line here.
+## Source Root Discovery
+
+Source roots are **rediscovered on every run**. A folder directly under
+`source_base` becomes a source root when it holds at least one loose PDF. So
+adding a new category of papers (e.g. a `guidance/datasets/` folder for papers
+describing the research dataset) is just: create the folder, drop the PDFs in,
+run. No configuration edit.
+
+Two boundaries make that safe:
+
+- **A loose PDF is required.** Ingestion *moves* files. Requiring a PDF you put
+  there yourself is what keeps an unrelated folder under the base from ever
+  being touched.
+- **Exactly one level down.** A folder nested inside a source root is never
+  scanned, because a subfolder means "paper already ingested". `guidance/` itself
+  is a container of roots, not a root: loose PDFs sitting directly in it are
+  ignored.
+
+A folder holding only already-ingested papers is not a new root — its PDFs are
+not loose — and is correctly left alone.
+
+`source_roots` still works for roots that live outside `source_base`; explicit
+entries are added to whatever was discovered. A `source_base` that is not a
+folder is a configuration error, not an empty discovery.
 
 ## Fidelity & Verification
 
@@ -115,6 +137,9 @@ mode when fidelity matters more than speed.
 | Situation | Action |
 | --- | --- |
 | Malformed/missing configuration | Report the error; do nothing |
+| `source_base` set to something that is not a folder | Report the error; do nothing |
+| Neither `source_base` nor `source_roots` configured | Report the error; do nothing |
+| A folder under `source_base` with no loose PDF | Not a source root; leave it untouched |
 | Unknown `engine`/`mode`, or a value of the wrong type | Report the error before loading the engine; do nothing |
 | Loose PDFs present | Ingest them without prompting |
 | No loose PDFs (all in folders) | Report nothing to do; do not re-ingest |

@@ -10,6 +10,12 @@ paper_ingestion:
   # Each source root holds loose PDFs. Ingestion moves each PDF into its own
   # <stem>/ folder alongside its .md and figure images. A loose PDF = not yet
   # ingested; a PDF already inside its folder is skipped.
-  source_roots:
-    - guidance/paper-guide
-    - guidance/reference-papers
+  #
+  # Source roots are rediscovered on every run: every folder directly under
+  # source_base that holds at least one loose PDF is one. Drop a new folder in
+  # with its PDFs and it is picked up — no edit here. A folder with no loose PDF
+  # is left alone, because ingestion moves files and only a PDF you put there
+  # says you meant it.
+  source_base: guidance
+  # Optional: extra roots outside source_base, listed explicitly.
+  source_roots: []
