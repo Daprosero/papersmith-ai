@@ -23,9 +23,14 @@ Source roots are discovered on every run: each folder directly under
 ``source_base`` that already holds a loose PDF is one, so a new paper folder
 needs no configuration edit.
 
+Ingestion *moves* files, so it is never the first thing that runs. ``--list``
+answers "what is pending?" without loading a single model, which is what lets
+the skill show the findings and get an answer before anything is displaced.
+
 Usage:
+    python extract_pdf.py --list          # report the loose PDFs, ingest nothing
     python extract_pdf.py                 # ingest every loose PDF under every source root
-    python extract_pdf.py <pdf>           # ingest one loose PDF
+    python extract_pdf.py <pdf> [<pdf>…]  # ingest exactly these loose PDFs
 
 Exit codes: 0 success (or nothing to do), 1 at least one paper failed,
 2 configuration/usage/environment error (nothing was touched).
@@ -217,6 +222,34 @@ def resolve_single_target(raw: str) -> Path:
     return pdf
 
 
+def page_count(pdf: Path) -> int | None:
+    """Page count for the listing, or `None` when it cannot be read.
+
+    Best-effort on purpose. `--list` exists to answer "what is pending?" before
+    any model loads, so a PDF whose page tree will not parse is still worth
+    showing — without a page count, rather than not at all.
+    """
+    try:
+        import pypdfium2
+
+        doc = pypdfium2.PdfDocument(pdf)
+        try:
+            return len(doc)
+        finally:
+            doc.close()
+    except Exception:
+        return None
+
+
+def print_listing(targets: list[Path]) -> None:
+    """Report the pending papers: what would be ingested, and how big each is."""
+    print(f"Found {len(targets)} loose PDF(s) pending ingestion:")
+    for pdf in targets:
+        rel = pdf.relative_to(REPO_ROOT) if pdf.is_relative_to(REPO_ROOT) else pdf
+        pages = page_count(pdf)
+        print(f"  {rel}" + (f"  ({pages} pages)" if pages is not None else ""))
+
+
 def strip_references(text: str) -> str:
     """Drop everything from the last references/bibliography heading to the end."""
     cut = None
@@ -321,7 +354,14 @@ def ingest_loose(converter, loose_pdf: Path, strip_refs: bool) -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Per-paper-folder PDF -> Markdown ingestion (Marker).")
-    parser.add_argument("pdf", nargs="?", help="a single loose PDF to ingest")
+    parser.add_argument(
+        "pdf", nargs="*", help="the loose PDFs to ingest (default: every loose PDF found)"
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="report the pending loose PDFs and exit, without loading any model or moving any file",
+    )
     args = parser.parse_args()
 
     try:
@@ -329,7 +369,9 @@ def main() -> int:
         mode = cfg.get("mode")  # None -> Marker auto-selects by device
         strip_refs = bool(cfg.get("strip_references", True))
         if args.pdf:
-            targets = [resolve_single_target(args.pdf)]
+            # Dedupe while keeping the caller's order: the same PDF named twice
+            # would move on the first pass and then "fail" on the second.
+            targets = list(dict.fromkeys(resolve_single_target(raw) for raw in args.pdf))
         else:
             targets = find_loose_pdfs(discover_source_roots(cfg))
     except ConfigError as exc:
@@ -338,6 +380,12 @@ def main() -> int:
 
     if not targets:
         print("Nothing to ingest: no loose PDFs found (every paper is already in its folder).")
+        return 0
+
+    # Discovery is free; ingestion moves files. Reporting happens before the
+    # engine loads so the skill can ask which papers to ingest at no cost.
+    if args.list:
+        print_listing(targets)
         return 0
 
     try:

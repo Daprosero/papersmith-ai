@@ -49,11 +49,30 @@ Always invoke through the venv interpreter:
 
 ```
 .claude/skills/paper-ingestion/.venv/bin/python \
-  .claude/skills/paper-ingestion/scripts/extract_pdf.py [<loose-pdf>]
+  .claude/skills/paper-ingestion/scripts/extract_pdf.py [--list] [<loose-pdf>…]
 ```
 
+- `--list`: report the pending loose PDFs and exit. Loads no model, moves no file.
 - No argument: discover the source roots, then ingest every **loose** PDF in them.
-- `<loose-pdf>`: ingest that single loose PDF.
+- `<loose-pdf>…`: ingest exactly those loose PDFs.
+
+## Confirmation (required)
+
+**Never ingest without asking first.** Ingestion *moves* the user's PDFs, so
+discovery and execution are two separate steps:
+
+1. Run with `--list`. This is free — it loads no model, so asking costs nothing.
+2. Report what was found: each paper's path and page count.
+3. Ask the user **which papers to ingest**, as a multi-select over the listed
+   PDFs. Never assume the whole batch is wanted; a PDF may be sitting in a
+   source root by accident, and ingesting it displaces it.
+4. Run again passing only the approved paths as arguments. If the user approves
+   nothing, stop and ingest nothing.
+
+Running with no argument ingests everything unattended and therefore skips the
+user's decision — use it only when the user has explicitly asked for exactly
+that. The one loose PDF case is not an exception: one paper still gets moved,
+so one paper still gets confirmed.
 
 **Loose PDF = not yet ingested.** A PDF sitting directly in a source root is
 pending; once ingested it lives inside its own `<stem>/` folder, so it is no
@@ -141,7 +160,9 @@ mode when fidelity matters more than speed.
 | Neither `source_base` nor `source_roots` configured | Report the error; do nothing |
 | A folder under `source_base` with no loose PDF | Not a source root; leave it untouched |
 | Unknown `engine`/`mode`, or a value of the wrong type | Report the error before loading the engine; do nothing |
-| Loose PDFs present | Ingest them without prompting |
+| Loose PDFs present | List them, ask which to ingest, ingest only those |
+| User approves a subset | Ingest exactly the approved paths; leave the rest loose |
+| User approves nothing | Stop; move no file |
 | No loose PDFs (all in folders) | Report nothing to do; do not re-ingest |
 | Argument that is missing, not a PDF, a directory, or already ingested | Refuse before loading the engine; move nothing |
 | A paper's `<stem>/` folder already exists and is not empty | Refuse that paper; say to delete the folder to re-ingest |
