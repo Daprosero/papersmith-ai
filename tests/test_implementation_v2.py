@@ -7,6 +7,7 @@ declares whether the user can still review it.
 """
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -1018,10 +1019,27 @@ class ReportDigestJoinTests(unittest.TestCase):
 
 # ------------------------------------------------------- el contrato de informe
 
-def _cell(kind, text):
+def _stream(text="salida\n"):
+    return {"output_type": "stream", "name": "stdout", "text": [text]}
+
+
+def _shown(mime, payload="x"):
+    return {"output_type": "display_data", "data": {mime: payload}, "metadata": {}}
+
+
+def _cell(kind, text, outputs=None, executed=True):
+    """Una celda, y para las de código lo que dejó al correr.
+
+    El default de una celda de código es haber impreso algo, porque es lo que hace
+    un `print`. Una celda ejecutada con la lista de salidas vacía no es un fixture
+    neutro: es exactamente el defecto de haber computado una medición y no haberla
+    mostrado, y dejarlo como default haría que cada prueba de este archivo lo
+    disparara sin querer.
+    """
     cell = {"cell_type": kind, "metadata": {}, "source": [text]}
     if kind == "code":
-        cell |= {"execution_count": 1, "outputs": []}
+        cell |= {"execution_count": 1 if executed else None,
+                 "outputs": [_stream()] if outputs is None else list(outputs)}
     return cell
 
 
@@ -1138,3 +1156,277 @@ class ReportContractTests(unittest.TestCase):
         state = self.state(self.WELL_FORMED)
         self.assertEqual(state["live"], "unavailable")
         self.assertEqual(state["status"], "incomplete")
+
+
+# ------------------------------------- lo que una celda produjo, no lo que dice
+
+class CellOutputTests(unittest.TestCase):
+    """Los dos chequeos que leen la salida de una celda y no su código.
+
+    Todo lo demás en `report_state` se contesta desde las fuentes. Estos dos no:
+    una celda puede correr, no levantar nada, emitir una salida, y no haber
+    mostrado nada. `execution_count` dice que corrió y la lista de errores está
+    vacía, así que cualquier chequeo que lea solo esas dos la aprueba.
+    """
+
+    DECLARATION = (
+        "__benchmark__ = {\n"
+        "    'revision': 'r01.md',\n"
+        "    'arms': {},\n"
+        "    'report': {\n"
+        "        'renderers': ['tables.render'],\n"
+        "        'conclusions': ['tables.conclusion'],\n"
+        "        'figures': ['figures.curves'],\n"
+        "        'dimensions': {'accuracy': 'higher'},\n"
+        "    },\n"
+        "}\n"
+    )
+
+    FRAME = _cell("markdown", "Qué mide: la exactitud. Más alto es mejor.")
+    TABLE = _cell("code", "print(tables.render(runs, 'accuracy', reduction))\n"
+                          "print(tables.conclusion(runs, 'accuracy', reduction))")
+
+    def state(self, cells, declaration=None):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "src/Method_Benchmark").mkdir(parents=True)
+            (root / "src/Method_Benchmark/__init__.py").write_text(
+                declaration or self.DECLARATION, encoding="utf-8")
+            notebooks = root / "Method/Notebooks"
+            notebooks.mkdir(parents=True)
+            (notebooks / "Report.ipynb").write_text(
+                json.dumps({"cells": cells, "metadata": {}, "nbformat": 4,
+                            "nbformat_minor": 5}), encoding="utf-8")
+            return impl.report_state(root, "Method", "Method")
+
+    def drawing(self, outputs):
+        return [_cell("markdown", "La figura muestra las curvas."),
+                _cell("code", "figures.curves(path)", outputs=outputs)]
+
+    def test_a_figure_that_came_out_as_a_description_is_caught(self):
+        """El defecto real: `display(fig)` sin el formateador registrado emite
+        `<Figure size ...>` como texto. La celda corrió, no levantó nada, produjo
+        una salida — y le muestra al lector una línea de prosa donde va el dibujo.
+        """
+        found = self.state(self.drawing([_shown("text/plain", "<Figure size 640x480>")]))
+        self.assertEqual(len(found["describedNotShown"]), 1, found["describedNotShown"])
+        self.assertEqual(found["describedNotShown"][0]["drawing"], "figures.curves")
+        self.assertEqual(found["describedNotShown"][0]["emitted"], ["text/plain"])
+
+    def test_a_figure_that_printed_its_filename_is_caught(self):
+        """Guardar y anunciar la ruta es la misma falla con otra ropa: la celda
+        informa un nombre de archivo donde debería haber un resultado."""
+        found = self.state(self.drawing([_stream("escrita: curves.pdf\n")]))
+        self.assertEqual(len(found["describedNotShown"]), 1)
+        self.assertEqual(found["describedNotShown"][0]["emitted"], ["texto"])
+
+    def test_a_figure_that_actually_rendered_passes(self):
+        """El verde tiene que ser alcanzable, o el rojo de arriba no prueba nada."""
+        self.assertEqual(self.state(self.drawing([_shown("image/png")]))["describedNotShown"], [])
+
+    def test_any_image_mime_counts_as_shown(self):
+        """Nada acá puede saber en qué formato dibuja alguien. Un SVG es una
+        figura mostrada tanto como un PNG, y exigir uno sería aprender la cadena
+        de herramientas de un repositorio."""
+        for mime in ("image/png", "image/svg+xml", "image/jpeg"):
+            with self.subTest(mime=mime):
+                self.assertEqual(
+                    self.state(self.drawing([_shown(mime)]))["describedNotShown"], [])
+
+    def test_a_measurement_computed_and_never_shown_is_caught(self):
+        cells = [self.FRAME,
+                 _cell("code", "tabla = tables.render(runs, 'accuracy', reduction)\n"
+                               "conclusion = tables.conclusion(runs, 'accuracy', reduction)",
+                       outputs=[])]
+        found = self.state(cells)["unrendered"]
+        self.assertEqual(len(found), 1, found)
+        self.assertEqual(found[0]["rendering"], "tables.render")
+
+    def test_a_table_that_printed_is_not_reported_as_unrendered(self):
+        self.assertEqual(self.state([self.FRAME, self.TABLE])["unrendered"], [])
+
+    def test_the_cell_that_writes_the_record_may_show_nothing(self):
+        """Escribir el registro es su trabajo entero. Exigirle una salida visible
+        haría que la forma de aprobar sea imprimir el archivo."""
+        cells = [self.FRAME, self.TABLE,
+                 _cell("markdown", "el registro"),
+                 _cell("code", "(root / 'r.txt').write_text("
+                               "tables.render(runs, 'accuracy', reduction))",
+                       outputs=[])]
+        self.assertEqual(self.state(cells)["unrendered"], [])
+
+    def test_an_unexecuted_cell_is_not_a_report_defect(self):
+        """Un cuaderno sin ejecutar ya es un hallazgo de `validation`. Repetirlo
+        acá como un defecto de informe por celda enterraría a los que sí lo son.
+        """
+        cells = [self.FRAME,
+                 _cell("code", "print(tables.render(runs, 'accuracy', reduction))",
+                       outputs=[], executed=False),
+                 _cell("markdown", "la figura"),
+                 _cell("code", "figures.curves(path)", outputs=[], executed=False)]
+        state = self.state(cells)
+        self.assertEqual(state["unrendered"], [])
+        self.assertEqual(state["describedNotShown"], [])
+
+    def test_a_cell_that_raised_is_reported_once_and_not_twice(self):
+        """El error lo informa `notebook_execution`. Sin marcarlo, esta celda
+        también leería como una que no mostró nada, y un defecto saldría dos
+        veces con dos nombres distintos."""
+        error = {"output_type": "error", "ename": "ValueError",
+                 "evalue": "x", "traceback": []}
+        state = self.state(self.drawing([error]))
+        self.assertEqual(state["describedNotShown"], [])
+
+    SILENT = DECLARATION.replace("        'figures': ['figures.curves'],\n", "")
+
+    def test_a_description_is_caught_with_no_declaration_at_all(self):
+        """El hallazgo del e2e sobre el repositorio real, convertido en prueba.
+
+        Ese paquete declaraba `renderers` y `conclusions` y ninguna llamada de
+        dibujo, así que la comprobación quedaba inerte justo en el repositorio
+        cuyo defecto la motivó. Una red que solo se activa cuando alguien escribió
+        una clave opcional no es una red. La forma de la salida alcanza: un
+        `text/plain` que es el repr de un objeto es una descripción-de-figura la
+        haya dibujado quien la haya dibujado, y ahí no se nombra ninguna librería.
+        """
+        state = self.state(self.drawing([_shown("text/plain", "<Figure size 640x480>")]),
+                           self.SILENT)
+        self.assertEqual(len(state["describedNotShown"]), 1, state["describedNotShown"])
+        found = state["describedNotShown"][0]
+        self.assertEqual(found["drawing"], "<sin declarar>")
+        self.assertEqual(found["description"], "<Figure size 640x480>")
+        self.assertEqual(state["status"], "drift")
+
+    def test_the_repr_of_any_object_reads_as_a_description(self):
+        """No hay una lista de librerías acá, y no puede haberla. Lo que delata al
+        defecto es que la celda mostró el repr de algo en vez de la cosa."""
+        for repr_text in ("<Figure size 640x480 with 6 Axes>",
+                          "<matplotlib.axes._axes.Axes object at 0x10a3f>",
+                          "[<Line2D object at 0x7fa1>]"):
+            with self.subTest(repr_text=repr_text):
+                state = self.state(self.drawing([_shown("text/plain", repr_text)]),
+                                   self.SILENT)
+                self.assertEqual(len(state["describedNotShown"]), 1, repr_text)
+
+    def test_a_rich_rendering_carries_a_repr_beside_it_and_that_is_not_a_defect(self):
+        """El falso positivo que el e2e sacó a la luz, y que la suite no cubría.
+
+        Una salida rica guarda su repr de respaldo AL LADO: un Markdown mostrado
+        deja `<IPython.core.display.Markdown object>` en `text/plain` junto a su
+        `text/markdown`. Esa celda mostró lo que tenía que mostrar. Leer la celda
+        entera en vez de cada salida marcaba las once celdas de encabezado del
+        repositorio real como figuras que nunca se dibujaron — y once hallazgos
+        falsos entierran al verdadero, que es peor que no tener el hallazgo.
+        """
+        rich = {"output_type": "display_data",
+                "data": {"text/markdown": "## Qué mide",
+                         "text/plain": "<IPython.core.display.Markdown object>"},
+                "metadata": {}}
+        state = self.state([self.FRAME, _cell("code", "display(Markdown(texto))",
+                                              outputs=[rich])], self.SILENT)
+        self.assertEqual(state["describedNotShown"], [])
+
+    def test_ordinary_printed_output_is_not_a_description(self):
+        """El rojo de arriba no sirve de nada si una tabla impresa también lo
+        dispara: un informe que grita en cada celda se lee salteando."""
+        for text in ("accuracy  0.81", "escrita: curves.pdf", "a < b > c"):
+            with self.subTest(text=text):
+                state = self.state([self.FRAME, _cell("code", "print(resumen)",
+                                                      outputs=[_shown("text/plain", text)])],
+                                   self.SILENT)
+                self.assertEqual(state["describedNotShown"], [], text)
+
+    def test_a_picture_no_declared_call_could_have_drawn_is_a_finding(self):
+        """Lo que impide que las dos comprobaciones de arriba sean una cortesía.
+        Sin esto, un paquete que no declara `figures` es indistinguible de uno
+        cuyas figuras están todas bien — y el informe sale limpio."""
+        state = self.state(self.drawing([_shown("image/png")]), self.SILENT)
+        self.assertEqual(len(state["undeclaredDrawings"]), 1, state["undeclaredDrawings"])
+        self.assertIn("figures.curves", state["undeclaredDrawings"][0]["calls"])
+        self.assertEqual(state["status"], "drift")
+
+    def test_a_declared_drawing_that_showed_its_picture_is_not_undeclared(self):
+        """El verde tiene que seguir siendo alcanzable declarando, o el hallazgo
+        de arriba no pide una declaración: pide que nadie dibuje."""
+        state = self.state(self.drawing([_shown("image/png")]))
+        self.assertEqual(state["undeclaredDrawings"], [])
+        # No `ok`: sin intérprete del target la sonda `live` no corre y el estado
+        # queda `incomplete`, que es una limitación del banco y no del hallazgo.
+        # Lo que esta prueba defiende es que declarar y mostrar no produce deriva.
+        self.assertNotEqual(state["status"], "drift")
+
+    def test_the_echo_still_shows_the_key_when_nothing_was_declared(self):
+        """Declarar ninguna llamada no es lo mismo que no dibujar, y el eco lo
+        tiene que dejar ver en vez de callar."""
+        state = self.state([self.FRAME, self.TABLE], self.SILENT)
+        self.assertEqual(state["declared"]["figures"], [])
+
+    def test_a_figure_defect_puts_the_whole_report_in_drift(self):
+        """Sin esto el hallazgo existiría y no frenaría nada: es el estado del
+        informe lo que hace que `probe` conteste `report-first` en vez de ofrecer
+        la campaña."""
+        state = self.state(self.drawing([_shown("text/plain", "<Figure ...>")]))
+        self.assertEqual(state["status"], "drift")
+
+
+class CellOutputEndToEndTests(unittest.TestCase):
+    """El chequeo, desde `argv` hasta el JSON que lee una persona.
+
+    Las pruebas de arriba llaman a `report_state` directo, así que verifican las
+    dos mitades y nunca la unión. Esta cruza la junta: arma un repositorio de
+    juguete, corre el CLI como proceso, y le pregunta a la herramienta qué ve.
+
+    El objetivo vive bajo `implementations/` porque el guardia lo exige, con un
+    nombre que no puede chocar con nada, y se borra pase lo que pase.
+    """
+
+    DECLARATION = (
+        "__benchmark__ = {\n"
+        "    'revision': 'r01.md',\n"
+        "    'arms': {},\n"
+        "    'report': {\n"
+        "        'renderers': ['tables.render'],\n"
+        "        'conclusions': ['tables.conclusion'],\n"
+        "        'figures': ['figures.curves'],\n"
+        "        'dimensions': {'accuracy': 'higher'},\n"
+        "    },\n"
+        "}\n"
+    )
+
+    def verify_with(self, outputs):
+        box = FORGE / "implementations" / f"_e2e_cell_outputs_{os.getpid()}"
+        try:
+            (box / "src/Method_Benchmark").mkdir(parents=True)
+            (box / "Method/Notebooks").mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(box)], check=True,
+                           capture_output=True)
+            (box / "src/Method_Benchmark/__init__.py").write_text(
+                self.DECLARATION, encoding="utf-8")
+            cells = [_cell("markdown", "La figura muestra las curvas."),
+                     _cell("code", "figures.curves(path)", outputs=outputs)]
+            (box / "Method/Notebooks/Report.ipynb").write_text(
+                json.dumps({"cells": cells, "metadata": {}, "nbformat": 4,
+                            "nbformat_minor": 5}), encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(CLI), "verify", "--target", str(box),
+                 "--name", "Method", "--revision", "r01.md"],
+                capture_output=True, text=True, cwd=FORGE)
+            return json.loads(proc.stdout or "{}")
+        finally:
+            shutil.rmtree(box, ignore_errors=True)
+
+    def test_the_defect_reaches_the_reported_json(self):
+        report = self.verify_with(
+            [_shown("text/plain", "<Figure size 640x480 with 6 Axes>")])["report"]
+        self.assertEqual(report["status"], "drift")
+        self.assertEqual([f["drawing"] for f in report["describedNotShown"]],
+                         ["figures.curves"])
+
+    def test_a_shown_figure_clears_it(self):
+        report = self.verify_with([_shown("image/png")])["report"]
+        self.assertEqual(report["describedNotShown"], [])
+
+    def test_the_toy_target_left_nothing_behind(self):
+        self.verify_with([_shown("image/png")])
+        leftover = list((FORGE / "implementations").glob("_e2e_cell_outputs_*"))
+        self.assertEqual(leftover, [], leftover)

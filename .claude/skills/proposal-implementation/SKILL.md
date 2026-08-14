@@ -782,6 +782,7 @@ metric is called in somebody's field.
     "renderers":       ["tables.render", "harness.render_panorama"],
     "conclusions":     ["tables.conclusion", "tables.conclusion_geometry"],
     "conclusionEntry": "tables.conclusions",
+    "figures":         ["figures.curves", "latent.grid"],
     "dimensions":      {"targetAccuracy": "higher", "seconds": "lower"},
     "selections":      {"SEEDS": "the pilot, a prefix of FULL_SEEDS"},
     "record":          "latent.json",
@@ -811,16 +812,91 @@ behind it is right:
   text means the conclusion is tied to nothing. This is `trivialAssertions` pointed
   at the report — a conclusion that cannot come out wrong is measuring nothing, for
   exactly the reason an assertion that cannot fail proves nothing.
+- **A cell that shows nothing showed nothing.** Every check above reads the code a
+  cell contains. Two failures live only in what it *emitted*, and both survive
+  every reading of the source: a measurement computed and never displayed, and a
+  figure that came out as a *description of a figure*. The second hides best —
+  displaying a figure object where the runtime never registered an image formatter
+  emits a line of text like `<Figure size 640x480>`. The cell ran, raised nothing,
+  produced an output, and anything reading `execution_count` and the error list
+  calls it green. `verify` reports these as `unrendered` and `describedNotShown`.
+- **A picture nobody declared is a contract that is short.** `undeclaredDrawings`
+  names a cell that showed an image through no declared call. Without it the two
+  findings above would be a courtesy rather than a net: they can only fire on a
+  drawing call somebody wrote down, and the repository most likely to ship a figure
+  that never rendered is exactly the one that never wrote one down — there the
+  check goes silent and the report comes out clean. This was not an argument, it
+  was measured: the first run of these checks against a real repository passed with
+  `figures` empty and three cells drawing.
 
-One entry point rather than a list of callables, and the reason is worth keeping:
-a check that has to guess at signatures ends up reporting *could not exercise*,
-and that reads as a pass.
+Two entries here are declarations and not lists in this skill, for the same reason
+the metric names are not: `conclusionEntry`, because a check that has to guess at
+signatures ends up reporting *could not exercise*, and that reads as a pass; and
+`figures`, because asking whether a picture was shown must not require knowing how
+anybody draws. A check that guessed at plotting libraries would go silent the
+moment a repository used a different one. Declaring no drawing calls is not the
+same as drawing nothing, so the echo of the contract shows the key even when it is
+empty — and `undeclaredDrawings` is what makes the empty case cost something.
+
+Two things do not need the declaration at all, because they read the *shape of the
+output* instead of the code. An output the runtime could render only as plain text,
+whose payload is an object's repr, is a description of the thing where the thing
+belongs — no library is named to see that. It is judged per output and never per
+cell: a rich rendering stores its repr *beside* itself, so a displayed Markdown
+block carries `<IPython…Markdown object>` next to its `text/markdown`, and reading
+the cell as a whole calls every heading in the notebook a figure that never drew.
 
 `verify` reports this as `report`, beside `structure`, `fidelity`, `audit` and
 `validation`. **A report in drift is reason not to offer the full run** — `probe`
 answers `report-first` instead of `benchmark`. A campaign measured in hours can
 otherwise print a wrong conclusion with the authority of thirty repetitions, and
 correcting it afterwards costs the campaign rather than the sentence.
+
+### Writing the report, not only checking it
+
+A rule that exists only as a check is paid for with a campaign: the notebook is
+written wrong, the grid runs, and the defect surfaces after the machine time is
+spent. So the conventions below govern how the report is written, and the checks
+above catch what slipped. None of them can be verified mechanically — that is why
+they are here and not in the contract.
+
+- **A figure is shown, never merely filed.** A cell that writes a picture and
+  prints its path has reported a filename. The reader has to open something else
+  to see what the cell claims to have produced, and a report that requires opening
+  something else is not reporting. *Merely* is the whole of the rule: the archived
+  copy stays, and stays vector — the notebook shows the picture inline **and** the
+  cell writes the file a paper is built from. Both, and neither instead of the
+  other. Nothing in `describedNotShown` or `undeclaredDrawings` reads what a cell
+  wrote to disk, so keeping the archived figure can never be the reason a check
+  turns red.
+- **The framing is a paragraph, not a form.** What is being measured and how, what
+  for, and what value would count as the good one. A reader should not have to
+  reassemble the point from three bolded labels, and a template invites filling the
+  slots rather than saying the thing.
+- **What the framing carries, the figure does not repeat.** No title restating the
+  heading directly above it. No caption restating bounds the notebook already
+  stated. Stating them twice is the duplication rule again, in two media.
+- **Decoration appears once.** Axis labels shared by every panel collapse into one
+  for the whole figure; tick labels stay at the border. But whether an axis really
+  is shared is a claim about the data, so the drawing code **measures it** and
+  collapses only what it found — a grid whose panels quietly differ in range, drawn
+  as if they shared one, is a figure that lies in the direction of tidiness.
+- **The picture qualifies, the table quantifies, and that is the order.** The
+  figure shows the shape; the table that puts numbers on that shape reads better
+  after it than before it.
+- **The stamp is stated once, computed, and binds everything under it.** Bounds
+  repeated on every table train the reader to skip them, which is the opposite of
+  what they are for. The line describing a table and the stamp that bounds the run
+  belong to the framing, not to the renderer's output.
+- **The conclusion names who.** Not a description of the distribution — who is
+  ahead, on what evidence, and plainly when the evidence does not reach far enough
+  to call it. That last clause is not a hedge: below the declared floor of
+  repetitions there is no verdict to give, and a conclusion that names a winner
+  anyway is reading noise out loud.
+- **A table reports the extreme only where the extreme is the unflattering side.**
+  The best of N repetitions grows with the method's own dispersion, so printing it
+  beside a mean flatters the noisiest arm — the same reason the median artefact is
+  kept and never the best. A worst case is the other direction and informs.
 
 ### The record a later session reads
 

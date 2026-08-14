@@ -1442,8 +1442,15 @@ BENCHMARK_DECLARATION = "__benchmark__"
 #:     "report": {
 #:         "renderers":   ["tables.render", "harness.render_panorama"],
 #:         "conclusions": ["tables.conclusion", "tables.conclusion_rungs"],
+#:         "figures":     ["figures.curves", "latent.grid"],
 #:         "dimensions":  {"targetAccuracy": "higher", "seconds": "lower"},
 #:     }
+#:
+#: `figures` is what lets the check below ask whether a picture was actually shown
+#: without knowing one word about how anybody draws. Naming the drawing calls is the
+#: target's job for the same reason naming the renderers is: a check that guessed at
+#: plotting libraries would be a check that learned somebody's toolchain, and would
+#: go silent the moment a repository used a different one.
 REPORT_KEY = "report"
 
 #: A decimal with two or more places in prose is a measurement somebody typed. One
@@ -1487,6 +1494,92 @@ def _notebook_cells(path: Path) -> list[dict]:
 def _source_of(cell: dict) -> str:
     source = cell.get("source")
     return "".join(source) if isinstance(source, list) else str(source or "")
+
+
+def _produced(cell: dict) -> dict:
+    """What a cell actually emitted, as opposed to what its code says it emits.
+
+    Every other reading of a notebook in this file goes to the *sources*: which
+    calls appear, which numbers are typed in prose. Two questions cannot be
+    answered there, and both are ways a cell reports nothing while looking like it
+    reported something:
+
+    * it computed a measurement and never showed it, and
+    * it drew a figure and emitted a *description* of the figure.
+
+    The second is the quiet one. A cell that displays a figure object without the
+    runtime's image formatter registered emits `<Figure size ...>` as plain text:
+    the cell ran, raised nothing, produced an output, and shows the reader a line
+    of prose where the picture belongs. `execution_count` says it ran and the
+    error list is empty, so nothing that reads only those two can see it.
+
+    Returns the MIME types the cell displayed, the plain-text payloads it wrote,
+    whether it printed anything, and whether it emitted anything at all.
+    """
+    mimes: set[str] = set()
+    bare: list[str] = []
+    streamed = False
+    for output in cell.get("outputs") or []:
+        if not isinstance(output, dict):
+            continue
+        kind = output.get("output_type")
+        if kind == "stream":
+            streamed = True
+        elif kind in ("display_data", "execute_result"):
+            data = output.get("data")
+            if isinstance(data, dict):
+                mimes.update(str(key) for key in data)
+                plain = data.get("text/plain")
+                # Judged per output and never across the cell, because a rich
+                # rendering carries a `text/plain` repr *beside* it as a fallback:
+                # a displayed Markdown block stores `<IPython…Markdown object>`
+                # next to its `text/markdown`, and reading the cell as a whole
+                # would call every one of those a figure that never rendered.
+                # What names the defect is an output the runtime could render no
+                # other way — plain text and nothing else.
+                if plain is not None and set(data) == {"text/plain"}:
+                    bare.append("".join(plain) if isinstance(plain, list)
+                                else str(plain))
+        elif kind == "error":
+            # An error is its own finding, reported by `notebook_execution`. Left
+            # unmarked here it would also read as a cell that showed nothing, and
+            # one defect would be reported as two.
+            return {"mimes": set(), "bare": [], "streamed": True,
+                    "any": True, "errored": True}
+    return {"mimes": mimes, "bare": bare, "streamed": streamed,
+            "any": bool(mimes or streamed), "errored": False}
+
+
+def _shows_image(produced: dict) -> bool:
+    """Whether the cell emitted a picture rather than a sentence describing one."""
+    return any(mime.startswith("image/") for mime in produced["mimes"])
+
+
+#: An output that is nothing but an object's repr: `<Figure size 640x480 with 6
+#: Axes>`, `[<Line2D object at 0x10a…>]`. It means something was displayed and the
+#: runtime had no formatter for its type, so the reader got a *description* of the
+#: thing where the thing belongs.
+#:
+#: This matches the shape of the output, and that is the whole point of it. Every
+#: other way to catch this failure has to know who draws — and a check that knows
+#: one plotting library is a check that goes silent for every repository using
+#: another. Nothing here names a library, and nothing here has to.
+OBJECT_REPR = re.compile(r"^\[?\s*<[A-Za-z_][\w.]*[^\n]*>\s*\]?$")
+
+
+def _described(produced: dict) -> str | None:
+    """The output that describes an object instead of showing it, if there is one.
+
+    Independent of any declaration, which is what makes it worth having: the
+    declared-drawing check below can only fire in a repository that wrote its
+    drawing calls down, and the repository most likely to ship this defect is
+    exactly the one that never did.
+    """
+    for text in produced["bare"]:
+        stripped = text.strip()
+        if stripped and OBJECT_REPR.match(stripped):
+            return stripped[:120]
+    return None
 
 
 #: Read inside the target's own interpreter, because both questions below need the
@@ -1618,12 +1711,12 @@ def report_contract(target: Path, package: str) -> dict:
 def report_state(target: Path, name: str, package: str) -> dict:
     """Whether the document a human reads obeys the rules the numbers already do.
 
-    Five findings, and each one is a way a report can be wrong while every number
-    behind it is right:
+    Each finding below is a way a report can be wrong while every number behind it
+    is right:
 
     `proseNumbers`      a measurement typed into prose. It cannot be recomputed, so
-                        it survives the run that contradicts it. This is the sharpest
-                        of the five: it catches a hand-written conclusion, a caption
+                        it survives the run that contradicts it. It catches a
+                        hand-written conclusion, a caption
                         left over from an earlier campaign, and a figure the text
                         already disagrees with.
     `duplicated`        the same measurement rendered twice. Two renderings of one
@@ -1637,6 +1730,27 @@ def report_state(target: Path, name: str, package: str) -> dict:
                         by hand is the `proseNumbers` failure wearing a sentence.
     `undeclared`        a dimension rendered whose direction the package never
                         declared, so nothing could have checked its framing.
+    `unrendered`        a cell that computed a declared measurement and emitted
+                        nothing. The number exists and no reader ever sees it.
+    `describedNotShown` a cell that emitted a description of a figure instead of
+                        the picture. This is the one that hides best: the cell ran,
+                        raised nothing, produced an output, and every check that
+                        reads `execution_count` and the error list calls it green.
+                        Reachable two ways — through a declared drawing call, and
+                        through the shape of the output alone.
+    `undeclaredDrawings` a cell that showed a picture no declared call could have
+                        drawn, so `figures` is short by that call.
+
+    The last three are the only ones that read what a cell *produced* rather than
+    what its code says. Everything else here can be answered from the sources, and
+    a defect that only exists in the outputs was invisible to all of it.
+
+    `undeclaredDrawings` is what keeps the other two honest. A finding that fires
+    only on a declared call is not a net, it is a courtesy: the repository most
+    likely to ship a figure that never rendered is the one that never wrote its
+    drawing calls down, and there the check would be silent and the report green.
+    So an undeclared drawing is itself a finding, and the shape-of-the-output route
+    into `describedNotShown` fires with no declaration at all.
 
     Nothing here judges whether a conclusion is *correct*. That would need to know
     what the numbers mean, which is exactly what this file may not know.
@@ -1644,6 +1758,7 @@ def report_state(target: Path, name: str, package: str) -> dict:
     contract = report_contract(target, package)
     renderers = set(contract.get("renderers") or [])
     conclusions = set(contract.get("conclusions") or [])
+    drawings = set(contract.get("figures") or [])
     dimensions = dict(contract.get("dimensions") or {})
 
     root = target / name / "Notebooks"
@@ -1663,6 +1778,9 @@ def report_state(target: Path, name: str, package: str) -> dict:
     unframed: list[dict] = []
     unconcluded: list[dict] = []
     undeclared: set[str] = set()
+    unrendered: list[dict] = []
+    described_not_shown: list[dict] = []
+    undeclared_drawings: list[dict] = []
 
     for notebook in notebooks:
         cells = _notebook_cells(notebook)
@@ -1682,8 +1800,7 @@ def report_state(target: Path, name: str, package: str) -> dict:
 
             calls = _dotted_calls(source)
             rendered = sorted(set(c for c in calls if c in renderers))
-            if not rendered:
-                continue
+            drawn = sorted(set(c for c in calls if c in drawings))
 
             # A cell that writes to disk is the record, and the record is supposed
             # to hold everything the notebook showed. Counting it as a second
@@ -1692,6 +1809,63 @@ def report_state(target: Path, name: str, package: str) -> dict:
             # writing it.
             writes_record = any(call.endswith(("write_text", "write_bytes", "write"))
                                 for call in calls)
+
+            # The only reading in this file that goes to what a cell produced.
+            # Skipped when the cell never ran: an unexecuted notebook is already
+            # `validation`'s finding, and repeating it here as one report defect
+            # per cell would bury the ones that are about the report.
+            if cell.get("execution_count") is not None:
+                produced = _produced(cell)
+                shows_image = _shows_image(produced)
+                if not produced["errored"]:
+                    # Two ways in, and only one of them needs the contract. A cell
+                    # that emitted a description of an object where a picture
+                    # belongs is a defect whoever drew it, and the output says so
+                    # on its own. That second route is the one that matters: a
+                    # check reachable only through a declared call goes quiet in
+                    # precisely the repository that never declared one.
+                    described = _described(produced)
+                    # Two routes, and the first needs no contract: an output the
+                    # runtime could only render as plain text is a description of
+                    # the object whatever the cell was supposed to draw. The
+                    # second is the declared one, and it still reads the cell as a
+                    # whole — a declared drawing call that produced no picture
+                    # anywhere in its cell drew nothing a reader can see.
+                    if described is not None or (drawn and not shows_image):
+                        described_not_shown.append({
+                            "notebook": rel, "cell": index,
+                            "drawing": ", ".join(drawn) or "<sin declarar>",
+                            "emitted": sorted(produced["mimes"])
+                                       or (["texto"] if produced["streamed"] else []),
+                            # The repr itself when that is what gave it away, so
+                            # the reader sees the sentence that stood in for the
+                            # picture rather than being told one exists.
+                            "description": described,
+                        })
+                    # A picture came out of a call the contract never named, so
+                    # `figures` is short by that call and every check that reads it
+                    # was blind to this cell. Reported rather than inferred: which
+                    # of these calls draws is a claim about the package, and the
+                    # package is where it gets declared.
+                    if shows_image and not drawn:
+                        # Dotted calls only. The bare ones are `len`, `print`,
+                        # `float` and the method names already counted with their
+                        # receiver, and a finding that hands back thirty-four
+                        # entries is one nobody reads to the end.
+                        undeclared_drawings.append({
+                            "notebook": rel, "cell": index,
+                            "calls": sorted(set(c for c in calls
+                                                if "." in c
+                                                and c not in renderers
+                                                and c not in conclusions)),
+                        })
+                    if rendered and not writes_record and not produced["any"]:
+                        unrendered.append({"notebook": rel, "cell": index,
+                                           "rendering": ", ".join(rendered)})
+
+
+            if not rendered:
+                continue
 
             # Which declared dimensions this rendering names, so the same table is
             # recognised as the same table wherever it is printed.
@@ -1752,6 +1926,17 @@ def report_state(target: Path, name: str, package: str) -> dict:
     findings = {"proseNumbers": prose_numbers, "duplicated": duplicated,
                 "unframed": unframed, "unconcluded": unconcluded,
                 "undeclared": sorted(undeclared),
+                # A measurement computed and never shown, and a figure that came
+                # out as a sentence describing a figure. Both are cells that ran
+                # clean and reported nothing, which is why no check that reads
+                # `execution_count` and the error list has ever caught one.
+                "unrendered": unrendered,
+                "describedNotShown": described_not_shown,
+                # A cell that showed a picture no declared call could have drawn.
+                # It is what keeps the two findings above from being a courtesy:
+                # without it, a package that declares no `figures` is indistinguishable
+                # from a package whose figures are all fine.
+                "undeclaredDrawings": undeclared_drawings,
                 # A subset written by hand is a selection nobody had to justify.
                 # It is legitimate when the rule that fixed it looks at no outcome,
                 # and that is a claim a human makes — so it is declared in the
@@ -1764,15 +1949,19 @@ def report_state(target: Path, name: str, package: str) -> dict:
     clean = all(not value for value in findings.values())
     status = "ok" if clean else "drift"
     if live.get("status") != "ok":
-        # An unavailable check is never a pass. Two of the five findings could not
-        # be looked for, and saying `ok` would report their absence as their
-        # answer.
+        # An unavailable check is never a pass. Two of the findings could not be
+        # looked for, and saying `ok` would report their absence as their answer.
         status = "incomplete" if clean else "drift"
     return {"status": status,
             "live": live.get("status"),
             "liveDetail": live.get("detail"),
             "declared": {"renderers": sorted(renderers),
                          "conclusions": sorted(conclusions),
+                         # Echoed even when empty, so "declares no drawing calls"
+                         # cannot be read as "draws nothing". Nothing here can tell
+                         # the two apart, and leaving the key out would let an
+                         # undeclared figure pass as an absent one.
+                         "figures": sorted(drawings),
                          "dimensions": dimensions,
                          "selections": fixed},
             "notebooks": [str(p.relative_to(target)) for p in notebooks],
