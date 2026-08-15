@@ -21,6 +21,30 @@ const dropStopwords=(value:string)=>{
  const kept=value.split(/\s+/u).filter(token=>!STOPWORDS.has(token.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu,''))).join(' ').trim();
  return words(kept).length?kept:value;
 };
+const escapeRegExp=(value:string)=>value.replace(/[.*+?^${}()|[\]\\]/gu,'\\$&');
+/**
+ * True when `value` occurs in `query` as a standalone token.
+ *
+ * Label and tag matching used to ask `query.includes(label)` — the containment
+ * test the wrong way round. A one-character tag like `3` is a substring of any
+ * query mentioning `30`, `13` or `3-3`, and each match is worth 8 points against
+ * 3 for a content word, so a spurious hit outranks nearly three real ones.
+ * Boundaries fix that without breaking punctuated labels like `eq:uno`, whose
+ * `:` is not a word character on either side.
+ */
+const isolatedInQuery=(query:string,value:string)=>new RegExp(`(?<![\\p{L}\\p{N}_-])${escapeRegExp(value)}(?![\\p{L}\\p{N}_-])`,'u').test(query);
+/**
+ * Maps each label/tag to the smallest entry carrying it — the one that actually
+ * declares it.
+ *
+ * `document-index` reads an entry's tags straight out of its own text, and a
+ * section's text contains every equation inside it, so the section ends up
+ * carrying `\tag{3}` without ever writing it. Since the section also matches all
+ * the prose the equation lacks, asking for equation 3 resolved to the whole
+ * section that owns it. Crediting only the declaring entry keeps the ancestor
+ * from outscoring its own descendant.
+ */
+function declaringEntries(entries:readonly StructuralEntry[],key:'labels'|'tags'){const owner=new Map<string,{id:string;size:number}>();for(const entry of entries){const size=entry.endByte-entry.startByte;for(const value of entry[key]){const current=owner.get(value);if(!current||size<current.size)owner.set(value,{id:entry.entryId,size});}}return owner;}
 const equationSymbols=(value:string)=>[...new Set(value.match(/\\[A-Za-z]+|\b[A-Za-z]\b/g)??[])];
 const entryText=(state:DocumentState,id:string)=>{const e=state.structuralIndex.byId[id];return e?state.documentBytes.subarray(e.startByte,e.endByte).toString('utf8'):''};
 const leaf=(entry:StructuralEntry)=>['display_equation','paragraph','inline_math_region','list','code_block','definition','theorem','algorithm'].includes(entry.type);
@@ -185,10 +209,13 @@ export function resolveTargets(state:DocumentState,query:string,options:TargetRe
  if(direct&&direct.type!=='document')return [{entryId:direct.entryId,type:direct.type,headingPath:direct.headingPath,matchedTerms:[],matchedLabels:direct.labels,matchedTags:direct.tags,matchedSymbols:[],score:100,confidence:1,shortPreview:entryText(state,direct.entryId).slice(0,180),evidence:['explicit selection']}];
  const terms=words(query); const equationRequested=/ecuaci[oó]n/i.test(query); const oneHot=/one[- ]?hot|codificaci[oó]n|etiqueta|clase/i.test(query);
  const entries=(equationRequested?state.structuralIndex.entries.filter(e=>e.type==='display_equation'):state.structuralIndex.entries).filter(e=>e.type!=='document');
+ // Ownership is resolved over EVERY entry, not the filtered set: an equation
+ // still declares its tag even when the filter above has excluded its ancestors.
+ const labelOwner=declaringEntries(state.structuralIndex.entries,'labels'),tagOwner=declaringEntries(state.structuralIndex.entries,'tags');
  return entries.map(e=>{
   const own=entryText(state,e.entryId); const neighbors=e.neighboringEntryIds.map(id=>entryText(state,id)).join('\n'); const nearby=`${own}\n${neighbors}\n${e.headingPath.join(' ')}`.toLowerCase();
   const matchedTerms=terms.filter(t=>nearby.includes(t)||e.lexicalTerms.includes(t)||e.deterministicAliases.some(a=>a.includes(t)));
-  const matchedLabels=e.labels.filter(x=>query.includes(x)); const matchedTags=e.tags.filter(x=>query.includes(x));
+  const matchedLabels=e.labels.filter(x=>isolatedInQuery(query,x)&&labelOwner.get(x)?.id===e.entryId); const matchedTags=e.tags.filter(x=>isolatedInQuery(query,x)&&tagOwner.get(x)?.id===e.entryId);
   const symbols=equationSymbols(own); const matchedSymbols=symbols.filter(symbol=>Object.values(state.symbolIndex.symbols).some(x=>x.normalized===symbol.replace(/^\\/,'').toLowerCase()||x.uses.includes(e.entryId)));
   const semanticEvidence=oneHot&&/one[- ]?hot|codificaci[oó]n|etiqueta|clase/i.test(neighbors)?4:0;
   const oneHotMatch=/one[- ]?hot|codificaci[oó]n|etiqueta|clase/i.test(own)||semanticEvidence>0;const score=matchedTerms.length*3+matchedLabels.length*8+matchedTags.length*8+semanticEvidence+(equationRequested&&e.type==='display_equation'&&(!oneHot||oneHotMatch)?3:0);
