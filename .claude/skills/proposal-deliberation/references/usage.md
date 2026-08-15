@@ -232,12 +232,20 @@ Every `CREATE_SUCCESSOR` call above only previews. A real run looks like:
 
 (`modelCalls`/`plannerCalls` are always `1` here as a bookkeeping artifact of routing through the ambient-supplied planner — no network or model call is made. `tutorCalls`/`reviewerCalls` are always `0`: those roles are yours, in-conversation, not the engine's.)
 
-To publish, reuse the SAME `--serve` session opened at the top of this page — send the resolve line, then the preview line, then an accept line with `acceptSuccessor: true` and the returned `acceptanceToken`, all over the same stdin:
+The preview also carries a `mathDelta` naming every mathematical atom that existed before and is gone after — display equations, inline math, `\tag` values, LaTeX macros, `(Ec. N)` citations:
+
+```json
+"mathDelta": { "lost": [{ "id": "display:2a32c3fe", "kind": "display", "text": "x_{t+1}=A x_t" }], "added": [] }
+```
+
+Publishing requires echoing every lost id in `acknowledgedMathRemovals`; leave one out and the accept answers `MATH_REMOVALS_NOT_ACKNOWLEDGED` and writes nothing. Editing an equation counts as removing its previous form. Say out loud to the user what is leaving the document before you acknowledge it.
+
+To publish, reuse the SAME `--serve` session opened at the top of this page — send the resolve line, then the preview line, then an accept line with `acceptSuccessor: true`, the returned `acceptanceToken`, and any `acknowledgedMathRemovals`, all over the same stdin:
 
 ```json
 {"operation":"RESOLVE_TARGET","sourceFilename":"research-concept-r05.md","query":"..."}
 {"operation":"CREATE_SUCCESSOR","sourceFilename":"research-concept-r05.md","instruction":"...","selectedEntryId":"...","resolvedDecisions":[{"kind":"replace","targetEntryId":"<entryId from the resolve line>","replacementText":"..."}]}
-{"operation":"CREATE_SUCCESSOR","sourceFilename":"research-concept-r05.md","instruction":"...","selectedEntryId":"...","resolvedDecisions":[{"kind":"replace","targetEntryId":"<entryId from the resolve line>","replacementText":"..."}],"acceptSuccessor":true,"successorAcceptanceToken":"<the acceptanceToken from the preview line>"}
+{"operation":"CREATE_SUCCESSOR","sourceFilename":"research-concept-r05.md","instruction":"...","selectedEntryId":"...","resolvedDecisions":[{"kind":"replace","targetEntryId":"<entryId from the resolve line>","replacementText":"..."}],"acceptSuccessor":true,"successorAcceptanceToken":"<the acceptanceToken from the preview line>","acknowledgedMathRemovals":["<every mathDelta.lost[].id from the preview line>"]}
 ```
 
 The final line returns `status: "published"`, the new filename, `receiptId`, `manifestStatus: "COMMITTED"`, and `auditStatus`/`selfAuditStatus: "PASS"`. The acceptance token is single-use and lives only in that `--serve` process's memory — a preview from one process cannot be accepted by another invocation of `cli.mjs`. Keeping resolve, preview, and accept on the same stdin also means the engine's cold start is paid once for all three, not three times.

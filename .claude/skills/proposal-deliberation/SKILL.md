@@ -21,6 +21,16 @@ For the rest of this deliberation:
 
 These criteria are what the engine's separate tutor/reviewer/planner roles used to enforce mechanically before every model call. They are not optional style advice — apply them to every proposed change before it becomes a `resolvedDecisions` entry.
 
+## Showing mathematics in chat
+
+The document stores canonical LaTeX and that never changes. But the terminal does not render LaTeX, so pasting `\frac{a}{b}` at the user asks them to compile it in their head. Render it for reading instead, at whichever of three levels fits:
+
+- **Transliterate** when it clarifies — Greek and operators as Unicode, structure as ASCII. `$w_j^{t} = 1 - \widehat H_2(\mathbf g_j^{t}) / \ln C$` reads far better as `wⱼᵗ = 1 − Ĥ₂(gⱼᵗ) / ln C`.
+- **Decompose** when the expression is too big for one line — a block matrix or a long `aligned` gets worse as Unicode, not better. Name its parts instead, the way the document itself does.
+- **Show raw LaTeX** when the exact bytes are the point: when the user asks, or when you are showing what will enter the document.
+
+**This is a view, never a source.** Unicode math exists only in what you say to the user. Every byte in `replacementText`, `content`, `transformedContent` and `instruction` is canonical LaTeX per [the canonical form](#the-canonical-form-how-this-document-spells-mathematics). If a glyph ever leaks into a candidate, rule 3 fails it — the discipline is verified, not merely promised.
+
 ## Session lock
 
 Once you open a deliberation with the user about this proposal, **stay in this role** for the rest of the conversation. Do not drift into an unrelated task, and do not silently apply an edit-sounding follow-up without discussing it first. Only leave the tutor role when the user explicitly closes the deliberation (says they are done, asks to stop, or the session ends). An edit-verb follow-up ("apply that", "now change...") is still a proposal to discuss and refute first, not a standing instruction to bypass deliberation.
@@ -138,6 +148,34 @@ For `move`/`copy`: the kind, source, destination, and position are whatever the 
 - **Display math is its own block.** Write a `$$ … $$` display equation on its own lines with blank lines around it — never inline inside a prose sentence — and keep every `$$` balanced and every LaTeX command well-formed. Inline or unbalanced display math is rejected.
 - Patch only complete Markdown blocks; do not cut a replacement off mid-block.
 If the engine returns `successor-markdown-block-safety`, the fix is a well-formed replacement (fix the spacing / make the equation a standalone block), never a workaround.
+
+#### The canonical form: how this document spells mathematics
+
+Every byte you send the engine — `replacementText`, `content`, `transformedContent` — obeys these. They are what makes the `.md` render, and the engine now blocks a candidate that breaks any of them (`mathCanonicalForm`).
+
+1. **Inline math is `$…$`**, opened and closed on the same line. Never `\(…\)`.
+2. **Display math is `$$` alone on its own line**, opening and closing, with a blank line before and after the block. Never `$$…$$` inside a prose line. Never `\[…\]`. (A LaTeX line break with spacing, `\\[1em]`, is not a delimiter and is fine.)
+3. **Notation is LaTeX commands, never Unicode glyphs**: `\varepsilon` not `ε`, `\sum` not `∑`, `\leq` not `≤`, `\mathcal L` not `ℒ`, `\infty` not `∞`. Checked inside math delimiters, where notation lives; prose may be any Unicode it needs.
+4. **Numbering is `\tag{N}`**; cite in the document's own prose form, `(Ec. N)`. A citation whose tag does not exist blocks the candidate.
+5. **Chat rendering is a view, never a source.** See [Showing mathematics in chat](#showing-mathematics-in-chat) — Unicode belongs in what you say to the user, never in a byte the engine stores. Rule 3 enforces this: a leaked glyph fails the candidate.
+
+#### Removing mathematics requires saying so
+
+The preview returns a `mathDelta`: which mathematical atoms — display equations, inline math, `\tag` values, LaTeX macros, `(Ec. N)` citations — existed before and are gone after.
+
+```json
+"mathDelta": { "lost": [{ "id": "display:2a32c3fe", "kind": "display", "text": "x_{t+1}=A x_t" }], "added": [] }
+```
+
+**Read that list. It is the only thing standing between a rewritten section and mathematics that silently disappears from the paper.** Byte coverage guards what lies outside the locus; inside it, this is the guard.
+
+To publish, echo the ids of every lost atom in `acknowledgedMathRemovals` on the accept call. Leave one out and the engine answers `MATH_REMOVALS_NOT_ACKNOWLEDGED` and publishes nothing.
+
+```json
+{ "operation": "CREATE_SUCCESSOR", "…": "…", "acceptSuccessor": true, "successorAcceptanceToken": "…", "acknowledgedMathRemovals": ["display:2a32c3fe"] }
+```
+
+Editing an equation counts as removing its previous form — that is deliberate. Before you acknowledge anything, tell the user in plain language what is leaving the document and confirm it was part of what they approved. An acknowledgment you cannot justify from the deliberation is a defect, not a formality.
 
 ### 3. Call the engine: `CREATE_SUCCESSOR` + `resolvedDecisions`
 

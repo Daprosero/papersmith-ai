@@ -240,7 +240,11 @@ test('explicit CREATE_SUCCESSOR overrides recupera r02 and derives one semantic 
  assert.deepEqual(await readFile(r01Path), r01Before, 'preview preserves source bytes');
  assert.deepEqual(await readdir(proposals), ['research-concept-r01.md'], 'acceptance precedes publication');
  assert.equal(preview.compiled.candidate, '<!-- proposal-workspace:artifact:v1 -->\n# 1 Intro\n\nPrefix bytes remain.\n\n# 2 Revised dynamics\n\n$$\nx_{t+1}=B x_t\n$$\n\nNew dynamics.\n\n# 3 Tail\n\nSuffix bytes remain.\n');
- const published = await orchestrator.execute({ ...request, acceptSuccessor: true, successorAcceptanceToken: preview.acceptanceToken });
+ // The replacement rewrites the dynamics equation, so the old display atom
+ // leaves the document: mathematical preservation requires acknowledging it
+ // by the id the preview reported, exactly as an intentional removal.
+ assert.deepEqual(preview.mathDelta.lost.map(atom => atom.text), ['x_{t+1}=A x_t']);
+ const published = await orchestrator.execute({ ...request, acceptSuccessor: true, successorAcceptanceToken: preview.acceptanceToken, acknowledgedMathRemovals: preview.mathDelta.lost.map(atom => atom.id) });
  assert.equal(published.status, 'published', JSON.stringify(published));
  assert.deepEqual(await readFile(r01Path), r01Before, 'publication preserves r01 bytes');
  assert.ok((await readFile(path.join(proposals, 'research-concept-r02.md'), 'utf8')).includes('New dynamics.'));
