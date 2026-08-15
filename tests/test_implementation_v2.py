@@ -1057,6 +1057,7 @@ class ReportContractTests(unittest.TestCase):
         "    'report': {\n"
         "        'renderers': ['tables.render'],\n"
         "        'conclusions': ['tables.conclusion'],\n"
+        "        'objectiveEntry': 'tables.objective',\n"
         "        'dimensions': {'accuracy': 'higher', 'seconds': 'lower'},\n"
         "    },\n"
         "}\n"
@@ -1080,6 +1081,8 @@ class ReportContractTests(unittest.TestCase):
 
     WELL_FORMED = [
         _cell("markdown", "Qué mide: la exactitud. Más alto es mejor."),
+        # La mitad calculada del encuadre: contra qué valor se compara lo de abajo.
+        _cell("code", "print(tables.objective('accuracy'))"),
         _cell("code", "print(tables.render(runs, 'accuracy', reduction))\n"
                       "print(tables.conclusion(runs, 'accuracy', reduction))"),
     ]
@@ -1088,6 +1091,60 @@ class ReportContractTests(unittest.TestCase):
         state = self.state(self.WELL_FORMED)
         for finding in ("proseNumbers", "duplicated", "unframed", "unconcluded"):
             self.assertEqual(state[finding], [], f"{finding}: {state[finding]}")
+
+    def test_a_section_that_never_says_what_value_it_seeks_is_caught(self):
+        """Una dirección no es un objetivo.
+
+        «Más alto es mejor» dice para qué lado mirar y nada sobre dónde termina lo
+        bueno. Quien no conoce la métrica no aprende nada de eso: le falta el hito
+        contra el que se compara — un azar, una cota, un acuerdo entre corridas.
+        """
+        cells = [_cell("markdown", "Qué mide: la exactitud. Más alto es mejor."),
+                 _cell("code", "print(tables.render(runs, 'accuracy', reduction))\n"
+                               "print(tables.conclusion(runs, 'accuracy', reduction))")]
+        found = self.state(cells)["unaimed"]
+        self.assertEqual(len(found), 1, found)
+        self.assertEqual(found[0]["reason"], "la sección no dice qué valor se busca")
+
+    def test_declaring_no_objective_at_all_is_the_reason_and_not_a_pass(self):
+        """La lección de `figures: []`, aplicada antes de repetirla.
+
+        Un hallazgo que solo puede dispararse cuando alguien escribió una clave
+        opcional se apaga justo en el paquete que nunca la escribió, y ahí el
+        informe sale limpio sin decir en ningún lado qué se busca. La ausencia de
+        la declaración es el motivo del hallazgo, no su excusa.
+        """
+        silent = self.DECLARATION.replace(
+            "        'objectiveEntry': 'tables.objective',\n", "")
+        found = self.state(self.WELL_FORMED, silent)["unaimed"]
+        self.assertEqual(len(found), 1, found)
+        self.assertEqual(found[0]["reason"], "el contrato no declara objectiveEntry")
+
+    def test_the_objective_is_computed_and_counts_as_framing(self):
+        """El valor que se busca no puede ir tipeado: envejece igual que una
+        medición tipeada, y el día que cambie una constante la frase va a seguir
+        nombrando el hito viejo. Va calculado, y por eso ocupa una celda de código
+        entre el párrafo y la tabla — que el chequeo tiene que leer como parte del
+        encuadre y no como trabajo ajeno."""
+        state = self.state(self.WELL_FORMED)
+        self.assertEqual(state["unaimed"], [])
+        self.assertEqual(state["unframed"], [])
+        self.assertEqual(state["unconcluded"], [])
+
+    def test_the_skill_never_asks_what_the_objective_says(self):
+        """El límite que impide que esto aprenda un campo.
+
+        Cualquier texto sirve: si la comprobación distinguiera un azar de una cota
+        habría aprendido de qué se trata el experimento, y se apagaría en el
+        próximo que mida otra cosa. Solo pregunta si la sección lo dice.
+        """
+        for texto in ("hacia cero", "por encima del azar", "adentro de sus cotas"):
+            with self.subTest(texto=texto):
+                cells = [_cell("markdown", "Qué mide: la exactitud."),
+                         _cell("code", f"print(tables.objective({texto!r}))"),
+                         _cell("code", "print(tables.render(runs, 'accuracy', reduction))\n"
+                                       "print(tables.conclusion(runs, 'accuracy', reduction))")]
+                self.assertEqual(self.state(cells)["unaimed"], [])
 
     def test_a_number_typed_into_prose_is_caught(self):
         cells = [_cell("markdown", "La exactitud sube 2,78 puntos."),
@@ -1235,6 +1292,7 @@ class CellOutputTests(unittest.TestCase):
         "    'report': {\n"
         "        'renderers': ['tables.render'],\n"
         "        'conclusions': ['tables.conclusion'],\n"
+        "        'objectiveEntry': 'tables.objective',\n"
         "        'figures': ['figures.curves'],\n"
         "        'dimensions': {'accuracy': 'higher'},\n"
         "    },\n"
@@ -1242,6 +1300,7 @@ class CellOutputTests(unittest.TestCase):
     )
 
     FRAME = _cell("markdown", "Qué mide: la exactitud. Más alto es mejor.")
+    AIM = _cell("code", "print(tables.objective('accuracy'))")
     TABLE = _cell("code", "print(tables.render(runs, 'accuracy', reduction))\n"
                           "print(tables.conclusion(runs, 'accuracy', reduction))")
 
@@ -1503,6 +1562,7 @@ class CellOutputEndToEndTests(unittest.TestCase):
         "    'report': {\n"
         "        'renderers': ['tables.render'],\n"
         "        'conclusions': ['tables.conclusion'],\n"
+        "        'objectiveEntry': 'tables.objective',\n"
         "        'figures': ['figures.curves'],\n"
         "        'dimensions': {'accuracy': 'higher'},\n"
         "    },\n"

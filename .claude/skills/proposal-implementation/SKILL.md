@@ -782,6 +782,7 @@ metric is called in somebody's field.
     "renderers":       ["tables.render", "harness.render_panorama"],
     "conclusions":     ["tables.conclusion", "tables.conclusion_geometry"],
     "conclusionEntry": "tables.conclusions",
+    "objectiveEntry":  "tables.objective",
     "figures":         ["figures.curves", "latent.grid"],
     "dimensions":      {"targetAccuracy": "higher", "seconds": "lower"},
     "selections":      {"SEEDS": "the pilot, a prefix of FULL_SEEDS"},
@@ -882,6 +883,23 @@ they are here and not in the contract.
   for, and what value would count as the good one. A reader should not have to
   reassemble the point from three bolded labels, and a template invites filling the
   slots rather than saying the thing.
+- **A direction is not a target, and the target is computed.** "Higher is better"
+  says which way to look and nothing about where good stops; a reader who does not
+  already know the metric learns nothing from it. What they need is the landmark —
+  a chance level, a bound, an agreement across runs — and that landmark is a
+  number, so typing it into the prose ages exactly as a measurement typed into the
+  prose does: the day a constant moves, the sentence goes on naming the old one.
+  So the framing has a written half and a computed one. `objectiveEntry` is the
+  package's call that states, for a dimension, the value being aimed at;
+  `verify` reports a section that never states one as `unaimed`, and reports a
+  package that declares no entry at all with that absence as the reason rather
+  than passing it in silence.
+
+  **What this must never become is a list of kinds of objective.** A check that
+  could tell a chance level from a unit interval would have learned somebody's
+  field and would go quiet in the next repository that measures something else.
+  The skill asks only whether the section states its objective; what the objective
+  *is* belongs to the package, exactly as the metric names do.
 - **What the framing carries, the figure does not repeat.** No title restating the
   heading directly above it. No caption restating bounds the notebook already
   stated. Stating them twice is the duplication rule again, in two media.

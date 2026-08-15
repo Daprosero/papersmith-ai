@@ -1784,6 +1784,18 @@ def report_state(target: Path, name: str, package: str) -> dict:
     conclusions = set(contract.get("conclusions") or [])
     drawings = set(contract.get("figures") or [])
     dimensions = dict(contract.get("dimensions") or {})
+    # One declared call that states, for a dimension, which value would count as
+    # the good one. An entry point rather than a list of targets, for the same
+    # reason `conclusionEntry` is one: what a good value looks like is a fact about
+    # somebody's field, and a check that enumerated the kinds — a chance level, a
+    # unit interval, a distance that should fall — would have learned that field.
+    # Here it only asks whether the section says it, never what it says.
+    #
+    # It also has to be *computed*. A target typed into prose goes stale exactly
+    # like a measurement typed into prose: the day the class count changes, the
+    # sentence keeps naming the old chance. That is the same defect `proseNumbers`
+    # exists for, wearing an objective instead of a result.
+    aim = contract.get("objectiveEntry")
 
     root = target / name / "Notebooks"
     notebooks = sorted(root.glob("*.ipynb")) if root.is_dir() else []
@@ -1802,6 +1814,7 @@ def report_state(target: Path, name: str, package: str) -> dict:
     unframed: list[dict] = []
     unconcluded: list[dict] = []
     undeclared: set[str] = set()
+    unaimed: list[dict] = []
     unrendered: list[dict] = []
     described_not_shown: list[dict] = []
     undeclared_drawings: list[dict] = []
@@ -1965,10 +1978,17 @@ def report_state(target: Path, name: str, package: str) -> dict:
             # checks still guarantee is unchanged — a section that frames nothing,
             # or that never concludes, is caught exactly as before.
             def _sibling_rendering(cell_at: dict) -> bool:
-                """Another table of this same section, rather than other work."""
+                """Another table of this same section, rather than other work.
+
+                The computed objective counts as framing and not as other work: a
+                framing has a written half and a computed one, and the value to aim
+                for belongs to the second because it must not be typed.
+                """
                 if cell_at.get("cell_type") != "code":
                     return False
                 sibling = _dotted_calls(_source_of(cell_at))
+                if aim and aim in sibling and not any(c in renderers for c in sibling):
+                    return True
                 return (any(c in renderers for c in sibling)
                         and not any(c in conclusions for c in sibling))
 
@@ -1987,6 +2007,32 @@ def report_state(target: Path, name: str, package: str) -> dict:
                 unframed.append({"notebook": rel, "cell": index,
                                  "rendering": ", ".join(sorted(set(rendered))),
                                  "reason": "la explicación no está inmediatamente antes"})
+
+            # Whether the section says what value would count as the good one. A
+            # direction is not a target: «higher is better» tells a reader which
+            # way to look and nothing about where to stop, and somebody who does
+            # not already know the metric learns nothing from it. Asked of the
+            # section, over the same walk-back that finds the framing, because the
+            # objective belongs to the framing.
+            aimed = bool(aim) and any(
+                aim in _dotted_calls(_source_of(cells[step]))
+                for step in range(back, index)
+                if cells[step].get("cell_type") == "code")
+            # The cell that writes the record is exempt, for the same reason it is
+            # exempt from the duplication rule: it is the file, not a reading. It
+            # renders everything the notebook showed in order to store it, and
+            # asking it to state an objective would put one sentence in front of a
+            # dozen unrelated tables.
+            if not aimed and not writes_record:
+                unaimed.append({
+                    "notebook": rel, "cell": index,
+                    "rendering": ", ".join(sorted(set(rendered))),
+                    # An absent declaration is the reason, not an excuse. Silence
+                    # here would make a package that declares no objective at all
+                    # indistinguishable from one whose objectives are all stated.
+                    "reason": ("el contrato no declara objectiveEntry" if not aim
+                               else "la sección no dice qué valor se busca"),
+                })
 
             concluded = any(c in conclusions for c in calls)
             forward = index + 1
@@ -2028,6 +2074,10 @@ def report_state(target: Path, name: str, package: str) -> dict:
                 # out as a sentence describing a figure. Both are cells that ran
                 # clean and reported nothing, which is why no check that reads
                 # `execution_count` and the error list has ever caught one.
+                # Una sección que muestra una medición y nunca dice contra qué
+                # se la compara. La dirección sola no alcanza: dice para qué lado
+                # mirar y nada sobre dónde termina lo bueno.
+                "unaimed": unaimed,
                 "unrendered": unrendered,
                 "describedNotShown": described_not_shown,
                 # A cell that showed a picture no declared call could have drawn.
