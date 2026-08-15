@@ -104,8 +104,13 @@ The engine host itself cold-starts in well under a second (compiling its TS sour
 Every decision must name the *engine's own* resolved entry ID for its target — never a guessed, invented, or human-readable identifier. To learn it before building a decision, send a `RESOLVE_TARGET` line to the SAME `--serve` process you opened above (no mutation, no model call, no `ANTHROPIC_API_KEY`):
 
 ```json
-{ "operation": "RESOLVE_TARGET", "sourceFilename": "<managed-filename>.md", "query": "<the same locus description you will use in the request>" }
+{ "operation": "RESOLVE_TARGET", "sourceFilename": "<managed-filename>.md", "query": "<distinctive words from the target heading>" }
 ```
+
+**Write the query as distinctive heading words, not as a sentence.** The resolver scores a heading by how many query words appear as substrings of its heading line, so a query is only as good as its rarest words. Use the content words of the target's heading and nothing else: no punctuation (the query is truncated at the first `,;:.`, so `"Sección 3. Formulación…"` collapses to `"3"`), no section number, and keep accents exactly as the heading spells them (matching is accent-sensitive: `"normalizacion"` does not match `Normalización`). Stopwords are filtered out for you, but everything else you add is scored.
+
+- ✅ `"Normalización términos adaptación"`
+- ❌ `"## 5. Normalización de los términos de adaptación"` — punctuation truncates it to `"5"`
 
 which returns:
 
@@ -113,7 +118,7 @@ which returns:
 { "status": "resolved", "operation": "RESOLVE_TARGET", "entryId": "...", "blocked": false, "question": null }
 ```
 
-`RESOLVE_TARGET` reuses the exact same resolver (`loadDocumentState` → `resolveSuccessorTarget` → `ambiguityGate`) that `CREATE_SUCCESSOR` itself uses internally, so the `entryId` it returns is guaranteed to match what `CREATE_SUCCESSOR` will resolve for the identical `sourceFilename`/query — there is no separate, divergent resolution path. If `blocked` is true, the locus is ambiguous — narrow the description (do not guess) and resolve again. Do this once per independent locus you intend to touch. To resolve more than one locus in a single call, send `queries` (an array of `{ "query": "..." }`) instead of `query`; the response returns one `{ query, entryId, blocked, question }` result per entry in the same order. See [usage examples](references/usage.md) for a worked recipe.
+`RESOLVE_TARGET` reuses the exact same resolver (`loadDocumentState` → `resolveSuccessorTarget` → `ambiguityGate`) that `CREATE_SUCCESSOR` itself uses internally, so the `entryId` it returns is guaranteed to match what `CREATE_SUCCESSOR` will resolve for the identical `sourceFilename`/query — there is no separate, divergent resolution path. If `blocked` is true the locus is ambiguous — **remove words, never add them** (and never guess from the menu). Adding words to "narrow" the description is what caused the ambiguity: every extra word matches more headings. The blocked `question` names the terms that matched every candidate; drop exactly those and resolve again. If instead you get `SUCCESSOR_TARGET_NOT_FOUND`, no heading line matched at all — the query described the section's *content* rather than its *title*, so name the heading. A successor locus is never resolved from body text, precisely so a near-miss cannot silently hand you the wrong section. Do this once per independent locus you intend to touch. To resolve more than one locus in a single call, send `queries` (an array of `{ "query": "..." }`) instead of `query`; the response returns one `{ query, entryId, blocked, question }` result per entry in the same order. See [usage examples](references/usage.md) for a worked recipe.
 
 ### 2. Build one `EditAction` per resolved locus
 
@@ -143,14 +148,14 @@ Send this as the next line on the SAME `--serve` stdin you resolved the entry ID
   "operation": "CREATE_SUCCESSOR",
   "sourceFilename": "<managed-filename>.md",
   "instruction": "<the user's request, in their own words>",
-  "selectedEntryId": "<the same locus description used to resolve the entry ID above>",
+  "selectedEntryId": "<the same query used to resolve the entry ID above>",
   "resolvedDecisions": [
     { "kind": "replace", "targetEntryId": "<resolved entry ID>", "replacementText": "<new text>" }
   ]
 }
 ```
 
-For more than one independent locus in the same version, use `selectedEntryIds` (plural — one locus description per entry) instead of `selectedEntryId`, and supply one decision per resolved locus in `resolvedDecisions`.
+For more than one independent locus in the same version, use `selectedEntryIds` (plural — one query per entry) instead of `selectedEntryId`, and supply one decision per resolved locus in `resolvedDecisions`.
 
 No `ANTHROPIC_API_KEY` and no model configuration are ever required — this call never makes a network or model call. There is no separate `PROPOSAL_DELIBERATION_MODEL` setting anymore, and no per-call cost budget to manage; the environment is only `PROPOSAL_DELIBERATION_PROJECT_ROOT` (defaults to cwd) and `PROPOSAL_DELIBERATION_SESSION_ID`.
 

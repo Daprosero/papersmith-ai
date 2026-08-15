@@ -75,24 +75,28 @@ Every example below is a JSON line sent to that same process's stdin, in order.
 Before you can build a `resolvedDecisions` entry, you need the engine's own resolved entry ID for the locus you intend to touch. Send a `RESOLVE_TARGET` line to the `--serve` process above — this is read-only, makes no model call, and needs no `ANTHROPIC_API_KEY`. It uses the exact same resolver (`loadDocumentState` → `resolveSuccessorTarget` → `ambiguityGate`) `orchestrator.ts` calls internally for `CREATE_SUCCESSOR`, so the returned `entryId` is guaranteed to match what `CREATE_SUCCESSOR` itself would resolve for the identical `sourceFilename`/query:
 
 ```json
-{ "operation": "RESOLVE_TARGET", "sourceFilename": "research-concept-r05.md", "query": "the definition of stationarity in the assumptions section" }
+{ "operation": "RESOLVE_TARGET", "sourceFilename": "research-concept-r05.md", "query": "Assumptions stationarity" }
 ```
+
+Write the query as **distinctive words from the target heading**, not as a sentence describing it. The resolver scores a heading by how many query words appear as substrings of its heading line, so only the rare words help. Drop punctuation (the query is truncated at the first `,;:.`), drop the section number, and keep accents exactly as the heading spells them — matching is accent-sensitive. Stopwords are filtered out for you.
+
 
 ```json
 { "status": "resolved", "operation": "RESOLVE_TARGET", "entryId": "…", "blocked": false, "question": null }
 ```
 
 - If `blocked` is `false`, `entryId` is the real value to use as `targetEntryId`/`anchorEntryId`/`sourceEntryIds`/`destinationAnchorId` in your decision.
-- If `blocked` is `true`, the description matched more than one candidate — `question` lists them; narrow the description (add the section, a nearby phrase, or an exact quote) and resolve again. Never guess between the listed candidates.
+- If `blocked` is `true`, the query matched more than one candidate — `question` lists them and names the terms that matched all of them. **Remove those terms; never add more.** Extra words match more headings, so "narrowing" a blocked query widens it. Never guess between the listed candidates.
+- If the reason is `SUCCESSOR_TARGET_NOT_FOUND`, no heading line matched — you described the section's content instead of its title. Name the heading. A successor locus is never resolved from body text, so a near-miss can never silently hand you the wrong section.
 
 Do this once per independent locus in the batch you are about to apply. To resolve several loci in one call, send `queries` (an array of `{ "query": "..." }`) instead of `query`:
 
 ```json
-{ "operation": "RESOLVE_TARGET", "sourceFilename": "research-concept-r05.md", "queries": [{ "query": "the definition of stationarity in the assumptions section" }, { "query": "the main theorem statement" }] }
+{ "operation": "RESOLVE_TARGET", "sourceFilename": "research-concept-r05.md", "queries": [{ "query": "Assumptions stationarity" }, { "query": "Main convergence theorem" }] }
 ```
 
 ```json
-{ "status": "resolved", "operation": "RESOLVE_TARGET", "results": [{ "query": "the definition of stationarity in the assumptions section", "entryId": "…", "blocked": false, "question": null }, { "query": "the main theorem statement", "entryId": "…", "blocked": false, "question": null }] }
+{ "status": "resolved", "operation": "RESOLVE_TARGET", "results": [{ "query": "Assumptions stationarity", "entryId": "…", "blocked": false, "question": null }, { "query": "Main convergence theorem", "entryId": "…", "blocked": false, "question": null }] }
 ```
 
 ## Building `resolvedDecisions` and applying
@@ -104,7 +108,7 @@ node .claude/skills/proposal-deliberation/engine/cli.mjs '{
   "operation": "CREATE_SUCCESSOR",
   "sourceFilename": "research-concept-r05.md",
   "instruction": "Tighten the definition of stationarity to require strict, not weak, stationarity.",
-  "selectedEntryId": "the definition of stationarity in the assumptions section",
+  "selectedEntryId": "Assumptions stationarity",
   "resolvedDecisions": [
     { "kind": "replace", "targetEntryId": "<entryId from the resolve step>", "replacementText": "A process is strictly stationary when its full joint distribution is shift-invariant..." }
   ]
@@ -118,7 +122,7 @@ node .claude/skills/proposal-deliberation/engine/cli.mjs '{
   "operation": "CREATE_SUCCESSOR",
   "sourceFilename": "research-concept-r05.md",
   "instruction": "Add a remark after the main theorem clarifying the role of the boundedness assumption.",
-  "selectedEntryId": "the main theorem statement",
+  "selectedEntryId": "Main convergence theorem",
   "resolvedDecisions": [
     { "kind": "insert", "anchorEntryId": "<entryId>", "position": "after", "content": "**Remark.** Boundedness is used only to control the tail of the empirical process; ..." }
   ]
@@ -132,7 +136,7 @@ node .claude/skills/proposal-deliberation/engine/cli.mjs '{
   "operation": "CREATE_SUCCESSOR",
   "sourceFilename": "research-concept-r05.md",
   "instruction": "Remove the sentence claiming the method has no computational overhead — it is unsupported.",
-  "selectedEntryId": "the sentence claiming no computational overhead, in the limitations section",
+  "selectedEntryId": "Limitations",
   "resolvedDecisions": [
     { "kind": "delete", "targetEntryId": "<entryId>", "instructionEvidence": "Remove the sentence claiming the method has no computational overhead.", "reason": "unsupported claim" }
   ]
@@ -146,7 +150,7 @@ node .claude/skills/proposal-deliberation/engine/cli.mjs '{
   "operation": "CREATE_SUCCESSOR",
   "sourceFilename": "research-concept-r05.md",
   "instruction": "Move the paragraph beginning \"We next impose compactness\" from the motivation section to immediately before the assumptions list.",
-  "selectedEntryId": "the paragraph beginning \"We next impose compactness\"",
+  "selectedEntryId": "Assumptions compactness",
   "resolvedDecisions": [
     {
       "kind": "move",
@@ -170,7 +174,7 @@ An `ADAPTIVE` relocation requires you to supply the reworded text yourself in `t
   "operation": "CREATE_SUCCESSOR",
   "sourceFilename": "research-concept-r05.md",
   "instruction": "Copy the notation convention for logarithms from the notation section to the start of the appendix, adapting it to refer back to the notation section.",
-  "selectedEntryId": "the sentence establishing the natural-logarithm convention",
+  "selectedEntryId": "Notation conventions",
   "resolvedDecisions": [
     {
       "kind": "copy",
@@ -188,14 +192,14 @@ An `ADAPTIVE` relocation requires you to supply the reworded text yourself in `t
 
 ### Multiple independent loci in one version
 
-Use `selectedEntryIds` (plural) instead of `selectedEntryId`, one locus description per entry, and supply one decision per resolved locus:
+Use `selectedEntryIds` (plural) instead of `selectedEntryId`, one query per entry, and supply one decision per resolved locus:
 
 ```json
 {
   "operation": "CREATE_SUCCESSOR",
   "sourceFilename": "research-concept-r05.md",
   "instruction": "Tighten stationarity and add the boundedness remark in the same version.",
-  "selectedEntryIds": ["the definition of stationarity in the assumptions section", "the main theorem statement"],
+  "selectedEntryIds": ["Assumptions stationarity", "Main convergence theorem"],
   "resolvedDecisions": [
     { "kind": "replace", "targetEntryId": "<entryId 1>", "replacementText": "..." },
     { "kind": "insert", "anchorEntryId": "<entryId 2>", "position": "after", "content": "..." }

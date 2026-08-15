@@ -8,6 +8,19 @@ export type SuccessorTargetResolution={candidates:TargetCandidate[];reason?:'SUC
 type StructuralCore={entry:StructuralEntry;startByte:number;endByte:number;text:Buffer};
 
 const words=(value:string)=>(value.toLowerCase().match(/[\p{L}\p{N}_-]{2,}/gu)??[]);
+/**
+ * Function words that carry no discriminating power in a heading. Term matching
+ * is a plain substring test against the heading line, so a single `de` matches
+ * nearly every Spanish heading, lifts them all into contention, and collapses
+ * the ambiguity gate's score margin — turning an otherwise exact locus
+ * description into a blocked one.
+ */
+const STOPWORDS=new Set(['de','del','la','el','los','las','un','una','unos','unas','en','con','por','para','sin','sobre','entre','al','lo','su','sus','que','se','es','son','como','mas','más','of','the','an','in','on','for','to','with','and','or','by','from','is','are','as','at','be']);
+/** Drops stopword tokens, keeping the original when nothing discriminating survives. */
+const dropStopwords=(value:string)=>{
+ const kept=value.split(/\s+/u).filter(token=>!STOPWORDS.has(token.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu,''))).join(' ').trim();
+ return words(kept).length?kept:value;
+};
 const equationSymbols=(value:string)=>[...new Set(value.match(/\\[A-Za-z]+|\b[A-Za-z]\b/g)??[])];
 const entryText=(state:DocumentState,id:string)=>{const e=state.structuralIndex.byId[id];return e?state.documentBytes.subarray(e.startByte,e.endByte).toString('utf8'):''};
 const leaf=(entry:StructuralEntry)=>['display_equation','paragraph','inline_math_region','list','code_block','definition','theorem','algorithm'].includes(entry.type);
@@ -104,7 +117,7 @@ export function resolveSectionRange(state:DocumentState,raw:string):SectionRange
  return {candidate,entryIds};
 }
 
-function successorSelectionQuery(query:string){const selected=/(?:\bsecci[oó]n|\bsubsecci[oó]n|\bsection|\bsubsection|\bapartado)\s+(?:de(?:l|\s+la)?\s+)?(.+?)(?=[,;:.]|\b(?:para|pero|donde|que|conserva|preserva|mant(?:é|e)n|keep)\b|$)/iu.exec(query)?.[1];return (selected??query).replace(/\becuaci[oó]n(?:es)?\b/giu,' ').trim();}
+function successorSelectionQuery(query:string){const selected=/(?:\bsecci[oó]n|\bsubsecci[oó]n|\bsection|\bsubsection|\bapartado)\s+(?:de(?:l|\s+la)?\s+)?(.+?)(?=[,;:.]|\b(?:para|pero|donde|que|conserva|preserva|mant(?:é|e)n|keep)\b|$)/iu.exec(query)?.[1];return dropStopwords((selected??query).replace(/\becuaci[oó]n(?:es)?\b/giu,' ').trim());}
 function collapseNestedSuccessorCandidates(candidates:TargetCandidate[]){return candidates.filter(candidate=>!candidates.some(other=>other.entryId!==candidate.entryId&&other.composite!.startByte>=candidate.composite!.startByte&&other.composite!.endByte<=candidate.composite!.endByte&&(other.composite!.startByte!==candidate.composite!.startByte||other.composite!.endByte!==candidate.composite!.endByte)));}
 
 /**
@@ -139,7 +152,13 @@ export function resolveSuccessorTarget(state:DocumentState,query:string):Success
   const resolved=headingCandidates.find(candidate=>candidate.entryId===entry.entryId);
   return [resolved??{entryId:entry.entryId,type:entry.type,headingPath:entry.headingPath,matchedTerms,matchedLabels:[],matchedTags:[],matchedSymbols:[],score:matchedTerms.length*3,confidence:Math.min(1,matchedTerms.length/3),shortPreview:entryText(state,entry.entryId).slice(0,180),evidence:matchedTerms}];
  });
- const semantic=direct.length?direct:headingCandidates;
+ // A successor locus must be matched by its own heading line. Falling back to
+ // `headingCandidates` would accept a section scored on its BODY — including a
+ // descendant equation's `\tag`, whose label the section entry also carries —
+ // so a query like "3-3" silently resolved to whichever section owns equation 3.
+ // A wrong target is worse than none: report NOT_FOUND and let the caller name
+ // the section.
+ const semantic=direct;
  if(!semantic.length)return {candidates:[],reason:'SUCCESSOR_TARGET_NOT_FOUND'};
  const candidates=semantic.flatMap(candidate=>{
   const entry=state.structuralIndex.byId[candidate.entryId],structural=entry&&successorLocusCandidate(state,entry,`semantic successor target: ${candidate.evidence.join(', ')}`);
