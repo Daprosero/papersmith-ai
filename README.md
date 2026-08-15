@@ -201,25 +201,70 @@ si pasa, el error habla del formato y el reporte de `env` es donde está la raz�
 distingue un marcador de un archivo genuinamente corrupto: los dos se leen como
 material ausente, que es la lectura conservadora.
 
-### `proposal-deliberation` — no se puede editar el título ni la introducción
+### `proposal-deliberation` — la consulta que ubica un cambio es sensible a cómo la escribís
 
-**Qué pasa.** Pedile que cambie una sección con `##` y la edita sin problema. Pedile
-que cambie el **título** o el **párrafo de introducción** y no puede: el resolvedor
-que ubica dónde aplicar un cambio no sabe seleccionar de forma fiable el bloque que
-está antes del primer `##`.
+**Qué pasa.** Para aplicar un cambio hay que decirle a qué sección apunta. Esa consulta
+se compara **por substring contra la línea del encabezado**, y eso tiene dos filos.
 
-**Qué incluye ese bloque.** El título con `#`, la introducción que le sigue, y
-cualquier cosa que haya entre los dos y el primer encabezado de segundo nivel.
+Las **tildes cuentan**: `Normalizacion terminos adaptacion` no encuentra
+`## 5. Normalización de los términos de adaptación`, aunque sea la misma frase. Solo
+molesta cuando la palabra acentuada es justo la que distingue: si quedan otras palabras
+distintivas sin tilde, resuelve igual.
 
-**Qué podés hacer y qué no.** Todo el cuerpo del documento se gestiona por el flujo
-normal de revisiones. Título e introducción hay que **editarlos a mano** en el
-archivo — y ojo, porque eso choca de frente con la limitación siguiente: editar a
-mano una revisión ya publicada rompe la auditoría. En la práctica significa que el
-título y la introducción conviene dejarlos como quedaron en la primera versión.
+Y la consulta se **corta en el primer signo de puntuación**, así que
+`Sección 3. Formulación…` se reduce a `3` antes de buscar nada.
 
-**Cómo se arregla.** Dándole al resolvedor identificadores explícitos para ese
-bloque — algo como `document_root`, `preamble` o `front_matter` — para que se pueda
-apuntar a él igual que a cualquier sección.
+**Qué podés hacer.** Escribir la consulta como **palabras distintivas del encabezado**:
+sin puntuación, sin el número de sección, y con las tildes tal como están escritas.
+`Normalización términos adaptación` funciona; la frase completa con puntuación, no.
+Las palabras vacías (`de`, `los`, `la`) ya se filtran solas.
+
+**Cómo se arregla.** Comparando sin tildes de los dos lados, y quedándose con la
+consulta completa en vez de cortarla en la puntuación.
+
+### `proposal-deliberation` — mover o copiar nombrando una sección puede quedar ambiguo
+
+**Qué pasa.** En un `move` o un `copy`, la sección se busca con un puntuador distinto
+al de las ediciones normales: ese mira el **cuerpo entero** de cada entrada, no solo su
+encabezado. Como los párrafos de una sección contienen las mismas palabras que su
+título, la sección y sus propios párrafos empatan y la operación se bloquea pidiéndote
+que desambigües.
+
+**Qué podés hacer y qué no.** Se bloquea, no se equivoca: nunca vas a mover algo
+distinto de lo que pediste sin enterarte. Para desambiguar, nombrá el bloque concreto
+que querés mover en vez de la sección completa.
+
+**Cómo se arregla.** Haciendo que `move`/`copy` puntúe la línea del encabezado, igual
+que ya lo hacen las ediciones normales.
+
+### `proposal-deliberation` — un cambio se aplica sobre la sección completa
+
+**Qué pasa.** La unidad mínima que se puede apuntar es una sección `##`. Para corregir
+una sola ecuación, la skill entrega la sección entera reescrita. Nada dentro de esa
+sección está protegido byte a byte: la garantía de bytes idénticos cubre lo que queda
+**fuera** del cambio.
+
+**Qué podés hacer y qué no.** Lo que sí protege lo de adentro es la puerta de
+integridad matemática: antes de publicar, la skill te lista cada ecuación, cada
+símbolo, cada `\tag` y cada cita `(Ec. N)` que existía antes y ya no está, y **no
+publica** hasta que esa desaparición se reconozca explícitamente. Una ecuación no se
+puede perder en silencio; sí puede cambiar prosa alrededor sin que nadie lo señale.
+
+**Cómo se arregla.** Con loci más finos — poder apuntar a un párrafo o a una ecuación
+concreta, no solo a la sección que la contiene.
+
+### `proposal-deliberation` — mover contenido al lugar equivocado no lo detecta nadie
+
+**Qué pasa.** La puerta de integridad matemática compara qué había antes y qué hay
+después. Un `move` que se lleva el bloque equivocado **no pierde** matemática: la
+reubica intacta. Como no falta nada, la puerta no tiene nada que objetar.
+
+**Qué podés hacer y qué no.** El riesgo real bajó bastante: hoy una consulta ambigua se
+bloquea en vez de resolver a lo que no era. Aun así, revisá el resultado de un `move`
+antes de seguir construyendo encima.
+
+**Cómo se arregla.** Comparando también **dónde** está cada bloque, no solo si sigue
+existiendo.
 
 ### `proposal-deliberation` — editar una revisión publicada a mano rompe la auditoría
 
