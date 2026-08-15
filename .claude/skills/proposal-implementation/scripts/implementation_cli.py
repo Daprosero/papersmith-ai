@@ -1829,7 +1829,15 @@ def report_state(target: Path, name: str, package: str) -> dict:
                 continue
 
             calls = _dotted_calls(source)
-            rendered = sorted(set(c for c in calls if c in renderers))
+            # Two readings of the same list, and the difference is the whole point
+            # of keeping both. `renderings` counts what the cell actually printed,
+            # repeats included; `rendered` is the distinct set, which is what the
+            # dimension and output checks below want. Collapsing to the set before
+            # counting made a cell that printed the same table twice look like a
+            # cell that printed one — and that is exactly the shape "one cell, one
+            # measurement" exists to catch.
+            renderings = [c for c in calls if c in renderers]
+            rendered = sorted(set(renderings))
             drawn = sorted(set(c for c in calls if c in drawings))
 
             # A cell that writes to disk is the record, and the record is supposed
@@ -1934,30 +1942,68 @@ def report_state(target: Path, name: str, package: str) -> dict:
                         else:
                             seen[signature] = index
 
-                if len(rendered) > 1:
+                if len(renderings) > 1:
                     duplicated.append({"notebook": rel, "cell": index,
-                                       "rendering": " + ".join(rendered),
+                                       # Lo que la celda imprimió, con repeticiones:
+                                       # `a + a` es el caso que el conjunto perdía.
+                                       "rendering": " + ".join(sorted(renderings)),
                                        "reason": "más de una medición en una celda"})
 
-            frame = next((cells[back] for back in range(index - 1, -1, -1)
-                          if cells[back].get("cell_type") == "markdown"), None)
-            gap = any(cells[back].get("cell_type") == "code"
-                      for back in range(index - 1, -1, -1)
-                      if _dotted_calls(_source_of(cells[back])))
+            # A section may legitimately render more than once before it concludes,
+            # and the rule that forbids two measurements in one cell is what makes
+            # that shape necessary rather than sloppy. A ratio's numerator and its
+            # denominator are the clearest case: neither may be reported alone —
+            # one falling is alignment or collapse and only the pair tells them
+            # apart — so they are two tables under one framing with one conclusion
+            # that reads both. Demanding a heading between them, or a conclusion
+            # after each, would force either the cell this file already refuses or
+            # a conclusion drawn from half a reading.
+            #
+            # So both questions are asked of the *section* rather than of the
+            # adjacent cell: walking back over sibling renderings to find the
+            # framing, and forward over them to find the conclusion. What the
+            # checks still guarantee is unchanged — a section that frames nothing,
+            # or that never concludes, is caught exactly as before.
+            def _sibling_rendering(cell_at: dict) -> bool:
+                """Another table of this same section, rather than other work."""
+                if cell_at.get("cell_type") != "code":
+                    return False
+                sibling = _dotted_calls(_source_of(cell_at))
+                return (any(c in renderers for c in sibling)
+                        and not any(c in conclusions for c in sibling))
+
+            back = index - 1
+            while back >= 0 and _sibling_rendering(cells[back]):
+                back -= 1
+            frame = next((cells[step] for step in range(back, -1, -1)
+                          if cells[step].get("cell_type") == "markdown"), None)
+            gap = any(cells[step].get("cell_type") == "code"
+                      for step in range(back, -1, -1)
+                      if _dotted_calls(_source_of(cells[step])))
             if frame is None or not _source_of(frame).strip():
                 unframed.append({"notebook": rel, "cell": index,
                                  "rendering": ", ".join(sorted(set(rendered)))})
-            elif gap and index and cells[index - 1].get("cell_type") != "markdown":
+            elif gap and back >= 0 and cells[back].get("cell_type") != "markdown":
                 unframed.append({"notebook": rel, "cell": index,
                                  "rendering": ", ".join(sorted(set(rendered))),
                                  "reason": "la explicación no está inmediatamente antes"})
 
             concluded = any(c in conclusions for c in calls)
-            if not concluded and index + 1 < len(cells):
-                follower = cells[index + 1]
-                concluded = (follower.get("cell_type") == "code"
-                             and any(c in conclusions
-                                     for c in _dotted_calls(_source_of(follower))))
+            forward = index + 1
+            while not concluded and forward < len(cells):
+                follower = cells[forward]
+                if follower.get("cell_type") == "markdown":
+                    # The next framing opens another section, so this one closed
+                    # without concluding.
+                    break
+                if follower.get("cell_type") == "code":
+                    ahead = _dotted_calls(_source_of(follower))
+                    if any(c in conclusions for c in ahead):
+                        concluded = True
+                        break
+                    if not any(c in renderers for c in ahead):
+                        break
+                forward += 1
             if not concluded:
                 unconcluded.append({"notebook": rel, "cell": index,
                                     "rendering": ", ".join(sorted(set(rendered)))})

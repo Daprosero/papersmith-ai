@@ -1119,6 +1119,65 @@ class ReportContractTests(unittest.TestCase):
             "'renderers': ['tables.render', 'harness.render_panorama']"))
         self.assertTrue(state["duplicated"])
 
+    def test_the_same_renderer_called_twice_in_one_cell_is_caught(self):
+        """El hueco que dejaba pasar el caso más común de todos.
+
+        La comprobación de arriba usa dos renderizadores DISTINTOS, y con eso el
+        conteo se hacía sobre el conjunto de llamadas. Dos tablas producidas por
+        la misma función colapsaban en una sola entrada y la celda salía limpia —
+        que es justo la forma que «una celda, una medición» viene a atajar, y la
+        que más aparece: dos lecturas hermanas impresas juntas porque se leen
+        juntas.
+        """
+        cells = [_cell("markdown", "las dos distancias"),
+                 _cell("code",
+                       "print(tables.render(runs, 'accuracy', reduction))\n"
+                       "print(tables.render(runs, 'seconds', reduction))\n"
+                       "print(tables.conclusion(runs, 'accuracy', reduction))")]
+        found = self.state(cells)["duplicated"]
+        self.assertTrue(found, "una celda con dos tablas salió limpia")
+        self.assertTrue(any(f.get("reason") == "más de una medición en una celda"
+                            for f in found), found)
+
+    def test_one_renderer_called_once_is_not_a_duplicate(self):
+        """El verde tiene que seguir siendo alcanzable, o el conteo por
+        repeticiones convierte cualquier tabla en un hallazgo."""
+        cells = [_cell("markdown", "Qué mide: la exactitud. Más alto es mejor."),
+                 _cell("code", "print(tables.render(runs, 'accuracy', reduction))"),
+                 _cell("code", "print(tables.conclusion(runs, 'accuracy', reduction))")]
+        self.assertEqual(self.state(cells)["duplicated"], [])
+
+    def test_a_complementary_pair_shares_one_framing_and_one_conclusion(self):
+        """Dos tablas que no se pueden concluir por separado.
+
+        El numerador y el denominador de una razón son el caso claro: una
+        distancia que baja puede ser alineación o colapso, y solo el par lo
+        distingue. Ponerlas en una celda es el hallazgo de arriba; darle una
+        conclusión a cada una sería concluir sobre media lectura. Queda una sola
+        forma legítima — dos celdas bajo un encuadre, con una conclusión que lee
+        las dos — y el chequeo tiene que admitirla.
+        """
+        cells = [_cell("markdown", "Las dos distancias, que se leen juntas."),
+                 _cell("code", "print(tables.render(runs, 'accuracy', reduction))"),
+                 _cell("code", "print(tables.render(runs, 'seconds', reduction))"),
+                 _cell("code", "print(tables.conclusion(runs, 'accuracy', reduction))")]
+        state = self.state(cells)
+        self.assertEqual(state["unframed"], [])
+        self.assertEqual(state["unconcluded"], [])
+        self.assertEqual(state["duplicated"], [])
+
+    def test_a_section_that_never_concludes_is_still_caught(self):
+        """La garantía no se aflojó: mirar la sección en vez de la celda de al lado
+        no puede convertir en verde a una sección que nunca concluye."""
+        cells = [_cell("markdown", "dos tablas y ninguna conclusión"),
+                 _cell("code", "print(tables.render(runs, 'accuracy', reduction))"),
+                 _cell("code", "print(tables.render(runs, 'seconds', reduction))"),
+                 _cell("markdown", "otra sección"),
+                 _cell("code", "print(tables.render(runs, 'accuracy', reduction))"),
+                 _cell("code", "print(tables.conclusion(runs, 'accuracy', reduction))")]
+        found = self.state(cells)["unconcluded"]
+        self.assertEqual(sorted(f["cell"] for f in found), [1, 2], found)
+
     def test_a_table_with_nothing_explaining_it_is_caught(self):
         cells = [_cell("code", "print(tables.render(runs, 'accuracy', reduction))\n"
                                "print(tables.conclusion(runs, 'accuracy', reduction))")]
