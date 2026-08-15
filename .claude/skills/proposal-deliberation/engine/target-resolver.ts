@@ -105,6 +105,31 @@ function interEntryWhitespaceCompositeTargets(state:DocumentState,providedText:s
 
 function headingLevel(state:DocumentState,entry:StructuralEntry){return /^#{1,6}(?=\s)/u.exec(entryText(state,entry.entryId))?.[0].length;}
 function sectionBodyEnd(state:DocumentState,entry:StructuralEntry){const level=headingLevel(state,entry);if(!level)return entry.endByte;const next=state.structuralIndex.entries.filter(candidate=>candidate.startByte>entry.startByte&&['section','subsection','heading'].includes(candidate.type)).sort((a,b)=>a.startByte-b.startByte).find(candidate=>(headingLevel(state,candidate)??7)<=level);return next?.startByte??state.documentBytes.length;}
+/**
+ * The document's root block — the `#` title plus the introduction that runs up
+ * to the first `##` — as its own locus, or `undefined` for every other heading.
+ *
+ * The structural index already gives that block the exact span we want, but
+ * `sectionBodyEnd` then stretched the title over the WHOLE document, because no
+ * same-or-higher heading follows it. The stretched candidate contains every
+ * section, so `collapseNestedSuccessorCandidates` discarded it and the root
+ * block became unreachable: a query aiming at the title silently landed on
+ * whichever section shared a word with it, and one that matched nothing else
+ * rewrote the entire document. Both are the wrong-target-in-silence failure this
+ * resolver refuses everywhere else.
+ *
+ * A lone `#` is a document title; two or more mean `#` IS the section level, and
+ * `# Parent` legitimately spans its `## Child`. So this applies only to the
+ * first heading of a document with exactly one level-1 heading, and only when
+ * that heading does not already span its own subtree — leaving `##`-with-`###`
+ * and multi-`#` documents targeting their whole subtree exactly as before.
+ */
+function rootBlockEnd(state:DocumentState,entry:StructuralEntry){
+ const headings=state.structuralIndex.entries.filter(candidate=>['section','subsection','heading'].includes(candidate.type)).sort((left,right)=>left.startByte-right.startByte);
+ if(headings[0]?.entryId!==entry.entryId||headingLevel(state,entry)!==1)return undefined;
+ if(headings.filter(candidate=>headingLevel(state,candidate)===1).length!==1)return undefined;
+ return entry.endByte<sectionBodyEnd(state,entry)?entry.endByte:undefined;
+}
 function hasSectionBody(state:DocumentState,startByte:number,endByte:number){const selected=state.documentBytes.subarray(startByte,endByte).toString('utf8');return selected.replace(/^ {0,3}#{1,6}\s+.*(?:\r?\n|$)/gmu,'').trim().length>0;}
 function sectionReplacementCandidate(state:DocumentState,start:StructuralEntry,requestedSectionIds:string[],evidence:string){
  const startByte=start.startByte,endByte=sectionBodyEnd(state,start),last=state.structuralIndex.entries.filter(entry=>entry.startByte>=startByte&&entry.endByte===endByte).sort((left,right)=>right.startByte-left.startByte)[0];
@@ -155,7 +180,7 @@ function collapseNestedSuccessorCandidates(candidates:TargetCandidate[]){return 
  * numbered-range-only requirements would only add friction here.
  */
 function successorLocusCandidate(state:DocumentState,entry:StructuralEntry,evidence:string){
- const startByte=entry.startByte,endByte=sectionBodyEnd(state,entry);
+ const startByte=entry.startByte,endByte=rootBlockEnd(state,entry)??sectionBodyEnd(state,entry);
  if(endByte<startByte)return;
  // The heading's own structural entry may end before the natural section
  // boundary (e.g. when it has child subsections it does not itself span);
@@ -169,12 +194,15 @@ function successorLocusCandidate(state:DocumentState,entry:StructuralEntry,evide
 /** Resolves a semantic successor target into one Markdown heading's natural span, inferred from the request/deliberation without requiring a numbered range. */
 export function resolveSuccessorTarget(state:DocumentState,query:string):SuccessorTargetResolution {
  const semanticQuery=successorSelectionQuery(query);
- const headingCandidates=resolveTargets(state,semanticQuery).filter(candidate=>['section','subsection','heading'].includes(candidate.type));
+ // Scored on the heading LINE alone, never on `resolveTargets`. That scorer
+ // reads an entry's body, its neighbours and its `headingPath`, so a section
+ // inherited its parent's title words and every section competed with the root
+ // block's introduction, which paraphrases the whole paper. Matching a heading
+ // means matching what the heading says.
  const direct=state.structuralIndex.entries.filter(entry=>['section','subsection','heading'].includes(entry.type)).flatMap(entry=>{
   const heading=entryText(state,entry.entryId).split(/\r?\n/u,1)[0].toLowerCase(),matchedTerms=words(semanticQuery).filter(term=>heading.includes(term));
   if(!matchedTerms.length)return [];
-  const resolved=headingCandidates.find(candidate=>candidate.entryId===entry.entryId);
-  return [resolved??{entryId:entry.entryId,type:entry.type,headingPath:entry.headingPath,matchedTerms,matchedLabels:[],matchedTags:[],matchedSymbols:[],score:matchedTerms.length*3,confidence:Math.min(1,matchedTerms.length/3),shortPreview:entryText(state,entry.entryId).slice(0,180),evidence:matchedTerms}];
+  return [{entryId:entry.entryId,type:entry.type,headingPath:entry.headingPath,matchedTerms,matchedLabels:[],matchedTags:[],matchedSymbols:[],score:matchedTerms.length*3,confidence:Math.min(1,matchedTerms.length/3),shortPreview:entryText(state,entry.entryId).slice(0,180),evidence:matchedTerms}];
  });
  // A successor locus must be matched by its own heading line. Falling back to
  // `headingCandidates` would accept a section scored on its BODY — including a
@@ -188,7 +216,10 @@ export function resolveSuccessorTarget(state:DocumentState,query:string):Success
   const entry=state.structuralIndex.byId[candidate.entryId],structural=entry&&successorLocusCandidate(state,entry,`semantic successor target: ${candidate.evidence.join(', ')}`);
   return structural?[{...structural,matchedTerms:candidate.matchedTerms,matchedLabels:candidate.matchedLabels,matchedTags:candidate.matchedTags,matchedSymbols:candidate.matchedSymbols,score:candidate.score,confidence:candidate.confidence,evidence:[...structural.evidence,...candidate.evidence]}]:[];
  });
- const canonical=collapseNestedSuccessorCandidates(candidates);
+ // `ambiguityGate` reads candidates[0] as the best and measures the margin to
+ // candidates[1], so they must arrive sorted by score. Document order would
+ // hand it the weakest first and turn a clear win into a negative margin.
+ const canonical=collapseNestedSuccessorCandidates(candidates).sort((left,right)=>right.score-left.score||left.entryId.localeCompare(right.entryId));
  return canonical.length?{candidates:canonical}:{candidates:[],reason:'SUCCESSOR_TARGET_NOT_FOUND'};
 }
 
