@@ -231,6 +231,21 @@ proposal itself — that is `proposal-deliberation`.
   computes and the record is stale, while a change to a training loop the benchmark
   never calls moves nothing here and may still matter to prior work's own notebooks.
 
+  **What is there comes from the disk; only what is *recorded* comes from Git.**
+  `modules` and `imported` are enumerated from the filesystem, because *does this
+  exist* and *does an arm import it* are the filesystem's questions and answering
+  them from the index makes an ignored-but-used module vanish — Git says nothing
+  about an ignored path, so a prior-work module that runs on every call would be
+  reported as absent and the whole check would come back clean. Git answers the one
+  question only it can, and `recordStatus` says whether it could answer at all, so
+  an unreadable record reports `unknown` and never passes for a clean one.
+
+  `untrackedImported` is what falls out of asking both: a module present on this
+  disk, imported by an arm, and outside the record. Whether it is ignored or merely
+  never added is the ignore rules' business; what matters is that an arm computes
+  with something nobody else receives, so the comparison cannot be reproduced from
+  what was committed.
+
   Correcting prior work is a session of its own. This says the boundary was crossed;
   it never crosses it.
 

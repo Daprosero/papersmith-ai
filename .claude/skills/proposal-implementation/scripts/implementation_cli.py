@@ -182,6 +182,18 @@ def prior_work_state(target: Path, package: str) -> dict:
     benchmark never calls moves nothing here and may still matter to prior work's own
     notebooks.
 
+    **Everything about what is there comes from the disk.** *Does this module exist,
+    and does an arm import it* are the filesystem's questions, and answering them
+    with the index makes a file that is ignored-but-used disappear: Git says nothing
+    about an ignored path, so a prior-work module that runs on every call would be
+    reported as absent and the whole check would come back clean. That is the same
+    confusion as reading "not added yet" and "deliberately excluded" off one list.
+
+    Git answers exactly one question, the one only it can: *is this in the record,
+    and does it differ from it*. Its silence is never read as "nothing here" —
+    `recordStatus` says whether it could answer at all, so an unavailable record
+    cannot pass for a clean one.
+
     Uncommitted only, and deliberately. Prior work that a repository legitimately
     owns and evolves would leave a committed diff for good, and a check that is red
     for good is a check nobody reads. What this catches is the edit sitting in the
@@ -189,24 +201,26 @@ def prior_work_state(target: Path, package: str) -> dict:
     say "that belongs in a session of its own" and be heard.
     """
     source = target / "src"
+    empty = {"status": "none", "packages": [], "modules": [], "imported": [],
+             "untrackedImported": [], "modified": [], "reaching": [],
+             "recordStatus": "not-asked"}
     if not source.is_dir():
-        return {"status": "none", "packages": [], "modified": [], "reaching": []}
+        return empty
 
     ours = {package, f"{package}_Benchmark"}
     prior = sorted(d.name for d in source.iterdir()
                    if d.is_dir() and d.name not in ours and not d.name.startswith("."))
     if not prior:
-        return {"status": "none", "packages": [], "modified": [], "reaching": []}
+        return empty
 
-    try:
-        porcelain = git(target, "status", "--porcelain", "--", "src", check=False)
-    except Refused:
-        porcelain = ""
-    modified = sorted({
-        line[3:].strip().strip('"')
-        for line in porcelain.splitlines()
-        if line[3:].strip().strip('"').startswith(tuple(f"src/{p}/" for p in prior))
-    })
+    # From the disk. Every prior-work module that is present, whatever the ignore
+    # rules say about it.
+    modules = sorted(
+        str(f.relative_to(target))
+        for name in prior
+        for f in (source / name).rglob("*.py")
+        if "__pycache__" not in f.parts
+    )
 
     # What the method and its benchmark import from prior work, by top-level module.
     imported: set[str] = set()
@@ -228,26 +242,71 @@ def prior_work_state(target: Path, package: str) -> dict:
                     imported.update(a.name for a in node.names)
 
     def reached(relative: str) -> bool:
-        """True when a changed file is a module the method or its benchmark imports."""
+        """True when a module on disk is one the method or its benchmark imports."""
         parts = Path(relative).relative_to("src").with_suffix("").parts
         dotted = ".".join(parts)
         package_form = ".".join(parts[:-1]) if parts[-1] == "__init__" else dotted
         return any(m == dotted or m == package_form or m.startswith(package_form + ".")
                    for m in imported)
 
+    # Also from the disk: which of those present modules an arm actually reaches.
+    # This is a standing fact about the tree, not a consequence of anything having
+    # changed, so it is computed over every module rather than over a diff.
+    reaches = [m for m in modules if reached(m)]
+
+    # The one question only the record can answer. Asked last, and allowed to fail.
+    try:
+        porcelain = git(target, "status", "--porcelain", "--", "src", check=False)
+        tracked = set(tracked_files(target))
+        record = "read"
+    except Refused:
+        porcelain, tracked, record = "", set(), "unavailable"
+
+    modified = sorted({
+        line[3:].strip().strip('"')
+        for line in porcelain.splitlines()
+        if line[3:].strip().strip('"').startswith(tuple(f"src/{p}/" for p in prior))
+    }) if record == "read" else []
+
+    # Present, imported by an arm, and outside the record. Ignored or merely never
+    # added — the difference is the ignore rules' business and not this check's.
+    # What matters is that an arm computes with something nobody else receives, so
+    # the comparison cannot be reproduced from the record alone.
+    untracked_imported = ([m for m in reaches if m not in tracked]
+                          if record == "read" else [])
+
     reaching = [p for p in modified if reached(p)]
+    if record == "unavailable":
+        status = "unknown"
+    elif reaching or untracked_imported:
+        status = "reaching"
+    elif modified:
+        status = "modified"
+    else:
+        status = "clean"
+
+    notes = ["Prior work is used as it is; correcting it belongs to a session of its own."]
+    if reaching:
+        notes.append("`reaching` names changed modules the method or its benchmark "
+                     "imports, so those arms no longer compute what the record holds.")
+    if untracked_imported:
+        notes.append("`untrackedImported` names modules an arm computes with that are "
+                     "not in the record: present on this disk and nowhere else, so "
+                     "nobody can reproduce the comparison from what was committed.")
+    if record == "unavailable":
+        notes.append("The record could not be read, so nothing here says whether prior "
+                     "work changed — `unknown` is that absence, never a clean answer.")
+
     return {
-        "status": "reaching" if reaching else ("modified" if modified else "clean"),
+        "status": status,
         "packages": prior,
+        "modules": modules,
+        "imported": reaches,
+        "untrackedImported": untracked_imported,
         "modified": modified,
         "reaching": reaching,
-        "note": (
-            "Prior work is used as it is; correcting it belongs to a session of its "
-            "own. `reaching` names the changed modules the method or its benchmark "
-            "imports, so those arms no longer compute what the last run recorded."
-            if reaching else
-            "Prior work is used as it is; correcting it belongs to a session of its own."
-        ),
+        "recordStatus": record,
+        "note": " ".join(notes),
     }
 
 

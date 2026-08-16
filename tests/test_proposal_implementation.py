@@ -1152,6 +1152,60 @@ class PriorWorkTests(unittest.TestCase):
             self.assertEqual(state["modified"], ["src/PriorWork/training_loop.py"])
             self.assertEqual(state["reaching"], [])
 
+    def test_a_module_the_ignore_rules_hide_is_still_seen_on_the_disk(self):
+        """El caso que obliga a enumerar desde el disco y no desde el índice.
+
+        Git no dice nada de una ruta ignorada. Preguntándole a él *qué hay*, un
+        módulo de trabajo previo ignorado pero importado y ejecutado desaparece
+        del reporte y todo vuelve `clean` — con un brazo computando con él.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root)
+            (root / ".gitignore").write_text("src/PriorWork/secret.py\n", encoding="utf-8")
+            (root / "src/PriorWork/secret.py").write_text("SCALE = 3\n", encoding="utf-8")
+            (root / "src/Method_Benchmark/wiring.py").write_text(
+                "from PriorWork.models import Loss\n"
+                "from PriorWork.secret import SCALE\n", encoding="utf-8")
+
+            state = self.state(root)
+            self.assertIn("src/PriorWork/secret.py", state["modules"])
+            self.assertIn("src/PriorWork/secret.py", state["imported"])
+            self.assertEqual(state["untrackedImported"], ["src/PriorWork/secret.py"])
+            # Rojo alcanzable: preguntándole al índice esto sería `clean`.
+            self.assertEqual(state["status"], "reaching")
+
+    def test_an_unreadable_record_is_unknown_and_never_clean(self):
+        """El silencio de git no puede leerse como "no cambió nada"."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            for relative in ("src/Method/kernels.py", "src/PriorWork/models.py"):
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("X = 1\n", encoding="utf-8")
+            # Sin `git init`: no hay registro que consultar.
+            state = self.state(root)
+            self.assertEqual(state["recordStatus"], "unavailable")
+            self.assertEqual(state["status"], "unknown")
+            self.assertEqual(state["modules"], ["src/PriorWork/models.py"])
+
+    def test_what_an_arm_imports_is_reported_without_anything_having_changed(self):
+        """`imported` es un hecho del árbol, no la consecuencia de un diff.
+
+        El `__init__.py` del paquete cuenta: importar `PriorWork.models` lo
+        ejecuta, así que un cambio ahí alcanza al brazo igual que uno en el
+        módulo nombrado. El loop de entrenamiento propio del trabajo previo no,
+        y esa es la distinción entera.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root)
+            state = self.state(root)
+            self.assertEqual(state["status"], "clean")
+            self.assertIn("src/PriorWork/models.py", state["imported"])
+            self.assertIn("src/PriorWork/__init__.py", state["imported"])
+            self.assertNotIn("src/PriorWork/training_loop.py", state["imported"])
+
     def test_the_stamp_moves_even_when_the_change_reaches_no_arm(self):
         """El par que hay que declarar, no descubrir.
 
