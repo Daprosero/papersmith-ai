@@ -75,13 +75,44 @@ several of them are indistinguishable by filename, and a choice between
 identical labels is not a choice. Say which ones are already stored too — picking
 one of those rotates its key rather than adding an account.
 
-Offer a free-text option for a file somewhere else, and fall back to asking for
-the path only when `discover` finds nothing. Never make the user type a path the
-tool could have shown them.
+Offer a free-text option for a file somewhere else. Never make the user type a
+path the tool could have shown them.
 
 Never ask the user to paste the key into the conversation, and never echo one
 you happen to see. A token pasted in chat is in the transcript permanently and
 cannot be taken back; a file path costs nothing and leaks nothing.
+
+## When there is no file
+
+`discover` finding nothing is not a dead end, and treating it as one is how a
+user ends up pasting a token: refusing the paste while offering no alternative
+just moves the leak into their lap.
+
+There are two ways in, and neither goes through the conversation:
+
+- **Download one.** kaggle.com → Settings → API → *Create New Token* drops a
+  `kaggle.json` in `~/Downloads`, where `discover` finds it on the next run.
+- **Type it into a terminal.** For a token that lives in a password manager, or
+  a download that is long gone:
+
+  ```
+  python3 .claude/skills/kaggle-accounts/scripts/accounts_cli.py add --interactive
+  ```
+
+  It asks for the username, then the key with the echo off. The key is in no
+  message, no argv, and no shell history.
+
+**Tell the user to run that command themselves, in their own shell. Never run it
+for them.** The prompt refuses when stdin is not a terminal precisely so that an
+agent running it hits an error instead of finding a way — but the refusal is the
+backstop, not the rule. There is deliberately no `--key` flag either: a secret
+on a command line is in the process list and in the shell history, which is the
+same leak wearing a different hat.
+
+If a user pastes a token anyway: do not store it, and say plainly that it is in
+the transcript for good and should be expired at kaggle.com → Settings → API →
+*Expire API Token*. Say it once. Then give them the two ways in above — the
+point is to get them a working credential, not to make them feel caught.
 
 Each chosen file is handled independently:
 
@@ -149,8 +180,9 @@ not just the one being added.
 | --- | --- |
 | Invoked with no stated intent | `list`, then an interactive add-or-remove selection |
 | User wants to add | `discover --json`, multi-select the files, then `add` |
-| `discover` finds nothing | Only then ask for a path; never for the token itself |
-| User pastes a raw token in chat | Do not store it; ask for the file, and say the pasted one should be rotated |
+| `discover` finds nothing | Offer the two ways in: download a token, or `add --interactive` in their own shell |
+| User pastes a raw token | Do not store it; say to expire it, once; then offer the two ways in |
+| Asked to run `add --interactive` for them | Refuse: it is theirs to run in a terminal, and the command refuses anyway |
 | Some credentials in a batch fail | Store the rest; report each rejection with its reason |
 | Kaggle unreachable while validating | Report it as unreachable, not as invalid; store nothing |
 | User wants to remove | `list --json`, multi-select, then `remove` |

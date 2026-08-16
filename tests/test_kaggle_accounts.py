@@ -154,6 +154,22 @@ class DiscoverTests(unittest.TestCase):
             self.assertNotIn("SECRET", json.dumps(ACCOUNTS.discover_credentials([tmp])))
 
 
+class InteractiveEntryTests(unittest.TestCase):
+    """The way in when no file exists — and the one place it must not work."""
+
+    def test_refuses_when_stdin_is_not_a_terminal(self) -> None:
+        # Run from an agent's shell there is nobody to type and nothing to
+        # suppress the echo, so it must fail rather than find a way.
+        with self.assertRaisesRegex(ACCOUNTS.UsageError, "real terminal"):
+            ACCOUNTS.read_credential_interactively()
+
+    def test_there_is_no_flag_that_takes_a_key_on_the_command_line(self) -> None:
+        # A secret in argv is in the process list and the shell history. If this
+        # ever fails, someone added the convenience that undoes the whole design.
+        source = Path(ACCOUNTS.__file__).read_text(encoding="utf-8")
+        self.assertNotIn('"--key"', source)
+
+
 class AliasTests(unittest.TestCase):
     def test_accepts_ordinary_kaggle_usernames_as_aliases(self) -> None:
         for alias in ("diego", "diego-lab", "diego_2", "d.p"):

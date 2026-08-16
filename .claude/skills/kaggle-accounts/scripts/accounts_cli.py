@@ -33,6 +33,7 @@ Usage:
     python accounts_cli.py list [--json]
     python accounts_cli.py discover [--json]
     python accounts_cli.py add <kaggle.json> [<kaggle.json>…] [--alias NAME]
+    python accounts_cli.py add --interactive        # run this one yourself, in a terminal
     python accounts_cli.py remove <alias> [<alias>…]
 
 Exit codes: 0 success (or nothing to do), 1 at least one credential was
@@ -43,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import getpass
 import json
 import os
 import re
@@ -192,6 +194,37 @@ def read_credential_file(raw: str) -> tuple[str, str]:
     return username.strip(), key.strip()
 
 
+def read_credential_interactively() -> tuple[str, str]:
+    """Take a credential from a terminal prompt. Raises `UsageError`.
+
+    The file flow cannot serve every case: the token may live in a password
+    manager, or the download may be long gone. Without this, the only way left
+    is pasting the key into a conversation, where it stays permanently — so
+    refusing the paste while offering no alternative just moves the leak.
+
+    Typed into this process's terminal, the key is in no message, no argv, and
+    no shell history. There is deliberately no `--key` flag: a secret on a
+    command line is in the process list and in `~/.zsh_history`, which is the
+    same leak wearing a different hat.
+
+    Refuses when stdin is not a terminal. Run from an agent's shell there is
+    nobody to type and nothing to suppress the echo, which is exactly the
+    situation this exists to avoid — so it fails instead of finding a way.
+    """
+    if not sys.stdin.isatty():
+        raise UsageError(
+            "--interactive needs a real terminal. Run it yourself in your shell, "
+            "not through an agent — that is the whole point of the flag."
+        )
+    username = input("Kaggle username: ").strip()
+    if not username:
+        raise UsageError("no username given")
+    key = getpass.getpass("Kaggle API key (input hidden): ").strip()
+    if not key:
+        raise UsageError("no key given")
+    return username, key
+
+
 def display_path(path: Path) -> str:
     """`~/Downloads/kaggle.json` rather than the full home path."""
     try:
@@ -309,8 +342,12 @@ def cmd_discover(args: argparse.Namespace) -> int:
 
 
 def cmd_add(args: argparse.Namespace) -> int:
+    if args.interactive and args.files:
+        raise UsageError("--interactive takes no file arguments")
+    if not args.interactive and not args.files:
+        raise UsageError("pass at least one kaggle.json, or --interactive to type a credential")
     if args.alias is not None:
-        if len(args.files) != 1:
+        if len(args.files) > 1:
             raise UsageError("--alias applies to a single file; without it each account is named after its username")
         if not ALIAS_PATTERN.match(args.alias):
             raise UsageError(f"alias {args.alias!r} must be 1-64 chars of letters, digits, dot, dash or underscore")
@@ -321,9 +358,12 @@ def cmd_add(args: argparse.Namespace) -> int:
     saved: list[str] = []
     rejected: list[str] = []
 
-    for raw in args.files:
+    # One source per credential: a file path, or the terminal prompt.
+    sources = args.files or [None]
+    for raw in sources:
         try:
-            username, key = read_credential_file(raw)
+            username, key = (read_credential_interactively() if raw is None
+                             else read_credential_file(raw))
             alias = args.alias or username
             if not ALIAS_PATTERN.match(alias):
                 raise CredentialError(f"username {username!r} is not a usable alias; pass --alias")
@@ -334,7 +374,7 @@ def cmd_add(args: argparse.Namespace) -> int:
                 )
             validate(username, key)
         except CredentialError as exc:
-            rejected.append(f"{raw} — {exc}")
+            rejected.append(f"{raw or 'the credential you typed'} — {exc}")
             continue
         if existing is not None:
             existing["key"] = key
@@ -348,10 +388,11 @@ def cmd_add(args: argparse.Namespace) -> int:
 
     if saved:
         save_store(store)
-        print(f"Validated and stored {len(saved)} of {len(args.files)}:")
+        print(f"Validated and stored {len(saved)} of {len(sources)}:")
         for line in saved:
             print(f"  {line}")
-        print("The kaggle.json files still hold those tokens; delete them once you are done.")
+        if args.files:
+            print("The kaggle.json files still hold those tokens; delete them once you are done.")
     if rejected:
         print(f"Rejected {len(rejected)}, nothing stored for them:")
         for line in rejected:
@@ -388,8 +429,13 @@ def main() -> int:
     p_discover.set_defaults(func=cmd_discover)
 
     p_add = sub.add_parser("add", help="validate one or more kaggle.json files and store what passes")
-    p_add.add_argument("files", nargs="+", metavar="kaggle.json")
+    p_add.add_argument("files", nargs="*", metavar="kaggle.json")
     p_add.add_argument("--alias", help="name for the account; defaults to its Kaggle username")
+    p_add.add_argument(
+        "--interactive", action="store_true",
+        help="type one credential into a hidden terminal prompt instead of passing a file; "
+             "run this yourself in your own shell",
+    )
     p_add.set_defaults(func=cmd_add)
 
     p_remove = sub.add_parser("remove", help="delete stored accounts by alias")
