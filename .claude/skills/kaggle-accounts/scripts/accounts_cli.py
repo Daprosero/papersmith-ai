@@ -25,8 +25,13 @@ never the key, so an agent driving this CLI can offer you a choice of accounts
 without the secret ever crossing into its context. Whatever launches the runs
 reads the store directly.
 
+Every question this skill asks is a selection, and `discover` is what makes the
+add question one: it finds the candidate `kaggle.json` files and says which
+account each holds, so the user picks instead of typing a path from memory.
+
 Usage:
     python accounts_cli.py list [--json]
+    python accounts_cli.py discover [--json]
     python accounts_cli.py add <kaggle.json> [<kaggle.json>…] [--alias NAME]
     python accounts_cli.py remove <alias> [<alias>…]
 
@@ -61,6 +66,12 @@ VALIDATION_TIMEOUT = 20
 
 STORE_VERSION = 1
 ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+# Where a downloaded credential actually lands. Direct children only: walking a
+# home directory to find a two-field JSON file is slow, and reading every JSON
+# somebody owns to see what is inside it is not a thing to do quietly.
+CREDENTIAL_SEARCH_DIRS = ("~/Downloads", "~/Desktop", "~/.kaggle", ".")
+CREDENTIAL_GLOB = "kaggle*.json"
 
 
 class UsageError(Exception):
@@ -181,6 +192,47 @@ def read_credential_file(raw: str) -> tuple[str, str]:
     return username.strip(), key.strip()
 
 
+def display_path(path: Path) -> str:
+    """`~/Downloads/kaggle.json` rather than the full home path."""
+    try:
+        return "~/" + str(path.relative_to(Path.home()))
+    except ValueError:
+        return str(path)
+
+
+def discover_credentials(folders: list[str] | None = None) -> list[dict]:
+    """Candidate `kaggle.json` files, each with the account it holds.
+
+    Asking "what is the path?" makes the user go find something the machine can
+    see, and a mistyped path is a question asked twice. This finds the
+    candidates so the choice can be a selection.
+
+    Reporting the **username** of each file is the part that matters: Kaggle
+    names every download `kaggle.json`, so three of them in one folder are
+    indistinguishable by filename, and picking between identical names is not a
+    choice. The key is read and dropped — it never leaves this process.
+    """
+    seen: set[Path] = set()
+    found: list[dict] = []
+    for folder in (folders or CREDENTIAL_SEARCH_DIRS):
+        directory = Path(folder).expanduser()
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob(CREDENTIAL_GLOB)):
+            resolved = path.resolve()
+            if resolved in seen or not path.is_file():
+                continue
+            seen.add(resolved)
+            entry: dict = {"path": str(path), "display": display_path(path),
+                           "username": None, "problem": None}
+            try:
+                entry["username"], _ = read_credential_file(str(path))
+            except CredentialError as exc:
+                entry["problem"] = str(exc)
+            found.append(entry)
+    return found
+
+
 def validate(username: str, key: str) -> None:
     """Prove the credential against the live API. Raises `CredentialError`.
 
@@ -227,6 +279,32 @@ def cmd_list(args: argparse.Namespace) -> int:
     print(f"{len(accounts)} account(s):")
     for account in sorted(accounts, key=lambda a: a["alias"]):
         print(f"  {account['alias']:<{width}}  {account['username']}")
+    return 0
+
+
+def cmd_discover(args: argparse.Namespace) -> int:
+    """List candidate credential files so adding can be a pick, not a path."""
+    stored = {a["username"]: a["alias"] for a in load_store()["accounts"]}
+    found = discover_credentials()
+    for entry in found:
+        alias = stored.get(entry["username"] or "")
+        entry["storedAs"] = alias
+        entry["note"] = (
+            entry["problem"] if entry["problem"]
+            else f"already stored as {alias!r} — adding it again replaces its key" if alias
+            else "not stored yet"
+        )
+    if args.json:
+        print(json.dumps({"candidates": found}, indent=2))
+        return 0
+    if not found:
+        print("No kaggle.json found in " + ", ".join(CREDENTIAL_SEARCH_DIRS) + ".")
+        return 0
+    width = max(len(e["display"]) for e in found)
+    print(f"{len(found)} candidate credential file(s):")
+    for entry in found:
+        who = entry["username"] or "unreadable"
+        print(f"  {entry['display']:<{width}}  {who}  ({entry['note']})")
     return 0
 
 
@@ -304,6 +382,10 @@ def main() -> int:
     p_list = sub.add_parser("list", help="show stored accounts (never their keys)")
     p_list.add_argument("--json", action="store_true", help="machine-readable output")
     p_list.set_defaults(func=cmd_list)
+
+    p_discover = sub.add_parser("discover", help="find kaggle.json files to offer as choices")
+    p_discover.add_argument("--json", action="store_true", help="machine-readable output")
+    p_discover.set_defaults(func=cmd_discover)
 
     p_add = sub.add_parser("add", help="validate one or more kaggle.json files and store what passes")
     p_add.add_argument("files", nargs="+", metavar="kaggle.json")

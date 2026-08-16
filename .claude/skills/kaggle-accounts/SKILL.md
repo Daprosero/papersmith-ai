@@ -21,11 +21,17 @@ Invoked with no clear intent, this is a two-step conversation, not a command:
 Never infer the intent from context: a session that mentions Kaggle is not a
 request to change credentials.
 
-**Every question this skill asks is a selection, not prose.** The opening
-add-or-remove, and the pick of which accounts to remove, are both interactive
-prompts. A question written into the reply asks the user to retype an alias that
-the tool could have let them click, and a retyped alias is a typo waiting to
-delete the wrong credential.
+**Every question this skill asks is a selection, not prose.** All three of them
+— add or remove, which credential files to add, which accounts to remove — are
+interactive prompts built from what the CLI reports. A question written into the
+reply asks the user to retype something the tool could have let them click: a
+retyped alias is a typo waiting to delete the wrong credential, and a retyped
+path is the question asked twice.
+
+That is why `discover` exists. A prompt can only offer what something enumerated
+first, so each question has a command behind it: `list` for the accounts,
+`discover` for the credential files. If a question has no command behind it, it
+is the wrong question.
 
 Then follow the matching flow below.
 
@@ -44,21 +50,40 @@ python3 .claude/skills/kaggle-accounts/scripts/accounts_cli.py <command>
 ```
 
 - `list [--json]` — stored accounts. Reads nothing remote, touches nothing.
+- `discover [--json]` — candidate `kaggle.json` files and the account in each.
 - `add <kaggle.json>… [--alias NAME]` — validate and store.
 - `remove <alias>…` — delete stored accounts.
 
 ## Adding
 
-**Ask for the path to a `kaggle.json`, never for the token.** A Kaggle
+**Never ask for the token, and never ask for a path in prose.** A Kaggle
 credential is two fields, `username` and `key`, and Kaggle hands both over in a
-single downloaded file (kaggle.com → Settings → API → *Create New Token*). Ask
-for that file's path.
+single downloaded file (kaggle.com → Settings → API → *Create New Token*). So
+adding is a pick from the files that already exist:
+
+1. Run `discover --json`. It looks in `~/Downloads`, `~/Desktop`, `~/.kaggle`
+   and the working directory, and reports each candidate with the **username**
+   inside it and whether that account is already stored.
+2. Present those as an **interactive multi-select** — one option per file,
+   labelled with the account it holds, not just the filename. Multi-select
+   because adding several at once is the point; the user marks every credential
+   they want stored in one pass.
+3. Run `add` with exactly the chosen paths.
+
+Label each option by its username. Kaggle names every download `kaggle.json`, so
+several of them are indistinguishable by filename, and a choice between
+identical labels is not a choice. Say which ones are already stored too — picking
+one of those rotates its key rather than adding an account.
+
+Offer a free-text option for a file somewhere else, and fall back to asking for
+the path only when `discover` finds nothing. Never make the user type a path the
+tool could have shown them.
 
 Never ask the user to paste the key into the conversation, and never echo one
 you happen to see. A token pasted in chat is in the transcript permanently and
 cannot be taken back; a file path costs nothing and leaks nothing.
 
-Several paths can go in one call. Each is handled independently:
+Each chosen file is handled independently:
 
 - Every credential is validated against Kaggle before anything is written.
 - **Only the ones that authenticate are stored.** A rejected file is reported
@@ -123,7 +148,8 @@ not just the one being added.
 | Situation | Action |
 | --- | --- |
 | Invoked with no stated intent | `list`, then an interactive add-or-remove selection |
-| User wants to add | Ask for `kaggle.json` path(s); never for the token itself |
+| User wants to add | `discover --json`, multi-select the files, then `add` |
+| `discover` finds nothing | Only then ask for a path; never for the token itself |
 | User pastes a raw token in chat | Do not store it; ask for the file, and say the pasted one should be rotated |
 | Some credentials in a batch fail | Store the rest; report each rejection with its reason |
 | Kaggle unreachable while validating | Report it as unreachable, not as invalid; store nothing |

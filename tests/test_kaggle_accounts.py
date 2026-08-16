@@ -117,6 +117,43 @@ class IgnorePreconditionTests(unittest.TestCase):
         self.assertFalse(tracked.exists())
 
 
+class DiscoverTests(unittest.TestCase):
+    """Adding is a pick, so something has to enumerate the choices first."""
+
+    def test_finds_kaggle_json_files_and_names_the_account_in_each(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            write_credential(Path(tmp), "kaggle.json", username="diego", key="K1")
+            write_credential(Path(tmp), "kaggle (1).json", username="milab", key="K2")
+            found = ACCOUNTS.discover_credentials([tmp])
+            self.assertEqual(sorted(e["username"] for e in found), ["diego", "milab"])
+            self.assertTrue(all(e["problem"] is None for e in found))
+
+    def test_reports_an_unreadable_candidate_instead_of_hiding_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "kaggle.json").write_text("garbage", encoding="utf-8")
+            (entry,) = ACCOUNTS.discover_credentials([tmp])
+            self.assertIsNone(entry["username"])
+            self.assertIn("not valid JSON", entry["problem"])
+
+    def test_ignores_unrelated_json_and_missing_folders(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            write_credential(Path(tmp), "settings.json", username="diego", key="K1")
+            self.assertEqual(ACCOUNTS.discover_credentials([tmp, tmp + "/nope"]), [])
+
+    def test_the_same_file_reached_twice_is_offered_once(self) -> None:
+        # Two search folders can resolve to the same place; the same credential
+        # listed twice would read as two accounts to add.
+        with tempfile.TemporaryDirectory() as tmp:
+            write_credential(Path(tmp), "kaggle.json", username="diego", key="K1")
+            found = ACCOUNTS.discover_credentials([tmp, tmp + "/"])
+            self.assertEqual(len(found), 1)
+
+    def test_never_carries_the_key_out_of_the_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            write_credential(Path(tmp), "kaggle.json", username="diego", key="SECRET")
+            self.assertNotIn("SECRET", json.dumps(ACCOUNTS.discover_credentials([tmp])))
+
+
 class AliasTests(unittest.TestCase):
     def test_accepts_ordinary_kaggle_usernames_as_aliases(self) -> None:
         for alias in ("diego", "diego-lab", "diego_2", "d.p"):
