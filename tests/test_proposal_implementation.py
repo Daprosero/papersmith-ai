@@ -1510,6 +1510,26 @@ class AgreementsTests(unittest.TestCase):
             self.assertEqual(state["settled"], 2)
             self.assertEqual(state["open"], [])
 
+    def test_prose_is_not_mistaken_for_a_malformed_agreement(self):
+        """Un párrafo en negrita no es una viñeta.
+
+        Probando solo el primer carácter, cada `**negrita**` se leía como un
+        acuerdo mal escrito. Un archivo que registra un acuerdo revertido lo
+        explica en prosa, y esa prosa es justo la que este archivo necesita
+        permitir — un chequeo que grita por markdown se deja de leer, que cuesta
+        más que el caso que vigilaba.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            state = self.write(Path(raw), (
+                "# Acuerdos\n\n- [x] el techo queda en uno\n\n"
+                "## Revertidos\n\n"
+                "**\"El techo se fija sin mirar resultados.\"** Revertido al "
+                "decidir que cada familia busca el suyo.\n\n"
+                "*Una línea en cursiva tampoco es una viñeta.*\n"))
+            self.assertEqual(state["unparsed"], [])
+            self.assertEqual(state["status"], "settled")
+            self.assertEqual(state["settled"], 1)
+
     def test_a_bullet_that_is_not_a_checklist_item_is_never_counted_as_settled(self):
         """Un acuerdo escrito con el formato equivocado no es un acuerdo cumplido.
 
@@ -1520,6 +1540,170 @@ class AgreementsTests(unittest.TestCase):
             state = self.write(Path(raw), "- [x] uno\n- dos, sin casilla\n")
             self.assertEqual(state["unparsed"], ["- dos, sin casilla"])
             self.assertEqual(state["status"], "open")
+
+
+class SearchIsAnExperimentTests(unittest.TestCase):
+    """Una búsqueda es un experimento y se declara como tal.
+
+    Tres cosas que se vuelven invisibles hasta que alguien se choca con ellas:
+    escala propia, rol de material propio, y una regla de desempate escrita en vez
+    de heredada de `max`. Nada acá sabe qué se busca ni nombra herramienta alguna.
+    """
+
+    COMPLETE = {
+        "what": "el techo del coeficiente de adaptación, por familia",
+        "requiredScale": {"epochs": 20, "seeds": 3},
+        "role": "valid",
+        "tieRule": "el techo más chico entre los empatados",
+        "record": "Results/ceilings.json",
+    }
+
+    def test_a_repository_that_searches_nothing_has_nothing_to_declare(self):
+        """Ausencia es un estado, no una falla: casi ningún repo busca algo."""
+        state = impl.search_state({}, [])
+        self.assertEqual(state["status"], "none")
+        self.assertIn("undeclaredRecords", state["note"])
+
+    def test_each_missing_piece_is_named_with_why_it_matters(self):
+        for field in ("what", "requiredScale", "role", "tieRule"):
+            partial = {k: v for k, v in self.COMPLETE.items() if k != field}
+            state = impl.search_state({"search": partial}, ["Results/ceilings.json"])
+            self.assertEqual(state["status"], "incomplete", field)
+            self.assertEqual([m["field"] for m in state["missing"]], [field])
+            self.assertTrue(state["missing"][0]["reason"], field)
+
+    def test_a_search_that_writes_a_record_has_to_name_it_among_the_records(self):
+        """La junta entre las dos declaraciones.
+
+        Una búsqueda que escribe un archivo y no lo nombra donde se nombran los
+        registros es un segundo experimento llegando sin contabilizar, que es
+        justamente para lo que existe `records`.
+        """
+        state = impl.search_state({"search": self.COMPLETE}, ["Results/summary.json"])
+        self.assertEqual(state["status"], "incomplete")
+        self.assertEqual(state["recordNotDeclared"], "Results/ceilings.json")
+
+    def test_a_directory_among_the_records_covers_the_search_record(self):
+        state = impl.search_state({"search": self.COMPLETE}, ["Results"])
+        self.assertEqual(state["recordNotDeclared"], None)
+        self.assertEqual(state["status"], "ok")
+
+    def test_a_complete_declaration_passes(self):
+        """Rojo alcanzable: si no leyera la declaración, esto seguiría incompleto."""
+        state = impl.search_state({"search": self.COMPLETE}, ["Results/ceilings.json"])
+        self.assertEqual(state["status"], "ok")
+        self.assertEqual(state["missing"], [])
+        self.assertEqual(state["declared"]["role"], "valid")
+
+    def test_it_names_no_tool(self):
+        """La skill no recomienda con qué buscar: eso depende del problema.
+
+        Un muestreo adaptativo entrega puntos desigualmente muestreados, y la
+        skill exige después el paisaje completo para sostener una afirmación de
+        escala. Recomendar la herramienta sería empujar una salida que contradice
+        sus propias reglas de reporte.
+        """
+        source = (impl.SEARCH_DECLARATION, impl.search_state.__doc__)
+        for tool in ("optuna", "hyperopt", "ray", "skopt", "grid", "bayesian"):
+            self.assertNotIn(tool, json.dumps(source[0]).lower())
+            self.assertNotIn(tool, (source[1] or "").lower())
+
+
+class UndeclaredRecordsTests(unittest.TestCase):
+    """Lo que la corrida deja escrito donde viven sus registros, o está declarado
+    o se reporta.
+
+    Todos los demás chequeos solo pueden dispararse sobre algo que alguien
+    escribió, así que el repositorio corriendo un experimento que nadie contabilizó
+    es justamente aquel donde todos se quedan callados. Es la misma red que
+    `undeclaredDrawings` tiende sobre las figuras, tendida sobre lo que una
+    corrida escribe.
+    """
+
+    def build(self, root: Path, declared: str) -> dict:
+        (root / "src/Method_Benchmark").mkdir(parents=True, exist_ok=True)
+        (root / "src/Method_Benchmark/__init__.py").write_text(
+            "__benchmark__ = {\n"
+            "    'revision': 'r01.md',\n"
+            "    'arms': {},\n"
+            "    'report': {\n"
+            "        'renderers': ['tables.render'],\n"
+            "        'conclusions': ['tables.conclusion'],\n"
+            "        'objectiveEntry': 'tables.objective',\n"
+            "        'components': {'terms': ['fit'], 'share': None},\n"
+            "        'dimensions': {'accuracy': 'higher', 'fit': None},\n"
+            f"{declared}"
+            "    },\n"
+            "}\n", encoding="utf-8")
+        (root / "Method/Notebooks").mkdir(parents=True, exist_ok=True)
+        return impl.report_state(root, "Method", "Method")
+
+    def results(self, root: Path, *relatives: str) -> None:
+        for relative in relatives:
+            path = root / "Method/Results" / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}", encoding="utf-8")
+
+    def test_a_record_nobody_declared_is_named(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.results(root, "summary.json", "Benchmark/ceilings.json")
+            state = self.build(root, "        'records': ['Results/summary.json'],\n")
+            self.assertEqual(state["undeclaredRecords"],
+                             ["Results/Benchmark/ceilings.json"])
+
+    def test_it_does_not_filter_by_format(self):
+        """Filtrar por `.json` daría un pase mudo a quien registre en otra cosa.
+
+        Rojo alcanzable: con un filtro de extensión, ninguno de estos tres
+        aparecería y el chequeo se quedaría callado justo donde hace falta.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.results(root, "runs.csv", "grid.parquet", "latents.npz")
+            state = self.build(root, "        'records': [],\n")
+            self.assertEqual(state["undeclaredRecords"],
+                             ["Results/grid.parquet", "Results/latents.npz",
+                              "Results/runs.csv"])
+
+    def test_declaring_a_directory_covers_it_and_shows_in_the_echo(self):
+        """Permitido, y visible: renunciar a la cuenta archivo por archivo es una
+        decisión que se ve, no un silencio."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.results(root, "figures/curve.pdf", "figures/grid.pdf",
+                         "Benchmark/ceilings.json")
+            state = self.build(root, "        'records': ['Results/figures'],\n")
+            self.assertEqual(state["undeclaredRecords"],
+                             ["Results/Benchmark/ceilings.json"])
+            self.assertEqual(state["declared"]["records"], ["Results/figures"])
+
+    def test_the_per_checkpoint_artefacts_of_models_are_never_reported(self):
+        """`Models/` guarda uno por checkpoint por diseño del layout.
+
+        Reportar sesenta manifiestos sería un hallazgo que nadie lee, en cualquier
+        repositorio — no solo en el que lo motivó.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            models = root / "Method/Models/Benchmark"
+            models.mkdir(parents=True, exist_ok=True)
+            for i in range(5):
+                (models / f"A_M-U_seed{i}.manifest.json").write_text("{}", encoding="utf-8")
+            self.results(root, "summary.json")
+            state = self.build(root, "        'records': ['Results/summary.json'],\n")
+            self.assertEqual(state["undeclaredRecords"], [])
+
+    def test_declaring_everything_leaves_nothing_to_report(self):
+        """Rojo alcanzable: si no leyera `records`, esto seguiría reportando."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.results(root, "summary.json", "Benchmark/latent.json")
+            state = self.build(
+                root,
+                "        'records': ['Results/summary.json',\n"
+                "                    'Results/Benchmark/latent.json'],\n")
+            self.assertEqual(state["undeclaredRecords"], [])
 
 
 class ComponentShareTests(unittest.TestCase):

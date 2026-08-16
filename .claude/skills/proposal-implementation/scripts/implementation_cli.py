@@ -110,6 +110,12 @@ AGREEMENTS = "AGREEMENTS.md"
 #: A checklist item. Anything else on the line is the item's text, verbatim.
 AGREEMENT_LINE = re.compile(r"^\s*[-*]\s*\[(?P<mark>[ xX])\]\s*(?P<text>.+?)\s*$")
 
+#: A bullet: a marker followed by whitespace. `**bold**` is not one, which is why
+#: this exists — a file that records a reverted agreement in prose was reported as
+#: three malformed items, and the paragraph that explains a reversal is exactly the
+#: kind of writing this file needs to allow.
+BULLET_LINE = re.compile(r"^\s*[-*]\s+\S")
+
 
 def agreements_state(target: Path, name: str) -> dict:
     """What was settled in conversation, and what of it has not reached the code.
@@ -148,7 +154,12 @@ def agreements_state(target: Path, name: str) -> dict:
             # A line that is neither blank, a heading, nor a checklist item. Left
             # silent it would be an agreement nobody counts, which is the failure
             # this file exists to prevent, one level down.
-            if line.lstrip().startswith(("-", "*")):
+            #
+            # A bullet is a marker followed by whitespace. Testing the first
+            # character alone read every `**bold**` paragraph as a malformed
+            # agreement, and a check that fires on ordinary prose is one people
+            # stop reading — which costs more than the case it was guarding.
+            if BULLET_LINE.match(line):
                 unparsed.append(line.strip())
             continue
         if match.group("mark") == " ":
@@ -163,6 +174,111 @@ def agreements_state(target: Path, name: str) -> dict:
         "settled": settled,
         "unparsed": unparsed,
     }
+
+
+#: What a search has to say about itself before its answer means anything. Each
+#: one is a way a search silently stops being an experiment and becomes a number
+#: somebody picked, and each was walked into rather than foreseen.
+SEARCH_DECLARATION = {
+    "what": "which free scalar this chooses",
+    "requiredScale": "the scale its answer needs, declared apart from the one it "
+                     "is running at — with only one of them, a value found at "
+                     "pilot scale and the configuration agree with each other and "
+                     "everything reads as finished",
+    "role": "the material role it reads. Choosing by outcome on the material the "
+            "verdict rests on makes the verdict report a decision it already made",
+    "tieRule": "how a tie is broken, written down. Inheriting it from `max` leaves "
+               "the first element winning by accident, and where the objective is "
+               "flat the accident is what chooses",
+}
+
+
+def search_state(contract: dict, declared_records: list) -> dict:
+    """Whether a declared search says enough about itself to be an experiment.
+
+    A search is an experiment and gets declared as one. Three things it needs are
+    invisible until somebody walks into them: a scale of its own, a material role
+    of its own, and a tie rule that was written rather than inherited. Nothing
+    here knows what is being searched — the declaration does — and no tool is
+    named, because which search a problem wants is the problem's business.
+
+    Absence is `none` and not a failure: most repositories search nothing. What
+    makes the declaration bite is `undeclaredRecords` — a search leaves an
+    artefact where the records live, so it has to be named there, and naming it is
+    the moment somebody has to say what the thing is.
+
+    The limit, stated rather than papered over: this cannot check that the role is
+    disjoint from the verdict's, because it does not know the material. It can
+    only require that the role be named, which is what puts the question in front
+    of whoever writes it.
+    """
+    search = contract.get("search")
+    if not search:
+        return {"status": "none", "declared": {}, "missing": [],
+                "recordNotDeclared": None,
+                "note": "no search declared; `undeclaredRecords` is what would "
+                        "surface one that left an artefact"}
+
+    missing = [{"field": field, "reason": reason}
+               for field, reason in SEARCH_DECLARATION.items()
+               if not search.get(field)]
+
+    # The join between the two declarations: a search that writes a record and
+    # never names it there is a second experiment arriving unaccounted for, which
+    # is the whole reason `records` exists.
+    record = search.get("record")
+    covered = record is None or any(
+        record == entry or record.startswith(entry.rstrip("/") + "/")
+        for entry in declared_records)
+
+    return {
+        "status": "ok" if not missing and covered else "incomplete",
+        "declared": dict(search),
+        "missing": missing,
+        "recordNotDeclared": None if covered else record,
+    }
+
+
+def records_state(target: Path, name: str, contract: dict) -> tuple[list, list]:
+    """What the run left where its records live, against what the contract names.
+
+    Every other check here can only fire on something somebody wrote down, which
+    means the repository most likely to be running an experiment nobody accounted
+    for is exactly the one where they all stay quiet. This is the same net
+    `undeclaredDrawings` casts over figures, cast over what a run writes: a whole
+    second experiment — its own scale, its own material role, its output feeding
+    every later run — arrives as a file in `Results/` and nothing asks about it.
+
+    Format-agnostic on purpose. Filtering to `.json` would hand a silent pass to
+    every repository that records in `.csv`, `.parquet` or `.npz`, and silent is
+    the failure this exists to prevent. A repository that archives figures here
+    declares the directory once, and that declaration shows in the echo — opting
+    out of file-by-file accounting is then a visible decision rather than a gap.
+
+    Scoped to `Results/` and not to the whole product, because `Models/` holds one
+    artefact per checkpoint by the layout's own design: reporting sixty manifests
+    as undeclared would be a finding nobody reads, in any repository.
+
+    It says a file is unaccounted for. It cannot say the file is a second
+    experiment — what it does is force the question, which is the point at which
+    somebody has to write down what the thing is.
+    """
+    declared = list(contract.get("records") or [])
+    product = target / name
+    results = product / "Results"
+    if not results.is_dir():
+        return declared, []
+
+    covered = [(product / entry).resolve() for entry in declared]
+    undeclared = []
+    for path in sorted(results.rglob("*")):
+        if not path.is_file() or any(part.startswith(".") for part in path.parts):
+            continue
+        resolved = path.resolve()
+        if any(resolved == c or c in resolved.parents for c in covered):
+            continue
+        undeclared.append(str(path.relative_to(product)))
+    return declared, undeclared
 
 
 def prior_work_state(target: Path, package: str) -> dict:
@@ -2406,6 +2522,7 @@ def report_state(target: Path, name: str, package: str) -> dict:
     fixed = dict(contract.get("selections") or {})
     record = next((p for p in sorted((target / name).rglob("*.json"))
                    if p.name in (contract.get("record") or "latent.json")), None)
+    declared_records, undeclared_records = records_state(target, name, contract)
     live = introspect(target, package, record)
     written_selections = [
         {**row, "rule": None} for row in live.get("subsets", [])
@@ -2451,6 +2568,11 @@ def report_state(target: Path, name: str, package: str) -> dict:
                 # reason rather than passed over in silence.
                 "componentsNotRecorded": sorted(unrecorded),
                 "componentsWithoutShare": shareless,
+                # What the run left where its records live and nothing declared.
+                # Every other check fires only on something somebody wrote down,
+                # so the repository running an experiment nobody accounted for is
+                # exactly the one where they all stay quiet.
+                "undeclaredRecords": undeclared_records,
                 # A measurement computed and never shown, and a figure that came
                 # out as a sentence describing a figure. Both are cells that ran
                 # clean and reported nothing, which is why no check that reads
@@ -2502,6 +2624,11 @@ def report_state(target: Path, name: str, package: str) -> dict:
                          # term". `componentsWithoutShare` is what makes the empty
                          # case cost something.
                          "components": components,
+                         # Echoed even when empty, like `figures`: "declares no
+                         # records" must not read as "writes none". A directory
+                         # here is allowed and shows, so opting out of
+                         # file-by-file accounting is a visible decision.
+                         "records": declared_records,
                          "selections": fixed},
             "notebooks": [str(p.relative_to(target)) for p in notebooks],
             **findings}
@@ -3378,6 +3505,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         audit_status = "ok"
 
     smoke_present = (target / "tests" / "test_smoke.py").exists()
+    report = report_state(target, name, package_name(name))
     notebooks = notebooks_state(target, name, package_name(name))
     trivial = trivial_assertions(target / "tests")
 
@@ -3405,6 +3533,11 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         },
         "priorWork": prior_work_state(target, package_name(name)),
         "agreements": agreements_state(target, name),
+        "search": search_state(
+            read_declaration(
+                target / "src" / f"{package_name(name)}_Benchmark" / "__init__.py",
+                BENCHMARK_DECLARATION) or {},
+            list((report.get("declared") or {}).get("records") or [])),
         "fidelity": {
             "status": fidelity_status,
             "latestRevision": args.revision,
@@ -3419,7 +3552,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         # Whether the document a human reads obeys the rules the numbers already do.
         # Every other section here checks that the run was sound; a run can be sound
         # and its report still assert the opposite, which is worse than no report.
-        "report": report_state(target, name, package_name(name)),
+        "report": report,
         "audit": {
             "status": audit_status,
             "findings": [

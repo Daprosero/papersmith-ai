@@ -361,6 +361,7 @@ method intact, which is the property the name is promising.
 | `verify` reports `unreachedModules` | An arm declares mathematics it never calls: report before any run |
 | `priorWork` reports `modified` | Say what changed and that correcting prior work belongs to a session of its own |
 | `priorWork` reports `reaching` | The change moves what an arm computes: the record is stale, report before any run |
+| `search` reports `incomplete` | A value is chosen by outcome and the search does not say enough about itself to be an experiment: report before quoting anything it chose |
 | Target outside `implementations/`, or dirty tree | Refuse and report the guard |
 
 ## Where to start: the repository is the memory
@@ -899,6 +900,7 @@ metric is called in somebody's field.
     "components":      {"terms": ["supervised", "adaptation"], "share": "adaptationShare"},
     "selections":      {"SEEDS": "the pilot, a prefix of FULL_SEEDS"},
     "record":          "latent.json",
+    "records":         ["Results/summary.json", "Results/Benchmark", "Results/figures"],
 }
 ```
 
@@ -958,6 +960,27 @@ behind it is right:
   also measured rather than argued: five conclusions in a real report were
   enumerating their own tables, one of them twenty-one numbers deep, with every
   other check clean.
+- **And neither is a record nobody declared.** Every check above fires only on
+  something somebody wrote down, so the repository running an experiment nobody
+  accounted for is exactly the one where they all stay quiet. `records` names what
+  a run leaves under `Results/`; anything else there comes back as
+  `undeclaredRecords`. What it catches is a second experiment arriving as a file —
+  its own scale, its own material role, its output feeding every later run — while
+  the contract describes only the first.
+
+  Format-agnostic, deliberately: filtering to `.json` would hand a silent pass to
+  every repository that records in `.csv`, `.parquet` or `.npz`, and silent is the
+  failure this exists to prevent. A repository that archives figures under
+  `Results/` declares the directory once, and that declaration shows in the echo,
+  so opting out of file-by-file accounting is a visible decision and not a gap.
+
+  Scoped to `Results/` and not to the whole product, because `Models/` holds one
+  artefact per checkpoint by this layout's own design; reporting sixty manifests
+  as undeclared would be a finding nobody reads.
+
+  It says a file is unaccounted for. It cannot say the file is a second
+  experiment — what it does is force the question, which is where somebody has to
+  write down what the thing is.
 - **A picture nobody declared is a contract that is short.** `undeclaredDrawings`
   names a cell that showed an image through no declared call. Without it the two
   findings above would be a courtesy rather than a net: they can only fire on a
@@ -1151,6 +1174,44 @@ apart, and each is cheap enough that skipping it is never the economical choice.
   taken from prior work was calibrated for prior work's scale. Sweep it over decades
   on a single cell and find where the term begins to move the outcome, before the grid
   runs. It costs minutes and decides whether the whole campaign says anything.
+- **And a search is an experiment, declared as one.** The moment a value is chosen
+  by looking at outcomes, the thing that chose it needs everything a run needs, and
+  three of those are invisible until somebody walks into them. `verify` reports
+  `search`: what is being chosen, its `requiredScale`, its `role`, its `tieRule`.
+
+  **Its own scale, declared apart from the one it is running at.** Lowering a
+  search to test the pipeline cheaply writes a value found in a landscape nothing
+  else trains in, and every later run consumes it without a word. Without both
+  numbers the record and the configuration agree with each other and it all reads
+  as finished — the same failure the pilot stamp exists to prevent, one experiment
+  over.
+
+  **Its own material role, disjoint from the verdict's.** Choosing by outcome on
+  the material the verdict rests on makes the verdict report a decision it already
+  made, by an amount nobody can subtract afterwards. Carve the role, and fund it
+  from material the verdict does not lose — the arithmetic of what the verdict must
+  resolve does not bend to make room for a search.
+
+  **A tie rule that was written, not inherited.** `max` leaves the first element
+  winning by accident, and where the objective is flat the accident is what
+  chooses — which is exactly the stretch where a term is inert and every candidate
+  scores the same. Write which way ties go and why.
+
+  No tool is named here and none should be. Which search a problem wants depends on
+  the problem: an adaptive sampler returns unequally sampled points, and this skill
+  asks afterwards for the whole landscape to support a claim about scale, so
+  recommending one would be pushing an output shape that contradicts its own
+  reporting rules. What the skill asks is that whatever was used declares itself.
+
+  Declaring a search is optional, because most repositories search nothing. What
+  makes it bite is `undeclaredRecords`: a search leaves an artefact where the
+  records live, so it has to be named there, and naming it is the moment somebody
+  has to say what the thing is.
+
+  The limit, stated rather than papered over: nothing here can check that the role
+  is disjoint from the verdict's, because it does not know the material. It can
+  only require that the role be named, which is what puts the question in front of
+  whoever writes it.
 
 ### The pilot, and never launching the long run blind
 
