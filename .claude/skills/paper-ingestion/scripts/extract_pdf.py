@@ -27,10 +27,16 @@ Ingestion *moves* files, so it is never the first thing that runs. ``--list``
 answers "what is pending?" without loading a single model, which is what lets
 the skill show the findings and get an answer before anything is displaced.
 
+A PDF dropped directly in ``source_base``, beside the topic folders rather than
+inside one, is reported and never ingested. Converting it where it lies would make
+it a topic of its own, and which topic a paper belongs to is not a decision this
+script can make — so it names the options and waits for one.
+
 Usage:
     python extract_pdf.py --list          # report the loose PDFs, ingest nothing
     python extract_pdf.py                 # ingest every loose PDF under every source root
     python extract_pdf.py <pdf> [<pdf>…]  # ingest exactly these loose PDFs
+    python extract_pdf.py --file <pdf> --into <topic>  # file an unfiled PDF, ingest nothing
 
 Exit codes: 0 success (or nothing to do), 1 at least one paper failed,
 2 configuration/usage/environment error (nothing was touched).
@@ -149,6 +155,75 @@ def loose_pdfs_in(folder: Path) -> list[Path]:
     )
 
 
+def base_path_of(cfg: dict) -> Path | None:
+    """The configured `source_base` as a folder, or None when there is none."""
+    base = cfg.get("source_base")
+    if not base:
+        return None
+    resolved = (REPO_ROOT / base).resolve()
+    return resolved if resolved.is_dir() else None
+
+
+def unfiled_pdfs(cfg: dict) -> list[Path]:
+    """Loose PDFs sitting directly in `source_base`, outside every topic folder.
+
+    They are pending and they are invisible, which is the worst pair: discovery only
+    promotes the base's *children*, so a PDF dropped beside those children is never
+    found and nothing says so — the run reports that every paper is already ingested,
+    which is exactly the silence `source_base` fails closed to avoid.
+
+    Ingesting them where they lie is not the fix. The base's children are topics, so
+    a paper ingested at that level becomes a topic of its own, and the next run reads
+    it as a folder already ingested and leaves it there for good. Which topic a paper
+    belongs to is a judgement nothing here can make, so these are reported and never
+    moved: the flow asks, and `--into` files them once there is an answer.
+    """
+    base_path = base_path_of(cfg)
+    return loose_pdfs_in(base_path) if base_path else []
+
+
+def filing_options(cfg: dict) -> list[str]:
+    """The topic folders an unfiled PDF could be filed into, as they exist now.
+
+    Read from the tree rather than configured, for the same reason the roots are:
+    a topic added last week is an option this week with nothing edited anywhere.
+    """
+    base_path = base_path_of(cfg)
+    if not base_path:
+        return []
+    return sorted(child.name for child in base_path.iterdir()
+                  if child.is_dir() and not child.name.startswith("."))
+
+
+def file_into(pdf: Path, folder: str, cfg: dict) -> Path:
+    """Move an unfiled PDF into a topic folder under the base, creating it if new.
+
+    This is filing, not ingestion: the PDF lands loose inside the topic so the next
+    ordinary run discovers it and converts it. Doing it here rather than leaving the
+    caller a `mv` is what keeps it under the same guards as everything else that
+    displaces a file. Raises `ConfigError`.
+    """
+    base_path = base_path_of(cfg)
+    if base_path is None:
+        raise ConfigError("no source_base configured; there is nowhere to file into")
+    if not folder or folder.startswith(".") or Path(folder).name != folder:
+        raise ConfigError(f"{folder!r} is not a folder name directly under the base")
+    if pdf.parent.resolve() != base_path:
+        raise ConfigError(f"{pdf.name} is not an unfiled PDF sitting in the base")
+
+    destination = base_path / folder
+    if destination.exists() and not destination.is_dir():
+        raise ConfigError(f"{folder} exists and is not a folder")
+    landing = destination / pdf.name
+    # Never displace a file that is already there: the two may be different papers
+    # under one name, and the move would destroy the one that arrived first.
+    if landing.exists():
+        raise ConfigError(f"{folder}/{pdf.name} already exists; nothing was moved")
+    destination.mkdir(parents=True, exist_ok=True)
+    pdf.rename(landing)
+    return landing
+
+
 def discover_source_roots(cfg: dict) -> list[Path]:
     """Resolve the folders to scan: auto-discovered under `source_base`, plus
     any explicit `source_roots`. Raises `ConfigError`.
@@ -241,13 +316,36 @@ def page_count(pdf: Path) -> int | None:
         return None
 
 
+def _relative(path: Path) -> Path:
+    return path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
+
+
 def print_listing(targets: list[Path]) -> None:
     """Report the pending papers: what would be ingested, and how big each is."""
     print(f"Found {len(targets)} loose PDF(s) pending ingestion:")
     for pdf in targets:
-        rel = pdf.relative_to(REPO_ROOT) if pdf.is_relative_to(REPO_ROOT) else pdf
         pages = page_count(pdf)
-        print(f"  {rel}" + (f"  ({pages} pages)" if pages is not None else ""))
+        print(f"  {_relative(pdf)}" + (f"  ({pages} pages)" if pages is not None else ""))
+
+
+def print_unfiled(unfiled: list[Path], options: list[str]) -> None:
+    """Report the PDFs no topic folder covers, and what could be done with them.
+
+    Printed on every run and not only under `--list`, because the moment they are
+    easiest to miss is the one where everything else succeeded. Nothing here moves
+    them: the options are named so a person can choose, which is the whole reason
+    this is a report and not a default.
+    """
+    print(f"\n{len(unfiled)} PDF(s) sitting in the base, in no topic folder — "
+          f"NOT ingested:")
+    for pdf in unfiled:
+        pages = page_count(pdf)
+        print(f"  {_relative(pdf)}" + (f"  ({pages} pages)" if pages is not None else ""))
+    print("  Ingesting these where they lie would make each one a topic of its own.")
+    print("  File each into a topic, existing or new:")
+    print(f"    existing: {', '.join(options)}" if options
+          else "    (no topic folder exists yet)")
+    print("    python extract_pdf.py --file <pdf> --into <topic>")
 
 
 def strip_references(text: str) -> str:
@@ -362,23 +460,51 @@ def main() -> int:
         action="store_true",
         help="report the pending loose PDFs and exit, without loading any model or moving any file",
     )
+    parser.add_argument(
+        "--file", metavar="PDF",
+        help="file one unfiled PDF sitting in the base into a topic folder; ingests nothing",
+    )
+    parser.add_argument(
+        "--into", metavar="TOPIC",
+        help="the topic folder --file moves into, created when it does not exist yet",
+    )
     args = parser.parse_args()
+
+    if bool(args.file) != bool(args.into):
+        print("Usage error: --file and --into are given together.", file=sys.stderr)
+        return 2
 
     try:
         cfg = load_config()
         mode = cfg.get("mode")  # None -> Marker auto-selects by device
         strip_refs = bool(cfg.get("strip_references", True))
+        # Filing is not ingestion: it moves one PDF into a topic and loads no model,
+        # so it answers and exits before anything here can displace anything else.
+        if args.file:
+            landed = file_into(Path(args.file).resolve(), args.into, cfg)
+            print(f"Filed into {_relative(landed.parent)}: {landed.name}")
+            print("Run the ingestion to convert it.")
+            return 0
         if args.pdf:
             # Dedupe while keeping the caller's order: the same PDF named twice
             # would move on the first pass and then "fail" on the second.
             targets = list(dict.fromkeys(resolve_single_target(raw) for raw in args.pdf))
+            unfiled: list[Path] = []
         else:
             targets = find_loose_pdfs(discover_source_roots(cfg))
+            unfiled = unfiled_pdfs(cfg)
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
 
     if not targets:
+        # Never "every paper is already in its folder" while PDFs sit unfiled in the
+        # base. That sentence is what makes them invisible, and it is the reason this
+        # branch reports them instead of reporting success.
+        if unfiled:
+            print("Nothing to ingest: no loose PDF sits inside a topic folder.")
+            print_unfiled(unfiled, filing_options(cfg))
+            return 0
         print("Nothing to ingest: no loose PDFs found (every paper is already in its folder).")
         return 0
 
@@ -386,6 +512,8 @@ def main() -> int:
     # engine loads so the skill can ask which papers to ingest at no cost.
     if args.list:
         print_listing(targets)
+        if unfiled:
+            print_unfiled(unfiled, filing_options(cfg))
         return 0
 
     try:
@@ -406,6 +534,10 @@ def main() -> int:
 
     if done:
         print(f"Ingested {len(done)}: " + ", ".join(done))
+    # Last, and on purpose: a successful run is exactly when a pending PDF nobody
+    # filed is easiest to read as nothing left to do.
+    if unfiled:
+        print_unfiled(unfiled, filing_options(cfg))
     return 1 if failed else 0
 
 

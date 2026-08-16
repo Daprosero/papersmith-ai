@@ -55,6 +55,8 @@ Always invoke through the venv interpreter:
 - `--list`: report the pending loose PDFs and exit. Loads no model, moves no file.
 - No argument: discover the source roots, then ingest every **loose** PDF in them.
 - `<loose-pdf>…`: ingest exactly those loose PDFs.
+- `--file <pdf> --into <topic>`: file one unfiled PDF into a topic folder under the
+  base, creating it when new. Moves one file, converts nothing, loads no model.
 
 ## Confirmation (required)
 
@@ -73,6 +75,33 @@ Running with no argument ingests everything unattended and therefore skips the
 user's decision — use it only when the user has explicitly asked for exactly
 that. The one loose PDF case is not an exception: one paper still gets moved,
 so one paper still gets confirmed.
+
+## A PDF in the base belongs to no topic yet, and nothing files it for you
+
+The base's children are topics. A PDF dropped in the base itself, beside those
+folders rather than inside one, is pending and invisible at the same time:
+discovery only promotes children, so nothing finds it and the run reports that
+every paper is already in its folder.
+
+The script reports these separately and **ingests none of them**. Converting one
+where it lies would make it a topic of its own, and the next run would read that
+folder as already ingested and leave it there permanently — a stray paper turned
+into a permanent category, silently.
+
+So it is a question, not a default:
+
+1. Report each unfiled PDF with its page count, and the topics that exist now.
+2. **Ask which topic it belongs in** — one of the existing ones, or a new one
+   whose name the user gives. Never pick for them: the topics are the user's
+   filing system and the paper's subject is not something to infer from a
+   filename.
+3. Run `--file <pdf> --into <topic>` with the answer. The PDF lands loose inside
+   that topic, which makes it ordinary pending work.
+4. Then the normal confirmation applies — filing is not ingestion, and moving a
+   paper into a folder never authorizes converting it.
+
+If the user does not want to file it, leave it. It stays reported on every run,
+which is the correct end state for a decision nobody has made yet.
 
 **Loose PDF = not yet ingested.** A PDF sitting directly in a source root is
 pending; once ingested it lives inside its own `<stem>/` folder, so it is no
