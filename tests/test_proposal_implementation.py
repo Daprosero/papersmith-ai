@@ -988,6 +988,43 @@ class ReportDigestJoinTests(unittest.TestCase):
             self.assertNotEqual(before, after)
             self.assertNotEqual(report_digest.source_digest(root, "Method"), before)
 
+    def test_prior_work_the_benchmark_imports_is_inside_what_the_stamp_covers(self):
+        """Mover lo que computa un brazo tiene que marcar rancio el informe.
+
+        El banco importa del trabajo previo — es lo que lo hace una comparación —
+        así que un cambio ahí cambia los números de esos brazos. Nombrando los
+        paquetes uno por uno esto quedaba afuera: los cuadernos seguían diciendo
+        `executed` sobre resultados viejos, y la sesión aparte que arregla el
+        trabajo previo y vuelve es justo la que lo dispara.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root)
+            baseline = root / "src/PriorWork/models.py"
+            baseline.parent.mkdir(parents=True, exist_ok=True)
+            baseline.write_text("LOSS = 1\n", encoding="utf-8")
+            before = impl.source_digest(root, "Method")
+            baseline.write_text("LOSS = 2\n", encoding="utf-8")
+            after = impl.source_digest(root, "Method")
+            self.assertNotEqual(before, after)
+            self.assertEqual(after, report_digest.source_digest(root, "Method"))
+
+    def test_adding_a_test_does_not_mark_every_report_in_the_repository_stale(self):
+        """`tests/` no es de lo que depende un informe: ningún cuaderno lo importa.
+
+        Cubrirlo hacía que agregar cualquier prueba — incluso una sobre el
+        trabajo previo, que ningún cuaderno toca — pidiera re-ejecutar la campaña
+        entera para re-estampar un hash.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root)
+            before = impl.source_digest(root, "Method")
+            (root / "tests/test_added_later.py").write_text(
+                "def test_new():\n    assert True\n", encoding="utf-8")
+            self.assertEqual(impl.source_digest(root, "Method"), before)
+            self.assertEqual(report_digest.source_digest(root, "Method"), before)
+
     def test_the_marker_is_the_one_the_verification_looks_for(self):
         """Otra unión: el destino imprime un prefijo y la verificación lo busca."""
         self.assertEqual(report_digest.MARKER, impl.DIGEST_MARKER)
@@ -1043,6 +1080,111 @@ def _cell(kind, text, outputs=None, executed=True):
     return cell
 
 
+class PriorWorkTests(unittest.TestCase):
+    """"El baseline se usa como está" era la regla más fuerte sin verificar.
+
+    El trabajo previo vive bajo `src/` junto al método y su banco, y todos los
+    chequeos pasaban de largo. Se podía editar en cualquier sesión y la siguiente
+    abría un repositorio que no decía nada.
+
+    Lo que hace útil el aviso es la segunda pregunta. "Cambió" a secas queda rojo
+    para siempre en un repositorio que evoluciona y se deja de leer; "cambió esto,
+    que tus brazos importan" es accionable.
+    """
+
+    def build(self, root: Path) -> None:
+        for relative, body in (
+            ("src/Method/kernels.py", "K = 1\n"),
+            ("src/Method_Benchmark/__init__.py", "__benchmark__ = {}\n"),
+            ("src/Method_Benchmark/wiring.py",
+             "from PriorWork.models import Loss\nimport PriorWork.helpers\n"),
+            ("src/PriorWork/__init__.py", ""),
+            ("src/PriorWork/models.py", "class Loss:\n    scale = 1\n"),
+            ("src/PriorWork/helpers.py", "def helper():\n    return 1\n"),
+            ("src/PriorWork/training_loop.py", "def train():\n    return 'own'\n"),
+        ):
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "base"], cwd=root, check=True)
+
+    def state(self, root: Path) -> dict:
+        return impl.prior_work_state(root, "Method")
+
+    def test_an_untouched_baseline_is_reported_as_present_and_clean(self):
+        """El hecho se informa aunque la respuesta sea que no pasó nada."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root)
+            state = self.state(root)
+            self.assertEqual(state["status"], "clean")
+            self.assertEqual(state["packages"], ["PriorWork"])
+            self.assertEqual(state["modified"], [])
+
+    def test_a_change_the_benchmark_imports_is_reported_as_reaching_the_run(self):
+        """Mueve lo que computa un brazo: los resultados dejaron de valer."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root)
+            (root / "src/PriorWork/models.py").write_text(
+                "class Loss:\n    scale = 2\n", encoding="utf-8")
+            state = self.state(root)
+            self.assertEqual(state["status"], "reaching")
+            self.assertEqual(state["reaching"], ["src/PriorWork/models.py"])
+
+    def test_a_change_the_benchmark_never_imports_is_reported_without_alarm(self):
+        """Rojo alcanzable: si `reaching` ignorara los imports, esto sería `reaching`.
+
+        El loop de entrenamiento propio del trabajo previo no lo llama el banco.
+        Importa para los cuadernos del trabajo previo y no para esta comparación,
+        y confundir los dos casos es lo que vuelve el aviso ruido.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root)
+            (root / "src/PriorWork/training_loop.py").write_text(
+                "def train():\n    return 'changed'\n", encoding="utf-8")
+            state = self.state(root)
+            self.assertEqual(state["status"], "modified")
+            self.assertEqual(state["modified"], ["src/PriorWork/training_loop.py"])
+            self.assertEqual(state["reaching"], [])
+
+    def test_the_stamp_moves_even_when_the_change_reaches_no_arm(self):
+        """El par que hay que declarar, no descubrir.
+
+        El sello cubre `src/` entero a propósito: se computa dos veces, una en el
+        cuaderno y otra en la verificación, y cualquier regla más sutil que un
+        directorio es una regla en la que dos implementaciones se desincronizan —
+        y un sello cuyas mitades no coinciden no protege nada.
+
+        Así que las dos cosas pasan juntas: ningún brazo cambió de número y el
+        informe queda obsoleto igual. Sin decirlo, alguien re-corre una campaña
+        por un comentario en trabajo previo que el banco nunca importa.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root)
+            before = impl.source_digest(root, "Method")
+            (root / "src/PriorWork/training_loop.py").write_text(
+                "def train():\n    return 'changed'\n", encoding="utf-8")
+            self.assertEqual(self.state(root)["reaching"], [])
+            self.assertNotEqual(impl.source_digest(root, "Method"), before)
+
+    def test_a_repository_with_no_prior_work_reports_none_rather_than_clean(self):
+        """Sin baseline no hay nada que vigilar, y decir `clean` lo insinuaría."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            for relative in ("src/Method/kernels.py", "src/Method_Benchmark/__init__.py"):
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("X = 1\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            self.assertEqual(self.state(root)["status"], "none")
+
+
 class ReportContractTests(unittest.TestCase):
     """Los cinco chequeos estáticos del informe, cada uno con su rojo alcanzable.
 
@@ -1058,7 +1200,8 @@ class ReportContractTests(unittest.TestCase):
         "        'renderers': ['tables.render'],\n"
         "        'conclusions': ['tables.conclusion'],\n"
         "        'objectiveEntry': 'tables.objective',\n"
-        "        'dimensions': {'accuracy': 'higher', 'seconds': 'lower'},\n"
+        "        'components': {'terms': ['fit'], 'share': None},\n"
+        "        'dimensions': {'accuracy': 'higher', 'seconds': 'lower', 'fit': None},\n"
         "    },\n"
         "}\n"
     )
@@ -1276,6 +1419,130 @@ class ReportContractTests(unittest.TestCase):
 
 # ------------------------------------- lo que una celda produjo, no lo que dice
 
+class AgreementsTests(unittest.TestCase):
+    """La regla de escribir los acuerdos existía en prosa y sin nada que la sostenga
+    — la misma forma que el defecto que describe.
+
+    Un acuerdo se toma en una compuerta, no vive en ningún archivo, y cuando se
+    escribe el código el único registro es una memoria que re-decide sola.
+    """
+
+    def write(self, root: Path, body: str) -> dict:
+        (root / "Method").mkdir(parents=True, exist_ok=True)
+        (root / "Method/AGREEMENTS.md").write_text(body, encoding="utf-8")
+        return impl.agreements_state(root, "Method")
+
+    def test_no_file_is_a_state_and_says_what_it_would_have_held(self):
+        with tempfile.TemporaryDirectory() as raw:
+            state = impl.agreements_state(Path(raw), "Method")
+            self.assertEqual(state["status"], "absent")
+            self.assertEqual(state["path"], "Method/AGREEMENTS.md")
+
+    def test_an_unticked_item_is_an_agreement_that_never_reached_the_code(self):
+        with tempfile.TemporaryDirectory() as raw:
+            state = self.write(Path(raw), (
+                "# Acuerdos\n\n"
+                "- [x] el techo queda en 1 y compartido\n"
+                "- [ ] la figura muestra la imagen, no la ruta\n"))
+            self.assertEqual(state["status"], "open")
+            self.assertEqual(state["open"], ["la figura muestra la imagen, no la ruta"])
+            self.assertEqual(state["settled"], 1)
+
+    def test_everything_ticked_settles(self):
+        """Rojo alcanzable: si no leyera la marca, esto seguiría `open`."""
+        with tempfile.TemporaryDirectory() as raw:
+            state = self.write(Path(raw), "- [x] uno\n- [X] dos\n")
+            self.assertEqual(state["status"], "settled")
+            self.assertEqual(state["settled"], 2)
+            self.assertEqual(state["open"], [])
+
+    def test_a_bullet_that_is_not_a_checklist_item_is_never_counted_as_settled(self):
+        """Un acuerdo escrito con el formato equivocado no es un acuerdo cumplido.
+
+        Es la misma falla que el archivo previene, un nivel más abajo: quedaría
+        escrito, nadie lo contaría, y el reporte diría que no falta nada.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            state = self.write(Path(raw), "- [x] uno\n- dos, sin casilla\n")
+            self.assertEqual(state["unparsed"], ["- dos, sin casilla"])
+            self.assertEqual(state["status"], "open")
+
+
+class ComponentShareTests(unittest.TestCase):
+    """Un término bien implementado y multiplicado por algo minúsculo da una
+    columna de casi-ceros que se lee como resultado.
+
+    `contribution` sola — el numerador, sin denominador al lado — no distingue
+    "el término no comandó nada" de "el término fue escalado a nada", y las dos
+    imprimen chico. La regla existía en prosa y un repositorio entregó el
+    numerador solo con la verificación en verde.
+
+    Lo que se chequea es la declaración, nunca el significado: nada acá puede
+    aprender cómo se llama un término del objetivo de alguien.
+    """
+
+    BASE = ("__benchmark__ = {\n"
+            "    'revision': 'r01.md',\n"
+            "    'arms': {},\n"
+            "    'report': {\n"
+            "        'renderers': ['tables.render'],\n"
+            "        'conclusions': ['tables.conclusion'],\n"
+            "        'objectiveEntry': 'tables.objective',\n"
+            "%s"
+            "        'dimensions': %s,\n"
+            "    },\n"
+            "}\n")
+
+    def state(self, root: Path, components: str, dimensions: str) -> dict:
+        (root / "src/Method_Benchmark").mkdir(parents=True, exist_ok=True)
+        (root / "src/Method_Benchmark/__init__.py").write_text(
+            self.BASE % (components, dimensions), encoding="utf-8")
+        (root / "Method/Notebooks").mkdir(parents=True, exist_ok=True)
+        return impl.report_state(root, "Method", "Method")
+
+    def test_a_package_that_declares_no_components_is_told_why_that_matters(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            found = self.state(root, "", "{'accuracy': 'higher'}")["componentsWithoutShare"]
+            self.assertEqual(len(found), 1)
+            self.assertIn("no declara `components`", found[0]["reason"])
+
+    def test_more_than_one_term_and_no_share_is_the_gap_the_rule_is_about(self):
+        """Dos términos que se suman y ninguna forma de leer la parte de cada uno."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            found = self.state(
+                root,
+                "        'components': {'terms': ['fit', 'align'], 'share': None},\n",
+                "{'accuracy': 'higher', 'fit': None, 'align': None}",
+            )["componentsWithoutShare"]
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0]["terms"], ["fit", "align"])
+
+    def test_a_declared_term_the_record_never_carries_is_named(self):
+        """Declararlo y no registrarlo deja la parte sin poder computarse igual."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            state = self.state(
+                root,
+                "        'components': {'terms': ['fit', 'align'], 'share': 'alignShare'},\n",
+                "{'accuracy': 'higher', 'fit': None}",
+            )
+            self.assertEqual(state["componentsNotRecorded"], ["align", "alignShare"])
+
+    def test_terms_and_share_both_recorded_raise_nothing(self):
+        """Rojo alcanzable: si el chequeo no leyera `dimensions`, esto fallaría."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            state = self.state(
+                root,
+                "        'components': {'terms': ['fit', 'align'], 'share': 'alignShare'},\n",
+                "{'accuracy': 'higher', 'fit': None, 'align': None, 'alignShare': None}",
+            )
+            self.assertEqual(state["componentsNotRecorded"], [])
+            self.assertEqual(state["componentsWithoutShare"], [])
+
+
 class CellOutputTests(unittest.TestCase):
     """Los dos chequeos que leen la salida de una celda y no su código.
 
@@ -1294,7 +1561,8 @@ class CellOutputTests(unittest.TestCase):
         "        'conclusions': ['tables.conclusion'],\n"
         "        'objectiveEntry': 'tables.objective',\n"
         "        'figures': ['figures.curves'],\n"
-        "        'dimensions': {'accuracy': 'higher'},\n"
+        "        'components': {'terms': ['fit'], 'share': None},\n"
+        "        'dimensions': {'accuracy': 'higher', 'fit': None},\n"
         "    },\n"
         "}\n"
     )
@@ -1564,7 +1832,8 @@ class CellOutputEndToEndTests(unittest.TestCase):
         "        'conclusions': ['tables.conclusion'],\n"
         "        'objectiveEntry': 'tables.objective',\n"
         "        'figures': ['figures.curves'],\n"
-        "        'dimensions': {'accuracy': 'higher'},\n"
+        "        'components': {'terms': ['fit'], 'share': None},\n"
+        "        'dimensions': {'accuracy': 'higher', 'fit': None},\n"
         "    },\n"
         "}\n"
     )
@@ -1605,4 +1874,179 @@ class CellOutputEndToEndTests(unittest.TestCase):
     def test_the_toy_target_left_nothing_behind(self):
         self.verify_with([_shown("image/png")])
         leftover = list((FORGE / "implementations").glob("_e2e_cell_outputs_*"))
+        self.assertEqual(leftover, [], leftover)
+
+
+# ------------------------------- la junta entre el método y el arnés que lo mide
+
+def _module(revision, sections, equations, imports=""):
+    return (f"{imports}"
+            f"__provenance__ = {{\n"
+            f"    'revision': {revision!r},\n"
+            f"    'sections': {sections!r},\n"
+            f"    'equations': {equations!r},\n"
+            f"    'invariants': [],\n"
+            f"}}\n")
+
+
+class UnreachedMathematicsEndToEndTests(unittest.TestCase):
+    """El brazo declara que ejercita una sección y nunca llama a lo que la implementa.
+
+    Es la única junta que ninguna otra comprobación cruzaba. `verify` leía la
+    procedencia del método y la declaración del banco como dos documentos separados,
+    y los dos pueden estar impecables mientras el brazo reimplementa la ecuación en
+    vez de llamarla: el módulo declara sus secciones, el brazo declara las mismas, y
+    nunca se encuentran.
+
+    No es hipotético. Así corrió una campaña entera con un brazo calculando una forma
+    simplificada del término que declaraba, con todos los chequeos en verde.
+
+    Los módulos del juguete se llaman por su ROL en la prueba y no por ninguna
+    matemática. El chequeo es estructural: no sabe qué es una sección ni qué implementa
+    un módulo, y un fixture con nombres de un método real sugeriría que sí.
+    """
+
+    DECLARATION = (
+        "__benchmark__ = {\n"
+        "    'revision': 'r01.md',\n"
+        "    'arms': {\n"
+        "        'floor': {'sections': ['3']},\n"
+        "        'full': {'sections': ['3', '5']},\n"
+        "    },\n"
+        "}\n"
+    )
+
+    def verify_with(self, wiring):
+        box = FORGE / "implementations" / f"_e2e_unreached_{os.getpid()}"
+        try:
+            (box / "src/Method").mkdir(parents=True)
+            (box / "src/Method_Benchmark").mkdir(parents=True)
+            (box / "tests").mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(box)], check=True,
+                           capture_output=True)
+            (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+            # Imported by the harness, and the only way the next one is reached.
+            (box / "src/Method/called.py").write_text(
+                _module("r01.md", ["3"], ["11"],
+                        imports="from Method.reached_through import reached_through\n"),
+                encoding="utf-8")
+            # Reached only through `called`: a direct-import check would call this
+            # missing on every faithful repository, so it is pinned here.
+            (box / "src/Method/reached_through.py").write_text(
+                _module("r01.md", ["3"], ["21"]), encoding="utf-8")
+            # The defect: the arms declare sections 3 and 5, and nobody calls it.
+            (box / "src/Method/never_called.py").write_text(
+                _module("r01.md", ["3", "5"], ["12", "13"]), encoding="utf-8")
+            # Mathematics no arm claims. Unreached, and correctly silent.
+            (box / "src/Method/unclaimed.py").write_text(
+                _module("r01.md", ["9"], ["31"]), encoding="utf-8")
+
+            (box / "src/Method_Benchmark/__init__.py").write_text(
+                self.DECLARATION, encoding="utf-8")
+            (box / "src/Method_Benchmark/wiring.py").write_text(wiring,
+                                                                encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(CLI), "verify", "--target", str(box),
+                 "--name", "Method", "--revision", "r01.md"],
+                capture_output=True, text=True, cwd=FORGE)
+            return json.loads(proc.stdout or "{}")
+        finally:
+            shutil.rmtree(box, ignore_errors=True)
+
+    WITHOUT = "from Method.called import called\n"
+    WITH = "from Method.called import called\nfrom Method.never_called import total\n"
+
+    def test_a_module_no_arm_calls_is_named_with_its_equations(self):
+        fidelity = self.verify_with(self.WITHOUT)["fidelity"]
+        unreached = fidelity["benchmark"]["unreachedModules"]
+        self.assertEqual([u["module"] for u in unreached], ["src/Method/never_called.py"])
+        # The equation, not the section it lives in: that is what a reader acts on.
+        self.assertEqual(unreached[0]["equations"], ["12", "13"])
+        self.assertEqual(unreached[0]["declaredBy"], ["floor", "full"])
+
+    def test_the_defect_is_not_left_inside_a_headline_that_reads_ok(self):
+        """Un defecto que solo vive dentro de `benchmark` mientras `fidelity` dice
+        `ok` es exactamente el silencio que este chequeo viene a romper."""
+        fidelity = self.verify_with(self.WITHOUT)["fidelity"]
+        self.assertEqual(fidelity["benchmark"]["status"], "unfaithful")
+        self.assertEqual(fidelity["status"], "drift")
+
+    def test_calling_it_clears_the_finding(self):
+        """El otro polo. Sin esto, un chequeo que siempre marca rojo no distingue
+        un arnés infiel de uno fiel, y aprobar sería imposible."""
+        fidelity = self.verify_with(self.WITH)["fidelity"]
+        self.assertEqual(fidelity["benchmark"]["unreachedModules"], [])
+        self.assertEqual(fidelity["benchmark"]["status"], "ok")
+        self.assertEqual(fidelity["status"], "ok")
+
+    def test_a_module_reached_through_another_is_not_reported(self):
+        """`called` importa `reached_through`, así que el arnés la ejercita sin nombrarla.
+        Marcarla haría que el hallazgo se ignore en todo repositorio real."""
+        unreached = self.verify_with(self.WITHOUT)["fidelity"]["benchmark"]
+        self.assertNotIn("src/Method/reached_through.py",
+                         [u["module"] for u in unreached["unreachedModules"]])
+
+    def test_mathematics_no_arm_claims_stays_silent(self):
+        """Un método puede cargar más de lo que una comparación ejercita. Exigir que
+        todo módulo se llame dispararía sobre eso y enseñaría a saltear el hallazgo.
+
+        Se mide sobre el caso que SÍ marca: con `WITH` la lista queda vacía por el
+        control y `unclaimed` pasaría aunque nada lo estuviera silenciando.
+        """
+        unreached = self.verify_with(self.WITHOUT)["fidelity"]["benchmark"]
+        reported = [u["module"] for u in unreached["unreachedModules"]]
+        self.assertNotIn("src/Method/unclaimed.py", reported)
+        self.assertIn("src/Method/never_called.py", reported)
+
+    def probe_with(self, wiring):
+        """Un juguete que llega hasta donde se ofrece la corrida.
+
+        Hace falta lo mismo que en cualquier repositorio real para que la pregunta
+        exista: algo contra qué comparar, y un backend entrenable. Sin las dos cosas
+        `probe` contesta otra cosa mucho antes y la compuerta no se ejercita nunca.
+        """
+        box = FORGE / "implementations" / f"_e2e_unreached_probe_{os.getpid()}"
+        try:
+            (box / "src/Method").mkdir(parents=True)
+            (box / "src/Method_Benchmark").mkdir(parents=True)
+            (box / "src/Prior").mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(box)], check=True,
+                           capture_output=True)
+            (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+            (box / "src/Method/called.py").write_text(
+                _module("r01.md", ["3"], ["11"], imports="import torch\n"),
+                encoding="utf-8")
+            (box / "src/Method/never_called.py").write_text(
+                _module("r01.md", ["3", "5"], ["12", "13"], imports="import torch\n"),
+                encoding="utf-8")
+            (box / "src/Prior/model.py").write_text("import torch\n", encoding="utf-8")
+            (box / "src/Method_Benchmark/__init__.py").write_text(
+                self.DECLARATION, encoding="utf-8")
+            (box / "src/Method_Benchmark/wiring.py").write_text(wiring, encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(CLI), "probe", "--target", str(box),
+                 "--name", "Method", "--revision", "r01.md"],
+                capture_output=True, text=True, cwd=FORGE)
+            return json.loads(proc.stdout or "{}")
+        finally:
+            shutil.rmtree(box, ignore_errors=True)
+
+    def test_the_run_is_not_offered_while_an_arm_does_not_call_what_it_declares(self):
+        """El hallazgo tiene que frenar la campaña, no solo figurar: cada número
+        vendría de un brazo que no computa lo que la tabla dice que computó."""
+        probe = self.probe_with(self.WITHOUT)
+        self.assertEqual(probe["nextStep"], "wiring-first")
+        self.assertEqual([u["module"] for u in probe["unreachedModules"]],
+                         ["src/Method/never_called.py"])
+
+    def test_the_offer_comes_back_once_the_arm_calls_it(self):
+        """El polo de control de la compuerta. Sin él, `wiring-first` podría estar
+        frenando por cualquier motivo y la prueba de arriba no lo notaría."""
+        probe = self.probe_with(self.WITH)
+        self.assertEqual(probe["unreachedModules"], [])
+        self.assertNotEqual(probe["nextStep"], "wiring-first")
+
+    def test_the_toy_target_left_nothing_behind(self):
+        self.verify_with(self.WITH)
+        leftover = list((FORGE / "implementations").glob("_e2e_unreached_*"))
         self.assertEqual(leftover, [], leftover)

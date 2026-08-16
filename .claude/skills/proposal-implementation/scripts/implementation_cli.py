@@ -102,6 +102,155 @@ def tracked_files(target: Path) -> list[str]:
 LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/"
 
 
+#: Where the agreements of every gate are written down, inside the product folder
+#: so they travel with the work and are read by the next session rather than
+#: remembered by it.
+AGREEMENTS = "AGREEMENTS.md"
+
+#: A checklist item. Anything else on the line is the item's text, verbatim.
+AGREEMENT_LINE = re.compile(r"^\s*[-*]\s*\[(?P<mark>[ xX])\]\s*(?P<text>.+?)\s*$")
+
+
+def agreements_state(target: Path, name: str) -> dict:
+    """What was settled in conversation, and what of it has not reached the code.
+
+    Agreements are what this flow loses. They are reached at a gate, they live in
+    nobody's file, and by the time the code is being written the only record is a
+    memory that re-decides freely — usually while implementing, when something
+    turns out to be awkward and the substitution looks like tidiness rather than
+    like a decision that was the user's to make.
+
+    The rule to write them down existed in prose with nothing to hold it, which is
+    the same shape as the defect it describes. This is the artefact. It is
+    deliberately not a plan of work: a checklist derived from how the agent intends
+    to build can be completed in full while an agreed thing never happens, and
+    nothing anywhere will say so.
+
+    Absence is a state and not a failure — a repository whose flow never reached a
+    gate has nothing to record. It is reported either way, because a check that
+    speaks only on failure teaches nobody what it was watching.
+    """
+    path = target / name / AGREEMENTS
+    if not path.exists():
+        return {"status": "absent", "path": f"{name}/{AGREEMENTS}",
+                "open": [], "settled": 0, "unparsed": [],
+                "note": "no hay acuerdos escritos; si hubo una compuerta, se perdieron"}
+
+    open_items: list[str] = []
+    settled = 0
+    unparsed: list[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.rstrip()
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        match = AGREEMENT_LINE.match(line)
+        if not match:
+            # A line that is neither blank, a heading, nor a checklist item. Left
+            # silent it would be an agreement nobody counts, which is the failure
+            # this file exists to prevent, one level down.
+            if line.lstrip().startswith(("-", "*")):
+                unparsed.append(line.strip())
+            continue
+        if match.group("mark") == " ":
+            open_items.append(match.group("text"))
+        else:
+            settled += 1
+
+    return {
+        "status": "open" if open_items or unparsed else "settled",
+        "path": f"{name}/{AGREEMENTS}",
+        "open": open_items,
+        "settled": settled,
+        "unparsed": unparsed,
+    }
+
+
+def prior_work_state(target: Path, package: str) -> dict:
+    """Which packages of prior work changed, and whether the change reaches the run.
+
+    "The baseline is used as it is" is one of the strongest rules here and nothing
+    verified it. Prior work sits under `src/` beside the method and its benchmark,
+    and every check walked past it: not in the structure, not in the provenance, not
+    in the stamp. It could be edited in any session and the next one would open a
+    repository that says nothing happened.
+
+    Two questions, and reporting only the first is what makes a check get ignored.
+    *Did it change* is a fact and belongs in the report whatever the answer. *Does it
+    reach the run* is what decides whether anyone has to act: the benchmark imports
+    from prior work — that is what makes it a comparison — so a change to a module an
+    arm imports moves what that arm computes, while a change to a training loop the
+    benchmark never calls moves nothing here and may still matter to prior work's own
+    notebooks.
+
+    Uncommitted only, and deliberately. Prior work that a repository legitimately
+    owns and evolves would leave a committed diff for good, and a check that is red
+    for good is a check nobody reads. What this catches is the edit sitting in the
+    tree right now, before it enters the history — which is where the flow can still
+    say "that belongs in a session of its own" and be heard.
+    """
+    source = target / "src"
+    if not source.is_dir():
+        return {"status": "none", "packages": [], "modified": [], "reaching": []}
+
+    ours = {package, f"{package}_Benchmark"}
+    prior = sorted(d.name for d in source.iterdir()
+                   if d.is_dir() and d.name not in ours and not d.name.startswith("."))
+    if not prior:
+        return {"status": "none", "packages": [], "modified": [], "reaching": []}
+
+    try:
+        porcelain = git(target, "status", "--porcelain", "--", "src", check=False)
+    except Refused:
+        porcelain = ""
+    modified = sorted({
+        line[3:].strip().strip('"')
+        for line in porcelain.splitlines()
+        if line[3:].strip().strip('"').startswith(tuple(f"src/{p}/" for p in prior))
+    })
+
+    # What the method and its benchmark import from prior work, by top-level module.
+    imported: set[str] = set()
+    for name in ours:
+        root = source / name
+        if not root.is_dir():
+            continue
+        for file in sorted(root.rglob("*.py")):
+            if "__pycache__" in file.parts:
+                continue
+            try:
+                tree = ast.parse(file.read_text(encoding="utf-8"))
+            except (SyntaxError, OSError, UnicodeDecodeError):
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    imported.add(node.module)
+                elif isinstance(node, ast.Import):
+                    imported.update(a.name for a in node.names)
+
+    def reached(relative: str) -> bool:
+        """True when a changed file is a module the method or its benchmark imports."""
+        parts = Path(relative).relative_to("src").with_suffix("").parts
+        dotted = ".".join(parts)
+        package_form = ".".join(parts[:-1]) if parts[-1] == "__init__" else dotted
+        return any(m == dotted or m == package_form or m.startswith(package_form + ".")
+                   for m in imported)
+
+    reaching = [p for p in modified if reached(p)]
+    return {
+        "status": "reaching" if reaching else ("modified" if modified else "clean"),
+        "packages": prior,
+        "modified": modified,
+        "reaching": reaching,
+        "note": (
+            "Prior work is used as it is; correcting it belongs to a session of its "
+            "own. `reaching` names the changed modules the method or its benchmark "
+            "imports, so those arms no longer compute what the last run recorded."
+            if reaching else
+            "Prior work is used as it is; correcting it belongs to a session of its own."
+        ),
+    }
+
+
 def lfs_state(target: Path) -> dict:
     """Which files are placeholders, and what fetching them would cost.
 
@@ -528,6 +677,136 @@ def imported_modules(path: Path) -> set[str]:
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
             found.add(node.module.split(".")[0])
     return found
+
+
+def method_imports(path: Path, package: str, stems: set[str]) -> set[str]:
+    """Which modules OF THE METHOD this file imports, by stem.
+
+    `imported_modules` answers at top-level granularity, and that is the wrong
+    resolution here: every file of the benchmark imports the method's package, so
+    at that resolution every harness looks like it calls everything. The question
+    is which parts of it.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (SyntaxError, UnicodeDecodeError, OSError):
+        return set()
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            parts = node.module.split(".")
+            if parts[0] != package:
+                continue
+            if len(parts) > 1:
+                found.add(parts[1])
+            else:
+                # `from <package> import <name>` names a submodule too, and only the
+                # directory can say whether it does: the same statement is how a plain
+                # symbol is imported.
+                found.update(a.name for a in node.names if a.name in stems)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                parts = alias.name.split(".")
+                if parts[0] == package and len(parts) > 1:
+                    found.add(parts[1])
+    return found & stems
+
+
+def benchmark_reach(target: Path, package: str, bench_package: str) -> set[str]:
+    """Which modules of the method the benchmark actually calls.
+
+    Transitively, and that is not a refinement but the difference between a useful
+    finding and one that gets ignored: one module of the method is routinely reached
+    through another that uses it, never named by the harness at all, and a
+    direct-import check would report it missing on every faithful repository there is.
+    """
+    method, bench = target / "src" / package, target / "src" / bench_package
+    if not method.is_dir() or not bench.is_dir():
+        return set()
+    paths = {f.stem: f for f in sorted(method.rglob("*.py")) if f.name != "__init__.py"}
+    stems = set(paths)
+    if not stems:
+        return set()
+    edges = {stem: method_imports(path, package, stems) for stem, path in paths.items()}
+
+    frontier: set[str] = set()
+    for file in sorted(bench.rglob("*.py")):
+        frontier |= method_imports(file, package, stems)
+    reached: set[str] = set()
+    while frontier:
+        stem = frontier.pop()
+        if stem in reached:
+            continue
+        reached.add(stem)
+        frontier |= edges.get(stem, set()) - reached
+    return reached
+
+
+def unreached_mathematics(modules: list[dict], declaration: dict,
+                          reached: set[str]) -> list[dict]:
+    """Modules carrying sections the arms declare, that the harness never calls.
+
+    This is the join nothing else in the flow crosses. `verify` reads the method's
+    provenance and the bench's declaration as two separate documents, and both can be
+    impeccable while an arm reimplements the equation instead of calling it: the module
+    still declares its sections, the arm still declares the same ones, and the two
+    never meet. That is not hypothetical — it is how an arm ran a whole campaign
+    computing a simplified form of a term it declared, with every check reporting clean.
+
+    It stays silent about mathematics no arm claims. A method may legitimately carry
+    more than a given comparison exercises, and a check that demanded every module be
+    called would fire on that and teach the reader to skip it.
+    """
+    arms = declaration.get("arms") or {}
+    claimants: dict[str, list[str]] = {}
+    for arm, spec in arms.items():
+        if not isinstance(spec, dict):
+            continue
+        for section in spec.get("sections", []) or []:
+            claimants.setdefault(str(section), []).append(str(arm))
+
+    unreached = []
+    for module in modules:
+        if Path(module["module"]).stem in reached:
+            continue
+        declared_by = sorted({arm for section in module.get("sections", [])
+                              for arm in claimants.get(str(section), [])})
+        if not declared_by:
+            continue
+        unreached.append({
+            "module": module["module"],
+            "sections": module.get("sections", []),
+            # What the arm claims to exercise and does not, named at the resolution
+            # the reader can act on: the equation, not the section it lives in.
+            "equations": module.get("equations", []),
+            "declaredBy": declared_by,
+        })
+    return unreached
+
+
+def benchmark_unfaithfulness(target: Path, name: str) -> list[dict]:
+    """The same crossing `verify` makes, for callers that do not enumerate modules."""
+    package = package_name(name)
+    bench_package = f"{package}_Benchmark"
+    root = target / "src" / package
+    declaration = None
+    for candidate in ("__init__.py", "config.py"):
+        declaration = declaration or read_declaration(
+            target / "src" / bench_package / candidate, BENCHMARK_DECLARATION)
+    if not root.is_dir() or not declaration or "__error__" in declaration:
+        return []
+    modules = []
+    for file in sorted(root.rglob("*.py")):
+        if file.name == "__init__.py":
+            continue
+        prov = read_provenance(file)
+        if prov is None or "__error__" in prov:
+            continue
+        modules.append({"module": str(file.relative_to(target)),
+                        "sections": prov.get("sections", []),
+                        "equations": prov.get("equations", [])})
+    return unreached_mathematics(
+        modules, declaration, benchmark_reach(target, package, bench_package))
 
 
 def backend_state(target: Path, name: str) -> dict:
@@ -987,14 +1266,19 @@ def cmd_probe(args) -> dict:
     else:
         next_step = "benchmark"
 
-    # The report is read before any of this is offered, and a report in drift is
-    # reason not to offer the full run. Every other check here answers whether the
-    # numbers would be sound; this one answers whether the document that carries
-    # them says what they say. A campaign measured in hours can otherwise print a
-    # wrong conclusion with the authority of thirty repetitions — and correcting it
-    # afterwards costs the campaign, not the sentence.
+    # Two things are read before the run is offered, and in this order.
+    #
+    # An arm that never calls the mathematics it declares comes first, because it is
+    # the only defect here that makes the run itself meaningless: every number would
+    # come from an arm that was not computing what the table says it computed, and no
+    # amount of repetitions fixes that. The report comes second — a report in drift
+    # describes a sound run wrongly, which costs a sentence rather than the campaign,
+    # but still must not be printed with the authority of thirty repetitions behind it.
+    unfaithful = benchmark_unfaithfulness(target, name)
     report = report_state(target, name, package_name(name))
-    if next_step in ("benchmark", "piloted") and report["status"] != "ok":
+    if next_step in ("benchmark", "piloted") and unfaithful:
+        next_step = "wiring-first"
+    elif next_step in ("benchmark", "piloted") and report["status"] != "ok":
         next_step = "report-first"
 
     proposal = wiring_proposal(target, name, baselines) if next_step == "benchmark" else None
@@ -1011,6 +1295,9 @@ def cmd_probe(args) -> dict:
         "notebook": str(notebook.relative_to(target)) if notebook.exists() else None,
         "results": state,
         "report": report,
+        # Named here as well as in `verify`, because this is where the run is offered
+        # and a reason not to offer it belongs beside the offer.
+        "unreachedModules": unfaithful,
         "nextStep": next_step,
         "wiring": proposal,
         # `probe` looks and reports; it never runs anything itself.
@@ -2067,9 +2354,44 @@ def report_state(target: Path, name: str, package: str) -> dict:
     ]
     inert = live.get("inertConclusions", [])
 
+    # A term correctly implemented and multiplied by something tiny produces a
+    # column of near-zeros that reads like a result. `contribution` on its own —
+    # the numerator, with no denominator beside it — cannot tell "the term
+    # commanded nothing" from "the term was scaled to nothing", and both print
+    # small. The rule to report each component's share existed in prose only, and
+    # a repository shipped the numerator alone with the verification green.
+    #
+    # What is checked is the declaration, never the meaning: nothing here may
+    # learn what a term of somebody's objective is called. The package names its
+    # components and the dimension that carries their share; this asks whether
+    # each one is actually recorded, and whether a package with more than one
+    # component declares a share at all.
+    components = contract.get("components") or {}
+    terms = list(components.get("terms") or [])
+    share = components.get("share")
+    unrecorded = [t for t in terms if t not in dimensions]
+    if share and share not in dimensions:
+        unrecorded.append(share)
+    if len(terms) > 1 and not share:
+        shareless = [{"terms": terms,
+                      "reason": "más de un término y ningún `share` declarado: la "
+                                "parte de cada uno no se puede leer del registro"}]
+    elif not components:
+        shareless = [{"terms": [],
+                      "reason": "el contrato no declara `components`; sin ellos nadie "
+                                "puede decir si un término no hizo nada o no pesó nada"}]
+    else:
+        shareless = []
+
     findings = {"proseNumbers": prose_numbers, "duplicated": duplicated,
                 "unframed": unframed, "unconcluded": unconcluded,
                 "undeclared": sorted(undeclared),
+                # The two halves of the share check. `componentsNotRecorded` is a
+                # declared term the record never carries; `componentsWithoutShare`
+                # is the absence of the declaration itself, reported as its own
+                # reason rather than passed over in silence.
+                "componentsNotRecorded": sorted(unrecorded),
+                "componentsWithoutShare": shareless,
                 # A measurement computed and never shown, and a figure that came
                 # out as a sentence describing a figure. Both are cells that ran
                 # clean and reported nothing, which is why no check that reads
@@ -2116,6 +2438,11 @@ def report_state(target: Path, name: str, package: str) -> dict:
                          # undeclared figure pass as an absent one.
                          "figures": sorted(drawings),
                          "dimensions": dimensions,
+                         # Echoed even when empty, for the same reason `figures`
+                         # is: "declares no components" must not read as "has one
+                         # term". `componentsWithoutShare` is what makes the empty
+                         # case cost something.
+                         "components": components,
                          "selections": fixed},
             "notebooks": [str(p.relative_to(target)) for p in notebooks],
             **findings}
@@ -2197,16 +2524,28 @@ def source_digest(target: Path, package: str) -> str:
     ruling — the ruling stores the revision's digest and `verify` recomputes it.
     """
     digest = hashlib.sha256()
-    # The benchmark package belongs here as much as the method's does, and leaving
-    # it out was a hole with a name: the module that renders the tables and writes
-    # the conclusions is exactly what a report's claims depend on. Without it, a
-    # conclusion could be corrected in code while the record kept asserting the old
-    # one and the notebook stayed `executed` — observed, not imagined.
-    roots = [target / "src" / package, target / "src" / f"{package}_Benchmark",
-             target / "tests"]
-    for root in roots:
-        if not root.is_dir():
-            continue
+    # All of `src/`, and nothing else. The boundary is the claim: a report depends
+    # on the code the run executes, and on nothing else.
+    #
+    # Naming the packages one by one failed in both directions, and both were
+    # observed rather than imagined. It left out prior work, which the benchmark
+    # imports — moving what an arm computes left every notebook reporting
+    # `executed` over stale numbers, and the separate session that goes and fixes
+    # prior work and comes back is precisely the case that triggers it. And it
+    # pulled in `tests/`, which no notebook imports: adding any test at all marked
+    # every report in the repository stale and asked for the campaign to be re-run
+    # to restamp a hash.
+    #
+    # The benchmark package stays in, now by living under `src/` rather than by
+    # being named, and for the same reason as before: it renders the tables and
+    # writes the conclusions. Leaving it out let a conclusion be corrected in code
+    # while the record kept asserting the old one, with everything green.
+    #
+    # `package` no longer selects what is covered. It stays in the signature
+    # because the two halves must be callable alike — see `report_digest.py` in
+    # the kit, which the forge tests against this one over the same tree.
+    root = target / "src"
+    if root.is_dir():
         for file in sorted(root.rglob("*.py")):
             if "__pycache__" in file.parts:
                 continue
@@ -2875,6 +3214,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "module": rel,
             "revision": prov.get("revision"),
             "sections": prov.get("sections", []),
+            "equations": prov.get("equations", []),
             "invariants": prov.get("invariants", []),
             "stale": bool(args.revision) and prov.get("revision") != args.revision,
         })
@@ -2914,6 +3254,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     for candidate in ("__init__.py", "config.py"):
         declaration = declaration or read_declaration(bench_root / candidate,
                                                       BENCHMARK_DECLARATION)
+    unreached: list[dict] = []
     if not bench_root.is_dir():
         benchmark = {"status": "absent", "package": f"src/{bench_package}"}
     elif declaration is None or "__error__" in (declaration or {}):
@@ -2930,13 +3271,21 @@ def cmd_verify(args: argparse.Namespace) -> dict:
                                key=lambda n: (len(n), n))
                    for arm, spec in arms.items()
                    if isinstance(spec, dict) and set(spec.get("sections", [])) & set(moved)}
+        unreached = unreached_mathematics(
+            modules, declaration,
+            benchmark_reach(target, package_name(name), bench_package))
+        stale_revision = bool(args.revision) and built_against != args.revision
         benchmark = {
-            "status": "stale" if (args.revision and built_against != args.revision)
-                      else "ok",
+            # An arm that never calls what it claims outranks an arm built against an
+            # older revision: the first says the experiment is not measuring what it
+            # reports, the second only that it was measured earlier. Both stay visible.
+            "status": "unfaithful" if unreached else "stale" if stale_revision else "ok",
             "package": f"src/{bench_package}",
             "revision": built_against,
+            "staleRevision": stale_revision,
             "changedSections": moved,
             "armsReached": reached or None,
+            "unreachedModules": unreached,
         }
 
     # The audit bridge: a defect in the mathematics is only reported when its
@@ -2975,7 +3324,11 @@ def cmd_verify(args: argparse.Namespace) -> dict:
 
     if not args.revision:
         fidelity_status = "unknown"
-    elif stale or missing_provenance or untested:
+    elif stale or missing_provenance or untested or unreached:
+        # A bench built against an older revision does not drift fidelity — that is a
+        # state, and the flow surfaces it as one. An arm claiming mathematics it never
+        # calls is a defect, and a defect that stays inside `benchmark` while the
+        # headline reads `ok` is the silence this check exists to break.
         fidelity_status = "drift"
     else:
         fidelity_status = "ok"
@@ -2991,6 +3344,8 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "staleReferences": stale_refs,
             "scaffoldGaps": scaffold_gaps(target, name),
         },
+        "priorWork": prior_work_state(target, package_name(name)),
+        "agreements": agreements_state(target, name),
         "fidelity": {
             "status": fidelity_status,
             "latestRevision": args.revision,

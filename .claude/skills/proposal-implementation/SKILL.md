@@ -194,6 +194,55 @@ proposal itself — that is `proposal-deliberation`.
 - The benchmark lives in its own package beside the method's, never inside it. A
   harness declares no `__provenance__` because it implements no equation, and
   stamping one on it to satisfy the check empties the check.
+- **An arm calls the method's modules; it never reimplements them.** The harness
+  implements no equation, so every equation it exercises comes from `src/<Package>/`
+  — and the arm that writes the term inline instead has silently forked the
+  formulation. The fork is invisible to everything else here: the module still
+  declares its sections, the arm still declares the same ones, and the two documents
+  are read separately and both come back clean. `verify` crosses that join and reports
+  `unreachedModules`; `probe` answers `wiring-first` rather than offering the run.
+
+  It goes wrong quietly and in one direction. The inline version starts as a
+  defensible simplification — a stabilizer dropped, a constant folded away, a
+  reduction that was equivalent at the time — and it is written down as a description
+  rather than as a finding. Then the revision moves, the module moves with it, and the
+  arm does not. What was a rounding difference becomes the whole term, and every
+  number in the campaign was measured on mathematics the proposal no longer states.
+- **The baseline is used as it is; the method is used as its proposal states.** These
+  are not in tension and must not be traded against each other. Prior work is never
+  edited to fit the comparison, and the new method is never held to the prior work's
+  simplifications to keep the two looking alike. Where computing each side as stated
+  makes something the arms share stop lining up, that is a real consequence to be
+  measured and declared — never a reason to compute the method differently from its
+  own formulation, because what the proposal adds is often exactly what the comparison
+  exists to show, and dropping it to keep the sides symmetric deletes the result.
+- **And a rule nothing verifies is a rule that quietly stops holding.** Prior work
+  sits under `src/` beside the method, and every other check walked past it: not the
+  structure, not the provenance, not the stamp that ties a report to its code. So it
+  could be edited in any session and the next one would open a repository that says
+  nothing happened. `priorWork` reports what changed, and reports it whatever the
+  answer, because a check that speaks only on failure teaches nobody what it watches.
+
+  **Report the fact, then say whether it reaches the run.** "Prior work changed" on
+  its own goes red for good in a repository that legitimately evolves, and a check
+  that is always red is one nobody reads. `reaching` is the half that decides
+  whether anyone must act: the benchmark imports from prior work — that is what
+  makes it a comparison — so a change to a module an arm imports moves what that arm
+  computes and the record is stale, while a change to a training loop the benchmark
+  never calls moves nothing here and may still matter to prior work's own notebooks.
+
+  Correcting prior work is a session of its own. This says the boundary was crossed;
+  it never crosses it.
+
+  **`priorWork` and the report's stamp will disagree, and the pairing is declared
+  rather than a defect.** The stamp covers all of `src/` on purpose: it is computed
+  twice, once by the notebook and once by the verification, and any rule subtler
+  than a directory is a rule two implementations can drift apart on — and a stamp
+  whose halves disagree protects nothing. So a change to prior work the benchmark
+  never imports marks every report stale while `reaching` stays empty. Both are
+  true and they answer different questions. Say the combination out loud: nothing
+  an arm computes moved, the numbers still stand, and the stamp needs a re-run to
+  agree with the tree. Left unsaid, somebody spends a campaign on a comment.
 - Two arms differ in what they compute **and in everything they touch**. Shared
   mutable state — running statistics, caches, how much of the generator each
   consumes — is a difference nobody declared, and a rung that ignores it credits a
@@ -294,6 +343,9 @@ method intact, which is the property the name is promising.
 | Plan reports `unclassified` or `conflicts` | Ask where those files belong; never guess |
 | `verify` reports structure drift | Report it as its own finding, ask before fixing |
 | `verify` reports stale modules | Report revision drift separately; ask before rewriting |
+| `verify` reports `unreachedModules` | An arm declares mathematics it never calls: report before any run |
+| `priorWork` reports `modified` | Say what changed and that correcting prior work belongs to a session of its own |
+| `priorWork` reports `reaching` | The change moves what an arm computes: the record is stale, report before any run |
 | Target outside `implementations/`, or dirty tree | Refuse and report the guard |
 
 ## Where to start: the repository is the memory
@@ -517,6 +569,27 @@ never happens. The items are what was settled: this figure, that instrument, thi
 proportion, that ordering. Then an agreement that never reached the code shows up as
 an unticked item instead of as nothing at all.
 
+**The checklist is a file, and `verify` reads it.** `<Name>/AGREEMENTS.md`, one
+markdown item per agreement, unticked when made and ticked when the code carries it:
+
+```markdown
+- [x] the ceiling stays at one and identical across arms
+- [ ] the figure shows the picture inline, not the path it wrote
+```
+
+It lives inside the product folder so it travels with the work, and it is read
+rather than remembered — the same rule as everything else here. `verify` reports
+`agreements` beside the other statuses: `open` with the items still outstanding,
+`settled`, or `absent` when the file does not exist. Absence is a state and not a
+failure, because a flow that never reached a gate has nothing to record; it is
+reported either way, since a check that speaks only on failure teaches nobody what
+it was watching. A bullet written without a checkbox comes back as `unparsed`,
+because an agreement in the wrong format is one nobody counts — the same failure
+the file exists to prevent, one level down.
+
+Append to it at every gate, before writing any code the gate authorized. And never
+report the work done while an item is open: say which, and why it is still open.
+
 **And when implementation collides with one, that is a gate, not a detail.** The
 collision is real and worth reporting — a package missing, a rendering that is far
 easier as text than as a picture, an interface that will not take the shape agreed.
@@ -679,6 +752,29 @@ The mathematics does not change — this is a change of backend, not of method �
 invariant test must still hold. Re-run the audit: a remedy established over the numpy
 sweep has not been established over the converted one.
 
+### `nextStep: "wiring-first"` — an arm declares mathematics it never calls
+
+`unreachedModules` names each module of the method that no arm reaches, directly or
+through another module, while at least one arm declares its sections. Each entry
+carries the equations it implements and the arms that claim them, because the section
+is where it lives and the equation is what the reader acts on.
+
+This blocks the run, and ahead of a report in drift. A wrong report describes a sound
+run and costs a sentence; this costs the campaign, because every number came from an
+arm that was not computing what the table says it computed.
+
+Report it as its own finding and say when it started being material. It is almost
+never a fresh mistake: the arm reimplemented the term when the inline version was
+equivalent, and a later revision moved the module and left the arm behind. So name
+both — the fork, and the change that turned it from a rounding difference into the
+whole term. **[GATE]** then propose pointing the arm at the module and ask, because
+correcting it changes what the next run measures.
+
+Read what the correction implies before proposing it. Computing the arm as its
+proposal states can change what the two arms share, and that consequence gets measured
+and declared — it is never a reason to keep computing the method the prior work's way.
+See the hard rule on using the baseline as it is and the method as its proposal states.
+
 ### `nextStep: "benchmark"` — propose the wiring, then train both and measure
 
 Only reachable once `backend.trainable` is true and a baseline exists.
@@ -785,6 +881,7 @@ metric is called in somebody's field.
     "objectiveEntry":  "tables.objective",
     "figures":         ["figures.curves", "latent.grid"],
     "dimensions":      {"targetAccuracy": "higher", "seconds": "lower"},
+    "components":      {"terms": ["supervised", "adaptation"], "share": "adaptationShare"},
     "selections":      {"SEEDS": "the pilot, a prefix of FULL_SEEDS"},
     "record":          "latent.json",
 }
@@ -821,6 +918,22 @@ behind it is right:
   emits a line of text like `<Figure size 640x480>`. The cell ran, raised nothing,
   produced an output, and anything reading `execution_count` and the error list
   calls it green. `verify` reports these as `unrendered` and `describedNotShown`.
+- **A term's share, not just its magnitude.** A term correctly implemented and
+  multiplied by something tiny produces a column of near-zeros that reads like a
+  result, and the numerator alone cannot tell *the term commanded nothing* from
+  *the term was scaled to nothing* — both print small. `components` names the
+  terms the arms combine and the dimension carrying their share; `verify` reports
+  a declared term the record never carries as `componentsNotRecorded`, and more
+  than one term with no share — or no declaration at all — as
+  `componentsWithoutShare`. This one was measured rather than argued: a repository
+  shipped `contribution` without its denominator and every other check was green,
+  and what the ratio then showed on the first run was the two families optimizing
+  objectives balanced an order of magnitude apart.
+
+  It is a declaration and not a list here for the same reason the metric names
+  are: nothing in this skill may learn what a term of somebody's objective is
+  called. The check asks whether each declared component is recorded, never what
+  it means.
 - **A conclusion that restates its table has not concluded.** `restated` crosses
   from a rendering to the sentence written about it — the one direction every other
   duplication check is blind to, because the second copy is not a rendering. It is
@@ -1157,8 +1270,13 @@ have to count rows to learn the answer.
 ## Output Contract
 
 Report: the bound revision, the target path, the migration commit hash (if
-any), the object → module map, the test result, and the three verification
-statuses (`structure`, `fidelity`, `audit`, `validation`) separately. For each finding give
+any), the object → module map, the test result, and the verification statuses
+(`structure`, `priorWork`, `agreements`, `fidelity`, `report`, `audit`,
+`validation`) separately. `priorWork` and `agreements` are reported whatever they
+say: that prior work is untouched, and that nothing was left open, are facts the
+reader is owed, and a check that only speaks up when something is wrong teaches
+nobody what it was watching. Never report the work done while `agreements` is
+`open` — name the items and say why they are still open. For each finding give
 its kind, the equations it touches, its status with the measured rate, and the
 remedy with the equations the remedy would change. State scope left out. Never
 claim verification passed without the `verify` output and a green suite, and
