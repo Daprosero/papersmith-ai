@@ -93,6 +93,37 @@ class CredentialListTests(unittest.TestCase):
         entries = ACCOUNTS.parse_credential_lines("# note\n\none, KEY1\ntwo, KEY2\n")
         self.assertEqual([e["label"] for e in entries], ["line 3", "line 4"])
 
+    def test_underscores_in_a_key_survive_undecoration(self) -> None:
+        # Markdown italicises with `_` and Kaggle tokens contain it. Stripping it
+        # turns a good key into a 401 that reads as an expired token and sends
+        # somebody to regenerate one that was working.
+        (entry,) = ACCOUNTS.parse_credential_lines("- **Daprosero**: `KGAT_86ed_f00`\n")
+        self.assertEqual((entry["username"], entry["key"]), ("Daprosero", "KGAT_86ed_f00"))
+
+    def test_reads_a_markdown_table(self) -> None:
+        entries = ACCOUNTS.parse_credential_lines(
+            "# Cuentas\n\n| Usuario | Token |\n|---|---|\n| one | KEY_1 |\n| two | KEY_2 |\n")
+        self.assertEqual([(e["username"], e["key"]) for e in entries],
+                         [("one", "KEY_1"), ("two", "KEY_2")])
+
+    def test_the_table_header_is_skipped_by_its_structure_not_by_its_words(self) -> None:
+        # The row before `|---|---|` is a header whatever it is called.
+        entries = ACCOUNTS.parse_credential_lines(
+            "| cuenta | api |\n|---|---|\n| one | KEY_1 |\n")
+        self.assertEqual([e["username"] for e in entries], ["one"])
+
+    def test_reads_a_bullet_list(self) -> None:
+        entries = ACCOUNTS.parse_credential_lines("## Kaggle\n\n- one: KEY_1\n* two, KEY_2\n")
+        self.assertEqual([(e["username"], e["key"]) for e in entries],
+                         [("one", "KEY_1"), ("two", "KEY_2")])
+
+    def test_a_md_is_read_as_a_list_like_a_txt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "API_Token.md"
+            path.write_text("| one | KEY_1 |\n", encoding="utf-8")
+            (entry,) = ACCOUNTS.read_credentials(str(path))
+            self.assertEqual(entry["username"], "one")
+
     def test_a_txt_holding_nothing_usable_is_refused_as_a_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "cuentas.txt"

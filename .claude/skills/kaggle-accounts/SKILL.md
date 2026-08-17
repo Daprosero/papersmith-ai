@@ -7,8 +7,8 @@ description: "Trigger: check that this project's Kaggle accounts actually authen
 
 Prove the project's Kaggle accounts work, and keep only the ones that do.
 
-The user supplies credentials by hand — a `kaggle.json`, or a `.txt` with one
-`username key` per line, left in `kaggle-inbox/`. That being manual is what this
+The user supplies credentials by hand — a `kaggle.json`, or a `.txt`/`.md` list
+with one `username key` per line, left in `kaggle-inbox/`. That being manual is what this
 is *for*. The work worth automating is not moving a file; it is answering **does
 this account actually authenticate**, which is a question only Kaggle can answer
 and one that stops being true over time.
@@ -65,7 +65,7 @@ One command does the whole thing: `validate`.
   working does not fail when it was added — it fails hours later in the middle
   of a run.
 - **Everything in `kaggle-inbox/` is taken in**, and only what authenticates is
-  stored. A `.txt` is judged line by line: the rows that pass are stored, the
+  stored. A list is judged line by line: the rows that pass are stored, the
   rows that fail are reported by line number, and one bad row never costs the
   rows around it.
 - A username already stored has its key replaced, which makes rotating an
@@ -106,11 +106,16 @@ and neither goes through the conversation:
 
 - **The inbox.** `kaggle-inbox/` at the repository root exists for exactly this
   and ships already ignored by git. Drop in a `kaggle.json` (kaggle.com →
-  Settings → API → *Create New Token*) or a `.txt` with one `username key` per
-  line — comma, colon, tab or space between them, `#` comments and blank lines
-  skipped. Then validate.
+  Settings → API → *Create New Token*) or a `.txt`/`.md` with one
+  `username key` per line — comma, colon, tab or space between them, `#`
+  headings and blank lines skipped, markdown bullets and table pipes stripped,
+  and a table's header row skipped by the `|---|` under it. Then validate.
 
-  A `.txt` is looked for **in the inbox only.** Reading every text file in
+  **Both fields on the same line.** Username on one line and token on the next
+  is not read as a pair: for a list of several accounts that shape is ambiguous,
+  and guessing at it would pair the wrong token to the wrong account in silence.
+
+  A `.txt` or `.md` list is looked for **in the inbox only.** Reading every text file in
   somebody's Downloads to see whether it happens to hold credentials is not a
   thing to do quietly; putting one in the inbox is what opts it in.
 
@@ -186,7 +191,7 @@ not just the one being added.
 | Nothing stored | Offer validate only; there is nothing to remove |
 | User picks validate | Run `validate`; report passed, failed, stored, rejected |
 | A stored account stops authenticating | Report it; do not remove it — that is the user's other option |
-| Some lines of a `.txt` fail | Store the rest; report each by line number, never the line |
+| Some lines of a list fail | Store the rest; report each by line number, never the line |
 | Kaggle unreachable while validating | Report it as unreachable, not as invalid; store nothing |
 | Nothing to validate | Say to drop a file in `kaggle-inbox/` and run again |
 | User picks remove | `list --json`, multi-select, then `remove` |

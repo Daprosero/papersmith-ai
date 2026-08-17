@@ -89,8 +89,9 @@ INBOX_DIR = REPO_ROOT / INBOX_NAME
 # somebody owns to see what is inside it is not a thing to do quietly.
 CREDENTIAL_SEARCH_DIRS = (str(INBOX_DIR), "~/Downloads", "~/Desktop", "~/.kaggle", ".")
 CREDENTIAL_GLOB = "kaggle*.json"
-# A hand-written list of accounts, looked for in the inbox only.
-INBOX_LIST_GLOB = "*.txt"
+# A hand-written list of accounts, looked for in the inbox only. `.md` because
+# that is what people actually reach for when writing a small table by hand.
+INBOX_LIST_GLOBS = ("*.txt", "*.md")
 
 
 class UsageError(Exception):
@@ -201,27 +202,55 @@ def save_store(store: dict, path: Path | None = None) -> None:
 #: typed by hand and a separator is not a thing to be strict about.
 CREDENTIAL_SEPARATOR = re.compile(r"[\s,;:]+")
 
+#: Markdown a hand-written list arrives wearing. Nobody writing accounts into a
+#: `.md` types bare lines — they type a bullet list or a table, and a parser that
+#: only understands bare lines calls all of it malformed.
+LIST_MARKER = re.compile(r"^[-*+]\s+")
+TABLE_SEPARATOR = re.compile(r"^\|?[\s:|-]+\|?$")
+#: Backticks and asterisks only. NOT `_`: markdown italicises with it, but
+#: Kaggle tokens contain it, and stripping it turns a good key into a 401 that
+#: looks like an expired token and sends somebody to regenerate a working one.
+#: Corrupting a secret quietly is worse than failing to undecorate it.
+MARKDOWN_DECORATION = re.compile(r"[`*]")
+
+
+def split_credential_line(line: str) -> list[str]:
+    """The fields on one line, whether it is bare, a bullet, or a table row."""
+    if "|" in line:
+        return [MARKDOWN_DECORATION.sub("", cell).strip()
+                for cell in line.strip().strip("|").split("|") if cell.strip()]
+    bare = LIST_MARKER.sub("", line.strip())
+    return [MARKDOWN_DECORATION.sub("", part) for part in CREDENTIAL_SEPARATOR.split(bare)]
+
 
 def parse_credential_lines(text: str) -> list[dict]:
     """One credential per line: `username <sep> key`.
 
-    Blank lines and `#` comments are skipped, so the list can be annotated —
-    which is what people do with a file that holds several accounts.
+    Blank lines and `#` headings are skipped, so a list can be annotated — which
+    is what people do with a file holding several accounts. Bullets and table
+    pipes are stripped, because a `.md` is where somebody writes a small table by
+    hand and being strict about its punctuation would reject the whole file.
 
     A malformed line becomes its own entry with a `problem` rather than an
     exception. The whole point of a list is that the good rows survive the bad
     ones; failing the file would throw away four working credentials because
     somebody left a stray word on line three.
     """
+    lines = text.splitlines()
     entries: list[dict] = []
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, line in enumerate(lines, start=1):
         stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+        if not stripped or stripped.startswith("#") or TABLE_SEPARATOR.match(stripped):
+            continue
+        # A row followed by `|---|---|` is the table's header, not an account.
+        # Read from the structure rather than guessed at from the words in it.
+        following = lines[number].strip() if number < len(lines) else ""
+        if "|" in stripped and TABLE_SEPARATOR.match(following) and "|" in following:
             continue
         entry: dict = {"label": f"line {number}", "username": None, "key": None,
                        "problem": None}
-        parts = CREDENTIAL_SEPARATOR.split(stripped)
-        if len(parts) == 2 and all(parts):
+        parts = [part for part in split_credential_line(stripped) if part]
+        if len(parts) == 2:
             entry["username"], entry["key"] = parts
         else:
             # Never quote the line back: half of it is a key, and echoing it
@@ -350,7 +379,7 @@ def discover_credentials(folders: list[str] | None = None) -> list[dict]:
         # folder that exists to say "this one is for you".
         patterns = [CREDENTIAL_GLOB]
         if directory.resolve() == INBOX_DIR.resolve():
-            patterns.append(INBOX_LIST_GLOB)
+            patterns.extend(INBOX_LIST_GLOBS)
         for path in sorted(p for pattern in patterns for p in directory.glob(pattern)):
             resolved = path.resolve()
             if resolved in seen or not path.is_file():
