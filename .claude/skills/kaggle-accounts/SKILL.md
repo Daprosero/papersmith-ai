@@ -137,9 +137,19 @@ and neither goes through the conversation:
   is not read as a pair: for a list of several accounts that shape is ambiguous,
   and guessing at it would pair the wrong token to the wrong account in silence.
 
-  A `.txt` or `.md` list is looked for **in the inbox only.** Reading every text file in
-  somebody's Downloads to see whether it happens to hold credentials is not a
-  thing to do quietly; putting one in the inbox is what opts it in.
+  A delimiter the user typed wins over whitespace, so a field may contain a
+  space. Splitting on every separator at once would mean no field ever could.
+
+  **A name with a space is the display name, not the username**, and the report
+  says exactly that rather than counting fields. The two sit next to each other
+  in Kaggle's own UI, so copying the wrong one is the ordinary mistake, not a
+  typo — and it cannot be repaired later, since a bearer token authenticates
+  without Kaggle ever saying whose it is. The username is the one in the profile
+  URL, `kaggle.com/<username>`.
+
+  A `.txt` or `.md` list is looked for **in the inbox only.** Reading every text
+  file in somebody's Downloads to see whether it happens to hold credentials is
+  not a thing to do quietly; putting one in the inbox is what opts it in.
 
 - **A terminal prompt**, for a token that lives in a password manager or a
   download that is long gone:
@@ -215,6 +225,7 @@ not just the one being added.
 | User picks nothing | Do nothing. Nothing was written and nothing was consumed |
 | User picks validate | Run `validate`; report passed, failed, stored, rejected |
 | A stored account stops authenticating | Report it; do not remove it — that is the user's other option |
+| A row names a display name (has a space) | Say it is the display name and point at the profile URL; never "wrong field count" |
 | Some lines of a list fail | Store the rest; report each by line number, never the line |
 | Kaggle unreachable while validating | Report it as unreachable, not as invalid; store nothing |
 | Nothing to validate | Say to drop a file in `kaggle-inbox/` and run again |

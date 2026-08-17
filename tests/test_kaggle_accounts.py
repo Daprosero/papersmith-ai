@@ -128,6 +128,33 @@ class CredentialListTests(unittest.TestCase):
             (entry,) = ACCOUNTS.read_credentials(str(path))
             self.assertEqual(entry["username"], "one")
 
+    def test_an_explicit_delimiter_beats_whitespace_so_a_field_can_hold_a_space(self) -> None:
+        # Splitting on every separator at once means a field can never contain
+        # one. The comma the person typed says where the boundary is.
+        for line, expected in (
+            ("Trayectoria XX, KEY_1", ["Trayectoria XX", "KEY_1"]),
+            ("| Trayectoria XX | KEY_1 |", ["Trayectoria XX", "KEY_1"]),
+            ("- Trayectoria XX: KEY_1", ["Trayectoria XX", "KEY_1"]),
+            ("Trayectoria XX\tKEY_1", ["Trayectoria XX", "KEY_1"]),
+        ):
+            self.assertEqual(ACCOUNTS.split_credential_line(line), expected, line)
+
+    def test_whitespace_still_splits_a_line_with_no_delimiter_in_it(self) -> None:
+        self.assertEqual(ACCOUNTS.split_credential_line("diego KEY_1"), ["diego", "KEY_1"])
+
+    def test_a_name_with_a_space_is_named_as_a_display_name_not_as_bad_punctuation(self) -> None:
+        # It is not a typo: it is the other name Kaggle shows, and telling
+        # somebody their fields are miscounted sends them to fix the wrong thing.
+        (entry,) = ACCOUNTS.parse_credential_lines("Trayectoria XX, KEY_1\n")
+        self.assertIsNone(entry["username"])
+        self.assertIn("display name", entry["problem"])
+        self.assertNotIn("field(s)", entry["problem"])
+
+    def test_a_rejected_username_never_carries_its_key_along(self) -> None:
+        (entry,) = ACCOUNTS.parse_credential_lines("Trayectoria XX, KEY_THAT_LEAKED\n")
+        self.assertIsNone(entry["key"])
+        self.assertNotIn("KEY_THAT_LEAKED", entry["problem"])
+
     def test_a_txt_holding_nothing_usable_is_refused_as_a_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "cuentas.txt"

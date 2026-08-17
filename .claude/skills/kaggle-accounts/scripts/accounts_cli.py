@@ -214,13 +214,47 @@ TABLE_SEPARATOR = re.compile(r"^\|?[\s:|-]+\|?$")
 MARKDOWN_DECORATION = re.compile(r"[`*]")
 
 
+def username_problem(username: str) -> str | None:
+    """Why this cannot be a Kaggle username, or `None` if it can.
+
+    A name with a space is the case worth naming out loud, because it is not a
+    typo — it is the **display name**, which is a different thing from the
+    username and sits right next to it in Kaggle's own UI. Reporting that as
+    "wrong number of fields" sends somebody to fix their punctuation when what
+    is wrong is which of two names they copied.
+
+    And it cannot be repaired later. A prefixed bearer token authenticates
+    without Kaggle ever saying who it belongs to, so a display name stored as a
+    username is simply wrong from then on, with nothing to catch it.
+    """
+    if " " in username:
+        return (f"{username!r} has a space, so it is a display name — Kaggle usernames "
+                "have none. Use the one in your profile URL (kaggle.com/<username>)")
+    if not USERNAME_PATTERN.match(username):
+        return f"{username!r} is not a usable Kaggle username"
+    return None
+
+
 def split_credential_line(line: str) -> list[str]:
-    """The fields on one line, whether it is bare, a bullet, or a table row."""
+    """The fields on one line, whether it is bare, a bullet, or a table row.
+
+    An explicit delimiter wins over whitespace, and that ordering is the whole
+    point. Splitting on any of them at once means a field can never *contain*
+    one — so `Trayectoria XX, KGAT_…` came apart into three fields and was
+    reported as malformed, when the person writing it had already said where the
+    boundary was by putting a comma there. A delimiter someone typed is a
+    statement; a space is a guess. Take the statement.
+    """
+    def clean(field: str) -> str:
+        return MARKDOWN_DECORATION.sub("", field).strip()
+
     if "|" in line:
-        return [MARKDOWN_DECORATION.sub("", cell).strip()
-                for cell in line.strip().strip("|").split("|") if cell.strip()]
+        return [clean(cell) for cell in line.strip().strip("|").split("|") if cell.strip()]
     bare = LIST_MARKER.sub("", line.strip())
-    return [MARKDOWN_DECORATION.sub("", part) for part in CREDENTIAL_SEPARATOR.split(bare)]
+    for delimiter in ("\t", ",", ";", ":"):
+        if delimiter in bare:
+            return [clean(field) for field in bare.split(delimiter)]
+    return [clean(field) for field in CREDENTIAL_SEPARATOR.split(bare)]
 
 
 def parse_credential_lines(text: str) -> list[dict]:
@@ -250,12 +284,15 @@ def parse_credential_lines(text: str) -> list[dict]:
         entry: dict = {"label": f"line {number}", "username": None, "key": None,
                        "problem": None}
         parts = [part for part in split_credential_line(stripped) if part]
-        if len(parts) == 2:
-            entry["username"], entry["key"] = parts
-        else:
+        if len(parts) != 2:
             # Never quote the line back: half of it is a key, and echoing it
             # into a report is the leak this whole flow is built to avoid.
-            entry["problem"] = (f"expected `username key`, found {len(parts)} field(s)")
+            entry["problem"] = f"expected `username key`, found {len(parts)} field(s)"
+        else:
+            username, key = parts
+            entry["problem"] = username_problem(username)
+            if entry["problem"] is None:
+                entry["username"], entry["key"] = username, key
         entries.append(entry)
     return entries
 
