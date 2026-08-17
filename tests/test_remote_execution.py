@@ -1169,6 +1169,52 @@ def _append_pending_submission(
     )
 
 
+class CrashingFetchAdapter(FakeAdapter):
+    """Simulates a process killed partway through `fetch()`: some bytes land
+    under `into`, then the call raises before returning anything — the exact
+    shape a real crash mid-download leaves behind.
+    """
+
+    def fetch(self, submission_id: str, into: Path) -> "ADAPTER.Fetched":
+        into.mkdir(parents=True, exist_ok=True)
+        (into / "partial.bin").write_text("only-partial-bytes", encoding="utf-8")
+        raise ConnectionError("simulated crash mid-fetch (test double)")
+
+
+class IncompleteFetchAdapter(FakeAdapter):
+    """`fetch()` returns normally but reports `complete=False` — the
+    backend's own signal that the result is not finished yet, distinct from
+    a crash: nothing raised, but there is nothing to rename either.
+    """
+
+    def fetch(self, submission_id: str, into: Path) -> "ADAPTER.Fetched":
+        into.mkdir(parents=True, exist_ok=True)
+        (into / "still-running.bin").write_text("not done yet", encoding="utf-8")
+        return ADAPTER.Fetched(path=into, complete=False, files=())
+
+
+class ScriptedListActiveAdapter(FakeAdapter):
+    """A `FakeAdapter` whose `list_active()` answers with a fixed,
+    test-controlled set of ids, independent of anything `submit()`/
+    `cancel()` did on this same instance.
+
+    `reconcile` tests need to control exactly what "the service" claims is
+    active without first driving every submission through this fake's own
+    `submit()` — the ledger lines those tests build directly already stand
+    in for "what was submitted"; this adapter only needs to stand in for
+    "what the service currently says is active".
+    """
+
+    def __init__(
+        self, worker_id: str = "w1", capacity: int = 2, active: tuple[str, ...] = ()
+    ) -> None:
+        super().__init__(worker_id=worker_id, capacity=capacity)
+        self._active = tuple(active)
+
+    def list_active(self, worker: str) -> list:
+        return list(self._active)
+
+
 class PollTests(unittest.TestCase):
     def test_poll_refuses_a_status_outside_the_five_state_vocabulary(self) -> None:
         class MisbehavingAdapter(FakeAdapter):
@@ -1234,6 +1280,342 @@ class StatusTests(unittest.TestCase):
             # fact rather than a rule its body would otherwise have to be
             # trusted to follow.
             self.assertNotIn("adapter", inspect.signature(REMOTE_CLI.cmd_status).parameters)
+
+
+class FetchTests(unittest.TestCase):
+    """`remote_cli.cmd_fetch()` — materialize-then-rename, and the
+    quarantine placement, FakeAdapter only.
+    """
+
+    def test_fetch_renames_into_place_and_appends_returned_only_on_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                ledger_path,
+                entrypoint="Notebooks/a.ipynb",
+                submission_id="s1",
+                worker="w1",
+                source_digest="d" * 64,
+            )
+
+            adapter = FakeAdapter(worker_id="w1", capacity=2)
+            # target.resolve(), not the raw tmp path — see the darwin
+            # /var/folders-is-a-symlink gotcha noted elsewhere in this file.
+            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+
+            result = REMOTE_CLI.cmd_fetch(
+                target=target,
+                entrypoint=notebook,
+                submission_id="s1",
+                dest=dest,
+                adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
+
+            self.assertTrue(result["complete"])
+            self.assertEqual(result["verdict"], "current")
+            self.assertEqual(result["path"], dest)
+            self.assertTrue((dest / "result.txt").exists())
+
+            partial_dest = dest.with_name(dest.name + REMOTE_CLI.PARTIAL_SUFFIX)
+            self.assertFalse(partial_dest.exists())
+
+            lines = ledger_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 2)
+            appended = json.loads(lines[-1])
+            self.assertEqual(appended["kind"], "returned")
+            self.assertEqual(appended["submissionId"], "s1")
+            self.assertEqual(appended["artifactPath"], str(dest))
+
+    def test_crash_mid_fetch_leaves_pending_and_appends_no_returned_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                ledger_path,
+                entrypoint="Notebooks/a.ipynb",
+                submission_id="s1",
+                worker="w1",
+                source_digest="d" * 64,
+            )
+            lines_before = ledger_path.read_text(encoding="utf-8")
+
+            adapter = CrashingFetchAdapter(worker_id="w1", capacity=2)
+            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+
+            with self.assertRaises(ConnectionError):
+                REMOTE_CLI.cmd_fetch(
+                    target=target,
+                    entrypoint=notebook,
+                    submission_id="s1",
+                    dest=dest,
+                    adapter=adapter,
+                    source_digest=lambda t, n: "d" * 64,
+                )
+
+            # No returned event: the ledger is byte-identical, and the
+            # submission still folds to pending.
+            self.assertEqual(ledger_path.read_text(encoding="utf-8"), lines_before)
+            state = LEDGER.fold(
+                ledger_path.read_text(encoding="utf-8").splitlines(), live_digest="d" * 64
+            )
+            self.assertEqual(state.entrypoints["Notebooks/a.ipynb"].state, "pending")
+
+            # The .partial/ directory holds exactly the crash's partial
+            # bytes and was never renamed into `dest`.
+            partial_dest = dest.with_name(dest.name + REMOTE_CLI.PARTIAL_SUFFIX)
+            self.assertTrue((partial_dest / "partial.bin").exists())
+            self.assertFalse(dest.exists())
+
+    def test_incomplete_fetch_renames_nothing_and_appends_no_returned_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                ledger_path,
+                entrypoint="Notebooks/a.ipynb",
+                submission_id="s1",
+                worker="w1",
+                source_digest="d" * 64,
+            )
+            lines_before = ledger_path.read_text(encoding="utf-8")
+
+            adapter = IncompleteFetchAdapter(worker_id="w1", capacity=2)
+            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+
+            result = REMOTE_CLI.cmd_fetch(
+                target=target,
+                entrypoint=notebook,
+                submission_id="s1",
+                dest=dest,
+                adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
+
+            self.assertFalse(result["complete"])
+            self.assertIsNone(result["event"])
+            self.assertEqual(ledger_path.read_text(encoding="utf-8"), lines_before)
+            self.assertFalse(dest.exists())
+
+    def test_observed_concurrency_reflects_actual_pending_not_the_grant(self) -> None:
+        """(packer attempts 2, service actually runs 1 → recorded 1):
+        `plan()` grants capacity for two concurrent jobs on this worker, but
+        only one is ever actually submitted and pending when its result
+        comes back — the service throttled below the grant, and
+        `observedConcurrency` is what makes that visible instead of assumed.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            adapter = FakeAdapter(worker_id="w1", capacity=2)
+            plan = PACKER.plan(
+                adapter=adapter,
+                worker_id="w1",
+                requested=2,
+                ledger_lines=[],
+                live_digest="d" * 64,
+            )
+            self.assertEqual(plan.granted, 2)
+
+            ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                ledger_path,
+                entrypoint="Notebooks/a.ipynb",
+                submission_id="s1",
+                worker="w1",
+                source_digest="d" * 64,
+            )
+
+            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+            result = REMOTE_CLI.cmd_fetch(
+                target=target,
+                entrypoint=notebook,
+                submission_id="s1",
+                dest=dest,
+                adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
+
+            self.assertEqual(result["event"]["observedConcurrency"], 1)
+            self.assertNotEqual(result["event"]["observedConcurrency"], plan.granted)
+
+    def test_stale_result_is_quarantined_and_never_enumerable_under_results_shards(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                ledger_path,
+                entrypoint="Notebooks/a.ipynb",
+                submission_id="s1",
+                worker="w1",
+                source_digest="digest-1",
+            )
+            _append_pending_submission(  # a resubmission after a source edit
+                ledger_path,
+                entrypoint="Notebooks/a.ipynb",
+                submission_id="s2",
+                worker="w1",
+                source_digest="digest-2",
+            )
+
+            # A real, enumerable tree standing in for what a shard reader
+            # walks in the actual target repository.
+            shards_dir = target.resolve() / "MIL-CREDA" / "Results" / "shards"
+            shards_dir.mkdir(parents=True)
+
+            adapter = FakeAdapter(worker_id="w1", capacity=2)
+            # s1's own late result naively requests a path INSIDE
+            # Results/shards/ — exactly what an unaware caller might ask
+            # for; the point of this test is that fetch overrides it anyway.
+            requested_dest = shards_dir / "a"
+
+            result = REMOTE_CLI.cmd_fetch(
+                target=target,
+                entrypoint=notebook,
+                submission_id="s1",
+                dest=requested_dest,
+                adapter=adapter,
+                source_digest=lambda t, n: "digest-2",
+            )
+
+            self.assertEqual(result["verdict"], "fromStaleSubmission")
+            quarantine_path = result["path"]
+            self.assertTrue((quarantine_path / "result.txt").exists())
+
+            # Fetched and parked, never discarded — but never at the path
+            # the caller asked for either.
+            self.assertFalse(requested_dest.exists())
+            self.assertNotIn(shards_dir, quarantine_path.parents)
+
+            # The placement is the guarantee, not a filter: walking the
+            # exact tree a shard reader enumerates finds nothing at all.
+            enumerated = list(shards_dir.rglob("*"))
+            self.assertEqual(enumerated, [])
+
+
+class ReconcileTests(unittest.TestCase):
+    def test_reconcile_reports_orphan_remote_without_fabricating_a_submitted_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                ledger_path,
+                entrypoint="Notebooks/a.ipynb",
+                submission_id="s1",
+                worker="w1",
+                source_digest="d" * 64,
+            )
+            before = ledger_path.read_bytes()
+
+            # The service reports an id (s2) this ledger never recorded.
+            adapter = ScriptedListActiveAdapter(worker_id="w1", active=("s1", "s2"))
+
+            result = REMOTE_CLI.cmd_reconcile(
+                target=target,
+                entrypoint=notebook,
+                worker="w1",
+                adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
+
+            self.assertEqual(result["orphanRemote"], ("s2",))
+            self.assertEqual(result["orphanLocal"], ())
+            self.assertEqual(result["resolved"], ())
+
+            # No submitted line was fabricated for s2 — never auto-adopted.
+            after = ledger_path.read_bytes()
+            self.assertEqual(before, after)
+
+    def test_reconcile_reports_orphan_local_and_resolve_appends_exactly_one_errored_event(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                ledger_path,
+                entrypoint="Notebooks/a.ipynb",
+                submission_id="s1",
+                worker="w1",
+                source_digest="d" * 64,
+            )
+
+            # The service no longer lists s1 at all.
+            adapter = ScriptedListActiveAdapter(worker_id="w1", active=())
+
+            reported = REMOTE_CLI.cmd_reconcile(
+                target=target,
+                entrypoint=notebook,
+                worker="w1",
+                adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
+            self.assertEqual(reported["orphanLocal"], ("s1",))
+            # Merely reporting (the default, resolve=False) appends nothing.
+            self.assertEqual(
+                len(ledger_path.read_text(encoding="utf-8").splitlines()), 1
+            )
+
+            resolved = REMOTE_CLI.cmd_reconcile(
+                target=target,
+                entrypoint=notebook,
+                worker="w1",
+                adapter=adapter,
+                resolve=True,
+                source_digest=lambda t, n: "d" * 64,
+            )
+            self.assertEqual(len(resolved["resolved"]), 1)
+            self.assertEqual(resolved["resolved"][0]["kind"], "errored")
+            self.assertEqual(resolved["resolved"][0]["submissionId"], "s1")
+            self.assertEqual(resolved["resolved"][0]["reason"], "not-found-at-service")
+
+            lines_after_resolve = ledger_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines_after_resolve), 2)
+            appended = json.loads(lines_after_resolve[-1])
+            self.assertEqual(appended["kind"], "errored")
+            self.assertEqual(appended["reason"], "not-found-at-service")
 
 
 if __name__ == "__main__":

@@ -346,7 +346,7 @@ def fold(lines: Iterable[str], live_digest: str | Callable[[], str]) -> LedgerSt
             # this fold's) — the line parsed cleanly, so it is not counted
             # as unreadable. It simply contributes no verdict.
             continue
-        verdicts[event["submissionId"]] = _currency_verdict(submission, latest, live)
+        verdicts[event["submissionId"]] = currency_verdict(submission, latest, live)
 
     entrypoints: dict[str, EntrypointState] = {}
     for entrypoint, submission in latest.items():
@@ -377,10 +377,17 @@ def fold(lines: Iterable[str], live_digest: str | Callable[[], str]) -> LedgerSt
     )
 
 
-def _currency_verdict(
+def currency_verdict(
     submission: Mapping[str, object], latest: Mapping[str, dict], live: str
 ) -> str:
     """The currency rule a `returned` event's submission is judged by.
+
+    Public — not just `fold()`'s own internal helper — because `fetch()`
+    (a later module) has to classify a submission's currency BEFORE a
+    `returned` event exists to fold over: the quarantine-vs-normal
+    placement decision has to be made at materialize time, from the same
+    rule, not a second reimplementation of it that could quietly drift from
+    this one.
 
     Both halves below are load-bearing ON THEIR OWN, not redundant with each
     other:

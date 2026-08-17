@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The CLI front door for forge-owned remote execution: `submit`, for now.
+"""The CLI front door for forge-owned remote execution.
 
 This module is the top of this skill's own dependency chain —
 `remote_cli -> packer -> ledger -> adapter` — and it is deliberately the
@@ -10,8 +10,17 @@ it (`packer.py`, `ledger.py`, `adapter.py`) stays blind to both concerns:
 they take paths, ids and dicts as arguments and never ask where an argument
 came from or what kind of file it names.
 
-`submit` is the only command implemented here so far. `status`, `poll`,
-`fetch` and `reconcile` are later, separate work.
+`submit`, `status`, `poll`, `fetch` and `reconcile` are the five commands.
+`status` reports the fold and calls no adapter at all — it never resolves
+anything, only renders what the ledger already says. `poll` and `fetch`
+call the adapter; `fetch` is the only command that ever writes an artifact
+to disk, and it does so through a materialize-then-rename sequence so a
+crash never leaves a false `returned` event behind (see `cmd_fetch`).
+`reconcile` compares the ledger against `adapter.list_active()` in both
+directions and reports the difference; it never auto-adopts a remote orphan
+and never auto-resolves a local one — `--resolve` is the one human-invoked
+exception, and even then it only ever appends `errored`, never `returned`
+or `submitted`.
 
 Run with any Python 3.10+ (stdlib-only):
     python3 -m unittest tests.test_remote_execution
@@ -21,6 +30,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Callable
@@ -122,6 +132,8 @@ NOTEBOOKS_DIRNAME = "Notebooks"
 NOTEBOOK_SUFFIX = ".ipynb"
 LEDGER_DIRNAME = ".remote-execution"
 LEDGER_FILENAME = "ledger.jsonl"
+QUARANTINE_DIRNAME = "quarantine"
+PARTIAL_SUFFIX = ".partial"
 
 
 def name_for(target: Path, entrypoint: str | Path) -> str:
@@ -246,7 +258,7 @@ def cmd_submit(
     notebook's own post-hoc marker or from any earlier call in this
     process — that freshness is the one thing that later lets the ledger's
     fold tell a current result from a stale one (see `ledger.py`'s
-    `_currency_verdict`). `packer.plan()` runs before `adapter.submit()` so
+    `currency_verdict`). `packer.plan()` runs before `adapter.submit()` so
     a submission is never attempted with no capacity clamp computed behind
     it. `ledger.append()` runs LAST, only after the adapter has already
     returned a real submission id — appending before that would risk
@@ -373,6 +385,204 @@ def cmd_poll(*, submission_id: str, adapter: "ADAPTER.Adapter") -> "ADAPTER.Stat
     return status
 
 
+def cmd_fetch(
+    *,
+    target: str | Path,
+    entrypoint: str | Path,
+    submission_id: str,
+    dest: str | Path,
+    adapter: "ADAPTER.Adapter",
+    source_digest: Callable[[Path, str], str] | None = None,
+) -> dict:
+    """Materialize one submission's result, quarantining it structurally
+    when it is not judged current — never discarding it, and never merging
+    it either.
+
+    Ordering is fixed, and every step past the first exists to protect the
+    one fact that matters most: a `returned` event must never be recorded
+    unless the artifact it names is actually, completely, on disk.
+
+    1. `LEDGER.currency_verdict()` — the SAME rule `fold()` itself uses for
+       an already-recorded `returned` event — is evaluated here BEFORE one
+       exists, against the ledger state read at the top of this call. A
+       `current` verdict uses the caller's own `dest`; anything else
+       (`fromStaleSubmission`) overrides `dest` entirely and reroutes to
+       `<target>/<Name>/.remote-execution/quarantine/<submissionId>/` — a
+       location structurally outside `Results/shards/`, the only tree a
+       shard reader ever enumerates. This is a placement decision made
+       once, not a filter a merge step could forget to apply later: the
+       artifact is never even offered a path a merge could reach.
+    2. `observed_concurrency` is read from the SAME pre-fetch ledger state,
+       via `LedgerState.pending_for()` — the count of this worker's pending
+       submissions at the instant just before this one is about to be
+       recorded as done, including itself. A grant the packer allowed for
+       N concurrent jobs, honored by the service for fewer than N, shows up
+       here as a smaller number than N — visible, not assumed.
+    3. `adapter.fetch()` is handed `<dest-or-quarantine>.partial/`, never
+       the final path directly. This is the ONE call in this whole function
+       that can fail partway through after having already written SOME
+       bytes to disk — a network drop, a killed process, a raised
+       exception from inside the adapter itself. Nothing before this line
+       has touched the filesystem at all, and nothing after it runs unless
+       this call returns normally.
+    4. `Fetched.complete` is checked before anything else happens. `False`
+       means the backend itself considers the result unfinished — this
+       function returns without renaming and without appending anything,
+       leaving the ledger's own state exactly as `pending` as it already
+       was, which is what makes a retry safe. Only `complete=True` reaches
+       the rename.
+    5. `os.replace()` — an atomic rename on the same filesystem — moves the
+       `.partial/` directory into its final name. This is the one line
+       that turns "an artifact happens to exist on disk" into "the
+       artifact is at the path this call promises callers", and it runs
+       before the ledger is touched.
+    6. `LEDGER.append()` runs LAST, only after the rename above has
+       already succeeded. If the process is killed at any point before
+       this line, the submission reads back as `pending` on the next fold
+       — retryable, never a false `returned` — because nothing before this
+       line ever wrote to the ledger.
+    """
+    target = Path(target).resolve()
+    if not target.is_dir():
+        raise RemoteCLIError(
+            f"--target {target} does not resolve to an existing directory"
+        )
+
+    name = name_for(target, entrypoint)
+    ledger_path = target / name / LEDGER_DIRNAME / LEDGER_FILENAME
+    ledger_lines: list[str] = []
+    if ledger_path.exists():
+        ledger_lines = ledger_path.read_text(encoding="utf-8").splitlines()
+
+    digest_fn = source_digest or _load_source_digest()
+    live = digest_fn(target, name)
+    state = LEDGER.fold(ledger_lines, live_digest=live)
+
+    submission = state.by_id.get(submission_id)
+    if submission is None:
+        raise RemoteCLIError(
+            f"no submitted event on record for submission {submission_id!r}"
+        )
+
+    verdict = LEDGER.currency_verdict(submission, state.latest, live)
+    if verdict == "current":
+        final_dest = Path(dest).resolve()
+    else:
+        final_dest = target / name / LEDGER_DIRNAME / QUARANTINE_DIRNAME / submission_id
+
+    observed_concurrency = state.pending_for(submission["worker"])
+
+    partial_dest = final_dest.with_name(final_dest.name + PARTIAL_SUFFIX)
+    fetched = adapter.fetch(submission_id, partial_dest)
+
+    if not fetched.complete:
+        # Not renamed, not recorded: the ledger's own state stays exactly
+        # `pending`, which is the one state a retry can safely start from.
+        return {
+            "verdict": verdict,
+            "complete": False,
+            "path": partial_dest,
+            "event": None,
+        }
+
+    final_dest.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(str(partial_dest), str(final_dest))
+
+    event = LEDGER.returned_event(
+        submission_id=submission_id,
+        artifact_path=str(final_dest),
+        observed_concurrency=observed_concurrency,
+    )
+    LEDGER.append(ledger_path, event)
+
+    return {
+        "verdict": verdict,
+        "complete": True,
+        "path": final_dest,
+        "event": event,
+    }
+
+
+def cmd_reconcile(
+    *,
+    target: str | Path,
+    entrypoint: str | Path,
+    worker: str,
+    adapter: "ADAPTER.Adapter",
+    resolve: bool = False,
+    source_digest: Callable[[Path, str], str] | None = None,
+) -> dict:
+    """Compare the ledger's pending submissions for `worker` against what
+    `adapter.list_active(worker)` reports right now, in both directions,
+    and report the difference. Never resolves either side on its own
+    initiative.
+
+    An id `list_active()` reports that this ledger has no `submitted` event
+    for at all is `orphanRemote`. It is reported ONLY — never cancelled
+    (this function never calls `adapter.cancel()`, the same restraint
+    `fold()`'s own `staleInFlight` handling already applies to a source
+    that moved out from under a pending submission) and NEVER auto-adopted
+    by fabricating a `submitted` line for it. Adoption would have to invent
+    a `sourceDigest` this function has no way to know, and `sourceDigest`
+    is the entire basis the fold's currency rule later judges a result by
+    — a fabricated one would turn every future currency verdict for that id
+    into a guess wearing the shape of a fact. Reporting the orphan and
+    leaving the ledger untouched is the guarantee-preserving choice;
+    adoption is the guarantee-destroying one.
+
+    A `pending` submission the ledger still expects that `list_active()` no
+    longer lists is `orphanLocal`. It is always reported, regardless of
+    `resolve`. Only when `resolve=True` — reserved for a human explicitly
+    passing `--resolve`, never set by any automated caller in this skill —
+    does this function append one `errored` event per orphan, with
+    `reason="not-found-at-service"`, through the exact same
+    `LEDGER.append()` path every other terminal event goes through.
+    `resolve=False`, the default, appends nothing at all: an orphan-remote
+    id is reported without a single ledger write, on every call.
+    """
+    target = Path(target).resolve()
+    if not target.is_dir():
+        raise RemoteCLIError(
+            f"--target {target} does not resolve to an existing directory"
+        )
+
+    name = name_for(target, entrypoint)
+    ledger_path = target / name / LEDGER_DIRNAME / LEDGER_FILENAME
+    ledger_lines: list[str] = []
+    if ledger_path.exists():
+        ledger_lines = ledger_path.read_text(encoding="utf-8").splitlines()
+
+    digest_fn = source_digest or _load_source_digest()
+    live = digest_fn(target, name)
+    state = LEDGER.fold(ledger_lines, live_digest=live)
+
+    remote_active = set(adapter.list_active(worker))
+    local_pending = {
+        submission["submissionId"]
+        for submission in state.latest.values()
+        if submission.get("worker") == worker
+        and state.entrypoints[submission["entrypoint"]].state == "pending"
+    }
+
+    orphan_remote = tuple(sorted(remote_active - local_pending))
+    orphan_local = tuple(sorted(local_pending - remote_active))
+
+    resolved_events: list[dict] = []
+    if resolve:
+        for submission_id in orphan_local:
+            event = LEDGER.errored_event(
+                submission_id=submission_id, reason="not-found-at-service"
+            )
+            LEDGER.append(ledger_path, event)
+            resolved_events.append(event)
+
+    return {
+        "orphanRemote": orphan_remote,
+        "orphanLocal": orphan_local,
+        "resolved": tuple(resolved_events),
+    }
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="remote_cli",
@@ -407,6 +617,38 @@ def _build_parser() -> argparse.ArgumentParser:
         "--backend",
         required=True,
         help="the name a concrete adapter was registered under via adapter.register()",
+    )
+
+    fetch = subparsers.add_parser(
+        "fetch",
+        help="materialize one submission's result, quarantining it when it is not current",
+    )
+    fetch.add_argument("--target", required=True, type=Path)
+    fetch.add_argument("--entrypoint", required=True, type=Path)
+    fetch.add_argument("--submission-id", required=True)
+    fetch.add_argument("--dest", required=True, type=Path)
+    fetch.add_argument(
+        "--backend",
+        required=True,
+        help="the name a concrete adapter was registered under via adapter.register()",
+    )
+
+    reconcile = subparsers.add_parser(
+        "reconcile",
+        help="compare the ledger against the adapter's list_active() in both directions",
+    )
+    reconcile.add_argument("--target", required=True, type=Path)
+    reconcile.add_argument("--entrypoint", required=True, type=Path)
+    reconcile.add_argument("--worker", required=True)
+    reconcile.add_argument(
+        "--backend",
+        required=True,
+        help="the name a concrete adapter was registered under via adapter.register()",
+    )
+    reconcile.add_argument(
+        "--resolve",
+        action="store_true",
+        help="human-invoked only: append errored(reason=not-found-at-service) for each orphanLocal id",
     )
 
     return parser
@@ -478,6 +720,60 @@ def main(argv: list[str] | None = None) -> int:
                 sort_keys=True,
             )
         )
+        return 0
+
+    if args.command == "fetch":
+        try:
+            adapter_cls = ADAPTER.resolve(args.backend)
+        except KeyError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+        try:
+            result = cmd_fetch(
+                target=args.target,
+                entrypoint=args.entrypoint,
+                submission_id=args.submission_id,
+                dest=args.dest,
+                adapter=adapter_cls(),
+            )
+        except (RemoteCLIError, LEDGER.LedgerError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+        print(
+            json.dumps(
+                {
+                    "verdict": result["verdict"],
+                    "complete": result["complete"],
+                    "path": str(result["path"]),
+                    "event": result["event"],
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    if args.command == "reconcile":
+        try:
+            adapter_cls = ADAPTER.resolve(args.backend)
+        except KeyError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+        try:
+            result = cmd_reconcile(
+                target=args.target,
+                entrypoint=args.entrypoint,
+                worker=args.worker,
+                adapter=adapter_cls(),
+                resolve=args.resolve,
+            )
+        except (RemoteCLIError, LEDGER.LedgerError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+        print(json.dumps(result, sort_keys=True))
         return 0
 
     return 1

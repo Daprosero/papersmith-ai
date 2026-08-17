@@ -1,6 +1,6 @@
 ---
 name: remote-execution
-description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill so far ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry, no concrete backend yet), the packer's capacity clamp, and the CLI's `submit` command with its path guard (the sole holder of file-kind policy for what may run remotely). No concrete service adapter and no status/poll/fetch/reconcile CLI commands exist yet; they land in later, separate commits. Stdlib-only, no venv."
+description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill so far ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry, no concrete backend yet), the packer's capacity clamp, and the full `remote_cli` front door: `submit` (with its path guard, the sole holder of file-kind policy for what may run remotely), `status` (reports the fold; calls no adapter), `poll` (refuses a Status outside the seam's five-value vocabulary), `fetch` (materialize-then-rename, quarantining a fromStaleSubmission result outside Results/shards/, never merged), and `reconcile` (compares the ledger against list_active() in both directions; never auto-adopts an orphanRemote id, --resolve is the one human-invoked path to closing an orphanLocal one). No concrete service adapter exists yet; that is later, separate work. Stdlib-only, no venv."
 ---
 
 # Remote Execution
@@ -10,8 +10,9 @@ job is to make sure that fact survives being written, to derive current
 state from the record rather than store it separately, and to decide how
 much work a worker is asked to take on at once without either side of that
 decision asserting the other's fact. Nothing here yet talks to a real
-service, or exposes a command a user would invoke directly — those are the
-adapter and the CLI, both still to come.
+service — that is a concrete adapter, still to come — but the CLI a user
+would invoke directly (`submit`, `status`, `poll`, `fetch`, `reconcile`) is
+in place today, exercised against a `FakeAdapter` only.
 
 ## Current Scope
 
@@ -41,25 +42,59 @@ Three modules exist so far, each service-blind and stdlib-only:
   minimum: `plan()` returns `requested`, `cap`, `inFlight` and `granted` as
   four separate numbers, plus `inFlightSource` recording whether `inFlight`
   came from the live service or fell back to the ledger.
-- `scripts/remote_cli.py` — the CLI front door. `submit` guards the
-  entrypoint, computes a fresh `source_digest()`, calls `packer.plan()`,
-  hands the job to a registered adapter's `submit()`, and appends the
-  resulting `submitted` event to the ledger — in that order. `guard_entrypoint()`
-  is the ONLY place in this whole skill that holds an opinion about what
-  KIND of file may run remotely: `Path.resolve()` first, then refuse
-  anything whose resolved path does not stay under
-  `<target>/<Name>/Notebooks/` and end `.ipynb`. Everything below the guard
-  (`Job.entrypoint`, the ledger's `entrypoint` field, the fold's indices)
-  stays deliberately blind to that question; widening this one guard, not
-  reworking any of those, is how a future non-notebook workload becomes
-  admissible. `status`, `poll`, `fetch` and `reconcile` are not implemented
-  yet.
+- `scripts/remote_cli.py` — the CLI front door, five commands.
+  - `submit` guards the entrypoint, computes a fresh `source_digest()`,
+    calls `packer.plan()`, hands the job to a registered adapter's
+    `submit()`, and appends the resulting `submitted` event to the ledger —
+    in that order. `guard_entrypoint()` is the ONLY place in this whole
+    skill that holds an opinion about what KIND of file may run remotely:
+    `Path.resolve()` first, then refuse anything whose resolved path does
+    not stay under `<target>/<Name>/Notebooks/` and end `.ipynb`.
+    Everything below the guard (`Job.entrypoint`, the ledger's `entrypoint`
+    field, the fold's indices) stays deliberately blind to that question;
+    widening this one guard, not reworking any of those, is how a future
+    non-notebook workload becomes admissible.
+  - `status` folds the ledger and reports per-entrypoint state, what is
+    `staleInFlight`, what is quarantined, and `unreadableLines`. It accepts
+    no `adapter` parameter at all — a structural fact, not a convention —
+    so it reports and never resolves anything.
+  - `poll` asks the adapter for one submission's status and refuses a
+    `Status.state` outside the seam's own five-value vocabulary itself,
+    rather than trusting every adapter to have gone through
+    `ADAPTER.Status.__post_init__`'s own validation.
+  - `fetch` materializes into `<dest>.partial/` and renames into place only
+    on `Fetched.complete == True`; only a completed rename appends a
+    `returned` event, so a crash mid-fetch leaves the submission `pending`
+    — retryable, never a false `returned`. `LEDGER.currency_verdict()` (the
+    same rule `fold()` itself uses) is evaluated before the rename: a
+    `fromStaleSubmission` result overrides the caller's requested `dest`
+    entirely and is fetched into
+    `<target>/<Name>/.remote-execution/quarantine/<submissionId>/` instead
+    — structurally outside `Results/shards/`, so it is parked and
+    auditable, never merged. Every `returned` event also carries
+    `observedConcurrency`: `LedgerState.pending_for(worker)` read from the
+    ledger state at the top of the call, so a service throttling below the
+    packer's own grant becomes a visible, different number instead of an
+    assumed one.
+  - `reconcile` compares `adapter.list_active(worker)` against the ledger's
+    own pending set for that worker, in both directions, and only ever
+    reports the difference. An id the service has that the ledger lacks is
+    `orphanRemote` — reported, never auto-cancelled and never auto-adopted,
+    because adopting would fabricate a `submitted` line with no digest, and
+    the digest is the entire basis a later result is judged current by. A
+    `pending` ledger submission the service no longer lists is
+    `orphanLocal` — reported, and `--resolve` (human-invoked only, default
+    `False`) is the one path that appends `errored(reason="not-found-at-service")`
+    for it.
+  - `name_for(target, entrypoint)` derives `<Name>` from a resolved path the
+    same way `guard_entrypoint()` does, factored out so `fetch`'s quarantine
+    path and `reconcile`'s ledger selection reuse the one derivation instead
+    of each growing a second copy that could quietly disagree with `submit`'s.
 
-Not implemented yet: a concrete backend adapter (for example, one talking
-to an actual service), and the `remote_cli` status/poll/fetch/reconcile
-commands a user would actually invoke. Reading the ledger back today, or
-asking for a capacity plan directly, both mean calling into `ledger.py` or
-`packer.py` themselves; only `submit` has a command-line front door so far.
+Not implemented yet: a concrete backend adapter — for example, one talking
+to an actual service. Every `remote_cli` command a user would invoke
+(`submit`, `status`, `poll`, `fetch`, `reconcile`) exists today, exercised
+against a `FakeAdapter` only.
 
 ## Why append, not a status record
 
@@ -124,3 +159,11 @@ Requires Python 3.10+.
 Code is forge-owned and lives here, inside the skill. Data is target-owned:
 `<target>/<Name>/.remote-execution/ledger.jsonl`, inside the target's own git
 checkout, alongside the repository whose submissions it records.
+
+## Quarantine location
+
+`<target>/<Name>/.remote-execution/quarantine/<submissionId>/` — a
+`fromStaleSubmission` result's fetch destination, structurally outside
+`Results/shards/`. This is what makes the non-merging structural rather than
+procedural: the tree a shard reader enumerates never contains this path, so
+there is nothing a filter could forget to apply.
