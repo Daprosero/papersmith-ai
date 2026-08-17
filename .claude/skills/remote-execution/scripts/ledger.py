@@ -240,6 +240,26 @@ class LedgerState:
         }
         return tuple(sorted(stale_entrypoints))
 
+    def pending_for(self, worker: str) -> int:
+        """Count entrypoints whose LATEST submission targets `worker` and is
+        still pending.
+
+        This is what the packer's capacity clamp (a later module) treats as
+        concurrent work already committed to `worker` before granting any
+        more. Only an entrypoint's latest submission is ever considered —
+        `self.latest` already keeps just that one per entrypoint, so an
+        older, superseded submission to this same worker can never be
+        double-counted here even if, taken in isolation, it is itself still
+        pending: it stopped being what this entrypoint's state answers for
+        the moment a newer submission superseded it.
+        """
+        return sum(
+            1
+            for submission in self.latest.values()
+            if submission.get("worker") == worker
+            and self.entrypoints[submission["entrypoint"]].state == "pending"
+        )
+
 
 def fold(lines: Iterable[str], live_digest: str | Callable[[], str]) -> LedgerState:
     """Derive current per-entrypoint state from the append-only log.

@@ -1,30 +1,52 @@
 ---
 name: remote-execution
-description: "Trigger: durable record of what a repository has submitted to a remote worker, and what came back. This commit lands only the ledger's append path — the append-only log a submission is recorded into, with the write-integrity checks that make a torn or lost line detectable. Packing, the service adapter, and the submit/status/fetch CLI are not part of this skill yet; they land in later, separate commits. Stdlib-only, no venv."
+description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill so far ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry, no concrete backend yet), and the packer's capacity clamp. No concrete service adapter and no submit/status/fetch CLI exist yet; they land in later, separate commits. Stdlib-only, no venv."
 ---
 
-# Remote Execution — Ledger
+# Remote Execution
 
 A submission to a remote worker is a fact once it happens, and this skill's
-one job right now is to make sure that fact survives being written. Nothing
-here yet talks to a service, packs a request, or exposes a command a user
-would invoke directly — this is the durable record those later pieces will
-write to and read from.
+job is to make sure that fact survives being written, to derive current
+state from the record rather than store it separately, and to decide how
+much work a worker is asked to take on at once without either side of that
+decision asserting the other's fact. Nothing here yet talks to a real
+service, or exposes a command a user would invoke directly — those are the
+adapter and the CLI, both still to come.
 
 ## Current Scope
 
-Only `scripts/ledger.py` exists so far:
+Three modules exist so far, each service-blind and stdlib-only:
 
-- `append(path, event)` — appends one JSON-encoded event as a single line to
-  `<target>/<Name>/.remote-execution/ledger.jsonl`. The file is opened
-  `O_APPEND`; a line, once written, is never rewritten or deleted.
-- `submitted_event(...)`, `returned_event(...)`, `errored_event(...)` — build
+- `scripts/ledger.py` — `append(path, event)` appends one JSON-encoded event
+  as a single line to `<target>/<Name>/.remote-execution/ledger.jsonl`. The
+  file is opened `O_APPEND`; a line, once written, is never rewritten or
+  deleted (see below for why an append can be trusted at all).
+  `fold(lines, live_digest)` derives current per-entrypoint state from that
+  log — `pending | returned | errored`, whether a pending submission is
+  `staleInFlight`, and which `returned` results are `fromStaleSubmission` —
+  the currency rule that tells a fresh result from a stale one.
+  `submitted_event(...)`, `returned_event(...)`, `errored_event(...)` build
   the three event kinds this ledger records, with the field names and
   truncation rules this schema fixes (see below).
+- `scripts/adapter.py` — the `Adapter` ABC every backend-specific module
+  must satisfy in full, the frozen data shapes that cross the seam
+  (`Worker`, `Job`, `Submission`, `Status`, `Fetched`), and a name-to-class
+  registry a caller can select a backend by without importing it directly.
+  No concrete backend implements this ABC yet; this skill's own test suite
+  stands a `FakeAdapter` in for one.
+- `scripts/packer.py` — `plan(...)` clamps a repository's declared
+  per-worker request to the cap the adapter states through `workers()`,
+  deducting what is already committed (from the ledger's fold, refined by
+  `list_active()` when the adapter answers). The clamp is never a silent
+  minimum: `plan()` returns `requested`, `cap`, `inFlight` and `granted` as
+  four separate numbers, plus `inFlightSource` recording whether `inFlight`
+  came from the live service or fell back to the ledger.
 
-Deriving "what is the current state of this entrypoint" — folding the log
-into a verdict, telling a fresh result from a stale one — is not implemented
-yet. Reading this ledger back today means reading its raw lines.
+Not implemented yet: a concrete backend adapter (for example, one talking
+to an actual service), and the `remote_cli` submit/status/poll/fetch/
+reconcile commands a user would actually invoke. Reading the ledger back
+today, or asking for a capacity plan, both mean calling into these modules
+directly; neither yet has a command-line front door.
 
 ## Why append, not a status record
 
@@ -74,10 +96,10 @@ convention:
 | `errored` | `ts`, `submissionId`, `reason` (truncated to 512 chars) |
 
 `entrypoint` is the field name for the thing executed remotely — not
-`notebook`. This schema and the adapter seam a later commit adds both use the
-same name for it, and neither carries a format opinion about what it points
-to; that policy question belongs to the CLI that submits, not to this
-record.
+`notebook`. This schema and the adapter seam (`scripts/adapter.py`) both use
+the same name for it, and neither carries a format opinion about what it
+points to; that policy question belongs to the CLI that submits, not to
+this record.
 
 ## Environment
 

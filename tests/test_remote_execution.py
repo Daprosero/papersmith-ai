@@ -20,6 +20,7 @@ import inspect
 import json
 import multiprocessing
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -41,6 +42,22 @@ assert ADAPTER_SPEC and ADAPTER_SPEC.loader
 ADAPTER = importlib.util.module_from_spec(ADAPTER_SPEC)
 sys.modules[ADAPTER_SPEC.name] = ADAPTER
 ADAPTER_SPEC.loader.exec_module(ADAPTER)
+
+# Loaded AFTER ledger.py and adapter.py above, and under the exact module
+# names packer.py's own sibling-loader looks for first: packer.py's
+# `_load_sibling` checks `sys.modules` before loading anything itself, so by
+# the time its top-level code runs here, it reuses these exact LEDGER/ADAPTER
+# module objects rather than exec'ing either file a second time. That reuse
+# is what lets `isinstance(fake_adapter, ADAPTER.Adapter)` and
+# `isinstance(fake_adapter, PACKER.ADAPTER.Adapter)` agree below — two
+# separately exec'd copies of adapter.py would otherwise define two distinct
+# `Adapter` classes with the same name.
+PACKER_SCRIPT = REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/packer.py"
+PACKER_SPEC = importlib.util.spec_from_file_location("remote_execution_packer", PACKER_SCRIPT)
+assert PACKER_SPEC and PACKER_SPEC.loader
+PACKER = importlib.util.module_from_spec(PACKER_SPEC)
+sys.modules[PACKER_SPEC.name] = PACKER
+PACKER_SPEC.loader.exec_module(PACKER)
 
 
 def _sample_submitted_event(**overrides: object) -> dict:
@@ -646,6 +663,246 @@ class AdapterSeamTests(unittest.TestCase):
             state = LEDGER.fold(lines, live_digest="digest-1")
             self.assertEqual(state.entrypoints[str(job.entrypoint)].state, "returned")
             self.assertEqual(state.verdicts[submission.id], "current")
+
+
+class UnreachableAdapter(FakeAdapter):
+    """A `FakeAdapter` whose `list_active()` simulates the service being
+    unreachable, so `plan()`'s ledger-fallback path is exercised on
+    purpose rather than only ever taking the `list_active` branch.
+    """
+
+    def list_active(self, worker: str) -> list:
+        raise ConnectionError("service unreachable (test double)")
+
+
+def _pending_submission_line(*, entrypoint: str, submission_id: str, worker: str) -> str:
+    """One `submitted` line with no terminal event — still pending."""
+    return json.dumps(
+        LEDGER.submitted_event(
+            entrypoint=entrypoint,
+            source_digest="digest-1",
+            submission_id=submission_id,
+            worker=worker,
+            requested_capacity=1,
+            granted_capacity=1,
+        ),
+        sort_keys=True,
+    )
+
+
+class PackerTests(unittest.TestCase):
+    """Clamp arithmetic and its visibility.
+
+    `FakeAdapter`'s `submit()` marks a submission `complete` immediately, so
+    it never populates its own `list_active()` on its own — that is
+    deliberate here, not a gap: the in-flight numbers below come from the
+    ledger's own pending submissions (built directly with
+    `LEDGER.submitted_event`, no terminal event appended), which is exactly
+    the case `plan()`'s `pending_for()` call exists to cover, and
+    `UnreachableAdapter` exercises the `list_active`-raises fallback
+    separately from that.
+    """
+
+    def test_plan_clamps_requested_above_the_adapter_cap(self) -> None:
+        adapter = FakeAdapter(worker_id="w1", capacity=2)
+        result = PACKER.plan(
+            adapter=adapter,
+            worker_id="w1",
+            requested=5,
+            ledger_lines=[],
+            live_digest="digest-1",
+        )
+        self.assertEqual(result.requested, 5)
+        self.assertEqual(result.cap, 2)
+        self.assertEqual(result.in_flight, 0)
+        self.assertEqual(result.granted, 2)
+
+    def test_plan_grants_the_full_request_when_cap_exceeds_it(self) -> None:
+        adapter = FakeAdapter(worker_id="w1", capacity=5)
+        result = PACKER.plan(
+            adapter=adapter,
+            worker_id="w1",
+            requested=2,
+            ledger_lines=[],
+            live_digest="digest-1",
+        )
+        self.assertEqual(result.requested, 2)
+        self.assertEqual(result.cap, 5)
+        self.assertEqual(result.granted, 2)
+
+    def test_plan_saturates_grant_to_zero_when_in_flight_meets_the_cap(self) -> None:
+        adapter = UnreachableAdapter(worker_id="w1", capacity=2)
+        lines = [
+            _pending_submission_line(entrypoint="Notebooks/a.ipynb", submission_id="s1", worker="w1"),
+            _pending_submission_line(entrypoint="Notebooks/b.ipynb", submission_id="s2", worker="w1"),
+        ]
+        result = PACKER.plan(
+            adapter=adapter,
+            worker_id="w1",
+            requested=5,
+            ledger_lines=lines,
+            live_digest="digest-1",
+        )
+        self.assertEqual(result.cap, 2)
+        self.assertEqual(result.in_flight, 2)
+        self.assertEqual(result.granted, 0)
+        self.assertEqual(result.in_flight_source, "ledger")
+
+    def test_granted_never_goes_negative_when_in_flight_exceeds_the_cap(self) -> None:
+        # An edge case that should not arise in ordinary operation (more
+        # pending submissions than the cap allows), but the clamp still has
+        # to answer it without a negative "grant" leaking downstream.
+        adapter = UnreachableAdapter(worker_id="w1", capacity=2)
+        lines = [
+            _pending_submission_line(entrypoint="Notebooks/a.ipynb", submission_id="s1", worker="w1"),
+            _pending_submission_line(entrypoint="Notebooks/b.ipynb", submission_id="s2", worker="w1"),
+            _pending_submission_line(entrypoint="Notebooks/c.ipynb", submission_id="s3", worker="w1"),
+        ]
+        result = PACKER.plan(
+            adapter=adapter,
+            worker_id="w1",
+            requested=5,
+            ledger_lines=lines,
+            live_digest="digest-1",
+        )
+        self.assertEqual(result.in_flight, 3)
+        self.assertEqual(result.granted, 0)
+        self.assertGreaterEqual(result.granted, 0)
+
+    def test_plan_reports_four_numbers_not_a_silent_minimum(self) -> None:
+        """The test that would fail if `plan()` returned only `granted`.
+
+        Two plans below share the exact same `granted` value (2) for
+        opposite reasons — one asked for less than the cap and got all of
+        it, the other asked for more than the cap and got clamped to it.
+        `granted` alone cannot tell these apart; `requested` and `cap`
+        together are what make the difference a visible fact instead of a
+        silent minimum.
+        """
+        unclamped_adapter = FakeAdapter(worker_id="w1", capacity=5)
+        unclamped = PACKER.plan(
+            adapter=unclamped_adapter,
+            worker_id="w1",
+            requested=2,
+            ledger_lines=[],
+            live_digest="digest-1",
+        )
+
+        clamped_adapter = FakeAdapter(worker_id="w1", capacity=2)
+        clamped = PACKER.plan(
+            adapter=clamped_adapter,
+            worker_id="w1",
+            requested=5,
+            ledger_lines=[],
+            live_digest="digest-1",
+        )
+
+        self.assertEqual(unclamped.granted, clamped.granted)  # same granted...
+        # ...yet the two plans are not the same claim, and `requested`/`cap`
+        # are what prove it:
+        self.assertEqual(unclamped.requested, unclamped.granted)  # got what it asked for
+        self.assertNotEqual(clamped.requested, clamped.granted)  # got less than it asked for
+        self.assertNotEqual(unclamped.cap, clamped.cap)
+        self.assertNotEqual(unclamped.requested, clamped.requested)
+
+    def test_plan_prefers_list_active_over_the_ledger_estimate_when_reachable(self) -> None:
+        """`list_active()` REFINES `inFlight`, it does not merely duplicate
+        the ledger's own count — proven here by a ledger that reports one
+        pending submission while the reachable adapter's `list_active()`
+        reports none, and the adapter's answer is the one that wins.
+        """
+        adapter = FakeAdapter(worker_id="w1", capacity=2)  # list_active() answers []
+        lines = [
+            _pending_submission_line(entrypoint="Notebooks/a.ipynb", submission_id="s1", worker="w1"),
+        ]
+        result = PACKER.plan(
+            adapter=adapter,
+            worker_id="w1",
+            requested=2,
+            ledger_lines=lines,
+            live_digest="digest-1",
+        )
+        self.assertEqual(result.in_flight, 0)
+        self.assertEqual(result.in_flight_source, "list_active")
+
+    def test_plan_falls_back_to_the_ledger_when_the_adapter_is_unreachable(self) -> None:
+        adapter = UnreachableAdapter(worker_id="w1", capacity=2)
+        lines = [
+            _pending_submission_line(entrypoint="Notebooks/a.ipynb", submission_id="s1", worker="w1"),
+        ]
+        result = PACKER.plan(
+            adapter=adapter,
+            worker_id="w1",
+            requested=2,
+            ledger_lines=lines,
+            live_digest="digest-1",
+        )
+        self.assertEqual(result.in_flight, 1)
+        self.assertEqual(result.in_flight_source, "ledger")
+
+    def test_plan_refuses_an_object_that_is_not_a_real_adapter(self) -> None:
+        class NotAnAdapter:
+            def workers(self):
+                return []
+
+        with self.assertRaises(PACKER.PackerError):
+            PACKER.plan(
+                adapter=NotAnAdapter(),
+                worker_id="w1",
+                requested=1,
+                ledger_lines=[],
+                live_digest="digest-1",
+            )
+
+    def test_plan_refuses_a_worker_id_the_adapter_does_not_report(self) -> None:
+        adapter = FakeAdapter(worker_id="w1", capacity=2)
+        with self.assertRaises(PACKER.PackerError):
+            PACKER.plan(
+                adapter=adapter,
+                worker_id="no-such-worker",
+                requested=1,
+                ledger_lines=[],
+                live_digest="digest-1",
+            )
+
+    def test_packer_module_names_no_service_and_hardcodes_no_capacity(self) -> None:
+        source = PACKER_SCRIPT.read_text(encoding="utf-8")
+        lowered = source.lower()
+        for leaked in ("kaggle", "t4"):
+            self.assertNotIn(leaked, lowered, leaked)
+
+        # No module-level ALL_CAPS numeric constant (the shape a hardcoded
+        # capacity would take, mirroring how ledger.py's own real constants
+        # like MAX_EVENT_BYTES are declared) anywhere in this file.
+        for line in source.splitlines():
+            stripped = line.strip()
+            match = re.match(r"^[A-Z][A-Z0-9_]*\s*=\s*-?\d+\s*(#.*)?$", stripped)
+            self.assertIsNone(match, f"looks like a hardcoded constant: {line!r}")
+
+    def test_packer_only_discovers_capacity_through_adapter_workers(self) -> None:
+        """`plan()` accepts no `cap`/`capacity` keyword at all — the only
+        route to a capacity number in this module's public signature is
+        `adapter.workers()`.
+        """
+        signature = inspect.signature(PACKER.plan)
+        for leaked in ("cap", "capacity"):
+            self.assertNotIn(leaked, signature.parameters)
+
+    def test_plan_works_against_fake_adapter_with_no_real_backend(self) -> None:
+        """No import of any concrete backend module anywhere in this test,
+        and none exists yet in this skill — `FakeAdapter` is the only
+        `Adapter` this whole test module ever constructs.
+        """
+        adapter = FakeAdapter(worker_id="w1", capacity=3)
+        result = PACKER.plan(
+            adapter=adapter,
+            worker_id="w1",
+            requested=3,
+            ledger_lines=[],
+            live_digest="digest-1",
+        )
+        self.assertIsInstance(result, PACKER.Plan)
+        self.assertEqual(result.granted, 3)
 
 
 if __name__ == "__main__":
