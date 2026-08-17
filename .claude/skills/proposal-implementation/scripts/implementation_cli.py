@@ -36,6 +36,24 @@ WORKSPACE = FORGE_ROOT / "implementations"
 
 PRODUCT_DIRS = ("Notebooks", "Data", "Results", "Models")
 
+#: Where a tracked `.py` may live. Anything else is a stray module.
+#:
+#: `tools/` is here for the same reason the benchmark is a sibling package, and
+#: the argument has the same shape: a script that launches or operates a run has
+#: nowhere else to go. It cannot live in the method's package — it implements no
+#: equation, so it could only sit there by declaring a `__provenance__` it has no
+#: right to, and a falsified stamp empties the one check that keeps the code tied
+#: to the mathematics. It cannot live in the benchmark's package — that one trains
+#: and measures, and operating a service is neither. And it cannot stay untracked,
+#: because then the configuration of a run that costs hours lives on one disk and
+#: no later session can reproduce how it was launched.
+#:
+#: A named place and not an amnesty: a script loose at the top of the repository
+#: is still a stray. And nothing in `tools/` is ever asked for a provenance,
+#: because the scan only recurses into `src/<Package>/` — which is what keeps a
+#: launcher from being able to claim it implements something.
+SOURCE_ROOTS = ("src/", "tests/", "tools/")
+
 # A reorganization is "large" when the user can no longer review it, and what a user
 # reviews is a list of decisions: this file goes there, this folder is renamed, this
 # reference is rewritten. Eight of those you read and decide on; forty you approve
@@ -3601,7 +3619,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     # reports thousands of stray modules and buries the one that matters.
     stray = [
         p for p in paths
-        if p.endswith(".py") and not p.startswith(("src/", "tests/"))
+        if p.endswith(".py") and not p.startswith(SOURCE_ROOTS)
         and Path(p).parts[0] not in IGNORED_DIRS and Path(p).name != "setup.py"
     ]
     # Static check, nothing is executed: does anything still address a product

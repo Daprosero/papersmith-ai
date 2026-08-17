@@ -1797,6 +1797,75 @@ class UndeclaredRecordsTests(unittest.TestCase):
             self.assertEqual(state["undeclaredRecords"], [])
 
 
+class ToolsRootTests(unittest.TestCase):
+    """`tools/` is where a launcher lives, and it needed a home.
+
+    The same shape of problem the sibling-package rule already solved: a script
+    that operates a run cannot sit in the method's package, because it implements
+    no equation and could only be there by declaring a `__provenance__` it has no
+    right to; it cannot sit in the benchmark's package, because it neither trains
+    nor measures; and it cannot stay untracked, because then the configuration of
+    a multi-hour campaign lives on one disk and no later session can reproduce
+    how it was launched. No place existed, and that absence is the argument.
+    """
+
+    def build(self, root: Path, *relatives: str) -> list:
+        for relative in ("src/Method/kernels.py", "tests/test_smoke.py", *relatives):
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("X = 1\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "base"], cwd=root, check=True)
+        paths = impl.present_files(root)
+        return [p for p in paths
+                if p.endswith(".py")
+                and not p.startswith(impl.SOURCE_ROOTS)
+                and Path(p).parts[0] not in impl.IGNORED_DIRS
+                and Path(p).name != "setup.py"]
+
+    def test_a_launcher_under_tools_is_not_a_stray_module(self):
+        """Reachable red: without `tools/` among the roots, this is a stray."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.assertEqual(self.build(root, "tools/distribute.py"), [])
+
+    def test_a_script_loose_at_the_top_is_still_a_stray_module(self):
+        """The permission is a named place, not an amnesty."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.assertEqual(self.build(root, "run_it.py"), ["run_it.py"])
+
+    def test_a_launcher_is_never_asked_for_a_provenance(self):
+        """A launcher implements no equation, so it must never be asked for one.
+
+        Safe by construction rather than by a guard: the provenance scan only
+        recurses into `src/<Package>/`. Pinned end to end so a later widening of
+        that walk cannot quietly start demanding a stamp `tools/` cannot honestly
+        give — the falsified provenance the sibling-package rule exists to prevent.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            for relative, body in (
+                ("src/Method/kernels.py",
+                 '__provenance__ = {"revision": "r01.md", "sections": ["1"],\n'
+                 '                  "equations": ["1"], "invariants": ["holds"]}\n'),
+                ("tests/test_invariants.py", "def test_holds():\n    assert True\n"),
+                ("tools/distribute.py", "ACCELERATOR = 'X'\n"),
+            ):
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(body, encoding="utf-8")
+
+            missing = [str(f.relative_to(root))
+                       for f in sorted((root / "src" / "Method").rglob("*.py"))
+                       if impl.read_declaration(f, "__provenance__") is None]
+            self.assertEqual(missing, [])
+            self.assertTrue((root / "tools/distribute.py").exists(),
+                            "el lanzador existe y aun asi nadie le pide procedencia")
+
+
 class ProseTests(unittest.TestCase):
     """Claims in prose that stopped being true, where nothing else would notice.
 
