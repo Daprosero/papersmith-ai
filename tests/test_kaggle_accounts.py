@@ -232,7 +232,7 @@ class InboxTests(unittest.TestCase):
 
     def test_shows_inbox_paths_by_that_name(self) -> None:
         self.assertEqual(
-            ACCOUNTS.display_path(ACCOUNTS.INBOX_DIR / "kaggle.json"), "inbox/kaggle.json")
+            ACCOUNTS.display_path(ACCOUNTS.INBOX_DIR / "kaggle.json"), "kaggle-inbox/kaggle.json")
 
 
 class InteractiveEntryTests(unittest.TestCase):

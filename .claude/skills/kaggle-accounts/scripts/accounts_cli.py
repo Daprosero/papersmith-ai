@@ -55,8 +55,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-# .../.claude/skills/kaggle-accounts/scripts/accounts_cli.py -> skill root is parents[1]
+# .../.claude/skills/kaggle-accounts/scripts/accounts_cli.py
 SKILL_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 STORE_DIR = SKILL_ROOT / "store"
 STORE_PATH = STORE_DIR / "accounts.json"
 
@@ -71,7 +72,12 @@ ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 # A folder that exists for this, so the flow does not depend on where a browser
 # happens to save things. It ships already ignored by git.
-INBOX_DIR = SKILL_ROOT / "inbox"
+#
+# At the repository root, beside `guidance/` and `proposals/`, and not buried in
+# the skill: a folder the user is asked to drop a file into has to be a folder
+# they can find. The store stays inside the skill — nobody opens that one.
+INBOX_NAME = "kaggle-inbox"
+INBOX_DIR = REPO_ROOT / INBOX_NAME
 
 # Where a downloaded credential actually lands. Direct children only: walking a
 # home directory to find a two-field JSON file is slow, and reading every JSON
@@ -295,8 +301,8 @@ def read_credential_interactively() -> tuple[str, str]:
 
 
 def display_path(path: Path) -> str:
-    """`inbox/kaggle.json` or `~/Downloads/kaggle.json`, not an absolute path."""
-    for root, prefix in ((INBOX_DIR, "inbox"), (Path.home(), "~")):
+    """`kaggle-inbox/kaggle.json` or `~/Downloads/kaggle.json`, never absolute."""
+    for root, prefix in ((INBOX_DIR, INBOX_NAME), (Path.home(), "~")):
         try:
             inside = path.resolve().relative_to(root.resolve())
         except (ValueError, OSError):

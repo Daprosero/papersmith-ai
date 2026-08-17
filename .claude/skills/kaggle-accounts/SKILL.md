@@ -67,7 +67,7 @@ two fields, `username` and `key`, and it arrives in one of two shapes:
 
 Adding is a pick from what already exists:
 
-1. Run `discover --json`. It looks in `inbox/`, `~/Downloads`, `~/Desktop`,
+1. Run `discover --json`. It looks in `kaggle-inbox/`, `~/Downloads`, `~/Desktop`,
    `~/.kaggle` and the working directory, and reports each candidate with the
    **usernames** inside it and how many are already stored.
 2. Present those as an **interactive multi-select** — one option per file,
@@ -99,7 +99,7 @@ just moves the leak into their lap.
 
 There are two ways in, and neither goes through the conversation:
 
-- **Put it in the inbox.** `.claude/skills/kaggle-accounts/inbox/` exists for
+- **Put it in the inbox.** `kaggle-inbox/` (repository root) exists for
   exactly this and ships already ignored by git, so the flow does not depend on
   where a browser happens to save things. Drop in either a downloaded
   `kaggle.json` or a `.txt` with one `username key` per line, then run
@@ -176,7 +176,7 @@ question about which accounts exist. `list` answers that without the keys.
 
 ## The inbox is transit, not storage
 
-`inbox/` is where the user hands credentials over. A file that came from there
+`kaggle-inbox/` is where the user hands credentials over. A file that came from there
 and gave up **everything it held** is deleted, and the report says so: the same
 token sitting in two places in plaintext is exposure with nothing bought.
 
@@ -211,11 +211,11 @@ not just the one being added.
 | --- | --- |
 | Invoked with no stated intent | `list`, then an interactive add-or-remove selection |
 | User wants to add | `discover --json`, multi-select the files, then `add` |
-| `discover` finds nothing | Offer the two ways in: drop a token in `inbox/`, or `add --interactive` in their own shell |
+| `discover` finds nothing | Offer the two ways in: drop a token in `kaggle-inbox/`, or `add --interactive` in their own shell |
 | Some lines of a `.txt` fail | Store the rest; report each failure with its line number, never the line |
-| An `inbox/` file gave up everything it held | It is deleted; report that it was consumed |
-| An `inbox/` file has rows left | It is kept; report how many did not go in |
-| `discover` warns the inbox is not ignored | Relay it; say to restore `inbox/.gitignore` before dropping a token |
+| A `kaggle-inbox/` file gave up everything it held | It is deleted; report that it was consumed |
+| A `kaggle-inbox/` file has rows left | It is kept; report how many did not go in |
+| `discover` warns the inbox is not ignored | Relay it; say to restore `kaggle-inbox/.gitignore` before dropping a token |
 | User pastes a raw token | Do not store it; say to expire it, once; then offer the two ways in |
 | Asked to run `add --interactive` for them | Refuse: it is theirs to run in a terminal, and the command refuses anyway |
 | Some credentials in a batch fail | Store the rest; report each rejection with its reason |
