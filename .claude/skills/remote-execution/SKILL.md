@@ -1,6 +1,6 @@
 ---
 name: remote-execution
-description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill so far ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry, no concrete backend yet), the packer's capacity clamp, and the full `remote_cli` front door: `submit` (with its path guard, the sole holder of file-kind policy for what may run remotely), `status` (reports the fold; calls no adapter), `poll` (refuses a Status outside the seam's five-value vocabulary), `fetch` (materialize-then-rename, quarantining a fromStaleSubmission result outside Results/shards/, never merged), and `reconcile` (compares the ledger against list_active() in both directions; never auto-adopts an orphanRemote id, --resolve is the one human-invoked path to closing an orphanLocal one). No concrete service adapter exists yet; that is later, separate work. Stdlib-only, no venv."
+description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry), the packer's capacity clamp, the full `remote_cli` front door (`submit` with its path guard, `status`, `poll`, `fetch` with quarantine, `reconcile`), and one concrete backend: `adapters/kaggle.py` — the ONLY file in this entire skill allowed to name a service. It shells out to the `kaggle` CLI (never imports the `kaggle` package), derives worker identity solely from kaggle-accounts' own sanctioned `list --json` command, and accepts credentials only as a `CredentialHandle(worker_id, config_dir)` carrying a path, never a value — its single sink is `KAGGLE_CONFIG_DIR` on a child process's environment. Stdlib-only, no venv."
 ---
 
 # Remote Execution
@@ -90,11 +90,34 @@ Three modules exist so far, each service-blind and stdlib-only:
     same way `guard_entrypoint()` does, factored out so `fetch`'s quarantine
     path and `reconcile`'s ledger selection reuse the one derivation instead
     of each growing a second copy that could quietly disagree with `submit`'s.
+- `scripts/adapters/kaggle.py` — the ONE file below the adapter seam allowed
+  to name a service. `workers()` reports usernames from kaggle-accounts' own
+  sanctioned `list --json` command (run as a subprocess; this module never
+  opens kaggle-accounts' own credential file itself, directly or otherwise),
+  each stamped with this service's own documented per-worker allowance
+  (`KAGGLE_WORKER_CAPACITY`, a module constant, explicitly not a universal
+  one). `submit`/`poll`/`fetch`/`cancel`/`list_active` shell out to the
+  `kaggle` CLI — `shell=False`, list argv, an env built from an allowlist
+  (`PATH` plus, when a credential is involved, `KAGGLE_CONFIG_DIR`), and an
+  explicit timeout on every call; a non-zero exit or an expired timeout is a
+  refusal (`KaggleAdapterError`), never a fabricated `Status`, `Submission`
+  or `Fetched`. `poll()` translates Kaggle's own raw status text into the
+  seam's five-value vocabulary and never passes it through; the raw text
+  goes in `Status.detail` only. `CredentialHandle(worker_id, config_dir)` is
+  the only credential type this adapter accepts, exposes no read method, and
+  has exactly one sink in the whole file: `env["KAGGLE_CONFIG_DIR"] =
+  str(handle.config_dir)`. `REQUESTED_ACCELERATOR = "T4"` is declared here —
+  a request, not a receipt; what a submission actually ran on is a fact the
+  service states at poll/fetch time, never assumed from this constant.
+  `cancel()` refuses explicitly: Kaggle's own CLI documents no
+  single-kernel cancel operation, and this adapter does not guess at an
+  unofficial one.
 
-Not implemented yet: a concrete backend adapter — for example, one talking
-to an actual service. Every `remote_cli` command a user would invoke
-(`submit`, `status`, `poll`, `fetch`, `reconcile`) exists today, exercised
-against a `FakeAdapter` only.
+Every `remote_cli` command a user would invoke (`submit`, `status`, `poll`,
+`fetch`, `reconcile`) exists today. `submit`/`poll`/`fetch`/`reconcile` are
+exercised in this skill's own test suite against both a `FakeAdapter` and
+`adapters/kaggle.py` (the latter only ever against a fake `kaggle`
+executable — no test in this suite reaches the network or a real account).
 
 ## Why append, not a status record
 

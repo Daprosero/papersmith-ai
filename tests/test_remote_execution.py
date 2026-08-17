@@ -21,10 +21,12 @@ import json
 import multiprocessing
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
 import unittest.mock
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -70,6 +72,19 @@ assert REMOTE_CLI_SPEC and REMOTE_CLI_SPEC.loader
 REMOTE_CLI = importlib.util.module_from_spec(REMOTE_CLI_SPEC)
 sys.modules[REMOTE_CLI_SPEC.name] = REMOTE_CLI
 REMOTE_CLI_SPEC.loader.exec_module(REMOTE_CLI)
+
+# Loaded AFTER adapter.py above, for the same sys.modules-reuse reason: this
+# module's own `isinstance(kaggle_adapter, ADAPTER.Adapter)` checks below
+# have to agree with the exact `Adapter` class every other module in this
+# chain already loaded.
+KAGGLE_SCRIPT = REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/adapters/kaggle.py"
+KAGGLE_SPEC = importlib.util.spec_from_file_location(
+    "remote_execution_kaggle_adapter", KAGGLE_SCRIPT
+)
+assert KAGGLE_SPEC and KAGGLE_SPEC.loader
+KAGGLE = importlib.util.module_from_spec(KAGGLE_SPEC)
+sys.modules[KAGGLE_SPEC.name] = KAGGLE
+KAGGLE_SPEC.loader.exec_module(KAGGLE)
 
 
 def _sample_submitted_event(**overrides: object) -> dict:
@@ -1616,6 +1631,359 @@ class ReconcileTests(unittest.TestCase):
             appended = json.loads(lines_after_resolve[-1])
             self.assertEqual(appended["kind"], "errored")
             self.assertEqual(appended["reason"], "not-found-at-service")
+
+
+def _write_fake_kaggle(
+    bin_dir: Path,
+    *,
+    status_text: str = "complete",
+    exit_code: int = 0,
+    sleep_seconds: float | None = None,
+) -> Path:
+    """A minimal stand-in for the real `kaggle` executable.
+
+    Never touches a network, never reads whatever `KAGGLE_CONFIG_DIR`
+    points to (real or fake), and answers `kernels push|status|output|list`
+    just well enough to drive `KaggleAdapter` through its own pipeline.
+    Placed on disk with an executable bit and a shebang so it can be
+    invoked directly by `subprocess.run(shell=False, ...)`, the same way
+    the genuine `kaggle` executable would be.
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    script = bin_dir / "kaggle"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys, time\n"
+        "from pathlib import Path\n"
+        f"SLEEP = {sleep_seconds!r}\n"
+        "if SLEEP:\n"
+        "    time.sleep(SLEEP)\n"
+        f"EXIT_CODE = {exit_code!r}\n"
+        "if EXIT_CODE != 0:\n"
+        "    print('simulated failure', file=sys.stderr)\n"
+        "    sys.exit(EXIT_CODE)\n"
+        "args = sys.argv[1:]\n"
+        "if args[:2] == ['kernels', 'push']:\n"
+        "    print('kernel version 1 successfully pushed')\n"
+        "    sys.exit(0)\n"
+        "if args[:2] == ['kernels', 'status']:\n"
+        "    ref = args[2] if len(args) > 2 else 'unknown-ref'\n"
+        f"    print(ref + ' has status \"{status_text}\"')\n"
+        "    sys.exit(0)\n"
+        "if args[:2] == ['kernels', 'output']:\n"
+        "    idx = args.index('-p')\n"
+        "    outdir = Path(args[idx + 1])\n"
+        "    outdir.mkdir(parents=True, exist_ok=True)\n"
+        "    (outdir / 'result.txt').write_text('ok', encoding='utf-8')\n"
+        "    print('output downloaded')\n"
+        "    sys.exit(0)\n"
+        "if args[:2] == ['kernels', 'list']:\n"
+        "    print('ref,status')\n"
+        "    sys.exit(0)\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return script
+
+
+class KaggleAdapterTests(unittest.TestCase):
+    """`adapters/kaggle.py` — the one file in this skill allowed to name a
+    service. No test in this class reaches the network or a real Kaggle
+    account: every subprocess call goes to a fake `kaggle` executable this
+    class writes to a temp `PATH` entry, or to a fake `accounts_cli.py`
+    stub passed in by path.
+
+    Every test here has a reachable red: `adapters/kaggle.py` did not exist
+    before this task, so the whole module fails to import and every test
+    in this class fails to collect.
+    """
+
+    def test_adapter_source_contains_no_accounts_json_or_store_literal(self) -> None:
+        """The leak guard specific to this module: a static scan over the
+        raw file text (source and every docstring alike) for the two
+        literals that would tie this adapter's own code to reading
+        `kaggle-accounts`' credential file directly, rather than only ever
+        running its sanctioned `list --json` command as a subprocess.
+        """
+        source = KAGGLE_SCRIPT.read_text(encoding="utf-8").lower()
+        for leaked in ("accounts.json", "store"):
+            self.assertNotIn(leaked, source, leaked)
+
+    def test_kaggle_adapter_satisfies_the_abc(self) -> None:
+        self.assertIsInstance(KAGGLE.KaggleAdapter(), ADAPTER.Adapter)
+
+    def test_a_kaggle_adapter_missing_one_method_cannot_instantiate(self) -> None:
+        """The ABC's structural guarantee holds for a concrete subclass
+        too, not only for `adapter.py`'s own generic incomplete-subclass
+        case (`AdapterSeamTests`): re-marking one already-implemented
+        method abstract on a subclass of `KaggleAdapter` itself must make
+        that subclass uninstantiable.
+        """
+        from abc import abstractmethod
+
+        class BrokenKaggleAdapter(KAGGLE.KaggleAdapter):
+            cancel = abstractmethod(lambda self, submission_id: None)
+
+        with self.assertRaises(TypeError):
+            BrokenKaggleAdapter()
+
+    def test_requested_accelerator_is_declared_here_as_a_request_not_a_receipt(self) -> None:
+        self.assertEqual(KAGGLE.REQUESTED_ACCELERATOR, "T4")
+
+    def test_workers_still_answers_when_the_credential_file_is_unreadable(self) -> None:
+        """Proves `workers()` never opens the credential file itself: a
+        genuinely unreadable decoy file named the way that file is named
+        sits on disk throughout this test, and `workers()` still answers
+        normally, because the only thing it ever does is run the sanctioned
+        `list --json` command as a subprocess — never open anything by
+        path on its own.
+
+        The fixture's own brokenness is asserted BEFORE trusting the
+        result: a negative test whose fixture silently failed to break
+        would report success while testing nothing.
+        """
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root ignores file permission bits; this check needs a non-root run")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            decoy = tmp_path / "accounts.json"
+            decoy.write_text('{"accounts": []}', encoding="utf-8")
+            decoy.chmod(0o000)
+            try:
+                with self.assertRaises(PermissionError):
+                    decoy.read_text(encoding="utf-8")
+
+                fake_accounts_cli = tmp_path / "fake_accounts_cli.py"
+                fake_accounts_cli.write_text(
+                    "import json\n"
+                    "print(json.dumps({'accounts': [{'username': 'acct-1'}]}))\n",
+                    encoding="utf-8",
+                )
+
+                adapter = KAGGLE.KaggleAdapter(accounts_cli=fake_accounts_cli)
+                workers = adapter.workers()
+            finally:
+                decoy.chmod(0o644)
+
+            self.assertEqual([w.id for w in workers], ["acct-1"])
+            self.assertEqual(workers[0].capacity, KAGGLE.KAGGLE_WORKER_CAPACITY)
+
+    def test_a_service_status_outside_the_five_value_vocabulary_is_translated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bin_dir = tmp_path / "bin"
+            _write_fake_kaggle(bin_dir, status_text="cancelAcknowledged")
+            config_dir = tmp_path / "creds"
+            config_dir.mkdir()
+
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", config_dir=config_dir)
+            with unittest.mock.patch.dict(
+                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+            ):
+                adapter = KAGGLE.KaggleAdapter(credentials={"acct-1": handle})
+                status = adapter.poll("acct-1/kernel-1")
+
+            self.assertEqual(status.state, "unknown")
+            self.assertIn("cancelAcknowledged", status.detail)
+
+    def test_a_genuinely_valid_status_translates_straight_through(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bin_dir = tmp_path / "bin"
+            _write_fake_kaggle(bin_dir, status_text="running")
+            config_dir = tmp_path / "creds"
+            config_dir.mkdir()
+
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", config_dir=config_dir)
+            with unittest.mock.patch.dict(
+                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+            ):
+                adapter = KAGGLE.KaggleAdapter(credentials={"acct-1": handle})
+                status = adapter.poll("acct-1/kernel-1")
+
+            self.assertEqual(status.state, "running")
+
+    def test_non_zero_exit_from_the_service_cli_produces_a_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bin_dir = tmp_path / "bin"
+            _write_fake_kaggle(bin_dir, exit_code=7)
+            config_dir = tmp_path / "creds"
+            config_dir.mkdir()
+
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", config_dir=config_dir)
+            with unittest.mock.patch.dict(
+                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+            ):
+                adapter = KAGGLE.KaggleAdapter(credentials={"acct-1": handle})
+                with self.assertRaises(KAGGLE.KaggleAdapterError):
+                    adapter.poll("acct-1/kernel-1")
+
+    def test_subprocess_timeout_yields_a_refusal_not_a_fabricated_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bin_dir = tmp_path / "bin"
+            _write_fake_kaggle(bin_dir, sleep_seconds=5)
+            config_dir = tmp_path / "creds"
+            config_dir.mkdir()
+
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", config_dir=config_dir)
+            with unittest.mock.patch.dict(
+                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+            ):
+                adapter = KAGGLE.KaggleAdapter(credentials={"acct-1": handle}, timeout=0.3)
+                with self.assertRaises(KAGGLE.KaggleAdapterError):
+                    adapter.poll("acct-1/kernel-1")
+
+    def test_worker_id_with_shell_metacharacters_reaches_argv_verbatim_executes_nothing(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bin_dir = tmp_path / "bin"
+            _write_fake_kaggle(bin_dir)
+            config_dir = tmp_path / "creds"
+            config_dir.mkdir()
+            # No "/" anywhere in this string: `poll()` derives a worker id
+            # from a submission id by splitting on the FIRST "/", and this
+            # test's own `/kernel-1` suffix is what that split is meant to
+            # find — a malicious segment containing its own "/" would
+            # confuse this test's own arithmetic, not the adapter's.
+            marker_name = "pwned-marker"
+            malicious_worker = (
+                f"acct-1$(touch {marker_name})`touch {marker_name}`;touch {marker_name}"
+            )
+            handle = KAGGLE.CredentialHandle(worker_id=malicious_worker, config_dir=config_dir)
+
+            recorded_argv: list[list[str]] = []
+            real_run = subprocess.run
+
+            def recording_run(argv, **kwargs):
+                recorded_argv.append(list(argv))
+                return real_run(argv, **kwargs)
+
+            marker_path = Path.cwd() / marker_name
+            try:
+                with unittest.mock.patch.dict(
+                    os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+                ), unittest.mock.patch.object(
+                    KAGGLE.subprocess, "run", side_effect=recording_run
+                ):
+                    adapter = KAGGLE.KaggleAdapter(credentials={malicious_worker: handle})
+                    status = adapter.poll(f"{malicious_worker}/kernel-1")
+
+                # Never executed: shell=False plus a list argv means the
+                # whole malicious string travels as ONE argv element, never
+                # evaluated by a shell.
+                self.assertFalse(marker_path.exists())
+                self.assertEqual(status.state, "complete")
+                self.assertEqual(
+                    recorded_argv[-1][-1], f"{malicious_worker}/kernel-1"
+                )
+            finally:
+                if marker_path.exists():
+                    marker_path.unlink()
+
+    def test_credential_sentinel_absent_from_argv_stdout_stderr_ledger_and_quarantine(
+        self,
+    ) -> None:
+        """The sentinel test: the whole point of `CredentialHandle` is that
+        a key VALUE never becomes a value this process holds. A fake
+        credential file, holding a unique sentinel, sits inside the
+        directory this adapter is handed by PATH only — and after a real
+        `submit()` followed by a `fetch()` that lands in quarantine (so
+        both the ledger AND a quarantine file are exercised), the sentinel
+        must appear in none of: every subprocess call's argv, its stdout,
+        its stderr, the ledger file, or the quarantine file.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            target = tmp_path / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            sentinel = "SENTINEL-" + uuid.uuid4().hex
+            config_dir = tmp_path / "creds" / "w1"
+            config_dir.mkdir(parents=True)
+            (config_dir / "kaggle.json").write_text(
+                json.dumps({"username": "w1", "key": sentinel}), encoding="utf-8"
+            )
+
+            bin_dir = tmp_path / "bin"
+            _write_fake_kaggle(bin_dir)
+
+            fake_accounts_cli = tmp_path / "fake_accounts_cli.py"
+            fake_accounts_cli.write_text(
+                "import json\n"
+                "print(json.dumps({'accounts': [{'username': 'w1'}]}))\n",
+                encoding="utf-8",
+            )
+
+            handle = KAGGLE.CredentialHandle(worker_id="w1", config_dir=config_dir)
+
+            calls: list[dict[str, object]] = []
+            real_run = subprocess.run
+
+            def recording_run(argv, **kwargs):
+                result = real_run(argv, **kwargs)
+                calls.append(
+                    {"argv": list(argv), "stdout": result.stdout, "stderr": result.stderr}
+                )
+                return result
+
+            with unittest.mock.patch.dict(
+                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+            ), unittest.mock.patch.object(KAGGLE.subprocess, "run", side_effect=recording_run):
+                adapter = KAGGLE.KaggleAdapter(
+                    credentials={"w1": handle}, accounts_cli=fake_accounts_cli
+                )
+
+                submit_result = REMOTE_CLI.cmd_submit(
+                    target=target,
+                    entrypoint=notebook,
+                    worker="w1",
+                    requested=1,
+                    adapter=adapter,
+                    source_digest=lambda t, n: "d" * 64,
+                )
+
+                submission_id = submit_result["submission"].id
+                ledger_path = submit_result["ledgerPath"]
+                dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+
+                # A different live digest at fetch time than at submit time
+                # forces `fromStaleSubmission`, exercising the quarantine
+                # path, not only the ledger.
+                fetch_result = REMOTE_CLI.cmd_fetch(
+                    target=target,
+                    entrypoint=notebook,
+                    submission_id=submission_id,
+                    dest=dest,
+                    adapter=adapter,
+                    source_digest=lambda t, n: "e" * 64,
+                )
+
+            self.assertEqual(fetch_result["verdict"], "fromStaleSubmission")
+            quarantine_dir = fetch_result["path"]
+            self.assertTrue(quarantine_dir.exists())
+
+            self.assertGreater(len(calls), 0)
+            for call in calls:
+                self.assertNotIn(sentinel, json.dumps(call["argv"]))
+                if call["stdout"]:
+                    self.assertNotIn(sentinel, call["stdout"])
+                if call["stderr"]:
+                    self.assertNotIn(sentinel, call["stderr"])
+
+            self.assertNotIn(sentinel, ledger_path.read_text(encoding="utf-8"))
+            for artifact in quarantine_dir.rglob("*"):
+                if artifact.is_file():
+                    self.assertNotIn(
+                        sentinel, artifact.read_text(encoding="utf-8", errors="ignore")
+                    )
 
 
 if __name__ == "__main__":
