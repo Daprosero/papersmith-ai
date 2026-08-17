@@ -6,6 +6,7 @@ what the user types becomes a directory/package pair deterministically, and a pl
 declares whether the user can still review it.
 """
 
+import argparse
 import json
 import os
 import shutil
@@ -2780,3 +2781,170 @@ class UnreachedMathematicsEndToEndTests(unittest.TestCase):
         self.verify_with(self.WITH)
         leftover = list((FORGE / "implementations").glob("_e2e_unreached_*"))
         self.assertEqual(leftover, [], leftover)
+
+
+class RemoteExecutionLedgerSectionTests(unittest.TestCase):
+    """`verify`'s ledger section, read service-blind through `ledger.py` alone.
+
+    A guard you have to go looking for is a guard nobody looks at — that is
+    why this section lives inside `verify` rather than a command of its own,
+    and it is what these tests hold it to: it reports what was sent, what
+    came back, and what changed since, and it never resolves anything and
+    never names a worker.
+    """
+
+    def _write_ledger(self, target: Path, name: str, lines: list) -> Path:
+        ledger_path = target / name / ".remote-execution" / "ledger.jsonl"
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        ledger_path.write_text(
+            "\n".join(lines) + "\n" if lines else "", encoding="utf-8")
+        return ledger_path
+
+    def _minimal_source(self, target: Path) -> None:
+        """Enough of `src/` for `source_digest()` to compute over something
+        real, so a "stale" fixture is stale against an actual hash and not
+        an accident of an empty tree."""
+        module = target / "src" / "Method" / "module.py"
+        module.parent.mkdir(parents=True, exist_ok=True)
+        module.write_text("VALUE = 1\n", encoding="utf-8")
+
+    def test_absent_when_no_remote_execution_skill_present(self):
+        """The one state every target predates this section in, and the one
+        `verify` must stay safe on without anyone touching a target at all."""
+        from unittest import mock
+
+        box = FORGE / "implementations" / f"_re_absent_{os.getpid()}"
+        try:
+            (box / "src" / "Method").mkdir(parents=True)
+            (box / "src" / "Method_Benchmark").mkdir(parents=True)
+            (box / "tests").mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(box)], check=True,
+                           capture_output=True)
+            (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+            (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+                "__benchmark__ = {}\n", encoding="utf-8")
+
+            missing_script = box / "no-such-skill" / "ledger.py"
+            with mock.patch.object(impl, "REMOTE_EXECUTION_LEDGER_SCRIPT", missing_script):
+                result = impl.cmd_verify(
+                    argparse.Namespace(target=str(box), name="Method", revision=None))
+        finally:
+            shutil.rmtree(box, ignore_errors=True)
+
+        # The whole of verify, not just the new key: this is the case every
+        # existing target is in today, so it is the one that must never crash it.
+        self.assertEqual(result["command"], "verify")
+        self.assertEqual(result["remoteExecution"], {"status": "absent"})
+
+    def test_absent_when_the_skill_is_present_but_nothing_was_ever_sent(self):
+        """Absence of data reads the same as absence of the capability: an
+        installed skill with no ledger file for this target has nothing to
+        report either, and reporting it as `ok` would claim a fact — that a
+        run completed cleanly — nobody has any evidence for."""
+        with tempfile.TemporaryDirectory() as raw:
+            target = Path(raw)
+            self._minimal_source(target)
+            state = impl.remote_execution_state(target, "Method", "Method")
+            self.assertEqual(state, {"status": "absent"})
+
+    def test_drift_when_a_pending_submission_s_source_has_moved(self):
+        with tempfile.TemporaryDirectory() as raw:
+            target = Path(raw)
+            self._minimal_source(target)
+            self._write_ledger(target, "Method", [json.dumps({
+                "kind": "submitted", "ts": "2026-08-17T00:00:00Z",
+                "entrypoint": "Method/Notebooks/verification.ipynb",
+                "sourceDigest": "0" * 64, "submissionId": "s1", "worker": "w1",
+                "requestedCapacity": 1, "grantedCapacity": 1,
+            })])
+            state = impl.remote_execution_state(target, "Method", "Method")
+            self.assertEqual(state["status"], "drift")
+            self.assertEqual(state["staleInFlight"],
+                            ["Method/Notebooks/verification.ipynb"])
+            self.assertEqual(state["fromStaleSubmission"], [])
+            self.assertEqual(state["pending"], 1)
+            self.assertEqual(state["sent"], 1)
+
+    def test_unreliable_when_a_line_cannot_be_read(self):
+        """Reachable only against a log that is otherwise clean: if
+        `unreadableLines` did not override an otherwise-`ok` verdict, this
+        would read `ok` with the corrupted line silently dropped."""
+        with tempfile.TemporaryDirectory() as raw:
+            target = Path(raw)
+            self._minimal_source(target)
+            live = impl.source_digest(target, "Method")
+            lines = [json.dumps({
+                "kind": "submitted", "ts": "2026-08-17T00:00:00Z",
+                "entrypoint": "Method/Notebooks/verification.ipynb",
+                "sourceDigest": live, "submissionId": "s1", "worker": "w1",
+                "requestedCapacity": 1, "grantedCapacity": 1,
+            }), json.dumps({
+                "kind": "returned", "ts": "2026-08-17T00:05:00Z",
+                "submissionId": "s1", "artifactPath": "out/s1", "observedConcurrency": 1,
+            }), "{not valid json"]
+            self._write_ledger(target, "Method", lines)
+            state = impl.remote_execution_state(target, "Method", "Method")
+            self.assertEqual(state["unreadableLines"], 1)
+            # Otherwise-clean and still `unreliable`: an unread line must
+            # outrank a report that would read `ok` without it.
+            self.assertEqual(state["returned"], 1)
+            self.assertEqual(state["status"], "unreliable")
+
+    def test_a_quarantined_result_is_reported_and_never_treated_as_merged(self):
+        """The result from a superseded submission arrives, is named, and
+        never promotes its entrypoint's current state to `returned`."""
+        with tempfile.TemporaryDirectory() as raw:
+            target = Path(raw)
+            self._minimal_source(target)
+            live = impl.source_digest(target, "Method")
+            entrypoint = "Method/Notebooks/verification.ipynb"
+            lines = [json.dumps({
+                "kind": "submitted", "ts": "2026-08-17T00:00:00Z",
+                "entrypoint": entrypoint, "sourceDigest": live,
+                "submissionId": "s1", "worker": "w1",
+                "requestedCapacity": 1, "grantedCapacity": 1,
+            }), json.dumps({
+                "kind": "submitted", "ts": "2026-08-17T00:10:00Z",
+                "entrypoint": entrypoint, "sourceDigest": live,
+                "submissionId": "s2", "worker": "w1",
+                "requestedCapacity": 1, "grantedCapacity": 1,
+            }), json.dumps({
+                # Arrives late, for the superseded submission s1.
+                "kind": "returned", "ts": "2026-08-17T00:20:00Z",
+                "submissionId": "s1", "artifactPath": "out/s1", "observedConcurrency": 1,
+            })]
+            self._write_ledger(target, "Method", lines)
+            state = impl.remote_execution_state(target, "Method", "Method")
+            self.assertEqual(state["quarantined"], 1)
+            self.assertEqual(state["fromStaleSubmission"], [entrypoint])
+            # s2, the entrypoint's LATEST submission, has no terminal event of
+            # its own yet: the quarantined result for s1 must not count here.
+            self.assertEqual(state["returned"], 0)
+            self.assertEqual(state["pending"], 1)
+            self.assertEqual(state["status"], "drift")
+
+    def test_the_section_names_no_service(self):
+        """The test the user cares most about: a ledger whose workers carry
+        service-shaped usernames must never leak one into the section's JSON,
+        and `workers` must be a count. Assert this over the section's full
+        JSON dump — asserting field-by-field would let a leak hide in a key
+        this test forgot to check."""
+        service_shaped_workers = ("kaggle-svc-worker-42", "prod-training-bot-07")
+        with tempfile.TemporaryDirectory() as raw:
+            target = Path(raw)
+            self._minimal_source(target)
+            live = impl.source_digest(target, "Method")
+            lines = [json.dumps({
+                "kind": "submitted", "ts": "2026-08-17T00:00:00Z",
+                "entrypoint": f"Method/Notebooks/n{i}.ipynb",
+                "sourceDigest": live, "submissionId": f"s{i}", "worker": worker,
+                "requestedCapacity": 1, "grantedCapacity": 1,
+            }) for i, worker in enumerate(service_shaped_workers)]
+            self._write_ledger(target, "Method", lines)
+            state = impl.remote_execution_state(target, "Method", "Method")
+
+            dumped = json.dumps(state)
+            for worker in service_shaped_workers:
+                self.assertNotIn(worker, dumped, worker)
+            self.assertIsInstance(state["workers"], int)
+            self.assertEqual(state["workers"], len(service_shaped_workers))

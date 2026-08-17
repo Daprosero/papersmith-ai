@@ -21,6 +21,7 @@ import argparse
 import ast
 import fnmatch
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -33,6 +34,14 @@ from pathlib import Path
 FORGE_ROOT = Path(__file__).resolve().parents[4]
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE = FORGE_ROOT / "implementations"
+
+# The one file `remote_execution_state` is ever allowed to path-import from the
+# forge's `remote-execution` skill. `adapter.py` and everything under
+# `adapters/` are where that skill confines every fact a service could leak —
+# this check has no business reaching past `ledger.py` to either.
+REMOTE_EXECUTION_LEDGER_SCRIPT = (
+    FORGE_ROOT / ".claude" / "skills" / "remote-execution" / "scripts" / "ledger.py"
+)
 
 PRODUCT_DIRS = ("Notebooks", "Data", "Results", "Models")
 
@@ -3744,6 +3753,103 @@ def admissibility_record(target: Path, revision: str | None) -> dict:
             "findings": record.get("findings", {})}
 
 
+def _load_remote_execution_ledger():
+    """Path-import the forge's ledger module, and only that module.
+
+    Reusing an already-loaded copy under a fixed `sys.modules` key matters for
+    the same reason it matters in `remote-execution/scripts/packer.py`'s own
+    loader: `LedgerState` is a dataclass, and two separately exec'd copies of
+    the same source file produce two distinct classes with the same name — an
+    `isinstance` check made against one copy would silently fail against an
+    instance the other built, even though the source is byte-identical.
+    """
+    module_name = "remote_execution_ledger"
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+    spec = importlib.util.spec_from_file_location(module_name, REMOTE_EXECUTION_LEDGER_SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def remote_execution_state(target: Path, name: str, package: str) -> dict:
+    """What went out to a remote worker, what came back, and what changed since.
+
+    Reads exactly one module of the forge's `remote-execution` skill —
+    `ledger.py` — and never `adapter.py` or anything under `adapters/`, which
+    is the one place that skill lets a service be named. Reimplementing the
+    fold in here instead was rejected for the reason a second copy of any
+    rule is rejected everywhere else in this file: two definitions of
+    `fromStaleSubmission` is the shim-drift risk, and the whole point of the
+    classification is that exactly one thing decides it.
+
+    Absent, not zero, when there is nothing to read: the skill may not be
+    installed, or this target may simply never have submitted anything —
+    every target that predates this check is in exactly that second state,
+    so `verify` stays clean on all of them without anyone touching a target
+    at all.
+
+    Reports and never resolves. `drift` names a submission the source has
+    moved past — in flight, or already returned and quarantined rather than
+    merged. `unreliable` names a log this check could not fully read. Neither
+    case cancels a job, adopts a result, or repairs a line; that is
+    `remote_cli reconcile`'s territory, run by a human, never by `verify`.
+
+    `workers` is a count, never a name. A worker id is a service account's
+    username, and printing one here would falsify SKILL.md's own surviving
+    sentence — "No service is named here, and none should be" — the moment
+    somebody ran this command.
+    """
+    if not REMOTE_EXECUTION_LEDGER_SCRIPT.is_file():
+        return {"status": "absent"}
+
+    ledger_path = target / name / ".remote-execution" / "ledger.jsonl"
+    if not ledger_path.is_file():
+        return {"status": "absent"}
+
+    ledger = _load_remote_execution_ledger()
+    lines = ledger_path.read_text(encoding="utf-8").splitlines()
+    # A callable, not a computed value: `fold()` only pays for `source_digest()`
+    # once per call, and never at all when the log holds nothing pending to
+    # judge against it.
+    state = ledger.fold(lines, live_digest=lambda: source_digest(target, package))
+
+    pending = sum(1 for e in state.entrypoints.values() if e.state == "pending")
+    returned = sum(1 for e in state.entrypoints.values() if e.state == "returned")
+    errored = sum(1 for e in state.entrypoints.values() if e.state == "errored")
+    # A quarantined result counted once per arrival, not once per entrypoint:
+    # `fromStaleSubmission` below already collapses to one entry per
+    # entrypoint, and collapsing here too would hide a second stale result
+    # landing for the same entrypoint.
+    quarantined = sum(1 for v in state.verdicts.values() if v == "fromStaleSubmission")
+    workers = len({event.get("worker") for event in state.by_id.values()})
+
+    if state.unreadable_lines > 0:
+        status = "unreliable"
+    elif state.stale_in_flight or state.from_stale_submission:
+        status = "drift"
+    elif pending:
+        status = "pending"
+    else:
+        status = "ok"
+
+    return {
+        "status": status,
+        "ledger": str(ledger_path.relative_to(target)),
+        "sent": len(state.by_id),
+        "pending": pending,
+        "returned": returned,
+        "errored": errored,
+        "staleInFlight": list(state.stale_in_flight),
+        "fromStaleSubmission": list(state.from_stale_submission),
+        "quarantined": quarantined,
+        "unreadableLines": state.unreadable_lines,
+        "workers": workers,
+    }
+
+
 def cmd_verify(args: argparse.Namespace) -> dict:
     target = resolve_target(args.target)
     name = validate_name(args.name)
@@ -3931,6 +4037,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
                 target / "src" / f"{package_name(name)}_Benchmark" / "__init__.py",
                 BENCHMARK_DECLARATION) or {},
             (report.get("declared") or {}).get("dimensions") or {}),
+        "remoteExecution": remote_execution_state(target, name, package_name(name)),
         "fidelity": {
             "status": fidelity_status,
             "latestRevision": args.revision,

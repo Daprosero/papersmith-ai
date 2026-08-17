@@ -1454,8 +1454,8 @@ have to count rows to learn the answer.
 
 Report: the bound revision, the target path, the migration commit hash (if
 any), the object → module map, the test result, and the verification statuses
-(`structure`, `priorWork`, `agreements`, `search`, `distribution`, `prose`,
-`fidelity`, `report`, `audit`, `validation`) separately. `priorWork`, `agreements` and `prose` are reported whatever they
+(`structure`, `priorWork`, `agreements`, `search`, `distribution`, `remoteExecution`,
+`prose`, `fidelity`, `report`, `audit`, `validation`) separately. `priorWork`, `agreements` and `prose` are reported whatever they
 say: that prior work is untouched, and that nothing was left open, are facts the
 reader is owed, and a check that only speaks up when something is wrong teaches
 nobody what it was watching. Never report the work done while `agreements` is
