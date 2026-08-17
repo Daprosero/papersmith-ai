@@ -672,7 +672,8 @@ def main(argv: list[str] | None = None) -> int:
                 requested=args.requested,
                 adapter=adapter_cls(),
             )
-        except (RemoteCLIError, PACKER.PackerError, LEDGER.LedgerError) as exc:
+        except (RemoteCLIError, PACKER.PackerError, LEDGER.LedgerError,
+                ADAPTER.AdapterError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
@@ -692,7 +693,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "status":
         try:
             result = cmd_status(target=args.target, entrypoint=args.entrypoint)
-        except (RemoteCLIError, LEDGER.LedgerError) as exc:
+        except (RemoteCLIError, LEDGER.LedgerError, ADAPTER.AdapterError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
@@ -710,7 +711,7 @@ def main(argv: list[str] | None = None) -> int:
             status_result = cmd_poll(
                 submission_id=args.submission_id, adapter=adapter_cls()
             )
-        except RemoteCLIError as exc:
+        except (RemoteCLIError, ADAPTER.AdapterError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
@@ -737,7 +738,7 @@ def main(argv: list[str] | None = None) -> int:
                 dest=args.dest,
                 adapter=adapter_cls(),
             )
-        except (RemoteCLIError, LEDGER.LedgerError) as exc:
+        except (RemoteCLIError, LEDGER.LedgerError, ADAPTER.AdapterError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
@@ -769,7 +770,7 @@ def main(argv: list[str] | None = None) -> int:
                 adapter=adapter_cls(),
                 resolve=args.resolve,
             )
-        except (RemoteCLIError, LEDGER.LedgerError) as exc:
+        except (RemoteCLIError, LEDGER.LedgerError, ADAPTER.AdapterError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 

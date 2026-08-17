@@ -130,6 +130,26 @@ class Fetched:
     files: tuple[str, ...]
 
 
+class AdapterError(Exception):
+    """A backend refused, timed out, or answered with something unusable.
+
+    The seam's own error type, and the fifth thing that crosses this boundary
+    besides the four data shapes above. Every concrete adapter raises a
+    subclass of this and nothing else.
+
+    Without it the seam has a hole exactly where it is supposed to be sealed.
+    A caller has to catch a backend's failures somehow, and if the only type
+    available is the concrete adapter's own, then catching it means importing
+    it — so the CLI would have to name every backend it might be run against,
+    which is the one thing this whole file exists to prevent. The alternative,
+    catching bare `Exception`, is worse: it swallows the genuine defects a
+    traceback is for.
+
+    So the failure this closes is not a crash but a leak: a common base is
+    what lets code above the seam handle a backend it has never heard of.
+    """
+
+
 class Adapter(ABC):
     """The seam every backend-specific adapter must satisfy in full.
 

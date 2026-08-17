@@ -14,8 +14,10 @@ Run with any Python 3.10+ (the modules are stdlib-only):
 """
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import importlib.util
+import io
 import inspect
 import json
 import multiprocessing
@@ -995,6 +997,77 @@ class PathGuardTests(unittest.TestCase):
 
             with self.assertRaises(REMOTE_CLI.PathGuardError):
                 REMOTE_CLI.guard_entrypoint(target.resolve(), elsewhere)
+
+
+class AdapterErrorAtTheSeamTests(unittest.TestCase):
+    """A backend fails, and the CLI has to survive a backend it never heard of.
+
+    `main()` is the one path in this skill nothing else exercises: every other
+    test calls `cmd_*` directly, so argparse, the exit codes and the error
+    handling were wired and never run. That is where this hole was hiding.
+
+    The hole itself is the seam's, not any backend's. Code above the seam has
+    to catch a backend's failures somehow, and the only two options without a
+    common base are both wrong: importing the concrete adapter to name its
+    error type is the leak this whole seam exists to prevent, and catching
+    bare `Exception` swallows the real defects a traceback is for. So
+    `AdapterError` is what lets the CLI handle a backend it has never heard
+    of, and these tests are what keep it that way.
+    """
+
+    class _Boom(ADAPTER.AdapterError):
+        pass
+
+    class _FailingAdapter(ADAPTER.Adapter):
+        def workers(self):
+            return []
+
+        def submit(self, job):
+            raise AdapterErrorAtTheSeamTests._Boom("the service refused")
+
+        def poll(self, submission_id):
+            raise AdapterErrorAtTheSeamTests._Boom("the service refused")
+
+        def fetch(self, submission_id, into):
+            raise AdapterErrorAtTheSeamTests._Boom("the service refused")
+
+        def cancel(self, submission_id):
+            raise AdapterErrorAtTheSeamTests._Boom("the service refused")
+
+        def list_active(self, worker):
+            raise AdapterErrorAtTheSeamTests._Boom("the service refused")
+
+    def setUp(self) -> None:
+        ADAPTER.register("failing-test-backend", self._FailingAdapter)
+
+    def test_a_failing_backend_becomes_an_error_line_and_not_a_traceback(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            code = REMOTE_CLI.main(
+                ["poll", "--submission-id", "s1", "--backend", "failing-test-backend"]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("the service refused", stderr.getvalue())
+
+    def test_the_concrete_adapter_s_error_descends_from_the_seam_s(self) -> None:
+        """Otherwise the handler above catches nothing that matters: the base
+        exists and the one backend that ships does not use it."""
+        self.assertTrue(issubclass(KAGGLE.KaggleAdapterError, ADAPTER.AdapterError))
+
+    def test_a_genuine_defect_still_reaches_the_caller(self) -> None:
+        """Reachable red in the other direction. Widening the handler to bare
+        `Exception` would make the first test pass and this one fail, and that
+        trade is the whole reason the base type exists."""
+
+        class Broken(self._FailingAdapter):
+            def poll(self, submission_id):
+                raise ZeroDivisionError("a real bug, not a backend refusing")
+
+        ADAPTER.register("broken-test-backend", Broken)
+        with self.assertRaises(ZeroDivisionError):
+            REMOTE_CLI.main(
+                ["poll", "--submission-id", "s1", "--backend", "broken-test-backend"]
+            )
 
 
 class RealDigestLoaderTests(unittest.TestCase):

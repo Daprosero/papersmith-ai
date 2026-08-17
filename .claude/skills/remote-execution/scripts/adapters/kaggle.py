@@ -87,7 +87,7 @@ def _load_adapter_seam():
 ADAPTER = _load_adapter_seam()
 
 
-class KaggleAdapterError(Exception):
+class KaggleAdapterError(ADAPTER.AdapterError):
     """A refusal: the service CLI failed, timed out, or this adapter was
     asked to act for a worker it holds no `CredentialHandle` for.
 
