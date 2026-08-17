@@ -1,0 +1,15 @@
+# Buzón de credenciales: dejá acá el `kaggle.json` que bajaste de Kaggle.
+#
+# Es una carpeta de PASO, no de guardado. Cuando `add` valida y guarda una
+# credencial que salió de acá, borra el archivo: la llave ya quedó en el store
+# y un token en texto plano duplicado en dos lugares es exposición sin ninguna
+# ganancia. Los archivos de afuera del buzón no se tocan nunca.
+#
+# Se ignora TODO el contenido, no `kaggle.json` por nombre: Kaggle numera las
+# descargas repetidas (`kaggle (1).json`) y una regla por nombre dejaría la
+# segunda afuera de la protección, que es justo el caso donde hay varias cuentas.
+#
+# El `.gitignore` se versiona (por eso la excepción) para que la carpeta exista
+# ya protegida, antes de que bajes el primer token.
+*
+!.gitignore

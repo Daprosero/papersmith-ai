@@ -69,11 +69,17 @@ VALIDATION_TIMEOUT = 20
 STORE_VERSION = 1
 ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
+# A folder that exists for this, so the flow does not depend on where a browser
+# happens to save things. It ships already ignored by git.
+INBOX_DIR = SKILL_ROOT / "inbox"
+
 # Where a downloaded credential actually lands. Direct children only: walking a
 # home directory to find a two-field JSON file is slow, and reading every JSON
 # somebody owns to see what is inside it is not a thing to do quietly.
-CREDENTIAL_SEARCH_DIRS = ("~/Downloads", "~/Desktop", "~/.kaggle", ".")
+CREDENTIAL_SEARCH_DIRS = (str(INBOX_DIR), "~/Downloads", "~/Desktop", "~/.kaggle", ".")
 CREDENTIAL_GLOB = "kaggle*.json"
+# A hand-written list of accounts, looked for in the inbox only.
+INBOX_LIST_GLOB = "*.txt"
 
 
 class UsageError(Exception):
@@ -115,13 +121,12 @@ def load_store(path: Path | None = None) -> dict:
     return data
 
 
-def assert_ignored(path: Path) -> None:
-    """Refuse to write a secret into a path git would track. Raises `StoreError`.
+def is_ignored(path: Path) -> bool | None:
+    """Whether git would ignore this path. `None` when git could not answer.
 
-    The store is deliberately inside the repository, which means the ignore rule
-    is the entire protection. So this asks git for the effective answer rather
-    than trusting that a `.gitignore` exists — a rule can be present and still
-    fail to match the path it was written for.
+    Asks for the effective answer rather than trusting that a `.gitignore`
+    exists — a rule can be present and still fail to match the path it was
+    written for.
     """
     try:
         result = subprocess.run(
@@ -130,18 +135,28 @@ def assert_ignored(path: Path) -> None:
             capture_output=True,
         )
     except (OSError, subprocess.SubprocessError):
-        # No git available: fall back to the weaker check rather than refusing
-        # to work outside a checkout.
-        if not (path.parent / ".gitignore").exists():
-            raise StoreError(
-                f"{path.parent}/.gitignore is missing — restore it before storing a token here"
-            )
-        return
-    # 0 = ignored, 1 = not ignored, anything else = git could not answer
-    # (not a repository, for instance), which is not evidence of exposure.
-    if result.returncode == 1:
+        return None
+    # 0 = ignored, 1 = not ignored, anything else (not a repository, for
+    # instance) is git declining to answer, not evidence of exposure.
+    return {0: True, 1: False}.get(result.returncode)
+
+
+def assert_ignored(path: Path) -> None:
+    """Refuse to write a secret into a path git would track. Raises `StoreError`.
+
+    The store is deliberately inside the repository, which means the ignore rule
+    is the entire protection — so it is checked before writing, not assumed.
+    """
+    answer = is_ignored(path)
+    if answer is False:
         raise StoreError(
             f"git would track {path} — restore {path.parent}/.gitignore before storing a token here"
+        )
+    if answer is None and not (path.parent / ".gitignore").exists():
+        # No git to ask: fall back to the weaker check rather than refusing to
+        # work outside a checkout.
+        raise StoreError(
+            f"{path.parent}/.gitignore is missing — restore it before storing a token here"
         )
 
 
@@ -170,20 +185,73 @@ def save_store(store: dict, path: Path | None = None) -> None:
 # --- credentials -----------------------------------------------------------
 
 
-def read_credential_file(raw: str) -> tuple[str, str]:
-    """Pull `username` and `key` out of a downloaded `kaggle.json`."""
+#: `user, key` on one line. Comma, colon, semicolon, tab or spaces — whichever
+#: the person writing the list happened to use, because a list of accounts is
+#: typed by hand and a separator is not a thing to be strict about.
+CREDENTIAL_SEPARATOR = re.compile(r"[\s,;:]+")
+
+
+def parse_credential_lines(text: str) -> list[dict]:
+    """One credential per line: `username <sep> key`.
+
+    Blank lines and `#` comments are skipped, so the list can be annotated —
+    which is what people do with a file that holds several accounts.
+
+    A malformed line becomes its own entry with a `problem` rather than an
+    exception. The whole point of a list is that the good rows survive the bad
+    ones; failing the file would throw away four working credentials because
+    somebody left a stray word on line three.
+    """
+    entries: list[dict] = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        entry: dict = {"label": f"line {number}", "username": None, "key": None,
+                       "problem": None}
+        parts = CREDENTIAL_SEPARATOR.split(stripped)
+        if len(parts) == 2 and all(parts):
+            entry["username"], entry["key"] = parts
+        else:
+            # Never quote the line back: half of it is a key, and echoing it
+            # into a report is the leak this whole flow is built to avoid.
+            entry["problem"] = (f"expected `username key`, found {len(parts)} field(s)")
+        entries.append(entry)
+    return entries
+
+
+def read_credentials(raw: str) -> list[dict]:
+    """Every credential in a file — a `kaggle.json`, or a `.txt` list.
+
+    Kaggle hands out one credential per downloaded JSON, but somebody managing
+    several accounts writes them down in a list. Both arrive here; the caller
+    validates each entry and keeps what passes.
+
+    Raises `CredentialError` only for a failure of the file itself. Anything
+    wrong with a single credential travels as that entry's `problem`, so one bad
+    row never costs the rows around it.
+    """
     path = Path(raw).expanduser()
     if not path.exists():
         raise CredentialError("file not found")
     if path.is_dir():
-        raise CredentialError("is a directory, not a kaggle.json")
+        raise CredentialError("is a directory, not a credential file")
     try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        detail = getattr(exc, "strerror", None) or "not text"
+        raise CredentialError(f"could not be read: {detail}")
+
+    if path.suffix.lower() != ".json":
+        entries = parse_credential_lines(text)
+        if not entries:
+            raise CredentialError("holds no credentials")
+        return entries
+
+    try:
+        data = json.loads(text)
     except json.JSONDecodeError:
         raise CredentialError("not valid JSON — expected the kaggle.json Kaggle downloads")
-    except OSError as exc:
-        raise CredentialError(f"could not be read: {exc.strerror}")
     if not isinstance(data, dict):
         raise CredentialError("not a kaggle.json (expected a JSON object)")
     username, key = data.get("username"), data.get("key")
@@ -191,7 +259,8 @@ def read_credential_file(raw: str) -> tuple[str, str]:
         raise CredentialError("no 'username' field")
     if not isinstance(key, str) or not key.strip():
         raise CredentialError("no 'key' field")
-    return username.strip(), key.strip()
+    return [{"label": path.name, "username": username.strip(), "key": key.strip(),
+             "problem": None}]
 
 
 def read_credential_interactively() -> tuple[str, str]:
@@ -226,11 +295,24 @@ def read_credential_interactively() -> tuple[str, str]:
 
 
 def display_path(path: Path) -> str:
-    """`~/Downloads/kaggle.json` rather than the full home path."""
+    """`inbox/kaggle.json` or `~/Downloads/kaggle.json`, not an absolute path."""
+    for root, prefix in ((INBOX_DIR, "inbox"), (Path.home(), "~")):
+        try:
+            inside = path.resolve().relative_to(root.resolve())
+        except (ValueError, OSError):
+            continue
+        # `relative_to` gives "." for the folder itself, which would render as
+        # "inbox/." in the very message that tells the user where to put a file.
+        return prefix if str(inside) == "." else f"{prefix}/{inside}"
+    return str(path)
+
+
+def in_inbox(path: Path) -> bool:
+    """Whether a file came from the folder that exists to hand credentials over."""
     try:
-        return "~/" + str(path.relative_to(Path.home()))
-    except ValueError:
-        return str(path)
+        return INBOX_DIR.resolve() in path.resolve().parents
+    except OSError:
+        return False
 
 
 def discover_credentials(folders: list[str] | None = None) -> list[dict]:
@@ -251,17 +333,28 @@ def discover_credentials(folders: list[str] | None = None) -> list[dict]:
         directory = Path(folder).expanduser()
         if not directory.is_dir():
             continue
-        for path in sorted(directory.glob(CREDENTIAL_GLOB)):
+        # A `.txt` full of accounts is only looked for in the inbox. Reading
+        # every text file in somebody's Downloads to see whether it happens to
+        # contain credentials is not a thing to do quietly; the inbox is the
+        # folder that exists to say "this one is for you".
+        patterns = [CREDENTIAL_GLOB]
+        if directory.resolve() == INBOX_DIR.resolve():
+            patterns.append(INBOX_LIST_GLOB)
+        for path in sorted(p for pattern in patterns for p in directory.glob(pattern)):
             resolved = path.resolve()
             if resolved in seen or not path.is_file():
                 continue
             seen.add(resolved)
             entry: dict = {"path": str(path), "display": display_path(path),
-                           "username": None, "problem": None}
+                           "usernames": [], "problems": []}
             try:
-                entry["username"], _ = read_credential_file(str(path))
+                for credential in read_credentials(str(path)):
+                    if credential["problem"]:
+                        entry["problems"].append(f"{credential['label']}: {credential['problem']}")
+                    else:
+                        entry["usernames"].append(credential["username"])
             except CredentialError as exc:
-                entry["problem"] = str(exc)
+                entry["problems"].append(str(exc))
             found.append(entry)
     return found
 
@@ -320,25 +413,67 @@ def cmd_discover(args: argparse.Namespace) -> int:
     stored = {a["username"]: a["alias"] for a in load_store()["accounts"]}
     found = discover_credentials()
     for entry in found:
-        alias = stored.get(entry["username"] or "")
-        entry["storedAs"] = alias
-        entry["note"] = (
-            entry["problem"] if entry["problem"]
-            else f"already stored as {alias!r} — adding it again replaces its key" if alias
-            else "not stored yet"
-        )
+        entry["accounts"] = [
+            {"username": username, "storedAs": stored.get(username)}
+            for username in entry["usernames"]
+        ]
+        known = [a for a in entry["accounts"] if a["storedAs"]]
+        parts = []
+        if entry["usernames"]:
+            parts.append(", ".join(entry["usernames"]))
+        if known:
+            parts.append(f"{len(known)} already stored — adding again replaces the key")
+        parts.extend(entry["problems"])
+        entry["note"] = "; ".join(parts) or "nothing usable in it"
+    # The inbox is inside the repository, so its ignore rule is what keeps a
+    # dropped token out of a commit. Say so loudly rather than assume it holds.
+    exposed = INBOX_DIR.is_dir() and not is_ignored(INBOX_DIR / "kaggle.json")
+    warning = (f"{display_path(INBOX_DIR)} is not ignored by git — restore its .gitignore "
+               "before dropping a token there") if exposed else None
+
     if args.json:
-        print(json.dumps({"candidates": found}, indent=2))
+        print(json.dumps({"candidates": found, "inboxWarning": warning}, indent=2))
         return 0
+    if warning:
+        print(f"warning: {warning}", file=sys.stderr)
     if not found:
-        print("No kaggle.json found in " + ", ".join(CREDENTIAL_SEARCH_DIRS) + ".")
+        print(f"Nothing found. Drop a kaggle.json, or a .txt with one "
+              f"`username key` per line, into {display_path(INBOX_DIR)}/ and run this again.")
         return 0
     width = max(len(e["display"]) for e in found)
     print(f"{len(found)} candidate credential file(s):")
     for entry in found:
-        who = entry["username"] or "unreadable"
-        print(f"  {entry['display']:<{width}}  {who}  ({entry['note']})")
+        print(f"  {entry['display']:<{width}}  {entry['note']}")
     return 0
+
+
+def report_source_files(tally: dict) -> None:
+    """Consume the inbox files that gave up everything they held; report the rest.
+
+    The inbox is a folder for handing credentials over, so a file with nothing
+    left to give has no reason to stay: the same token in two plaintext places
+    is exposure with nothing bought.
+
+    Only when **every** credential in it was stored. Deleting a list because
+    four of its five rows worked would take the fifth — the one that still needs
+    a retry — with it.
+
+    Only the inbox, too. A file the user keeps elsewhere is theirs: say it still
+    holds tokens and leave the deleting to them.
+    """
+    for path, (held, stored) in sorted(tally.items()):
+        if not stored:
+            continue
+        if not in_inbox(path):
+            print(f"{path} still holds its token(s); delete it once you are done.")
+        elif stored < held:
+            print(f"Kept {display_path(path)}: {held - stored} of {held} did not go in.")
+        else:
+            try:
+                path.unlink()
+                print(f"Consumed {display_path(path)} — the keys are in the store now.")
+            except OSError as exc:
+                print(f"Could not delete {display_path(path)} ({exc.strerror}); it still holds the token(s).")
 
 
 def cmd_add(args: argparse.Namespace) -> int:
@@ -346,53 +481,72 @@ def cmd_add(args: argparse.Namespace) -> int:
         raise UsageError("--interactive takes no file arguments")
     if not args.interactive and not args.files:
         raise UsageError("pass at least one kaggle.json, or --interactive to type a credential")
-    if args.alias is not None:
-        if len(args.files) > 1:
-            raise UsageError("--alias applies to a single file; without it each account is named after its username")
-        if not ALIAS_PATTERN.match(args.alias):
-            raise UsageError(f"alias {args.alias!r} must be 1-64 chars of letters, digits, dot, dash or underscore")
+    if args.alias is not None and not ALIAS_PATTERN.match(args.alias):
+        raise UsageError(f"alias {args.alias!r} must be 1-64 chars of letters, digits, dot, dash or underscore")
 
     store = load_store()
     by_alias = {a["alias"]: a for a in store["accounts"]}
     by_username = {a["username"]: a for a in store["accounts"]}
     saved: list[str] = []
     rejected: list[str] = []
+    # Per file: how many credentials it held, and how many reached the store.
+    tally: dict[Path, list[int]] = {}
 
-    # One source per credential: a file path, or the terminal prompt.
     sources = args.files or [None]
     for raw in sources:
-        try:
-            username, key = (read_credential_interactively() if raw is None
-                             else read_credential_file(raw))
-            alias = args.alias or username
-            if not ALIAS_PATTERN.match(alias):
-                raise CredentialError(f"username {username!r} is not a usable alias; pass --alias")
-            existing = by_username.get(username)
-            if existing is None and alias in by_alias:
-                raise CredentialError(
-                    f"alias {alias!r} already belongs to {by_alias[alias]['username']}; pass a different --alias"
-                )
-            validate(username, key)
-        except CredentialError as exc:
-            rejected.append(f"{raw or 'the credential you typed'} — {exc}")
-            continue
-        if existing is not None:
-            existing["key"] = key
-            saved.append(f"{existing['alias']} ({username}) — updated, key replaced")
+        if raw is None:
+            username, key = read_credential_interactively()
+            credentials = [{"label": "the credential you typed", "username": username,
+                            "key": key, "problem": None}]
         else:
-            entry = {"alias": alias, "username": username, "key": key}
-            store["accounts"].append(entry)
-            by_alias[alias] = entry
-            by_username[username] = entry
-            saved.append(f"{alias} ({username}) — saved")
+            try:
+                credentials = read_credentials(raw)
+            except CredentialError as exc:
+                rejected.append(f"{raw} — {exc}")
+                continue
+            tally[Path(raw)] = [len(credentials), 0]
+
+        # `--alias` names one account, so it cannot name a list. Refused rather
+        # than applied to the first row, which would silently mislabel it.
+        if args.alias is not None and len(credentials) > 1:
+            raise UsageError(f"--alias names one account, but {raw} holds {len(credentials)}")
+
+        for credential in credentials:
+            where = f"{raw}:{credential['label']}" if raw else credential["label"]
+            try:
+                if credential["problem"]:
+                    raise CredentialError(credential["problem"])
+                username, key = credential["username"], credential["key"]
+                alias = args.alias or username
+                if not ALIAS_PATTERN.match(alias):
+                    raise CredentialError(f"username {username!r} is not a usable alias; pass --alias")
+                existing = by_username.get(username)
+                if existing is None and alias in by_alias:
+                    raise CredentialError(
+                        f"alias {alias!r} already belongs to {by_alias[alias]['username']}; pass a different --alias"
+                    )
+                validate(username, key)
+            except CredentialError as exc:
+                rejected.append(f"{where} — {exc}")
+                continue
+            if existing is not None:
+                existing["key"] = key
+                saved.append(f"{existing['alias']} ({username}) — updated, key replaced")
+            else:
+                entry = {"alias": alias, "username": username, "key": key}
+                store["accounts"].append(entry)
+                by_alias[alias] = entry
+                by_username[username] = entry
+                saved.append(f"{alias} ({username}) — saved")
+            if raw is not None:
+                tally[Path(raw)][1] += 1
 
     if saved:
         save_store(store)
-        print(f"Validated and stored {len(saved)} of {len(sources)}:")
+        print(f"Validated and stored {len(saved)}:")
         for line in saved:
             print(f"  {line}")
-        if args.files:
-            print("The kaggle.json files still hold those tokens; delete them once you are done.")
+        report_source_files(tally)
     if rejected:
         print(f"Rejected {len(rejected)}, nothing stored for them:")
         for line in rejected:

@@ -56,24 +56,33 @@ python3 .claude/skills/kaggle-accounts/scripts/accounts_cli.py <command>
 
 ## Adding
 
-**Never ask for the token, and never ask for a path in prose.** A Kaggle
-credential is two fields, `username` and `key`, and Kaggle hands both over in a
-single downloaded file (kaggle.com → Settings → API → *Create New Token*). So
-adding is a pick from the files that already exist:
+**Never ask for the token, and never ask for a path in prose.** A credential is
+two fields, `username` and `key`, and it arrives in one of two shapes:
 
-1. Run `discover --json`. It looks in `~/Downloads`, `~/Desktop`, `~/.kaggle`
-   and the working directory, and reports each candidate with the **username**
-   inside it and whether that account is already stored.
+- a **`kaggle.json`** downloaded from kaggle.com → Settings → API → *Create New
+  Token*, which holds exactly one account;
+- a **`.txt` list** in the inbox, one `username key` per line — comma, colon,
+  tab or space between them, `#` comments and blank lines skipped. This is how
+  somebody with several accounts actually writes them down.
+
+Adding is a pick from what already exists:
+
+1. Run `discover --json`. It looks in `inbox/`, `~/Downloads`, `~/Desktop`,
+   `~/.kaggle` and the working directory, and reports each candidate with the
+   **usernames** inside it and how many are already stored.
 2. Present those as an **interactive multi-select** — one option per file,
-   labelled with the account it holds, not just the filename. Multi-select
-   because adding several at once is the point; the user marks every credential
-   they want stored in one pass.
+   labelled with the accounts it holds, not just the filename.
 3. Run `add` with exactly the chosen paths.
 
-Label each option by its username. Kaggle names every download `kaggle.json`, so
-several of them are indistinguishable by filename, and a choice between
-identical labels is not a choice. Say which ones are already stored too — picking
-one of those rotates its key rather than adding an account.
+Label each option by its usernames. Kaggle names every download `kaggle.json`,
+so several of them are indistinguishable by filename, and a choice between
+identical labels is not a choice. Say which are already stored too — picking one
+of those rotates its key rather than adding an account.
+
+**A list is judged line by line.** Every credential in it is validated on its
+own; the ones that authenticate are stored and the ones that do not are reported
+with their line number. One bad row never costs the rows around it, and a
+malformed line is never quoted back — half of it is a key.
 
 Offer a free-text option for a file somewhere else. Never make the user type a
 path the tool could have shown them.
@@ -90,8 +99,17 @@ just moves the leak into their lap.
 
 There are two ways in, and neither goes through the conversation:
 
-- **Download one.** kaggle.com → Settings → API → *Create New Token* drops a
-  `kaggle.json` in `~/Downloads`, where `discover` finds it on the next run.
+- **Put it in the inbox.** `.claude/skills/kaggle-accounts/inbox/` exists for
+  exactly this and ships already ignored by git, so the flow does not depend on
+  where a browser happens to save things. Drop in either a downloaded
+  `kaggle.json` or a `.txt` with one `username key` per line, then run
+  `discover` again. `~/Downloads`, `~/Desktop` and `~/.kaggle` are still
+  searched for `kaggle.json` — the inbox is the answer to "where do I put it",
+  not a new requirement.
+
+  A `.txt` is looked for **in the inbox only.** Reading every text file in
+  somebody's Downloads to see whether it happens to contain credentials is not a
+  thing to do quietly; putting one in the inbox is what opts it in.
 - **Type it into a terminal.** For a token that lives in a password manager, or
   a download that is long gone:
 
@@ -156,6 +174,19 @@ entering its context. Whatever launches runs reads the store file directly.
 Never `cat`, `bat`, `rg`, or otherwise read `store/accounts.json` to answer a
 question about which accounts exist. `list` answers that without the keys.
 
+## The inbox is transit, not storage
+
+`inbox/` is where the user hands credentials over. A file that came from there
+and gave up **everything it held** is deleted, and the report says so: the same
+token sitting in two places in plaintext is exposure with nothing bought.
+
+Everything it held, not most of it. Deleting a list because four of its five
+rows worked would take the fifth — the one that still needs a retry — with it.
+A list with any row left is kept, and the report says how many did not go in.
+
+Only the inbox, too. A file the user keeps in `~/Downloads` or anywhere else is
+theirs: report that it still holds tokens and leave the deleting to them.
+
 ## Where credentials live
 
 `store/accounts.json`, inside the skill, `0600`, ignored by
@@ -180,7 +211,11 @@ not just the one being added.
 | --- | --- |
 | Invoked with no stated intent | `list`, then an interactive add-or-remove selection |
 | User wants to add | `discover --json`, multi-select the files, then `add` |
-| `discover` finds nothing | Offer the two ways in: download a token, or `add --interactive` in their own shell |
+| `discover` finds nothing | Offer the two ways in: drop a token in `inbox/`, or `add --interactive` in their own shell |
+| Some lines of a `.txt` fail | Store the rest; report each failure with its line number, never the line |
+| An `inbox/` file gave up everything it held | It is deleted; report that it was consumed |
+| An `inbox/` file has rows left | It is kept; report how many did not go in |
+| `discover` warns the inbox is not ignored | Relay it; say to restore `inbox/.gitignore` before dropping a token |
 | User pastes a raw token | Do not store it; say to expire it, once; then offer the two ways in |
 | Asked to run `add --interactive` for them | Refuse: it is theirs to run in a terminal, and the command refuses anyway |
 | Some credentials in a batch fail | Store the rest; report each rejection with its reason |

@@ -34,22 +34,23 @@ def write_credential(folder: Path, name: str, **fields: object) -> Path:
     return path
 
 
-class ReadCredentialFileTests(unittest.TestCase):
+class ReadCredentialsTests(unittest.TestCase):
     def test_reads_username_and_key_from_a_kaggle_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = write_credential(Path(tmp), "kaggle.json", username=" diego ", key=" abc123 ")
-            self.assertEqual(ACCOUNTS.read_credential_file(str(path)), ("diego", "abc123"))
+            (entry,) = ACCOUNTS.read_credentials(str(path))
+            self.assertEqual((entry["username"], entry["key"]), ("diego", "abc123"))
 
     def test_rejects_a_missing_file(self) -> None:
         with self.assertRaisesRegex(ACCOUNTS.CredentialError, "not found"):
-            ACCOUNTS.read_credential_file("/nonexistent/kaggle.json")
+            ACCOUNTS.read_credentials("/nonexistent/kaggle.json")
 
     def test_rejects_unparseable_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "kaggle.json"
             path.write_text("not json at all", encoding="utf-8")
             with self.assertRaisesRegex(ACCOUNTS.CredentialError, "not valid JSON"):
-                ACCOUNTS.read_credential_file(str(path))
+                ACCOUNTS.read_credentials(str(path))
 
     def test_rejects_a_json_object_missing_either_field(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -58,7 +59,46 @@ class ReadCredentialFileTests(unittest.TestCase):
             blank = write_credential(Path(tmp), "c.json", username="diego", key="   ")
             for path, expected in ((no_key, "'key'"), (no_user, "'username'"), (blank, "'key'")):
                 with self.assertRaisesRegex(ACCOUNTS.CredentialError, expected):
-                    ACCOUNTS.read_credential_file(str(path))
+                    ACCOUNTS.read_credentials(str(path))
+
+
+class CredentialListTests(unittest.TestCase):
+    """A hand-written `.txt` of accounts — one `username key` per line."""
+
+    def test_reads_every_line_whatever_separator_was_used(self) -> None:
+        entries = ACCOUNTS.parse_credential_lines(
+            "one, KEY1\ntwo: KEY2\nthree KEY3\nfour\tKEY4\n")
+        self.assertEqual([(e["username"], e["key"]) for e in entries],
+                         [("one", "KEY1"), ("two", "KEY2"), ("three", "KEY3"), ("four", "KEY4")])
+
+    def test_skips_blank_lines_and_comments_so_a_list_can_be_annotated(self) -> None:
+        entries = ACCOUNTS.parse_credential_lines("# personal\n\none, KEY1\n\n# lab\ntwo, KEY2\n")
+        self.assertEqual([e["username"] for e in entries], ["one", "two"])
+
+    def test_a_bad_line_is_its_own_problem_and_does_not_fail_the_file(self) -> None:
+        # The point of a list is that the good rows survive the bad ones.
+        entries = ACCOUNTS.parse_credential_lines("one, KEY1\nnonsense\ntwo, KEY2\n")
+        self.assertEqual([e["username"] for e in entries if not e["problem"]], ["one", "two"])
+        (bad,) = [e for e in entries if e["problem"]]
+        self.assertEqual(bad["label"], "line 2")
+
+    def test_never_quotes_the_offending_line_back(self) -> None:
+        # Half of a malformed credential line is still a key.
+        (bad,) = ACCOUNTS.parse_credential_lines("user KEY_THAT_LEAKED extra\n")
+        self.assertIsNotNone(bad["problem"])
+        self.assertNotIn("KEY_THAT_LEAKED", bad["problem"])
+
+    def test_numbers_lines_by_the_file_not_by_the_credentials_in_it(self) -> None:
+        # "line 4" has to mean the fourth line of what the user opens in an editor.
+        entries = ACCOUNTS.parse_credential_lines("# note\n\none, KEY1\ntwo, KEY2\n")
+        self.assertEqual([e["label"] for e in entries], ["line 3", "line 4"])
+
+    def test_a_txt_holding_nothing_usable_is_refused_as_a_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cuentas.txt"
+            path.write_text("# solo comentarios\n\n", encoding="utf-8")
+            with self.assertRaisesRegex(ACCOUNTS.CredentialError, "no credentials"):
+                ACCOUNTS.read_credentials(str(path))
 
 
 class StoreTests(unittest.TestCase):
@@ -125,15 +165,29 @@ class DiscoverTests(unittest.TestCase):
             write_credential(Path(tmp), "kaggle.json", username="diego", key="K1")
             write_credential(Path(tmp), "kaggle (1).json", username="milab", key="K2")
             found = ACCOUNTS.discover_credentials([tmp])
-            self.assertEqual(sorted(e["username"] for e in found), ["diego", "milab"])
-            self.assertTrue(all(e["problem"] is None for e in found))
+            self.assertEqual(sorted(u for e in found for u in e["usernames"]),
+                             ["diego", "milab"])
+            self.assertTrue(all(not e["problems"] for e in found))
 
     def test_reports_an_unreadable_candidate_instead_of_hiding_it(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "kaggle.json").write_text("garbage", encoding="utf-8")
             (entry,) = ACCOUNTS.discover_credentials([tmp])
-            self.assertIsNone(entry["username"])
-            self.assertIn("not valid JSON", entry["problem"])
+            self.assertEqual(entry["usernames"], [])
+            self.assertIn("not valid JSON", entry["problems"][0])
+
+    def test_a_txt_list_is_only_looked_for_in_the_inbox(self) -> None:
+        # Reading every text file in somebody's Downloads to see what is inside
+        # is not a thing to do quietly; the inbox is the folder that opts in.
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "cuentas.txt").write_text("one, KEY1\n", encoding="utf-8")
+            self.assertEqual(ACCOUNTS.discover_credentials([tmp]), [])
+            original, ACCOUNTS.INBOX_DIR = ACCOUNTS.INBOX_DIR, Path(tmp)
+            try:
+                (entry,) = ACCOUNTS.discover_credentials([tmp])
+                self.assertEqual(entry["usernames"], ["one"])
+            finally:
+                ACCOUNTS.INBOX_DIR = original
 
     def test_ignores_unrelated_json_and_missing_folders(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -152,6 +206,33 @@ class DiscoverTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             write_credential(Path(tmp), "kaggle.json", username="diego", key="SECRET")
             self.assertNotIn("SECRET", json.dumps(ACCOUNTS.discover_credentials([tmp])))
+
+
+class InboxTests(unittest.TestCase):
+    """The folder that exists so the user has somewhere to put the download."""
+
+    def test_the_inbox_ships_already_ignored_by_git(self) -> None:
+        # It lives inside the repository, so the ignore rule is the whole
+        # protection — and it has to hold before the first token lands, not after.
+        self.assertTrue(ACCOUNTS.INBOX_DIR.is_dir())
+        self.assertIs(ACCOUNTS.is_ignored(ACCOUNTS.INBOX_DIR / "kaggle.json"), True)
+        self.assertIs(ACCOUNTS.is_ignored(ACCOUNTS.INBOX_DIR / "kaggle (1).json"), True)
+
+    def test_the_inbox_gitignore_itself_stays_tracked(self) -> None:
+        self.assertIs(ACCOUNTS.is_ignored(ACCOUNTS.INBOX_DIR / ".gitignore"), False)
+
+    def test_is_searched_for_candidates(self) -> None:
+        self.assertIn(str(ACCOUNTS.INBOX_DIR), ACCOUNTS.CREDENTIAL_SEARCH_DIRS)
+
+    def test_recognises_what_came_from_the_inbox_and_what_did_not(self) -> None:
+        self.assertTrue(ACCOUNTS.in_inbox(ACCOUNTS.INBOX_DIR / "kaggle.json"))
+        self.assertFalse(ACCOUNTS.in_inbox(Path.home() / "Downloads" / "kaggle.json"))
+        # The inbox folder itself is not a file inside it.
+        self.assertFalse(ACCOUNTS.in_inbox(ACCOUNTS.INBOX_DIR))
+
+    def test_shows_inbox_paths_by_that_name(self) -> None:
+        self.assertEqual(
+            ACCOUNTS.display_path(ACCOUNTS.INBOX_DIR / "kaggle.json"), "inbox/kaggle.json")
 
 
 class InteractiveEntryTests(unittest.TestCase):
