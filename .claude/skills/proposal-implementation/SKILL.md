@@ -400,6 +400,7 @@ exactly what stops a launcher from being able to claim it implements anything.
 | `priorWork` reports `modified` | Say what changed and that correcting prior work belongs to a session of its own |
 | `priorWork` reports `reaching` | The change moves what an arm computes: the record is stale, report before any run |
 | `search` reports `incomplete` | A value is chosen by outcome and the search does not say enough about itself to be an experiment: report before quoting anything it chose |
+| `distribution` reports `incomplete` | A run is split and does not say enough about the split to still be one run: report before merging anything |
 | Target outside `implementations/`, or dirty tree | Refuse and report the guard |
 
 ## Where to start: the repository is the memory
@@ -1223,6 +1224,49 @@ apart, and each is cheap enough that skipping it is never the economical choice.
   taken from prior work was calibrated for prior work's scale. Sweep it over decades
   on a single cell and find where the term begins to move the outcome, before the grid
   runs. It costs minutes and decides whether the whole campaign says anything.
+- **A run split across machines is still one run, and only if it is declared as
+  one.** When a campaign is too large for the machine in front of you, it gets
+  divided — and the division is a choice with a wrong answer. `verify` reports
+  `distribution`: the `axis` a shard is a subset of, which measurements are
+  `poolable` and which are `perEnvironment`, and what must be
+  `identicalAcrossShards`.
+
+  **The axis may be anything except a comparison.** Divide by repetition, by
+  subject, by fold, by whatever a repetition is made of here — but never by arm.
+  Every rung of the ladder subtracts two arms, so splitting there puts that
+  subtraction across a hardware boundary, and the rung then credits a mechanism
+  with what the machine did. That is the one split no care afterwards can undo,
+  and it is the only one this refuses; what the axis *is* instead is the
+  repository's business, and a skill that required a particular one would work
+  for the repository it was written against and no other.
+
+  **A measurement describes whichever machine produced it.** Accuracy is a
+  property of the method and pools freely; wall time and peak memory are
+  properties of the machine, and averaging them across two of them yields a
+  number that describes neither. So every declared dimension belongs to exactly
+  one half. In neither, and it is silently dropped — a column nobody notices is
+  gone. In both, and there are two answers to one question. Which is which the
+  repository says; nothing here learns what a dimension measures.
+
+  **Requesting hardware and receiving it are two obligations.** A service
+  allocates by availability, so a shard can ask for one class and land on
+  another without a word. Pin it where the launching lives, and stamp what
+  arrived where the measuring lives; group cost by the stamp and never by the
+  request. A stamp that cannot tell two accelerators apart is a label that lies,
+  and grouping by it is worse than not grouping at all.
+
+  **Shards agree on what they said had to agree, or the merge refuses.** Not
+  averages — refuses. A different epoch count is a different experiment rather
+  than different hardware, and one table drawn over both is a table nobody can
+  attribute.
+
+  And scale is recomputed from what came back, never from what was asked for.
+  Three shards planned and two returned is a smaller campaign, not a failed one,
+  and the record says which repetitions the verdict actually rests on.
+
+  No service is named here, and none should be. Where the work goes is the
+  repository's decision, and the launcher that knows about it belongs in
+  `tools/` for the reasons that section gives.
 - **And a search is an experiment, declared as one.** The moment a value is chosen
   by looking at outcomes, the thing that chose it needs everything a run needs, and
   three of those are invisible until somebody walks into them. `verify` reports
@@ -1396,8 +1440,8 @@ have to count rows to learn the answer.
 
 Report: the bound revision, the target path, the migration commit hash (if
 any), the object → module map, the test result, and the verification statuses
-(`structure`, `priorWork`, `agreements`, `search`, `prose`, `fidelity`, `report`,
-`audit`, `validation`) separately. `priorWork`, `agreements` and `prose` are reported whatever they
+(`structure`, `priorWork`, `agreements`, `search`, `distribution`, `prose`,
+`fidelity`, `report`, `audit`, `validation`) separately. `priorWork`, `agreements` and `prose` are reported whatever they
 say: that prior work is untouched, and that nothing was left open, are facts the
 reader is owed, and a check that only speaks up when something is wrong teaches
 nobody what it was watching. Never report the work done while `agreements` is

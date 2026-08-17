@@ -1797,6 +1797,119 @@ class UndeclaredRecordsTests(unittest.TestCase):
             self.assertEqual(state["undeclaredRecords"], [])
 
 
+class DistributionTests(unittest.TestCase):
+    """A run split across machines, checked without knowing what any of it means.
+
+    Three obligations, and each one's prohibition is the reason it is general:
+    the axis must not be a comparison, the partition must be exhaustive, and
+    shards must agree on what they said had to agree.
+    """
+
+    COMPLETE = {
+        "axis": "seed",
+        "poolable": ["accuracy"],
+        "perEnvironment": ["cost"],
+        "identicalAcrossShards": ["revision"],
+    }
+    DIMENSIONS = {"accuracy": "higher", "cost": "lower"}
+
+    def test_a_repository_that_distributes_nothing_has_nothing_to_declare(self):
+        state = impl.distribution_state({}, self.DIMENSIONS)
+        self.assertEqual(state["status"], "none")
+
+    def test_sharding_along_a_comparison_is_refused(self):
+        """The one axis that is never allowed, because the ladder subtracts along it.
+
+        Every rung compares two arms, so splitting by arm puts that subtraction
+        across a hardware boundary and credits a mechanism with what the machine
+        did.
+        """
+        state = impl.distribution_state(
+            {"distribution": {**self.COMPLETE, "axis": "arm"}}, self.DIMENSIONS)
+        self.assertEqual(state["status"], "incomplete")
+        self.assertTrue(state["axisIsAComparison"])
+
+    def test_any_other_axis_is_the_repository_s_business(self):
+        """Reachable red: requiring `"seed"` would make this a forge for one paper.
+
+        Another repository shards by subject, by fold, by episode, by patient.
+        The skill has no notion of a seed and must not acquire one.
+        """
+        for axis in ("seed", "subject", "fold", "episode", "patient"):
+            state = impl.distribution_state(
+                {"distribution": {**self.COMPLETE, "axis": axis}}, self.DIMENSIONS)
+            self.assertEqual(state["status"], "ok", axis)
+
+    def test_a_dimension_in_neither_half_is_named(self):
+        """Silently dropped, it becomes a column nobody notices is gone."""
+        state = impl.distribution_state(
+            {"distribution": {**self.COMPLETE, "perEnvironment": []}},
+            self.DIMENSIONS)
+        self.assertEqual(state["unpartitioned"], ["cost"])
+        self.assertEqual(state["status"], "incomplete")
+
+    def test_a_dimension_in_both_halves_is_named(self):
+        """Pooled and grouped at once is two answers to one question."""
+        state = impl.distribution_state(
+            {"distribution": {**self.COMPLETE, "poolable": ["accuracy", "cost"]}},
+            self.DIMENSIONS)
+        self.assertEqual(state["inBothHalves"], ["cost"])
+        self.assertEqual(state["status"], "incomplete")
+
+    def test_a_declared_dimension_that_does_not_exist_is_named(self):
+        state = impl.distribution_state(
+            {"distribution": {**self.COMPLETE, "poolable": ["accuracy", "ghost"]}},
+            self.DIMENSIONS)
+        self.assertEqual(state["notADimension"], ["ghost"])
+
+    def test_it_names_no_dimension_of_its_own(self):
+        """The offending names are echoed from the repository, never written here.
+
+        A skill that knew `seconds` describes a machine would be a skill that had
+        learned one benchmark's vocabulary.
+        """
+        import json as _json
+        source = _json.dumps([impl.DISTRIBUTION_DECLARATION,
+                              impl.distribution_state.__doc__]).lower()
+        for leaked in ("seconds", "peakmib", "accuracy", "seed", "kaggle", "t4"):
+            self.assertNotIn(leaked, source, leaked)
+
+    def test_shards_that_disagree_on_what_must_match_are_reported(self):
+        """Refused rather than averaged: a difference there is a different
+        experiment, not different hardware."""
+        merged = {"shardsArrived": ["a", "b"],
+                  "disagreements": [{"field": "revision", "values": {}}]}
+        state = impl.distribution_state(
+            {"distribution": self.COMPLETE}, self.DIMENSIONS, merged)
+        self.assertEqual(state["status"], "incomplete")
+        self.assertEqual(state["shardsDisagree"], ["revision"])
+
+    def test_the_forecast_scales_what_the_pilot_measured(self):
+        """A projection from data, not an estimate from memory."""
+        cost = impl._projected_cost(
+            {"seconds": 600, "epochs": 3, "seeds": [0]},
+            {"epochs": 20, "seeds": list(range(30))})
+        self.assertEqual(cost["factor"], 200.0)
+        self.assertEqual(cost["projectedSeconds"], 120000)
+
+    def test_a_forecast_it_cannot_make_says_why(self):
+        """A silent `None` reads as "the cost is fine" to anyone skimming.
+
+        It means the record never wrote down how long it took, and the whole
+        point of projecting from a measurement is that somebody kept one.
+        """
+        cost = impl._projected_cost({"epochs": 3}, {"epochs": 20})
+        self.assertIsNone(cost["projectedSeconds"])
+        self.assertIn("no duration", cost["reason"])
+
+    def test_a_complete_declaration_with_agreeing_shards_passes(self):
+        merged = {"shardsArrived": ["a", "b"], "disagreements": []}
+        state = impl.distribution_state(
+            {"distribution": self.COMPLETE}, self.DIMENSIONS, merged)
+        self.assertEqual(state["status"], "ok")
+        self.assertEqual(state["missing"], [])
+
+
 class ToolsRootTests(unittest.TestCase):
     """`tools/` is where a launcher lives, and it needed a home.
 

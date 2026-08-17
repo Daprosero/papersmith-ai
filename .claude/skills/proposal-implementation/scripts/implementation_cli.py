@@ -393,6 +393,128 @@ def prose_state(target: Path, revision: str | None,
     return {"staleRevisions": revisions, "unresolvedSymbols": unresolved}
 
 
+#: What a distributed run has to say about itself. Each is a way a split stops
+#: being one experiment and becomes several wearing one table.
+DISTRIBUTION_DECLARATION = {
+    "axis": "what a shard is a subset of. It may be anything the repository "
+            "divides by, and it may never be one the ladder compares along: "
+            "every rung subtracts two arms, so splitting there puts that "
+            "subtraction across a hardware boundary and credits a mechanism "
+            "with what the machine did",
+    "poolable": "the measurements that mean the same thing wherever they were "
+                "taken, so they may be pooled across shards",
+    "perEnvironment": "the measurements that describe the machine that produced "
+                      "them, which are read one machine at a time — averaging "
+                      "them across two yields a number that describes neither",
+    "identicalAcrossShards": "what every shard must agree on. A difference there "
+                             "is a different experiment rather than different "
+                             "hardware, so the merge refuses instead of averaging",
+}
+
+
+def _projected_cost(reduction: dict, target_scale: dict) -> dict | None:
+    """What the full run would cost, scaled from what the pilot measured.
+
+    A projection from data, not an estimate. The pilot already ran and its
+    duration is in the record; what the campaign costs is that, multiplied by how
+    much larger the declared scale is along each axis the pilot ran short on.
+
+    Reported and never gated. Whether a projected cost is too much is the user's
+    call, and a threshold invented here would be this skill deciding how long
+    somebody else's afternoon is worth.
+    """
+    ran = reduction.get("seconds") or reduction.get("wallSeconds")
+    if not target_scale:
+        return {"projectedSeconds": None,
+                "reason": "the record declares no target scale, so there is "
+                          "nothing to project towards"}
+    if not ran:
+        # Said rather than left empty. A silent `None` reads as "the cost is
+        # fine" to anyone skimming, when it means the record never wrote down how
+        # long it took — and the whole point of projecting from a measurement is
+        # that somebody kept the measurement.
+        return {"projectedSeconds": None,
+                "reason": "the record carries no duration for the run that "
+                          "produced it, so the only honest projection is none; "
+                          "record the wall time beside the scale and this fills in"}
+    factor = 1.0
+    for key, wanted in target_scale.items():
+        have = _scale_of(reduction.get(key))
+        want = _scale_of(wanted)
+        if have and want:
+            factor *= want / have
+    return {"measuredSeconds": ran, "factor": round(factor, 2),
+            "projectedSeconds": round(ran * factor)}
+
+
+def distribution_state(contract: dict, dimensions: dict,
+                       merged: dict | None = None) -> dict:
+    """Whether a run split across machines says enough about itself to be one run.
+
+    Three obligations, and each one's prohibition is what keeps this general.
+
+    **The axis may be anything except a comparison.** This refuses `arm` and asks
+    nothing else of it. A repository divides by whatever its repetitions are made
+    of, and this has no notion of what that is — requiring a particular one would
+    make the check work for the repository it was written against and no other.
+    What it does know is that the arms are compared, because the declaration
+    names them, and a split along a comparison is the one that cannot be undone
+    by any amount of care afterwards.
+
+    **The partition must be exhaustive and disjoint.** Every declared dimension
+    belongs to exactly one half: pooled, or read one machine at a time. In
+    neither, and it is silently dropped — a column nobody notices is gone. In
+    both, and there are two answers to one question. Which dimension is which is
+    the repository's to say; this never learns what any of them measures, and the
+    names in a finding are echoed from the declaration rather than written here.
+
+    **Shards agree on what they said had to agree.** Where a merge record exists,
+    a disagreement is reported and the merge is refused, never averaged.
+
+    Absence is `none`. Most repositories run on one machine and have nothing to
+    declare, and demanding a declaration from them would be inventing a problem.
+    """
+    dist = contract.get("distribution")
+    if not dist:
+        return {"status": "none", "declared": {}, "missing": [],
+                "axisIsAComparison": False, "unpartitioned": [],
+                "inBothHalves": [], "notADimension": [], "shardsDisagree": [],
+                "note": "no distribution declared; a run on one machine has "
+                        "nothing to split and nothing to say about splitting it"}
+
+    missing = [{"field": field, "reason": reason}
+               for field, reason in DISTRIBUTION_DECLARATION.items()
+               if not dist.get(field)]
+
+    # The only axis this refuses, and it refuses it by name because the name is
+    # its own: `arms` is part of the declaration schema, so what the ladder
+    # compares along is something this can know without learning a vocabulary.
+    axis_is_comparison = dist.get("axis") == "arm"
+
+    poolable = list(dist.get("poolable") or [])
+    per_environment = list(dist.get("perEnvironment") or [])
+    declared = set(poolable) | set(per_environment)
+    unpartitioned = sorted(d for d in dimensions if d not in declared)
+    in_both = sorted(set(poolable) & set(per_environment))
+    not_a_dimension = sorted(d for d in declared if d not in dimensions)
+
+    disagree = sorted(row.get("field") for row in (merged or {}).get("disagreements") or [])
+
+    clean = (not missing and not axis_is_comparison and not unpartitioned
+             and not in_both and not not_a_dimension and not disagree)
+    return {
+        "status": "ok" if clean else "incomplete",
+        "declared": dict(dist),
+        "missing": missing,
+        "axisIsAComparison": axis_is_comparison,
+        "unpartitioned": unpartitioned,
+        "inBothHalves": in_both,
+        "notADimension": not_a_dimension,
+        "shardsDisagree": disagree,
+        "shardsArrived": list((merged or {}).get("shardsArrived") or []),
+    }
+
+
 def search_state(contract: dict, declared_records: list,
                  product: Path | None = None) -> dict:
     """Whether a declared search says enough about itself to be an experiment.
@@ -1326,6 +1448,12 @@ def probe_state(target: Path, name: str, revision: str | None) -> dict:
         "reduction": reduction,
         "targetScale": target_scale or None,
         "belowTargetScale": below or None,
+        # What the full run would cost, from what the pilot actually took rather
+        # than from anybody's memory of it. Divided by the shards the repository
+        # declares, when it declares any — a projection and never a threshold:
+        # whether that cost is worth splitting is not a question this can answer,
+        # and a number reported is what lets somebody else answer it.
+        "projectedCost": _projected_cost(reduction, target_scale),
         "labels": sorted(rows) if isinstance(rows, dict) else
                   [row.get("dimension") for row in rows if isinstance(row, dict)],
     }
@@ -3788,6 +3916,11 @@ def cmd_verify(args: argparse.Namespace) -> dict:
                 BENCHMARK_DECLARATION) or {},
             list((report.get("declared") or {}).get("records") or []),
             target / name),
+        "distribution": distribution_state(
+            read_declaration(
+                target / "src" / f"{package_name(name)}_Benchmark" / "__init__.py",
+                BENCHMARK_DECLARATION) or {},
+            (report.get("declared") or {}).get("dimensions") or {}),
         "fidelity": {
             "status": fidelity_status,
             "latestRevision": args.revision,
