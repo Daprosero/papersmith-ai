@@ -2095,7 +2095,8 @@ class StaleFindingTests(unittest.TestCase):
         "    },\n"
         "}\n")
 
-    def build(self, root: Path, digest_matches: bool) -> dict:
+    def build(self, root: Path, digest_matches: bool,
+              unexecuted: bool = False, errored: bool = False) -> dict:
         (root / "src/Method_Benchmark").mkdir(parents=True, exist_ok=True)
         (root / "src/Method_Benchmark/__init__.py").write_text(
             self.DECLARATION, encoding="utf-8")
@@ -2118,6 +2119,16 @@ class StaleFindingTests(unittest.TestCase):
              "outputs": [{"output_type": "stream", "name": "stdout",
                           "text": [f"{impl.DIGEST_MARKER} {digest}\n"]}]},
         ]
+        if unexecuted:
+            cells.append({"cell_type": "code", "execution_count": None,
+                          "metadata": {}, "source": ["tables.render()"],
+                          "outputs": []})
+        if errored:
+            cells.append({"cell_type": "code", "execution_count": 4,
+                          "metadata": {}, "source": ["tables.render()"],
+                          "outputs": [{"output_type": "error",
+                                       "ename": "NameError", "evalue": "tables",
+                                       "traceback": []}]})
         nb = root / "Method/Notebooks/report.ipynb"
         nb.parent.mkdir(parents=True, exist_ok=True)
         nb.write_text(json.dumps({"cells": cells, "metadata": {},
@@ -2139,6 +2150,31 @@ class StaleFindingTests(unittest.TestCase):
             found = state["restated"]
             self.assertTrue(found, "el fixture tiene que producir el hallazgo")
             self.assertNotIn("fromStaleNotebook", found[0])
+
+    def test_a_notebook_too_stale_to_be_called_stale_sources_still_says_so(self):
+        """La escalera de estados es excluyente, y esta bandera leía un peldaño.
+
+        Un cuaderno con celdas sin correr se llama `stale` y ahí se queda: nunca
+        llega a la comparación de digest, así que sus fuentes pueden diferir en
+        todo y el estado no cambia. Filtrar por `stale-sources` entonces pierde la
+        marca justo cuando el cuaderno está más desactualizado y no menos —
+        corrió a medias *y* contra otro código— que es la única dirección en la
+        que este error podía ser peligroso.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            state = self.build(Path(raw), digest_matches=False, unexecuted=True)
+            found = state["restated"]
+            self.assertTrue(found, "el fixture tiene que producir el hallazgo")
+            self.assertTrue(found[0].get("fromStaleNotebook"))
+
+    def test_a_finding_read_off_a_notebook_that_failed_says_so(self):
+        """Un cuaderno con un error corrió parte de sus celdas y abandonó el
+        resto, así que lo que emitió describe una corrida que no terminó."""
+        with tempfile.TemporaryDirectory() as raw:
+            state = self.build(Path(raw), digest_matches=True, errored=True)
+            found = state["restated"]
+            self.assertTrue(found, "el fixture tiene que producir el hallazgo")
+            self.assertTrue(found[0].get("fromStaleNotebook"))
 
 
 class ComponentShareTests(unittest.TestCase):

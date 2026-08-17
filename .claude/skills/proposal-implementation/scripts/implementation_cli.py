@@ -2623,8 +2623,18 @@ def report_state(target: Path, name: str, package: str) -> dict:
     # a live defect goes and fixes something already fixed, or fixes it a second
     # way. Both halves were already computed and reported, in two different places
     # in this output, and nobody crossed them; `fromStaleNotebook` is that join.
+    #
+    # Anything that is not `executed`, rather than `stale-sources` alone. The
+    # status ladder is exclusive and `stale-sources` sits at the top of it: a
+    # notebook is only compared against the current digest once it is known to
+    # have run clean, so one with an unexecuted cell is called `stale` and stops
+    # there — its sources can differ in everything and the name never changes.
+    # Naming only the top rung therefore dropped the mark exactly where the
+    # notebook was *more* out of date and not less, which is the one direction
+    # this could go wrong in: a half-run notebook measured against other code
+    # reported its findings as live.
     stale = {r["notebook"] for r in notebooks_state(target, name, package)["reports"]
-             if r["status"] == "stale-sources"}
+             if r["status"] != "executed"}
     if not contract:
         return {
             "status": "undeclared",
