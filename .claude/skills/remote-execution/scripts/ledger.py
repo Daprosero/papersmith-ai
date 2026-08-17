@@ -2,13 +2,13 @@
 """Append-only ledger for forge-owned remote execution.
 
 A submission to a remote worker is a fact once it happens, and facts are not
-edited — only added to. This module owns exactly one operation on that
-premise: appending one JSON-encoded event to `<target>/<Name>/.remote-execution/
-ledger.jsonl`, one line per event, opened `O_APPEND`, never rewritten and
-never deleted. Deriving "what is the current state of this entrypoint" from
-that log — the fold, and the currency rule that tells a fresh result from a
-stale one — is a later module's job; this one only has to make sure that
-every fact that goes in survives being written.
+edited — only added to. This module owns the append path — appending one
+JSON-encoded event to `<target>/<Name>/.remote-execution/ledger.jsonl`, one
+line per event, opened `O_APPEND`, never rewritten and never deleted — and
+the fold: deriving "what is the current state of this entrypoint" from that
+log, including the currency rule that tells a fresh result from a stale one.
+No mutable "current status" record is ever stored; every answer `fold()`
+gives is recomputed from the log each time it is called.
 
 Ledger CODE is forge-owned. Ledger DATA lives inside the target's own git
 checkout, because it is a per-repository record of what that repository
@@ -40,8 +40,9 @@ from __future__ import annotations
 import json
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Iterable, Mapping
 
 # A ledger event has no business being large: the fields are a path, a
 # 64-hex digest, an opaque id, a worker name and a timestamp — ~300 B
@@ -172,3 +173,221 @@ def append(path: str | Path, event: Mapping[str, object]) -> None:
             f"short write on append: wrote {written} of {len(payload)} "
             f"bytes to {path}; treat this event as unrecorded"
         )
+
+
+# --------------------------------------------------------------------------
+# The fold: deriving current state from the append-only log.
+# --------------------------------------------------------------------------
+
+_TERMINAL_KINDS = ("returned", "errored")
+
+
+@dataclass(frozen=True)
+class EntrypointState:
+    """Where one entrypoint stands after folding the log.
+
+    `state` reflects only the entrypoint's LATEST submission's own terminal
+    event (or the absence of one) — a `returned` event that belongs to a
+    SUPERSEDED submission never promotes this to "returned". That event is
+    instead reported through `LedgerState.from_stale_submission` and
+    quarantined; it never touches what this entrypoint's current picture
+    says.
+    """
+
+    state: str  # "pending" | "returned" | "errored"
+    stale_in_flight: bool
+
+
+@dataclass
+class LedgerState:
+    """The result of folding a ledger's lines. Derived, not stored.
+
+    Nothing here is a fact on its own — every field is recomputed from the
+    log each time `fold()` runs. A mutable "current status" record is
+    exactly what this ledger's append-only design exists to avoid: a lost
+    append is detectable (the reader can count lines against what it
+    expects), a lost in-place mutation is not.
+    """
+
+    by_id: dict[str, dict]
+    latest: dict[str, dict]
+    entrypoints: dict[str, EntrypointState]
+    verdicts: dict[str, str]
+    unreadable_lines: int
+
+    @property
+    def stale_in_flight(self) -> tuple[str, ...]:
+        """Entrypoints with a pending submission the source has moved past.
+
+        Reported, never acted on — see `fold()`'s note on why this function
+        never calls `cancel()`.
+        """
+        return tuple(
+            sorted(
+                entrypoint
+                for entrypoint, state in self.entrypoints.items()
+                if state.stale_in_flight
+            )
+        )
+
+    @property
+    def from_stale_submission(self) -> tuple[str, ...]:
+        """Entrypoints with at least one quarantined, never-merged result."""
+        stale_entrypoints = {
+            self.by_id[submission_id]["entrypoint"]
+            for submission_id, verdict in self.verdicts.items()
+            if verdict == "fromStaleSubmission" and submission_id in self.by_id
+        }
+        return tuple(sorted(stale_entrypoints))
+
+
+def fold(lines: Iterable[str], live_digest: str | Callable[[], str]) -> LedgerState:
+    """Derive current per-entrypoint state from the append-only log.
+
+    Append order IS the total order this function honors, full stop. `ts` is
+    a field carried on every event for a human reading the raw file, and it
+    is NEVER used to order or compare events here: two machines submitting
+    to the same ledger can disagree about the time, and sorting by a value
+    one of them wrote would reorder events the filesystem's `O_APPEND`
+    already ordered correctly. `lines` is trusted to already be in that
+    order — the order the caller read them off disk — and this function
+    does not second-guess it.
+
+    `live_digest` is the source digest to judge recorded submissions
+    against, taken as data rather than computed in here. This module stays
+    stdlib-only and target-blind on purpose: the dependency direction for
+    this whole skill is `remote_cli -> packer -> ledger -> adapter`, one
+    way, and the actual `source_digest()` lives in proposal-implementation's
+    own module, which is the one that knows what a target's source tree is.
+    Importing it from here would point that arrow the wrong way for no
+    benefit `fold()` itself needs. A caller that already knows how to
+    compute a fresh digest passes a string; if computing one is not free, it
+    passes a zero-argument callable instead, and this function pays for it
+    at most once per call — not once per event or per entrypoint.
+
+    Two passes over `lines`, not one. The first resolves `by_id` and
+    `latest` — facts about the WHOLE log. The second computes each
+    `returned` event's verdict against those resolved facts. A single
+    forward pass would get this wrong: a result that looked current the
+    moment it arrived can become `fromStaleSubmission` the instant a LATER
+    resubmission lands, even though the log line itself never changes. Since
+    `fold()` is a batch computation that can run long after every event in
+    the log has landed, "latest" has to mean latest across the whole log,
+    not "latest as of wherever this loop has read so far".
+    """
+    live = live_digest() if callable(live_digest) else live_digest
+
+    by_id: dict[str, dict] = {}
+    latest: dict[str, dict] = {}
+    terminal_by_id: dict[str, dict] = {}
+    returned_events: list[dict] = []
+    unreadable_lines = 0
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        try:
+            event = json.loads(line)
+            if not isinstance(event, dict) or "kind" not in event:
+                raise ValueError("not a ledger event")
+        except (json.JSONDecodeError, ValueError):
+            # A corrupted or truncated line is exactly what a short write
+            # (see append()) or a process killed mid-append leaves behind.
+            # It is skipped and counted here, never repaired and never
+            # rewritten: repairing it would mean inventing a fact this
+            # ledger never actually recorded, and rewriting the file is the
+            # one operation the append-only design exists to rule out.
+            unreadable_lines += 1
+            continue
+
+        kind = event.get("kind")
+        if kind == "submitted":
+            by_id[event["submissionId"]] = event
+            # Overwritten every time a submitted event for this entrypoint
+            # is seen, in the order this loop sees them — append order, not
+            # `ts`. The last write wins, same as it would for any other
+            # last-one-in-wins index over an ordered log.
+            latest[event["entrypoint"]] = event
+        elif kind in _TERMINAL_KINDS:
+            terminal_by_id[event["submissionId"]] = event
+            if kind == "returned":
+                returned_events.append(event)
+        # Any other kind parses cleanly and is simply one this fold does not
+        # act on yet — forward-compatible, not corrupted.
+
+    verdicts: dict[str, str] = {}
+    for event in returned_events:
+        submission = by_id.get(event["submissionId"])
+        if submission is None:
+            # A returned event naming a submission this log never recorded
+            # is a reconciliation concern (a later task's territory, not
+            # this fold's) — the line parsed cleanly, so it is not counted
+            # as unreadable. It simply contributes no verdict.
+            continue
+        verdicts[event["submissionId"]] = _currency_verdict(submission, latest, live)
+
+    entrypoints: dict[str, EntrypointState] = {}
+    for entrypoint, submission in latest.items():
+        terminal = terminal_by_id.get(submission["submissionId"])
+        if terminal is None:
+            state = "pending"
+        elif terminal["kind"] == "returned":
+            state = "returned"
+        else:
+            state = "errored"
+
+        # staleInFlight is orthogonal to state on purpose: it only ever
+        # applies to a submission still waiting on a result. A submission
+        # that already returned or errored is a settled fact, not an
+        # in-flight one, however stale the source has since become.
+        stale_in_flight = state == "pending" and submission["sourceDigest"] != live
+
+        entrypoints[entrypoint] = EntrypointState(
+            state=state, stale_in_flight=stale_in_flight
+        )
+
+    return LedgerState(
+        by_id=by_id,
+        latest=latest,
+        entrypoints=entrypoints,
+        verdicts=verdicts,
+        unreadable_lines=unreadable_lines,
+    )
+
+
+def _currency_verdict(
+    submission: Mapping[str, object], latest: Mapping[str, dict], live: str
+) -> str:
+    """The currency rule a `returned` event's submission is judged by.
+
+    Both halves below are load-bearing ON THEIR OWN, not redundant with each
+    other:
+
+    - `superseded` (id-equality) catches a resubmission at an UNCHANGED
+      digest — a retry after a service failure, where the source never
+      moved but an older submission id is no longer the one that matters.
+      Digest-equality alone would miss this: the old submission's recorded
+      digest still equals the live one, so a digest-only check would call
+      its result current.
+    - `sourceMoved` (digest-equality) catches the opposite: the same
+      submission is still the latest one on record — no resubmission
+      happened — yet the source has moved again since it was submitted.
+      Id-equality alone would miss this: the id still matches the latest
+      one, so an id-only check would call this result current too.
+
+    Either check alone lets a superseded result read as current, which is
+    the one defect class this whole ledger exists to prevent. A submission
+    this log never recorded (a defensive case that should not arise given
+    `submission` always comes from `by_id`) is treated as superseded rather
+    than current — this rule fails closed, not open.
+    """
+    latest_for_entrypoint = latest.get(submission["entrypoint"])
+    superseded = (
+        latest_for_entrypoint is None
+        or latest_for_entrypoint["submissionId"] != submission["submissionId"]
+    )
+    source_moved = submission["sourceDigest"] != live
+    current = not superseded and not source_moved
+    return "current" if current else "fromStaleSubmission"
