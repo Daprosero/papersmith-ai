@@ -222,7 +222,161 @@ SEARCH_DECLARATION = {
 }
 
 
-def search_state(contract: dict, declared_records: list) -> dict:
+#: A token in prose that looks like something in the code: dotted, underscored or
+#: shouted. A bare lowercase word is an English word far more often than a symbol,
+#: and reporting those would bury the ones that matter.
+PROSE_SYMBOL = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+"
+                          r"|[A-Z][A-Z0-9_]{2,}"
+                          r"|[a-z][a-z0-9]*(?:_[a-z0-9]+)+)`")
+
+#: Endings that make a token a filename rather than a symbol. Prose names files
+#: constantly, and dotted-and-underscored is exactly what a filename looks like.
+FILE_SUFFIXES = (".py", ".md", ".json", ".jsonl", ".ipynb", ".txt", ".toml",
+                 ".yaml", ".yml", ".csv", ".cfg", ".pdf", ".png", ".npz")
+
+
+def prose_of(path: Path) -> list[tuple[int, str]]:
+    """The prose of a file — docstrings and comments — and never its code.
+
+    Reading the whole text would report a revision sitting in a `__provenance__`
+    literal, which is code and is checked where it belongs. What this wants is the
+    sentences: the places where a claim ages without anything failing.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if path.suffix == ".md":
+        return list(enumerate(text.splitlines(), 1))
+    if path.suffix == ".ipynb":
+        try:
+            cells = json.loads(text).get("cells") or []
+        except json.JSONDecodeError:
+            return []
+        lines = []
+        for cell in cells:
+            body = "".join(cell.get("source") or [])
+            if cell.get("cell_type") == "markdown":
+                lines += list(enumerate(body.splitlines(), 1))
+            else:
+                lines += [(n, ln) for n, ln in enumerate(body.splitlines(), 1)
+                          if ln.lstrip().startswith("#")]
+        return lines
+
+    found: list[tuple[int, str]] = []
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                             ast.AsyncFunctionDef)):
+            doc = ast.get_docstring(node, clean=False)
+            if doc:
+                start = getattr(node, "lineno", 0)
+                found += [(start + i, ln) for i, ln in enumerate(doc.splitlines())]
+    found += [(n, ln) for n, ln in enumerate(text.splitlines(), 1)
+              if ln.lstrip().startswith("#")]
+    return found
+
+
+def prose_state(target: Path, revision: str | None,
+                source_root: Path | None = None) -> dict:
+    """Claims in prose that stopped being true, where nothing else would notice.
+
+    Every other check here reads a declaration or a file. These read sentences —
+    the docstrings and comments that say what the code does — and a sentence ages
+    without anything failing. A rename leaves the old symbol named in the
+    paragraph beside it; a new revision leaves the old one named in a heading that
+    still says which revision was verified.
+
+    Two kinds, and only the two that can be settled without interpreting anyone:
+
+    `staleRevisions` — a managed revision named in prose that is not the current
+    one. The pattern is derived from the revision handed in, never hardcoded, so
+    nothing here has to know a naming convention. A historical mention is
+    legitimate and common — "the bound r16 adopted" is a fact about when — so this
+    is reported and never drifts a status: telling the two apart is a reading, and
+    a check that guessed would spend its credibility on the wrong ones.
+
+    `unresolvedSymbols` — a token in prose shaped like a symbol that resolves to
+    nothing under `src/`. This is what a rename leaves behind. A configuration key
+    quoted the same way will show up too; that is a small, honest cost for
+    catching the paragraph that still names a constant nobody kept.
+
+    What neither can do is judge a claim about behaviour. "Nothing here is
+    modified" ages exactly the same way and cannot be checked without parsing an
+    assertion out of a sentence — in whichever language its author wrote it.
+    """
+    revisions: list[dict] = []
+    unresolved: list[dict] = []
+    if not target.is_dir():
+        return {"staleRevisions": revisions, "unresolvedSymbols": unresolved}
+
+    # Every name any module under the source root defines, plus the module paths
+    # themselves. The root is a parameter because the same reading is worth having
+    # over this skill's own directory: a rename here leaves the old symbol named
+    # in `SKILL.md` and in the asset templates, and that is the identical failure
+    # this catches in a target — found by hand twice before it was a check.
+    known: set[str] = set()
+    source = source_root if source_root is not None else target / "src"
+    for file in sorted(source.rglob("*.py")) if source.is_dir() else []:
+        if "__pycache__" in file.parts:
+            continue
+        parts = file.relative_to(source).with_suffix("").parts
+        dotted = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+        known.add(dotted)
+        known.add(parts[-1])
+        try:
+            tree = ast.parse(file.read_text(encoding="utf-8", errors="replace"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                known.add(node.name)
+                known.add(f"{dotted}.{node.name}")
+                known.add(f"{parts[-1]}.{node.name}")
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                known.add(node.id)
+                known.add(f"{parts[-1]}.{node.id}")
+            elif isinstance(node, ast.arg):
+                known.add(node.arg)
+
+    pattern = None
+    if revision:
+        stem = re.sub(r"\d+", r"\\d+", re.escape(Path(revision).name))
+        pattern = re.compile(stem)
+
+    for file in sorted(target.rglob("*")):
+        # Hidden *inside* the target, not hidden anywhere in the absolute path. The
+        # first version tested every part, so pointing this at a directory living
+        # under a dotted one — `.claude/skills/…`, say — silently skipped every
+        # file and reported nothing found. It read as a clean tree and was a check
+        # that never ran.
+        inside = file.relative_to(target)
+        if (not file.is_file() or file.suffix not in (".py", ".md", ".ipynb")
+                or any(p.startswith(".") for p in inside.parts)
+                or "__pycache__" in inside.parts):
+            continue
+        relative = str(inside)
+        for number, line in prose_of(file):
+            if pattern:
+                for named in pattern.findall(line):
+                    if named != Path(revision).name:
+                        revisions.append({"file": relative, "line": number,
+                                          "named": named, "current": Path(revision).name})
+            for token in PROSE_SYMBOL.findall(line):
+                # A filename is not a symbol. `report.md` and `test_audit.py` are
+                # dotted and underscored like one, and reporting them would bury
+                # the renames this exists to catch under the repository's own
+                # file list.
+                if Path(token).suffix in FILE_SUFFIXES:
+                    continue
+                if token not in known and token.split(".")[0] not in known:
+                    unresolved.append({"file": relative, "line": number,
+                                       "symbol": token})
+    return {"staleRevisions": revisions, "unresolvedSymbols": unresolved}
+
+
+def search_state(contract: dict, declared_records: list,
+                 product: Path | None = None) -> dict:
     """Whether a declared search says enough about itself to be an experiment.
 
     A search is an experiment and gets declared as one. Three things it needs are
@@ -236,6 +390,14 @@ def search_state(contract: dict, declared_records: list) -> dict:
     artefact where the records live, so it has to be named there, and naming it is
     the moment somebody has to say what the thing is.
 
+    **And the declared record is checked against the disk, not against the other
+    declaration.** Comparing the two declarations verifies that somebody wrote the
+    same string twice; it says nothing about where the search actually writes. A
+    path with a directory doubled in it satisfied both declarations perfectly and
+    put the record one level below where anyone would look for it — observed, and
+    only after the search had already run there. `recordFound` is the answer to
+    the filesystem's question, and it is reported whatever it says.
+
     The limit, stated rather than papered over: this cannot check that the role is
     disjoint from the verdict's, because it does not know the material. It can
     only require that the role be named, which is what puts the question in front
@@ -244,7 +406,7 @@ def search_state(contract: dict, declared_records: list) -> dict:
     search = contract.get("search")
     if not search:
         return {"status": "none", "declared": {}, "missing": [],
-                "recordNotDeclared": None,
+                "recordNotDeclared": None, "recordFound": None, "strayRecords": [],
                 "note": "no search declared; `undeclaredRecords` is what would "
                         "surface one that left an artefact"}
 
@@ -260,9 +422,27 @@ def search_state(contract: dict, declared_records: list) -> dict:
         record == entry or record.startswith(entry.rstrip("/") + "/")
         for entry in declared_records)
 
+    # The join against reality. `None` means there was nothing to check: no record
+    # declared, or no product folder handed in. False means the search declares a
+    # record and nothing is there — which is either a search that has not run or a
+    # search writing somewhere else, and `strayRecords` tells the two apart by
+    # looking for that filename anywhere under the product.
+    found = None
+    stray: list[str] = []
+    if record and product is not None and product.is_dir():
+        expected = product / record
+        found = expected.is_file()
+        if not found:
+            stray = [str(p.relative_to(product))
+                     for p in sorted(product.rglob(Path(record).name))
+                     if p.is_file()]
+
     return {
-        "status": "ok" if not missing and covered else "incomplete",
+        "status": ("ok" if not missing and covered and found is not False
+                   else "incomplete"),
         "declared": dict(search),
+        "recordFound": found,
+        "strayRecords": stray,
         "missing": missing,
         "recordNotDeclared": None if covered else record,
     }
@@ -2290,6 +2470,15 @@ def report_state(target: Path, name: str, package: str) -> dict:
 
     root = target / name / "Notebooks"
     notebooks = sorted(root.glob("*.ipynb")) if root.is_dir() else []
+
+    # Which notebooks no longer match the code. Every finding below is read off
+    # what a notebook *emitted*, so on a stale one it describes the run that
+    # happened and not the code that is there now — and a reader who takes it for
+    # a live defect goes and fixes something already fixed, or fixes it a second
+    # way. Both halves were already computed and reported, in two different places
+    # in this output, and nobody crossed them; `fromStaleNotebook` is that join.
+    stale = {r["notebook"] for r in notebooks_state(target, name, package)["reports"]
+             if r["status"] == "stale-sources"}
     if not contract:
         return {
             "status": "undeclared",
@@ -2631,6 +2820,15 @@ def report_state(target: Path, name: str, package: str) -> dict:
                 # same thing about different numbers is tied to nothing, exactly
                 # as an assertion that cannot fail proves nothing.
                 "inertConclusions": inert}
+    # Stamp every finding that names a notebook with whether that notebook still
+    # matches the code. Written here rather than at each site so a check added
+    # later cannot forget it, and so the flag can never disagree with the
+    # staleness the same run reports two keys away.
+    for rows in findings.values():
+        for row in rows:
+            if isinstance(row, dict) and row.get("notebook") in stale:
+                row["fromStaleNotebook"] = True
+
     clean = all(not value for value in findings.values())
     status = "ok" if clean else "drift"
     if live.get("status") != "ok":
@@ -3562,11 +3760,16 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         },
         "priorWork": prior_work_state(target, package_name(name)),
         "agreements": agreements_state(target, name),
+        # Reported whatever it says, and it drifts nothing: a historical mention
+        # of an older revision is legitimate, and a configuration key quoted like
+        # a symbol is not a defect. These are facts for a reader, not verdicts.
+        "prose": prose_state(target, args.revision),
         "search": search_state(
             read_declaration(
                 target / "src" / f"{package_name(name)}_Benchmark" / "__init__.py",
                 BENCHMARK_DECLARATION) or {},
-            list((report.get("declared") or {}).get("records") or [])),
+            list((report.get("declared") or {}).get("records") or []),
+            target / name),
         "fidelity": {
             "status": fidelity_status,
             "latestRevision": args.revision,

@@ -1640,6 +1640,52 @@ class SearchIsAnExperimentTests(unittest.TestCase):
         self.assertEqual(state["missing"], [])
         self.assertEqual(state["declared"]["role"], "valid")
 
+    def test_the_declared_record_is_checked_against_the_disk(self):
+        """Comparar las dos declaraciones verifica que alguien escribió el mismo
+        texto dos veces, y no dice nada de dónde escribe la búsqueda."""
+        with tempfile.TemporaryDirectory() as raw:
+            product = Path(raw) / "Method"
+            (product / "Results").mkdir(parents=True, exist_ok=True)
+            state = impl.search_state({"search": self.COMPLETE},
+                                      ["Results/ceilings.json"], product)
+            self.assertIs(state["recordFound"], False)
+            self.assertEqual(state["status"], "incomplete")
+
+            (product / "Results/ceilings.json").write_text("{}", encoding="utf-8")
+            state = impl.search_state({"search": self.COMPLETE},
+                                      ["Results/ceilings.json"], product)
+            self.assertIs(state["recordFound"], True)
+            self.assertEqual(state["status"], "ok")
+
+    def test_a_record_written_one_level_deeper_is_found_and_named(self):
+        """El caso que motivó esto, y que las dos declaraciones no podían ver.
+
+        Una ruta con un directorio duplicado satisfacía las dos declaraciones y
+        dejaba el registro un nivel por debajo de donde nadie lo iba a buscar. Se
+        descubrió después de que la búsqueda ya hubiera escrito ahí.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            product = Path(raw) / "Method"
+            deeper = product / "Results/Benchmark/Benchmark"
+            deeper.mkdir(parents=True, exist_ok=True)
+            (deeper / "ceilings.json").write_text("{}", encoding="utf-8")
+
+            declaration = {**self.COMPLETE,
+                           "record": "Results/Benchmark/ceilings.json"}
+            state = impl.search_state({"search": declaration},
+                                      ["Results/Benchmark"], product)
+            self.assertIs(state["recordFound"], False)
+            self.assertEqual(state["strayRecords"],
+                             ["Results/Benchmark/Benchmark/ceilings.json"])
+
+    def test_nothing_to_check_is_none_and_never_a_failure(self):
+        """Sin carpeta de producto no hay pregunta que hacerle al disco, y `False`
+        ahí sería inventar un hallazgo."""
+        state = impl.search_state({"search": self.COMPLETE},
+                                  ["Results/ceilings.json"])
+        self.assertIsNone(state["recordFound"])
+        self.assertEqual(state["status"], "ok")
+
     def test_it_names_no_tool(self):
         """La skill no recomienda con qué buscar: eso depende del problema.
 
@@ -1749,6 +1795,168 @@ class UndeclaredRecordsTests(unittest.TestCase):
                 "        'records': ['Results/summary.json',\n"
                 "                    'Results/Benchmark/latent.json'],\n")
             self.assertEqual(state["undeclaredRecords"], [])
+
+
+class ProseTests(unittest.TestCase):
+    """Claims in prose that stopped being true, where nothing else would notice.
+
+    Every other check reads a declaration or a file. These read sentences, and a
+    sentence ages without anything failing: a rename leaves the old symbol named
+    in the paragraph beside it, a new revision leaves the old one in a heading.
+    """
+
+    def build(self, root: Path, **files: str) -> None:
+        for relative, body in files.items():
+            path = root / relative.replace("__", "/")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
+
+    def test_a_revision_named_in_prose_that_is_not_the_current_one(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root, **{
+                "src__Method__kernels.py":
+                    '"""Verified against research-concept-r16.md."""\nK = 1\n',
+            })
+            state = impl.prose_state(root, "research-concept-r17.md")
+            self.assertEqual(len(state["staleRevisions"]), 1)
+            self.assertEqual(state["staleRevisions"][0]["named"],
+                             "research-concept-r16.md")
+
+    def test_the_current_revision_in_prose_is_not_reported(self):
+        """Rojo alcanzable: reportarlas todas haría el hallazgo inútil."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root, **{
+                "src__Method__kernels.py":
+                    '"""Verified against research-concept-r17.md."""\nK = 1\n',
+            })
+            self.assertEqual(
+                impl.prose_state(root, "research-concept-r17.md")["staleRevisions"], [])
+
+    def test_the_pattern_comes_from_the_revision_handed_in(self):
+        """Nada acá conoce una convención de nombres: se deriva del argumento."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root, **{
+                "src__Method__kernels.py": '"""Bound to paper-v3.md."""\nK = 1\n',
+            })
+            state = impl.prose_state(root, "paper-v9.md")
+            self.assertEqual(state["staleRevisions"][0]["named"], "paper-v3.md")
+
+    def test_a_symbol_named_in_prose_that_resolves_to_nothing(self):
+        """Lo que deja un rename: el párrafo sigue nombrando la constante vieja."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root, **{
+                "src__Method__config.py": "RAMP_CEILING = 1.0\n",
+                "src__Method__figures.py":
+                    '"""The coefficient is fixed at `LAMBDA_CONST` for every arm."""\n',
+            })
+            found = impl.prose_state(root, None)["unresolvedSymbols"]
+            self.assertEqual([f["symbol"] for f in found], ["LAMBDA_CONST"])
+
+    def test_a_symbol_that_exists_is_not_reported(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root, **{
+                "src__Method__config.py": "RAMP_CEILING = 1.0\n",
+                "src__Method__figures.py":
+                    '"""Fixed at `RAMP_CEILING` for every arm."""\n',
+            })
+            self.assertEqual(impl.prose_state(root, None)["unresolvedSymbols"], [])
+
+    def test_a_filename_is_not_mistaken_for_a_symbol(self):
+        """Dotted y con guion bajo es exactamente lo que parece un archivo, y la
+        prosa nombra archivos todo el tiempo."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root, **{
+                "src__Method__kernels.py":
+                    '"""See `Results_Generator.ipynb` and `requirements.txt`."""\nK = 1\n',
+            })
+            self.assertEqual(impl.prose_state(root, None)["unresolvedSymbols"], [])
+
+    def test_code_is_not_read_as_prose(self):
+        """Una revisión dentro de un literal es código y se chequea en otro lado;
+        reportarla acá sería ruido sobre algo que ya tiene su verificación."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root, **{
+                "src__Method__kernels.py":
+                    '__provenance__ = {"revision": "research-concept-r16.md"}\n',
+            })
+            self.assertEqual(
+                impl.prose_state(root, "research-concept-r17.md")["staleRevisions"], [])
+
+
+class StaleFindingTests(unittest.TestCase):
+    """Un hallazgo del reporte se lee de lo que un cuaderno **emitió**.
+
+    Sobre un cuaderno obsoleto describe la corrida que pasó, no el código que hay
+    ahora. Las dos mitades ya se reportaban —el hallazgo y el estado del
+    cuaderno— en dos lugares distintos de la misma salida, y nadie las cruzaba.
+    Un lector que lo toma por defecto vivo va y arregla algo ya arreglado, o lo
+    arregla de una segunda manera.
+    """
+
+    DECLARATION = (
+        "__benchmark__ = {\n"
+        "    'revision': 'r01.md',\n"
+        "    'arms': {},\n"
+        "    'report': {\n"
+        "        'renderers': ['tables.render'],\n"
+        "        'conclusions': ['tables.conclusion'],\n"
+        "        'objectiveEntry': 'tables.objective',\n"
+        "        'components': {'terms': ['fit'], 'share': None},\n"
+        "        'dimensions': {'accuracy': 'higher', 'fit': None},\n"
+        "    },\n"
+        "}\n")
+
+    def build(self, root: Path, digest_matches: bool) -> dict:
+        (root / "src/Method_Benchmark").mkdir(parents=True, exist_ok=True)
+        (root / "src/Method_Benchmark/__init__.py").write_text(
+            self.DECLARATION, encoding="utf-8")
+        (root / "src/Method").mkdir(parents=True, exist_ok=True)
+        (root / "src/Method/kernels.py").write_text("K = 1\n", encoding="utf-8")
+
+        digest = (impl.source_digest(root, "Method") if digest_matches
+                  else "0" * 64)
+        cells = [
+            {"cell_type": "code", "execution_count": 1, "metadata": {},
+             "source": ["tables.render()"],
+             "outputs": [{"output_type": "stream", "name": "stdout",
+                          "text": ["acc 81.5  peor 67.1  piso 0.0\n"]}]},
+            {"cell_type": "code", "execution_count": 2, "metadata": {},
+             "source": ["tables.conclusion()"],
+             "outputs": [{"output_type": "stream", "name": "stdout",
+                          "text": ["mejor 81.5, peor 67.1, piso 0.0\n"]}]},
+            {"cell_type": "code", "execution_count": 3, "metadata": {},
+             "source": [f'print("{impl.DIGEST_MARKER} {digest}")'],
+             "outputs": [{"output_type": "stream", "name": "stdout",
+                          "text": [f"{impl.DIGEST_MARKER} {digest}\n"]}]},
+        ]
+        nb = root / "Method/Notebooks/report.ipynb"
+        nb.parent.mkdir(parents=True, exist_ok=True)
+        nb.write_text(json.dumps({"cells": cells, "metadata": {},
+                                  "nbformat": 4, "nbformat_minor": 5}),
+                      encoding="utf-8")
+        return impl.report_state(root, "Method", "Method")
+
+    def test_a_finding_from_a_stale_notebook_says_so(self):
+        with tempfile.TemporaryDirectory() as raw:
+            state = self.build(Path(raw), digest_matches=False)
+            found = state["restated"]
+            self.assertTrue(found, "el fixture tiene que producir el hallazgo")
+            self.assertTrue(found[0]["fromStaleNotebook"])
+
+    def test_a_finding_from_a_current_notebook_carries_no_flag(self):
+        """Rojo alcanzable: marcarlos todos haría la bandera inútil."""
+        with tempfile.TemporaryDirectory() as raw:
+            state = self.build(Path(raw), digest_matches=True)
+            found = state["restated"]
+            self.assertTrue(found, "el fixture tiene que producir el hallazgo")
+            self.assertNotIn("fromStaleNotebook", found[0])
 
 
 class ComponentShareTests(unittest.TestCase):

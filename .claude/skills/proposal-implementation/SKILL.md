@@ -95,6 +95,28 @@ proposal itself — that is `proposal-deliberation`.
   `invariants` has a matching `test_<id>`. No provenance, no merge.
 - Never fabricate mathematics. A test whose claim is not traceable to the
   proposal does not belong in the suite.
+- **A sentence ages without anything failing.** Every other check here reads a
+  declaration or a file; the docstrings and comments that say what the code does
+  are read by nobody, so a rename leaves the old symbol named in the paragraph
+  beside it and a new revision leaves the old one in a heading that still says
+  which revision was verified. `verify` reports `prose` with the two that can be
+  settled without interpreting anyone: `staleRevisions`, a managed revision named
+  in prose that is not the current one — the pattern derived from the revision
+  handed in, never from a naming convention this skill would have to know — and
+  `unresolvedSymbols`, a token shaped like a symbol that resolves to nothing under
+  `src/`.
+
+  **Both are reported and neither drifts a status.** A historical mention is
+  legitimate and common: *"the bound r16 adopted"* is a fact about when, not a
+  claim gone stale. A configuration key quoted like a symbol is not a defect
+  either. Telling those apart is a reading, and a check that guessed would spend
+  its credibility on the wrong ones — so it hands over the list and the reader
+  judges.
+
+  What neither can do is judge a claim about behaviour. *"Nothing here is
+  modified"* ages exactly the same way and would need an assertion parsed out of a
+  sentence, in whichever language its author wrote it. That one is caught by
+  reading, and saying so is better than a check that pretends otherwise.
 - **Never assert an absence you did not go looking for.** "There is no bootstrap",
   "that cannot be obtained", "the prior work has no data layer" are claims about the
   whole repository, and a reading that stopped at one file cannot support any of them.
@@ -1007,6 +1029,17 @@ cell: a rich rendering stores its repr *beside* itself, so a displayed Markdown
 block carries `<IPython…Markdown object>` next to its `text/markdown`, and reading
 the cell as a whole calls every heading in the notebook a figure that never drew.
 
+**Every one of these is read off what a cell emitted, so on a stale notebook it
+describes the run that happened and not the code that is there now.** A finding
+whose notebook no longer matches the tree carries `fromStaleNotebook`. Without
+it the two halves sit in one output two keys apart and nobody crosses them: the
+finding says a conclusion restates its table, the notebook list says that
+notebook is `stale-sources`, and the reader concludes the code is defective. It
+was observed doing exactly that — a session proposed correcting a conclusion
+that had already been corrected hours earlier, which risks a second, different
+correction of the same thing. Re-run first; a finding that survives the re-run
+is the one about the code.
+
 `verify` reports this as `report`, beside `structure`, `fidelity`, `audit` and
 `validation`. **A report in drift is reason not to offer the full run** — `probe`
 answers `report-first` instead of `benchmark`. A campaign measured in hours can
@@ -1347,8 +1380,8 @@ have to count rows to learn the answer.
 
 Report: the bound revision, the target path, the migration commit hash (if
 any), the object → module map, the test result, and the verification statuses
-(`structure`, `priorWork`, `agreements`, `fidelity`, `report`, `audit`,
-`validation`) separately. `priorWork` and `agreements` are reported whatever they
+(`structure`, `priorWork`, `agreements`, `search`, `prose`, `fidelity`, `report`,
+`audit`, `validation`) separately. `priorWork`, `agreements` and `prose` are reported whatever they
 say: that prior work is untouched, and that nothing was left open, are facts the
 reader is owed, and a check that only speaks up when something is wrong teaches
 nobody what it was watching. Never report the work done while `agreements` is
