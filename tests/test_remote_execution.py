@@ -1,15 +1,20 @@
-"""Focused unit tests for the remote-execution ledger.
+"""Focused unit tests for the remote-execution ledger and adapter seam.
 
 Covers `ledger.py`'s write-integrity guarantees (the short-write check, the
 per-event size cap, `errored.reason` truncation, concurrent appenders never
-tearing or losing a line), and its fold: deriving per-entrypoint state from
-the log, and the currency rule that tells a fresh result from a stale one.
+tearing or losing a line), its fold: deriving per-entrypoint state from the
+log and the currency rule that tells a fresh result from a stale one, and
+`adapter.py`'s seam: the ABC's structural refusal of an incomplete
+implementation, the frozen data shapes, the name-to-class registry, and that
+a fake adapter's output plugs into the ledger's own event builders with zero
+translation.
 
-Run with any Python 3.10+ (the module is stdlib-only):
+Run with any Python 3.10+ (the modules are stdlib-only):
     python3 -m unittest tests.test_remote_execution
 """
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import inspect
 import json
@@ -29,6 +34,13 @@ assert SPEC and SPEC.loader
 LEDGER = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = LEDGER
 SPEC.loader.exec_module(LEDGER)
+
+ADAPTER_SCRIPT = REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/adapter.py"
+ADAPTER_SPEC = importlib.util.spec_from_file_location("remote_execution_adapter", ADAPTER_SCRIPT)
+assert ADAPTER_SPEC and ADAPTER_SPEC.loader
+ADAPTER = importlib.util.module_from_spec(ADAPTER_SPEC)
+sys.modules[ADAPTER_SPEC.name] = ADAPTER
+ADAPTER_SPEC.loader.exec_module(ADAPTER)
 
 
 def _sample_submitted_event(**overrides: object) -> dict:
@@ -442,6 +454,198 @@ class FoldCurrencyTests(unittest.TestCase):
         self.assertEqual(state.latest["Notebooks/a.ipynb"]["submissionId"], "s2")
         self.assertEqual(state.verdicts["s2"], "current")
         self.assertEqual(state.verdicts["s1"], "fromStaleSubmission")
+
+
+class FakeAdapter(ADAPTER.Adapter):
+    """A complete, in-memory stand-in for a real backend adapter.
+
+    Exists to prove the seam is genuinely swappable, not merely typed that
+    way: everything that consumes an adapter today — only the ledger's event
+    builders, since the packer does not exist until Task 4 — reads and
+    writes nothing but these six operations' return shapes.
+    """
+
+    def __init__(self, worker_id: str = "fake-1", capacity: int = 2) -> None:
+        self._worker = ADAPTER.Worker(id=worker_id, capacity=capacity)
+        self._next_id = 0
+        self._states: dict[str, str] = {}
+
+    def workers(self) -> list:
+        return [self._worker]
+
+    def submit(self, job) -> "ADAPTER.Submission":
+        self._next_id += 1
+        submission_id = f"fake-{self._next_id}"
+        self._states[submission_id] = "complete"
+        return ADAPTER.Submission(id=submission_id, worker=job.worker)
+
+    def poll(self, submission_id: str) -> "ADAPTER.Status":
+        return ADAPTER.Status(state=self._states[submission_id], detail="fake backend")
+
+    def fetch(self, submission_id: str, into: Path) -> "ADAPTER.Fetched":
+        into.mkdir(parents=True, exist_ok=True)
+        (into / "result.txt").write_text("ok", encoding="utf-8")
+        return ADAPTER.Fetched(path=into, complete=True, files=("result.txt",))
+
+    def cancel(self, submission_id: str) -> None:
+        self._states[submission_id] = "failed"
+
+    def list_active(self, worker: str) -> list:
+        return [sid for sid, state in self._states.items() if state in ("queued", "running")]
+
+
+class AdapterSeamTests(unittest.TestCase):
+    def test_adapter_abc_rejects_direct_instantiation(self) -> None:
+        with self.assertRaises(TypeError):
+            ADAPTER.Adapter()
+
+    def test_an_incomplete_subclass_cannot_be_instantiated(self) -> None:
+        """The ABC is a structural guarantee, not a suggestion.
+
+        Leaving out even one of the six operations must make the subclass
+        itself uninstantiable, not merely undocumented — this is the test
+        that makes the seam a seam rather than a convention a future
+        contributor could quietly ignore.
+        """
+
+        class MissingCancel(ADAPTER.Adapter):
+            def workers(self):
+                return []
+
+            def submit(self, job):
+                raise NotImplementedError
+
+            def poll(self, submission_id):
+                raise NotImplementedError
+
+            def fetch(self, submission_id, into):
+                raise NotImplementedError
+
+            def list_active(self, worker):
+                return []
+
+            # cancel() deliberately omitted.
+
+        with self.assertRaises(TypeError):
+            MissingCancel()
+
+    def test_fake_adapter_satisfies_all_six_operations(self) -> None:
+        adapter = FakeAdapter()
+        self.assertIsInstance(adapter, ADAPTER.Adapter)  # instantiation itself proves completeness
+        workers = adapter.workers()
+        self.assertEqual(len(workers), 1)
+
+        job = ADAPTER.Job(entrypoint=Path("Notebooks/a.ipynb"), inputs=(), worker=workers[0].id)
+        submission = adapter.submit(job)
+        status = adapter.poll(submission.id)
+        self.assertIn(status.state, ADAPTER.STATES)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fetched = adapter.fetch(submission.id, Path(tmp) / "out")
+            self.assertTrue(fetched.complete)
+
+        adapter.cancel(submission.id)
+        self.assertEqual(adapter.list_active(workers[0].id), [])
+
+    def test_registry_resolves_adapter_class_by_name(self) -> None:
+        ADAPTER.register("fake-for-test", FakeAdapter)
+        self.assertIs(ADAPTER.resolve("fake-for-test"), FakeAdapter)
+        with self.assertRaises(KeyError):
+            ADAPTER.resolve("no-backend-registered-under-this-name")
+
+    def test_registry_refuses_a_class_that_does_not_subclass_adapter(self) -> None:
+        class NotAnAdapter:
+            pass
+
+        with self.assertRaises(TypeError):
+            ADAPTER.register("not-an-adapter", NotAnAdapter)
+
+    def test_job_exposes_entrypoint_field_not_notebook(self) -> None:
+        """Pins the naming decision the ledger's own schema already made."""
+        job = ADAPTER.Job(entrypoint=Path("Notebooks/a.ipynb"), inputs=("x",), worker="w1")
+        self.assertEqual(job.entrypoint, Path("Notebooks/a.ipynb"))
+        with self.assertRaises(TypeError):
+            ADAPTER.Job(notebook=Path("a.ipynb"), inputs=(), worker="w1")
+
+    def test_status_rejects_a_value_outside_the_five_state_vocabulary(self) -> None:
+        with self.assertRaises(ValueError):
+            ADAPTER.Status(state="succeeded", detail="a backend's own word, not the seam's")
+
+    def test_frozen_shapes_refuse_assignment(self) -> None:
+        worker = ADAPTER.Worker(id="w1", capacity=2)
+        job = ADAPTER.Job(entrypoint=Path("a.ipynb"), inputs=(), worker="w1")
+        submission = ADAPTER.Submission(id="s1", worker="w1")
+        status = ADAPTER.Status(state="queued", detail="")
+        fetched = ADAPTER.Fetched(path=Path("/tmp/out"), complete=False, files=())
+
+        for instance, field, value in (
+            (worker, "capacity", 99),
+            (job, "worker", "w2"),
+            (submission, "id", "s2"),
+            (status, "state", "running"),
+            (fetched, "complete", True),
+        ):
+            with self.assertRaises(dataclasses.FrozenInstanceError):
+                setattr(instance, field, value)
+
+    def test_adapter_module_names_no_service(self) -> None:
+        """The leak guard for this new module — asserted over the raw file
+
+        text, which covers the module source and every docstring in it: a
+        docstring naming a backend to explain an example would be exactly
+        the kind of leak the seam exists to prevent, so it is checked the
+        same as executable code.
+        """
+        source = ADAPTER_SCRIPT.read_text(encoding="utf-8").lower()
+        for leaked in ("kaggle", "t4"):
+            self.assertNotIn(leaked, source, leaked)
+
+    def test_fake_adapter_output_plugs_into_ledger_events_unchanged(self) -> None:
+        """What exists today — `fold()` and the event builders — accepts a
+        fake adapter's output with zero translation, proving the seam
+        instead of merely asserting it.
+
+        The packer (Task 4) does not exist yet, so `plan()`'s clamp/grant
+        arithmetic is deliberately NOT exercised here. This covers only the
+        ledger integration that exists at this point in the chain; claiming
+        packer coverage here would be a proxy, not a test.
+        """
+        adapter = FakeAdapter(worker_id="w1", capacity=2)
+        job = ADAPTER.Job(entrypoint=Path("Notebooks/a.ipynb"), inputs=(), worker="w1")
+        submission = adapter.submit(job)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger_path = Path(tmp) / "ledger.jsonl"
+            LEDGER.append(
+                ledger_path,
+                LEDGER.submitted_event(
+                    entrypoint=str(job.entrypoint),
+                    source_digest="digest-1",
+                    submission_id=submission.id,
+                    worker=submission.worker,
+                    requested_capacity=1,
+                    granted_capacity=1,
+                ),
+            )
+
+            status = adapter.poll(submission.id)
+            self.assertEqual(status.state, "complete")
+            fetched = adapter.fetch(submission.id, Path(tmp) / "out")
+            self.assertTrue(fetched.complete)
+
+            LEDGER.append(
+                ledger_path,
+                LEDGER.returned_event(
+                    submission_id=submission.id,
+                    artifact_path=str(fetched.path),
+                    observed_concurrency=1,
+                ),
+            )
+
+            lines = ledger_path.read_text(encoding="utf-8").splitlines()
+            state = LEDGER.fold(lines, live_digest="digest-1")
+            self.assertEqual(state.entrypoints[str(job.entrypoint)].state, "returned")
+            self.assertEqual(state.verdicts[submission.id], "current")
 
 
 if __name__ == "__main__":
