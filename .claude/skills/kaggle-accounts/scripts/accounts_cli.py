@@ -2,7 +2,7 @@
 """Kaggle credentials: prove they work, keep the ones that do, drop the rest.
 
 The user supplies the credentials by hand — a `kaggle.json` downloaded from
-Kaggle, or a `.txt` with one `username key` per line, left in the inbox. That
+Kaggle, or a `.txt`/`.md` list with one `username key` per line, left in the inbox. That
 being manual is what this is *for*: the work worth automating is not moving a
 file, it is answering **does this account actually authenticate**, which is a
 question only Kaggle can answer and one that stops being true over time.
@@ -399,17 +399,14 @@ def discover_credentials(folders: list[str] | None = None) -> list[dict]:
     return found
 
 
-def validate(username: str, key: str) -> None:
-    """Prove the credential against the live API. Raises `CredentialError`.
-
-    A network failure is reported as its own outcome. Discarding a good
-    credential because the connection dropped, and saying it was invalid, would
-    send the user to regenerate a token that was never the problem.
-    """
-    token = base64.b64encode(f"{username}:{key}".encode()).decode()
+def _attempt(scheme: str, credential: str) -> None:
+    """One authenticated request. Raises `CredentialError`, or returns on 200."""
     request = urllib.request.Request(
         VALIDATION_URL,
-        headers={"Authorization": f"Basic {token}", "User-Agent": "papersmith-kaggle-accounts"},
+        headers={
+            "Authorization": f"{scheme} {credential}",
+            "User-Agent": "papersmith-kaggle-accounts",
+        },
     )
     try:
         with urllib.request.urlopen(request, timeout=VALIDATION_TIMEOUT) as response:
@@ -425,6 +422,32 @@ def validate(username: str, key: str) -> None:
         raise CredentialError(f"could not reach Kaggle to validate it ({exc.reason}) — not saved")
     except TimeoutError:
         raise CredentialError(f"Kaggle did not answer within {VALIDATION_TIMEOUT}s — not saved")
+
+
+def validate(username: str, key: str) -> None:
+    """Prove the credential against the live API. Raises `CredentialError`.
+
+    Two token formats are live at once, and they do not authenticate the same
+    way. The classic 32-hex key is the password half of Basic `username:key`.
+    The newer prefixed token is a bearer token that carries its own identity and
+    is refused by Basic. Trying only one of them reports a working account as
+    expired, which is the exact failure this whole command exists to catch, so
+    a 401 from the first is a reason to try the other rather than a verdict.
+
+    A network failure is reported as its own outcome. Discarding a good
+    credential because the connection dropped, and saying it was invalid, would
+    send the user to regenerate a token that was never the problem.
+    """
+    basic = base64.b64encode(f"{username}:{key}".encode()).decode()
+    try:
+        _attempt("Basic", basic)
+    except CredentialError as rejected:
+        # Only an outright rejection is worth a second attempt. A timeout or an
+        # unreachable host says nothing about the credential, and retrying it
+        # under another scheme would turn one network outage into two.
+        if "401" not in str(rejected):
+            raise
+        _attempt("Bearer", key)
 
 
 # --- commands --------------------------------------------------------------
@@ -453,10 +476,10 @@ def cmd_discover(args: argparse.Namespace) -> int:
     found = discover_credentials()
     for entry in found:
         entry["accounts"] = [
-            {"username": username, "storedAs": stored.get(username)}
+            {"username": username, "stored": username in stored}
             for username in entry["usernames"]
         ]
-        known = [a for a in entry["accounts"] if a["storedAs"]]
+        known = [a for a in entry["accounts"] if a["stored"]]
         parts = []
         if entry["usernames"]:
             parts.append(", ".join(entry["usernames"]))

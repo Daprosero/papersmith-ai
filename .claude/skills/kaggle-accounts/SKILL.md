@@ -15,17 +15,26 @@ and one that stops being true over time.
 
 ## Activation Contract
 
-Invoking this skill asks **one** interactive question, with exactly two options:
+Invoking this skill asks **one** interactive question before doing anything:
 
 1. Run `list` first, so the question is asked against what is actually there.
 2. Ask with `AskUserQuestion` — never a question typed into the reply:
    - **Validate accounts** — re-check everything stored, and take in whatever is
      in the inbox.
-   - **Remove accounts** — delete accounts. Offer this only when something is
-     stored; there is nothing to remove from an empty store.
+   - **Remove accounts** — delete accounts. Drop this option when the store is
+     empty; there is nothing to remove.
 
-Never infer the intent from context: a session that mentions Kaggle is not a
-request to touch credentials.
+**Ask even when only one option is left.** Dropping the remove option does not
+turn the question into a formality with an obvious answer, and "there is no
+branch to choose, so I will just run it" is the wrong reading. The question is
+not routing — it is consent. `validate` **writes**: it puts credentials in the
+store and it *deletes* the user's file from the inbox once that file has given
+up everything it held. Nothing here is read-only, so nothing here runs
+unprompted. If the user picks nothing, do nothing.
+
+Never infer the intent from context either: a session that mentions Kaggle is
+not a request to touch credentials, and finding a file in the inbox is not
+permission to consume it.
 
 **Every question is a selection, not prose.** The opening choice, and the pick
 of which accounts to remove, are both interactive prompts built from what the
@@ -40,10 +49,23 @@ If a question has no command behind it, it is the wrong question.
 ## Environment
 
 **None.** The script is stdlib-only — no `.venv`, no `setup.sh`, no
-`requirements.txt`, no `pip install kaggle`. Validation is one HTTPS request
-with Basic auth, which `urllib` already does. Creating a virtualenv to hold zero
+`requirements.txt`, no `pip install kaggle`. Validation is an authenticated
+HTTPS request, which `urllib` already does. Creating a virtualenv to hold zero
 packages is ceremony, so there is none. Requires Python 3.10+ and a network
 connection.
+
+Two Kaggle token formats are live at once and they do not authenticate the same
+way: the classic 32-hex key is the password half of Basic `username:key`, while
+the newer prefixed token is a **bearer** token that Basic refuses outright. So a
+401 from the first scheme is a reason to try the other, not a verdict — trying
+only one reports a working account as expired, which is the single wrong answer
+this command exists to prevent.
+
+A consequence worth stating: a bearer token carries its own identity, so what it
+proves is that the *token* works. The username beside it is a label the store
+files it under, and Kaggle is never asked whether the two belong together. Under
+the classic format the pairing is what gets proven; under the new one it cannot
+be, so a mislabelled row authenticates and is stored under the wrong name.
 
 ## How to execute
 
@@ -188,7 +210,9 @@ not just the one being added.
 | Situation | Action |
 | --- | --- |
 | Invoked | `list`, then the interactive validate-or-remove selection |
-| Nothing stored | Offer validate only; there is nothing to remove |
+| Nothing stored | Offer validate only — and still ask; `validate` writes |
+| Only one option is available | Still ask. The question is consent, not routing |
+| User picks nothing | Do nothing. Nothing was written and nothing was consumed |
 | User picks validate | Run `validate`; report passed, failed, stored, rejected |
 | A stored account stops authenticating | Report it; do not remove it — that is the user's other option |
 | Some lines of a list fail | Store the rest; report each by line number, never the line |

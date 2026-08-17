@@ -10,12 +10,16 @@ Run with any Python 3.10+ (the script is stdlib-only):
 """
 from __future__ import annotations
 
+import argparse
+import contextlib
 import importlib.util
+import io
 import json
 import stat
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 
@@ -296,6 +300,74 @@ class UsernameTests(unittest.TestCase):
         source = Path(ACCOUNTS.__file__).read_text(encoding="utf-8")
         self.assertNotIn('"--alias"', source)
         self.assertNotIn('a["alias"]', source)
+
+
+class ValidateTests(unittest.TestCase):
+    """Which authentication scheme a credential is offered under.
+
+    Two Kaggle token formats are live at once and they do not authenticate the
+    same way, so the cost of getting this wrong is a working account reported
+    as expired — the one verdict this command must never invent.
+    """
+
+    def run_validate(self, *outcomes: object) -> list[str]:
+        """Validate against a scripted sequence of attempts, returning schemes."""
+        tried: list[str] = []
+        remaining = list(outcomes)
+
+        def attempt(scheme: str, credential: str) -> None:
+            tried.append(scheme)
+            outcome = remaining.pop(0)
+            if outcome is not None:
+                raise outcome
+
+        with unittest.mock.patch.object(ACCOUNTS, "_attempt", attempt):
+            ACCOUNTS.validate("diego", "key")
+        return tried
+
+    def test_a_classic_key_is_proven_by_basic_and_asks_nothing_further(self) -> None:
+        self.assertEqual(self.run_validate(None), ["Basic"])
+
+    def test_a_token_basic_refuses_is_retried_as_a_bearer(self) -> None:
+        rejected = ACCOUNTS.CredentialError("Kaggle rejected it (HTTP 401) — expired")
+        self.assertEqual(self.run_validate(rejected, None), ["Basic", "Bearer"])
+
+    def test_refused_under_both_schemes_is_a_refusal(self) -> None:
+        rejected = ACCOUNTS.CredentialError("Kaggle rejected it (HTTP 401) — expired")
+        with self.assertRaises(ACCOUNTS.CredentialError):
+            self.run_validate(rejected, rejected)
+
+    def test_an_unreachable_kaggle_is_not_retried_into_a_second_outage(self) -> None:
+        # A dropped connection says nothing about the credential, so there is
+        # nothing for a second scheme to learn — and the retry would double the
+        # wait before the user is told the network is what failed.
+        unreachable = ACCOUNTS.CredentialError("could not reach Kaggle to validate it")
+        with self.assertRaises(ACCOUNTS.CredentialError):
+            self.run_validate(unreachable)
+
+
+class DiscoverCommandTests(unittest.TestCase):
+    def test_marks_which_found_accounts_are_already_stored(self) -> None:
+        # The command reports over the store, which the parsing tests never
+        # reach: a discover that crashes here takes the opening question with it.
+        candidate = {"path": "kaggle-inbox/list.md", "usernames": ["diego", "sofia"],
+                     "problems": []}
+        with unittest.mock.patch.object(
+            ACCOUNTS, "load_store", lambda: {"accounts": [{"username": "diego"}]}
+        ), unittest.mock.patch.object(
+            ACCOUNTS, "discover_credentials", lambda: [candidate]
+        ):
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                code = ACCOUNTS.cmd_discover(argparse.Namespace(json=True))
+
+        self.assertEqual(code, 0)
+        (entry,) = json.loads(buffer.getvalue())["candidates"]
+        self.assertEqual(
+            entry["accounts"],
+            [{"username": "diego", "stored": True}, {"username": "sofia", "stored": False}],
+        )
+        self.assertIn("1 already stored", entry["note"])
 
 
 if __name__ == "__main__":
