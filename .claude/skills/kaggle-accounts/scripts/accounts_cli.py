@@ -1,17 +1,25 @@
 #!/usr/bin/env python3
-"""Kaggle credential store — add, list, remove. Nothing is saved unvalidated.
+"""Kaggle credentials: prove they work, keep the ones that do, drop the rest.
 
-A Kaggle credential is two fields, ``username`` and ``key``, and Kaggle hands
-both to you in a single downloaded ``kaggle.json``. So ``add`` takes the path to
-that file rather than the token itself: a secret passed as a file never has to
-be typed, pasted, or echoed into a transcript that keeps it forever.
+The user supplies the credentials by hand — a `kaggle.json` downloaded from
+Kaggle, or a `.txt` with one `username key` per line, left in the inbox. That
+being manual is what this is *for*: the work worth automating is not moving a
+file, it is answering **does this account actually authenticate**, which is a
+question only Kaggle can answer and one that stops being true over time.
 
-Every credential is proven against the live API before it is stored. An account
-that cannot authenticate is worse than an absent one — it does not fail when you
-add it, it fails hours later in the middle of a run. Adding accepts several
-files at once and treats each independently: the ones that authenticate are
-saved, the ones that do not are reported and dropped, and one bad file never
-costs you the good ones beside it.
+So there are two operations and no more. ``validate`` re-checks every stored
+account and takes in whatever is new, keeping only what authenticates.
+``remove`` deletes what you no longer want. Everything else — ``list``,
+``discover`` — exists to build the choices for those two.
+
+Validating is not a setup step. Tokens get expired and rotated, and an account
+that quietly stopped working does not fail when you add it; it fails hours later
+in the middle of a run. That is why the stored accounts are re-checked every
+time, not just the new ones.
+
+An account is its Kaggle username. There is no alias: a second name for the same
+thing buys nothing and gives you two ways to refer to one account, one of which
+is always the wrong one.
 
 The store lives inside the repository, so a `.gitignore` is the only thing
 standing between a token and a public commit. That makes the ignore rule a
@@ -20,24 +28,21 @@ store path is genuinely ignored, and refuses to write if it is not. Checking the
 effective answer beats checking that a file exists, because an ignore rule can
 be present and still not match.
 
-Keys are write-only from the outside. ``list`` reports aliases and usernames and
-never the key, so an agent driving this CLI can offer you a choice of accounts
-without the secret ever crossing into its context. Whatever launches the runs
-reads the store directly.
-
-Every question this skill asks is a selection, and `discover` is what makes the
-add question one: it finds the candidate `kaggle.json` files and says which
-account each holds, so the user picks instead of typing a path from memory.
+Keys are write-only from the outside. ``list`` reports usernames and never the
+key, so an agent driving this CLI can offer you a choice of accounts without the
+secret ever crossing into its context. Whatever launches the runs reads the
+store directly.
 
 Usage:
+    python accounts_cli.py validate                 # re-check the store, take in the inbox
+    python accounts_cli.py validate <file>…         # check these instead
+    python accounts_cli.py validate --interactive   # run this one yourself, in a terminal
+    python accounts_cli.py remove <username>…
     python accounts_cli.py list [--json]
     python accounts_cli.py discover [--json]
-    python accounts_cli.py add <kaggle.json> [<kaggle.json>…] [--alias NAME]
-    python accounts_cli.py add --interactive        # run this one yourself, in a terminal
-    python accounts_cli.py remove <alias> [<alias>…]
 
-Exit codes: 0 success (or nothing to do), 1 at least one credential was
-rejected (the rest were saved), 2 usage/store/environment error (nothing was
+Exit codes: 0 everything checked out, 1 at least one account failed or was
+rejected (the rest are stored), 2 usage/store/environment error (nothing was
 written).
 """
 from __future__ import annotations
@@ -68,7 +73,7 @@ VALIDATION_URL = "https://www.kaggle.com/api/v1/competitions/list?page=1"
 VALIDATION_TIMEOUT = 20
 
 STORE_VERSION = 1
-ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 # A folder that exists for this, so the flow does not depend on where a browser
 # happens to save things. It ships already ignored by git.
@@ -122,8 +127,8 @@ def load_store(path: Path | None = None) -> dict:
     if not isinstance(data, dict) or not isinstance(data.get("accounts"), list):
         raise StoreError(f"{path} is not a credential store (expected an 'accounts' list)")
     for entry in data["accounts"]:
-        if not isinstance(entry, dict) or not entry.get("alias") or not entry.get("username"):
-            raise StoreError(f"{path} holds an entry with no alias or username")
+        if not isinstance(entry, dict) or not entry.get("username"):
+            raise StoreError(f"{path} holds an entry with no username")
     return data
 
 
@@ -400,23 +405,22 @@ def cmd_list(args: argparse.Namespace) -> int:
     accounts = load_store()["accounts"]
     if args.json:
         print(json.dumps(
-            {"accounts": [{"alias": a["alias"], "username": a["username"]} for a in accounts]},
+            {"accounts": [{"username": a["username"]} for a in accounts]},
             indent=2,
         ))
         return 0
     if not accounts:
         print("No accounts stored.")
         return 0
-    width = max(len(a["alias"]) for a in accounts)
     print(f"{len(accounts)} account(s):")
-    for account in sorted(accounts, key=lambda a: a["alias"]):
-        print(f"  {account['alias']:<{width}}  {account['username']}")
+    for account in sorted(accounts, key=lambda a: a["username"]):
+        print(f"  {account['username']}")
     return 0
 
 
 def cmd_discover(args: argparse.Namespace) -> int:
     """List candidate credential files so adding can be a pick, not a path."""
-    stored = {a["username"]: a["alias"] for a in load_store()["accounts"]}
+    stored = {a["username"] for a in load_store()["accounts"]}
     found = discover_credentials()
     for entry in found:
         entry["accounts"] = [
@@ -482,95 +486,121 @@ def report_source_files(tally: dict) -> None:
                 print(f"Could not delete {display_path(path)} ({exc.strerror}); it still holds the token(s).")
 
 
-def cmd_add(args: argparse.Namespace) -> int:
+def inbox_files() -> list[Path]:
+    """Whatever the user left in the inbox for this run."""
+    return [Path(entry["path"]) for entry in discover_credentials([str(INBOX_DIR)])]
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    """Make the store true: re-check what is in it, take in what is new.
+
+    Both halves are the same act. A stored credential is not permanently good —
+    tokens get expired and rotated, and an account that quietly stopped working
+    fails in the middle of a run rather than here. So validating is something to
+    do again, not once at setup, and re-checking the store is the half that has
+    to keep happening.
+
+    With no argument it also takes in whatever is sitting in the inbox. That
+    folder means "these are for you"; a `kaggle.json` in `~/Downloads` is
+    reported by `discover` and taken only when named, because finding a file
+    somewhere in a home directory is not the same as being handed it.
+    """
     if args.interactive and args.files:
         raise UsageError("--interactive takes no file arguments")
-    if not args.interactive and not args.files:
-        raise UsageError("pass at least one kaggle.json, or --interactive to type a credential")
-    if args.alias is not None and not ALIAS_PATTERN.match(args.alias):
-        raise UsageError(f"alias {args.alias!r} must be 1-64 chars of letters, digits, dot, dash or underscore")
 
     store = load_store()
-    by_alias = {a["alias"]: a for a in store["accounts"]}
     by_username = {a["username"]: a for a in store["accounts"]}
-    saved: list[str] = []
-    rejected: list[str] = []
-    # Per file: how many credentials it held, and how many reached the store.
-    tally: dict[Path, list[int]] = {}
+    checked: list[str] = []
+    failures = 0
 
-    sources = args.files or [None]
+    # 1. What is already stored. A dead credential is reported, never silently
+    #    dropped: removing an account is the user's other option, not a side
+    #    effect of asking whether it still works.
+    for account in sorted(store["accounts"], key=lambda a: a["username"]):
+        try:
+            validate(account["username"], account["key"])
+            checked.append(f"  {account['username']} — ok")
+        except CredentialError as exc:
+            failures += 1
+            checked.append(f"  {account['username']} — NOT working: {exc}")
+
+    # 2. What is new.
+    if args.interactive:
+        sources: list[str | None] = [None]
+    else:
+        sources = list(args.files) or [str(p) for p in inbox_files()]
+
+    added: list[str] = []
+    tally: dict[Path, list[int]] = {}
     for raw in sources:
         if raw is None:
             username, key = read_credential_interactively()
-            credentials = [{"label": "the credential you typed", "username": username,
-                            "key": key, "problem": None}]
+            credentials = [{"label": "typed", "username": username, "key": key, "problem": None}]
         else:
             try:
                 credentials = read_credentials(raw)
             except CredentialError as exc:
-                rejected.append(f"{raw} — {exc}")
+                failures += 1
+                added.append(f"  {display_path(Path(raw))} — {exc}")
                 continue
             tally[Path(raw)] = [len(credentials), 0]
 
-        # `--alias` names one account, so it cannot name a list. Refused rather
-        # than applied to the first row, which would silently mislabel it.
-        if args.alias is not None and len(credentials) > 1:
-            raise UsageError(f"--alias names one account, but {raw} holds {len(credentials)}")
-
         for credential in credentials:
-            where = f"{raw}:{credential['label']}" if raw else credential["label"]
+            where = (f"{display_path(Path(raw))}, {credential['label']}" if raw
+                     else "the credential you typed")
             try:
                 if credential["problem"]:
                     raise CredentialError(credential["problem"])
                 username, key = credential["username"], credential["key"]
-                alias = args.alias or username
-                if not ALIAS_PATTERN.match(alias):
-                    raise CredentialError(f"username {username!r} is not a usable alias; pass --alias")
-                existing = by_username.get(username)
-                if existing is None and alias in by_alias:
-                    raise CredentialError(
-                        f"alias {alias!r} already belongs to {by_alias[alias]['username']}; pass a different --alias"
-                    )
+                if not USERNAME_PATTERN.match(username):
+                    raise CredentialError(f"{username!r} is not a usable Kaggle username")
                 validate(username, key)
             except CredentialError as exc:
-                rejected.append(f"{where} — {exc}")
+                failures += 1
+                added.append(f"  {where} — rejected: {exc}")
                 continue
+            existing = by_username.get(username)
             if existing is not None:
+                # Say "replaced" only when something actually changed. A list
+                # left in the inbox is re-read every run, so the common case is
+                # the same key arriving again, and calling that a rotation reads
+                # as a token having changed when none did.
+                same = existing["key"] == key
                 existing["key"] = key
-                saved.append(f"{existing['alias']} ({username}) — updated, key replaced")
+                added.append(f"  {username} — {'already stored' if same else 'key replaced'}")
             else:
-                entry = {"alias": alias, "username": username, "key": key}
+                entry = {"username": username, "key": key}
                 store["accounts"].append(entry)
-                by_alias[alias] = entry
                 by_username[username] = entry
-                saved.append(f"{alias} ({username}) — saved")
+                added.append(f"  {username} — stored")
             if raw is not None:
                 tally[Path(raw)][1] += 1
 
-    if saved:
-        save_store(store)
-        print(f"Validated and stored {len(saved)}:")
-        for line in saved:
-            print(f"  {line}")
-        report_source_files(tally)
-    if rejected:
-        print(f"Rejected {len(rejected)}, nothing stored for them:")
-        for line in rejected:
-            print(f"  {line}")
-    return 1 if rejected else 0
+    if checked:
+        print(f"Checked {len(checked)} stored account(s):")
+        print("\n".join(checked))
+    if added:
+        print(f"From what you left to validate:")
+        print("\n".join(added))
+    save_store(store)
+    report_source_files(tally)
+    if not checked and not added:
+        print(f"Nothing to validate. Drop a kaggle.json, or a .txt with one "
+              f"`username key` per line, into {INBOX_NAME}/ and run this again.")
+    return 1 if failures else 0
 
 
 def cmd_remove(args: argparse.Namespace) -> int:
     store = load_store()
-    present = {a["alias"] for a in store["accounts"]}
-    unknown = [alias for alias in args.aliases if alias not in present]
+    present = {a["username"] for a in store["accounts"]}
+    unknown = [username for username in args.usernames if username not in present]
     if unknown:
-        # Refuse the whole batch: a typo that silently removes only the aliases
-        # it happened to match is a worse outcome than removing nothing.
+        # Refuse the whole batch: a typo that silently removes only the names it
+        # happened to match is a worse outcome than removing nothing.
         raise UsageError(f"no such account: {', '.join(unknown)}")
 
-    targets = set(args.aliases)
-    store["accounts"] = [a for a in store["accounts"] if a["alias"] not in targets]
+    targets = set(args.usernames)
+    store["accounts"] = [a for a in store["accounts"] if a["username"] not in targets]
     save_store(store)
     print(f"Removed {len(targets)}: {', '.join(sorted(targets))}")
     return 0
@@ -588,18 +618,20 @@ def main() -> int:
     p_discover.add_argument("--json", action="store_true", help="machine-readable output")
     p_discover.set_defaults(func=cmd_discover)
 
-    p_add = sub.add_parser("add", help="validate one or more kaggle.json files and store what passes")
-    p_add.add_argument("files", nargs="*", metavar="kaggle.json")
-    p_add.add_argument("--alias", help="name for the account; defaults to its Kaggle username")
-    p_add.add_argument(
+    p_validate = sub.add_parser(
+        "validate",
+        help="re-check every stored account and take in whatever is in the inbox")
+    p_validate.add_argument("files", nargs="*", metavar="file",
+                            help="check these instead of the inbox")
+    p_validate.add_argument(
         "--interactive", action="store_true",
         help="type one credential into a hidden terminal prompt instead of passing a file; "
              "run this yourself in your own shell",
     )
-    p_add.set_defaults(func=cmd_add)
+    p_validate.set_defaults(func=cmd_validate)
 
-    p_remove = sub.add_parser("remove", help="delete stored accounts by alias")
-    p_remove.add_argument("aliases", nargs="+", metavar="alias")
+    p_remove = sub.add_parser("remove", help="delete stored accounts by username")
+    p_remove.add_argument("usernames", nargs="+", metavar="username")
     p_remove.set_defaults(func=cmd_remove)
 
     args = parser.parse_args()

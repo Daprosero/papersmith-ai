@@ -251,14 +251,20 @@ class InteractiveEntryTests(unittest.TestCase):
         self.assertNotIn('"--key"', source)
 
 
-class AliasTests(unittest.TestCase):
-    def test_accepts_ordinary_kaggle_usernames_as_aliases(self) -> None:
-        for alias in ("diego", "diego-lab", "diego_2", "d.p"):
-            self.assertTrue(ACCOUNTS.ALIAS_PATTERN.match(alias), alias)
+class UsernameTests(unittest.TestCase):
+    def test_accepts_ordinary_kaggle_usernames(self) -> None:
+        for username in ("diego", "diego-lab", "diego_2", "d.p"):
+            self.assertTrue(ACCOUNTS.USERNAME_PATTERN.match(username), username)
 
-    def test_rejects_aliases_that_would_be_ambiguous_or_unusable(self) -> None:
-        for alias in ("", "with space", "slash/es", "a" * 65):
-            self.assertFalse(ACCOUNTS.ALIAS_PATTERN.match(alias), alias)
+    def test_rejects_what_could_not_be_a_username(self) -> None:
+        for username in ("", "with space", "slash/es", "a" * 65):
+            self.assertFalse(ACCOUNTS.USERNAME_PATTERN.match(username), username)
+
+    def test_an_account_is_its_username_with_no_second_name_for_it(self) -> None:
+        # Two ways to refer to one account means one of them is always wrong.
+        source = Path(ACCOUNTS.__file__).read_text(encoding="utf-8")
+        self.assertNotIn('"--alias"', source)
+        self.assertNotIn('a["alias"]', source)
 
 
 if __name__ == "__main__":
