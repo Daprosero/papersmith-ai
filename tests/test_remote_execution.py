@@ -59,6 +59,17 @@ PACKER = importlib.util.module_from_spec(PACKER_SPEC)
 sys.modules[PACKER_SPEC.name] = PACKER
 PACKER_SPEC.loader.exec_module(PACKER)
 
+# Loaded AFTER ledger.py, adapter.py and packer.py above, for the same
+# sys.modules-reuse reason documented next to PACKER's own load above:
+# remote_cli.py's `_load_sibling` reuses these exact LEDGER/ADAPTER/PACKER
+# module objects rather than exec'ing any of the three a second time.
+REMOTE_CLI_SCRIPT = REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/remote_cli.py"
+REMOTE_CLI_SPEC = importlib.util.spec_from_file_location("remote_execution_cli", REMOTE_CLI_SCRIPT)
+assert REMOTE_CLI_SPEC and REMOTE_CLI_SPEC.loader
+REMOTE_CLI = importlib.util.module_from_spec(REMOTE_CLI_SPEC)
+sys.modules[REMOTE_CLI_SPEC.name] = REMOTE_CLI
+REMOTE_CLI_SPEC.loader.exec_module(REMOTE_CLI)
+
 
 def _sample_submitted_event(**overrides: object) -> dict:
     fields = dict(
@@ -903,6 +914,238 @@ class PackerTests(unittest.TestCase):
         )
         self.assertIsInstance(result, PACKER.Plan)
         self.assertEqual(result.granted, 3)
+
+
+def _make_product(target: Path, name: str) -> Path:
+    """Build `<target>/<name>/Notebooks/` and return the Notebooks dir."""
+    notebooks = target / name / "Notebooks"
+    notebooks.mkdir(parents=True)
+    return notebooks
+
+
+class PathGuardTests(unittest.TestCase):
+    """`remote_cli.guard_entrypoint()` — the sole holder of file-kind policy.
+
+    Every case here has a reachable red: `remote_cli.py` does not exist
+    before this task, so the whole module fails to import and every test in
+    this file fails to collect.
+    """
+
+    def test_symlink_escaping_the_product_notebooks_dir_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            outside = Path(tmp) / "outside.ipynb"
+            outside.write_text("{}", encoding="utf-8")
+
+            link = notebooks / "evil.ipynb"
+            os.symlink(outside, link)
+
+            # The fixture itself must actually escape — a negative test
+            # whose escape silently failed would report success while
+            # testing nothing.
+            self.assertNotIn("Notebooks", link.resolve().parts)
+            self.assertEqual(link.resolve(), outside.resolve())
+
+            with self.assertRaises(REMOTE_CLI.PathGuardError):
+                REMOTE_CLI.guard_entrypoint(target.resolve(), link)
+
+    def test_non_ipynb_path_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            not_a_notebook = notebooks / "notes.txt"
+            not_a_notebook.write_text("plain text", encoding="utf-8")
+
+            with self.assertRaises(REMOTE_CLI.PathGuardError):
+                REMOTE_CLI.guard_entrypoint(target.resolve(), not_a_notebook)
+
+    def test_path_legitimately_under_notebooks_dir_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            resolved = REMOTE_CLI.guard_entrypoint(target.resolve(), notebook)
+            self.assertEqual(resolved, notebook.resolve())
+
+    def test_path_outside_target_entirely_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            elsewhere = Path(tmp) / "elsewhere.ipynb"
+            elsewhere.write_text("{}", encoding="utf-8")
+
+            with self.assertRaises(REMOTE_CLI.PathGuardError):
+                REMOTE_CLI.guard_entrypoint(target.resolve(), elsewhere)
+
+
+class RealDigestLoaderTests(unittest.TestCase):
+    """The one path in `submit` every other test replaces with a stub.
+
+    Injecting a digest is what keeps the submit tests fast and independent of
+    any repository's source tree, but it means the real loader — a path
+    reaching out of this skill into `proposal-implementation`'s kit — is wired
+    and never exercised. A path nothing runs is a path that breaks when the
+    file it points at moves, and the break surfaces at submit time, on the one
+    run that was about to spend an afternoon of somebody's machine.
+    """
+
+    def test_the_real_loader_returns_a_working_digest_function(self) -> None:
+        digest = REMOTE_CLI._load_source_digest()
+        self.assertTrue(callable(digest))
+        computed = digest(REPOSITORY_ROOT, "MIL_CREDA_Benchmark")
+        self.assertRegex(computed, r"^[0-9a-f]{64}$")
+
+    def test_the_loader_fails_loudly_when_its_target_is_gone(self) -> None:
+        """Reachable red for the test above: it passes only because the file is
+        where the loader expects it, so the failure has to be reachable by
+        moving it. A loader that quietly returned something on a missing file
+        would make the parity it depends on unverifiable."""
+        kit = (REPOSITORY_ROOT / ".claude/skills/proposal-implementation"
+               / "assets/kit/nb/report_digest.py")
+        self.assertTrue(kit.exists(), "the loader's target moved; update the loader")
+        hidden = kit.with_suffix(".py.hidden")
+        kit.rename(hidden)
+        try:
+            with self.assertRaises(Exception):
+                REMOTE_CLI._load_source_digest()
+        finally:
+            hidden.rename(kit)
+
+
+class SubmitTests(unittest.TestCase):
+    """`remote_cli.cmd_submit()` — the whole submit path, FakeAdapter only.
+
+    No live account and no concrete backend are involved anywhere in this
+    class; `adapters/kaggle.py` does not exist yet (a later task).
+    """
+
+    def test_submit_appends_exactly_one_submitted_event_with_a_fresh_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            digest_calls: list[tuple[Path, str]] = []
+
+            def fake_source_digest(resolved_target: Path, name: str) -> str:
+                digest_calls.append((resolved_target, name))
+                return "d" * 64
+
+            adapter = FakeAdapter(worker_id="w1", capacity=2)
+            result = REMOTE_CLI.cmd_submit(
+                target=target,
+                entrypoint=notebook,
+                worker="w1",
+                requested=1,
+                adapter=adapter,
+                source_digest=fake_source_digest,
+            )
+
+            # target.resolve(), not the raw tmp path: on darwin, tempfile's
+            # own /var/folders path is itself a symlink to /private/var, so
+            # only the resolved form matches what cmd_submit actually wrote.
+            ledger_path = target.resolve() / "MIL-CREDA" / ".remote-execution" / "ledger.jsonl"
+            self.assertEqual(result["ledgerPath"], ledger_path)
+            lines = ledger_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 1)
+
+            event = json.loads(lines[0])
+            self.assertEqual(event["kind"], "submitted")
+            self.assertEqual(event["entrypoint"], "Notebooks/a.ipynb")
+            self.assertEqual(event["sourceDigest"], "d" * 64)
+            self.assertEqual(event["submissionId"], result["submission"].id)
+
+            # Computed fresh at submit time — called exactly once, with the
+            # resolved target this call actually used.
+            self.assertEqual(len(digest_calls), 1)
+            self.assertEqual(digest_calls[0], (target.resolve(), "MIL-CREDA"))
+
+    def test_submit_refuses_a_symlink_escaping_notebooks_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            outside = Path(tmp) / "outside.ipynb"
+            outside.write_text("{}", encoding="utf-8")
+            link = notebooks / "evil.ipynb"
+            os.symlink(outside, link)
+
+            adapter = FakeAdapter(worker_id="w1", capacity=2)
+            with self.assertRaises(REMOTE_CLI.PathGuardError):
+                REMOTE_CLI.cmd_submit(
+                    target=target,
+                    entrypoint=link,
+                    worker="w1",
+                    requested=1,
+                    adapter=adapter,
+                    source_digest=lambda t, n: "d" * 64,
+                )
+
+            ledger_path = target / "MIL-CREDA" / ".remote-execution" / "ledger.jsonl"
+            self.assertFalse(ledger_path.exists())
+
+    def test_target_must_resolve_to_an_existing_dir_before_any_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing_target = Path(tmp) / "does-not-exist"
+            adapter = FakeAdapter(worker_id="w1", capacity=2)
+
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError):
+                REMOTE_CLI.cmd_submit(
+                    target=missing_target,
+                    entrypoint=missing_target / "MIL-CREDA" / "Notebooks" / "a.ipynb",
+                    worker="w1",
+                    requested=1,
+                    adapter=adapter,
+                    source_digest=lambda t, n: "d" * 64,
+                )
+
+            self.assertFalse(missing_target.exists())
+
+    def test_relative_target_is_resolved_before_any_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            original_cwd = Path.cwd()
+            os.chdir(tmp)
+            try:
+                adapter = FakeAdapter(worker_id="w1", capacity=2)
+                result = REMOTE_CLI.cmd_submit(
+                    target=Path("repo"),  # relative to the tmp dir just chdir'd into
+                    entrypoint=Path("repo/MIL-CREDA/Notebooks/a.ipynb"),
+                    worker="w1",
+                    requested=1,
+                    adapter=adapter,
+                    source_digest=lambda t, n: "d" * 64,
+                )
+            finally:
+                os.chdir(original_cwd)
+
+            # Written under the resolved absolute target...
+            expected_ledger = (target / "MIL-CREDA" / ".remote-execution" / "ledger.jsonl").resolve()
+            self.assertEqual(result["ledgerPath"], expected_ledger)
+            self.assertTrue(expected_ledger.exists())
+
+            # ...and nothing leaked into the real process cwd this test
+            # started from (the repository checkout itself), which is what
+            # a relative `--target` resolved against the wrong directory at
+            # write time would otherwise have produced.
+            self.assertFalse((original_cwd / "repo").exists())
+
+    def test_remote_cli_module_names_no_service(self) -> None:
+        """The leak guard for this module, over the raw file text — a
+        docstring naming a backend to explain an example would be exactly
+        the leak this skill's seam exists to prevent everywhere above the
+        adapter, and this CLI sits at the very top of that chain.
+        """
+        source = REMOTE_CLI_SCRIPT.read_text(encoding="utf-8").lower()
+        for leaked in ("kaggle", "t4"):
+            self.assertNotIn(leaked, source, leaked)
 
 
 if __name__ == "__main__":

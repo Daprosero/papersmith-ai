@@ -1,6 +1,6 @@
 ---
 name: remote-execution
-description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill so far ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry, no concrete backend yet), and the packer's capacity clamp. No concrete service adapter and no submit/status/fetch CLI exist yet; they land in later, separate commits. Stdlib-only, no venv."
+description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill so far ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry, no concrete backend yet), the packer's capacity clamp, and the CLI's `submit` command with its path guard (the sole holder of file-kind policy for what may run remotely). No concrete service adapter and no status/poll/fetch/reconcile CLI commands exist yet; they land in later, separate commits. Stdlib-only, no venv."
 ---
 
 # Remote Execution
@@ -41,12 +41,25 @@ Three modules exist so far, each service-blind and stdlib-only:
   minimum: `plan()` returns `requested`, `cap`, `inFlight` and `granted` as
   four separate numbers, plus `inFlightSource` recording whether `inFlight`
   came from the live service or fell back to the ledger.
+- `scripts/remote_cli.py` — the CLI front door. `submit` guards the
+  entrypoint, computes a fresh `source_digest()`, calls `packer.plan()`,
+  hands the job to a registered adapter's `submit()`, and appends the
+  resulting `submitted` event to the ledger — in that order. `guard_entrypoint()`
+  is the ONLY place in this whole skill that holds an opinion about what
+  KIND of file may run remotely: `Path.resolve()` first, then refuse
+  anything whose resolved path does not stay under
+  `<target>/<Name>/Notebooks/` and end `.ipynb`. Everything below the guard
+  (`Job.entrypoint`, the ledger's `entrypoint` field, the fold's indices)
+  stays deliberately blind to that question; widening this one guard, not
+  reworking any of those, is how a future non-notebook workload becomes
+  admissible. `status`, `poll`, `fetch` and `reconcile` are not implemented
+  yet.
 
 Not implemented yet: a concrete backend adapter (for example, one talking
-to an actual service), and the `remote_cli` submit/status/poll/fetch/
-reconcile commands a user would actually invoke. Reading the ledger back
-today, or asking for a capacity plan, both mean calling into these modules
-directly; neither yet has a command-line front door.
+to an actual service), and the `remote_cli` status/poll/fetch/reconcile
+commands a user would actually invoke. Reading the ledger back today, or
+asking for a capacity plan directly, both mean calling into `ledger.py` or
+`packer.py` themselves; only `submit` has a command-line front door so far.
 
 ## Why append, not a status record
 
