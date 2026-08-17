@@ -88,6 +88,15 @@ KAGGLE = importlib.util.module_from_spec(KAGGLE_SPEC)
 sys.modules[KAGGLE_SPEC.name] = KAGGLE
 KAGGLE_SPEC.loader.exec_module(KAGGLE)
 
+SHARD_IO_SCRIPT = REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/shard_io.py"
+SHARD_IO_SPEC = importlib.util.spec_from_file_location(
+    "remote_execution_shard_io", SHARD_IO_SCRIPT
+)
+assert SHARD_IO_SPEC and SHARD_IO_SPEC.loader
+SHARD_IO = importlib.util.module_from_spec(SHARD_IO_SPEC)
+sys.modules[SHARD_IO_SPEC.name] = SHARD_IO
+SHARD_IO_SPEC.loader.exec_module(SHARD_IO)
+
 
 def _sample_submitted_event(**overrides: object) -> dict:
     fields = dict(
@@ -2057,6 +2066,109 @@ class KaggleAdapterTests(unittest.TestCase):
                     self.assertNotIn(
                         sentinel, artifact.read_text(encoding="utf-8", errors="ignore")
                     )
+
+
+class ShardIoTests(unittest.TestCase):
+    """`shard_io.py` — the generic half of a target repository's shard reader.
+
+    Every test here exercises `read_shards`/`disagreements` directly against
+    a real temporary shard tree, never a mock of the filesystem: the module
+    has no dependency the tests would need to fake.
+
+    Every test in this class has a reachable red: `shard_io.py` did not
+    exist before this task, so the module import above would fail and every
+    test here would fail to collect.
+    """
+
+    def test_a_shard_with_no_stamp_is_absent_not_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "no-stamp").mkdir()
+            (root / "no-stamp" / "runs.jsonl").write_text(
+                json.dumps({"seed": 0}) + "\n", encoding="utf-8"
+            )
+
+            self.assertEqual(SHARD_IO.read_shards(root), [])
+
+    def test_a_shard_with_a_stamp_and_no_runs_reports_an_empty_run_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shard_dir = root / "k01"
+            shard_dir.mkdir()
+            (shard_dir / "shard.json").write_text(
+                json.dumps({"shard": "k01", "epochs": 20}), encoding="utf-8"
+            )
+
+            found = SHARD_IO.read_shards(root)
+
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0]["shard"], "k01")
+            self.assertEqual(found[0]["stamp"]["epochs"], 20)
+            self.assertEqual(found[0]["runs"], [])
+
+    def test_a_shard_s_runs_are_read_from_its_runs_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shard_dir = root / "k02"
+            shard_dir.mkdir()
+            (shard_dir / "shard.json").write_text(
+                json.dumps({"shard": "k02"}), encoding="utf-8"
+            )
+            (shard_dir / "runs.jsonl").write_text(
+                "\n".join(json.dumps({"seed": s}) for s in (0, 1)) + "\n",
+                encoding="utf-8",
+            )
+
+            found = SHARD_IO.read_shards(root)
+
+            self.assertEqual(len(found), 1)
+            self.assertEqual([r["seed"] for r in found[0]["runs"]], [0, 1])
+
+    def test_a_missing_root_reports_no_shards(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "never-created"
+
+            self.assertEqual(SHARD_IO.read_shards(root), [])
+
+    def test_shards_agreeing_on_a_field_report_no_disagreement(self) -> None:
+        shards = [
+            {"shard": "a", "stamp": {"epochs": 20}},
+            {"shard": "b", "stamp": {"epochs": 20}},
+        ]
+
+        self.assertEqual(SHARD_IO.disagreements(shards, ["epochs"]), [])
+
+    def test_shards_disagreeing_on_a_field_report_every_value_and_its_shards(self) -> None:
+        shards = [
+            {"shard": "a", "stamp": {"epochs": 20}},
+            {"shard": "b", "stamp": {"epochs": 3}},
+            {"shard": "c", "stamp": {"epochs": 20}},
+        ]
+
+        found = SHARD_IO.disagreements(shards, ["epochs"])
+
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["field"], "epochs")
+        values = found[0]["values"]
+        self.assertEqual(values[json.dumps(20)], ["a", "c"])
+        self.assertEqual(values[json.dumps(3)], ["b"])
+
+    def test_shard_io_source_names_no_service_and_no_domain_term(self) -> None:
+        """The leak guard this module exists to make impossible to miss: a
+        static scan over the raw file text (source and every docstring
+        alike) for the two service literals a second backend would
+        introduce, and the two domain literals that would mean the rest of
+        `shards.py` — the half that keys cells on those two dimensions —
+        followed this half into the forge without anyone noticing.
+        """
+        source = SHARD_IO_SCRIPT.read_text(encoding="utf-8").lower()
+        # Whole words, not substrings. `arm` alone fires on `warm`, `harm` and
+        # `alarm`, and a guard that fails on an innocent word is a guard the
+        # next contributor deletes rather than reads — which would leave the
+        # boundary it protects with nothing watching it at all.
+        for leaked in ("kaggle", "t4", "transfer", "arm"):
+            self.assertIsNone(
+                re.search(rf"\b{leaked}s?\b", source), leaked)
 
 
 if __name__ == "__main__":
