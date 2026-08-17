@@ -26,6 +26,7 @@ import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
+from types import SimpleNamespace
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -1146,6 +1147,93 @@ class SubmitTests(unittest.TestCase):
         source = REMOTE_CLI_SCRIPT.read_text(encoding="utf-8").lower()
         for leaked in ("kaggle", "t4"):
             self.assertNotIn(leaked, source, leaked)
+
+
+def _append_pending_submission(
+    ledger_path: Path, *, entrypoint: str, submission_id: str, worker: str, source_digest: str
+) -> None:
+    """Write a real `submitted` event to `ledger_path` through `LEDGER.append()`
+    — never a hand-built file — so every fetch/reconcile test below starts
+    from the exact same write path `cmd_submit` itself uses.
+    """
+    LEDGER.append(
+        ledger_path,
+        LEDGER.submitted_event(
+            entrypoint=entrypoint,
+            source_digest=source_digest,
+            submission_id=submission_id,
+            worker=worker,
+            requested_capacity=1,
+            granted_capacity=1,
+        ),
+    )
+
+
+class PollTests(unittest.TestCase):
+    def test_poll_refuses_a_status_outside_the_five_state_vocabulary(self) -> None:
+        class MisbehavingAdapter(FakeAdapter):
+            def poll(self, submission_id: str):
+                # Bypasses `ADAPTER.Status.__post_init__`'s own vocabulary
+                # check entirely — a raw namespace, not a genuine `Status`
+                # instance. This is exactly the "adapter's fault" case
+                # `cmd_poll`'s own refusal has to catch itself, rather than
+                # trusting every adapter to have gone through the
+                # dataclass's own constructor.
+                return SimpleNamespace(state="succeeded", detail="not this seam's word")
+
+        adapter = MisbehavingAdapter(worker_id="w1", capacity=2)
+        job = ADAPTER.Job(entrypoint=Path("Notebooks/a.ipynb"), inputs=(), worker="w1")
+        submission = adapter.submit(job)
+
+        with self.assertRaises(REMOTE_CLI.RemoteCLIError):
+            REMOTE_CLI.cmd_poll(submission_id=submission.id, adapter=adapter)
+
+    def test_poll_accepts_a_genuinely_valid_status(self) -> None:
+        adapter = FakeAdapter(worker_id="w1", capacity=2)
+        job = ADAPTER.Job(entrypoint=Path("Notebooks/a.ipynb"), inputs=(), worker="w1")
+        submission = adapter.submit(job)
+
+        status = REMOTE_CLI.cmd_poll(submission_id=submission.id, adapter=adapter)
+        self.assertIn(status.state, ADAPTER.STATES)
+
+
+class StatusTests(unittest.TestCase):
+    def test_status_reports_pending_stale_in_flight_and_unreadable_lines_and_calls_no_adapter(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                ledger_path,
+                entrypoint="Notebooks/a.ipynb",
+                submission_id="s1",
+                worker="w1",
+                source_digest="digest-old",
+            )
+            with open(ledger_path, "a", encoding="utf-8") as handle:
+                handle.write('{"kind": "submitted", "entrypoint": "Note')  # a torn tail
+
+            result = REMOTE_CLI.cmd_status(
+                target=target, entrypoint=notebook, source_digest=lambda t, n: "digest-new"
+            )
+
+            self.assertEqual(result["entrypoints"]["Notebooks/a.ipynb"]["state"], "pending")
+            self.assertIn("Notebooks/a.ipynb", result["staleInFlight"])
+            self.assertEqual(result["unreadableLines"], 1)
+            self.assertEqual(result["quarantined"], ())
+
+            # `cmd_status`'s own signature accepts no adapter at all — this
+            # is what makes "status reports; it never resolves" a structural
+            # fact rather than a rule its body would otherwise have to be
+            # trusted to follow.
+            self.assertNotIn("adapter", inspect.signature(REMOTE_CLI.cmd_status).parameters)
 
 
 if __name__ == "__main__":

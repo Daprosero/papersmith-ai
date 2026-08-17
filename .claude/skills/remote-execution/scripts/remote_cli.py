@@ -124,6 +124,34 @@ LEDGER_DIRNAME = ".remote-execution"
 LEDGER_FILENAME = "ledger.jsonl"
 
 
+def name_for(target: Path, entrypoint: str | Path) -> str:
+    """Derive `<Name>` from a path known to live under `target` — the same
+    structural technique `guard_entrypoint()` uses for a submitted
+    notebook (resolve first, then read the first path component past
+    `target`), factored out so `fetch`'s quarantine path and `reconcile`'s
+    ledger selection call the SAME derivation rather than each growing its
+    own copy that could quietly disagree with `submit`'s about which
+    product a given path belongs to.
+
+    This forge's real target hosts two products (`CREDA`, `MIL-CREDA`);
+    nothing in this skill is allowed to assume which one a caller means —
+    `<Name>` is always read off a path, never typed in as a bare string.
+    """
+    resolved = Path(entrypoint).resolve()
+    try:
+        relative = resolved.relative_to(target)
+    except ValueError:
+        raise RemoteCLIError(
+            f"cannot derive <Name>: {resolved} does not stay under target "
+            f"{target} at all"
+        ) from None
+    if not relative.parts:
+        raise RemoteCLIError(
+            f"cannot derive <Name>: {resolved} equals target {target} itself"
+        )
+    return relative.parts[0]
+
+
 def guard_entrypoint(target: Path, entrypoint: Path) -> Path:
     """Refuse anything that is not a notebook living under this product's
     `Notebooks/` tree.
@@ -271,6 +299,80 @@ def cmd_submit(
     }
 
 
+def cmd_status(
+    *,
+    target: str | Path,
+    entrypoint: str | Path,
+    source_digest: Callable[[Path, str], str] | None = None,
+) -> dict:
+    """The fold, rendered for a human: per-entrypoint state, what is
+    pending, what is `staleInFlight`, what is quarantined, and how many
+    lines could not be read at all.
+
+    This function accepts no `adapter` parameter at all — not merely
+    "does not call one" but structurally cannot, since none is in scope to
+    call. `status` reports what the ledger already says; it never resolves
+    anything, and the signature itself is what makes that true rather than
+    a rule this function's body would otherwise have to be trusted to
+    follow.
+    """
+    target = Path(target).resolve()
+    if not target.is_dir():
+        raise RemoteCLIError(
+            f"--target {target} does not resolve to an existing directory"
+        )
+
+    name = name_for(target, entrypoint)
+    ledger_path = target / name / LEDGER_DIRNAME / LEDGER_FILENAME
+    ledger_lines: list[str] = []
+    if ledger_path.exists():
+        ledger_lines = ledger_path.read_text(encoding="utf-8").splitlines()
+
+    digest_fn = source_digest or _load_source_digest()
+    live = digest_fn(target, name)
+    state = LEDGER.fold(ledger_lines, live_digest=live)
+
+    return {
+        "ledgerPath": ledger_path,
+        "entrypoints": {
+            entry_name: {
+                "state": entry.state,
+                "staleInFlight": entry.stale_in_flight,
+            }
+            for entry_name, entry in state.entrypoints.items()
+        },
+        "staleInFlight": state.stale_in_flight,
+        "quarantined": state.from_stale_submission,
+        "unreadableLines": state.unreadable_lines,
+    }
+
+
+def cmd_poll(*, submission_id: str, adapter: "ADAPTER.Adapter") -> "ADAPTER.Status":
+    """Ask the adapter for one submission's status, in the seam's own
+    five-value vocabulary — never the backend's raw text.
+
+    `ADAPTER.Status.__post_init__` already refuses an out-of-vocabulary
+    `state` for a genuine `Status` built the ordinary way, but that
+    validation runs only at construction time, inside the adapter, and this
+    function has no way to confirm every adapter actually goes through it —
+    a misbehaving adapter could hand back any object carrying a `.state`
+    attribute the ordinary constructor never touched. The check below is
+    this seam's OWN refusal, made again at the one place a bad value would
+    otherwise reach a caller: a state outside `ADAPTER.STATES` is the
+    adapter's fault, and it is refused here, not translated, not guessed
+    at, and never passed through.
+    """
+    status = adapter.poll(submission_id)
+    state = getattr(status, "state", None)
+    if state not in ADAPTER.STATES:
+        raise RemoteCLIError(
+            f"adapter.poll() returned state {state!r}, outside this seam's "
+            f"own vocabulary {ADAPTER.STATES}; that is the adapter's fault, "
+            "not something this CLI passes through"
+        )
+    return status
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="remote_cli",
@@ -290,6 +392,22 @@ def _build_parser() -> argparse.ArgumentParser:
         help="the name a concrete adapter was registered under via adapter.register()",
     )
     submit.add_argument("--requested", type=int, default=1)
+
+    status = subparsers.add_parser(
+        "status", help="report the fold for one product's ledger; resolves nothing"
+    )
+    status.add_argument("--target", required=True, type=Path)
+    status.add_argument("--entrypoint", required=True, type=Path)
+
+    poll = subparsers.add_parser(
+        "poll", help="ask the adapter for one submission's status"
+    )
+    poll.add_argument("--submission-id", required=True)
+    poll.add_argument(
+        "--backend",
+        required=True,
+        help="the name a concrete adapter was registered under via adapter.register()",
+    )
 
     return parser
 
@@ -324,6 +442,39 @@ def main(argv: list[str] | None = None) -> int:
                     "granted": result["plan"].granted,
                     "ledgerPath": str(result["ledgerPath"]),
                 },
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    if args.command == "status":
+        try:
+            result = cmd_status(target=args.target, entrypoint=args.entrypoint)
+        except (RemoteCLIError, LEDGER.LedgerError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+        print(json.dumps({**result, "ledgerPath": str(result["ledgerPath"])}, sort_keys=True))
+        return 0
+
+    if args.command == "poll":
+        try:
+            adapter_cls = ADAPTER.resolve(args.backend)
+        except KeyError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+        try:
+            status_result = cmd_poll(
+                submission_id=args.submission_id, adapter=adapter_cls()
+            )
+        except RemoteCLIError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+        print(
+            json.dumps(
+                {"state": status_result.state, "detail": status_result.detail},
                 sort_keys=True,
             )
         )
