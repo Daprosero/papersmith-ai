@@ -1910,6 +1910,27 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(state["missing"], [])
 
 
+class DoctrineAmendmentTests(unittest.TestCase):
+    """The record's clause and the launcher's clause governed different things.
+
+    Only the launcher's ever moved. Asserting sentence-one survival alone would
+    already pass before the amendment, since that sentence is untouched today —
+    the reachable red is the second assertion, so both live in one test.
+    """
+
+    SKILL_MD = CLI.parent.parent / "SKILL.md"
+
+    def test_amendment_preserves_sentence_and_revokes_launcher_clause(self):
+        text = self.SKILL_MD.read_text(encoding="utf-8")
+        self.assertIn(
+            "No service is named here, and none should be.", text,
+            "the sentence governing what the RECORD names must survive verbatim")
+        collapsed = " ".join(text.split())
+        self.assertNotIn(
+            "belongs in `tools/` for the reasons that section gives", collapsed,
+            "the clause governing where the launcher's CODE lives must be revoked")
+
+
 class ToolsRootTests(unittest.TestCase):
     """`tools/` is where a launcher lives, and it needed a home.
 

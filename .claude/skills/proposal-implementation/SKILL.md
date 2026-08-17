@@ -368,14 +368,18 @@ Nothing in the benchmark package is part of the formulation. Deleting it leaves 
 method intact, which is the property the name is promising.
 
 **And `tools/` exists for the same reason, reached the same way.** A script that
-launches or operates a run — one that hands work to a service, or drives a grid
-across several — has nowhere else to go. Not the method's package: it implements
-no equation, so it could only sit there by declaring a `__provenance__` it has no
-right to, and that is the falsified stamp the paragraph above refuses. Not the
-benchmark's package: that one trains and measures, and operating a service is
-neither. And not untracked, because then the configuration of a run that costs
-hours lives on one disk and no later session can reproduce how it was launched.
-No place existed, and that absence is the argument for naming one.
+wires this repository into a run — declaring which backend it hands work to,
+and at what capacity — has nowhere else to go. Not the method's package: it
+implements no equation, so it could only sit there by declaring a
+`__provenance__` it has no right to, and that is the falsified stamp the
+paragraph above refuses. Not the benchmark's package: that one trains and
+measures, and declaring a backend is neither. And not untracked, because then
+the configuration of a run that costs hours lives on one disk and no later
+session can reproduce how it was launched. No place existed for that
+declaration, and that absence is the argument for naming one. The launching
+machinery itself — the part identical for every repository — has since moved
+to the forge's `remote-execution` skill; the revocation note further below
+records what moved and why.
 
 It is a named place and not an amnesty. A `.py` loose at the top of the repository
 is still a stray module. And nothing under `tools/` is ever asked for a
@@ -1265,8 +1269,18 @@ apart, and each is cheap enough that skipping it is never the economical choice.
   and the record says which repetitions the verdict actually rests on.
 
   No service is named here, and none should be. Where the work goes is the
-  repository's decision, and the launcher that knows about it belongs in
-  `tools/` for the reasons that section gives.
+  repository's decision, declared as a backend and a capacity; the launcher
+  that knows about it is general machinery, identical for every
+  implementation, and now lives in the forge's `remote-execution` skill,
+  with service knowledge confined to a single adapter file there.
+
+  This revokes only half of what this rule used to say. The sentence above —
+  no service is named here, and none should be — governs what the RECORD
+  names, and nothing about it moved: `DISTRIBUTION_DECLARATION` and
+  `distribution_state` still name none, and the leak test still holds them
+  to it. What is revoked is the half that governed where the launcher's CODE
+  lives. A reader who meets that placement quoted elsewhere should read it
+  as retired; the sentence beside it never was.
 - **And a search is an experiment, declared as one.** The moment a value is chosen
   by looking at outcomes, the thing that chose it needs everything a run needs, and
   three of those are invisible until somebody walks into them. `verify` reports
