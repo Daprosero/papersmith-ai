@@ -1490,7 +1490,7 @@ class AgreementsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             state = impl.agreements_state(Path(raw), "Method")
             self.assertEqual(state["status"], "absent")
-            self.assertEqual(state["path"], "Method/AGREEMENTS.md")
+            self.assertEqual(state["searched"], "Method/*.md")
 
     def test_an_unticked_item_is_an_agreement_that_never_reached_the_code(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -1509,6 +1509,51 @@ class AgreementsTests(unittest.TestCase):
             self.assertEqual(state["status"], "settled")
             self.assertEqual(state["settled"], 2)
             self.assertEqual(state["open"], [])
+
+    def test_a_checklist_under_any_name_is_found(self):
+        """El caso que motivó esto, y que no probé la primera vez.
+
+        Un repositorio ya tenía su checklist bajo otro nombre, con 159 ítems
+        acordados a mano. Con el nombre fijo el chequeo reportaba `absent` encima
+        de ella e inventaba una segunda al lado. Eso no es un archivo faltante:
+        es una ausencia que nadie fue a buscar, vestida de hallazgo.
+
+        Rojo alcanzable: con `AGREEMENTS.md` fijo, esto da `absent`.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            (root / "Method/AGREED.md").write_text(
+                "# Acordado\n\n- [x] el techo queda en uno\n- [ ] la figura inline\n",
+                encoding="utf-8")
+            state = impl.agreements_state(root, "Method")
+            self.assertEqual(state["status"], "open")
+            self.assertEqual(state["holders"], ["Method/AGREED.md"])
+            self.assertEqual(state["settled"], 1)
+
+    def test_every_checklist_in_the_product_folder_is_counted(self):
+        """Dos archivos con acuerdos son dos mitades de un contrato, no uno."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            (root / "Method/AGREED.md").write_text("- [x] uno\n", encoding="utf-8")
+            (root / "Method/AGREEMENTS.md").write_text("- [ ] dos\n", encoding="utf-8")
+            state = impl.agreements_state(root, "Method")
+            self.assertEqual(state["holders"],
+                             ["Method/AGREED.md", "Method/AGREEMENTS.md"])
+            self.assertEqual(state["settled"], 1)
+            self.assertEqual(state["open"], ["dos"])
+
+    def test_a_markdown_file_with_no_items_is_a_document_and_not_a_checklist(self):
+        """Un README en la carpeta del producto no es un contrato incumplido."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            (root / "Method/README.md").write_text(
+                "# El método\n\n- una viñeta cualquiera\n- otra\n", encoding="utf-8")
+            state = impl.agreements_state(root, "Method")
+            self.assertEqual(state["status"], "absent")
+            self.assertEqual(state["unparsed"], [])
 
     def test_prose_is_not_mistaken_for_a_malformed_agreement(self):
         """Un párrafo en negrita no es una viñeta.
@@ -1538,7 +1583,7 @@ class AgreementsTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as raw:
             state = self.write(Path(raw), "- [x] uno\n- dos, sin casilla\n")
-            self.assertEqual(state["unparsed"], ["- dos, sin casilla"])
+            self.assertEqual(state["unparsed"], ["AGREEMENTS.md: - dos, sin casilla"])
             self.assertEqual(state["status"], "open")
 
 

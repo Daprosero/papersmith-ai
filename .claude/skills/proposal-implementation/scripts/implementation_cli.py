@@ -102,10 +102,17 @@ def tracked_files(target: Path) -> list[str]:
 LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/"
 
 
-#: Where the agreements of every gate are written down, inside the product folder
-#: so they travel with the work and are read by the next session rather than
-#: remembered by it.
-AGREEMENTS = "AGREEMENTS.md"
+#: The agreements of every gate live in the product folder, so they travel with
+#: the work and get read by the next session rather than remembered by it. Which
+#: file holds them is found by shape and never by name.
+#:
+#: This was a fixed `AGREEMENTS.md` for one commit, and that was wrong in the way
+#: this whole file exists to catch: a repository already had its checklist under a
+#: different name, 159 items settled by hand, and the check reported `absent` over
+#: it and invented a second one beside it. Naming the file is deciding for the
+#: repository, and then reading only the name you decided is asserting an absence
+#: you never went looking for.
+AGREEMENTS_GLOB = "*.md"
 
 #: A checklist item. Anything else on the line is the item's text, verbatim.
 AGREEMENT_LINE = re.compile(r"^\s*[-*]\s*\[(?P<mark>[ xX])\]\s*(?P<text>.+?)\s*$")
@@ -135,41 +142,63 @@ def agreements_state(target: Path, name: str) -> dict:
     Absence is a state and not a failure — a repository whose flow never reached a
     gate has nothing to record. It is reported either way, because a check that
     speaks only on failure teaches nobody what it was watching.
+
+    **Found by shape, never by name.** Every markdown file at the top of the
+    product folder is read, and one holding checklist items is a checklist. A
+    fixed filename would decide for the repository and then report `absent` over
+    whatever the repository actually called it — which is not a missing file, it
+    is an absence nobody went looking for, dressed as a finding.
     """
-    path = target / name / AGREEMENTS
-    if not path.exists():
-        return {"status": "absent", "path": f"{name}/{AGREEMENTS}",
-                "open": [], "settled": 0, "unparsed": [],
-                "note": "no hay acuerdos escritos; si hubo una compuerta, se perdieron"}
+    product = target / name
+    files = sorted(p for p in product.glob(AGREEMENTS_GLOB) if p.is_file()) \
+        if product.is_dir() else []
 
     open_items: list[str] = []
     settled = 0
     unparsed: list[str] = []
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.rstrip()
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        match = AGREEMENT_LINE.match(line)
-        if not match:
+    holding: list[str] = []
+    for path in files:
+        items_here = 0
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = raw.rstrip()
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            match = AGREEMENT_LINE.match(line)
+            if not match:
             # A line that is neither blank, a heading, nor a checklist item. Left
             # silent it would be an agreement nobody counts, which is the failure
             # this file exists to prevent, one level down.
             #
-            # A bullet is a marker followed by whitespace. Testing the first
-            # character alone read every `**bold**` paragraph as a malformed
-            # agreement, and a check that fires on ordinary prose is one people
-            # stop reading — which costs more than the case it was guarding.
-            if BULLET_LINE.match(line):
-                unparsed.append(line.strip())
-            continue
-        if match.group("mark") == " ":
-            open_items.append(match.group("text"))
+                # A bullet is a marker followed by whitespace. Testing the first
+                # character alone read every `**bold**` paragraph as a malformed
+                # agreement, and a check that fires on ordinary prose is one
+                # people stop reading — costlier than the case it was guarding.
+                if BULLET_LINE.match(line):
+                    unparsed.append(f"{path.name}: {line.strip()}")
+                continue
+            items_here += 1
+            if match.group("mark") == " ":
+                open_items.append(match.group("text"))
+            else:
+                settled += 1
+        # A markdown file with no checklist items is a document, not a checklist.
+        # Only what actually holds agreements is reported as holding them, and the
+        # unparsed lines of a file that turned out to hold none go with it.
+        if items_here:
+            holding.append(str(path.relative_to(target)))
         else:
-            settled += 1
+            unparsed = [u for u in unparsed if not u.startswith(f"{path.name}: ")]
+
+    if not holding:
+        return {"status": "absent", "holders": [], "searched": f"{name}/*.md",
+                "open": [], "settled": 0, "unparsed": [],
+                "note": "no markdown file in the product folder holds checklist "
+                        "items; if a gate happened, its agreements were lost"}
 
     return {
         "status": "open" if open_items or unparsed else "settled",
-        "path": f"{name}/{AGREEMENTS}",
+        "holders": holding,
+        "searched": f"{name}/*.md",
         "open": open_items,
         "settled": settled,
         "unparsed": unparsed,
