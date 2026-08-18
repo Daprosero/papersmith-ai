@@ -17,6 +17,24 @@ not a directory inside the resolved target, which is what stands between a
 crafted `--service`/`--job-name` (`../../etc`, say) and a write outside the
 target repository entirely.
 
+`_verify_commit_reachable()` runs next, before `resolve_clone_paths()` or
+any write: `--commit` proving out with `git cat-file -e` only shows the pin
+exists in the LOCAL checkout that ran `generate-job` — it says nothing
+about whether the declared `--repo-url` can actually serve it, which is
+what a runner needs when it clones that remote and checks out the
+pin inside the kernel. `git ls-remote <repo-url> <commit>` cannot answer
+this for a bare commit SHA (`ls-remote` matches ref *names*; a 40-hex pin
+that is not literally a branch/tag name comes back empty with exit 0
+either way), so this uses the accurate equivalent instead: `git fetch
+--dry-run <repo-url> <commit>`, which the remote's own upload-pack either
+serves or refuses with "not our ref" — without ever writing a ref or
+`FETCH_HEAD` locally. Fails closed exactly like `computedNotDeclared`,
+never a warning, and closed on an unanswerable network failure too: an
+unresolved DNS lookup cannot confirm reachability any more than it can
+deny it, and generation is local and free to re-run, so "cannot
+determine" refuses exactly like "confirmed absent" rather than risking a
+silent pass on the one path this check exists to close.
+
 `resolve_clone_paths()` is the AST-based, transitive dependency check:
 declared `clonePaths` are cross-checked against what the declared entry
 modules (`run.module`, plus `run.smoke.module` when present) actually
@@ -562,10 +580,13 @@ def generate_job(
     existing one unless `regenerate=True`.
 
     Order is fixed: resolve `target` (no other check runs against a raw,
-    unresolved path); derive and validate `destination`; resolve and
-    cross-check `clone_paths` against what the declared entry modules
-    actually import (`resolve_clone_paths()`), refusing before anything
-    else is built if that check fails; build `run-config.json` and the
+    unresolved path); derive and validate `destination`; confirm `commit`
+    is actually reachable on the declared `repo_url`
+    (`_verify_commit_reachable()`), refusing before anything else runs if
+    it is not (or cannot be confirmed); resolve and cross-check
+    `clone_paths` against what the declared entry modules actually import
+    (`resolve_clone_paths()`), refusing before anything else is built if
+    that check fails; build `run-config.json` and the
     notebook fully, in memory, before touching disk; only then check for an
     existing folder or a leftover `.partial/`. Everything from that point
     on writes into `<job>.partial/` first — `run-config.json`,
@@ -586,6 +607,8 @@ def generate_job(
     """
     resolved_target = resolve_target(target)
     destination = resolve_destination(resolved_target, service, job_name)
+
+    _verify_commit_reachable(resolved_target, commit, repo_url)
 
     entry_modules = [run_module]
     if smoke_module and smoke_function:
@@ -739,6 +762,60 @@ def _run_git(
             f"git {' '.join(args)} exited {result.returncode}: {result.stderr.strip()}"
         )
     return result
+
+
+def _verify_commit_reachable(target: Path, commit: str, repo_url: str) -> None:
+    """Confirm `commit` is actually fetchable from the declared `repo_url`
+    — the exact operation a runner performs when it clones that remote and
+    checks out the pin inside the kernel — before `generate_job()` ever
+    writes a byte.
+
+    `git cat-file -e <pinned>^{commit}` (used by `_staleness_for()` below)
+    only proves the pin exists in `target`'s LOCAL history; it is silent
+    on whether `repo_url` can serve it. `git ls-remote <repo_url>
+    <commit>` cannot fill that gap either for a bare 40-hex commit SHA:
+    `ls-remote` matches ref *names* against a pattern, and a commit hash
+    is not a ref name unless it happens to collide with one, so it comes
+    back empty with exit 0 whether or not the remote actually has the
+    commit — confirmed directly against a real GitHub repository while
+    building this check, not assumed. `git fetch --dry-run <repo_url>
+    <commit>` is the accurate equivalent: the remote's own upload-pack
+    either serves the object graph reaching `commit` (exit 0) or refuses
+    it with "not our ref" (non-zero) — the same failure a runner's own
+    clone would hit, just paid for here instead of inside a kernel after
+    quota is spent. `--dry-run` means no ref or `FETCH_HEAD` is ever
+    written into `target`, the same read-only discipline every other git
+    call in this module holds; it runs through `_run_git()`, the single
+    composition point, so it inherits that function's `shell=False`
+    list-argv and `GIT_ENV_ALLOWLIST` discipline rather than a second,
+    parallel one — `repo_url` reaches an outside host and is treated as
+    untrusted input the same way a pinned commit already is elsewhere in
+    this module.
+
+    Raises `JobFolderError` — refusing generation, exactly like the
+    existing `computedNotDeclared` refusal, never a warning — both when
+    the remote confirms it cannot serve `commit` AND when the question
+    could not be asked at all (a DNS failure, a timeout, an unreachable
+    host). The two are indistinguishable in git's own exit code, and
+    deliberately not distinguished here either: a network failure cannot
+    confirm reachability any more than it can deny it, the same way
+    `_staleness_for()`'s own `unknown` verdict is never rendered as
+    `fresh`. Generation is local and costs nothing to re-run once
+    connectivity is back; a wrong PASS here costs spent remote-execution quota and
+    a failure discovered only after the push — the exact expense this
+    check exists to avoid. Git's own message (which does name the
+    distinct underlying cause) is carried into the refusal rather than
+    replaced with a second, coarser one.
+    """
+    try:
+        _run_git(["fetch", "--dry-run", repo_url, commit], cwd=target)
+    except JobFolderError as exc:
+        raise JobFolderError(
+            f"generation refuses: commit {commit!r} could not be confirmed "
+            f"reachable on the declared remote {repo_url!r} — a runner "
+            "would attempt and fail this same fetch inside the kernel, "
+            f"after quota is already spent: {exc}"
+        ) from exc
 
 
 def _staleness_for(target: Path, pinned_commit: str, clone_paths: Sequence[str]) -> dict:

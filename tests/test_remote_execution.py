@@ -3113,6 +3113,18 @@ class JobFolderTests(unittest.TestCase):
             lambda run_config: ("fake-metadata.json", json.dumps({"ok": True})),
         )
 
+    def setUp(self) -> None:
+        # This class is not exercising commit-reachability itself (that is
+        # `CommitReachabilityTests`' own job below) — every `commit`/
+        # `repo_url` pair here is a syntactic fixture pointed at
+        # `example.invalid`, never something a real remote could confirm.
+        # Stubbed out here so this class stays offline and deterministic.
+        patcher = unittest.mock.patch.object(
+            JOBFOLDER, "_verify_commit_reachable", return_value=None
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _fixture_assets(self, tmp: str) -> tuple[Path, Path]:
         bootstrap = Path(tmp) / "fixture_bootstrap.py"
         invoke = Path(tmp) / "fixture_invoke.py"
@@ -3512,6 +3524,241 @@ class JobFolderTests(unittest.TestCase):
             self.assertIn("__import__", run_config["unresolvedImports"][0])
 
 
+class CommitReachabilityTests(unittest.TestCase):
+    """`jobfolder._verify_commit_reachable()` — generation refuses when
+    the pinned `--commit` cannot be confirmed reachable on the declared
+    `--repo-url`, exactly like the existing `computedNotDeclared` refusal:
+    fail-closed, never a warning.
+
+    `git cat-file -e <pinned>^{commit}` (used elsewhere in this module,
+    for staleness) only proves the pin exists in the LOCAL checkout — it
+    says nothing about whether the declared remote can serve it, which is
+    what a Kaggle runner actually needs when it clones `--repo-url` and
+    checks out the pin inside the kernel. A pin that only exists on the
+    author's laptop currently surfaces as a failure inside the kernel,
+    after quota is already spent; this is the check that catches it here
+    instead, locally, before a single byte is written.
+
+    `git ls-remote <repo_url> <commit>` cannot do this for a bare 40-hex
+    commit SHA — proven directly against a real GitHub repository while
+    building this check: `ls-remote` matches ref *names*, and a commit
+    hash that is not literally a branch/tag name comes back empty with
+    exit 0 whether or not the remote actually has the commit. `git fetch
+    --dry-run <repo_url> <commit>` is the equivalent that actually answers
+    the question — verified the same way: the remote's own upload-pack
+    either serves the commit (exit 0) or refuses it with "not our ref"
+    (non-zero) — and `--dry-run` means no ref or `FETCH_HEAD` is ever
+    written locally.
+
+    Every test in this class has a reachable red: before this task,
+    `jobfolder` exposed no `_verify_commit_reachable` attribute at all, so
+    every test here that references it fails with `AttributeError`, and
+    `generate_job()` wrote a job folder unconditionally regardless of
+    whether the pin was reachable anywhere but locally.
+    """
+
+    FAKE_SERVICE = "commit-reachability-fake-service"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        ADAPTER.register_metadata(
+            cls.FAKE_SERVICE,
+            lambda run_config: ("fake-metadata.json", json.dumps({"ok": True})),
+        )
+
+    def _fixture_assets(self, tmp: str) -> tuple[Path, Path]:
+        bootstrap = Path(tmp) / "fixture_bootstrap.py"
+        invoke = Path(tmp) / "fixture_invoke.py"
+        bootstrap.write_text("# fixture bootstrap cell\n", encoding="utf-8")
+        invoke.write_text("# fixture invoke cell\n", encoding="utf-8")
+        return bootstrap, invoke
+
+    def _ensure_default_source_tree(self, target: Path) -> None:
+        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        if not harness.exists():
+            harness.parent.mkdir(parents=True, exist_ok=True)
+            harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
+
+    def _generate(self, tmp: str, target: Path, **overrides) -> Path:
+        bootstrap, invoke = self._fixture_assets(tmp)
+        self._ensure_default_source_tree(target)
+        kwargs = dict(
+            target=target,
+            service=self.FAKE_SERVICE,
+            job_name="search-a",
+            product="MIL-CREDA",
+            commit="c" * 40,
+            repo_url="https://example.invalid/repo.git",
+            repo_ref="main",
+            clone_paths=["src/MIL_CREDA_Benchmark"],
+            run_module="MIL_CREDA_Benchmark.harness",
+            run_function="campaign",
+            bootstrap_asset=bootstrap,
+            invoke_asset=invoke,
+        )
+        kwargs.update(overrides)
+        return JOBFOLDER.generate_job(**kwargs)
+
+    # -- `_verify_commit_reachable()` in isolation, `_run_git` mocked so no
+    # real network call is ever made -------------------------------------
+
+    def test_reaches_git_fetch_dry_run_with_repo_url_commit_and_cwd(self) -> None:
+        recorded = {}
+
+        def fake_run_git(args, *, cwd, timeout=None):
+            recorded["args"] = list(args)
+            recorded["cwd"] = cwd
+            return unittest.mock.Mock(returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            with unittest.mock.patch.object(JOBFOLDER, "_run_git", side_effect=fake_run_git):
+                JOBFOLDER._verify_commit_reachable(
+                    target, "c" * 40, "https://example.invalid/repo.git"
+                )
+
+            self.assertEqual(
+                recorded["args"],
+                ["fetch", "--dry-run", "https://example.invalid/repo.git", "c" * 40],
+            )
+            self.assertEqual(recorded["cwd"], target)
+
+    def test_succeeds_silently_when_fetch_dry_run_succeeds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            with unittest.mock.patch.object(
+                JOBFOLDER, "_run_git", return_value=unittest.mock.Mock(returncode=0)
+            ):
+                self.assertIsNone(
+                    JOBFOLDER._verify_commit_reachable(
+                        target, "c" * 40, "https://example.invalid/repo.git"
+                    )
+                )
+
+    def test_refuses_when_remote_reports_not_our_ref(self) -> None:
+        """The real failure shape `git fetch --dry-run` produces for a
+        commit the remote cannot serve — reproduced verbatim from a real
+        GitHub repository while building this check.
+        """
+
+        def fake_run_git(args, *, cwd, timeout=None):
+            raise JOBFOLDER.JobFolderError(
+                "git fetch --dry-run exited 128: fatal: remote error: "
+                f"upload-pack: not our ref {'d' * 40}"
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            with unittest.mock.patch.object(JOBFOLDER, "_run_git", side_effect=fake_run_git):
+                with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                    JOBFOLDER._verify_commit_reachable(
+                        target, "d" * 40, "https://example.invalid/repo.git"
+                    )
+
+            self.assertIn("d" * 40, str(ctx.exception))
+            self.assertIn("https://example.invalid/repo.git", str(ctx.exception))
+
+    def test_refuses_when_network_is_unavailable_not_a_silent_pass(self) -> None:
+        """`_staleness_for()` already refuses to render an unanswerable
+        question as `fresh` — `unknown` is a separate branch, never a
+        fallback to the clean verdict. The same discipline applies here:
+        a network failure cannot confirm reachability any more than it can
+        deny it, and generation costs nothing to re-run once connectivity
+        is back — a wrong PASS here costs a spent Kaggle quota discovered
+        only after the push, which is exactly what this check exists to
+        avoid. So an unresolved DNS lookup refuses generation exactly like
+        a confirmed-absent commit does, not a warning either way.
+        """
+
+        def fake_run_git(args, *, cwd, timeout=None):
+            raise JOBFOLDER.JobFolderError(
+                "could not run git: [Errno 8] nodename nor servname provided, "
+                "or not known"
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            with unittest.mock.patch.object(JOBFOLDER, "_run_git", side_effect=fake_run_git):
+                with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                    JOBFOLDER._verify_commit_reachable(
+                        target, "c" * 40, "https://example.invalid/repo.git"
+                    )
+
+            self.assertIn("nodename nor servname", str(ctx.exception))
+
+    # -- wired into `generate_job()`: refuses before any file is written --
+
+    def test_generate_job_refuses_when_pin_is_not_reachable_on_declared_remote(self) -> None:
+        def fake_run_git(args, *, cwd, timeout=None):
+            raise JOBFOLDER.JobFolderError(
+                f"git fetch --dry-run exited 128: fatal: remote error: "
+                f"upload-pack: not our ref {'e' * 40}"
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            with unittest.mock.patch.object(JOBFOLDER, "_run_git", side_effect=fake_run_git):
+                with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                    self._generate(tmp, target, commit="e" * 40)
+
+            self.assertIn("e" * 40, str(ctx.exception))
+            self.assertIn("https://example.invalid/repo.git", str(ctx.exception))
+            # Fail-closed before any write: no job folder, no partial
+            # leftover — the same atomicity `computedNotDeclared` already
+            # guarantees for its own refusal.
+            job_dir = target / "tools" / self.FAKE_SERVICE / "search-a"
+            self.assertFalse(job_dir.exists())
+            self.assertFalse(job_dir.with_name(job_dir.name + ".partial").exists())
+
+    def test_generate_job_succeeds_when_pin_is_reachable_on_declared_remote(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            with unittest.mock.patch.object(
+                JOBFOLDER, "_run_git", return_value=unittest.mock.Mock(returncode=0)
+            ):
+                job_dir = self._generate(tmp, target)
+
+            self.assertTrue((job_dir / "run-config.json").is_file())
+
+    def test_reachability_refusal_precedes_clone_path_resolution(self) -> None:
+        """The reachability check runs early enough to refuse before
+        `resolve_clone_paths()` ever parses a single source file — proven
+        by pointing `run_module` at a module that does not exist on disk
+        at all (which `resolve_clone_paths()` would itself refuse on, but
+        with a different message) and confirming the REMOTE refusal is
+        the one that actually surfaces.
+        """
+
+        def fake_run_git(args, *, cwd, timeout=None):
+            raise JOBFOLDER.JobFolderError("not our ref")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            # No source tree at all under `target` — resolve_clone_paths()
+            # would refuse on a missing entry module if it ever ran.
+            with unittest.mock.patch.object(JOBFOLDER, "_run_git", side_effect=fake_run_git):
+                with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                    JOBFOLDER.generate_job(
+                        target=target,
+                        service=self.FAKE_SERVICE,
+                        job_name="search-a",
+                        product="MIL-CREDA",
+                        commit="c" * 40,
+                        repo_url="https://example.invalid/repo.git",
+                        repo_ref="main",
+                        clone_paths=["src/MIL_CREDA_Benchmark"],
+                        run_module="MIL_CREDA_Benchmark.harness",
+                        run_function="campaign",
+                        bootstrap_asset=self._fixture_assets(tmp)[0],
+                        invoke_asset=self._fixture_assets(tmp)[1],
+                    )
+
+            self.assertIn("not our ref", str(ctx.exception))
+
+
 class ResolveClonePathsTests(unittest.TestCase):
     """`jobfolder.resolve_clone_paths()` — the AST-based, transitive
     dependency check (design #744 section 3). Reuses
@@ -3687,6 +3934,17 @@ class StalenessTests(unittest.TestCase):
             cls.FAKE_SERVICE,
             lambda run_config: ("fake-metadata.json", json.dumps({"ok": True})),
         )
+
+    def setUp(self) -> None:
+        # Staleness (this class's own subject) is orthogonal to commit
+        # reachability on a declared remote — every `repo_url` here is
+        # `example.invalid`, a fixture, never a real remote. Stubbed out so
+        # this class stays offline and deterministic.
+        patcher = unittest.mock.patch.object(
+            JOBFOLDER, "_verify_commit_reachable", return_value=None
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _git(self, cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
         env = dict(os.environ)
@@ -3971,6 +4229,16 @@ class StalenessRoutingTests(unittest.TestCase):
             cls.FAKE_SERVICE,
             lambda run_config: ("fake-metadata.json", json.dumps({"ok": True})),
         )
+
+    def setUp(self) -> None:
+        # This class exercises staleness routing, not commit reachability —
+        # every `repo_url` here is `example.invalid`, a fixture. Stubbed
+        # out so this class stays offline and deterministic.
+        patcher = unittest.mock.patch.object(
+            JOBFOLDER, "_verify_commit_reachable", return_value=None
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _git(self, cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
         env = dict(os.environ)
@@ -4849,6 +5117,16 @@ class SmokeTests(unittest.TestCase):
             cls.FAKE_SERVICE,
             lambda run_config: ("fake-metadata.json", json.dumps({"ok": True})),
         )
+
+    def setUp(self) -> None:
+        # This class exercises smoke recording, not commit reachability —
+        # every `repo_url` here is `example.invalid`, a fixture. Stubbed
+        # out so this class stays offline and deterministic.
+        patcher = unittest.mock.patch.object(
+            JOBFOLDER, "_verify_commit_reachable", return_value=None
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     # -- fixtures: a real git repo + a real generated job folder, the same
     # shape `StalenessTests` already establishes for exercising
