@@ -305,10 +305,25 @@ def resolve_clone_paths(
     Reuses `implementation_cli.py`'s `prior_work_state()` idiom exactly for
     the walk itself (`ast.parse` + `ast.walk` over `ast.Import`/
     `ast.ImportFrom`, inspecting only `node.module` for `ImportFrom` and
-    `alias.name` for `Import`, with no relative-import resolution and no
-    per-name submodule disambiguation) — just walked transitively, over
-    every module an entry module reaches, instead of over one fixed file
-    set.
+    `alias.name` for `Import`, with no relative-import resolution) — just
+    walked transitively, over every module an entry module reaches,
+    instead of over one fixed file set.
+
+    One conservative widening on top of that reused idiom, confirmed
+    necessary by a real production gap: for `from A import name`, `name`
+    is also tried as a candidate submodule `A.name`, and enqueued ONLY
+    when that candidate resolves to an actual file on disk. Without this,
+    `from A import sub` enqueues `A` alone, which resolves to
+    `A/__init__.py` — never to `A/sub.py` when `sub` is a submodule FILE
+    rather than an attribute `__init__.py` itself defines, so `sub.py`'s
+    own imports were never walked at all. A generated job's `from
+    MIL_CREDA_Benchmark import bags, config, report_digest, wiring` (an
+    empty `__init__.py`) let `wiring.py`'s own further import slip past
+    this check undeclared, and a real clone failed at runtime with
+    `ModuleNotFoundError` for exactly that reason. Resolving the
+    candidate first, rather than enqueuing every imported name
+    unconditionally, is what keeps an ordinary `from A import
+    some_attribute` from becoming a spurious `unresolved` entry.
 
     The granularity rule (design #744 section 3): a resolved import maps
     to its top-level package directory under `src/`, never to a single
@@ -375,6 +390,30 @@ def resolve_clone_paths(
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module:
                 enqueue(node.module)
+                for alias in node.names:
+                    if alias.name == "*":
+                        continue
+                    candidate = f"{node.module}.{alias.name}"
+                    # `from A import sub` names `sub` only as an imported
+                    # NAME on `node.module = "A"` — `enqueue("A")` alone
+                    # resolves to `A/__init__.py`, never to `A/sub.py`,
+                    # when `sub` is actually a submodule FILE rather than
+                    # an attribute `__init__.py` itself defines. A real
+                    # production gap this conservative widening closes: a
+                    # generated job's `from MIL_CREDA_Benchmark import
+                    # bags, config, report_digest, wiring` (an empty
+                    # `__init__.py`) let `wiring.py`'s own further imports
+                    # slip past this walk entirely, undeclared, and the
+                    # clone failed at runtime with `ModuleNotFoundError`.
+                    # Enqueued ONLY when `candidate` resolves to an actual
+                    # file on disk — an ordinary `from A import
+                    # some_attribute`, where `some_attribute` is merely a
+                    # name `__init__.py` defines rather than a submodule
+                    # file, must never become a spurious `unresolved`
+                    # entry, so this never enqueues a name that cannot be
+                    # positively confirmed as a real submodule first.
+                    if _module_to_relpath(candidate, source) is not None:
+                        enqueue(candidate)
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     enqueue(alias.name)

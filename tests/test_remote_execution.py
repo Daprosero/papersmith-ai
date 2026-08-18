@@ -4143,6 +4143,66 @@ class ResolveClonePathsTests(unittest.TestCase):
             self.assertEqual(result["computedNotDeclared"], [])
             self.assertEqual(result["unresolved"], [])
 
+    def test_from_package_import_of_a_name_also_reaches_that_submodules_own_imports(
+        self,
+    ) -> None:
+        """`from A import sub` names `sub` only as an imported NAME on
+        `node.module = "A"` — the walk's own documented "no per-name
+        submodule disambiguation" means `enqueue("A")` alone resolves to
+        `A/__init__.py`, never to `A/sub.py`, when `sub` is actually a
+        submodule FILE rather than an attribute `__init__.py` itself
+        defines. `A/sub.py`'s own imports were then never walked at
+        all — confirmed as a real production gap: a job folder generated
+        for `from MIL_CREDA_Benchmark import bags, config, report_digest,
+        wiring` (an empty `__init__.py`) let `wiring.py`'s own `from
+        MIL_CREDA.attention import ...` slip through undeclared, and the
+        clone failed at runtime with `ModuleNotFoundError: No module named
+        'MIL_CREDA'` — exactly the silent gap `computedNotDeclared` exists
+        to refuse.
+
+        The fix must stay conservative: `A.sub` is enqueued ONLY when it
+        actually resolves to a file on disk (a real submodule); an
+        ordinary `from A import some_attribute` where `some_attribute` is
+        merely a name `__init__.py` defines must not become a spurious
+        `unresolved` entry.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(target, "src/A/__init__.py", "")
+            self._write(target, "src/A/entry.py", "from A import sub\n")
+            self._write(target, "src/A/sub.py", "import C.thing\n")
+            self._write(target, "src/C/thing.py", "value = 1\n")
+
+            missing = JOBFOLDER.resolve_clone_paths(target, ["A.entry"], ["src/A"])
+            self.assertEqual(missing["computedNotDeclared"], ["src/C"])
+
+            complete = JOBFOLDER.resolve_clone_paths(
+                target, ["A.entry"], ["src/A", "src/C"]
+            )
+            self.assertEqual(complete["computed"], ["src/A", "src/C"])
+            self.assertEqual(complete["computedNotDeclared"], [])
+            self.assertEqual(complete["unresolved"], [])
+
+    def test_from_package_import_of_a_plain_attribute_is_not_flagged_unresolved(
+        self,
+    ) -> None:
+        """The conservative half of the same fix: `from A import value`,
+        where `value` is an ordinary name `__init__.py` defines (not a
+        submodule file), must not become a spurious `unresolved` entry —
+        only a candidate that actually resolves to a file on disk is ever
+        enqueued at all.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(target, "src/A/__init__.py", "value = 1\n")
+            self._write(target, "src/A/entry.py", "from A import value\n")
+
+            result = JOBFOLDER.resolve_clone_paths(target, ["A.entry"], ["src/A"])
+
+            self.assertEqual(result["computed"], ["src/A"])
+            self.assertEqual(result["computedNotDeclared"], [])
+            self.assertEqual(result["unresolved"], [])
+
     def test_computed_not_declared_is_reported_and_never_silently_added(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
