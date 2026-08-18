@@ -172,6 +172,72 @@ exercised in this skill's own test suite against both a `FakeAdapter` and
 `adapters/kaggle.py` (the latter only ever against a fake `kaggle`
 executable — no test in this suite reaches the network or a real account).
 
+- `scripts/jobfolder.py` — `generate-job`, driven through `remote_cli.py`
+  the same way every other command is: `remote_cli.py` loads it as a
+  sibling module (`JOBFOLDER = _load_sibling(...)`) and its CLI parser gains
+  a `generate-job` subcommand. `generate_job()` builds
+  `<target>/tools/<service>/<job-name>/` — `run-config.json`,
+  `runner.ipynb`, and one adapter-supplied metadata file — from
+  target-supplied values (`--service`, `--job-name`, `--product`,
+  `--commit`, `--repo-url`/`--repo-ref`, `--clone-path` repeated,
+  `--run-module`/`--run-function`/`--run-kwargs`, an optional
+  `--smoke-module`/`--smoke-function`/`--smoke-kwargs`) plus one adapter
+  registry call: `ADAPTER.resolve_metadata(service)(run_config)` returns an
+  opaque `(filename, text)` pair this module writes without ever learning
+  what either means — the same registry `adapters/kaggle.py` already
+  registers `assemble_metadata` under (see above). `--target` is resolved
+  first, and `resolve_destination()` derives the job folder's path from
+  that resolved value and refuses outright when the result does not stay
+  under `target` — the guard against a crafted `--service`/`--job-name`
+  (`../../etc`, say) writing outside the target repository. `run-config.json`
+  is written first inside a `<job>.partial/` staging directory, then
+  `runner.ipynb`, then the metadata file, and only a fully-written
+  `.partial/` is ever renamed into place with `os.replace` — a half-written
+  job folder cannot exist. Regeneration (`--regenerate`) replaces an
+  existing job folder the same way, via a double-rename (existing folder
+  aside under a fresh unused name, new folder into place, aside folder
+  removed only after that second rename actually succeeds) so `destination`
+  is always either the old folder or the new one, never neither and never a
+  mix. A leftover `<job>.partial/` from a previous failed generation is
+  reported and refused, never read as a job folder. `run-config.json`'s
+  schema is validated both when `generate_job()` builds one and by a
+  standalone `validate_run_config()` any future reader can call again;
+  `clonePaths` is validated structurally at generation (non-empty, no
+  absolute path, no `..`) by `validate_clone_paths()`.
+  `runnerTemplate` records each runner asset's path and sha256 as inert
+  provenance — deliberately not a drift check; adding one would be a second
+  staleness condition, out of bounds for this skill (see design #744
+  section 2).
+
+  **Not yet in this module**: the AST-based, transitive
+  `resolve_clone_paths()` (declared-vs-computed clone paths, refusing
+  `computedNotDeclared` and uncertain imports, `--accept-unresolved`) and
+  the two runner assets' REAL content. `assets/runner_bootstrap.py` and
+  `assets/runner_invoke.py` exist today only as placeholders — real files,
+  at the real path `generate-job` reads by default, but each raises
+  `NotImplementedError` if actually executed. `jobfolder.py` copies
+  whatever bytes are at those two paths into the notebook's two cells
+  byte-for-byte, with zero interpolation, regardless of what those bytes
+  are; a later slice replaces the placeholder content in place with the
+  real, service-blind eight-responsibility bootstrap and the real invoke
+  cell, and adds their own unit tests (importable as modules, tested
+  directly against fake configs) plus `resolve_clone_paths()`. Until that
+  slice lands, a job folder `generate-job` produces has a real, valid,
+  atomically-written `run-config.json` and a real three-file layout, but
+  its `runner.ipynb` will not actually bootstrap or invoke anything if run.
+
+  Open question this slice inherited from `cmd_submit`'s own `--product`
+  migration (T6b) and did not change: `status`, `fetch` and `reconcile`
+  still expose no `--product` flag, only `submit` does. This slice's own
+  decision: leave that as is. Each of those three commands reads an
+  already-generated job folder whose own `run-config.json` already
+  declares its product (`product_for()`'s step 2), so an explicit override
+  is not load-bearing there the way it is for `submit`, which can be asked
+  to record a submission for a job folder with no declared product at all.
+  `generate-job` itself needs no `--product` resolution step either — it
+  writes the declared `product` value straight into `run-config.json`, it
+  never has to resolve one from a path the way `product_for()` does.
+
 ## Why append, not a status record
 
 A lost append is detectable — the file is simply shorter than expected, or a

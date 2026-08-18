@@ -79,6 +79,11 @@ PACKER = _load_sibling("remote_execution_packer", "packer.py")
 # copy of the same name.
 CREDENTIALS = _load_sibling("remote_execution_credentials", "credentials.py")
 
+# Loaded the same way, for the same reason: `jobfolder.py`'s own `ADAPTER`
+# (it calls `ADAPTER.resolve_metadata()`) has to be this exact module
+# object too.
+JOBFOLDER = _load_sibling("remote_execution_jobfolder", "jobfolder.py")
+
 
 def _load_source_digest() -> Callable[[Path, str], str]:
     """Path-import `source_digest()` from proposal-implementation's digest kit.
@@ -881,6 +886,34 @@ def _build_parser() -> argparse.ArgumentParser:
         help="override: use this directory instead of lazily materializing one by worker id",
     )
 
+    generate_job = subparsers.add_parser(
+        "generate-job",
+        help="generate a forge-owned job folder at <target>/tools/<service>/<job-name>/",
+    )
+    generate_job.add_argument("--target", required=True, type=Path)
+    generate_job.add_argument("--service", required=True)
+    generate_job.add_argument("--job-name", required=True)
+    generate_job.add_argument("--product", required=True)
+    generate_job.add_argument("--commit", required=True)
+    generate_job.add_argument("--repo-url", required=True)
+    generate_job.add_argument("--repo-ref", required=True)
+    generate_job.add_argument(
+        "--clone-path", dest="clone_paths", action="append", default=[],
+        help="repeatable: one declared clone path, relative to the clone's own root",
+    )
+    generate_job.add_argument("--run-module", required=True)
+    generate_job.add_argument("--run-function", required=True)
+    generate_job.add_argument(
+        "--run-kwargs", default="{}", help="a JSON object, passed to run.function as kwargs"
+    )
+    generate_job.add_argument("--smoke-module", default=None)
+    generate_job.add_argument("--smoke-function", default=None)
+    generate_job.add_argument("--smoke-kwargs", default=None, help="a JSON object")
+    generate_job.add_argument(
+        "--regenerate", action="store_true",
+        help="replace an existing job folder atomically instead of refusing",
+    )
+
     return parser
 
 
@@ -1018,6 +1051,32 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         print(json.dumps(result, sort_keys=True))
+        return 0
+
+    if args.command == "generate-job":
+        try:
+            destination = JOBFOLDER.generate_job(
+                target=args.target,
+                service=args.service,
+                job_name=args.job_name,
+                product=args.product,
+                commit=args.commit,
+                repo_url=args.repo_url,
+                repo_ref=args.repo_ref,
+                clone_paths=args.clone_paths,
+                run_module=args.run_module,
+                run_function=args.run_function,
+                run_kwargs=json.loads(args.run_kwargs),
+                smoke_module=args.smoke_module,
+                smoke_function=args.smoke_function,
+                smoke_kwargs=json.loads(args.smoke_kwargs) if args.smoke_kwargs else None,
+                regenerate=args.regenerate,
+            )
+        except (JOBFOLDER.JobFolderError, ADAPTER.AdapterError, KeyError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+        print(json.dumps({"jobFolder": str(destination)}, sort_keys=True))
         return 0
 
     return 1

@@ -18,6 +18,7 @@ import ast
 import builtins
 import contextlib
 import dataclasses
+import hashlib
 import importlib.util
 import io
 import inspect
@@ -89,6 +90,13 @@ assert KAGGLE_SPEC and KAGGLE_SPEC.loader
 KAGGLE = importlib.util.module_from_spec(KAGGLE_SPEC)
 sys.modules[KAGGLE_SPEC.name] = KAGGLE
 KAGGLE_SPEC.loader.exec_module(KAGGLE)
+
+# Loaded AFTER remote_cli.py above, which already path-imports this exact
+# module under this exact name via its own `_load_sibling` — reused here
+# rather than exec'd a second time, the same idiom every other module in
+# this chain follows.
+JOBFOLDER_SCRIPT = REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/jobfolder.py"
+JOBFOLDER = sys.modules["remote_execution_jobfolder"]
 
 SHARD_IO_SCRIPT = REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/shard_io.py"
 SHARD_IO_SPEC = importlib.util.spec_from_file_location(
@@ -2877,6 +2885,7 @@ class CredentialSecurityTests(unittest.TestCase):
             SCRIPT,
             ADAPTER_SCRIPT,
             KAGGLE_SCRIPT,
+            JOBFOLDER_SCRIPT,
         )
         forbidden = ("accounts.json", "STORE_PATH", "STORE_DIR", "import accounts_cli")
         for path in scanned:
@@ -2934,6 +2943,328 @@ class CredentialSecurityTests(unittest.TestCase):
 
             env_without_handle = adapter._env_for(None)
             self.assertEqual(sorted(env_without_handle), ["PATH"])
+
+
+class JobFolderTests(unittest.TestCase):
+    """`jobfolder.generate_job()` — this slice's whole surface: the
+    `generate-job` CLI command, `run-config.json`'s schema, and atomic,
+    refusal-guarded writes into a foreign checkout.
+
+    The two runner assets' REAL content (the eight-responsibility bootstrap
+    cell, the invoke cell) and the AST-based, transitive
+    `resolve_clone_paths()` are a later slice — every test here either
+    supplies its own fixture asset files or exercises `jobfolder.py`'s
+    default asset paths only to prove they resolve to *a* file, never that
+    file's real behavior.
+
+    Every test in this class has a reachable red: `jobfolder.py` did not
+    exist before this task, so the module import above would fail and
+    every test here would fail to collect.
+    """
+
+    FAKE_SERVICE = "jobfolder-fake-service"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        ADAPTER.register_metadata(
+            cls.FAKE_SERVICE,
+            lambda run_config: ("fake-metadata.json", json.dumps({"ok": True})),
+        )
+
+    def _fixture_assets(self, tmp: str) -> tuple[Path, Path]:
+        bootstrap = Path(tmp) / "fixture_bootstrap.py"
+        invoke = Path(tmp) / "fixture_invoke.py"
+        bootstrap.write_text("# fixture bootstrap cell\nprint('cell-0')\n", encoding="utf-8")
+        invoke.write_text("# fixture invoke cell\nprint('cell-1')\n", encoding="utf-8")
+        return bootstrap, invoke
+
+    def _generate(self, tmp: str, target: Path, *, assets=None, **overrides) -> Path:
+        bootstrap, invoke = assets or self._fixture_assets(tmp)
+        kwargs = dict(
+            target=target,
+            service=self.FAKE_SERVICE,
+            job_name="search-a",
+            product="MIL-CREDA",
+            commit="a" * 40,
+            repo_url="https://example.invalid/repo.git",
+            repo_ref="main",
+            clone_paths=["src/MIL_CREDA_Benchmark"],
+            run_module="MIL_CREDA_Benchmark.harness",
+            run_function="campaign",
+            bootstrap_asset=bootstrap,
+            invoke_asset=invoke,
+        )
+        kwargs.update(overrides)
+        return JOBFOLDER.generate_job(**kwargs)
+
+    def test_generate_job_writes_three_files_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+
+            job_dir = self._generate(tmp, target)
+
+            self.assertEqual(
+                job_dir, (target / "tools" / self.FAKE_SERVICE / "search-a").resolve()
+            )
+            names = sorted(p.name for p in job_dir.iterdir())
+            self.assertEqual(names, ["fake-metadata.json", "run-config.json", "runner.ipynb"])
+            self.assertFalse(job_dir.with_name(job_dir.name + ".partial").exists())
+
+            run_config = json.loads((job_dir / "run-config.json").read_text(encoding="utf-8"))
+            self.assertEqual(run_config["schemaVersion"], 1)
+            self.assertEqual(run_config["product"], "MIL-CREDA")
+            self.assertEqual(run_config["run"]["module"], "MIL_CREDA_Benchmark.harness")
+
+    def test_regeneration_refused_without_the_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            self._generate(tmp, target)
+
+            with self.assertRaises(JOBFOLDER.JobFolderError):
+                self._generate(tmp, target)
+
+    def test_regeneration_with_the_flag_replaces_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            self._generate(tmp, target, commit="a" * 40)
+
+            job_dir = self._generate(tmp, target, commit="b" * 40, regenerate=True)
+
+            run_config = json.loads((job_dir / "run-config.json").read_text(encoding="utf-8"))
+            self.assertEqual(run_config["commit"], "b" * 40)
+            self.assertFalse(job_dir.with_name(job_dir.name + ".partial").exists())
+            leftovers = [
+                p for p in job_dir.parent.iterdir() if p.name.startswith("search-a.stale-")
+            ]
+            self.assertEqual(leftovers, [])
+
+    def test_leftover_partial_dir_is_reported_and_never_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            job_dir = target / "tools" / self.FAKE_SERVICE / "search-a"
+            partial = job_dir.with_name(job_dir.name + ".partial")
+            partial.mkdir(parents=True)
+            (partial / "sentinel").write_text("do-not-read-me", encoding="utf-8")
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                self._generate(tmp, target)
+
+            self.assertIn(".partial", str(ctx.exception))
+            # Never read as a job folder: the real destination was never
+            # created from it, and the sentinel is exactly where it was
+            # left — nothing here opened the leftover directory's contents.
+            self.assertFalse(job_dir.exists())
+            self.assertEqual(
+                (partial / "sentinel").read_text(encoding="utf-8"), "do-not-read-me"
+            )
+
+    def test_destination_derived_from_service_and_job_name_cannot_escape_target(self) -> None:
+        """The one check standing between a crafted `--service`/`--job-name`
+        and a write landing outside the resolved target entirely.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+
+            with self.assertRaises(JOBFOLDER.JobFolderError):
+                self._generate(tmp, target, service="../../escaped", job_name="x")
+
+    def test_relative_target_is_resolved_before_the_destination_is_derived(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            cwd = Path.cwd()
+            try:
+                os.chdir(tmp)
+                job_dir = self._generate(tmp, Path("repo"))
+            finally:
+                os.chdir(cwd)
+
+            self.assertTrue(job_dir.is_absolute())
+            self.assertEqual(
+                job_dir, (target / "tools" / self.FAKE_SERVICE / "search-a").resolve()
+            )
+
+    def test_empty_clone_paths_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            with self.assertRaises(JOBFOLDER.JobFolderError):
+                self._generate(tmp, target, clone_paths=[])
+
+    def test_absolute_clone_path_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            with self.assertRaises(JOBFOLDER.JobFolderError):
+                self._generate(tmp, target, clone_paths=["/etc/passwd"])
+
+    def test_dotdot_clone_path_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            with self.assertRaises(JOBFOLDER.JobFolderError):
+                self._generate(tmp, target, clone_paths=["src/../../../etc"])
+
+    def test_validate_run_config_refuses_a_missing_required_field(self) -> None:
+        with self.assertRaises(JOBFOLDER.JobFolderError):
+            JOBFOLDER.validate_run_config({"schemaVersion": 1})
+
+    def test_validate_run_config_refuses_an_unknown_schema_version(self) -> None:
+        run_config = {
+            "schemaVersion": 99, "product": "P", "service": "s", "jobName": "j",
+            "commit": "a" * 40, "repo": {"url": "u", "ref": "main"},
+            "clonePaths": ["src/A"], "run": {"module": "A.b", "function": "f"},
+            "runnerTemplate": [{"path": "x", "sha256": "y"}],
+        }
+        with self.assertRaises(JOBFOLDER.JobFolderError):
+            JOBFOLDER.validate_run_config(run_config)
+
+    def test_validate_run_config_refuses_a_run_block_missing_function(self) -> None:
+        run_config = {
+            "schemaVersion": 1, "product": "P", "service": "s", "jobName": "j",
+            "commit": "a" * 40, "repo": {"url": "u", "ref": "main"},
+            "clonePaths": ["src/A"], "run": {"module": "A.b"},
+            "runnerTemplate": [{"path": "x", "sha256": "y"}],
+        }
+        with self.assertRaises(JOBFOLDER.JobFolderError):
+            JOBFOLDER.validate_run_config(run_config)
+
+    def test_runner_template_provenance_records_real_sha256(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            bootstrap, invoke = self._fixture_assets(tmp)
+
+            job_dir = self._generate(tmp, target, assets=(bootstrap, invoke))
+
+            run_config = json.loads((job_dir / "run-config.json").read_text(encoding="utf-8"))
+            template = run_config["runnerTemplate"]
+            self.assertEqual(len(template), 2)
+            self.assertEqual(
+                template[0]["sha256"], hashlib.sha256(bootstrap.read_bytes()).hexdigest()
+            )
+            self.assertEqual(
+                template[1]["sha256"], hashlib.sha256(invoke.read_bytes()).hexdigest()
+            )
+
+    def test_generated_cell_zero_equals_the_asset_byte_for_byte_across_two_different_jobs(
+        self,
+    ) -> None:
+        """The executable-file-classification threat-matrix RED test: the
+        notebook's own bytes carry no per-job interpolation at all.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            bootstrap, invoke = self._fixture_assets(tmp)
+
+            job_a = self._generate(
+                tmp, target, job_name="job-a", commit="a" * 40, assets=(bootstrap, invoke)
+            )
+            job_b = self._generate(
+                tmp, target, job_name="job-b", commit="b" * 40, assets=(bootstrap, invoke)
+            )
+
+            notebook_a = json.loads((job_a / "runner.ipynb").read_text(encoding="utf-8"))
+            notebook_b = json.loads((job_b / "runner.ipynb").read_text(encoding="utf-8"))
+
+            self.assertEqual(notebook_a["cells"][0]["source"], notebook_b["cells"][0]["source"])
+            self.assertEqual(
+                "".join(notebook_a["cells"][0]["source"]), bootstrap.read_text(encoding="utf-8")
+            )
+
+    def test_metadata_file_is_written_verbatim_from_the_registered_assembler(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+
+            job_dir = self._generate(tmp, target)
+
+            content = (job_dir / "fake-metadata.json").read_text(encoding="utf-8")
+            self.assertEqual(json.loads(content), {"ok": True})
+
+    def test_jobfolder_module_names_no_service(self) -> None:
+        """The no-service guard this new sibling module needs of its own —
+        in the same family as `test_adapter_module_names_no_service`,
+        `test_remote_cli_module_names_no_service` and
+        `test_credentials_module_names_no_service`.
+        """
+        source = JOBFOLDER_SCRIPT.read_text(encoding="utf-8").lower()
+        for leaked in ("kaggle", "t4"):
+            self.assertNotIn(leaked, source, leaked)
+
+    def test_generate_job_cli_wired_through_remote_cli_main_with_fixture_assets(self) -> None:
+        """Runtime harness: the real `remote_cli.main()` entry point, not
+        `generate_job()` called directly — proves the CLI wiring itself,
+        including the fixture-asset override this command does not expose
+        as a flag (patched onto the module instead, the way a test doubles
+        any other default this skill resolves lazily).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            bootstrap, invoke = self._fixture_assets(tmp)
+
+            with unittest.mock.patch.object(
+                JOBFOLDER, "DEFAULT_BOOTSTRAP_ASSET", bootstrap
+            ), unittest.mock.patch.object(JOBFOLDER, "DEFAULT_INVOKE_ASSET", invoke):
+                exit_code = REMOTE_CLI.main([
+                    "generate-job",
+                    "--target", str(target),
+                    "--service", self.FAKE_SERVICE,
+                    "--job-name", "cli-job",
+                    "--product", "MIL-CREDA",
+                    "--commit", "a" * 40,
+                    "--repo-url", "https://example.invalid/repo.git",
+                    "--repo-ref", "main",
+                    "--clone-path", "src/MIL_CREDA_Benchmark",
+                    "--run-module", "MIL_CREDA_Benchmark.harness",
+                    "--run-function", "campaign",
+                ])
+
+            self.assertEqual(exit_code, 0)
+            job_dir = target / "tools" / self.FAKE_SERVICE / "cli-job"
+            self.assertTrue((job_dir / "run-config.json").is_file())
+            self.assertTrue((job_dir / "runner.ipynb").is_file())
+
+    def test_generate_job_cli_reaches_the_real_default_asset_paths_today(self) -> None:
+        """Without an override, `generate-job` reaches THIS repository's own
+        real `assets/runner_bootstrap.py` and `assets/runner_invoke.py` —
+        proving the CLI's default wiring points at the real location, not a
+        fixture. Their content is a placeholder until a later slice, but
+        the path resolution and the atomic write around it are real today,
+        and this is the one test in this class that proves it end to end.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+
+            exit_code = REMOTE_CLI.main([
+                "generate-job",
+                "--target", str(target),
+                "--service", self.FAKE_SERVICE,
+                "--job-name", "cli-job",
+                "--product", "MIL-CREDA",
+                "--commit", "a" * 40,
+                "--repo-url", "https://example.invalid/repo.git",
+                "--repo-ref", "main",
+                "--clone-path", "src/MIL_CREDA_Benchmark",
+                "--run-module", "MIL_CREDA_Benchmark.harness",
+                "--run-function", "campaign",
+            ])
+
+            self.assertEqual(exit_code, 0)
+            job_dir = target / "tools" / self.FAKE_SERVICE / "cli-job"
+            notebook = json.loads((job_dir / "runner.ipynb").read_text(encoding="utf-8"))
+            self.assertEqual(
+                "".join(notebook["cells"][0]["source"]),
+                JOBFOLDER.DEFAULT_BOOTSTRAP_ASSET.read_text(encoding="utf-8"),
+            )
 
 
 class ShardIoTests(unittest.TestCase):
