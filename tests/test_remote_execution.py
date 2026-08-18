@@ -3300,6 +3300,30 @@ class JobFolderTests(unittest.TestCase):
             self.assertEqual(run_config["product"], "MIL-CREDA")
             self.assertEqual(run_config["run"]["module"], "MIL_CREDA_Benchmark.harness")
 
+    def test_generated_notebook_declares_a_kernelspec_papermill_can_resolve(self) -> None:
+        """Confirmed against a real Kaggle kernel run: with no `kernelspec`
+        at all, the service's own runner (`papermill`) refuses before a
+        single cell executes — `ValueError: No kernel name found in
+        notebook and no override provided` — a failure that surfaces only
+        after a real push, with quota already spent, for a notebook that
+        was never going to run regardless of which target it clones.
+
+        Every generated notebook needs this, unconditionally — it is
+        notebook-format correctness, not a fact about any one target
+        repository or benchmark, which is why it belongs in
+        `build_notebook()` rather than anywhere target-side.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+
+            job_dir = self._generate(tmp, target)
+
+            notebook = json.loads((job_dir / "runner.ipynb").read_text(encoding="utf-8"))
+            kernelspec = notebook["metadata"]["kernelspec"]
+            self.assertEqual(kernelspec["name"], "python3")
+            self.assertEqual(kernelspec["language"], "python")
+
     def test_regeneration_refused_without_the_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"

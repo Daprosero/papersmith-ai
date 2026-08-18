@@ -533,6 +533,16 @@ def build_notebook(bootstrap_asset: Path, invoke_asset: Path) -> dict:
     zero interpolation — the same bytes for every job, which is exactly
     what makes `runner_bootstrap.py`/`runner_invoke.py` unit-testable as
     modules in the forge suite rather than only as embedded, per-job prose.
+
+    `metadata.kernelspec` is not optional decoration: confirmed against a
+    real remote kernel run, a notebook with no `kernelspec` at all makes
+    the service's own runner (`papermill`) refuse before a single cell
+    executes — `ValueError: No kernel name found in notebook and no
+    override provided` — discovered only after a real push, quota
+    already spent, for a notebook that was never going to run regardless
+    of which target it clones. This is notebook-format correctness, true
+    of every generated job unconditionally, never a fact about one target
+    repository — which is exactly why it belongs here and nowhere else.
     """
     if not bootstrap_asset.is_file() or not invoke_asset.is_file():
         raise JobFolderError(
@@ -544,7 +554,14 @@ def build_notebook(bootstrap_asset: Path, invoke_asset: Path) -> dict:
             _notebook_cell(bootstrap_asset.read_text(encoding="utf-8")),
             _notebook_cell(invoke_asset.read_text(encoding="utf-8")),
         ],
-        "metadata": {},
+        "metadata": {
+            "kernelspec": {
+                "display_name": "Python 3",
+                "language": "python",
+                "name": "python3",
+            },
+            "language_info": {"name": "python"},
+        },
         "nbformat": 4,
         "nbformat_minor": 5,
     }
