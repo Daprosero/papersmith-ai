@@ -291,6 +291,78 @@ executable — no test in this suite reaches the network or a real account).
   writes the declared `product` value straight into `run-config.json`, it
   never has to resolve one from a path the way `product_for()` does.
 
+  `jobfolder.read(job_dir) -> JobFolder` is now the ONE reader. There is
+  no `is_stale()` a caller can forget: `JobFolder.staleness` is computed
+  INSIDE `read()`, before it ever constructs one, so reading a job folder
+  without getting a staleness verdict alongside it is not something this
+  module's API can express at all. `JobFolder` carries `path`, `run_config`
+  (re-validated on every read through the same `validate_run_config()`
+  `generate_job()` already calls, never a second copy) and `staleness`.
+
+  There is exactly ONE staleness condition, always computed, never
+  skippable:
+
+  ```
+  head    = git rev-parse HEAD                      # detached HEAD unchanged
+  exists  = git cat-file -e <pinned>^{commit}
+  changed = git diff --name-only <pinned> HEAD -- <clonePaths…>
+  ```
+
+  The pathspec (`-- <clonePaths…>`) does the intersection with the
+  declared clone paths itself — deliberately: there is no second,
+  independent prefix-matching implementation anywhere in this module that
+  could drift from `implementation_cli.py`'s own `prior_work_state.reached()`.
+  Verdict is `drift` iff `changed` is non-empty, and it is NEVER a
+  refusal — staleness informs, it does not block; two non-gating layers
+  already cover it (reported at submit and at `generate-job`'s own CLI
+  output, `fromStaleSubmission` on `fetch`). `run-config.json`'s
+  `runnerTemplate` provenance is deliberately NOT part of this condition —
+  see the note on it above; adding a template-drift check would be a
+  SECOND staleness condition, which is out of scope by design.
+
+  `unknown`, with a reason, whenever the question cannot be answered at
+  all: no git history, not a repository, or an absent pinned commit —
+  reusing `implementation_cli.py`'s own `prior_work_state()`
+  `recordStatus: "unavailable"` → `unknown` discipline, never letting an
+  unanswerable record pass for a clean one. `unknown` is never rendered as
+  `fresh`: absence of evidence is not evidence of freshness, and the two
+  are separate branches in `_staleness_for()`, neither one falling back to
+  the other.
+
+  `clonePaths` is validated again inside `read()`, through the SAME
+  `validate_clone_paths()` `generate_job()` already calls at generation
+  time (including its optional `target` argument for the symlink-escape
+  check) — never a second, parallel validator. The target a staleness
+  check runs `git` against is derived structurally from `job_dir` itself
+  (`<target>/tools/<service>/<job-name>/`, exactly as
+  `resolve_destination()` builds it), not accepted as a second argument.
+
+  `read()` has its own `_run_git()` — a SEPARATE single composition point
+  from `assets/runner_bootstrap.py`'s own `_run_git()` (the two modules
+  share no import), with the exact same discipline: `shell=False`, list
+  argv, a `PATH`-only env allowlist, an explicit timeout, and `cwd` always
+  the caller's already-resolved target — never `git -C` applied to a raw,
+  unresolved argument. A pinned commit carrying shell metacharacters
+  reaches this argv as one element and is never evaluated by a shell.
+
+  Every job-folder-touching command that exists today routes through
+  `read()` and reports its `staleness` alongside whatever else it already
+  reports: `generate-job`'s own CLI output, `submit`, `status`, `fetch`
+  (both its early "not complete yet" return and its final one), and
+  `reconcile`. `remote_cli._job_folder_staleness()` is the one place that
+  decides WHETHER a given entrypoint has a job folder to route through at
+  all — `None` for the legacy shape (no job folder exists) and for a
+  `run-config.json` `read()` cannot make sense of, the same tolerant
+  "falls through cleanly" rule `product_for()`'s own narrower run-config
+  lookup already applies one step up, so an already-tolerant command never
+  became stricter just because staleness reporting was added beside it.
+  `poll` is deliberately NOT routed: it receives only `--submission-id`
+  and must not learn the worker or the job, so it has no job folder to
+  route through in the first place. `readiness` and probe's own
+  `remoteExecution` fact do not exist yet (later slices build them); once
+  they do, they route through this same `read()` too, never a second
+  staleness computation of their own.
+
 ## Why append, not a status record
 
 A lost append is detectable — the file is simply shorter than expected, or a

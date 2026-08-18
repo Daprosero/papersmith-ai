@@ -26,6 +26,7 @@ import json
 import multiprocessing
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -3549,6 +3550,520 @@ class ResolveClonePathsTests(unittest.TestCase):
 
     def test_validate_clone_paths_without_target_argument_is_unchanged(self) -> None:
         self.assertEqual(JOBFOLDER.validate_clone_paths(["src/A"]), ("src/A",))
+
+
+class StalenessTests(unittest.TestCase):
+    """`jobfolder.read()` — design #744 section 4: there is no `is_stale()`
+    a caller can forget, because staleness is computed INSIDE the one
+    reader. `JobFolder.staleness` is therefore always present on whatever
+    `read()` returns; getting a `JobFolder` back without a staleness
+    verdict alongside it is not something this module's API can express.
+
+    Every test in this class has a reachable red: before this task,
+    `jobfolder` exposed no `read` attribute at all, so every test here
+    fails with `AttributeError` on the very first call.
+    """
+
+    FAKE_SERVICE = "staleness-fake-service"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        ADAPTER.register_metadata(
+            cls.FAKE_SERVICE,
+            lambda run_config: ("fake-metadata.json", json.dumps({"ok": True})),
+        )
+
+    def _git(self, cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "staleness-tests"
+        env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "staleness-tests@example.invalid"
+        return subprocess.run(
+            ["git", *args], cwd=cwd, env=env, capture_output=True, text=True, check=check
+        )
+
+    def _init_repo(self, target: Path) -> str:
+        """A real, throwaway git repository AT `target` itself — not a
+        clone source the way `RunnerBootstrapTests`' `_make_origin_repo`
+        is, since `read()`'s staleness runs `git` directly inside the
+        resolved target, never against a clone.
+        """
+        target.mkdir(parents=True, exist_ok=True)
+        self._git(target, "init", "-q")
+        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        harness.parent.mkdir(parents=True, exist_ok=True)
+        harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
+        (target / "README.md").write_text("scratch fixture\n", encoding="utf-8")
+        self._git(target, "add", "-A")
+        self._git(target, "commit", "-q", "-m", "initial")
+        return self._git(target, "rev-parse", "HEAD").stdout.strip()
+
+    def _fixture_assets(self, tmp: str) -> tuple[Path, Path]:
+        bootstrap = Path(tmp) / "fixture_bootstrap.py"
+        invoke = Path(tmp) / "fixture_invoke.py"
+        bootstrap.write_text("# fixture bootstrap cell\n", encoding="utf-8")
+        invoke.write_text("# fixture invoke cell\n", encoding="utf-8")
+        return bootstrap, invoke
+
+    def _ensure_source_tree(self, target: Path) -> None:
+        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        if not harness.exists():
+            harness.parent.mkdir(parents=True, exist_ok=True)
+            harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
+
+    def _generate(self, tmp: str, target: Path, *, commit: str, job_name: str = "search-a") -> Path:
+        self._ensure_source_tree(target)
+        bootstrap, invoke = self._fixture_assets(tmp)
+        return JOBFOLDER.generate_job(
+            target=target,
+            service=self.FAKE_SERVICE,
+            job_name=job_name,
+            product="MIL-CREDA",
+            commit=commit,
+            repo_url="https://example.invalid/repo.git",
+            repo_ref="main",
+            clone_paths=["src/MIL_CREDA_Benchmark"],
+            run_module="MIL_CREDA_Benchmark.harness",
+            run_function="campaign",
+            bootstrap_asset=bootstrap,
+            invoke_asset=invoke,
+        )
+
+    # -- the runtime harness: declared vs. undeclared clone path ----------
+
+    def test_runtime_harness_drift_vs_not_stale_by_declared_vs_undeclared_clone_path(
+        self,
+    ) -> None:
+        """The contrast that proves the pathspec is doing the intersection:
+        a job folder generated in a scratch git repo, then HEAD advances
+        twice — once touching only an UNDECLARED path, once touching the
+        DECLARED clone path — and only the second one reports `drift`.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            initial_commit = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=initial_commit)
+
+            fresh = JOBFOLDER.read(job_dir)
+            self.assertEqual(fresh.staleness["status"], "fresh")
+            self.assertEqual(fresh.staleness["changedPaths"], [])
+
+            # Advance HEAD touching only an UNDECLARED path.
+            (target / "README.md").write_text("changed\n", encoding="utf-8")
+            self._git(target, "add", "-A")
+            self._git(target, "commit", "-q", "-m", "undeclared change")
+
+            still_not_stale = JOBFOLDER.read(job_dir)
+            self.assertEqual(still_not_stale.staleness["status"], "fresh")
+
+            # Advance HEAD again, this time touching the DECLARED clone path.
+            (target / "src" / "MIL_CREDA_Benchmark" / "harness.py").write_text(
+                "def campaign(*args, **kwargs):\n    return 1\n", encoding="utf-8"
+            )
+            self._git(target, "add", "-A")
+            self._git(target, "commit", "-q", "-m", "declared change")
+
+            drifted = JOBFOLDER.read(job_dir)
+            self.assertEqual(drifted.staleness["status"], "drift")
+            self.assertIn(
+                "src/MIL_CREDA_Benchmark/harness.py", drifted.staleness["changedPaths"]
+            )
+
+    def test_drift_is_never_a_refusal(self) -> None:
+        """`read()` returns a `JobFolder` even when the verdict is
+        `drift` — it never raises. Staleness informs; it does not block.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            initial_commit = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=initial_commit)
+
+            (target / "src" / "MIL_CREDA_Benchmark" / "harness.py").write_text(
+                "def campaign(*args, **kwargs):\n    return 2\n", encoding="utf-8"
+            )
+            self._git(target, "add", "-A")
+            self._git(target, "commit", "-q", "-m", "declared change")
+
+            job_folder = JOBFOLDER.read(job_dir)
+            self.assertEqual(job_folder.staleness["status"], "drift")
+            self.assertIsInstance(job_folder, JOBFOLDER.JobFolder)
+
+    # -- unknown, and unknown is never fresh -------------------------------
+
+    def test_unknown_when_target_has_no_git_history_at_all(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            job_dir = self._generate(tmp, target, commit="a" * 40)
+
+            result = JOBFOLDER.read(job_dir)
+
+            self.assertEqual(result.staleness["status"], "unknown")
+            self.assertIsNotNone(result.staleness["reason"])
+            self.assertNotEqual(result.staleness["status"], "fresh")
+
+    def test_unknown_when_pinned_commit_is_absent_from_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            self._init_repo(target)
+            # A syntactically plausible commit that was never actually
+            # committed in this repository's history.
+            job_dir = self._generate(tmp, target, commit="f" * 40)
+
+            result = JOBFOLDER.read(job_dir)
+
+            self.assertEqual(result.staleness["status"], "unknown")
+            self.assertIn("f" * 40, result.staleness["reason"])
+
+    def test_unknown_is_never_rendered_as_fresh(self) -> None:
+        """Absence of evidence is not evidence of freshness. Explicit,
+        separate from the two cases above: this asserts the DISTINCTION,
+        not merely that one particular unknown case exists.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            job_dir = self._generate(tmp, target, commit="a" * 40)
+
+            result = JOBFOLDER.read(job_dir)
+
+            self.assertIn(result.staleness["status"], ("unknown", "drift"))
+            self.assertNotEqual(result.staleness["status"], "fresh")
+            self.assertEqual(result.staleness["status"], "unknown")
+
+    # -- clone paths validated again on every read -------------------------
+
+    def test_read_reuses_validate_clone_paths_and_refuses_a_symlink_escape(self) -> None:
+        """`read()` re-validates `clonePaths` through the SAME
+        `validate_clone_paths()` `generate_job()` already calls — never a
+        second, parallel validator. Proven here by making the declared
+        clone path escape target via a symlink installed AFTER generation.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            initial_commit = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=initial_commit)
+
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            real_dir = target / "src" / "MIL_CREDA_Benchmark"
+            shutil.rmtree(real_dir)
+            real_dir.symlink_to(outside)
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                JOBFOLDER.read(job_dir)
+            self.assertIn("symlink escape", str(ctx.exception))
+
+    # -- security: git invocation -------------------------------------------
+
+    def test_run_git_env_is_a_path_only_allowlist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            self._init_repo(target)
+            recorded_env: dict = {}
+            real_run = subprocess.run
+
+            def recording_run(argv, **kwargs):
+                recorded_env.update(kwargs.get("env") or {})
+                return real_run(argv, **kwargs)
+
+            with unittest.mock.patch.object(
+                JOBFOLDER.subprocess, "run", side_effect=recording_run
+            ), unittest.mock.patch.dict(os.environ, {"SOME_OTHER_VAR": "leak-me-not"}):
+                JOBFOLDER._run_git(["rev-parse", "HEAD"], cwd=target)
+
+            self.assertEqual(set(recorded_env), {"PATH"})
+
+    def test_run_git_non_zero_exit_is_a_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            with self.assertRaises(JOBFOLDER.JobFolderError):
+                JOBFOLDER._run_git(["this-is-not-a-real-git-subcommand"], cwd=target)
+
+    def test_run_git_timeout_is_a_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            with unittest.mock.patch.object(
+                JOBFOLDER.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired(cmd=["git", "init"], timeout=1.0),
+            ):
+                with self.assertRaises(JOBFOLDER.JobFolderError):
+                    JOBFOLDER._run_git(["init"], cwd=target, timeout=1.0)
+
+    def test_pinned_commit_carrying_shell_metacharacters_reaches_argv_verbatim_and_executes_nothing(
+        self,
+    ) -> None:
+        """The mandated RED test: a pinned commit value carrying shell
+        metacharacters must reach `_run_git`'s own argv verbatim and
+        execute nothing — `shell=False` plus a list argv means the whole
+        malicious string travels as ONE argv element, never evaluated by a
+        shell.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            self._init_repo(target)
+            marker_name = "pwned-marker-jobfolder"
+            marker_path = Path.cwd() / marker_name
+            malicious = f"a$(touch {marker_name})`touch {marker_name}`;touch {marker_name}"
+            job_dir = self._generate(tmp, target, commit=malicious)
+
+            recorded_argv: list = []
+            real_run = subprocess.run
+
+            def recording_run(argv, **kwargs):
+                recorded_argv.append(list(argv))
+                return real_run(argv, **kwargs)
+
+            try:
+                with unittest.mock.patch.object(
+                    JOBFOLDER.subprocess, "run", side_effect=recording_run
+                ):
+                    result = JOBFOLDER.read(job_dir)
+
+                self.assertEqual(result.staleness["status"], "unknown")
+                self.assertFalse(marker_path.exists())
+                self.assertTrue(
+                    any(malicious in "".join(call) for call in recorded_argv)
+                )
+            finally:
+                if marker_path.exists():
+                    marker_path.unlink()
+
+    def test_jobfolder_module_names_no_service_still_holds(self) -> None:
+        """Re-confirms the existing guard stays green with `read()`,
+        `_run_git()` and the staleness helpers added — no ninth guard is
+        needed since this is the same module, not a new sibling.
+        """
+        source = JOBFOLDER_SCRIPT.read_text(encoding="utf-8").lower()
+        for leaked in ("kaggle", "t4"):
+            self.assertNotIn(leaked, source, leaked)
+
+
+class StalenessRoutingTests(unittest.TestCase):
+    """Every existing job-folder-touching command in `remote_cli.py` routes
+    staleness reporting through `jobfolder.read()` — design #744 section 4:
+    `generate-job`, `submit`, `status`, `fetch`, `reconcile`. (`readiness`
+    and probe's fact do not exist yet — T11/T13 build them.)
+    """
+
+    FAKE_SERVICE = "staleness-routing-fake-service"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        ADAPTER.register_metadata(
+            cls.FAKE_SERVICE,
+            lambda run_config: ("fake-metadata.json", json.dumps({"ok": True})),
+        )
+
+    def _git(self, cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "staleness-routing-tests"
+        env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "staleness-routing-tests@example.invalid"
+        return subprocess.run(
+            ["git", *args], cwd=cwd, env=env, capture_output=True, text=True, check=check
+        )
+
+    def _init_repo(self, target: Path) -> str:
+        target.mkdir(parents=True, exist_ok=True)
+        self._git(target, "init", "-q")
+        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        harness.parent.mkdir(parents=True, exist_ok=True)
+        harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
+        (target / "MIL-CREDA").mkdir(parents=True, exist_ok=True)
+        self._git(target, "add", "-A")
+        self._git(target, "commit", "-q", "-m", "initial")
+        return self._git(target, "rev-parse", "HEAD").stdout.strip()
+
+    def _fixture_assets(self, tmp: str) -> tuple[Path, Path]:
+        bootstrap = Path(tmp) / "fixture_bootstrap.py"
+        invoke = Path(tmp) / "fixture_invoke.py"
+        bootstrap.write_text("# fixture bootstrap cell\n", encoding="utf-8")
+        invoke.write_text("# fixture invoke cell\n", encoding="utf-8")
+        return bootstrap, invoke
+
+    def _generate(self, tmp: str, target: Path, *, commit: str) -> Path:
+        bootstrap, invoke = self._fixture_assets(tmp)
+        return JOBFOLDER.generate_job(
+            target=target,
+            service=self.FAKE_SERVICE,
+            job_name="search-a",
+            product="MIL-CREDA",
+            commit=commit,
+            repo_url="https://example.invalid/repo.git",
+            repo_ref="main",
+            clone_paths=["src/MIL_CREDA_Benchmark"],
+            run_module="MIL_CREDA_Benchmark.harness",
+            run_function="campaign",
+            bootstrap_asset=bootstrap,
+            invoke_asset=invoke,
+        )
+
+    def test_cmd_status_reports_none_for_the_legacy_shape(self) -> None:
+        """A legacy-shape entrypoint has no job folder at all, so there is
+        nothing for `read()` to route through: `staleness` is `None`, not
+        a guessed or defaulted verdict.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            result = REMOTE_CLI.cmd_status(
+                target=target, entrypoint=notebook, source_digest=lambda t, n: "d" * 64
+            )
+
+            self.assertIsNone(result["staleness"])
+
+    def test_cmd_status_reports_staleness_for_a_job_folder_shaped_entrypoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            initial_commit = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=initial_commit)
+            notebook = job_dir / "runner.ipynb"
+
+            result = REMOTE_CLI.cmd_status(
+                target=target, entrypoint=notebook, source_digest=lambda t, n: "d" * 64
+            )
+
+            self.assertIsNotNone(result["staleness"])
+            self.assertEqual(result["staleness"]["status"], "fresh")
+
+    def test_cmd_submit_reports_staleness_for_a_job_folder_shaped_entrypoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            initial_commit = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=initial_commit)
+            notebook = job_dir / "runner.ipynb"
+
+            adapter = FakeAdapter(worker_id="w1", capacity=2)
+            result = REMOTE_CLI.cmd_submit(
+                target=target,
+                entrypoint=notebook,
+                worker="w1",
+                requested=1,
+                adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
+
+            self.assertIsNotNone(result["staleness"])
+            self.assertEqual(result["staleness"]["status"], "fresh")
+
+    def test_cmd_submit_tolerates_an_incomplete_run_config_and_reports_no_staleness(
+        self,
+    ) -> None:
+        """A pre-existing `SubmitTests` fixture shape (a minimal
+        `run-config.json` declaring only `product`) must keep behaving
+        exactly as it did before this task: `cmd_submit` still succeeds,
+        it just reports `staleness: None` rather than raising, because
+        `jobfolder.read()` cannot validate a run-config this incomplete.
+        Routing through `read()` must never make an already-tolerant
+        command stricter.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            (target / "MIL-CREDA").mkdir(parents=True)
+            job_dir = _make_job_folder(target, "kaggle", "search-a")
+            notebook = job_dir / "runner.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+            (job_dir / "run-config.json").write_text(
+                json.dumps({"product": "MIL-CREDA"}), encoding="utf-8"
+            )
+
+            adapter = FakeAdapter(worker_id="w1", capacity=2)
+            result = REMOTE_CLI.cmd_submit(
+                target=target,
+                entrypoint=notebook,
+                worker="w1",
+                requested=1,
+                adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
+
+            self.assertIsNone(result["staleness"])
+            self.assertTrue(Path(result["ledgerPath"]).exists())
+
+    def test_cmd_fetch_reports_staleness_for_a_job_folder_shaped_entrypoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            initial_commit = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=initial_commit)
+            notebook = job_dir / "runner.ipynb"
+
+            adapter = FakeAdapter(worker_id="w1", capacity=2)
+            submit_result = REMOTE_CLI.cmd_submit(
+                target=target,
+                entrypoint=notebook,
+                worker="w1",
+                requested=1,
+                adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
+
+            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "search-a"
+            fetch_result = REMOTE_CLI.cmd_fetch(
+                target=target,
+                entrypoint=notebook,
+                submission_id=submit_result["submission"].id,
+                dest=dest,
+                adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
+
+            self.assertIsNotNone(fetch_result["staleness"])
+            self.assertEqual(fetch_result["staleness"]["status"], "fresh")
+
+    def test_cmd_reconcile_reports_staleness_for_a_job_folder_shaped_entrypoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            initial_commit = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=initial_commit)
+            notebook = job_dir / "runner.ipynb"
+
+            adapter = ScriptedListActiveAdapter(worker_id="w1", active=())
+            result = REMOTE_CLI.cmd_reconcile(
+                target=target,
+                entrypoint=notebook,
+                worker="w1",
+                adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
+
+            self.assertIsNotNone(result["staleness"])
+            self.assertEqual(result["staleness"]["status"], "fresh")
+
+    def test_generate_job_cli_reports_staleness_in_its_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            initial_commit = self._init_repo(target)
+            bootstrap, invoke = self._fixture_assets(tmp)
+
+            stdout = io.StringIO()
+            with unittest.mock.patch.object(
+                JOBFOLDER, "DEFAULT_BOOTSTRAP_ASSET", bootstrap
+            ), unittest.mock.patch.object(
+                JOBFOLDER, "DEFAULT_INVOKE_ASSET", invoke
+            ), contextlib.redirect_stdout(stdout):
+                exit_code = REMOTE_CLI.main([
+                    "generate-job",
+                    "--target", str(target),
+                    "--service", self.FAKE_SERVICE,
+                    "--job-name", "cli-job",
+                    "--product", "MIL-CREDA",
+                    "--commit", initial_commit,
+                    "--repo-url", "https://example.invalid/repo.git",
+                    "--repo-ref", "main",
+                    "--clone-path", "src/MIL_CREDA_Benchmark",
+                    "--run-module", "MIL_CREDA_Benchmark.harness",
+                    "--run-function", "campaign",
+                ])
+
+            self.assertEqual(exit_code, 0)
+            printed = json.loads(stdout.getvalue())
+            self.assertIn("staleness", printed)
+            self.assertIn(printed["staleness"]["status"], ("fresh", "drift", "unknown"))
 
 
 def _make_origin_repo(tmp: str, files: dict) -> tuple:

@@ -263,6 +263,32 @@ def product_for(
     return product
 
 
+def _job_folder_staleness(resolved_entrypoint: Path) -> dict | None:
+    """Route `resolved_entrypoint` through `jobfolder.read()` — the single
+    staleness reader design #744 §4 mandates — whenever it sits beside a
+    `run-config.json`, i.e. the job-folder shape. Every command that
+    touches an already-generated job folder (`submit`, `status`, `fetch`,
+    `reconcile`) calls this so staleness is reported alongside whatever
+    else that command already reports, never recomputed a second way.
+
+    Returns `None` for the legacy shape, which has no job folder and
+    therefore nothing to report staleness about, and for a
+    `run-config.json` `jobfolder.read()` cannot make sense of (missing a
+    required field, invalid JSON) — the SAME "falls through cleanly"
+    tolerance `product_for()`'s own narrower run-config lookup already
+    applies one step up (see its docstring, step 2): a command already
+    resilient to an incomplete run-config.json does not become stricter
+    just because staleness reporting was added beside it.
+    """
+    job_dir = resolved_entrypoint.parent
+    if not (job_dir / RUN_CONFIG_FILENAME).is_file():
+        return None
+    try:
+        return dict(JOBFOLDER.read(job_dir).staleness)
+    except JOBFOLDER.JobFolderError:
+        return None
+
+
 def guard_entrypoint(target: Path, entrypoint: Path) -> Path:
     """Refuse anything that is not a notebook living under one of exactly
     two admitted shapes.
@@ -474,6 +500,7 @@ def cmd_submit(
         "submission": submission,
         "event": event,
         "ledgerPath": ledger_path,
+        "staleness": _job_folder_staleness(resolved_entrypoint),
     }
 
 
@@ -522,6 +549,7 @@ def cmd_status(
         "staleInFlight": state.stale_in_flight,
         "quarantined": state.from_stale_submission,
         "unreadableLines": state.unreadable_lines,
+        "staleness": _job_folder_staleness(Path(entrypoint).resolve()),
     }
 
 
@@ -637,6 +665,7 @@ def cmd_fetch(
         final_dest = target / product / LEDGER_DIRNAME / QUARANTINE_DIRNAME / submission_id
 
     observed_concurrency = state.pending_for(submission["worker"])
+    staleness = _job_folder_staleness(Path(entrypoint).resolve())
 
     partial_dest = final_dest.with_name(final_dest.name + PARTIAL_SUFFIX)
     fetched = adapter.fetch(submission_id, partial_dest)
@@ -649,6 +678,7 @@ def cmd_fetch(
             "complete": False,
             "path": partial_dest,
             "event": None,
+            "staleness": staleness,
         }
 
     final_dest.parent.mkdir(parents=True, exist_ok=True)
@@ -666,6 +696,7 @@ def cmd_fetch(
         "complete": True,
         "path": final_dest,
         "event": event,
+        "staleness": staleness,
     }
 
 
@@ -746,6 +777,7 @@ def cmd_reconcile(
         "orphanRemote": orphan_remote,
         "orphanLocal": orphan_local,
         "resolved": tuple(resolved_events),
+        "staleness": _job_folder_staleness(Path(entrypoint).resolve()),
     }
 
 
@@ -959,6 +991,7 @@ def main(argv: list[str] | None = None) -> int:
                     "worker": result["submission"].worker,
                     "granted": result["plan"].granted,
                     "ledgerPath": str(result["ledgerPath"]),
+                    "staleness": result["staleness"],
                 },
                 sort_keys=True,
             )
@@ -1030,6 +1063,7 @@ def main(argv: list[str] | None = None) -> int:
                     "complete": result["complete"],
                     "path": str(result["path"]),
                     "event": result["event"],
+                    "staleness": result["staleness"],
                 },
                 sort_keys=True,
             )
@@ -1085,7 +1119,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
-        print(json.dumps({"jobFolder": str(destination)}, sort_keys=True))
+        # Routes through the SAME single reader every other job-folder-
+        # touching command uses (design #744 §4) — a job folder is never
+        # even momentarily reported without its staleness alongside it.
+        staleness = dict(JOBFOLDER.read(destination).staleness)
+        print(
+            json.dumps(
+                {"jobFolder": str(destination), "staleness": staleness}, sort_keys=True
+            )
+        )
         return 0
 
     return 1

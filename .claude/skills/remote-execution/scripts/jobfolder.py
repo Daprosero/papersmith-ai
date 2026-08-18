@@ -40,9 +40,12 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Mapping, Sequence
 
 
@@ -640,5 +643,189 @@ def generate_job(
         raise
     if aside is not None:
         _rmtree(aside)
+
+    return destination
+
+
+# ---------------------------------------------------------------------------
+# read() — the single reader, staleness computed inside it (design #744 §4)
+# ---------------------------------------------------------------------------
+
+# The whole allowlist a git subprocess's environment is built from here —
+# never `os.environ` forwarded wholesale, the same restraint
+# `assets/runner_bootstrap.py`'s own `_run_git()` applies to its own child
+# environment. This is a SEPARATE composition point from that one: the two
+# live in different modules, with no import between them, so each has to
+# hold this discipline on its own rather than inherit it.
+GIT_ENV_ALLOWLIST = ("PATH",)
+GIT_TIMEOUT_SECONDS = 120.0
+
+
+@dataclass(frozen=True)
+class JobFolder:
+    """A job folder read back, staleness attached.
+
+    There is no `is_stale()` a caller can forget: `staleness` is computed
+    INSIDE `read()`, before it ever constructs one of these, so getting a
+    `JobFolder` back without a staleness verdict alongside it is not
+    something this module's API can express — reading a job folder
+    without checking it is not expressible.
+    """
+
+    path: Path
+    run_config: Mapping[str, object]
+    staleness: Mapping[str, object]
+
+
+def _run_git(
+    args: Sequence[str],
+    *,
+    cwd: str | Path,
+    timeout: float = GIT_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess:
+    """The single composition point for every git invocation `read()`
+    makes. `shell=False` with a list argv means a value carrying shell
+    metacharacters (a pinned commit, in particular) reaches `argv` as one
+    element and is never evaluated — no shell is ever invoked to interpret
+    it. The environment is built from `GIT_ENV_ALLOWLIST` alone, never
+    this process's own `os.environ` forwarded wholesale. `cwd` is always
+    the caller's already-resolved target — never `git -C` applied to a
+    raw, unresolved argument. A non-zero exit or an expired timeout raises
+    `JobFolderError` rather than being silently ignored.
+    """
+    argv = ["git", *args]
+    env = {name: os.environ[name] for name in GIT_ENV_ALLOWLIST if name in os.environ}
+    try:
+        result = subprocess.run(
+            argv,
+            shell=False,
+            cwd=str(cwd),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise JobFolderError(f"git {' '.join(args)} timed out after {timeout}s") from exc
+    except OSError as exc:
+        raise JobFolderError(f"could not run git: {exc}") from exc
+    if result.returncode != 0:
+        raise JobFolderError(
+            f"git {' '.join(args)} exited {result.returncode}: {result.stderr.strip()}"
+        )
+    return result
+
+
+def _staleness_for(target: Path, pinned_commit: str, clone_paths: Sequence[str]) -> dict:
+    """The one staleness condition (design #744 §4), always computed, never
+    skippable:
+
+        head    = git rev-parse HEAD
+        exists  = git cat-file -e <pinned>^{commit}
+        changed = git diff --name-only <pinned> HEAD -- <clonePaths…>
+
+    The pathspec (`-- <clonePaths…>`) does the intersection with the
+    declared clone paths — deliberately: there is no second,
+    prefix-matching implementation of that intersection anywhere in this
+    module that could drift from this one.
+
+    Verdict is `drift` iff `changed` is non-empty. Never a refusal: this
+    function always returns a verdict, it never raises for a stale or
+    unknown result — two non-gating layers already cover staleness
+    elsewhere (reported at submit, `fromStaleSubmission` on return).
+
+    `unknown`, with a reason, whenever the question cannot be answered at
+    all: no git history, not a repository, or an absent pinned commit —
+    reusing `implementation_cli.py`'s own `prior_work_state()` discipline
+    of never letting an unanswerable record pass for a clean one.
+    `unknown` is never rendered as `fresh`: the two are separate branches
+    below, neither one falls back to the other.
+    """
+    try:
+        _run_git(["rev-parse", "HEAD"], cwd=target)
+    except JobFolderError as exc:
+        return {
+            "status": "unknown",
+            "reason": f"{target} has no git history to check staleness against: {exc}",
+            "changedPaths": [],
+        }
+
+    try:
+        _run_git(["cat-file", "-e", f"{pinned_commit}^{{commit}}"], cwd=target)
+    except JobFolderError as exc:
+        return {
+            "status": "unknown",
+            "reason": (
+                f"pinned commit {pinned_commit!r} was not found in {target}'s "
+                f"history: {exc}"
+            ),
+            "changedPaths": [],
+        }
+
+    diff = _run_git(
+        ["diff", "--name-only", pinned_commit, "HEAD", "--", *clone_paths], cwd=target
+    )
+    changed = [line for line in diff.stdout.splitlines() if line]
+    return {
+        "status": "drift" if changed else "fresh",
+        "reason": None,
+        "changedPaths": changed,
+    }
+
+
+def read(job_dir: str | Path) -> JobFolder:
+    """The ONLY reader. Every command that touches an already-generated
+    job folder (`generate-job`'s own CLI output, `submit`, `status`,
+    `fetch`, `reconcile`) routes through this one function rather than
+    parsing `run-config.json` and computing staleness each its own way.
+
+    `clonePaths` is validated again here, through the SAME
+    `validate_clone_paths()` `generate_job()` already calls at generation
+    time — never a second, parallel validator (design #744 §§2-4:
+    "validated at generation and again on every read").
+
+    The target a staleness check runs `git` against is derived
+    structurally from `job_dir` itself (`<target>/tools/<service>/
+    <job-name>/`, exactly as `resolve_destination()` builds it) rather
+    than accepted as a second argument — there is exactly one path this
+    reader could mean by "the repository this job belongs to".
+    """
+    resolved = Path(job_dir).resolve()
+    if not resolved.is_dir():
+        raise JobFolderError(f"{resolved} is not an existing directory")
+
+    config_path = resolved / RUN_CONFIG_FILENAME
+    if not config_path.is_file():
+        raise JobFolderError(
+            f"{config_path} does not exist; {resolved} is not a generated job folder"
+        )
+    try:
+        run_config = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise JobFolderError(f"{config_path} is not valid JSON: {exc}") from exc
+    validate_run_config(run_config)
+
+    try:
+        tools_dir = resolved.parents[1]
+        target = resolved.parents[2]
+    except IndexError:
+        raise JobFolderError(
+            f"{resolved} is not nested deep enough under a target to derive "
+            "one"
+        ) from None
+    if tools_dir.name != TOOLS_DIRNAME:
+        raise JobFolderError(
+            f"{resolved} does not sit under <target>/{TOOLS_DIRNAME}/"
+            "<service>/<job-name>/; a target cannot be derived from it"
+        )
+
+    clone_paths = validate_clone_paths(run_config["clonePaths"], target)
+    staleness = _staleness_for(target, run_config["commit"], clone_paths)
+
+    return JobFolder(
+        path=resolved,
+        run_config=MappingProxyType(dict(run_config)),
+        staleness=MappingProxyType(staleness),
+    )
 
     return destination
