@@ -344,6 +344,37 @@ def guard_entrypoint(target: Path, entrypoint: Path) -> Path:
     return resolved
 
 
+def _relative_entrypoint(target: Path, resolved_entrypoint: Path, product: str) -> Path:
+    """Derive the path recorded as a `submitted` event's own `entrypoint`
+    field, from the SAME resolved entrypoint and the SAME product
+    `product_for()` already resolved — never a second, independent
+    derivation of either.
+
+    For the legacy shape, `product` IS the entrypoint's own first path
+    component past `target` (`product_for()`'s step 3 derives it that
+    way), so the path relative to the product directory is exactly
+    `Notebooks/...` — byte-identical to what this replaces, which computed
+    `resolved_entrypoint.relative_to(target / name)` with `name` derived
+    inline as that same first component.
+
+    For the job-folder shape, the product directory is NOT an ancestor of
+    the entrypoint at all: a job lives under
+    `<target>/tools/<service>/<job-name>/`, structurally separate from
+    wherever its declared product's own directory happens to live —
+    `product_for()`'s whole reason for reading `run-config.json` instead of
+    guessing `parts[0]` is that these two locations are unrelated for this
+    shape. "Relative to the product directory" therefore has no meaning
+    here, so this falls back to relative-to-`target` instead
+    (`tools/<service>/<job-name>/runner.ipynb`), which stays unique and
+    unambiguous per job folder without asserting a containment
+    relationship that does not hold for this shape.
+    """
+    try:
+        return resolved_entrypoint.relative_to(target / product)
+    except ValueError:
+        return resolved_entrypoint.relative_to(target)
+
+
 def cmd_submit(
     *,
     target: str | Path,
@@ -352,8 +383,10 @@ def cmd_submit(
     requested: int,
     adapter: "ADAPTER.Adapter",
     source_digest: Callable[[Path, str], str] | None = None,
+    product: str | None = None,
 ) -> dict:
-    """Guard, plan, submit, and record — the whole submit path, in this order.
+    """Guard, resolve a product, plan, submit, and record — the whole submit
+    path, in this order.
 
     `target` is resolved to an absolute path as the very first thing this
     function does, before any other check and before any filesystem write —
@@ -366,17 +399,29 @@ def cmd_submit(
 
     Order past that point is fixed by design, not incidental:
     `guard_entrypoint()` runs first because nothing after it — not the
-    digest, not the plan, not the adapter call — should ever run against a
-    path this forge's layout rule refuses. `source_digest()` is called
-    FRESH here, at submit time, and its result is never reused from a
-    notebook's own post-hoc marker or from any earlier call in this
-    process — that freshness is the one thing that later lets the ledger's
-    fold tell a current result from a stale one (see `ledger.py`'s
-    `currency_verdict`). `packer.plan()` runs before `adapter.submit()` so
-    a submission is never attempted with no capacity clamp computed behind
-    it. `ledger.append()` runs LAST, only after the adapter has already
-    returned a real submission id — appending before that would risk
-    recording a submission that was never actually made.
+    product, the digest, the plan, not the adapter call — should ever run
+    against a path this forge's layout rule refuses. `product_for()` runs
+    immediately after the guard, and BEFORE any digest, plan, or adapter
+    call: a submission whose product cannot be resolved is refused right
+    there, before anything is computed against a guessed tree (`tools`, in
+    particular, which `product_for()` itself refuses to ever return) and
+    before the adapter is given any chance to run — this is what keeps a
+    job-folder submission with no resolvable product a clean refusal rather
+    than a silently mis-recorded one. `source_digest()` is called FRESH
+    here, at submit time, and its result is never reused from a notebook's
+    own post-hoc marker or from any earlier call in this process — that
+    freshness is the one thing that later lets the ledger's fold tell a
+    current result from a stale one (see `ledger.py`'s `currency_verdict`).
+    `packer.plan()` runs before `adapter.submit()` so a submission is never
+    attempted with no capacity clamp computed behind it. `ledger.append()`
+    runs LAST, only after the adapter has already returned a real
+    submission id — appending before that would risk recording a submission
+    that was never actually made.
+
+    `product` is this function's own `--product` override, forwarded
+    unchanged to `product_for()` as its `explicit` argument — step 1 of
+    that function's four-step resolution order, and the one step no
+    earlier version of this function ever exposed a way to reach.
     """
     target = Path(target).resolve()
     if not target.is_dir():
@@ -385,13 +430,15 @@ def cmd_submit(
         )
 
     resolved_entrypoint = guard_entrypoint(target, Path(entrypoint))
-    name = resolved_entrypoint.relative_to(target).parts[0]
-    relative_entrypoint = resolved_entrypoint.relative_to(target / name)
+    resolved_product = product_for(target, resolved_entrypoint, explicit=product)
+    relative_entrypoint = _relative_entrypoint(
+        target, resolved_entrypoint, resolved_product
+    )
 
     digest_fn = source_digest or _load_source_digest()
-    digest = digest_fn(target, name)
+    digest = digest_fn(target, resolved_product)
 
-    ledger_path = target / name / LEDGER_DIRNAME / LEDGER_FILENAME
+    ledger_path = target / resolved_product / LEDGER_DIRNAME / LEDGER_FILENAME
     ledger_lines: list[str] = []
     if ledger_path.exists():
         ledger_lines = ledger_path.read_text(encoding="utf-8").splitlines()
@@ -767,6 +814,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--credential-dir", type=Path, default=None,
         help="override: use this directory instead of lazily materializing one by worker id",
     )
+    submit.add_argument(
+        "--product", default=None,
+        help="override: which product's ledger this submission belongs to; wins over a "
+        "job folder's own declared run-config.json product and over the legacy shape's "
+        "<Name> component",
+    )
 
     status = subparsers.add_parser(
         "status", help="report the fold for one product's ledger; resolves nothing"
@@ -851,6 +904,7 @@ def main(argv: list[str] | None = None) -> int:
                 worker=args.worker,
                 requested=args.requested,
                 adapter=_construct_adapter(adapter_cls, provider),
+                product=args.product,
             )
         except (RemoteCLIError, PACKER.PackerError, LEDGER.LedgerError,
                 ADAPTER.AdapterError) as exc:

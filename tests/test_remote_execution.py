@@ -1494,12 +1494,26 @@ class SubmitTests(unittest.TestCase):
         own `target = Path(target).resolve()` runs before
         `guard_entrypoint()` ever sees either shape, not just the legacy
         one.
+
+        A `run-config.json` declaring a product is part of this fixture
+        (T6b): before, `cmd_submit` never resolved a product for this
+        shape at all, so this test only proved resolve-first mechanics
+        without asserting where the ledger actually landed. Now that
+        `cmd_submit` genuinely resolves a product via `product_for()`, this
+        test also proves it lands under that declared product rather than
+        under `tools` — the two guarantees are exercised together, not
+        conflated: `SubmitTests` above already covers the product-not-
+        resolvable-is-refused case on its own.
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
+            (target / "MIL-CREDA").mkdir(parents=True)
             job_dir = _make_job_folder(target, "kaggle", "search-a")
             notebook = job_dir / "runner.ipynb"
             notebook.write_text("{}", encoding="utf-8")
+            (job_dir / "run-config.json").write_text(
+                json.dumps({"product": "MIL-CREDA"}), encoding="utf-8"
+            )
 
             original_cwd = Path.cwd()
             os.chdir(tmp)
@@ -1523,6 +1537,170 @@ class SubmitTests(unittest.TestCase):
             self.assertTrue(Path(result["ledgerPath"]).is_absolute())
             self.assertTrue(Path(result["ledgerPath"]).exists())
             self.assertFalse((original_cwd / "repo").exists())
+
+            # And it landed under the declared product, not under "tools".
+            self.assertEqual(
+                Path(result["ledgerPath"]),
+                (target.resolve() / "MIL-CREDA" / ".remote-execution" / "ledger.jsonl"),
+            )
+
+    def test_job_folder_submit_with_declared_product_lands_under_that_product_not_tools(
+        self,
+    ) -> None:
+        """The T6b defect, reproduced then corrected: a job-folder
+        submission whose `run-config.json` names a product must land its
+        ledger under THAT product, never under `tools` (the inline
+        `parts[0]` derivation this replaces would have produced `"tools"`
+        here, since that is the entrypoint's own first path component).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            (target / "MIL-CREDA").mkdir(parents=True)
+            job_dir = _make_job_folder(target, "kaggle", "search-a")
+            notebook = job_dir / "runner.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+            (job_dir / "run-config.json").write_text(
+                json.dumps({"product": "MIL-CREDA"}), encoding="utf-8"
+            )
+
+            digest_calls: list[tuple[Path, str]] = []
+
+            def fake_source_digest(resolved_target: Path, name: str) -> str:
+                digest_calls.append((resolved_target, name))
+                return "d" * 64
+
+            adapter = FakeAdapter(worker_id="w1", capacity=2)
+            result = REMOTE_CLI.cmd_submit(
+                target=target,
+                entrypoint=notebook,
+                worker="w1",
+                requested=1,
+                adapter=adapter,
+                source_digest=fake_source_digest,
+            )
+
+            ledger_path = (
+                target.resolve() / "MIL-CREDA" / ".remote-execution" / "ledger.jsonl"
+            )
+            self.assertEqual(result["ledgerPath"], ledger_path)
+            self.assertTrue(ledger_path.exists())
+
+            # Never under "tools" -- the exact defect this test corrects.
+            tools_ledger = (
+                target.resolve() / "tools" / ".remote-execution" / "ledger.jsonl"
+            )
+            self.assertFalse(tools_ledger.exists())
+
+            lines = ledger_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 1)
+            event = json.loads(lines[0])
+            self.assertEqual(event["kind"], "submitted")
+            self.assertEqual(event["entrypoint"], "tools/kaggle/search-a/runner.ipynb")
+
+            # The digest is computed over the resolved product's own tree,
+            # never over "tools".
+            self.assertEqual(digest_calls, [(target.resolve(), "MIL-CREDA")])
+
+    def test_submit_explicit_product_override_wins_over_the_declared_one(self) -> None:
+        """Triangulates the job-folder case above with a DIFFERENT product,
+        proving `cmd_submit` actually wires an explicit override through to
+        `product_for`, not merely that `product_for` itself supports one.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            (target / "OverrideProduct").mkdir(parents=True)
+            job_dir = _make_job_folder(target, "kaggle", "search-a")
+            notebook = job_dir / "runner.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+            (job_dir / "run-config.json").write_text(
+                json.dumps({"product": "MIL-CREDA"}), encoding="utf-8"
+            )
+            # "MIL-CREDA" is deliberately never created under target: if the
+            # declared value were used instead of the override, product_for
+            # would refuse for a not-existing-directory reason, not silently
+            # succeed under the wrong product.
+
+            adapter = FakeAdapter(worker_id="w1", capacity=2)
+            result = REMOTE_CLI.cmd_submit(
+                target=target,
+                entrypoint=notebook,
+                worker="w1",
+                requested=1,
+                adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+                product="OverrideProduct",
+            )
+
+            ledger_path = (
+                target.resolve() / "OverrideProduct" / ".remote-execution" / "ledger.jsonl"
+            )
+            self.assertEqual(result["ledgerPath"], ledger_path)
+            self.assertTrue(ledger_path.exists())
+
+    def test_job_folder_submit_with_no_resolvable_product_is_refused_not_recorded(
+        self,
+    ) -> None:
+        """A job-folder submission with no declared product and no explicit
+        override must be REFUSED -- never silently recorded under a guessed
+        product (`tools` or otherwise), and never allowed to reach the
+        adapter at all.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            job_dir = _make_job_folder(target, "kaggle", "search-a")
+            notebook = job_dir / "runner.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+            # No run-config.json at all, no --product override.
+
+            adapter = FakeAdapter(worker_id="w1", capacity=2)
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError):
+                REMOTE_CLI.cmd_submit(
+                    target=target,
+                    entrypoint=notebook,
+                    worker="w1",
+                    requested=1,
+                    adapter=adapter,
+                    source_digest=lambda t, n: "d" * 64,
+                )
+
+            # Nothing reached the adapter, and nothing was written anywhere:
+            # a refusal, not a mis-recorded submission.
+            self.assertEqual(adapter._next_id, 0)
+            tools_ledger = (
+                target.resolve() / "tools" / ".remote-execution" / "ledger.jsonl"
+            )
+            self.assertFalse(tools_ledger.exists())
+
+    def test_submit_parser_exposes_a_product_override_flag(self) -> None:
+        """Step 1 of `product_for`'s four-step order -- an explicit
+        `--product` -- has to actually be reachable from the command line,
+        not merely accepted by `product_for` itself.
+        """
+        parser = REMOTE_CLI._build_parser()
+        args = parser.parse_args(
+            [
+                "submit",
+                "--target", "/tmp/does-not-need-to-exist",
+                "--entrypoint", "/tmp/does-not-need-to-exist/a.ipynb",
+                "--worker", "w1",
+                "--backend", "fake",
+                "--product", "MIL-CREDA",
+            ]
+        )
+        self.assertEqual(args.product, "MIL-CREDA")
+
+    def test_submit_parser_product_flag_defaults_to_none(self) -> None:
+        parser = REMOTE_CLI._build_parser()
+        args = parser.parse_args(
+            [
+                "submit",
+                "--target", "/tmp/does-not-need-to-exist",
+                "--entrypoint", "/tmp/does-not-need-to-exist/a.ipynb",
+                "--worker", "w1",
+                "--backend", "fake",
+            ]
+        )
+        self.assertIsNone(args.product)
 
     def test_remote_cli_module_names_no_service(self) -> None:
         """The leak guard for this module, over the raw file text — a

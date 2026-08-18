@@ -55,10 +55,28 @@ Three modules exist so far, each service-blind and stdlib-only:
   four separate numbers, plus `inFlightSource` recording whether `inFlight`
   came from the live service or fell back to the ledger.
 - `scripts/remote_cli.py` — the CLI front door, five commands.
-  - `submit` guards the entrypoint, computes a fresh `source_digest()`,
-    calls `packer.plan()`, hands the job to a registered adapter's
-    `submit()`, and appends the resulting `submitted` event to the ledger —
-    in that order. `guard_entrypoint()` is the ONLY place in this whole
+  - `submit` guards the entrypoint, resolves the product via
+    `product_for()` (the SAME function `status`, `fetch` and `reconcile`
+    call — never an inline `parts[0]` derivation of its own), computes a
+    fresh `source_digest()`, calls `packer.plan()`, hands the job to a
+    registered adapter's `submit()`, and appends the resulting `submitted`
+    event to the ledger — in that order. A job-folder submission whose
+    product cannot be resolved (no `--product`, no `product` declared in
+    its own `run-config.json`) is refused right there, before the digest,
+    the plan or the adapter ever run — never silently recorded under
+    `tools`. `--product` is `submit`'s own CLI flag reaching `product_for`'s
+    `explicit` argument, its highest-priority resolution step; `status`,
+    `fetch` and `reconcile` do not yet expose an equivalent flag, since each
+    reads an already-generated job folder whose own `run-config.json`
+    already declares its product. The `entrypoint` field a `submitted`
+    event records is the resolved entrypoint's path relative to the
+    resolved product directory for the legacy shape (`Notebooks/a.ipynb`);
+    for the job-folder shape, whose product directory is never an ancestor
+    of the entrypoint at all, it falls back to the path relative to
+    `target` instead (`tools/<service>/<job-name>/runner.ipynb`) — both
+    stay unique per submission, and neither pretends a containment
+    relationship the job-folder shape does not have. `guard_entrypoint()` is
+    the ONLY place in this whole
     skill that holds an opinion about what KIND of file may run remotely:
     `Path.resolve()` first, then refuse anything whose resolved path does
     not match one of exactly two admitted shapes and end `.ipynb`:
