@@ -146,6 +146,19 @@ REQUESTED_ACCELERATOR = "NvidiaTeslaT4"
 # push it; see `KaggleAdapter.submit()`'s refusal below.
 KERNEL_METADATA_FILENAME = "kernel-metadata.json"
 
+# `jobfolder.py`'s own `RUN_CONFIG_FILENAME` constant, duplicated here
+# rather than imported: this module never imports `jobfolder.py` (the
+# dependency runs the other way — `jobfolder.py` reaches this module only
+# through the opaque `ADAPTER.resolve_metadata()` registry, never a direct
+# import), the same reason `KERNEL_METADATA_FILENAME` above is this
+# module's own constant rather than a shared one. Confirmed, by reading
+# `kernels_push()` in the installed `kaggle` 2.2.4 CLI, that `kernels push`
+# uploads `code_file` alone — no sibling file in the pushed directory ever
+# reaches the worker on its own. A generated job's `run-config.json` is
+# real and versioned beside its `runner.ipynb`, but the worker never sees
+# it unless something puts it there; see `_run_config_cell()` below.
+RUN_CONFIG_FILENAME = "run-config.json"
+
 # The seam's own five-value vocabulary a raw Kaggle status is translated
 # into — never passed through. Anything Kaggle reports that is not a key
 # here (a cancellation state, a future addition to Kaggle's own vocabulary,
@@ -273,6 +286,66 @@ def assemble_metadata(run_config: Mapping[str, object]) -> tuple[str, str]:
         "machine_shape": REQUESTED_ACCELERATOR,
     }
     return KERNEL_METADATA_FILENAME, json.dumps(payload)
+
+
+def _run_config_cell_source(run_config_text: str) -> str:
+    """The injected cell's own source: writes `run_config_text` — the job
+    folder's own `run-config.json` bytes, read verbatim, never
+    re-serialized — to `run-config.json` in whatever directory the kernel
+    is executing in.
+
+    `Path("run-config.json")`, relative, deliberately not an absolute
+    `/kaggle/working/...` guess: `runner_bootstrap.py`'s own
+    `load_run_config()` resolves `Path.cwd() / "run-config.json"` when no
+    `base_dir` is given, which is exactly how the real notebook cell runs
+    it (`if __name__ == "__main__": bootstrap()`). This injected cell runs
+    in the SAME kernel process, immediately before that one, so writing
+    relative to whatever `Path.cwd()` already is at that point lands in
+    the exact place the next cell will look — no assumption about
+    Kaggle's own working directory convention needed, and none made.
+
+    `repr(run_config_text)` is what keeps this safe for arbitrary JSON
+    content (quotes, newlines, unicode) as a single Python string literal,
+    without needing to guess at a quoting scheme of its own.
+    """
+    return (
+        "from pathlib import Path\n\n"
+        f"Path('run-config.json').write_text({run_config_text!r}, encoding='utf-8')\n"
+    )
+
+
+def _run_config_notebook_cell(run_config_text: str) -> dict:
+    """One notebook cell, in the exact shape `jobfolder.py`'s own
+    `_notebook_cell()` uses (`cell_type`/`metadata`/`execution_count`/
+    `outputs`/`source`) — duplicated rather than imported, for the same
+    reason `RUN_CONFIG_FILENAME` above is duplicated: this module does not
+    import `jobfolder.py`. This is CONFIGURATION, not runner logic: unlike
+    the two real cells `build_notebook()` copies byte for byte with zero
+    interpolation, this cell's own source is job-specific by construction
+    — it always was going to differ between two jobs, because the file it
+    materializes differs between them. It is a NEW cell prepended ahead of
+    the other two, never an edit to either of their bytes.
+    """
+    source = _run_config_cell_source(run_config_text)
+    return {
+        "cell_type": "code",
+        "metadata": {},
+        "execution_count": None,
+        "outputs": [],
+        "source": source.splitlines(keepends=True),
+    }
+
+
+def _stage_run_config_cell(notebook_path: Path, run_config_text: str) -> None:
+    """Prepend the injected cell to the notebook at `notebook_path` — a
+    file inside the STAGED copy `submit()` builds, never the job folder's
+    own versioned `runner.ipynb`. Reads and rewrites only that staged
+    file; the two existing cells travel through unread and unmodified,
+    since this only ever inserts at index 0.
+    """
+    notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+    notebook["cells"].insert(0, _run_config_notebook_cell(run_config_text))
+    notebook_path.write_text(json.dumps(notebook, indent=1), encoding="utf-8")
 
 
 # The seam's own shape (`adapter.py`), aliased under this module's name so
@@ -485,6 +558,21 @@ class KaggleAdapter(ADAPTER.Adapter):
         The versioned `kernel-metadata.json` inside the job folder itself
         is read, never opened for writing, and stays byte-for-byte
         unchanged: nothing here mutates a committed artifact per worker.
+
+        `kernels push` uploads `code_file` alone — confirmed by reading
+        `kernels_push()` in the installed `kaggle` 2.2.4 CLI, there is no
+        directory upload, so a job folder's own sibling `run-config.json`
+        never reaches the worker on its own. This same staging step also
+        prepends a cell to the STAGED notebook copy that materializes that
+        file back onto disk before the runner's own first cell ever reads
+        it (`_stage_run_config_cell()`), whenever `run-config.json` is
+        present beside the entrypoint — it always is for a real generated
+        job, written by `jobfolder.generate_job()` before the metadata
+        file. Its absence (a synthetic job folder carrying only a
+        metadata file, as several of this module's own narrower tests
+        build) is not treated as an error here: there is nothing to
+        materialize, so nothing is injected — a silent no-op rather than
+        a refusal, since it changes nothing the caller asked for.
         """
         metadata_path = job.entrypoint.parent / KERNEL_METADATA_FILENAME
         if job.run_config and not metadata_path.is_file():
@@ -509,6 +597,12 @@ class KaggleAdapter(ADAPTER.Adapter):
                 (staging_path / KERNEL_METADATA_FILENAME).write_text(
                     json.dumps(template), encoding="utf-8"
                 )
+                run_config_path = job.entrypoint.parent / RUN_CONFIG_FILENAME
+                if run_config_path.is_file():
+                    _stage_run_config_cell(
+                        staging_path / job.entrypoint.name,
+                        run_config_path.read_text(encoding="utf-8"),
+                    )
                 self._push(staging_path, handle)
         else:
             ref = f"{job.worker}/{_kernel_slug(job.entrypoint)}"

@@ -2828,6 +2828,211 @@ class KaggleAdapterTests(unittest.TestCase):
 
             self.assertEqual(submission.id, "w1/runner")
 
+    def test_submit_prepends_a_run_config_cell_without_touching_the_runner_logic_cells(
+        self,
+    ) -> None:
+        """`kernels push` uploads only `code_file` — confirmed against the
+        installed `kaggle` 2.2.4 CLI's own `kernels_push()` — so a job
+        folder's sibling `run-config.json` never reaches the worker on its
+        own. `submit()` must inject a THIRD cell, prepended ahead of the
+        two real runner cells, that materializes that file back onto disk
+        before cell 0 (now cell 1) ever reads it.
+
+        This must never touch the two existing cells' own bytes: they stay
+        exactly what `jobfolder.build_notebook()` wrote, byte for byte,
+        both in the staged/pushed copy and in the job folder's own
+        versioned `runner.ipynb` — the same "never touching the job
+        folder" guarantee `kernel-metadata.json` already gets.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            job_dir = tmp_path / "job"
+            job_dir.mkdir()
+            entrypoint = job_dir / "runner.ipynb"
+
+            bootstrap_cell = {
+                "cell_type": "code",
+                "metadata": {},
+                "execution_count": None,
+                "outputs": [],
+                "source": ["print('bootstrap')\n"],
+            }
+            invoke_cell = {
+                "cell_type": "code",
+                "metadata": {},
+                "execution_count": None,
+                "outputs": [],
+                "source": ["print('invoke')\n"],
+            }
+            original_notebook = {
+                "cells": [bootstrap_cell, invoke_cell],
+                "metadata": {
+                    "kernelspec": {
+                        "display_name": "Python 3",
+                        "language": "python",
+                        "name": "python3",
+                    },
+                    "language_info": {"name": "python"},
+                },
+                "nbformat": 4,
+                "nbformat_minor": 5,
+            }
+            original_notebook_text = json.dumps(original_notebook, indent=1)
+            entrypoint.write_text(original_notebook_text, encoding="utf-8")
+
+            run_config_text = json.dumps(
+                {"schemaVersion": 1, "jobName": "cell-injection", "commit": "c" * 40}
+            )
+            (job_dir / "run-config.json").write_text(run_config_text, encoding="utf-8")
+            (job_dir / "kernel-metadata.json").write_text(
+                json.dumps({"id": "", "title": "papersmith-cell-injection", "code_file": ""}),
+                encoding="utf-8",
+            )
+
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            captured_notebook = tmp_path / "captured-runner.ipynb"
+            fake_kaggle = bin_dir / "kaggle"
+            fake_kaggle.write_text(
+                "#!/usr/bin/env python3\n"
+                "import shutil, sys\n"
+                "from pathlib import Path\n"
+                "args = sys.argv[1:]\n"
+                "if args[:2] == ['kernels', 'push']:\n"
+                "    idx = args.index('-p')\n"
+                "    src = Path(args[idx + 1]) / 'runner.ipynb'\n"
+                f"    shutil.copyfile(src, {str(captured_notebook)!r})\n"
+                "    print('kernel version 1 successfully pushed')\n"
+                "    sys.exit(0)\n"
+                "sys.exit(1)\n",
+                encoding="utf-8",
+            )
+            fake_kaggle.chmod(0o755)
+
+            token_path = tmp_path / "creds"
+            token_path.mkdir()
+            handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
+
+            with unittest.mock.patch.dict(
+                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+            ):
+                adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle})
+                job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
+                adapter.submit(job)
+
+            self.assertTrue(captured_notebook.is_file())
+            pushed = json.loads(captured_notebook.read_text(encoding="utf-8"))
+            self.assertEqual(len(pushed["cells"]), 3)
+
+            # The two runner-logic cells stay exactly where they were,
+            # byte for byte — only a new cell was prepended ahead of them.
+            self.assertEqual(pushed["cells"][1], bootstrap_cell)
+            self.assertEqual(pushed["cells"][2], invoke_cell)
+
+            injected_source = "".join(pushed["cells"][0]["source"])
+            self.assertIn("run-config.json", injected_source)
+            self.assertIn(run_config_text, injected_source)
+
+            # The job folder's own versioned runner.ipynb is never mutated.
+            self.assertEqual(
+                entrypoint.read_text(encoding="utf-8"), original_notebook_text
+            )
+
+    def test_injected_run_config_cell_writes_the_configs_own_bytes_at_runtime(
+        self,
+    ) -> None:
+        """Structural proof (the cell contains the right text) is not
+        functional proof. This actually executes the injected cell's
+        source, in a fresh working directory, and confirms the file it
+        writes is byte-for-byte identical to the job folder's own
+        `run-config.json` — the exact file cell 0's `load_run_config()`
+        resolves via `Path.cwd() / "run-config.json"` when no `base_dir`
+        is given, which is how the real notebook cell runs.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            job_dir = tmp_path / "job"
+            job_dir.mkdir()
+            entrypoint = job_dir / "runner.ipynb"
+            entrypoint.write_text(
+                json.dumps(
+                    {
+                        "cells": [
+                            {
+                                "cell_type": "code",
+                                "metadata": {},
+                                "execution_count": None,
+                                "outputs": [],
+                                "source": ["print('bootstrap')\n"],
+                            }
+                        ],
+                        "metadata": {},
+                        "nbformat": 4,
+                        "nbformat_minor": 5,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            run_config_text = json.dumps(
+                {"schemaVersion": 1, "jobName": "cell-injection", "commit": "d" * 40},
+                indent=2,
+            )
+            (job_dir / "run-config.json").write_text(run_config_text, encoding="utf-8")
+            (job_dir / "kernel-metadata.json").write_text(
+                json.dumps({"id": "", "title": "papersmith-cell-injection", "code_file": ""}),
+                encoding="utf-8",
+            )
+
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            captured_notebook = tmp_path / "captured-runner.ipynb"
+            fake_kaggle = bin_dir / "kaggle"
+            fake_kaggle.write_text(
+                "#!/usr/bin/env python3\n"
+                "import shutil, sys\n"
+                "from pathlib import Path\n"
+                "args = sys.argv[1:]\n"
+                "if args[:2] == ['kernels', 'push']:\n"
+                "    idx = args.index('-p')\n"
+                "    src = Path(args[idx + 1]) / 'runner.ipynb'\n"
+                f"    shutil.copyfile(src, {str(captured_notebook)!r})\n"
+                "    print('kernel version 1 successfully pushed')\n"
+                "    sys.exit(0)\n"
+                "sys.exit(1)\n",
+                encoding="utf-8",
+            )
+            fake_kaggle.chmod(0o755)
+
+            token_path = tmp_path / "creds"
+            token_path.mkdir()
+            handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
+
+            with unittest.mock.patch.dict(
+                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+            ):
+                adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle})
+                job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
+                adapter.submit(job)
+
+            pushed = json.loads(captured_notebook.read_text(encoding="utf-8"))
+            injected_source = "".join(pushed["cells"][0]["source"])
+
+            with tempfile.TemporaryDirectory() as runtime_cwd:
+                previous_cwd = os.getcwd()
+                os.chdir(runtime_cwd)
+                try:
+                    exec(compile(injected_source, "<injected-cell>", "exec"), {})
+                finally:
+                    os.chdir(previous_cwd)
+
+                written = Path(runtime_cwd) / "run-config.json"
+                self.assertTrue(written.is_file())
+                self.assertEqual(
+                    written.read_bytes(),
+                    (job_dir / "run-config.json").read_bytes(),
+                )
+
     def test_credential_sentinel_absent_from_argv_stdout_stderr_ledger_and_quarantine(
         self,
     ) -> None:
