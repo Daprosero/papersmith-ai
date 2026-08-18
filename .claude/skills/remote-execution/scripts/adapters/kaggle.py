@@ -113,7 +113,14 @@ SUBPROCESS_TIMEOUT_SECONDS = 120.0
 # backend metering capacity some other way (a quota, a byte budget) would
 # convert it into "concurrent jobs" inside its own adapter, exactly the
 # same way this one does.
-KAGGLE_WORKER_CAPACITY = 1
+#
+# This is the batch-session figure: how many `kernels push` submissions
+# this service has, at the time this was last checked, let one account run
+# concurrently. It is an observed property of the service, measured
+# against `kernels push`, not a law — it is documented and expected to be
+# revised as Kaggle's own concurrent-kernel allowance changes, and it is
+# never asserted as a universal per-account or per-service ceiling.
+KAGGLE_WORKER_CAPACITY = 2
 
 # The accelerator this repository's submissions request. A REQUEST, not a
 # receipt: asking for one is not the same as receiving one. What a

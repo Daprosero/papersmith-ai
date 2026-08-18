@@ -1815,6 +1815,34 @@ class KaggleAdapterTests(unittest.TestCase):
     def test_requested_accelerator_is_declared_here_as_a_request_not_a_receipt(self) -> None:
         self.assertEqual(KAGGLE.REQUESTED_ACCELERATOR, "T4")
 
+    def test_kaggle_worker_capacity_is_two_documented_as_the_batch_session_figure(self) -> None:
+        """`KAGGLE_WORKER_CAPACITY` states Kaggle's own concurrent-kernel
+        allowance as observed against `kernels push` batch sessions — not
+        as a universal property of the service. This pins both the value
+        and the fact that its comment says so, so a future revision of the
+        number cannot silently drop the caveat that makes revising it safe.
+        """
+        self.assertEqual(KAGGLE.KAGGLE_WORKER_CAPACITY, 2)
+
+        source_lines = KAGGLE_SCRIPT.read_text(encoding="utf-8").splitlines()
+        constant_index = next(
+            i
+            for i, line in enumerate(source_lines)
+            if line.startswith("KAGGLE_WORKER_CAPACITY = ")
+        )
+        comment_lines: list[str] = []
+        i = constant_index - 1
+        while i >= 0 and source_lines[i].lstrip().startswith("#"):
+            comment_lines.append(source_lines[i])
+            i -= 1
+        comment = "\n".join(reversed(comment_lines)).lower()
+
+        self.assertIn("batch-session", comment)
+        self.assertIn("kernels push", comment)
+        self.assertIn("revis", comment)
+        self.assertIn("never", comment)
+        self.assertIn("universal", comment)
+
     def test_workers_still_answers_when_the_credential_file_is_unreadable(self) -> None:
         """Proves `workers()` never opens the credential file itself: a
         genuinely unreadable decoy file named the way that file is named
