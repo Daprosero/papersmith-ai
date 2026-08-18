@@ -397,5 +397,80 @@ class DiscoverCommandTests(unittest.TestCase):
         self.assertIn("1 already stored", entry["note"])
 
 
+class MaterializeCommandTests(unittest.TestCase):
+    """`materialize` — the one non-interactive way a stored credential
+    leaves this file, as a FILE handed to a destination, never as a printed
+    value. Reuses `save_store()`'s exact atomic shape at a NEW destination,
+    so what these tests are really asking is whether that reuse actually
+    holds somewhere the store's own writes never touch. C1.
+    """
+
+    def _materialize(
+        self, worker: str, into: Path, *, accounts: list[dict] | None = None,
+    ) -> tuple[int, str]:
+        store = {
+            "version": 1,
+            "accounts": accounts if accounts is not None else [
+                {"username": worker, "key": "K-not-a-real-key"}
+            ],
+        }
+        buffer = io.StringIO()
+        with unittest.mock.patch.object(ACCOUNTS, "load_store", lambda: store):
+            with contextlib.redirect_stdout(buffer):
+                code = ACCOUNTS.cmd_materialize(
+                    argparse.Namespace(worker=worker, into=str(into), json=True)
+                )
+        return code, buffer.getvalue()
+
+    def test_writes_the_config_atomically_owner_only_under_a_gitignored_destination(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = (Path(tmp) / "creds" / "w1").resolve()
+            dest.mkdir(parents=True)
+            (dest / ".gitignore").write_text("*\n", encoding="utf-8")
+
+            code, out = self._materialize("w1", dest)
+
+            self.assertEqual(code, 0)
+            config_path = dest / "kaggle.json"
+            self.assertTrue(config_path.exists())
+            self.assertEqual(stat.S_IMODE(config_path.stat().st_mode), 0o600)
+
+            payload = json.loads(out)
+            self.assertEqual(payload, {"worker": "w1", "configDir": str(dest)})
+            # A destination is printed, never a value — the whole point of
+            # this command.
+            self.assertNotIn("K-not-a-real-key", out)
+            self.assertEqual(
+                [p.name for p in dest.iterdir() if p.name.startswith(".kaggle-")], []
+            )
+
+    def test_refuses_a_destination_with_no_ignore_precondition_and_writes_nothing(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            # Deliberately no `.gitignore` reachable from this destination.
+            dest = Path(tmp) / "unsafe" / "w1"
+
+            with self.assertRaisesRegex(ACCOUNTS.StoreError, "gitignore"):
+                self._materialize("w1", dest)
+
+            # A refusal must leave nothing behind — not even an empty
+            # scaffold directory the credential was never actually put in.
+            self.assertFalse(dest.exists())
+
+    def test_refuses_an_unknown_worker_and_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "creds" / "ghost"
+
+            with self.assertRaisesRegex(ACCOUNTS.UsageError, "no such account"):
+                self._materialize(
+                    "ghost", dest, accounts=[{"username": "w1", "key": "K1"}]
+                )
+
+            self.assertFalse(dest.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

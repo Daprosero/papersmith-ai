@@ -14,6 +14,8 @@ Run with any Python 3.10+ (the modules are stdlib-only):
 """
 from __future__ import annotations
 
+import ast
+import builtins
 import contextlib
 import dataclasses
 import importlib.util
@@ -2066,6 +2068,258 @@ class KaggleAdapterTests(unittest.TestCase):
                     self.assertNotIn(
                         sentinel, artifact.read_text(encoding="utf-8", errors="ignore")
                     )
+
+
+def _write_fake_materialize_cli(
+    script_path: Path, materialized_root: Path, key: str, *, worker: str = "w1"
+) -> Path:
+    """A stand-in for kaggle-accounts' own CLI that answers exactly the two
+    sanctioned commands `KaggleAdapter`/`credentials.py` ever run as a
+    subprocess: `list --json` (worker identity) and `materialize` (the ONE
+    process in the tests below sanctioned to write a real credential
+    file). `materialize` is invoked exactly the way
+    `credentials.materialize()` invokes the real command — `<cli>
+    materialize --worker <id> --json` — and prints back a destination
+    only, never the key, mirroring `cmd_materialize`'s own contract.
+    """
+    script_path.write_text(
+        "import argparse, json, os\n"
+        "from pathlib import Path\n"
+        "parser = argparse.ArgumentParser()\n"
+        "sub = parser.add_subparsers(dest='command', required=True)\n"
+        "p_list = sub.add_parser('list')\n"
+        "p_list.add_argument('--json', action='store_true')\n"
+        "p = sub.add_parser('materialize')\n"
+        "p.add_argument('--worker', required=True)\n"
+        "p.add_argument('--json', action='store_true')\n"
+        "args = parser.parse_args()\n"
+        "if args.command == 'list':\n"
+        f"    print(json.dumps({{'accounts': [{{'username': {worker!r}}}]}}))\n"
+        "    raise SystemExit(0)\n"
+        f"dest = Path({str(materialized_root)!r}) / args.worker\n"
+        "dest.mkdir(parents=True, exist_ok=True)\n"
+        f"key = {key!r}\n"
+        "(dest / 'kaggle.json').write_text(json.dumps({'username': args.worker, 'key': key}))\n"
+        "os.chmod(dest / 'kaggle.json', 0o600)\n"
+        "print(json.dumps({'worker': args.worker, 'configDir': str(dest)}))\n",
+        encoding="utf-8",
+    )
+    return script_path
+
+
+def _is_under(candidate: object, root: Path) -> bool:
+    """Whether `candidate` resolves under `root` — used only to detect a
+    forbidden file-read INSIDE this test process; a child subprocess doing
+    its own file I/O is a separate OS process and is never seen by this
+    check, which is exactly the boundary the security contract draws.
+    """
+    try:
+        resolved = Path(candidate).resolve()
+    except (TypeError, OSError, ValueError):
+        return False
+    try:
+        return resolved.is_relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+
+
+@contextlib.contextmanager
+def _interposition_guard(guarded_root: Path):
+    """Interpose `Path.read_text`, `Path.read_bytes` and `builtins.open`
+    for the duration of the `with` block, recording every call whose
+    argument resolves under `guarded_root`. Every call is still forwarded
+    to the real implementation — this only OBSERVES, it never blocks —
+    so the guarded code path keeps running exactly as it would otherwise.
+    """
+    hits: list[str] = []
+    real_read_text = Path.read_text
+    real_read_bytes = Path.read_bytes
+    real_open = builtins.open
+
+    def guarded_read_text(path_self, *a, **kw):
+        if _is_under(path_self, guarded_root):
+            hits.append(f"Path.read_text:{path_self}")
+        return real_read_text(path_self, *a, **kw)
+
+    def guarded_read_bytes(path_self, *a, **kw):
+        if _is_under(path_self, guarded_root):
+            hits.append(f"Path.read_bytes:{path_self}")
+        return real_read_bytes(path_self, *a, **kw)
+
+    def guarded_open(file, *a, **kw):
+        if _is_under(file, guarded_root):
+            hits.append(f"open:{file}")
+        return real_open(file, *a, **kw)
+
+    with unittest.mock.patch.object(Path, "read_text", guarded_read_text), \
+            unittest.mock.patch.object(Path, "read_bytes", guarded_read_bytes), \
+            unittest.mock.patch("builtins.open", guarded_open):
+        yield hits
+
+
+class CredentialSecurityTests(unittest.TestCase):
+    """T1's hard security constraints (C2-C6): no component above the
+    adapter seam may open, read, print, or parse the credential store or
+    any credential file. Credentials move BY PATH only; the sole sink is
+    `KAGGLE_CONFIG_DIR` on a child process's own environment.
+
+    Every full-cycle test here drives `submit -> poll -> fetch -> status`
+    through `CREDENTIALS.provider()` and a FAKE `materialize` command (see
+    `_write_fake_materialize_cli`) that genuinely writes a credential file
+    to disk, as a separate OS process — the one process in these tests
+    sanctioned to touch it. Nothing else here ever reads that file.
+    """
+
+    def _run_full_cycle(self, tmp_path: Path, *, worker: str = "w1", key: str = "K1"):
+        materialized_root = tmp_path / "materialized"
+        fake_accounts_cli = _write_fake_materialize_cli(
+            tmp_path / "fake_accounts_cli.py", materialized_root, key, worker=worker
+        )
+        bin_dir = tmp_path / "bin"
+        _write_fake_kaggle(bin_dir)
+
+        target = tmp_path / "repo"
+        notebooks = _make_product(target, "MIL-CREDA")
+        notebook = notebooks / "a.ipynb"
+        notebook.write_text("{}", encoding="utf-8")
+
+        calls: list[dict[str, object]] = []
+        real_run = subprocess.run
+
+        def recording_run(argv, **kwargs):
+            result = real_run(argv, **kwargs)
+            calls.append(
+                {"argv": list(argv), "stdout": result.stdout, "stderr": result.stderr}
+            )
+            return result
+
+        with unittest.mock.patch.dict(
+            os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+        ), unittest.mock.patch.object(
+            subprocess, "run", side_effect=recording_run
+        ), _interposition_guard(materialized_root) as hits:
+            provider = REMOTE_CLI.CREDENTIALS.provider(accounts_cli=fake_accounts_cli)
+            adapter = KAGGLE.KaggleAdapter(
+                credentials=provider, accounts_cli=fake_accounts_cli
+            )
+
+            submit_result = REMOTE_CLI.cmd_submit(
+                target=target, entrypoint=notebook, worker=worker, requested=1,
+                adapter=adapter, source_digest=lambda t, n: "d" * 64,
+            )
+            submission_id = submit_result["submission"].id
+            ledger_path = submit_result["ledgerPath"]
+
+            REMOTE_CLI.cmd_poll(submission_id=submission_id, adapter=adapter)
+
+            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+            # A different live digest at fetch time than at submit time
+            # forces `fromStaleSubmission`, exercising the quarantine path
+            # too, not only the ledger.
+            fetch_result = REMOTE_CLI.cmd_fetch(
+                target=target, entrypoint=notebook, submission_id=submission_id,
+                dest=dest, adapter=adapter, source_digest=lambda t, n: "e" * 64,
+            )
+
+            status_result = REMOTE_CLI.cmd_status(
+                target=target, entrypoint=notebook, source_digest=lambda t, n: "e" * 64,
+            )
+
+        return {
+            "calls": calls,
+            "ledger_path": ledger_path,
+            "fetch_result": fetch_result,
+            "status_result": status_result,
+            "materialized_root": materialized_root,
+            "interposition_hits": hits,
+        }
+
+    def test_zero_file_read_interposition_across_a_full_submit_poll_fetch_status_run(
+        self,
+    ) -> None:
+        """C2."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cycle = self._run_full_cycle(Path(tmp))
+            self.assertGreater(len(cycle["calls"]), 0)
+            self.assertEqual(cycle["interposition_hits"], [])
+
+    def test_planted_sentinel_leaks_nowhere_including_materializes_own_stdout(
+        self,
+    ) -> None:
+        """C3."""
+        sentinel = "SENTINEL-" + uuid.uuid4().hex
+        with tempfile.TemporaryDirectory() as tmp:
+            cycle = self._run_full_cycle(Path(tmp), key=sentinel)
+
+            self.assertGreater(len(cycle["calls"]), 0)
+            for call in cycle["calls"]:
+                self.assertNotIn(sentinel, json.dumps(call["argv"]))
+                if call["stdout"]:
+                    self.assertNotIn(sentinel, call["stdout"])
+                if call["stderr"]:
+                    self.assertNotIn(sentinel, call["stderr"])
+
+            self.assertNotIn(sentinel, cycle["ledger_path"].read_text(encoding="utf-8"))
+
+            self.assertEqual(cycle["fetch_result"]["verdict"], "fromStaleSubmission")
+            quarantine_dir = cycle["fetch_result"]["path"]
+            self.assertTrue(quarantine_dir.exists())
+            for artifact in quarantine_dir.rglob("*"):
+                if artifact.is_file():
+                    self.assertNotIn(
+                        sentinel, artifact.read_text(encoding="utf-8", errors="ignore")
+                    )
+
+    def test_no_forge_component_contains_credential_store_literals_or_imports_accounts_cli(
+        self,
+    ) -> None:
+        """C4."""
+        scanned = (
+            REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/credentials.py",
+            REMOTE_CLI_SCRIPT,
+            PACKER_SCRIPT,
+            SCRIPT,
+            ADAPTER_SCRIPT,
+            KAGGLE_SCRIPT,
+        )
+        forbidden = ("accounts.json", "STORE_PATH", "STORE_DIR", "import accounts_cli")
+        for path in scanned:
+            source = path.read_text(encoding="utf-8")
+            for literal in forbidden:
+                self.assertNotIn(literal, source, f"{literal!r} found in {path}")
+
+    def test_credential_handle_carries_exactly_worker_id_and_config_dir(self) -> None:
+        """C5."""
+        fields = tuple(f.name for f in dataclasses.fields(ADAPTER.CredentialHandle))
+        self.assertEqual(fields, ("worker_id", "config_dir"))
+
+        # `.config_dir` is accessed exactly once in `adapters/kaggle.py`'s
+        # actual CODE — the single sink documented at the top of this
+        # module. Parsed as an AST rather than scanned as raw text, so a
+        # docstring that quotes the same expression in prose (as this
+        # module's own module docstring does, to document the sink) is not
+        # mistaken for a second real access.
+        tree = ast.parse(KAGGLE_SCRIPT.read_text(encoding="utf-8"))
+        accesses = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute) and node.attr == "config_dir"
+        ]
+        self.assertEqual(len(accesses), 1)
+
+    def test_the_only_sink_is_kaggle_config_dir_on_the_child_environment(self) -> None:
+        """C6."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp) / "creds"
+            config_dir.mkdir()
+            handle = KAGGLE.CredentialHandle(worker_id="w1", config_dir=config_dir)
+            adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle})
+
+            env = adapter._env_for(handle)
+            self.assertEqual(env.get("KAGGLE_CONFIG_DIR"), str(config_dir))
+            self.assertEqual(sorted(env), ["KAGGLE_CONFIG_DIR", "PATH"])
+
+            env_without_handle = adapter._env_for(None)
+            self.assertEqual(sorted(env_without_handle), ["PATH"])
 
 
 class ShardIoTests(unittest.TestCase):

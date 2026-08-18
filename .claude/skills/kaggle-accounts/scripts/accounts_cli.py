@@ -33,6 +33,12 @@ key, so an agent driving this CLI can offer you a choice of accounts without the
 secret ever crossing into its context. Whatever launches the runs reads the
 store directly.
 
+A fourth command, ``materialize``, exists for code rather than a human at a
+terminal: it writes one worker's stored credential to a config directory,
+atomically, and prints back where — never what. Nothing about it opens a
+question; it is the one non-interactive way a credential this store already
+holds reaches a file another process's own client can point itself at.
+
 Usage:
     python accounts_cli.py validate                 # re-check the store, take in the inbox
     python accounts_cli.py validate <file>…         # check these instead
@@ -40,6 +46,7 @@ Usage:
     python accounts_cli.py remove <username>…
     python accounts_cli.py list [--json]
     python accounts_cli.py discover [--json]
+    python accounts_cli.py materialize --worker <username> [--into <dir>] --json
 
 Exit codes: 0 everything checked out, 1 at least one account failed or was
 rejected (the rest are stored), 2 usage/store/environment error (nothing was
@@ -679,6 +686,73 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+def cmd_materialize(args: argparse.Namespace) -> int:
+    """Write one worker's live credential to a config directory, atomically.
+
+    The one command in this file that ever lets a stored credential leave
+    this process — and even here, only as a FILE, handed to a destination
+    that has already proven it is safe to hold one. Everything this prints
+    is a destination, never a value: a caller learns WHERE a credential
+    landed, not what it says.
+
+    Non-interactive by construction: there is no prompt, no confirmation,
+    no branch that ever asks a human anything. The "one interactive
+    question" doctrine that shapes `validate --interactive` governs the
+    human consent surface this file opens, not the total count of commands
+    it exposes — `list` and `discover` already answer without asking, and
+    this is a third.
+
+    Reuses `save_store()`'s own atomic shape exactly, because a half-written
+    config file would be exactly the failure that shape already prevents
+    for the store itself: `mkstemp` inside the destination, `os.fchmod` to
+    owner-only BEFORE any byte is written, then `os.replace` — so a reader
+    either finds the previous config or the new one, never a partial one.
+    """
+    store = load_store()
+    account = next(
+        (a for a in store["accounts"] if a["username"] == args.worker), None
+    )
+    if account is None:
+        raise UsageError(f"no such account: {args.worker}")
+
+    dest_dir = (
+        Path(args.into).expanduser().resolve()
+        if args.into
+        else STORE_DIR / "workers" / args.worker
+    )
+    config_path = dest_dir / "kaggle.json"
+    # The same precondition the store itself enforces before it ever writes
+    # a token to disk, checked again here because THIS destination has
+    # never been proven safe before — a caller passing `--into` names a
+    # path this file has no reason to trust just because the store's own
+    # ignore rule holds. Checked BEFORE the directory is created: a refusal
+    # must leave nothing behind, not even an empty scaffold directory —
+    # `git check-ignore` matches a pattern against a path regardless of
+    # whether anything exists there yet, so this ordering costs the
+    # default (store-relative) destination nothing.
+    assert_ignored(config_path)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    fd, tmp_name = tempfile.mkstemp(dir=str(dest_dir), prefix=".kaggle-", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"username": account["username"], "key": account["key"]}, fh)
+            fh.write("\n")
+        os.replace(tmp, config_path)
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        raise StoreError(f"{config_path} could not be written: {exc.strerror}")
+    dest_dir.chmod(0o700)
+
+    if args.json:
+        print(json.dumps({"worker": args.worker, "configDir": str(dest_dir)}))
+    else:
+        print(str(dest_dir))
+    return 0
+
+
 def cmd_remove(args: argparse.Namespace) -> int:
     store = load_store()
     present = {a["username"] for a in store["accounts"]}
@@ -722,6 +796,18 @@ def main() -> int:
     p_remove = sub.add_parser("remove", help="delete stored accounts by username")
     p_remove.add_argument("usernames", nargs="+", metavar="username")
     p_remove.set_defaults(func=cmd_remove)
+
+    p_materialize = sub.add_parser(
+        "materialize",
+        help="write one worker's credential to a config directory, non-interactively")
+    p_materialize.add_argument("--worker", required=True, metavar="username")
+    p_materialize.add_argument(
+        "--into", metavar="dir",
+        help="override the default store/workers/<worker>/ destination")
+    p_materialize.add_argument(
+        "--json", action="store_true",
+        help="machine-readable output — a destination, never the credential itself")
+    p_materialize.set_defaults(func=cmd_materialize)
 
     args = parser.parse_args()
     try:

@@ -57,7 +57,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
 
 
 def _load_adapter_seam():
@@ -166,24 +166,14 @@ def _kernel_slug(entrypoint: Path) -> str:
     return slug or "kernel"
 
 
-@dataclass(frozen=True)
-class CredentialHandle:
-    """One worker's credential, carried by PATH only.
-
-    `config_dir` must be a directory holding this worker's Kaggle
-    credential file, assembled by whatever prepared the target's own
-    configuration — never by this adapter, and never by this adapter
-    reading `kaggle-accounts`' own data directly. This class exposes no
-    read method: the only thing anywhere in this module that ever does
-    anything with `config_dir` is handing its string form to a child
-    process's environment as `KAGGLE_CONFIG_DIR`. A credential VALUE
-    therefore has no route into this process at all — only a path to
-    where the `kaggle` executable itself will look for one, in its own
-    process, under its own scrutiny.
-    """
-
-    worker_id: str
-    config_dir: Path
+# The seam's own shape (`adapter.py`), aliased under this module's name so
+# every existing caller and test that imports `CredentialHandle` FROM here
+# keeps working unchanged. The class is defined exactly once, in the seam,
+# because it carries no service-specific behavior at all — moving it there
+# is what lets a second backend adapter reuse the same shape without
+# redefining it; only the environment variable it is eventually handed to
+# (`KAGGLE_CONFIG_DIR`, below) is this service's own.
+CredentialHandle = ADAPTER.CredentialHandle
 
 
 class KaggleAdapter(ADAPTER.Adapter):
@@ -200,25 +190,61 @@ class KaggleAdapter(ADAPTER.Adapter):
     def __init__(
         self,
         *,
-        credentials: Mapping[str, CredentialHandle] | None = None,
+        credentials: (
+            Mapping[str, CredentialHandle] | Callable[[str], CredentialHandle] | None
+        ) = None,
         accounts_cli: Path | str | None = None,
         kaggle_executable: str = KAGGLE_EXECUTABLE,
         timeout: float = SUBPROCESS_TIMEOUT_SECONDS,
     ) -> None:
-        self._credentials: dict[str, CredentialHandle] = dict(credentials or {})
+        self._credential_provider = self._normalize_credentials(credentials)
         self._accounts_cli = Path(accounts_cli) if accounts_cli else DEFAULT_ACCOUNTS_CLI
         self._kaggle_executable = kaggle_executable
         self._timeout = timeout
 
+    @staticmethod
+    def _normalize_credentials(
+        credentials: (
+            Mapping[str, CredentialHandle] | Callable[[str], CredentialHandle] | None
+        ),
+    ) -> Callable[[str], CredentialHandle]:
+        """One internal shape regardless of what a caller handed in.
+
+        A caller that already knows every worker it will ever ask for —
+        most of this module's own test suite — passes a plain mapping,
+        unchanged from before this method existed. A caller that does NOT
+        pass one instead: `remote_cli.py`'s `poll` command never learns a
+        worker id at all, only a submission id this adapter alone is
+        permitted to split, so nothing above this seam can build a full
+        mapping up front for that command. That caller passes a callable,
+        resolved lazily the first time a worker is actually needed.
+
+        Both collapse to the same shape here so `_credential_for()` below
+        never has to ask which one it was given.
+        """
+        if credentials is None:
+            def _none(worker: str) -> CredentialHandle:
+                raise KeyError(worker)
+
+            return _none
+        if callable(credentials) and not isinstance(credentials, Mapping):
+            return credentials
+        mapping = dict(credentials)
+
+        def _lookup(worker: str) -> CredentialHandle:
+            return mapping[worker]
+
+        return _lookup
+
     def _credential_for(self, worker: str) -> CredentialHandle:
         try:
-            return self._credentials[worker]
+            return self._credential_provider(worker)
         except KeyError:
             raise KaggleAdapterError(
                 f"no credential handle registered for worker {worker!r}; this "
-                "adapter accepts credentials only as CredentialHandle instances "
-                "supplied at construction, never by reading a credential file "
-                "on its own initiative"
+                "adapter accepts credentials only as CredentialHandle instances, "
+                "supplied directly or produced by a provider callable, never by "
+                "reading a credential file on its own initiative"
             ) from None
 
     def _env_for(self, handle: CredentialHandle | None) -> dict[str, str]:

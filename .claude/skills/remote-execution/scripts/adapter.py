@@ -130,6 +130,32 @@ class Fetched:
     files: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class CredentialHandle:
+    """One worker's credential, carried by PATH only — never by value.
+
+    `config_dir` names a directory a concrete adapter's own environment
+    plumbing points a service's client at; this dataclass holds no opinion
+    about which environment variable that is, because the variable's name
+    is the one fact about a credential that IS service-specific (the
+    concrete adapter that reads `config_dir` is the one place that names
+    it). Everything else about a credential handle is common to every
+    backend this seam could ever hold, which is why this shape lives here
+    instead of being redefined inside each adapter module.
+
+    It exposes no read method. The only thing anywhere in this seam's
+    dependency graph that ever does anything with `config_dir` beyond
+    carrying it is handing its string form to a child process's own
+    environment — never opening it, never parsing whatever file lives
+    inside it. A credential VALUE therefore has no route into this
+    process's memory at all: nothing between where a handle is produced
+    and where it is consumed is even capable of reading one.
+    """
+
+    worker_id: str
+    config_dir: Path
+
+
 class AdapterError(Exception):
     """A backend refused, timed out, or answered with something unusable.
 

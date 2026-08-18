@@ -22,6 +22,14 @@ and never auto-resolves a local one — `--resolve` is the one human-invoked
 exception, and even then it only ever appends `errored`, never `returned`
 or `submitted`.
 
+`submit`, `poll`, `fetch` and `reconcile` construct their adapter with a
+credential PROVIDER, never a value and never a pre-built mapping this
+module would have to assemble itself: `credentials.provider()` returns a
+callable an adapter calls lazily, by worker id, the first time it actually
+needs one. `--credential-dir` is an override only, for tests and
+already-materialized directories — the default is lazy materialization,
+and no target configuration file is ever consulted for a credential path.
+
 Run with any Python 3.10+ (stdlib-only):
     python3 -m unittest tests.test_remote_execution
 """
@@ -29,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import inspect
 import json
 import os
 import sys
@@ -62,6 +71,13 @@ def _load_sibling(module_name: str, filename: str):
 LEDGER = _load_sibling("remote_execution_ledger", "ledger.py")
 ADAPTER = _load_sibling("remote_execution_adapter", "adapter.py")
 PACKER = _load_sibling("remote_execution_packer", "packer.py")
+
+# Loaded AFTER adapter.py above, for the same sys.modules-reuse reason
+# documented next to PACKER's own load above: `credentials.py`'s own
+# `ADAPTER.CredentialHandle` has to be the exact same class every other
+# module in this chain already loaded, not a second, separately exec'd
+# copy of the same name.
+CREDENTIALS = _load_sibling("remote_execution_credentials", "credentials.py")
 
 
 def _load_source_digest() -> Callable[[Path, str], str]:
@@ -583,6 +599,35 @@ def cmd_reconcile(
     }
 
 
+def _construct_adapter(
+    adapter_cls: type["ADAPTER.Adapter"],
+    credentials_provider: Callable[[str], "ADAPTER.CredentialHandle"],
+) -> "ADAPTER.Adapter":
+    """Construct a registered adapter, handing it a credential provider only
+    when its own constructor is written to accept one.
+
+    The `Adapter` ABC constrains exactly six operations and nothing about
+    `__init__` — a second adapter genuinely may take no arguments at all
+    (this skill's own test doubles do exactly that), and that has to keep
+    working, unmodified, for the seam's own "zero ledger/packer changes"
+    guarantee to mean anything at the CLI's own construction site too.
+    Introspecting the signature here, rather than trying `credentials=` and
+    falling back on a bare `TypeError`, is what keeps a GENUINE defect
+    inside a compliant adapter's own `__init__` from being swallowed as
+    "this adapter must not want credentials".
+    """
+    try:
+        parameters = inspect.signature(adapter_cls).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    accepts_credentials = "credentials" in parameters or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+    )
+    if accepts_credentials:
+        return adapter_cls(credentials=credentials_provider)
+    return adapter_cls()
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="remote_cli",
@@ -602,6 +647,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="the name a concrete adapter was registered under via adapter.register()",
     )
     submit.add_argument("--requested", type=int, default=1)
+    submit.add_argument(
+        "--credential-dir", type=Path, default=None,
+        help="override: use this directory instead of lazily materializing one by worker id",
+    )
 
     status = subparsers.add_parser(
         "status", help="report the fold for one product's ledger; resolves nothing"
@@ -618,6 +667,10 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         help="the name a concrete adapter was registered under via adapter.register()",
     )
+    poll.add_argument(
+        "--credential-dir", type=Path, default=None,
+        help="override: use this directory instead of lazily materializing one by worker id",
+    )
 
     fetch = subparsers.add_parser(
         "fetch",
@@ -631,6 +684,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--backend",
         required=True,
         help="the name a concrete adapter was registered under via adapter.register()",
+    )
+    fetch.add_argument(
+        "--credential-dir", type=Path, default=None,
+        help="override: use this directory instead of lazily materializing one by worker id",
     )
 
     reconcile = subparsers.add_parser(
@@ -650,6 +707,10 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="human-invoked only: append errored(reason=not-found-at-service) for each orphanLocal id",
     )
+    reconcile.add_argument(
+        "--credential-dir", type=Path, default=None,
+        help="override: use this directory instead of lazily materializing one by worker id",
+    )
 
     return parser
 
@@ -664,13 +725,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
+        provider = CREDENTIALS.provider(override=args.credential_dir)
         try:
             result = cmd_submit(
                 target=args.target,
                 entrypoint=args.entrypoint,
                 worker=args.worker,
                 requested=args.requested,
-                adapter=adapter_cls(),
+                adapter=_construct_adapter(adapter_cls, provider),
             )
         except (RemoteCLIError, PACKER.PackerError, LEDGER.LedgerError,
                 ADAPTER.AdapterError) as exc:
@@ -707,9 +769,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
+        provider = CREDENTIALS.provider(override=args.credential_dir)
         try:
             status_result = cmd_poll(
-                submission_id=args.submission_id, adapter=adapter_cls()
+                submission_id=args.submission_id, adapter=_construct_adapter(adapter_cls, provider)
             )
         except (RemoteCLIError, ADAPTER.AdapterError) as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -730,13 +793,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
+        provider = CREDENTIALS.provider(override=args.credential_dir)
         try:
             result = cmd_fetch(
                 target=args.target,
                 entrypoint=args.entrypoint,
                 submission_id=args.submission_id,
                 dest=args.dest,
-                adapter=adapter_cls(),
+                adapter=_construct_adapter(adapter_cls, provider),
             )
         except (RemoteCLIError, LEDGER.LedgerError, ADAPTER.AdapterError) as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -762,12 +826,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
+        provider = CREDENTIALS.provider(override=args.credential_dir)
         try:
             result = cmd_reconcile(
                 target=args.target,
                 entrypoint=args.entrypoint,
                 worker=args.worker,
-                adapter=adapter_cls(),
+                adapter=_construct_adapter(adapter_cls, provider),
                 resolve=args.resolve,
             )
         except (RemoteCLIError, LEDGER.LedgerError, ADAPTER.AdapterError) as exc:
