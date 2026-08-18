@@ -24,18 +24,21 @@ what this file's own dependency graph can even reach:
    script; it only runs it, exactly the way a human at a terminal would.
 
 2. Credentials move BY PATH, never by value. `CredentialHandle` below is
-   the only credential type this adapter accepts, and it carries a
-   directory, not a secret. Its single sink, in the whole file, is
-   `env["KAGGLE_CONFIG_DIR"] = str(handle.config_dir)` on exactly one
-   subprocess call. Nothing in this module ever opens, reads or parses
-   whatever file lives inside that directory — the `kaggle` executable
-   does that, in its own process, with its own environment, and this
-   module never inspects what that process printed for anything other
-   than a translated status word and an exit code.
+   the only credential type this adapter accepts, and it carries a path,
+   not a secret. Its single sink, in the whole file, is
+   `env["KAGGLE_API_TOKEN"] = str(handle.token_path)` on exactly one
+   subprocess call. `KAGGLE_API_TOKEN` is Kaggle's own client-side
+   environment variable for a token FILE path — checked with
+   `Path(...).exists()` before ever being treated as a literal value, which
+   is what keeps this a path-only sink rather than a second value-shaped
+   hole. Nothing in this module ever opens, reads or parses that file — the
+   `kaggle` executable does that, in its own process, with its own
+   environment, and this module never inspects what that process printed
+   for anything other than a translated status word and an exit code.
 
 Every subprocess call here is `shell=False` with a list argv, an explicit
 timeout, and an env built from an allowlist (`PATH` plus, when a credential
-is involved, `KAGGLE_CONFIG_DIR` — nothing else is ever forwarded from this
+is involved, `KAGGLE_API_TOKEN` — nothing else is ever forwarded from this
 process's own environment). A non-zero exit or an expired timeout is a
 refusal: this module raises `KaggleAdapterError` rather than fabricate a
 `Status`, a `Submission` or a `Fetched` result the service never actually
@@ -204,7 +207,7 @@ def assemble_metadata(run_config: Mapping[str, object]) -> tuple[str, str]:
 # because it carries no service-specific behavior at all — moving it there
 # is what lets a second backend adapter reuse the same shape without
 # redefining it; only the environment variable it is eventually handed to
-# (`KAGGLE_CONFIG_DIR`, below) is this service's own.
+# (`KAGGLE_API_TOKEN`, below) is this service's own.
 CredentialHandle = ADAPTER.CredentialHandle
 
 
@@ -295,10 +298,18 @@ class KaggleAdapter(ADAPTER.Adapter):
         never this process's own `os.environ` forwarded wholesale, which
         would leak every other variable this process happens to be
         carrying, credential-shaped or not.
+
+        `KAGGLE_API_TOKEN` is Kaggle's own client-side variable for a token
+        FILE path: `kagglesdk`'s environment resolution checks
+        `Path(KAGGLE_API_TOKEN).exists()` before treating the value as a
+        literal token, so a path here is read as a path, never as a value —
+        the same by-path-only contract `KAGGLE_CONFIG_DIR` held, on the
+        environment variable that actually authenticates the access-token
+        shape kaggle-accounts keeps for each worker.
         """
         env = {"PATH": os.environ.get("PATH", "")}
         if handle is not None:
-            env["KAGGLE_CONFIG_DIR"] = str(handle.config_dir)
+            env["KAGGLE_API_TOKEN"] = str(handle.token_path)
         return env
 
     def _run(self, argv: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:

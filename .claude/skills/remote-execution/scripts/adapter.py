@@ -145,26 +145,27 @@ class Fetched:
 class CredentialHandle:
     """One worker's credential, carried by PATH only — never by value.
 
-    `config_dir` names a directory a concrete adapter's own environment
-    plumbing points a service's client at; this dataclass holds no opinion
-    about which environment variable that is, because the variable's name
-    is the one fact about a credential that IS service-specific (the
-    concrete adapter that reads `config_dir` is the one place that names
-    it). Everything else about a credential handle is common to every
-    backend this seam could ever hold, which is why this shape lives here
-    instead of being redefined inside each adapter module.
+    `token_path` names a filesystem path a concrete adapter's own
+    environment plumbing points a service's client at; this dataclass holds
+    no opinion about which environment variable that is, or whether the
+    path names a file or a directory, because both the variable's name and
+    the shape it expects are facts about a credential that ARE
+    service-specific (the concrete adapter that reads `token_path` is the
+    one place that names either). Everything else about a credential handle
+    is common to every backend this seam could ever hold, which is why this
+    shape lives here instead of being redefined inside each adapter module.
 
     It exposes no read method. The only thing anywhere in this seam's
-    dependency graph that ever does anything with `config_dir` beyond
+    dependency graph that ever does anything with `token_path` beyond
     carrying it is handing its string form to a child process's own
-    environment — never opening it, never parsing whatever file lives
-    inside it. A credential VALUE therefore has no route into this
-    process's memory at all: nothing between where a handle is produced
-    and where it is consumed is even capable of reading one.
+    environment — never opening it, never parsing whatever file lives at
+    it. A credential VALUE therefore has no route into this process's
+    memory at all: nothing between where a handle is produced and where it
+    is consumed is even capable of reading one.
     """
 
     worker_id: str
-    config_dir: Path
+    token_path: Path
 
 
 class AdapterError(Exception):

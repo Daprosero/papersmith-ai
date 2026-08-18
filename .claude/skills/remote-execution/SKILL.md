@@ -1,6 +1,6 @@
 ---
 name: remote-execution
-description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry), the packer's capacity clamp, the full `remote_cli` front door (`submit` with its path guard and `--smoke`, `status`, `poll`, `fetch` with quarantine, `reconcile`, `generate-job`, `smoke record`, `readiness`), and one concrete backend: `adapters/kaggle.py` — the ONLY file in this entire skill allowed to name a service. It shells out to the `kaggle` CLI (never imports the `kaggle` package), derives worker identity solely from kaggle-accounts' own sanctioned `list --json` command, and accepts credentials only as a `CredentialHandle(worker_id, config_dir)` carrying a path, never a value — its single sink is `KAGGLE_CONFIG_DIR` on a child process's environment. A rehearsal run (`smoke.jsonl`, a distinct file from the main ledger) proves readiness from evidence-completeness, never a human assertion, and never a clock. Stdlib-only, no venv."
+description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry), the packer's capacity clamp, the full `remote_cli` front door (`submit` with its path guard and `--smoke`, `status`, `poll`, `fetch` with quarantine, `reconcile`, `generate-job`, `smoke record`, `readiness`), and one concrete backend: `adapters/kaggle.py` — the ONLY file in this entire skill allowed to name a service. It shells out to the `kaggle` CLI (never imports the `kaggle` package), derives worker identity solely from kaggle-accounts' own sanctioned `list --json` command, and accepts credentials only as a `CredentialHandle(worker_id, token_path)` carrying a path, never a value — its single sink is `KAGGLE_API_TOKEN` on a child process's environment. A rehearsal run (`smoke.jsonl`, a distinct file from the main ledger) proves readiness from evidence-completeness, never a human assertion, and never a clock. Stdlib-only, no venv."
 ---
 
 # Remote Execution
@@ -148,15 +148,21 @@ Three modules exist so far, each service-blind and stdlib-only:
   (`KAGGLE_WORKER_CAPACITY`, a module constant, explicitly not a universal
   one). `submit`/`poll`/`fetch`/`cancel`/`list_active` shell out to the
   `kaggle` CLI — `shell=False`, list argv, an env built from an allowlist
-  (`PATH` plus, when a credential is involved, `KAGGLE_CONFIG_DIR`), and an
+  (`PATH` plus, when a credential is involved, `KAGGLE_API_TOKEN`), and an
   explicit timeout on every call; a non-zero exit or an expired timeout is a
   refusal (`KaggleAdapterError`), never a fabricated `Status`, `Submission`
   or `Fetched`. `poll()` translates Kaggle's own raw status text into the
   seam's five-value vocabulary and never passes it through; the raw text
-  goes in `Status.detail` only. `CredentialHandle(worker_id, config_dir)` is
+  goes in `Status.detail` only. `CredentialHandle(worker_id, token_path)` is
   the only credential type this adapter accepts, exposes no read method, and
-  has exactly one sink in the whole file: `env["KAGGLE_CONFIG_DIR"] =
-  str(handle.config_dir)`. `REQUESTED_ACCELERATOR = "NvidiaTeslaT4"` is
+  has exactly one sink in the whole file: `env["KAGGLE_API_TOKEN"] =
+  str(handle.token_path)` — a token FILE path, not a config directory:
+  `kagglesdk` reads `KAGGLE_API_TOKEN` as a path, checks it exists, and
+  authenticates the token found there through Kaggle's modern (non-legacy)
+  path, which is what lets an access token (`KGAT...`) this skill's
+  credential store issues actually authenticate; the legacy
+  `KAGGLE_CONFIG_DIR`/`kaggle.json` shape routes that same token through a
+  Basic-auth path it was never meant for. `REQUESTED_ACCELERATOR = "NvidiaTeslaT4"` is
   declared here, and here alone in this whole skill — a request, not a
   receipt; what a submission actually ran on is a fact the service states
   at poll/fetch time, never assumed from this constant. `assemble_metadata`

@@ -34,10 +34,11 @@ secret ever crossing into its context. Whatever launches the runs reads the
 store directly.
 
 A fourth command, ``materialize``, exists for code rather than a human at a
-terminal: it writes one worker's stored credential to a config directory,
-atomically, and prints back where — never what. Nothing about it opens a
-question; it is the one non-interactive way a credential this store already
-holds reaches a file another process's own client can point itself at.
+terminal: it writes one worker's stored credential to a plain-text token
+file, atomically, and prints back where — never what. Nothing about it opens
+a question; it is the one non-interactive way a credential this store
+already holds reaches a file another process's own client can point itself
+at.
 
 Usage:
     python accounts_cli.py validate                 # re-check the store, take in the inbox
@@ -687,13 +688,23 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
 
 def cmd_materialize(args: argparse.Namespace) -> int:
-    """Write one worker's live credential to a config directory, atomically.
+    """Write one worker's live credential to a plain-text token file, atomically.
 
     The one command in this file that ever lets a stored credential leave
     this process — and even here, only as a FILE, handed to a destination
     that has already proven it is safe to hold one. Everything this prints
     is a destination, never a value: a caller learns WHERE a credential
     landed, not what it says.
+
+    The file holds nothing but the token itself — no `username` field, no
+    JSON wrapper. Kaggle's own client reads `KAGGLE_API_TOKEN` as a path,
+    treats whatever text is at that path (stripped) as the token, and
+    authenticates it through its modern token path. The legacy `kaggle.json`
+    container (`{"username": ..., "key": ...}`) routes an access token
+    through a Basic-auth path a bearer token was never meant for, and Kaggle
+    answers that with 401 regardless of how valid the token is — so this
+    command emits the shape Kaggle's client actually expects for the token
+    format this store holds.
 
     Non-interactive by construction: there is no prompt, no confirmation,
     no branch that ever asks a human anything. The "one interactive
@@ -703,10 +714,10 @@ def cmd_materialize(args: argparse.Namespace) -> int:
     this is a third.
 
     Reuses `save_store()`'s own atomic shape exactly, because a half-written
-    config file would be exactly the failure that shape already prevents
+    token file would be exactly the failure that shape already prevents
     for the store itself: `mkstemp` inside the destination, `os.fchmod` to
     owner-only BEFORE any byte is written, then `os.replace` — so a reader
-    either finds the previous config or the new one, never a partial one.
+    either finds the previous file or the new one, never a partial one.
     """
     store = load_store()
     account = next(
@@ -720,7 +731,7 @@ def cmd_materialize(args: argparse.Namespace) -> int:
         if args.into
         else STORE_DIR / "workers" / args.worker
     )
-    config_path = dest_dir / "kaggle.json"
+    token_path = dest_dir / "token"
     # The same precondition the store itself enforces before it ever writes
     # a token to disk, checked again here because THIS destination has
     # never been proven safe before — a caller passing `--into` names a
@@ -730,7 +741,7 @@ def cmd_materialize(args: argparse.Namespace) -> int:
     # `git check-ignore` matches a pattern against a path regardless of
     # whether anything exists there yet, so this ordering costs the
     # default (store-relative) destination nothing.
-    assert_ignored(config_path)
+    assert_ignored(token_path)
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     fd, tmp_name = tempfile.mkstemp(dir=str(dest_dir), prefix=".kaggle-", suffix=".tmp")
@@ -738,18 +749,18 @@ def cmd_materialize(args: argparse.Namespace) -> int:
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({"username": account["username"], "key": account["key"]}, fh)
+            fh.write(account["key"])
             fh.write("\n")
-        os.replace(tmp, config_path)
+        os.replace(tmp, token_path)
     except OSError as exc:
         tmp.unlink(missing_ok=True)
-        raise StoreError(f"{config_path} could not be written: {exc.strerror}")
+        raise StoreError(f"{token_path} could not be written: {exc.strerror}")
     dest_dir.chmod(0o700)
 
     if args.json:
-        print(json.dumps({"worker": args.worker, "configDir": str(dest_dir)}))
+        print(json.dumps({"worker": args.worker, "tokenPath": str(token_path)}))
     else:
-        print(str(dest_dir))
+        print(str(token_path))
     return 0
 
 

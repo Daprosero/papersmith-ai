@@ -16,7 +16,7 @@ says not to, but because nothing this module's own dependency graph is
 even capable of reading one. The value is read by exactly two processes in
 the whole system, neither of them this one: the materialize command's own
 child process, and whatever service client a concrete adapter eventually
-hands the returned directory to.
+hands the returned path to.
 
 Run with any Python 3.10+ (stdlib-only):
     python3 -m unittest tests.test_remote_execution
@@ -129,12 +129,12 @@ def materialize(
             f"materialize for worker {worker_id!r} did not print JSON: {exc}"
         ) from exc
 
-    config_dir = payload.get("configDir")
-    if not config_dir:
+    token_path = payload.get("tokenPath")
+    if not token_path:
         raise CredentialsError(
-            f"materialize for worker {worker_id!r} printed no 'configDir'"
+            f"materialize for worker {worker_id!r} printed no 'tokenPath'"
         )
-    return ADAPTER.CredentialHandle(worker_id=worker_id, config_dir=Path(config_dir))
+    return ADAPTER.CredentialHandle(worker_id=worker_id, token_path=Path(token_path))
 
 
 def provider(
@@ -144,7 +144,7 @@ def provider(
 ) -> Callable[[str], "ADAPTER.CredentialHandle"]:
     """Build the callable an adapter's constructor accepts as `credentials`.
 
-    `override`, when given, answers every worker with the SAME directory —
+    `override`, when given, answers every worker with the SAME path —
     the shape a test or an already-materialized run needs, and the one
     case this function never shells out for at all. Otherwise the callable
     it returns materializes lazily, by worker id, the FIRST time an
@@ -153,15 +153,15 @@ def provider(
     the adapter is permitted to split — so nothing above the seam can
     build a full mapping up front for that command. Every call re-runs
     `materialize` rather than caching a handle across calls: this function
-    keeps no state of its own, and a directory held past a credential's own
+    keeps no state of its own, and a path held past a credential's own
     rotation is a worse failure than one extra subprocess call per adapter
     method.
     """
     if override is not None:
-        config_dir = Path(override)
+        token_path = Path(override)
 
         def _override(worker_id: str) -> "ADAPTER.CredentialHandle":
-            return ADAPTER.CredentialHandle(worker_id=worker_id, config_dir=config_dir)
+            return ADAPTER.CredentialHandle(worker_id=worker_id, token_path=token_path)
 
         return _override
 

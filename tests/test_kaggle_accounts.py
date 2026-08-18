@@ -403,6 +403,11 @@ class MaterializeCommandTests(unittest.TestCase):
     value. Reuses `save_store()`'s exact atomic shape at a NEW destination,
     so what these tests are really asking is whether that reuse actually
     holds somewhere the store's own writes never touch. C1.
+
+    The file written is a plain-text token — no JSON wrapper, no
+    `username` field — because that is the shape Kaggle's own client reads
+    off `KAGGLE_API_TOKEN`: a path, whose contents (stripped) are the
+    token itself.
     """
 
     def _materialize(
@@ -433,12 +438,16 @@ class MaterializeCommandTests(unittest.TestCase):
             code, out = self._materialize("w1", dest)
 
             self.assertEqual(code, 0)
-            config_path = dest / "kaggle.json"
-            self.assertTrue(config_path.exists())
-            self.assertEqual(stat.S_IMODE(config_path.stat().st_mode), 0o600)
+            token_path = dest / "token"
+            self.assertTrue(token_path.exists())
+            self.assertEqual(stat.S_IMODE(token_path.stat().st_mode), 0o600)
+            # Plain text, nothing else: no JSON wrapper, no `username`
+            # field — this is the exact shape Kaggle's client reads a
+            # token's contents as (stripped).
+            self.assertEqual(token_path.read_text(encoding="utf-8").strip(), "K-not-a-real-key")
 
             payload = json.loads(out)
-            self.assertEqual(payload, {"worker": "w1", "configDir": str(dest)})
+            self.assertEqual(payload, {"worker": "w1", "tokenPath": str(token_path)})
             # A destination is printed, never a value — the whole point of
             # this command.
             self.assertNotIn("K-not-a-real-key", out)

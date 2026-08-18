@@ -27,7 +27,7 @@ credential PROVIDER, never a value and never a pre-built mapping this
 module would have to assemble itself: `credentials.provider()` returns a
 callable an adapter calls lazily, by worker id, the first time it actually
 needs one. `--credential-dir` is an override only, for tests and
-already-materialized directories — the default is lazy materialization,
+already-materialized credentials — the default is lazy materialization,
 and no target configuration file is ever consulted for a credential path.
 
 Run with any Python 3.10+ (stdlib-only):
