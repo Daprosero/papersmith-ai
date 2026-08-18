@@ -243,12 +243,41 @@ executable — no test in this suite reaches the network or a real account).
     same family as `jobfolder.py`'s, `adapter.py`'s, `remote_cli.py`'s
     and `credentials.py`'s — eight in total across this skill now.
 
-  **Not yet in this module**: the AST-based, transitive
-  `resolve_clone_paths()` (declared-vs-computed clone paths, refusing
-  `computedNotDeclared` and uncertain imports, `--accept-unresolved`) —
-  `generate_job()` still accepts `clonePaths` exactly as declared, with no
-  cross-check against what the target's own source actually imports. A
-  later slice wires that in.
+  `resolve_clone_paths(target, entry_modules, declared_clone_paths)` now
+  holds real content, wired into `generate_job()`. It reuses
+  `implementation_cli.py`'s `prior_work_state()` idiom exactly for the walk
+  itself (`ast.parse` + `ast.walk` over `ast.Import`/`ast.ImportFrom`,
+  inspecting only `node.module`/`alias.name`, with no relative-import
+  resolution and no per-name submodule disambiguation) — walked
+  transitively, over every module the declared entry modules (`run.module`,
+  plus `run.smoke.module` when present) reach, instead of over one fixed
+  file set. The granularity rule: a resolved import maps to its top-level
+  package directory under `src/`, never to a single file (`src/A/B/C.py`
+  => clone path `src/A`; a true top-level module `src/A.py` => clone path
+  `src/A.py`). An import that is not this repository's own code (its
+  top-level segment names nothing under `<target>/src` at all) is filtered
+  and never becomes a clone path or an uncertainty.
+
+  It returns `{declared, computed, computedNotDeclared, unresolved}`.
+  `computedNotDeclared` non-empty always refuses generation, naming every
+  missing path — never a warning, since this is exactly the sibling-import
+  bug that broke a real run. `unresolved` names every uncertain case: a
+  non-literal `importlib.import_module(...)` call, any `__import__(...)`
+  call, a `sys.path` mutation, an unparsable file, or an import that looks
+  like this repository's own code but does not resolve to a file on disk —
+  a non-empty result also refuses generation unless `--accept-unresolved`
+  is passed, which writes the uncertainty verbatim into `run-config.json`'s
+  `unresolvedImports` instead of guessing, converting a silence into a
+  recorded, reportable decision. `--accept-unresolved` never bypasses a
+  `computedNotDeclared` refusal — only `unresolved`.
+
+  `validate_clone_paths()` gained an optional `target` argument: when
+  given, each clone path is also resolved against it and refused if that
+  resolution escapes `target` (the symlink-escape case a purely textual
+  check cannot see). This is the SAME validator every caller uses —
+  `build_run_config()` at generation time (structural only), and
+  `resolve_clone_paths()` again once `target` is known — never a second,
+  parallel validator for the symlink case.
 
   Open question this slice inherited from `cmd_submit`'s own `--product`
   migration (T6b) and did not change: `status`, `fetch` and `reconcile`

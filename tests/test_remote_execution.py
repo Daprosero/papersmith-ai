@@ -2974,12 +2974,14 @@ class JobFolderTests(unittest.TestCase):
     `generate-job` CLI command, `run-config.json`'s schema, and atomic,
     refusal-guarded writes into a foreign checkout.
 
-    The two runner assets' REAL content (the eight-responsibility bootstrap
-    cell, the invoke cell) and the AST-based, transitive
-    `resolve_clone_paths()` are a later slice — every test here either
+    The two runner assets' own real content (the eight-responsibility
+    bootstrap cell, the invoke cell) is exercised directly in
+    `RunnerBootstrapTests`/`RunnerInvokeTests` below; every test here either
     supplies its own fixture asset files or exercises `jobfolder.py`'s
     default asset paths only to prove they resolve to *a* file, never that
-    file's real behavior.
+    file's real behavior. `resolve_clone_paths()`'s own dedicated coverage
+    lives in `ResolveClonePathsTests`; the tests here only cover its wiring
+    into `generate_job()`.
 
     Every test in this class has a reachable red: `jobfolder.py` did not
     exist before this task, so the module import above would fail and
@@ -3002,8 +3004,22 @@ class JobFolderTests(unittest.TestCase):
         invoke.write_text("# fixture invoke cell\nprint('cell-1')\n", encoding="utf-8")
         return bootstrap, invoke
 
+    def _ensure_default_source_tree(self, target: Path) -> None:
+        """`_generate()`'s default `clone_paths=["src/MIL_CREDA_Benchmark"]`
+        and `run_module="MIL_CREDA_Benchmark.harness"` now have to resolve
+        to a real file on disk under `target`, since `generate_job()` runs
+        `resolve_clone_paths()`. A no-further-imports module is enough:
+        exactly what makes the declared clone path match the computed one
+        with nothing left over.
+        """
+        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        if not harness.exists():
+            harness.parent.mkdir(parents=True, exist_ok=True)
+            harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
+
     def _generate(self, tmp: str, target: Path, *, assets=None, **overrides) -> Path:
         bootstrap, invoke = assets or self._fixture_assets(tmp)
+        self._ensure_default_source_tree(target)
         kwargs = dict(
             target=target,
             service=self.FAKE_SERVICE,
@@ -3232,6 +3248,7 @@ class JobFolderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
             target.mkdir()
+            self._ensure_default_source_tree(target)
             bootstrap, invoke = self._fixture_assets(tmp)
 
             with unittest.mock.patch.object(
@@ -3267,6 +3284,7 @@ class JobFolderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
             target.mkdir()
+            self._ensure_default_source_tree(target)
 
             exit_code = REMOTE_CLI.main([
                 "generate-job",
@@ -3289,6 +3307,248 @@ class JobFolderTests(unittest.TestCase):
                 "".join(notebook["cells"][0]["source"]),
                 JOBFOLDER.DEFAULT_BOOTSTRAP_ASSET.read_text(encoding="utf-8"),
             )
+
+    def test_generate_job_refuses_when_a_transitive_import_is_not_declared(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            self._ensure_default_source_tree(target)
+            (target / "src" / "MIL_CREDA_Benchmark" / "harness.py").write_text(
+                "import Extra.helper\n\n\ndef campaign(*args, **kwargs):\n    pass\n",
+                encoding="utf-8",
+            )
+            extra = target / "src" / "Extra"
+            extra.mkdir()
+            (extra / "helper.py").write_text("value = 1\n", encoding="utf-8")
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                self._generate(tmp, target)
+
+            self.assertIn("src/Extra", str(ctx.exception))
+
+    def test_generate_job_refuses_uncertain_imports_without_accept_unresolved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            self._ensure_default_source_tree(target)
+            (target / "src" / "MIL_CREDA_Benchmark" / "harness.py").write_text(
+                "import sys\nsys.path.append('/tmp/extra')\n\n\n"
+                "def campaign(*args, **kwargs):\n    pass\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                self._generate(tmp, target)
+
+            self.assertIn("sys.path", str(ctx.exception))
+
+    def test_generate_job_accept_unresolved_records_the_decision_in_run_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            self._ensure_default_source_tree(target)
+            (target / "src" / "MIL_CREDA_Benchmark" / "harness.py").write_text(
+                "import sys\nsys.path.append('/tmp/extra')\n\n\n"
+                "def campaign(*args, **kwargs):\n    pass\n",
+                encoding="utf-8",
+            )
+
+            job_dir = self._generate(tmp, target, accept_unresolved=True)
+
+            run_config = json.loads((job_dir / "run-config.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(run_config["unresolvedImports"]), 1)
+            self.assertIn("sys.path", run_config["unresolvedImports"][0])
+
+    def test_generate_job_cli_accept_unresolved_flag_reaches_run_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            self._ensure_default_source_tree(target)
+            (target / "src" / "MIL_CREDA_Benchmark" / "harness.py").write_text(
+                "mod = __import__('MIL_CREDA_Benchmark.harness')\n\n\n"
+                "def campaign(*args, **kwargs):\n    pass\n",
+                encoding="utf-8",
+            )
+            bootstrap, invoke = self._fixture_assets(tmp)
+
+            with unittest.mock.patch.object(
+                JOBFOLDER, "DEFAULT_BOOTSTRAP_ASSET", bootstrap
+            ), unittest.mock.patch.object(JOBFOLDER, "DEFAULT_INVOKE_ASSET", invoke):
+                exit_code = REMOTE_CLI.main([
+                    "generate-job",
+                    "--target", str(target),
+                    "--service", self.FAKE_SERVICE,
+                    "--job-name", "cli-accept",
+                    "--product", "MIL-CREDA",
+                    "--commit", "a" * 40,
+                    "--repo-url", "https://example.invalid/repo.git",
+                    "--repo-ref", "main",
+                    "--clone-path", "src/MIL_CREDA_Benchmark",
+                    "--run-module", "MIL_CREDA_Benchmark.harness",
+                    "--run-function", "campaign",
+                    "--accept-unresolved",
+                ])
+
+            self.assertEqual(exit_code, 0)
+            job_dir = target / "tools" / self.FAKE_SERVICE / "cli-accept"
+            run_config = json.loads((job_dir / "run-config.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(run_config["unresolvedImports"]), 1)
+            self.assertIn("__import__", run_config["unresolvedImports"][0])
+
+
+class ResolveClonePathsTests(unittest.TestCase):
+    """`jobfolder.resolve_clone_paths()` — the AST-based, transitive
+    dependency check (design #744 section 3). Reuses
+    `implementation_cli.py`'s `prior_work_state()` idiom (`ast.parse` +
+    `ast.walk` over `ast.Import`/`ast.ImportFrom`, inspecting only
+    `node.module`/`alias.name`, with no relative-import resolution and no
+    per-name submodule disambiguation) verbatim, walked transitively over
+    every module an entry module reaches instead of one fixed file set.
+
+    Every test in this class has a reachable red: before this task,
+    `jobfolder` exposed no `resolve_clone_paths` attribute at all, so every
+    test here fails with `AttributeError` on the very first call.
+    """
+
+    def _write(self, root: Path, relative: str, text: str) -> Path:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_transitive_import_is_computed_and_external_imports_are_filtered(self) -> None:
+        """A directly-imported local package, one reached transitively
+        through it, and a stdlib import alongside both — only the two
+        local top-level directories become clone paths.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(
+                target, "src/A/entry.py",
+                "import os\nimport B.helper\n\n\ndef run():\n    return B.helper.value\n",
+            )
+            self._write(target, "src/B/helper.py", "value = 1\n")
+
+            result = JOBFOLDER.resolve_clone_paths(target, ["A.entry"], ["src/A", "src/B"])
+
+            self.assertEqual(result["computed"], ["src/A", "src/B"])
+            self.assertEqual(result["computedNotDeclared"], [])
+            self.assertEqual(result["unresolved"], [])
+
+    def test_computed_not_declared_is_reported_and_never_silently_added(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(target, "src/A/entry.py", "import B.helper\n")
+            self._write(target, "src/B/helper.py", "value = 1\n")
+
+            result = JOBFOLDER.resolve_clone_paths(target, ["A.entry"], ["src/A"])
+
+            self.assertEqual(result["computedNotDeclared"], ["src/B"])
+            self.assertEqual(result["declared"], ["src/A"])
+
+    def test_granularity_rule_maps_a_deep_import_to_its_top_level_package(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(target, "src/A/B/C.py", "value = 1\n")
+            self._write(target, "src/A/entry.py", "import A.B.C\n")
+
+            result = JOBFOLDER.resolve_clone_paths(target, ["A.entry"], ["src/A"])
+
+            self.assertEqual(result["computed"], ["src/A"])
+
+    def test_true_top_level_module_clone_path_is_the_file_itself(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(target, "src/single.py", "def entry():\n    pass\n")
+
+            result = JOBFOLDER.resolve_clone_paths(target, ["single"], ["src/single.py"])
+
+            self.assertEqual(result["computed"], ["src/single.py"])
+            self.assertEqual(result["computedNotDeclared"], [])
+
+    def test_entry_module_missing_on_disk_is_uncertain_not_external(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            (target / "src").mkdir()
+
+            result = JOBFOLDER.resolve_clone_paths(
+                target, ["Missing.entry"], ["src/Placeholder"]
+            )
+
+            self.assertEqual(result["computed"], [])
+            self.assertEqual(len(result["unresolved"]), 1)
+            self.assertIn("Missing.entry", result["unresolved"][0])
+
+    def test_import_resolving_to_nothing_under_an_existing_package_is_uncertain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(target, "src/A/entry.py", "import A.missing_submodule\n")
+
+            result = JOBFOLDER.resolve_clone_paths(target, ["A.entry"], ["src/A"])
+
+            self.assertEqual(len(result["unresolved"]), 1)
+            self.assertIn("A.missing_submodule", result["unresolved"][0])
+
+    def test_non_literal_import_module_call_is_uncertain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(
+                target, "src/A/entry.py",
+                "import importlib\n\nname = 'A.' + str(1)\nimportlib.import_module(name)\n",
+            )
+
+            result = JOBFOLDER.resolve_clone_paths(target, ["A.entry"], ["src/A"])
+
+            self.assertEqual(len(result["unresolved"]), 1)
+            self.assertIn("import_module", result["unresolved"][0])
+
+    def test_dunder_import_call_is_uncertain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(target, "src/A/entry.py", "mod = __import__('A.sibling')\n")
+
+            result = JOBFOLDER.resolve_clone_paths(target, ["A.entry"], ["src/A"])
+
+            self.assertEqual(len(result["unresolved"]), 1)
+            self.assertIn("__import__", result["unresolved"][0])
+
+    def test_sys_path_mutation_is_uncertain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(
+                target, "src/A/entry.py", "import sys\nsys.path.append('/tmp/extra')\n"
+            )
+
+            result = JOBFOLDER.resolve_clone_paths(target, ["A.entry"], ["src/A"])
+
+            self.assertEqual(len(result["unresolved"]), 1)
+            self.assertIn("sys.path", result["unresolved"][0])
+
+    def test_unparsable_file_is_uncertain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(target, "src/A/entry.py", "def broken(:\n    pass\n")
+
+            result = JOBFOLDER.resolve_clone_paths(target, ["A.entry"], ["src/A"])
+
+            self.assertEqual(result["computed"], ["src/A"])
+            self.assertEqual(len(result["unresolved"]), 1)
+            self.assertIn("unparsable", result["unresolved"][0])
+
+    def test_validate_clone_paths_target_argument_refuses_symlink_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target"
+            target.mkdir()
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            (target / "src").mkdir()
+            (target / "src" / "escaped").symlink_to(outside)
+
+            with self.assertRaises(JOBFOLDER.JobFolderError):
+                JOBFOLDER.validate_clone_paths(["src/escaped"], target)
+
+    def test_validate_clone_paths_without_target_argument_is_unchanged(self) -> None:
+        self.assertEqual(JOBFOLDER.validate_clone_paths(["src/A"]), ("src/A",))
 
 
 def _make_origin_repo(tmp: str, files: dict) -> tuple:

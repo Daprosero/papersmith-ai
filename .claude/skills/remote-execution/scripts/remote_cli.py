@@ -913,6 +913,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--regenerate", action="store_true",
         help="replace an existing job folder atomically instead of refusing",
     )
+    generate_job.add_argument(
+        "--accept-unresolved", action="store_true",
+        help=(
+            "record uncertain imports found by resolve_clone_paths() in "
+            "run-config.json's unresolvedImports instead of refusing; never "
+            "bypasses a computedNotDeclared refusal"
+        ),
+    )
 
     return parser
 
@@ -1071,6 +1079,7 @@ def main(argv: list[str] | None = None) -> int:
                 smoke_function=args.smoke_function,
                 smoke_kwargs=json.loads(args.smoke_kwargs) if args.smoke_kwargs else None,
                 regenerate=args.regenerate,
+                accept_unresolved=args.accept_unresolved,
             )
         except (JOBFOLDER.JobFolderError, ADAPTER.AdapterError, KeyError) as exc:
             print(f"error: {exc}", file=sys.stderr)
