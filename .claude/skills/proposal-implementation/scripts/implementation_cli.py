@@ -1906,6 +1906,8 @@ def cmd_probe(args) -> dict:
                        state.get("reduction") or {},
                        (search.get("declared") or {}).get("requiredScale") or {})},
         "unreachedModules": unfaithful,
+        # A static fact, reported and never gating: see `notebook_coupling`.
+        "coupling": coupling_state(target, name, package_name(name)),
         "nextStep": next_step,
         "wiring": proposal,
         # `probe` looks and reports; it never runs anything itself.
@@ -3256,6 +3258,221 @@ def notebook_execution(path: Path) -> dict:
             "unexecuted": unexecuted, "errors": errors, "recordedDigest": recorded}
 
 
+def _module_scope_statements(tree: ast.Module):
+    """Every statement this cell executes at its own scope, walking into
+    control-flow blocks (`if`/`for`/`while`/`with`/`try`) but never into a
+    function or class body — that opens a scope of its own and binds no name
+    a later cell could read.
+    """
+    stack: list[ast.AST] = list(tree.body)
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue  # its own name is bound above; its body opens a new scope
+        for field in ("body", "orelse", "finalbody", "handlers"):
+            stack.extend(getattr(node, field, None) or [])
+
+
+def _assigned_names(target: ast.expr) -> list[str]:
+    """Every plain name a target actually binds. `a[0] = x` and `a.b = x`
+    rebind nothing a later cell can read by name — only a bare `Name`, and the
+    names inside a tuple or list unpacking, do.
+    """
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: list[str] = []
+        for element in target.elts:
+            names.extend(_assigned_names(
+                element.value if isinstance(element, ast.Starred) else element))
+        return names
+    return []
+
+
+def _cell_bindings(statement: ast.AST) -> list[tuple[str, ast.expr | None]]:
+    """Every name one statement binds, paired with the expression whose
+    reconstructibility decides whether the binding could be redone from the
+    notebook's own text. `None` marks a binding with no expression to weigh —
+    a definition, an import, an annotation with no value — which needs
+    nothing executed and is never coupled.
+    """
+    if isinstance(statement, ast.Assign):
+        value = statement.value
+        return [(n, value) for target in statement.targets
+                for n in _assigned_names(target)]
+    if isinstance(statement, (ast.AnnAssign, ast.AugAssign)):
+        return [(n, statement.value) for n in _assigned_names(statement.target)]
+    if isinstance(statement, ast.For):
+        return [(n, statement.iter) for n in _assigned_names(statement.target)]
+    if isinstance(statement, ast.With):
+        return [(n, item.context_expr) for item in statement.items
+                if item.optional_vars is not None
+                for n in _assigned_names(item.optional_vars)]
+    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return [(statement.name, None)]
+    if isinstance(statement, ast.Import):
+        return [(a.asname or a.name.split(".")[0], None) for a in statement.names]
+    if isinstance(statement, ast.ImportFrom):
+        return [(a.asname or a.name, None) for a in statement.names]
+    return []
+
+
+def _resolved_call_name(call: ast.Call, aliases: dict[str, str]) -> str | None:
+    """The call's `module.function` name, only when the receiver genuinely
+    names an imported module — never an attribute of an arbitrary instance,
+    which the vocabulary could not have named in the first place.
+    """
+    func = call.func
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        origin = aliases.get(func.value.id)
+        return f"{origin.rsplit('.', 1)[-1]}.{func.attr}" if origin else None
+    if isinstance(func, ast.Name):
+        return aliases.get(func.id)
+    return None
+
+
+def _is_literal(node: ast.expr) -> bool:
+    """Whether this expression is its own reconstruction: nothing runs to
+    produce it, the notebook's own text already is it."""
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        return _is_literal(node.operand)
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return all(_is_literal(e) for e in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(k is not None and _is_literal(k) for k in node.keys) \
+            and all(_is_literal(v) for v in node.values)
+    return False
+
+
+def _reconstructible_call(call: ast.Call) -> bool:
+    """A call built entirely from literals is a constructor, not a
+    dependency: retyping the line reproduces it exactly, whatever it is
+    named — the whitelist is by shape, never by a list of blessed names.
+    """
+    return all(_is_literal(a) for a in call.args) \
+        and all(_is_literal(kw.value) for kw in call.keywords)
+
+
+def _reconstructible(expr: ast.expr | None, aliases: dict[str, str],
+                      vocabulary: set[str]) -> bool:
+    """Whether this binding could be redone without executing anything the
+    report itself does not already name — the false-positive guard that is
+    the whole point of the check (design #744 section 8, step 5)."""
+    if expr is None:
+        return True
+    for node in ast.walk(expr):
+        if isinstance(node, ast.Call) \
+                and _resolved_call_name(node, aliases) not in vocabulary \
+                and not _reconstructible_call(node):
+            return False
+    return True
+
+
+def _is_reporting_cell(tree: ast.Module, aliases: dict[str, str], vocabulary: set[str],
+                       record_name: str | None) -> bool:
+    """Whether this cell calls a declared entry or writes the declared
+    record — the two shapes design #744 section 8, step 2 names as
+    reporting."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and _resolved_call_name(node, aliases) in vocabulary:
+            return True
+    if not record_name:
+        return False
+    literal_present = any(
+        isinstance(node, ast.Constant) and isinstance(node.value, str)
+        and record_name in node.value
+        for node in ast.walk(tree))
+    return literal_present and any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr in ("write_text", "write_bytes", "write", "dump")
+        for node in ast.walk(tree))
+
+
+def notebook_coupling(path: Path, contract: dict) -> dict:
+    """A reporting cell reading a name a non-reporting cell could not have
+    reconstructed without running a call the report itself never named.
+
+    Static, and it never gates — nothing here changes an exit status, and no
+    caller may make it do so. The five steps of design #744 section 8:
+
+    1. The vocabulary is `report_contract()`'s own `renderers`, `conclusions`
+       and `figures`, plus its `record` path.
+    2. A cell is *reporting* iff it calls a declared entry — resolved through
+       `_module_aliases`, so a call counts only when its receiver genuinely
+       names an imported module — or writes the declared record.
+    3. Every binding in the notebook is indexed by name, in cell order.
+    4. Each reporting cell's free reads are resolved to their latest prior
+       binding.
+    5. A read is coupled iff that binding sits in a non-reporting cell whose
+       expression contains a call outside the vocabulary that is not a
+       literal constructor — the one shape that costs a re-run: a binding
+       that cannot be rebuilt without executing something the report never
+       declared.
+    """
+    vocabulary = (set(contract.get("renderers") or [])
+                  | set(contract.get("conclusions") or [])
+                  | set(contract.get("figures") or []))
+    record_name = contract.get("record") or "latent.json"
+
+    code_cells = [(index, cell) for index, cell in enumerate(_notebook_cells(path))
+                  if isinstance(cell, dict) and cell.get("cell_type") == "code"]
+    trees: dict[int, ast.Module] = {}
+    for index, cell in code_cells:
+        try:
+            trees[index] = ast.parse(_source_of(cell))
+        except (SyntaxError, ValueError):
+            continue
+
+    aliases: dict[str, str] = {}
+    for tree in trees.values():
+        aliases.update(_module_aliases(tree))
+
+    reporting = {index: _is_reporting_cell(tree, aliases, vocabulary, record_name)
+                 for index, tree in trees.items()}
+
+    # name -> every (cell index, binding expression) that name was bound at,
+    # in cell order — step 3.
+    bindings: dict[str, list[tuple[int, ast.expr | None]]] = {}
+    bound_in_cell: dict[int, set[str]] = {}
+    for index, tree in trees.items():
+        names_here: set[str] = set()
+        for statement in _module_scope_statements(tree):
+            for name, expr in _cell_bindings(statement):
+                bindings.setdefault(name, []).append((index, expr))
+                names_here.add(name)
+        bound_in_cell[index] = names_here
+
+    seen: set[tuple[str, int, int]] = set()
+    couplings: list[dict] = []
+    for index, tree in trees.items():
+        if not reporting.get(index):
+            continue
+        own_names = bound_in_cell.get(index, set())
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)):
+                continue
+            if node.id in own_names:
+                continue  # bound within this same cell — step 4
+            prior = [(i, expr) for i, expr in bindings.get(node.id, []) if i < index]
+            if not prior:
+                continue
+            bound_in, expr = max(prior, key=lambda pair: pair[0])
+            if reporting.get(bound_in):
+                continue  # the false-positive guard only concerns a setup cell
+            if _reconstructible(expr, aliases, vocabulary):
+                continue
+            key = (node.id, bound_in, index)
+            if key in seen:
+                continue
+            seen.add(key)
+            couplings.append({"name": node.id, "boundIn": bound_in, "readIn": index})
+
+    return {"coupled": bool(couplings), "couplings": couplings}
+
+
 def notebooks_state(target: Path, name: str, package: str) -> dict:
     """Every notebook of the product, and whether its evidence is still current.
 
@@ -3266,6 +3483,7 @@ def notebooks_state(target: Path, name: str, package: str) -> dict:
     """
     root = target / name / "Notebooks"
     current = source_digest(target, package)
+    contract = report_contract(target, package)
     reports = []
     for notebook in sorted(root.glob("*.ipynb")) if root.is_dir() else []:
         state = notebook_execution(notebook)
@@ -3274,6 +3492,9 @@ def notebooks_state(target: Path, name: str, package: str) -> dict:
             state["status"] = "stale-sources"
         state["notebook"] = str(notebook.relative_to(target))
         state["sourcesMatch"] = None if not recorded else recorded == current
+        # Static, and it never gates: it names the same fact `verify` and
+        # `probe` echo, nowhere close to `status` above.
+        state["coupling"] = notebook_coupling(notebook, contract)
         reports.append(state)
     return {
         "sourcesDigest": current,
@@ -3288,6 +3509,18 @@ def notebooks_state(target: Path, name: str, package: str) -> dict:
         "status": "ok" if reports and all(
             r["status"] == "executed" and r["sourcesMatch"] for r in reports) else "drift",
     }
+
+
+def coupling_state(target: Path, name: str, package: str) -> dict:
+    """Whether any notebook of this product has a reporting cell reading a
+    name only reconstructible by re-running a non-reporting cell's call.
+
+    Read-only, and it never gates a status this repository reports anywhere:
+    see `notebook_coupling`.
+    """
+    reports = notebooks_state(target, name, package)["reports"]
+    return {"coupled": any(r["coupling"]["coupled"] for r in reports),
+            "notebooks": {r["notebook"]: r["coupling"] for r in reports}}
 
 
 def test_function_names(tests_dir: Path) -> set[str]:
@@ -4107,6 +4340,8 @@ def cmd_verify(args: argparse.Namespace) -> dict:
                 BENCHMARK_DECLARATION) or {},
             (report.get("declared") or {}).get("dimensions") or {}),
         "remoteExecution": remote_execution_state(target, name, package_name(name)),
+        # A static fact, reported and never gating: see `notebook_coupling`.
+        "coupling": coupling_state(target, name, package_name(name)),
         "fidelity": {
             "status": fidelity_status,
             "latestRevision": args.revision,

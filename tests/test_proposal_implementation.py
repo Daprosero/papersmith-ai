@@ -1474,6 +1474,210 @@ class ReportContractTests(unittest.TestCase):
         self.assertEqual(state["status"], "incomplete")
 
 
+# --------------------------------------------- run/report coupling detection
+
+_COUPLING_DECLARATION = (
+    "__benchmark__ = {\n"
+    "    'revision': 'r01.md',\n"
+    "    'arms': {},\n"
+    "    'report': {\n"
+    "        'renderers': ['tables.render'],\n"
+    "        'record': 'latent.json',\n"
+    "    },\n"
+    "}\n"
+)
+
+# The one shape the whole check exists to catch: a call the report never
+# named, whose arguments are not literals, bound in a cell that renders
+# nothing — exactly what costs a re-run when a reporting cell reads it back.
+_COUPLED_CELLS = [
+    _cell("code", "from Method_Benchmark import tables, harness"),
+    _cell("code", "runs = harness.campaign(config=CONFIG, seeds=SEEDS)"),
+    _cell("code", "print(tables.render(runs))"),
+]
+
+_CLEAN_CELLS = [
+    _cell("code", "from Method_Benchmark import tables"),
+    _cell("code", "print(tables.render(1))"),
+]
+
+
+class CouplingTests(unittest.TestCase):
+    """`notebook_coupling`'s five-step criterion (design #744 section 8).
+
+    Step 5, the reconstructibility guard, is the point of every test here —
+    it is the real criterion and not a heuristic about "setup cells": what
+    costs a re-run is a binding that cannot be rebuilt without executing a
+    call the report itself never named.
+    """
+
+    CONTRACT = {"renderers": ["tables.render"], "conclusions": [], "figures": [],
+                "record": "latent.json"}
+
+    def couple(self, cells, contract=None):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "Report.ipynb"
+            path.write_text(json.dumps({"cells": cells, "metadata": {},
+                                        "nbformat": 4, "nbformat_minor": 5}),
+                            encoding="utf-8")
+            return impl.notebook_coupling(path, contract or self.CONTRACT)
+
+    def test_an_imported_module_alias_never_couples(self):
+        """`import numpy as np` — reconstructible by definition: nothing runs
+        to redo an import, so a reporting cell reading `np` is never coupled."""
+        cells = [
+            _cell("code", "import numpy as np\nfrom Method_Benchmark import tables"),
+            _cell("code", "print(tables.render(np.array([1, 2, 3])))"),
+        ]
+        self.assertEqual(self.couple(cells), {"coupled": False, "couplings": []})
+
+    def test_a_literal_constructor_call_never_couples(self):
+        """`RESULTS = Path("Results")` — a call, but every argument is a
+        constant: retyping the line reproduces it, so it passes even though
+        `Path` is nowhere in the declared vocabulary — the whitelist is by
+        reconstructibility, never by a list of blessed names."""
+        cells = [
+            _cell("code", "from pathlib import Path\n"
+                          "from Method_Benchmark import tables"),
+            _cell("code", "RESULTS = Path('Results')"),
+            _cell("code", "print(tables.render(RESULTS))"),
+        ]
+        self.assertEqual(self.couple(cells), {"coupled": False, "couplings": []})
+
+    def test_a_function_definition_never_couples(self):
+        """`def fmt(x): ...` binds a name with nothing to execute at
+        definition time — whatever the body calls is irrelevant, because
+        defining a function is always reconstructible from its own text."""
+        cells = [
+            _cell("code", "from Method_Benchmark import tables"),
+            _cell("code", "def fmt(x):\n    return round(x, 2)"),
+            _cell("code", "print(tables.render(fmt(1.234)))"),
+        ]
+        self.assertEqual(self.couple(cells), {"coupled": False, "couplings": []})
+
+    def test_a_call_outside_the_vocabulary_with_non_constant_args_couples(self):
+        """`runs = harness.campaign(...)` — the one that costs GPU hours: a
+        call the report never named, with arguments that are not literals, so
+        it cannot be rebuilt without running it again."""
+        state = self.couple(_COUPLED_CELLS)
+        self.assertTrue(state["coupled"], state)
+        self.assertEqual(state["couplings"],
+                         [{"name": "runs", "boundIn": 1, "readIn": 2}])
+
+    def test_a_binding_by_a_reporting_cell_is_never_the_finding(self):
+        """A name last bound inside another reporting cell is not what this
+        check exists for — the false-positive guard is about a setup cell
+        that renders nothing, not about the report's own pipeline."""
+        cells = [
+            _cell("code", "from Method_Benchmark import tables, harness"),
+            _cell("code", "runs = tables.render(harness.campaign(config=CONFIG))"),
+            _cell("code", "print(tables.render(runs))"),
+        ]
+        self.assertEqual(self.couple(cells)["couplings"], [])
+
+    def test_a_clean_notebook_reports_no_coupling(self):
+        self.assertEqual(self.couple(_CLEAN_CELLS), {"coupled": False, "couplings": []})
+
+
+class CouplingSurfacingTests(unittest.TestCase):
+    """`notebook_coupling` reaches `notebooks_state()`, `verify` and `probe` —
+    never as a gate, only as a fact next to the ones that already are."""
+
+    def _write_notebook(self, root, cells, notebook_name="Report.ipynb"):
+        notebooks = root / "Method" / "Notebooks"
+        notebooks.mkdir(parents=True, exist_ok=True)
+        (notebooks / notebook_name).write_text(
+            json.dumps({"cells": cells, "metadata": {}, "nbformat": 4,
+                        "nbformat_minor": 5}), encoding="utf-8")
+
+    def test_notebooks_state_surfaces_a_coupling_per_notebook(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "src" / "Method_Benchmark").mkdir(parents=True)
+            (root / "src" / "Method_Benchmark" / "__init__.py").write_text(
+                _COUPLING_DECLARATION, encoding="utf-8")
+            self._write_notebook(root, _COUPLED_CELLS)
+            state = impl.notebooks_state(root, "Method", "Method")
+        self.assertEqual(len(state["reports"]), 1)
+        self.assertTrue(state["reports"][0]["coupling"]["coupled"], state)
+
+    def test_verify_and_probe_report_coupling_end_to_end(self):
+        box = FORGE / "implementations" / f"_e2e_coupling_{os.getpid()}"
+        try:
+            (box / "src" / "Method").mkdir(parents=True)
+            (box / "src" / "Method_Benchmark").mkdir(parents=True)
+            (box / "tests").mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(box)], check=True,
+                           capture_output=True)
+            (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+            (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+                _COUPLING_DECLARATION, encoding="utf-8")
+            self._write_notebook(box, _COUPLED_CELLS)
+            verify = subprocess.run(
+                [sys.executable, str(CLI), "verify", "--target", str(box),
+                 "--name", "Method"],
+                capture_output=True, text=True, cwd=FORGE)
+            probe = subprocess.run(
+                [sys.executable, str(CLI), "probe", "--target", str(box),
+                 "--name", "Method"],
+                capture_output=True, text=True, cwd=FORGE)
+        finally:
+            shutil.rmtree(box, ignore_errors=True)
+        self.assertEqual(verify.returncode, 0, verify.stderr)
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+        verify_json = json.loads(verify.stdout or "{}")
+        probe_json = json.loads(probe.stdout or "{}")
+        self.assertTrue(verify_json["coupling"]["coupled"], verify_json)
+        self.assertTrue(probe_json["coupling"]["coupled"], probe_json)
+
+
+class CouplingNeverGatesTests(unittest.TestCase):
+    """The one rule that makes coupling detection safe to ship: no command's
+    exit status may ever be conditioned on it. A static approximation of how
+    someone organized their notebook has no authority to stop their work; it
+    may only tell them what it sees (design #744 section 8, mandated RED)."""
+
+    def _run(self, cells, command, suffix):
+        box = FORGE / "implementations" / f"_e2e_coupling_gate_{os.getpid()}_{suffix}"
+        try:
+            (box / "src" / "Method").mkdir(parents=True)
+            (box / "src" / "Method_Benchmark").mkdir(parents=True)
+            (box / "tests").mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(box)], check=True,
+                           capture_output=True)
+            (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+            (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+                _COUPLING_DECLARATION, encoding="utf-8")
+            notebooks = box / "Method" / "Notebooks"
+            notebooks.mkdir(parents=True)
+            (notebooks / "Report.ipynb").write_text(
+                json.dumps({"cells": cells, "metadata": {}, "nbformat": 4,
+                            "nbformat_minor": 5}), encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(CLI), command, "--target", str(box),
+                 "--name", "Method"],
+                capture_output=True, text=True, cwd=FORGE)
+        finally:
+            shutil.rmtree(box, ignore_errors=True)
+        return proc
+
+    def test_verify_exit_status_is_byte_identical_coupled_or_not(self):
+        coupled = self._run(_COUPLED_CELLS, "verify", "v_coupled")
+        clean = self._run(_CLEAN_CELLS, "verify", "v_clean")
+        self.assertEqual(coupled.returncode, clean.returncode)
+        self.assertEqual(coupled.returncode, 0, coupled.stderr)
+        self.assertTrue(json.loads(coupled.stdout)["coupling"]["coupled"])
+        self.assertFalse(json.loads(clean.stdout)["coupling"]["coupled"])
+
+    def test_probe_exit_status_is_byte_identical_coupled_or_not(self):
+        coupled = self._run(_COUPLED_CELLS, "probe", "p_coupled")
+        clean = self._run(_CLEAN_CELLS, "probe", "p_clean")
+        self.assertEqual(coupled.returncode, clean.returncode)
+        self.assertEqual(coupled.returncode, 0, coupled.stderr)
+        self.assertTrue(json.loads(coupled.stdout)["coupling"]["coupled"])
+        self.assertFalse(json.loads(clean.stdout)["coupling"]["coupled"])
+
+
 # ------------------------------------- lo que una celda produjo, no lo que dice
 
 class AgreementsTests(unittest.TestCase):
