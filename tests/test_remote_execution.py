@@ -4639,5 +4639,84 @@ class ShardIoTests(unittest.TestCase):
                 re.search(rf"\b{leaked}s?\b", source), leaked)
 
 
+class CompletenessTests(unittest.TestCase):
+    """`shard_io.completeness(stamp, required)` — the same argument shape as
+    `disagreements(shards, fields)` above: the caller brings the field
+    vocabulary, this module only walks it. Every test here drives the
+    function with field paths this module has never heard of (some drawn
+    from a completely unrelated vocabulary), which is itself part of the
+    proof that the function names no field of its own.
+
+    Every test in this class has a reachable red: `completeness` did not
+    exist on `SHARD_IO` before this task, so every call below would raise
+    `AttributeError`.
+    """
+
+    def test_every_required_path_present_reports_complete_with_nothing_missing(self) -> None:
+        stamp = {
+            "epochs": 20,
+            "evidence": {"commit": "abc123", "codeDigest": "deadbeef"},
+        }
+
+        result = SHARD_IO.completeness(
+            stamp, ["epochs", "evidence.commit", "evidence.codeDigest"]
+        )
+
+        self.assertEqual(result, {"complete": True, "missing": []})
+
+    def test_a_missing_top_level_path_is_reported_incomplete_by_its_own_name(self) -> None:
+        stamp = {"epochs": 20}
+
+        result = SHARD_IO.completeness(stamp, ["epochs", "seeds"])
+
+        self.assertEqual(result, {"complete": False, "missing": ["seeds"]})
+
+    def test_a_stamp_with_no_evidence_key_at_all_reports_its_nested_paths_missing(self) -> None:
+        stamp = {"epochs": 20}
+
+        result = SHARD_IO.completeness(
+            stamp, ["evidence.commit", "environment.device.kind"]
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "complete": False,
+                "missing": ["evidence.commit", "environment.device.kind"],
+            },
+        )
+
+    def test_an_intermediate_non_mapping_value_is_reported_missing_never_raised(self) -> None:
+        stamp = {"evidence": "not-a-mapping"}
+
+        result = SHARD_IO.completeness(stamp, ["evidence.commit"])
+
+        self.assertEqual(result, {"complete": False, "missing": ["evidence.commit"]})
+
+    def test_missing_paths_are_reported_in_the_caller_s_own_order(self) -> None:
+        stamp = {"epochs": 20}
+
+        result = SHARD_IO.completeness(
+            stamp, ["seeds", "epochs", "evidence.commit"]
+        )
+
+        self.assertEqual(result["missing"], ["seeds", "evidence.commit"])
+
+    def test_the_function_carries_no_vocabulary_of_its_own(self) -> None:
+        """Field paths belonging to nothing this module has ever named —
+        this is the caller-supplied-vocabulary contract exercised directly,
+        not just inferred from the source-scan guard below."""
+        stamp = {"widget": {"gizmo": "present"}}
+
+        result = SHARD_IO.completeness(
+            stamp, ["widget.gizmo", "widget.absent", "unrelated.path"]
+        )
+
+        self.assertEqual(
+            result,
+            {"complete": False, "missing": ["widget.absent", "unrelated.path"]},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -68,3 +68,39 @@ def disagreements(shards: list[dict], fields: list[str]) -> list[dict]:
             found.append({"field": field,
                           "values": {value: names for value, names in seen.items()}})
     return found
+
+
+def completeness(stamp: dict, required: list[str]) -> dict:
+    """Which of the caller's declared fields this one stamp actually has.
+
+    Same argument shape as `disagreements(shards, fields)` above — a data
+    structure and a caller-supplied list of field designators — and, like
+    that function, this one names no field of its own. Each entry in
+    `required` is a dot-separated path (`"evidence.commit"`,
+    `"environment.device.kind"`), walked one segment at a time starting at
+    `stamp`, so a caller can ask about a value nested arbitrarily deep
+    without this module ever learning what any segment means.
+
+    A path counts as present only if every segment resolves to an existing
+    mapping key, all the way to the last one. Two distinct ways a path can
+    fail to resolve are both reported the same way — as missing, never as
+    an error: a segment simply absent at that level, or an intermediate
+    segment present but holding something other than a mapping (a string,
+    a number, `None`), so the walk cannot continue into it. Reporting both
+    alike, rather than raising on the second, is what lets a stamp with no
+    `evidence` key at all — the shape every stamp had before this schema
+    grew one — report its missing paths and nothing else: incomplete,
+    never invalid, so a rollback strands nothing.
+    """
+    missing = []
+    for path in required:
+        node = stamp
+        present = True
+        for segment in path.split("."):
+            if not isinstance(node, dict) or segment not in node:
+                present = False
+                break
+            node = node[segment]
+        if not present:
+            missing.append(path)
+    return {"complete": not missing, "missing": missing}
