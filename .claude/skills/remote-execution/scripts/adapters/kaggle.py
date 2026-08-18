@@ -290,9 +290,12 @@ def assemble_metadata(run_config: Mapping[str, object]) -> tuple[str, str]:
 
 def _run_config_cell_source(run_config_text: str) -> str:
     """The injected cell's own source: writes `run_config_text` — the job
-    folder's own `run-config.json` bytes, read verbatim, never
-    re-serialized — to `run-config.json` in whatever directory the kernel
-    is executing in.
+    folder's own `run-config.json` content, staged by the caller either
+    verbatim or merged with `job.run_config`'s submission-time overrides
+    (see `submit()`'s own docstring for that merge rule) — to
+    `run-config.json` in whatever directory the kernel is executing in.
+    This function itself is agnostic to which of the two `run_config_text`
+    is: it only ever writes the string it is handed.
 
     `Path("run-config.json")`, relative, deliberately not an absolute
     `/kaggle/working/...` guess: `runner_bootstrap.py`'s own
@@ -573,6 +576,37 @@ class KaggleAdapter(ADAPTER.Adapter):
         build) is not treated as an error here: there is nothing to
         materialize, so nothing is injected — a silent no-op rather than
         a refusal, since it changes nothing the caller asked for.
+
+        The staged bytes are the FILE's own content merged with
+        `job.run_config`, never the file verbatim on its own. The file was
+        made authoritative by a prior fix (`kernels push` uploads only
+        `code_file`, so the versioned `run-config.json` had to be injected
+        as a cell), and that same stroke silently orphaned every
+        submission-time mutation of `job.run_config` — `submit --smoke`
+        sets `run_config["mode"] = "smoke"` on the in-memory `Job`, but
+        `select_block()` in the pushed kernel only ever saw the file's own
+        `mode`-less content, so a `--smoke` submission always ran the
+        normal `run` block. The merge rule: when `job.run_config` is
+        empty — the legacy shape, and also the ordinary (non-smoke)
+        job-folder shape `cmd_submit` produces — the file's own bytes are
+        read and staged completely unread otherwise, exactly as before
+        this fix; no `json.loads`/`json.dumps` round-trip ever touches
+        them, so this path stays byte-identical to today's behavior by
+        construction, not by coincidence of formatting. Only when
+        `job.run_config` is non-empty is the file parsed, shallow-updated
+        at the TOP LEVEL with `dict(job.run_config)` (so `job.run_config`
+        wins on a key collision), and re-serialized. Shallow/top-level is
+        the deliberate choice, not an oversight: every override this seam
+        has ever needed to express — `mode` — is itself a top-level key,
+        and `job.run_config` is normalized to an opaque, flat mapping by
+        `adapter.py`'s own `Job.__post_init__`; nothing upstream of this
+        adapter ever constructs a nested override. This rule does NOT
+        cover replacing a single nested field (say, one key inside the
+        file's own `run.smoke` block) without clobbering the rest of that
+        block — a caller needing that would have to pass the whole nested
+        value, since a top-level key present in `job.run_config` replaces
+        the file's value for that key entirely rather than merging into
+        it.
         """
         metadata_path = job.entrypoint.parent / KERNEL_METADATA_FILENAME
         if job.run_config and not metadata_path.is_file():
@@ -599,9 +633,14 @@ class KaggleAdapter(ADAPTER.Adapter):
                 )
                 run_config_path = job.entrypoint.parent / RUN_CONFIG_FILENAME
                 if run_config_path.is_file():
+                    run_config_text = run_config_path.read_text(encoding="utf-8")
+                    if job.run_config:
+                        merged = json.loads(run_config_text)
+                        merged.update(dict(job.run_config))
+                        run_config_text = json.dumps(merged)
                     _stage_run_config_cell(
                         staging_path / job.entrypoint.name,
-                        run_config_path.read_text(encoding="utf-8"),
+                        run_config_text,
                     )
                 self._push(staging_path, handle)
         else:

@@ -3033,6 +3033,136 @@ class KaggleAdapterTests(unittest.TestCase):
                     (job_dir / "run-config.json").read_bytes(),
                 )
 
+    def test_submit_smoke_override_reaches_select_block_in_the_staged_run_config(
+        self,
+    ) -> None:
+        """The seam nobody was asserting: `cmd_submit --smoke` sets
+        `job.run_config["mode"] = "smoke"` on the in-memory `Job`, but
+        `submit()` used to stage `run-config.json`'s own bytes verbatim —
+        that file never carries a `mode` key, so `select_block()` in the
+        pushed kernel always saw the normal `run` block, never `smoke`.
+        Confirmed on real hardware: six `--smoke` submissions ran the full
+        `run` block instead of the one-transfer rehearsal.
+
+        This test spans the two pieces every prior test proved separately
+        while the bug stayed live: that `cmd_submit` sets the field on the
+        `Job` (never checking what `submit()` does with it), and that the
+        file's own bytes arrive at the kernel intact (never checking
+        whether `job.run_config` also arrives). It actually executes the
+        injected cell, reads back the file it writes, and feeds that
+        exact mapping to `runner_invoke.select_block()` — the same call
+        the real kernel makes — to prove `mode` is really there.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            job_dir = tmp_path / "job"
+            job_dir.mkdir()
+            entrypoint = job_dir / "runner.ipynb"
+            entrypoint.write_text(
+                json.dumps(
+                    {
+                        "cells": [
+                            {
+                                "cell_type": "code",
+                                "metadata": {},
+                                "execution_count": None,
+                                "outputs": [],
+                                "source": ["print('bootstrap')\n"],
+                            }
+                        ],
+                        "metadata": {},
+                        "nbformat": 4,
+                        "nbformat_minor": 5,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            # The versioned file: exactly what `generate-job` writes, with
+            # no `mode` key — `mode` is only ever set at submit time, on
+            # the in-memory `Job`, never written to disk.
+            versioned_run_config = {
+                "schemaVersion": 1,
+                "jobName": "smoke-seam",
+                "commit": "e" * 40,
+                "run": {"module": "pkg.entry", "function": "run"},
+            }
+            versioned_run_config["run"]["smoke"] = {
+                "module": "pkg.entry",
+                "function": "smoke",
+            }
+            (job_dir / "run-config.json").write_text(
+                json.dumps(versioned_run_config), encoding="utf-8"
+            )
+            (job_dir / "kernel-metadata.json").write_text(
+                json.dumps({"id": "", "title": "papersmith-smoke-seam", "code_file": ""}),
+                encoding="utf-8",
+            )
+
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            captured_notebook = tmp_path / "captured-runner.ipynb"
+            fake_kaggle = bin_dir / "kaggle"
+            fake_kaggle.write_text(
+                "#!/usr/bin/env python3\n"
+                "import shutil, sys\n"
+                "from pathlib import Path\n"
+                "args = sys.argv[1:]\n"
+                "if args[:2] == ['kernels', 'push']:\n"
+                "    idx = args.index('-p')\n"
+                "    src = Path(args[idx + 1]) / 'runner.ipynb'\n"
+                f"    shutil.copyfile(src, {str(captured_notebook)!r})\n"
+                "    print('kernel version 1 successfully pushed')\n"
+                "    sys.exit(0)\n"
+                "sys.exit(1)\n",
+                encoding="utf-8",
+            )
+            fake_kaggle.chmod(0o755)
+
+            token_path = tmp_path / "creds"
+            token_path.mkdir()
+            handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
+
+            with unittest.mock.patch.dict(
+                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+            ):
+                adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle})
+                # Exactly what `cmd_submit --smoke` hands the adapter.
+                job = ADAPTER.Job(
+                    entrypoint=entrypoint,
+                    run_config={"mode": "smoke"},
+                    worker="w1",
+                )
+                adapter.submit(job)
+
+            pushed = json.loads(captured_notebook.read_text(encoding="utf-8"))
+            injected_source = "".join(pushed["cells"][0]["source"])
+
+            with tempfile.TemporaryDirectory() as runtime_cwd:
+                previous_cwd = os.getcwd()
+                os.chdir(runtime_cwd)
+                try:
+                    exec(compile(injected_source, "<injected-cell>", "exec"), {})
+                finally:
+                    os.chdir(previous_cwd)
+
+                written = Path(runtime_cwd) / "run-config.json"
+                self.assertTrue(written.is_file())
+                staged_run_config = json.loads(written.read_text(encoding="utf-8"))
+
+            # The override reached the staged file...
+            self.assertEqual(staged_run_config["mode"], "smoke")
+            # ...without losing the file's own content.
+            self.assertEqual(staged_run_config["jobName"], "smoke-seam")
+            self.assertEqual(staged_run_config["commit"], "e" * 40)
+
+            # And the exact call the real kernel makes now resolves to the
+            # smoke block, not the full `run` block.
+            self.assertEqual(
+                RUNNER_INVOKE.select_block(staged_run_config),
+                {"module": "pkg.entry", "function": "smoke"},
+            )
+
     def test_credential_sentinel_absent_from_argv_stdout_stderr_ledger_and_quarantine(
         self,
     ) -> None:
