@@ -910,6 +910,38 @@ def cmd_smoke_record(
     }
 
 
+def latest_smoke_event(smoke_ledger_path: Path, job_name: str) -> dict | None:
+    """The latest `smokeResult` line for `job_name` in `smoke_ledger_path`,
+    by append order — last line wins, the same last-write-wins rule
+    `ledger.fold()` already applies to its own log. `None` when the smoke
+    ledger does not exist or holds no matching record.
+
+    Extracted out of `cmd_readiness()` so a second caller —
+    `proposal-implementation`'s own `probe` fact (design #744 section 9)
+    — can find the SAME latest record `cmd_readiness()` itself binds
+    against, rather than writing a second "walk `smoke.jsonl` for the
+    newest match" loop that could quietly drift from this one.
+    """
+    if not smoke_ledger_path.exists():
+        return None
+    latest: dict | None = None
+    for raw_line in smoke_ledger_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(event, dict)
+            and event.get("kind") == SMOKE_RESULT_KIND
+            and event.get("jobName") == job_name
+        ):
+            latest = event
+    return latest
+
+
 def cmd_readiness(*, job_dir: str | Path, worker: str) -> dict:
     """States whether `job_dir` is ready to run its full submission on
     `worker` — reports only, the same "resolves nothing" discipline
@@ -934,22 +966,7 @@ def cmd_readiness(*, job_dir: str | Path, worker: str) -> dict:
     target = _target_for_job_dir(resolved_job_dir)
     smoke_ledger_path = _smoke_ledger_path(target, run_config["product"])
 
-    latest: dict | None = None
-    if smoke_ledger_path.exists():
-        for raw_line in smoke_ledger_path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if (
-                isinstance(event, dict)
-                and event.get("kind") == SMOKE_RESULT_KIND
-                and event.get("jobName") == run_config["jobName"]
-            ):
-                latest = event
+    latest = latest_smoke_event(smoke_ledger_path, run_config["jobName"])
 
     if latest is None:
         return {

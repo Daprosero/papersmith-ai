@@ -35,12 +35,22 @@ FORGE_ROOT = Path(__file__).resolve().parents[4]
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE = FORGE_ROOT / "implementations"
 
-# The one file `remote_execution_state` is ever allowed to path-import from the
-# forge's `remote-execution` skill. `adapter.py` and everything under
-# `adapters/` are where that skill confines every fact a service could leak —
-# this check has no business reaching past `ledger.py` to either.
+# The two files this module is allowed to path-import from the forge's
+# `remote-execution` skill. `remote_execution_state()` reads `ledger.py`
+# alone; `remote_execution_jobs_state()` (design #744 section 9) reads
+# `remote_cli.py`, which itself loads `jobfolder.py`, `adapter.py`,
+# `packer.py`, `credentials.py` and `shard_io.py` — every one of the eight
+# modules the skill's own `*_module_names_no_service` guard family already
+# holds to naming no service. `adapters/kaggle.py`, the ONE module that
+# skill lets name a service, is never imported by `remote_cli.py` itself at
+# module scope — it is reached only by the CLI's own lazy, per-command
+# dispatch, which neither function below ever calls — so this widening
+# still never puts a service name within this file's reach.
 REMOTE_EXECUTION_LEDGER_SCRIPT = (
     FORGE_ROOT / ".claude" / "skills" / "remote-execution" / "scripts" / "ledger.py"
+)
+REMOTE_EXECUTION_CLI_SCRIPT = (
+    FORGE_ROOT / ".claude" / "skills" / "remote-execution" / "scripts" / "remote_cli.py"
 )
 
 PRODUCT_DIRS = ("Notebooks", "Data", "Results", "Models")
@@ -1908,6 +1918,13 @@ def cmd_probe(args) -> dict:
         "unreachedModules": unfaithful,
         # A static fact, reported and never gating: see `notebook_coupling`.
         "coupling": coupling_state(target, name, package_name(name)),
+        # What went out to a remote worker (the ledger), plus what job
+        # folders exist right now (the filesystem) — reported, never
+        # resolved, and never a submission. See `remote_execution_jobs_state`.
+        "remoteExecution": {
+            **remote_execution_state(target, name, package_name(name)),
+            **remote_execution_jobs_state(target),
+        },
         "nextStep": next_step,
         "wiring": proposal,
         # `probe` looks and reports; it never runs anything itself.
@@ -4150,6 +4167,146 @@ def remote_execution_state(target: Path, name: str, package: str) -> dict:
         "unreadableLines": state.unreadable_lines,
         "workers": workers,
     }
+
+
+def _load_remote_execution_cli():
+    """Path-import `remote_cli.py`, reusing an already-loaded copy the same
+    way `_load_remote_execution_ledger()` does above, and for the same
+    correctness reason: `remote_cli.py` itself re-exports `JOBFOLDER` as one
+    of its own module attributes, and a second, separately exec'd copy
+    would hand back a `JobFolder`/`JobFolderError` pair this module's own
+    `except` clauses could never `isinstance`-match against.
+    """
+    module_name = "remote_execution_cli"
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+    spec = importlib.util.spec_from_file_location(module_name, REMOTE_EXECUTION_CLI_SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _discovered_job_folders(target: Path, rcli) -> list[Path]:
+    """Every `<target>/tools/<service>/<job-name>/` directory that holds a
+    `run-config.json` — the job-folder shape `remote_cli.guard_entrypoint()`
+    admits (design #744 section 5). Sorted for determinism. `<service>` is
+    read only to walk the tree; `remote_execution_jobs_state()` below never
+    carries it past a count.
+    """
+    tools_dir = target / rcli.TOOLS_DIRNAME
+    if not tools_dir.is_dir():
+        return []
+    found: list[Path] = []
+    for service_dir in sorted(p for p in tools_dir.iterdir() if p.is_dir()):
+        for job_dir in sorted(p for p in service_dir.iterdir() if p.is_dir()):
+            if (job_dir / rcli.RUN_CONFIG_FILENAME).is_file():
+                found.append(job_dir)
+    return found
+
+
+def remote_execution_jobs_state(target: Path) -> dict:
+    """`probe`'s own job-folder fact (design #744 section 9): what job
+    folders exist on disk right now, reported alongside
+    `remote_execution_state()`'s ledger-derived fields under the same
+    `remoteExecution` key in `cmd_probe`. Reports and never resolves —
+    exactly `remote_execution_state()`'s own discipline, extended to a
+    second source of fact. States nothing about whether anything was ever
+    submitted; a job folder can exist and have never been run at all.
+
+    `<service>` is read only to walk `<target>/tools/`, and is dropped to a
+    count (`services`) before this function ever returns — the same rule
+    `remote_execution_state()` already applies to `workers`.
+
+    Staleness is read through `remote_cli.JOBFOLDER.read()` alone — the
+    single reader design #744 section 4 mandates — never recomputed here.
+
+    **The `None` conflation, made visible rather than passed through.**
+    `remote_cli._job_folder_staleness()` returns `None` for two different
+    situations: an entrypoint with no job folder at all (correct — nothing
+    to report), and a `run-config.json` `JOBFOLDER.read()` cannot make
+    sense of (a real defect, silently tolerated one layer up so an
+    already-lenient command does not become stricter — see that
+    function's own docstring). That tolerance is right for `submit`/
+    `status`/`fetch`/`reconcile`, each of which is routing an ENTRYPOINT
+    that may or may not sit beside a job folder at all.
+
+    This function is never in that situation: every directory it hands to
+    `JOBFOLDER.read()` was already found BECAUSE it holds a
+    `run-config.json` (`_discovered_job_folders()` above only walks
+    directories where that file exists). So a `JobFolderError` here can
+    only mean the second case — an unreadable or invalid config — never
+    the first, and folding it into `None`/omission the way the CLI-layer
+    helper does would be wrong here specifically: `probe`'s output is read
+    by a human, and a blank cell reads as "nothing wrong" when the truth
+    is "this job's configuration is broken and staleness could not even be
+    attempted." So this job is reported anyway, with
+    `staleness: {"status": "unreadable", "reason": <str(exc)>}` — a
+    verdict distinct from the git-related `"unknown"` `_staleness_for()`
+    already reports, because the two causes call for different fixes: one
+    means "check the repository's git history," the other means "check
+    this job's own `run-config.json`."
+
+    **`smokeReady`, and why it routes through `remote_cli.cmd_readiness()`
+    rather than reimplementing it.** T11's `readiness()` binds a smoke
+    verdict to `(job, commit, worker)` with no clock — the exact question
+    this fact wants answered, except `probe` has no caller-supplied worker
+    to ask about (it is read-only and takes no `--worker`). Reimplementing
+    just the `result == "pass" and commit == pinned` half here would be
+    the second, drift-prone copy of a rule `readiness()` already owns.
+    Instead, the worker is derived from the job's OWN latest smoke record
+    (via `remote_cli.latest_smoke_event()`, the same lookup
+    `cmd_readiness()` itself uses) and handed back to
+    `cmd_readiness(job_dir, worker=<that worker>)` — the worker-equality
+    clause becomes tautological, but the pass/commit comparison genuinely
+    runs through T11's own function, not a second copy of it. The worker
+    itself is never reported: `smokeReady` is keyed by job name (already
+    exposed via `jobs` above), never by worker.
+    """
+    if not REMOTE_EXECUTION_CLI_SCRIPT.is_file():
+        return {"jobs": [], "services": 0, "smokeReady": {}}
+
+    target = Path(target).resolve()
+    rcli = _load_remote_execution_cli()
+    job_dirs = _discovered_job_folders(target, rcli)
+    services = len({job_dir.parent.name for job_dir in job_dirs})
+
+    jobs: list[dict] = []
+    smoke_ready: dict[str, bool] = {}
+    for job_dir in job_dirs:
+        try:
+            job_folder = rcli.JOBFOLDER.read(job_dir)
+        except rcli.JOBFOLDER.JobFolderError as exc:
+            jobs.append({
+                "job": job_dir.name,
+                "product": None,
+                "staleness": {"status": "unreadable", "reason": str(exc)},
+            })
+            continue
+
+        run_config = job_folder.run_config
+        job_name = run_config.get("jobName", job_dir.name)
+        product = run_config.get("product")
+        jobs.append({
+            "job": job_name,
+            "product": product,
+            "staleness": dict(job_folder.staleness),
+        })
+
+        if not isinstance(product, str) or not product:
+            smoke_ready[job_name] = False
+            continue
+        smoke_ledger_path = target / product / rcli.LEDGER_DIRNAME / rcli.SMOKE_LEDGER_FILENAME
+        latest = rcli.latest_smoke_event(smoke_ledger_path, job_name)
+        worker = latest.get("worker") if latest else None
+        if not isinstance(worker, str) or not worker:
+            smoke_ready[job_name] = False
+            continue
+        readiness = rcli.cmd_readiness(job_dir=job_dir, worker=worker)
+        smoke_ready[job_name] = bool(readiness["ready"])
+
+    return {"jobs": jobs, "services": services, "smokeReady": smoke_ready}
 
 
 def cmd_verify(args: argparse.Namespace) -> dict:

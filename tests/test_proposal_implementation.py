@@ -3351,6 +3351,219 @@ class RemoteExecutionLedgerSectionTests(unittest.TestCase):
             self.assertEqual(state["workers"], len(service_shaped_workers))
 
 
+class RemoteExecutionJobsSectionTests(unittest.TestCase):
+    """`probe`'s own `remoteExecution` fact (design #744 section 9): unlike
+    `verify`'s ledger-only section above, `probe` reports what job folders
+    exist on disk right now — reused via `remote_execution_jobs_state()`,
+    merged beside `remote_execution_state()`'s own ledger fields under the
+    same `remoteExecution` key. States the fact; issues no submission.
+    """
+
+    def _git(self, cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "probe-jobs-tests"
+        env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "probe-jobs-tests@example.invalid"
+        return subprocess.run(
+            ["git", *args], cwd=cwd, env=env, capture_output=True, text=True, check=check)
+
+    def _init_repo(self, target: Path, packages=("Method",)) -> str:
+        target.mkdir(parents=True, exist_ok=True)
+        self._git(target, "init", "-q")
+        for package in packages:
+            module = target / "src" / package / "module.py"
+            module.parent.mkdir(parents=True, exist_ok=True)
+            module.write_text("VALUE = 1\n", encoding="utf-8")
+        self._git(target, "add", "-A")
+        self._git(target, "commit", "-q", "-m", "initial")
+        return self._git(target, "rev-parse", "HEAD").stdout.strip()
+
+    def _write_job_folder(self, target: Path, *, service: str, job_name: str,
+                           product: str, commit: str, clone_paths=("src/Method",)) -> Path:
+        job_dir = target / "tools" / service / job_name
+        job_dir.mkdir(parents=True, exist_ok=True)
+        run_config = {
+            "schemaVersion": 1, "product": product, "service": service,
+            "jobName": job_name, "commit": commit,
+            "repo": {"url": "https://example.invalid/repo.git", "ref": "main"},
+            "clonePaths": list(clone_paths),
+            "run": {"module": f"{product}.module", "function": "run", "kwargs": {}},
+            "runnerTemplate": [
+                {"path": "assets/runner_bootstrap.py", "sha256": "0" * 64},
+                {"path": "assets/runner_invoke.py", "sha256": "0" * 64},
+            ],
+        }
+        (job_dir / "run-config.json").write_text(json.dumps(run_config), encoding="utf-8")
+        return job_dir
+
+    def _write_smoke_record(self, target: Path, *, product: str, job_name: str,
+                             result: str, commit: str, worker: str) -> Path:
+        smoke_path = target / product / ".remote-execution" / "smoke.jsonl"
+        smoke_path.parent.mkdir(parents=True, exist_ok=True)
+        event = {"kind": "smokeResult", "ts": "2026-08-18T00:00:00Z",
+                  "jobName": job_name, "result": result, "commit": commit,
+                  "worker": worker, "missing": []}
+        with smoke_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(event) + "\n")
+        return smoke_path
+
+    def test_absent_when_no_job_folder_exists_at_all(self):
+        """No `tools/` directory: nothing to discover, and the shape stays
+        the same one `remote_execution_state()` already uses for absence."""
+        with tempfile.TemporaryDirectory() as raw:
+            target = Path(raw)
+            state = impl.remote_execution_jobs_state(target)
+        self.assertEqual(state, {"jobs": [], "services": 0, "smokeReady": {}})
+
+    def test_two_jobs_across_two_services_one_stale(self):
+        """The runtime harness this task is scored against: two generated
+        job folders, one stale — proven with different declared clone paths
+        so only the one whose declared path actually changed reports drift,
+        the same declared-vs-undeclared contrast `StalenessTests` uses."""
+        with tempfile.TemporaryDirectory() as raw:
+            target = Path(raw)
+            commit = self._init_repo(target, packages=("MethodA", "MethodB"))
+            self._write_job_folder(target, service="svc-a", job_name="job-fresh",
+                                    product="Method", commit=commit,
+                                    clone_paths=("src/MethodA",))
+            self._write_job_folder(target, service="svc-b", job_name="job-stale",
+                                    product="Method", commit=commit,
+                                    clone_paths=("src/MethodB",))
+            (target / "src" / "MethodB" / "module.py").write_text(
+                "VALUE = 2\n", encoding="utf-8")
+            self._git(target, "add", "-A")
+            self._git(target, "commit", "-q", "-m", "declared change")
+
+            state = impl.remote_execution_jobs_state(target)
+
+        self.assertEqual(state["services"], 2)
+        by_job = {j["job"]: j for j in state["jobs"]}
+        self.assertEqual(by_job["job-fresh"]["staleness"]["status"], "fresh")
+        self.assertEqual(by_job["job-stale"]["staleness"]["status"], "drift")
+        for job in state["jobs"]:
+            self.assertEqual(set(job.keys()), {"job", "product", "staleness"})
+
+    def test_services_is_a_count_never_a_name(self):
+        """Mirrors `test_the_section_names_no_service` above, over the
+        `<service>` path segment this new fact walks to discover jobs."""
+        service_shaped = "kaggle-svc-worker-42"
+        with tempfile.TemporaryDirectory() as raw:
+            target = Path(raw)
+            commit = self._init_repo(target)
+            self._write_job_folder(target, service=service_shaped, job_name="job1",
+                                    product="Method", commit=commit)
+            state = impl.remote_execution_jobs_state(target)
+
+        dumped = json.dumps(state)
+        self.assertNotIn(service_shaped, dumped)
+        self.assertIsInstance(state["services"], int)
+        self.assertEqual(state["services"], 1)
+
+    def test_smoke_ready_true_when_the_latest_record_passes_at_the_pinned_commit(self):
+        with tempfile.TemporaryDirectory() as raw:
+            target = Path(raw)
+            commit = self._init_repo(target)
+            self._write_job_folder(target, service="svc", job_name="job1",
+                                    product="Method", commit=commit)
+            self._write_smoke_record(target, product="Method", job_name="job1",
+                                      result="pass", commit=commit, worker="w1")
+            state = impl.remote_execution_jobs_state(target)
+        self.assertEqual(state["smokeReady"], {"job1": True})
+
+    def test_smoke_ready_false_when_no_smoke_record_exists(self):
+        with tempfile.TemporaryDirectory() as raw:
+            target = Path(raw)
+            commit = self._init_repo(target)
+            self._write_job_folder(target, service="svc", job_name="job1",
+                                    product="Method", commit=commit)
+            state = impl.remote_execution_jobs_state(target)
+        self.assertEqual(state["smokeReady"], {"job1": False})
+
+    def test_an_unreadable_run_config_is_reported_not_silently_dropped(self):
+        """The conflation design #744 leaves open: `remote_cli.py`'s own
+        `_job_folder_staleness()` returns `None` both for "no job folder"
+        (correct — nothing to report) and for a `run-config.json`
+        `jobfolder.read()` cannot parse (a real defect). This job's
+        directory was already found BY its `run-config.json` existing, so
+        a `JobFolderError` here can only mean the second case — it must
+        never read as a blank cell."""
+        with tempfile.TemporaryDirectory() as raw:
+            target = Path(raw)
+            job_dir = target / "tools" / "svc" / "broken-job"
+            job_dir.mkdir(parents=True)
+            (job_dir / "run-config.json").write_text("{not valid json", encoding="utf-8")
+
+            state = impl.remote_execution_jobs_state(target)
+
+        self.assertEqual(len(state["jobs"]), 1)
+        job = state["jobs"][0]
+        self.assertEqual(job["job"], "broken-job")
+        self.assertEqual(job["staleness"]["status"], "unreadable")
+        self.assertIsNotNone(job["staleness"]["reason"])
+        self.assertNotEqual(job["staleness"]["status"], "unknown")
+
+    def test_reading_the_fact_issues_no_submission(self):
+        with tempfile.TemporaryDirectory() as raw:
+            target = Path(raw)
+            commit = self._init_repo(target)
+            self._write_job_folder(target, service="svc", job_name="job1",
+                                    product="Method", commit=commit)
+            impl.remote_execution_jobs_state(target)
+            impl.remote_execution_jobs_state(target)
+            ledger_exists = (target / "Method" / ".remote-execution" / "ledger.jsonl").exists()
+            smoke_exists = (target / "Method" / ".remote-execution" / "smoke.jsonl").exists()
+        self.assertFalse(ledger_exists)
+        self.assertFalse(smoke_exists)
+
+    def test_probe_end_to_end_reports_two_jobs_one_stale(self):
+        """The mandated runtime harness: a real CLI subprocess call against
+        a target with two generated job folders, one stale."""
+        box = FORGE / "implementations" / f"_e2e_remote_jobs_{os.getpid()}"
+        try:
+            (box / "src" / "Method").mkdir(parents=True)
+            (box / "src" / "Method_Benchmark").mkdir(parents=True)
+            (box / "tests").mkdir(parents=True)
+            (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+            (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+                "__benchmark__ = {}\n", encoding="utf-8")
+            (box / "src" / "MethodA").mkdir(parents=True)
+            (box / "src" / "MethodA" / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+            (box / "src" / "MethodB").mkdir(parents=True)
+            (box / "src" / "MethodB" / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+            self._git(box, "init", "-q")
+            self._git(box, "add", "-A")
+            self._git(box, "commit", "-q", "-m", "initial")
+            commit = self._git(box, "rev-parse", "HEAD").stdout.strip()
+
+            self._write_job_folder(box, service="svc-a", job_name="job-fresh",
+                                    product="Method", commit=commit,
+                                    clone_paths=("src/MethodA",))
+            self._write_job_folder(box, service="svc-b", job_name="job-stale",
+                                    product="Method", commit=commit,
+                                    clone_paths=("src/MethodB",))
+            (box / "src" / "MethodB" / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
+            self._git(box, "add", "-A")
+            self._git(box, "commit", "-q", "-m", "declared change")
+
+            probe = subprocess.run(
+                [sys.executable, str(CLI), "probe", "--target", str(box),
+                 "--name", "Method"],
+                capture_output=True, text=True, cwd=FORGE)
+            ledger_exists = (box / "Method" / ".remote-execution" / "ledger.jsonl").exists()
+        finally:
+            shutil.rmtree(box, ignore_errors=True)
+
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+        probe_json = json.loads(probe.stdout or "{}")
+        remote = probe_json["remoteExecution"]
+        self.assertEqual(remote["services"], 2)
+        by_job = {j["job"]: j for j in remote["jobs"]}
+        self.assertEqual(by_job["job-fresh"]["staleness"]["status"], "fresh")
+        self.assertEqual(by_job["job-stale"]["staleness"]["status"], "drift")
+        self.assertIn("smokeReady", remote)
+        # `probe` states the fact and issues no submission.
+        self.assertFalse(ledger_exists)
+
+
 class NextStepSectionCoverageTests(unittest.TestCase):
     """`probe` returns eight `nextStep` values; SKILL.md must define a
     `### nextStep: "..."` section for exactly the ones that prescribe work.
