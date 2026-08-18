@@ -30,11 +30,23 @@ Three modules exist so far, each service-blind and stdlib-only:
   the three event kinds this ledger records, with the field names and
   truncation rules this schema fixes (see below).
 - `scripts/adapter.py` — the `Adapter` ABC every backend-specific module
-  must satisfy in full, the frozen data shapes that cross the seam
-  (`Worker`, `Job`, `Submission`, `Status`, `Fetched`), and a name-to-class
-  registry a caller can select a backend by without importing it directly.
-  No concrete backend implements this ABC yet; this skill's own test suite
-  stands a `FakeAdapter` in for one.
+  must satisfy in full (exactly six operations), the frozen data shapes
+  that cross the seam (`Worker`, `Job`, `Submission`, `Status`, `Fetched`),
+  and a name-to-class registry a caller can select a backend by without
+  importing it directly. `Job.run_config` is an opaque
+  `Mapping[str, object]` — normalized in `__post_init__` to a
+  `MappingProxyType` over a private copy, so mutating it (or mutating the
+  caller's own original dict afterward) is structurally refused. The
+  packer and the ledger never read or branch on a key inside it; an empty
+  `run_config` is the legacy shape every existing caller uses, a non-empty
+  one is what a generated job carries. A second, separate registry,
+  `register_metadata`/`resolve_metadata`, maps a name to a
+  `fn(run_config) -> (filename, text)` callable — kept off the ABC
+  entirely so a backend needing a service-specific metadata file (an
+  accelerator request, say) never forces every other backend to grow a
+  method it does not need. `adapters/kaggle.py` is the one concrete
+  backend this skill ships; its own test suite also stands a `FakeAdapter`
+  in for a second one, to prove the seam generalizes.
 - `scripts/packer.py` — `plan(...)` clamps a repository's declared
   per-worker request to the cap the adapter states through `workers()`,
   deducting what is already committed (from the ledger's fold, refined by
@@ -106,12 +118,20 @@ Three modules exist so far, each service-blind and stdlib-only:
   goes in `Status.detail` only. `CredentialHandle(worker_id, config_dir)` is
   the only credential type this adapter accepts, exposes no read method, and
   has exactly one sink in the whole file: `env["KAGGLE_CONFIG_DIR"] =
-  str(handle.config_dir)`. `REQUESTED_ACCELERATOR = "T4"` is declared here —
-  a request, not a receipt; what a submission actually ran on is a fact the
-  service states at poll/fetch time, never assumed from this constant.
-  `cancel()` refuses explicitly: Kaggle's own CLI documents no
-  single-kernel cancel operation, and this adapter does not guess at an
-  unofficial one.
+  str(handle.config_dir)`. `REQUESTED_ACCELERATOR = "NvidiaTeslaT4"` is
+  declared here, and here alone in this whole skill — a request, not a
+  receipt; what a submission actually ran on is a fact the service states
+  at poll/fetch time, never assumed from this constant. `assemble_metadata`
+  reads that constant into a `kernel-metadata.json` payload and is
+  registered under `ADAPTER.register_metadata("kaggle", ...)`, the second
+  registry `adapter.py` exposes; `KaggleAdapter.submit()` refuses, before
+  ever shelling out to `kernels push`, when `job.run_config` is non-empty
+  (a generated job) and `kernel-metadata.json` is absent beside the
+  entrypoint — an empty `run_config` is the legacy shape and is never
+  checked, which is what keeps the credential-sentinel test's legacy-shaped
+  `cmd_submit` call passing unchanged. `cancel()` refuses explicitly:
+  Kaggle's own CLI documents no single-kernel cancel operation, and this
+  adapter does not guess at an unofficial one.
 
 Every `remote_cli` command a user would invoke (`submit`, `status`, `poll`,
 `fetch`, `reconcile`) exists today. `submit`/`poll`/`fetch`/`reconcile` are

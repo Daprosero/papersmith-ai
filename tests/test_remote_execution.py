@@ -592,7 +592,9 @@ class AdapterSeamTests(unittest.TestCase):
         workers = adapter.workers()
         self.assertEqual(len(workers), 1)
 
-        job = ADAPTER.Job(entrypoint=Path("Notebooks/a.ipynb"), inputs=(), worker=workers[0].id)
+        job = ADAPTER.Job(
+            entrypoint=Path("Notebooks/a.ipynb"), run_config={}, worker=workers[0].id
+        )
         submission = adapter.submit(job)
         status = adapter.poll(submission.id)
         self.assertIn(status.state, ADAPTER.STATES)
@@ -619,10 +621,12 @@ class AdapterSeamTests(unittest.TestCase):
 
     def test_job_exposes_entrypoint_field_not_notebook(self) -> None:
         """Pins the naming decision the ledger's own schema already made."""
-        job = ADAPTER.Job(entrypoint=Path("Notebooks/a.ipynb"), inputs=("x",), worker="w1")
+        job = ADAPTER.Job(
+            entrypoint=Path("Notebooks/a.ipynb"), run_config={"x": True}, worker="w1"
+        )
         self.assertEqual(job.entrypoint, Path("Notebooks/a.ipynb"))
         with self.assertRaises(TypeError):
-            ADAPTER.Job(notebook=Path("a.ipynb"), inputs=(), worker="w1")
+            ADAPTER.Job(notebook=Path("a.ipynb"), run_config={}, worker="w1")
 
     def test_status_rejects_a_value_outside_the_five_state_vocabulary(self) -> None:
         with self.assertRaises(ValueError):
@@ -630,7 +634,7 @@ class AdapterSeamTests(unittest.TestCase):
 
     def test_frozen_shapes_refuse_assignment(self) -> None:
         worker = ADAPTER.Worker(id="w1", capacity=2)
-        job = ADAPTER.Job(entrypoint=Path("a.ipynb"), inputs=(), worker="w1")
+        job = ADAPTER.Job(entrypoint=Path("a.ipynb"), run_config={}, worker="w1")
         submission = ADAPTER.Submission(id="s1", worker="w1")
         status = ADAPTER.Status(state="queued", detail="")
         fetched = ADAPTER.Fetched(path=Path("/tmp/out"), complete=False, files=())
@@ -657,6 +661,71 @@ class AdapterSeamTests(unittest.TestCase):
         for leaked in ("kaggle", "t4"):
             self.assertNotIn(leaked, source, leaked)
 
+    def test_job_carries_run_config_as_an_opaque_mapping(self) -> None:
+        """`Job.run_config` replaces the old `inputs` tuple: an opaque
+        mapping the packer and ledger never interpret. Construction accepts
+        an ordinary dict; the seam itself is what freezes it (see the
+        immutability test below).
+        """
+        job = ADAPTER.Job(
+            entrypoint=Path("Notebooks/a.ipynb"),
+            run_config={"mode": "smoke", "seeds": [0, 1]},
+            worker="w1",
+        )
+        self.assertEqual(dict(job.run_config), {"mode": "smoke", "seeds": [0, 1]})
+
+    def test_job_run_config_is_immutable_even_against_direct_mutation(self) -> None:
+        """`__post_init__` normalizes `run_config` to a `MappingProxyType`
+        over a private copy, so mutating the mapping a caller gets back is
+        structurally refused — not merely a documented convention.
+        """
+        original = {"a": 1}
+        job = ADAPTER.Job(entrypoint=Path("a.ipynb"), run_config=original, worker="w1")
+        with self.assertRaises(TypeError):
+            job.run_config["a"] = 2
+
+        # Mutating the caller's own dict after construction must not leak
+        # into the job either — the seam copies, it does not merely wrap.
+        original["a"] = 99
+        self.assertEqual(job.run_config["a"], 1)
+
+    def test_run_config_is_opaque_to_packer_and_ledger(self) -> None:
+        """RED-provable opacity: the substring `run_config` never occurs
+        anywhere in `packer.py` or `ledger.py` — not in code, not in a
+        docstring, not in a comment. Those two modules depend on `Job` only
+        through the fields they already use (`entrypoint`, `worker`); this
+        field must never become a third.
+        """
+        for script in (PACKER_SCRIPT, SCRIPT):
+            source = script.read_text(encoding="utf-8")
+            self.assertNotIn("run_config", source, str(script))
+
+    def test_metadata_registry_resolves_by_name(self) -> None:
+        """A second, separate registry from the adapter class registry
+        above: `register_metadata`/`resolve_metadata` map a name to a
+        callable `fn(run_config) -> (filename, text)`. This keeps metadata
+        assembly off the `Adapter` ABC entirely — the spec pins that ABC at
+        exactly six operations, so a seventh method is not an option.
+        """
+        def fake_assembler(run_config):
+            return "meta.json", json.dumps(dict(run_config))
+
+        ADAPTER.register_metadata("fake-for-test", fake_assembler)
+        resolved = ADAPTER.resolve_metadata("fake-for-test")
+        filename, text = resolved({"a": 1})
+        self.assertEqual(filename, "meta.json")
+        self.assertEqual(json.loads(text), {"a": 1})
+
+    def test_metadata_registry_refuses_an_unregistered_name(self) -> None:
+        with self.assertRaises(KeyError):
+            ADAPTER.resolve_metadata("no-metadata-registered-under-this-name")
+
+    def test_adapter_abc_still_exposes_exactly_six_operations(self) -> None:
+        """Structural proof, not a count copied from prose: the metadata
+        registry above must never grow into a seventh ABC method.
+        """
+        self.assertEqual(len(ADAPTER.Adapter.__abstractmethods__), 6)
+
     def test_fake_adapter_output_plugs_into_ledger_events_unchanged(self) -> None:
         """What exists today — `fold()` and the event builders — accepts a
         fake adapter's output with zero translation, proving the seam
@@ -668,7 +737,7 @@ class AdapterSeamTests(unittest.TestCase):
         packer coverage here would be a proxy, not a test.
         """
         adapter = FakeAdapter(worker_id="w1", capacity=2)
-        job = ADAPTER.Job(entrypoint=Path("Notebooks/a.ipynb"), inputs=(), worker="w1")
+        job = ADAPTER.Job(entrypoint=Path("Notebooks/a.ipynb"), run_config={}, worker="w1")
         submission = adapter.submit(job)
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1327,7 +1396,7 @@ class PollTests(unittest.TestCase):
                 return SimpleNamespace(state="succeeded", detail="not this seam's word")
 
         adapter = MisbehavingAdapter(worker_id="w1", capacity=2)
-        job = ADAPTER.Job(entrypoint=Path("Notebooks/a.ipynb"), inputs=(), worker="w1")
+        job = ADAPTER.Job(entrypoint=Path("Notebooks/a.ipynb"), run_config={}, worker="w1")
         submission = adapter.submit(job)
 
         with self.assertRaises(REMOTE_CLI.RemoteCLIError):
@@ -1335,7 +1404,7 @@ class PollTests(unittest.TestCase):
 
     def test_poll_accepts_a_genuinely_valid_status(self) -> None:
         adapter = FakeAdapter(worker_id="w1", capacity=2)
-        job = ADAPTER.Job(entrypoint=Path("Notebooks/a.ipynb"), inputs=(), worker="w1")
+        job = ADAPTER.Job(entrypoint=Path("Notebooks/a.ipynb"), run_config={}, worker="w1")
         submission = adapter.submit(job)
 
         status = REMOTE_CLI.cmd_poll(submission_id=submission.id, adapter=adapter)
@@ -1813,7 +1882,7 @@ class KaggleAdapterTests(unittest.TestCase):
             BrokenKaggleAdapter()
 
     def test_requested_accelerator_is_declared_here_as_a_request_not_a_receipt(self) -> None:
-        self.assertEqual(KAGGLE.REQUESTED_ACCELERATOR, "T4")
+        self.assertEqual(KAGGLE.REQUESTED_ACCELERATOR, "NvidiaTeslaT4")
 
     def test_kaggle_worker_capacity_is_two_documented_as_the_batch_session_figure(self) -> None:
         """`KAGGLE_WORKER_CAPACITY` states Kaggle's own concurrent-kernel
@@ -1997,6 +2066,109 @@ class KaggleAdapterTests(unittest.TestCase):
             finally:
                 if marker_path.exists():
                     marker_path.unlink()
+
+    def test_kaggle_registers_assemble_metadata_requesting_the_pinned_accelerator(
+        self,
+    ) -> None:
+        """The one and only place `"NvidiaTeslaT4"` exists: `adapters/kaggle.py`
+        registers `assemble_metadata` under the metadata registry, and
+        calling it produces `kernel-metadata.json` naming the pinned
+        accelerator.
+        """
+        assembler = ADAPTER.resolve_metadata("kaggle")
+        filename, text = assembler({"mode": "smoke"})
+        self.assertEqual(filename, "kernel-metadata.json")
+        payload = json.loads(text)
+        self.assertEqual(payload["accelerator"], "NvidiaTeslaT4")
+
+    def test_submit_refuses_when_run_config_is_non_empty_and_metadata_file_is_absent(
+        self,
+    ) -> None:
+        """A generated job (non-empty `run_config`) must ship its own
+        metadata file beside the entrypoint before `submit()` ever shells
+        out — pushing a folder the service will reject is worse than
+        refusing here, before any subprocess runs. The patched
+        `subprocess.run` below raises if invoked at all, proving the
+        refusal happens without a real (or fake) service call.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            job_dir = tmp_path / "job"
+            job_dir.mkdir()
+            entrypoint = job_dir / "runner.ipynb"
+            entrypoint.write_text("{}", encoding="utf-8")
+            # Deliberately no kernel-metadata.json beside it.
+
+            config_dir = tmp_path / "creds"
+            config_dir.mkdir()
+            handle = KAGGLE.CredentialHandle(worker_id="w1", config_dir=config_dir)
+            adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle})
+            job = ADAPTER.Job(entrypoint=entrypoint, run_config={"mode": "full"}, worker="w1")
+
+            with unittest.mock.patch.object(
+                KAGGLE.subprocess,
+                "run",
+                side_effect=AssertionError("submit must refuse before shelling out"),
+            ):
+                with self.assertRaises(KAGGLE.KaggleAdapterError):
+                    adapter.submit(job)
+
+    def test_submit_proceeds_when_run_config_is_non_empty_and_metadata_file_is_present(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            job_dir = tmp_path / "job"
+            job_dir.mkdir()
+            entrypoint = job_dir / "runner.ipynb"
+            entrypoint.write_text("{}", encoding="utf-8")
+            (job_dir / "kernel-metadata.json").write_text("{}", encoding="utf-8")
+
+            bin_dir = tmp_path / "bin"
+            _write_fake_kaggle(bin_dir)
+            config_dir = tmp_path / "creds"
+            config_dir.mkdir()
+            handle = KAGGLE.CredentialHandle(worker_id="w1", config_dir=config_dir)
+
+            with unittest.mock.patch.dict(
+                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+            ):
+                adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle})
+                job = ADAPTER.Job(
+                    entrypoint=entrypoint, run_config={"mode": "full"}, worker="w1"
+                )
+                submission = adapter.submit(job)
+
+            self.assertEqual(submission.worker, "w1")
+
+    def test_submit_with_empty_run_config_behaves_exactly_as_before_even_without_metadata(
+        self,
+    ) -> None:
+        """Empty `run_config` is the legacy shape: submit proceeds even
+        with no metadata file present, which is what keeps the credential
+        sentinel test (a legacy-shaped `cmd_submit` call) green.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            notebooks = _make_product(tmp_path / "repo", "MIL-CREDA")
+            entrypoint = notebooks / "a.ipynb"
+            entrypoint.write_text("{}", encoding="utf-8")
+            # No metadata file beside it, and none is required.
+
+            bin_dir = tmp_path / "bin"
+            _write_fake_kaggle(bin_dir)
+            config_dir = tmp_path / "creds"
+            config_dir.mkdir()
+            handle = KAGGLE.CredentialHandle(worker_id="w1", config_dir=config_dir)
+
+            with unittest.mock.patch.dict(
+                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+            ):
+                adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle})
+                job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
+                submission = adapter.submit(job)
+
+            self.assertEqual(submission.worker, "w1")
 
     def test_credential_sentinel_absent_from_argv_stdout_stderr_ledger_and_quarantine(
         self,

@@ -128,11 +128,18 @@ KAGGLE_WORKER_CAPACITY = 2
 # time, in `Status.detail` — never assumed from this constant, and never
 # stamped anywhere by this module on its own initiative. Selecting an
 # accelerator for a real kernel submission is governed by that kernel's own
-# metadata, prepared by whatever assembles a submission's directory before
-# `submit()` is ever called; this constant exists so that assembly has one
-# sanctioned place, inside the one file allowed to name a service, to read
-# the requested value from.
-REQUESTED_ACCELERATOR = "T4"
+# metadata, prepared by `assemble_metadata()` below, the one sanctioned
+# place, inside the one file allowed to name a service, that reads the
+# requested value from this constant. Kaggle's own kernel-metadata schema
+# names accelerators this way (not the short marketing name "T4"), so this
+# is also the exact string a real `kernel-metadata.json` needs.
+REQUESTED_ACCELERATOR = "NvidiaTeslaT4"
+
+# The filename `kernels push -p <dir>` looks for beside a kernel's
+# entrypoint — Kaggle's own convention, not this module's invention. A
+# generated job's directory must carry this file before `submit()` will
+# push it; see `KaggleAdapter.submit()`'s refusal below.
+KERNEL_METADATA_FILENAME = "kernel-metadata.json"
 
 # The seam's own five-value vocabulary a raw Kaggle status is translated
 # into — never passed through. Anything Kaggle reports that is not a key
@@ -171,6 +178,24 @@ def _kernel_slug(entrypoint: Path) -> str:
     lowered = entrypoint.stem.lower()
     slug = _SLUG_DISALLOWED.sub("-", lowered).strip("-")
     return slug or "kernel"
+
+
+def assemble_metadata(run_config: Mapping[str, object]) -> tuple[str, str]:
+    """Build the `kernel-metadata.json` a generated job folder ships beside
+    its runner notebook, so `kernels push -p <dir>` requests the pinned
+    accelerator.
+
+    Registered under `ADAPTER.register_metadata("kaggle", ...)` below —
+    the ONE thing a caller above the adapter registry ever gets back is an
+    opaque `(filename, text)` pair; nothing above this module ever learns
+    what either one means, only that they exist and where to write them.
+    `run_config` is accepted for the seam's own signature shape
+    (`fn(run_config) -> (filename, text)`) and is not currently interpreted
+    — the accelerator request is fixed, not derived from a job's own
+    configuration.
+    """
+    payload = {"accelerator": REQUESTED_ACCELERATOR}
+    return KERNEL_METADATA_FILENAME, json.dumps(payload)
 
 
 # The seam's own shape (`adapter.py`), aliased under this module's name so
@@ -332,7 +357,24 @@ class KaggleAdapter(ADAPTER.Adapter):
         anything the `kaggle` process printed. `poll()`, `fetch()` and
         `list_active()` all recover `worker` from this same id, by
         splitting on the one `/` this construction guarantees is there.
+
+        A non-empty `job.run_config` marks a generated job — one whose
+        directory `jobfolder.py` was supposed to have written
+        `assemble_metadata()`'s output into. This method refuses, before
+        ever calling `kernels push`, when that metadata file is absent:
+        pushing a folder the service will reject on its own is worse than
+        refusing here. An empty `run_config` is the legacy shape and is
+        never checked — it behaves exactly as it did before this refusal
+        existed.
         """
+        if job.run_config:
+            metadata_path = job.entrypoint.parent / KERNEL_METADATA_FILENAME
+            if not metadata_path.is_file():
+                raise KaggleAdapterError(
+                    f"{job.entrypoint} carries a non-empty run_config but "
+                    f"{metadata_path} is absent: refusing to push a kernel "
+                    "the service would reject for missing metadata"
+                )
         handle = self._credential_for(job.worker)
         ref = f"{job.worker}/{_kernel_slug(job.entrypoint)}"
         argv = [self._kaggle_executable, "kernels", "push", "-p", str(job.entrypoint.parent)]
@@ -428,3 +470,4 @@ class KaggleAdapter(ADAPTER.Adapter):
 
 
 ADAPTER.register("kaggle", KaggleAdapter)
+ADAPTER.register_metadata("kaggle", assemble_metadata)

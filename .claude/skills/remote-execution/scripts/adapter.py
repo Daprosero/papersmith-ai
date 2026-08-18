@@ -18,8 +18,8 @@ next to the field it concerns, the rule that keeps it from doing so:
 
 - `Submission.id` — opaque outside the adapter that issued it.
 - `Status.state` — the seam's own vocabulary, never a backend's raw text.
-- `Job.inputs` — opaque strings the adapter interprets; the packer never
-  resolves them.
+- `Job.run_config` — an opaque mapping the adapter interprets; the packer
+  and the ledger never read or branch on a key inside it.
 - `Worker.capacity` — concurrent jobs per worker, not a backend's own
   metering unit.
 
@@ -31,6 +31,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
+from typing import Callable, Mapping
 
 
 @dataclass(frozen=True)
@@ -63,16 +65,25 @@ class Job:
     schema, the fold's indices, or any other consumer that would otherwise
     need to change alongside a field rename.
 
-    `inputs` are opaque strings this dataclass does not interpret. What one
-    backend's adapter expects there (a dataset identifier, say) and what
-    another expects (a local path, say) is that adapter's business alone;
-    nothing above this seam — the packer included — ever resolves or
-    inspects an input string itself.
+    `run_config` is an opaque mapping this dataclass does not interpret.
+    What one backend's adapter expects there (a dataset identifier, a run
+    mode, a set of seeds) and what another expects is that adapter's
+    business alone; nothing above this seam — the packer and the ledger
+    included — ever reads or branches on a key inside it. `__post_init__`
+    normalizes whatever mapping a caller passes into a `MappingProxyType`
+    over a private copy, so even mutating the mapping a caller gets back
+    from `job.run_config` is structurally refused, and mutating the
+    caller's own original dict after construction cannot leak in either.
+    An empty `run_config` is the legacy shape every existing caller already
+    uses; a non-empty one is what a generated job carries.
     """
 
     entrypoint: Path
-    inputs: tuple[str, ...]
+    run_config: Mapping[str, object]
     worker: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "run_config", MappingProxyType(dict(self.run_config)))
 
 
 @dataclass(frozen=True)
@@ -235,3 +246,33 @@ def resolve(name: str) -> type[Adapter]:
         return _REGISTRY[name]
     except KeyError:
         raise KeyError(f"no adapter registered under {name!r}") from None
+
+
+# A second, separate registry from the one above — deliberately not a
+# seventh `Adapter` ABC operation. The spec pins that ABC at exactly six
+# operations, so a backend that needs to assemble a service-specific
+# metadata file (an accelerator request, say) registers a plain function
+# here instead of widening the ABC every other backend would then also
+# have to implement, whether it needs one or not.
+MetadataAssembler = Callable[[Mapping[str, object]], tuple[str, str]]
+
+_METADATA_REGISTRY: dict[str, MetadataAssembler] = {}
+
+
+def register_metadata(name: str, fn: MetadataAssembler) -> None:
+    """Register a metadata assembler under a name a caller can select by.
+
+    `fn(run_config) -> (filename, text)`. Whatever this returns is opaque
+    to every caller above the adapter that registered it — a future
+    `jobfolder.py` writes the returned bytes under the returned filename
+    without ever learning what either one means.
+    """
+    _METADATA_REGISTRY[name] = fn
+
+
+def resolve_metadata(name: str) -> MetadataAssembler:
+    """Look up a previously registered metadata assembler by name."""
+    try:
+        return _METADATA_REGISTRY[name]
+    except KeyError:
+        raise KeyError(f"no metadata assembler registered under {name!r}") from None

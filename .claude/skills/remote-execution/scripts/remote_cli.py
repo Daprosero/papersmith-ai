@@ -306,7 +306,7 @@ def cmd_submit(
         live_digest=digest,
     )
 
-    job = ADAPTER.Job(entrypoint=resolved_entrypoint, inputs=(), worker=worker)
+    job = ADAPTER.Job(entrypoint=resolved_entrypoint, run_config={}, worker=worker)
     submission = adapter.submit(job)
 
     event = LEDGER.submitted_event(
