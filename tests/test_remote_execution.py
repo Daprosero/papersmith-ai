@@ -2288,6 +2288,24 @@ class CredentialSecurityTests(unittest.TestCase):
             for literal in forbidden:
                 self.assertNotIn(literal, source, f"{literal!r} found in {path}")
 
+    def test_credentials_module_names_no_service(self) -> None:
+        """The leak guard this module was missing until now, in the same
+        family as `test_adapter_module_names_no_service`,
+        `test_packer_module_names_no_service_and_hardcodes_no_capacity`,
+        `test_remote_cli_module_names_no_service` and
+        `test_shard_io_source_names_no_service_and_no_domain_term`: a static
+        scan over the raw file text (source and every docstring alike),
+        because a docstring naming a backend to explain an example is
+        exactly the leak this skill's seam exists to prevent, and
+        `credentials.py` is the only producer of a `CredentialHandle`
+        anywhere above the adapter.
+        """
+        source = (
+            REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/credentials.py"
+        ).read_text(encoding="utf-8").lower()
+        for leaked in ("kaggle", "t4"):
+            self.assertNotIn(leaked, source, leaked)
+
     def test_credential_handle_carries_exactly_worker_id_and_config_dir(self) -> None:
         """C5."""
         fields = tuple(f.name for f in dataclasses.fields(ADAPTER.CredentialHandle))

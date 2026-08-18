@@ -628,6 +628,24 @@ def _construct_adapter(
     return adapter_cls()
 
 
+def _accounts_cli_for(adapter_cls: type["ADAPTER.Adapter"]) -> Path | None:
+    """Read a resolved backend's own credential-materializing CLI location
+    off its class, without this module ever naming which backend that is.
+
+    `credentials.py` is the only producer of a `CredentialHandle`, but it
+    holds no opinion about WHERE a given backend's own materialize command
+    lives — that knowledge is confined to the one file per backend allowed
+    to name a service at all, one level below this seam, through that
+    module's own `CREDENTIAL_CLI` class attribute. `CREDENTIAL_CLI` is an
+    ordinary class attribute, not one of the `Adapter` ABC's six
+    operations, so an adapter that never declares one (this skill's own
+    test doubles included) is read as `None` here — `credentials.provider()`
+    only refuses if it is actually asked to materialize with neither this
+    nor `--credential-dir` supplied.
+    """
+    return getattr(adapter_cls, "CREDENTIAL_CLI", None)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="remote_cli",
@@ -725,7 +743,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
-        provider = CREDENTIALS.provider(override=args.credential_dir)
+        provider = CREDENTIALS.provider(
+            accounts_cli=_accounts_cli_for(adapter_cls), override=args.credential_dir
+        )
         try:
             result = cmd_submit(
                 target=args.target,
@@ -769,7 +789,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
-        provider = CREDENTIALS.provider(override=args.credential_dir)
+        provider = CREDENTIALS.provider(
+            accounts_cli=_accounts_cli_for(adapter_cls), override=args.credential_dir
+        )
         try:
             status_result = cmd_poll(
                 submission_id=args.submission_id, adapter=_construct_adapter(adapter_cls, provider)
@@ -793,7 +815,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
-        provider = CREDENTIALS.provider(override=args.credential_dir)
+        provider = CREDENTIALS.provider(
+            accounts_cli=_accounts_cli_for(adapter_cls), override=args.credential_dir
+        )
         try:
             result = cmd_fetch(
                 target=args.target,
@@ -826,7 +850,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
-        provider = CREDENTIALS.provider(override=args.credential_dir)
+        provider = CREDENTIALS.provider(
+            accounts_cli=_accounts_cli_for(adapter_cls), override=args.credential_dir
+        )
         try:
             result = cmd_reconcile(
                 target=args.target,

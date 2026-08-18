@@ -35,12 +35,12 @@ def _load_adapter_seam():
     """Path-import `adapter.py`, reusing an already-loaded copy under
     `remote_execution_adapter` when one exists.
 
-    Same idiom `adapters/kaggle.py` and `remote_cli.py` already use for the
-    same correctness reason: a second, separately exec'd copy of
-    `adapter.py` would define a second, distinct `CredentialHandle`
-    dataclass with the same name, and a caller checking the shape this
-    module returns against the one it already holds would silently
-    disagree with an instance built from the second copy.
+    Same idiom every other sibling loader in this skill uses for the same
+    correctness reason: a second, separately exec'd copy of `adapter.py`
+    would define a second, distinct `CredentialHandle` dataclass with the
+    same name, and a caller checking the shape this module returns against
+    the one it already holds would silently disagree with an instance
+    built from the second copy.
     """
     module_name = "remote_execution_adapter"
     if module_name in sys.modules:
@@ -68,14 +68,6 @@ class CredentialsError(ADAPTER.AdapterError):
     """
 
 
-# The materialize command's own script, computed once relative to this
-# file's location — its location only, never a path into whatever data
-# directory that command guards on its own, which this module has no path
-# to at all.
-DEFAULT_ACCOUNTS_CLI = (
-    Path(__file__).resolve().parents[2] / "kaggle-accounts" / "scripts" / "accounts_cli.py"
-)
-
 SUBPROCESS_TIMEOUT_SECONDS = 60.0
 
 
@@ -88,6 +80,15 @@ def materialize(
     """Run `<accounts_cli> materialize --worker <id> --json` as a child
     process and return the `CredentialHandle` it names.
 
+    `accounts_cli` names the location of that command's own script; this
+    module holds no default for it and no opinion about which backend's
+    credential CLI it points to — that knowledge belongs to whichever
+    concrete adapter module a caller resolved a backend through, one level
+    below this seam, and it is that caller's job to pass the path in. A
+    missing `accounts_cli` is refused here, the same way every other
+    unusable answer in this module is refused, rather than left to fail as
+    an unrelated `TypeError` from the path construction below.
+
     This is the ONLY place in this module — and, by `adapter.py`'s own
     shape, the only place above the adapter seam at all — that ever
     produces a handle. `shell=False` with a list argv, matching every other
@@ -96,7 +97,14 @@ def materialize(
     unparsable stdout, or stdout missing the one field this reads is a
     refusal raised as `CredentialsError` — never a fabricated handle.
     """
-    cli = Path(accounts_cli) if accounts_cli else DEFAULT_ACCOUNTS_CLI
+    if accounts_cli is None:
+        raise CredentialsError(
+            f"materialize for worker {worker_id!r} has no accounts_cli "
+            "configured; this module holds no default location for any "
+            "service's credential CLI, so the constructing caller must "
+            "supply one"
+        )
+    cli = Path(accounts_cli)
     argv = [sys.executable, str(cli), "materialize", "--worker", worker_id, "--json"]
     try:
         result = subprocess.run(

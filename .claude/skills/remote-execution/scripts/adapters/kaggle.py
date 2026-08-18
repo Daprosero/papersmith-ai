@@ -187,6 +187,17 @@ class KaggleAdapter(ADAPTER.Adapter):
     fails closed, not silently.
     """
 
+    # Read by `remote_cli.py`'s generic construction site, through a bare
+    # `getattr(adapter_cls, "CREDENTIAL_CLI", None)` that names no backend
+    # at all — see `_accounts_cli_for()` there. This is an ordinary class
+    # attribute, not one of the `Adapter` ABC's six operations, which is
+    # what lets an adapter with no credential-materializing CLI of its own
+    # (this skill's own test doubles included) simply not define it. Reusing
+    # `DEFAULT_ACCOUNTS_CLI` here, rather than declaring a second path, is
+    # what keeps this module's own `workers()` and `credentials.py`'s
+    # `materialize()` pointed at the exact same script.
+    CREDENTIAL_CLI = DEFAULT_ACCOUNTS_CLI
+
     def __init__(
         self,
         *,
