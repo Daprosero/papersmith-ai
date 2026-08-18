@@ -162,16 +162,31 @@ _QUOTED_STATUS = re.compile(r'"([^"]+)"')
 _SLUG_DISALLOWED = re.compile(r"[^a-z0-9-]+")
 
 
+def _normalize_status_word(token: str) -> str:
+    """Strip an enum class prefix, when the CLI quoted one, from an
+    already-lowercased status token.
+
+    Kaggle CLI 2.2.4 was confirmed, against a real running kernel, to
+    print `has status "KernelWorkerStatus.RUNNING"` — the enum's own
+    `str()` repr, quoted whole — rather than the bare word `"running"`
+    earlier versions apparently used. The bare word is always the part
+    after the last `.` on every form observed; a genuine bare status word
+    never contains one itself, so this is a no-op for that case.
+    """
+    return token.rsplit(".", 1)[-1] if "." in token else token
+
+
 def _extract_status_token(raw: str) -> str:
     """Pull a status word out of the CLI's own sentence, when it quotes
-    one (`... has status "complete"`); fall back to the whole trimmed,
-    lowercased line otherwise. Either way this returns a CANDIDATE token
-    for `_KAGGLE_STATUS_TO_SEAM` to translate — never a value handed
-    upward as `Status.state` directly.
+    one (`... has status "complete"`, or CLI 2.2.4's own
+    `... has status "KernelWorkerStatus.RUNNING"`); fall back to the
+    whole trimmed, lowercased line otherwise. Either way this returns a
+    CANDIDATE token for `_KAGGLE_STATUS_TO_SEAM` to translate — never a
+    value handed upward as `Status.state` directly.
     """
     match = _QUOTED_STATUS.search(raw)
     token = match.group(1) if match else raw
-    return token.strip().lower()
+    return _normalize_status_word(token.strip().lower())
 
 
 def _slugify(text: str) -> str:
@@ -592,7 +607,8 @@ class KaggleAdapter(ADAPTER.Adapter):
             ref = row.get("ref")
             if not ref:
                 continue
-            state = _KAGGLE_STATUS_TO_SEAM.get((row.get("status") or "").strip().lower(), "unknown")
+            token = _normalize_status_word((row.get("status") or "").strip().lower())
+            state = _KAGGLE_STATUS_TO_SEAM.get(token, "unknown")
             if state in ("queued", "running"):
                 active.append(ref)
         return active

@@ -2428,6 +2428,32 @@ class KaggleAdapterTests(unittest.TestCase):
 
             self.assertEqual(status.state, "running")
 
+    def test_kaggle_cli_2_2_4s_enum_repr_status_translates_correctly(self) -> None:
+        """Kaggle CLI 2.2.4 was confirmed, against a real running kernel,
+        to print `has status "KernelWorkerStatus.RUNNING"` -- the enum's
+        own `str()` repr, quoted whole -- rather than the bare word
+        `"running"` earlier versions apparently used. Lowercasing that
+        whole repr produces `"kernelworkerstatus.running"`, which matches
+        no key in `_KAGGLE_STATUS_TO_SEAM` and silently fell through to
+        `"unknown"` even though the kernel was, in fact, running.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bin_dir = tmp_path / "bin"
+            _write_fake_kaggle(bin_dir, status_text="KernelWorkerStatus.RUNNING")
+            token_path = tmp_path / "creds"
+            token_path.mkdir()
+
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
+            with unittest.mock.patch.dict(
+                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+            ):
+                adapter = KAGGLE.KaggleAdapter(credentials={"acct-1": handle})
+                status = adapter.poll("acct-1/kernel-1")
+
+            self.assertEqual(status.state, "running")
+            self.assertIn("KernelWorkerStatus.RUNNING", status.detail)
+
     def test_non_zero_exit_from_the_service_cli_produces_a_refusal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
