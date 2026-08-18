@@ -3364,26 +3364,96 @@ def _is_literal(node: ast.expr) -> bool:
     return False
 
 
-def _reconstructible_call(call: ast.Call) -> bool:
-    """A call built entirely from literals is a constructor, not a
-    dependency: retyping the line reproduces it exactly, whatever it is
-    named — the whitelist is by shape, never by a list of blessed names.
+#: The read half of the exact shape `_is_reporting_cell` already recognizes
+#: on the write side (`write_text`/`write_bytes`/`write`/`dump`) — a call to
+#: one of these, taking no argument of its own, reads back bytes the run
+#: already persisted rather than computing anything (T12b, design #744
+#: section 8, correcting the false positive a real notebook exposed).
+_RECORD_READ_METHODS = ("read_text", "read_bytes")
+
+
+def _reads_persisted_record(node: ast.expr) -> bool:
+    """A call to a canonical file-read method with no argument of its own.
+
+    What the call is *applied to* — the path expression it reads from — is a
+    separate node `ast.walk` visits and checks on its own; this only says
+    that the read step itself adds no work, exactly as a zero-argument call
+    already counts as reconstructible everywhere else in this guard.
     """
-    return all(_is_literal(a) for a in call.args) \
-        and all(_is_literal(kw.value) for kw in call.keywords)
+    return (isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in _RECORD_READ_METHODS
+            and not node.args and not node.keywords)
+
+
+def _comprehension_locals(expr: ast.expr) -> frozenset[str]:
+    """Names bound by a comprehension's own `for` target anywhere inside
+    this expression — `line` in `[json.loads(line) for line in ...]`.
+
+    A comprehension's loop variable is manufactured and consumed entirely
+    within the same expression; reading it back is not a dependency on
+    anything outside the binding being checked, so it never by itself makes
+    that binding non-reconstructible.
+    """
+    names: set[str] = set()
+    for node in ast.walk(expr):
+        if isinstance(node, ast.comprehension):
+            names.update(_target_names(node.target))
+    return frozenset(names)
+
+
+def _target_names(target: ast.expr) -> set[str]:
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: set[str] = set()
+        for elt in target.elts:
+            names.update(_target_names(elt))
+        return names
+    return set()
+
+
+def _reconstructible_arg(node: ast.expr, local_names: frozenset[str]) -> bool:
+    """Whether one call argument costs nothing to redo: a literal, a read of
+    already-persisted bytes, or a name manufactured by the same expression's
+    own comprehension — never a name read from somewhere else."""
+    return (_is_literal(node) or _reads_persisted_record(node)
+            or (isinstance(node, ast.Name) and node.id in local_names))
+
+
+def _reconstructible_call(call: ast.Call,
+                           local_names: frozenset[str] = frozenset()) -> bool:
+    """A call built entirely from literals, from a read of already-persisted
+    bytes, or from its own comprehension's loop variable is a constructor or
+    a record read, not a dependency: retyping the line reproduces it
+    exactly, whatever it is named — the whitelist is by shape, never by a
+    list of blessed names.
+    """
+    return all(_reconstructible_arg(a, local_names) for a in call.args) \
+        and all(_reconstructible_arg(kw.value, local_names) for kw in call.keywords)
 
 
 def _reconstructible(expr: ast.expr | None, aliases: dict[str, str],
                       vocabulary: set[str]) -> bool:
     """Whether this binding could be redone without executing anything the
     report itself does not already name — the false-positive guard that is
-    the whole point of the check (design #744 section 8, step 5)."""
+    the whole point of the check (design #744 section 8, step 5).
+
+    A read of already-persisted bytes (T12b's addition) is exempted the same
+    way a literal constructor already was: reading back what a run left on
+    disk costs nothing to redo, whatever the call happens to be named —
+    never by matching a path string against the report contract's `record`
+    or `records` entries, which a path built from an imported config symbol
+    (`config.RESULTS / "runs.jsonl"`) could never match without executing
+    the target's own code, something this guard deliberately never does.
+    """
     if expr is None:
         return True
+    local_names = _comprehension_locals(expr)
     for node in ast.walk(expr):
         if isinstance(node, ast.Call) \
                 and _resolved_call_name(node, aliases) not in vocabulary \
-                and not _reconstructible_call(node):
+                and not _reconstructible_call(node, local_names):
             return False
     return True
 
@@ -3428,6 +3498,19 @@ def notebook_coupling(path: Path, contract: dict) -> dict:
        literal constructor — the one shape that costs a re-run: a binding
        that cannot be rebuilt without executing something the report never
        declared.
+
+       T12b widens what counts as reconstructible in step 5, without adding
+       a name-based allow-list: a call to `read_text`/`read_bytes` with no
+       argument of its own is exempted the same way a zero-argument call
+       already was, and a comprehension's own loop variable no longer makes
+       its enclosing call non-reconstructible, since that name is
+       manufactured and consumed inside the same expression. Both are shape
+       rules, not a list of blessed names — see `_reconstructible_arg` and
+       `_comprehension_locals`. A call that merely *reconstructs an object*
+       from already-read data (`Reduction(**summary["reduction"])`) is
+       deliberately left uncovered: it is not itself a read, and widening
+       the exemption to cover it would need to reason transitively about
+       where its arguments came from, which this guard does not do.
     """
     vocabulary = (set(contract.get("renderers") or [])
                   | set(contract.get("conclusions") or [])

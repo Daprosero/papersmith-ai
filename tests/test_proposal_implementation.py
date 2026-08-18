@@ -1578,6 +1578,54 @@ class CouplingTests(unittest.TestCase):
     def test_a_clean_notebook_reports_no_coupling(self):
         self.assertEqual(self.couple(_CLEAN_CELLS), {"coupled": False, "couplings": []})
 
+    def test_reading_a_persisted_json_record_never_couples(self):
+        """`runs = [json.loads(line) for line in (RESULTS / "runs.jsonl")
+        .read_text().splitlines() if line.strip()]` — the exact shape of a
+        correctly split report notebook reading back what the run already
+        wrote (T12b, correcting the false positive T12's real-notebook
+        validation exposed on `Benchmark_Phase1_Report.ipynb`).
+
+        `.read_text()` takes no argument of its own, so retyping the call
+        reproduces it; `line` is manufactured and consumed entirely inside
+        the same comprehension, never read from anywhere outside it. Neither
+        is a dependency on a call the report never named — both are the
+        report's own record, read back rather than recomputed.
+        """
+        cells = [
+            _cell("code", "from pathlib import Path\n"
+                          "import json\n"
+                          "from Method_Benchmark import tables\n"
+                          "RESULTS = Path('Results')"),
+            _cell("code",
+                  "runs = [json.loads(line) for line in "
+                  "(RESULTS / 'runs.jsonl').read_text().splitlines() "
+                  "if line.strip()]\n"
+                  "summary = json.loads((RESULTS / 'summary.json').read_text())"),
+            _cell("code", "print(tables.render(runs))\n"
+                          "print(tables.render(summary))"),
+        ]
+        self.assertEqual(self.couple(cells), {"coupled": False, "couplings": []})
+
+    def test_reconstructing_an_object_from_already_read_data_still_couples(self):
+        """`Reduction(**summary['reduction'])` reconstructs a dataclass from
+        data that was itself read back cleanly — but the constructor call is
+        not one of the read primitives this guard recognizes, so it stays
+        flagged. The exemption is narrow by design: it does not widen to
+        make every coupling on a report notebook vanish (T12b)."""
+        cells = [
+            _cell("code", "import json\nfrom pathlib import Path\n"
+                          "from Method_Benchmark import tables, harness\n"
+                          "RESULTS = Path('Results')"),
+            _cell("code",
+                  "summary = json.loads((RESULTS / 'summary.json').read_text())\n"
+                  "reduction = harness.Reduction(**summary['reduction'])"),
+            _cell("code", "print(tables.render(reduction))"),
+        ]
+        state = self.couple(cells)
+        self.assertTrue(state["coupled"], state)
+        self.assertEqual(state["couplings"],
+                         [{"name": "reduction", "boundIn": 1, "readIn": 2}])
+
 
 class CouplingSurfacingTests(unittest.TestCase):
     """`notebook_coupling` reaches `notebooks_state()`, `verify` and `probe` —
