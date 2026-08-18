@@ -41,6 +41,7 @@ import inspect
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -83,6 +84,10 @@ CREDENTIALS = _load_sibling("remote_execution_credentials", "credentials.py")
 # (it calls `ADAPTER.resolve_metadata()`) has to be this exact module
 # object too.
 JOBFOLDER = _load_sibling("remote_execution_jobfolder", "jobfolder.py")
+
+# `smoke record`'s verdict comes from the SAME predicate T10's `merge()`
+# uses — never a second, independently written completeness check here.
+SHARD_IO = _load_sibling("remote_execution_shard_io", "shard_io.py")
 
 
 def _load_source_digest() -> Callable[[Path, str], str]:
@@ -157,6 +162,20 @@ QUARANTINE_DIRNAME = "quarantine"
 PARTIAL_SUFFIX = ".partial"
 TOOLS_DIRNAME = "tools"
 RUN_CONFIG_FILENAME = "run-config.json"
+
+# `smoke.jsonl` — a DISTINCT file from `ledger.jsonl`, beside it in the
+# same product's `.remote-execution/` directory, appended through the
+# same `LEDGER.append()`. A fourth `kind` inside `ledger.jsonl` was
+# rejected: `fold()` indexes `latest[entrypoint]`, so a smoke submission
+# recorded there would silently reclassify a real run as superseded.
+# `fold()` never reads this file, so that is structurally impossible. See
+# `SKILL.md`'s "Smoke" section for the full rationale.
+SMOKE_LEDGER_FILENAME = "smoke.jsonl"
+
+# The `kind` a `smoke record` verdict carries inside `smoke.jsonl` (which
+# also carries the ordinary `submitted` events a smoke SUBMISSION writes —
+# see `cmd_submit`). Never folded, so free of the fourth-kind constraint.
+SMOKE_RESULT_KIND = "smokeResult"
 
 
 def product_for(
@@ -415,9 +434,22 @@ def cmd_submit(
     adapter: "ADAPTER.Adapter",
     source_digest: Callable[[Path, str], str] | None = None,
     product: str | None = None,
+    smoke: bool = False,
 ) -> dict:
     """Guard, resolve a product, plan, submit, and record — the whole submit
     path, in this order.
+
+    `smoke=True` (`submit --smoke`) does two things together, both
+    load-bearing (design #744 section 7, and see `SMOKE_LEDGER_FILENAME`'s
+    own comment above): sets `run_config["mode"] = "smoke"` on the `Job`
+    (opaque to `packer.py`/`ledger.py`, read only by
+    `assets/runner_invoke.py`'s `select_block()`), and routes the
+    resulting `submitted` event to `smoke.jsonl` instead of
+    `ledger.jsonl` — a different destination FILE, not a different event
+    shape, which is what keeps a rehearsal from ever becoming an
+    entrypoint's `latest[...]` submission in the main ledger's fold.
+    `smoke=False` (the default) is byte-identical to this function's
+    pre-T11 behavior.
 
     `target` is resolved to an absolute path as the very first thing this
     function does, before any other check and before any filesystem write —
@@ -469,7 +501,8 @@ def cmd_submit(
     digest_fn = source_digest or _load_source_digest()
     digest = digest_fn(target, resolved_product)
 
-    ledger_path = target / resolved_product / LEDGER_DIRNAME / LEDGER_FILENAME
+    ledger_filename = SMOKE_LEDGER_FILENAME if smoke else LEDGER_FILENAME
+    ledger_path = target / resolved_product / LEDGER_DIRNAME / ledger_filename
     ledger_lines: list[str] = []
     if ledger_path.exists():
         ledger_lines = ledger_path.read_text(encoding="utf-8").splitlines()
@@ -482,7 +515,8 @@ def cmd_submit(
         live_digest=digest,
     )
 
-    job = ADAPTER.Job(entrypoint=resolved_entrypoint, run_config={}, worker=worker)
+    run_config = {"mode": "smoke"} if smoke else {}
+    job = ADAPTER.Job(entrypoint=resolved_entrypoint, run_config=run_config, worker=worker)
     submission = adapter.submit(job)
 
     event = LEDGER.submitted_event(
@@ -501,6 +535,7 @@ def cmd_submit(
         "event": event,
         "ledgerPath": ledger_path,
         "staleness": _job_folder_staleness(resolved_entrypoint),
+        "smoke": smoke,
     }
 
 
@@ -781,6 +816,171 @@ def cmd_reconcile(
     }
 
 
+def _now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _target_for_job_dir(resolved_job_dir: Path) -> Path:
+    """The repository a job folder belongs to, derived the exact same
+    structural way `jobfolder.read()` derives it internally
+    (`<target>/tools/<service>/<job-name>/` → `.parents[2]`). Only ever
+    called after `JOBFOLDER.read()` has already confirmed this exact
+    shape by not raising.
+    """
+    return resolved_job_dir.parents[2]
+
+
+def _smoke_ledger_path(target: Path, product: str) -> Path:
+    return target / product / LEDGER_DIRNAME / SMOKE_LEDGER_FILENAME
+
+
+def cmd_smoke_record(
+    *,
+    job_dir: str | Path,
+    artifact_path: str | Path,
+    worker: str,
+) -> dict:
+    """Record a smoke run's verdict — never a human assertion. Reads
+    `artifact_path` (a fetched `shard.json`) and passes iff
+    `shard_io.completeness(...)` reports it complete: the SAME predicate
+    T10's `merge()` uses, two consumers.
+
+    The `required` field list reaches this function WITHOUT this module
+    ever naming a field of its own: read from the job's own
+    `run-config.json`, at `run.smoke.requiredEvidence` — a list the TARGET
+    declares at `generate-job` time (repeatable `--smoke-required-evidence`
+    flag; see `jobfolder.build_run_config()`). This forge module only
+    carries that list from where the target wrote it to where
+    `shard_io.completeness()` needs it; confirmed by
+    `test_remote_cli_source_names_no_evidence_field_of_its_own` that no
+    evidence-stamp field path exists in this module's own source — the
+    same "caller brings the vocabulary" discipline
+    `shard_io.completeness()` already states, carried one hop further.
+
+    Routes through `JOBFOLDER.read()` — the single job-folder reader.
+    Unlike `_job_folder_staleness()`, a `JobFolderError` here is NOT
+    swallowed: `smoke record` has no legacy-shape fallback to fall through
+    to at all.
+
+    Appended to `smoke.jsonl` through the SAME `LEDGER.append()` every
+    other event in this skill goes through — see `cmd_submit`'s own
+    docstring and the module-level comment above `SMOKE_LEDGER_FILENAME`.
+    """
+    resolved_job_dir = Path(job_dir).resolve()
+    job_folder = JOBFOLDER.read(resolved_job_dir)
+    run_config = job_folder.run_config
+
+    smoke_block = run_config.get("run", {}).get("smoke") or {}
+    required = list(smoke_block.get("requiredEvidence") or [])
+
+    try:
+        artifact_text = Path(artifact_path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RemoteCLIError(
+            f"could not read artifact {artifact_path}: {exc}"
+        ) from None
+    try:
+        stamp = json.loads(artifact_text)
+    except json.JSONDecodeError as exc:
+        raise RemoteCLIError(f"{artifact_path} is not valid JSON: {exc}") from None
+
+    verdict = SHARD_IO.completeness(stamp, required)
+    result = "pass" if verdict["complete"] else "fail"
+
+    target = _target_for_job_dir(resolved_job_dir)
+    smoke_ledger_path = _smoke_ledger_path(target, run_config["product"])
+
+    event = {
+        "kind": SMOKE_RESULT_KIND,
+        "ts": _now(),
+        "jobName": run_config["jobName"],
+        "result": result,
+        "commit": run_config["commit"],
+        "worker": worker,
+        "missing": verdict["missing"],
+    }
+    LEDGER.append(smoke_ledger_path, event)
+
+    return {
+        "result": result,
+        "missing": verdict["missing"],
+        "requiredEvidence": required,
+        "smokeLedgerPath": smoke_ledger_path,
+        "event": event,
+    }
+
+
+def cmd_readiness(*, job_dir: str | Path, worker: str) -> dict:
+    """States whether `job_dir` is ready to run its full submission on
+    `worker` — reports only, the same "resolves nothing" discipline
+    `cmd_status()` already holds structurally (no `adapter` parameter):
+    issues no submission, offers no menu. (This is remote-execution's own
+    report command — not a call into `implementation_cli.py`'s own
+    `cmd_probe`, a later task's territory this function does not touch.)
+
+    Binds three facts on ONE record — the latest smoke record for this
+    job, by append order in `smoke.jsonl` (last line wins, same rule
+    `ledger.fold()` already applies to its own log): `result == "pass"`,
+    `commit` equal to the job's OWN currently-pinned commit, `worker`
+    equal to the worker asked about. No clock: nothing here reads or
+    compares a timestamp. A record's usefulness expires the moment the
+    job re-pins to a different commit or the worker changes — never after
+    elapsed time.
+    """
+    resolved_job_dir = Path(job_dir).resolve()
+    job_folder = JOBFOLDER.read(resolved_job_dir)
+    run_config = job_folder.run_config
+
+    target = _target_for_job_dir(resolved_job_dir)
+    smoke_ledger_path = _smoke_ledger_path(target, run_config["product"])
+
+    latest: dict | None = None
+    if smoke_ledger_path.exists():
+        for raw_line in smoke_ledger_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                isinstance(event, dict)
+                and event.get("kind") == SMOKE_RESULT_KIND
+                and event.get("jobName") == run_config["jobName"]
+            ):
+                latest = event
+
+    if latest is None:
+        return {
+            "ready": False,
+            "reason": "no smoke record on file for this job",
+            "latestSmokeRecord": None,
+            "staleness": dict(job_folder.staleness),
+        }
+
+    ready = (
+        latest.get("result") == "pass"
+        and latest.get("commit") == run_config["commit"]
+        and latest.get("worker") == worker
+    )
+    reason = None
+    if not ready:
+        reason = (
+            "latest smoke record does not match: expected result 'pass', "
+            f"commit {run_config['commit']!r}, worker {worker!r}; got "
+            f"result {latest.get('result')!r}, commit {latest.get('commit')!r}, "
+            f"worker {latest.get('worker')!r}"
+        )
+
+    return {
+        "ready": ready,
+        "reason": reason,
+        "latestSmokeRecord": latest,
+        "staleness": dict(job_folder.staleness),
+    }
+
+
 def _construct_adapter(
     adapter_cls: type["ADAPTER.Adapter"],
     credentials_provider: Callable[[str], "ADAPTER.CredentialHandle"],
@@ -856,6 +1056,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="override: which product's ledger this submission belongs to; wins over a "
         "job folder's own declared run-config.json product and over the legacy shape's "
         "<Name> component",
+    )
+    submit.add_argument(
+        "--smoke", action="store_true",
+        help="submit a rehearsal run: mode='smoke', recorded to smoke.jsonl, never ledger.jsonl",
     )
 
     status = subparsers.add_parser(
@@ -942,6 +1146,12 @@ def _build_parser() -> argparse.ArgumentParser:
     generate_job.add_argument("--smoke-function", default=None)
     generate_job.add_argument("--smoke-kwargs", default=None, help="a JSON object")
     generate_job.add_argument(
+        "--smoke-required-evidence", dest="smoke_required_evidence",
+        action="append", default=[],
+        help="repeatable: a field path shard_io.completeness() requires of a smoke "
+        "run's shard.json; refused without --smoke-module/--smoke-function set",
+    )
+    generate_job.add_argument(
         "--regenerate", action="store_true",
         help="replace an existing job folder atomically instead of refusing",
     )
@@ -953,6 +1163,29 @@ def _build_parser() -> argparse.ArgumentParser:
             "bypasses a computedNotDeclared refusal"
         ),
     )
+
+    smoke = subparsers.add_parser(
+        "smoke", help="smoke-run bookkeeping: recording a rehearsal's evidence-derived verdict"
+    )
+    smoke_subparsers = smoke.add_subparsers(dest="smoke_command", required=True)
+    smoke_record = smoke_subparsers.add_parser(
+        "record",
+        help="record a smoke run's verdict from its returned shard.json, "
+        "derived from shard_io.completeness() — never a human assertion",
+    )
+    smoke_record.add_argument("--job-dir", required=True, type=Path)
+    smoke_record.add_argument(
+        "--from-artifact", required=True, type=Path, dest="from_artifact"
+    )
+    smoke_record.add_argument("--worker", required=True)
+
+    readiness = subparsers.add_parser(
+        "readiness",
+        help="state whether a job is ready for a full submission on a worker; "
+        "reports only, issues no submission",
+    )
+    readiness.add_argument("--job-dir", required=True, type=Path)
+    readiness.add_argument("--worker", required=True)
 
     return parser
 
@@ -978,6 +1211,7 @@ def main(argv: list[str] | None = None) -> int:
                 requested=args.requested,
                 adapter=_construct_adapter(adapter_cls, provider),
                 product=args.product,
+                smoke=args.smoke,
             )
         except (RemoteCLIError, PACKER.PackerError, LEDGER.LedgerError,
                 ADAPTER.AdapterError) as exc:
@@ -992,6 +1226,7 @@ def main(argv: list[str] | None = None) -> int:
                     "granted": result["plan"].granted,
                     "ledgerPath": str(result["ledgerPath"]),
                     "staleness": result["staleness"],
+                    "smoke": result["smoke"],
                 },
                 sort_keys=True,
             )
@@ -1112,6 +1347,7 @@ def main(argv: list[str] | None = None) -> int:
                 smoke_module=args.smoke_module,
                 smoke_function=args.smoke_function,
                 smoke_kwargs=json.loads(args.smoke_kwargs) if args.smoke_kwargs else None,
+                smoke_required_evidence=args.smoke_required_evidence or None,
                 regenerate=args.regenerate,
                 accept_unresolved=args.accept_unresolved,
             )
@@ -1128,6 +1364,42 @@ def main(argv: list[str] | None = None) -> int:
                 {"jobFolder": str(destination), "staleness": staleness}, sort_keys=True
             )
         )
+        return 0
+
+    if args.command == "smoke":
+        if args.smoke_command == "record":
+            try:
+                result = cmd_smoke_record(
+                    job_dir=args.job_dir,
+                    artifact_path=args.from_artifact,
+                    worker=args.worker,
+                )
+            except (RemoteCLIError, LEDGER.LedgerError, JOBFOLDER.JobFolderError) as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+
+            print(
+                json.dumps(
+                    {
+                        "result": result["result"],
+                        "missing": result["missing"],
+                        "requiredEvidence": result["requiredEvidence"],
+                        "smokeLedgerPath": str(result["smokeLedgerPath"]),
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 0
+        return 1
+
+    if args.command == "readiness":
+        try:
+            result = cmd_readiness(job_dir=args.job_dir, worker=args.worker)
+        except (RemoteCLIError, JOBFOLDER.JobFolderError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+        print(json.dumps(result, sort_keys=True))
         return 0
 
     return 1

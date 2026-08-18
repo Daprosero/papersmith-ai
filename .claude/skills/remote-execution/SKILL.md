@@ -1,6 +1,6 @@
 ---
 name: remote-execution
-description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry), the packer's capacity clamp, the full `remote_cli` front door (`submit` with its path guard, `status`, `poll`, `fetch` with quarantine, `reconcile`), and one concrete backend: `adapters/kaggle.py` — the ONLY file in this entire skill allowed to name a service. It shells out to the `kaggle` CLI (never imports the `kaggle` package), derives worker identity solely from kaggle-accounts' own sanctioned `list --json` command, and accepts credentials only as a `CredentialHandle(worker_id, config_dir)` carrying a path, never a value — its single sink is `KAGGLE_CONFIG_DIR` on a child process's environment. Stdlib-only, no venv."
+description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry), the packer's capacity clamp, the full `remote_cli` front door (`submit` with its path guard and `--smoke`, `status`, `poll`, `fetch` with quarantine, `reconcile`, `generate-job`, `smoke record`, `readiness`), and one concrete backend: `adapters/kaggle.py` — the ONLY file in this entire skill allowed to name a service. It shells out to the `kaggle` CLI (never imports the `kaggle` package), derives worker identity solely from kaggle-accounts' own sanctioned `list --json` command, and accepts credentials only as a `CredentialHandle(worker_id, config_dir)` carrying a path, never a value — its single sink is `KAGGLE_CONFIG_DIR` on a child process's environment. A rehearsal run (`smoke.jsonl`, a distinct file from the main ledger) proves readiness from evidence-completeness, never a human assertion, and never a clock. Stdlib-only, no venv."
 ---
 
 # Remote Execution
@@ -54,7 +54,9 @@ Three modules exist so far, each service-blind and stdlib-only:
   minimum: `plan()` returns `requested`, `cap`, `inFlight` and `granted` as
   four separate numbers, plus `inFlightSource` recording whether `inFlight`
   came from the live service or fell back to the ledger.
-- `scripts/remote_cli.py` — the CLI front door, five commands.
+- `scripts/remote_cli.py` — the CLI front door, five submission/status
+  commands (`submit`, `status`, `poll`, `fetch`, `reconcile`) plus
+  `generate-job`, `smoke record` and `readiness` (see "Smoke" below).
   - `submit` guards the entrypoint, resolves the product via
     `product_for()` (the SAME function `status`, `fetch` and `reconcile`
     call — never an inline `parts[0]` derivation of its own), computes a
@@ -89,7 +91,10 @@ Three modules exist so far, each service-blind and stdlib-only:
     (`Job.entrypoint`, the ledger's `entrypoint` field, the fold's indices)
     stays deliberately blind to that question; widening this one guard,
     not reworking any of those, is how a future non-notebook workload
-    becomes admissible.
+    becomes admissible. `--smoke` sets `run_config["mode"] = "smoke"` on
+    the `Job` handed to the adapter, and routes the resulting `submitted`
+    event to `smoke.jsonl` instead of `ledger.jsonl` (see "Smoke" below) —
+    both together, never one without the other.
   - `status` folds the ledger and reports per-entrypoint state, what is
     `staleInFlight`, what is quarantined, and `unreadableLines`. It accepts
     no `adapter` parameter at all — a structural fact, not a convention —
@@ -181,7 +186,9 @@ executable — no test in this suite reaches the network or a real account).
   target-supplied values (`--service`, `--job-name`, `--product`,
   `--commit`, `--repo-url`/`--repo-ref`, `--clone-path` repeated,
   `--run-module`/`--run-function`/`--run-kwargs`, an optional
-  `--smoke-module`/`--smoke-function`/`--smoke-kwargs`) plus one adapter
+  `--smoke-module`/`--smoke-function`/`--smoke-kwargs`, and an optional
+  repeatable `--smoke-required-evidence` — see "Smoke" below for what that
+  last one is for) plus one adapter
   registry call: `ADAPTER.resolve_metadata(service)(run_config)` returns an
   opaque `(filename, text)` pair this module writes without ever learning
   what either means — the same registry `adapters/kaggle.py` already
@@ -358,10 +365,67 @@ executable — no test in this suite reaches the network or a real account).
   became stricter just because staleness reporting was added beside it.
   `poll` is deliberately NOT routed: it receives only `--submission-id`
   and must not learn the worker or the job, so it has no job folder to
-  route through in the first place. `readiness` and probe's own
-  `remoteExecution` fact do not exist yet (later slices build them); once
-  they do, they route through this same `read()` too, never a second
-  staleness computation of their own.
+  route through in the first place. `readiness` (see below) now routes
+  through this same `read()` too, never a second staleness computation of
+  its own. Probe's own `remoteExecution` fact does not exist yet (a later
+  slice builds it); once it does, it will route through `read()` the same
+  way.
+
+## Smoke — a readiness gate, evidence-derived
+
+A smoke run is a rehearsal, not a submission whose result feeds any report.
+
+**A distinct file, not a fourth ledger `kind`.**
+`<target>/<product>/.remote-execution/smoke.jsonl` lives beside
+`ledger.jsonl`, appended through the exact same `ledger.append()` — but a
+different FILE, load-bearing not stylistic. A fourth `kind` inside
+`ledger.jsonl` was rejected: `fold()` indexes `latest[entrypoint]`, so a
+smoke submission recorded there would become that entrypoint's latest
+`submitted` event and silently reclassify a real, still-pending full run
+as superseded. `fold()` never reads `smoke.jsonl`, so that is structurally
+impossible. `smoke.jsonl` carries two kinds with no such conflict, since
+nothing folds it that way: the ordinary `submitted` event a smoke
+SUBMISSION writes, and a `smokeResult` event `smoke record` writes.
+
+**`submit --smoke` stays explicit and human-invoked.** It sets
+`run_config["mode"] = "smoke"` on the `Job` — opaque to `packer.py`/
+`ledger.py` like every other `run_config` key — and routes the resulting
+`submitted` event to `smoke.jsonl` instead of `ledger.jsonl`.
+`assets/runner_invoke.py`'s `select_block()` already branches on that mode
+to pick the declared `run.smoke` block over the normal `run` block.
+
+**The verdict is not a human assertion.** `remote_cli.py smoke record
+--job-dir <dir> --from-artifact <path> --worker <worker>` reads the
+artifact (a fetched `shard.json`) and passes iff
+`shard_io.completeness(stamp, required)` — the SAME predicate T10's
+`merge()` uses — reports it complete. Smoke pass ≡ *the evidence stamp is
+complete, at this commit, on this worker*. The `required` list reaches
+`smoke record` WITHOUT this forge naming a field of its own: it travels
+through `run-config.json`'s `run.smoke.requiredEvidence`, declared by the
+TARGET at `generate-job` time via the repeatable
+`--smoke-required-evidence` flag — carried, never interpreted, the same
+way `run.module`/`clonePaths` already are (confirmed by
+`test_remote_cli_source_names_no_evidence_field_of_its_own`). Declaring
+that list without a smoke block is refused at generation time. `smoke
+record` routes through `jobfolder.read()`, and — unlike
+`_job_folder_staleness()` — does NOT swallow a `JobFolderError`: this
+command has no legacy-shape fallback to fall through to.
+
+**Readiness, and no clock.** `remote_cli.py readiness --job-dir <dir>
+--worker <worker>` reports whether a job is ready for its full submission
+on that worker — issues no submission, offers no menu, the same
+"reports and resolves nothing" discipline `status` already holds
+structurally (no `adapter` parameter in either signature). It binds three
+facts on the LATEST `smokeResult` record for this job (append order, last
+line wins): `result == "pass"`, `commit` equal to the job's CURRENT
+pinned commit, `worker` equal to the worker asked about. Nothing here
+reads a timestamp — a record's usefulness expires the moment the job
+re-pins to a different commit or the worker changes, never after elapsed
+time.
+
+`probe` states the fact and submits nothing — `readiness` reports only.
+`piloted` (a `proposal-implementation` concept) is untouched, and neither
+state implies the other.
 
 ## Why append, not a status record
 
@@ -416,6 +480,15 @@ the same name for it, and neither carries a format opinion about what it
 points to; that policy question belongs to the CLI that submits, not to
 this record.
 
+This table is `ledger.jsonl`'s own vocabulary — the one `fold()` indexes
+by `latest[entrypoint]`. `smoke.jsonl` is a physically separate file (see
+"Smoke" above) and carries its own, unrelated vocabulary:
+
+| event | fields |
+|---|---|
+| `submitted` | the same shape as above — written by `submit --smoke` |
+| `smokeResult` | `ts`, `jobName`, `result` (`"pass"`/`"fail"`), `commit`, `worker`, `missing` — written by `smoke record` |
+
 ## Environment
 
 **None.** Stdlib-only — no `.venv`, no `setup.sh`, no `requirements.txt`.
@@ -426,6 +499,13 @@ Requires Python 3.10+.
 Code is forge-owned and lives here, inside the skill. Data is target-owned:
 `<target>/<Name>/.remote-execution/ledger.jsonl`, inside the target's own git
 checkout, alongside the repository whose submissions it records.
+
+## Smoke data location
+
+`<target>/<product>/.remote-execution/smoke.jsonl` — the SAME directory
+`ledger.jsonl` lives in, product-scoped exactly like it, but a distinct
+file (see "Smoke" above for why that separation is load-bearing, not
+stylistic).
 
 ## Quarantine location
 

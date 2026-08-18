@@ -1812,6 +1812,19 @@ class ScriptedListActiveAdapter(FakeAdapter):
         return list(self._active)
 
 
+class _SpySubmitAdapter(FakeAdapter):
+    """A `FakeAdapter` that records the exact `Job` it was handed, so a
+    test can assert what `cmd_submit()` actually constructed."""
+
+    def __init__(self, worker_id: str = "w1", capacity: int = 2) -> None:
+        super().__init__(worker_id=worker_id, capacity=capacity)
+        self.last_job = None
+
+    def submit(self, job) -> "ADAPTER.Submission":
+        self.last_job = job
+        return super().submit(job)
+
+
 class PollTests(unittest.TestCase):
     def test_poll_refuses_a_status_outside_the_five_state_vocabulary(self) -> None:
         class MisbehavingAdapter(FakeAdapter):
@@ -4716,6 +4729,589 @@ class CompletenessTests(unittest.TestCase):
             result,
             {"complete": False, "missing": ["widget.absent", "unrelated.path"]},
         )
+
+
+class SmokeTests(unittest.TestCase):
+    """`smoke.jsonl`, `submit --smoke`, `smoke record --from-artifact`, and
+    `readiness` (design #744 section 7) — exercised against `FakeAdapter`
+    only. Every test here has a reachable red: before this task,
+    `cmd_submit` accepted no `smoke` keyword, and `REMOTE_CLI` exposed no
+    `cmd_smoke_record`/`cmd_readiness` attribute.
+    """
+
+    FAKE_SERVICE = "smoke-fake-service"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        ADAPTER.register_metadata(
+            cls.FAKE_SERVICE,
+            lambda run_config: ("fake-metadata.json", json.dumps({"ok": True})),
+        )
+
+    # -- fixtures: a real git repo + a real generated job folder, the same
+    # shape `StalenessTests` already establishes for exercising
+    # `JOBFOLDER.read()` end to end ------------------------------------
+
+    def _git(self, cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "smoke-tests"
+        env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "smoke-tests@example.invalid"
+        return subprocess.run(
+            ["git", *args], cwd=cwd, env=env, capture_output=True, text=True, check=check
+        )
+
+    def _init_repo(self, target: Path) -> str:
+        target.mkdir(parents=True, exist_ok=True)
+        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        harness.parent.mkdir(parents=True, exist_ok=True)
+        harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
+        self._git(target, "init", "-q")
+        self._git(target, "add", "-A")
+        self._git(target, "commit", "-q", "-m", "initial")
+        return self._git(target, "rev-parse", "HEAD").stdout.strip()
+
+    def _fixture_assets(self, tmp: str) -> tuple[Path, Path]:
+        bootstrap = Path(tmp) / "fixture_bootstrap.py"
+        invoke = Path(tmp) / "fixture_invoke.py"
+        bootstrap.write_text("# fixture bootstrap cell\n", encoding="utf-8")
+        invoke.write_text("# fixture invoke cell\n", encoding="utf-8")
+        return bootstrap, invoke
+
+    def _generate(
+        self,
+        tmp: str,
+        target: Path,
+        *,
+        commit: str,
+        job_name: str = "search-a",
+        required_evidence=("evidence.commit", "evidence.outputs"),
+        regenerate: bool = False,
+    ) -> Path:
+        (target / "MIL-CREDA").mkdir(parents=True, exist_ok=True)
+        bootstrap, invoke = self._fixture_assets(tmp)
+        return JOBFOLDER.generate_job(
+            target=target,
+            service=self.FAKE_SERVICE,
+            job_name=job_name,
+            product="MIL-CREDA",
+            commit=commit,
+            repo_url="https://example.invalid/repo.git",
+            repo_ref="main",
+            clone_paths=["src/MIL_CREDA_Benchmark"],
+            run_module="MIL_CREDA_Benchmark.harness",
+            run_function="campaign",
+            smoke_module="MIL_CREDA_Benchmark.harness",
+            smoke_function="campaign",
+            smoke_required_evidence=list(required_evidence) if required_evidence else None,
+            bootstrap_asset=bootstrap,
+            invoke_asset=invoke,
+            regenerate=regenerate,
+        )
+
+    # -- (a) smoke.jsonl is a distinct file; the mandated RED test --------
+
+    def test_smoke_submission_never_enters_the_fold_or_supersedes_a_real_run(self) -> None:
+        """A fourth `kind` inside the main ledger would become
+        `latest[entrypoint]` and silently reclassify a real, still-pending
+        full run as superseded (design #744 section 7's own rejection)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            (target / "MIL-CREDA").mkdir(parents=True)
+            job_dir = _make_job_folder(target, "kaggle", "search-a")
+            notebook = job_dir / "runner.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+            (job_dir / "run-config.json").write_text(
+                json.dumps({"product": "MIL-CREDA"}), encoding="utf-8"
+            )
+
+            adapter = FakeAdapter(worker_id="w1", capacity=2)
+
+            full_result = REMOTE_CLI.cmd_submit(
+                target=target, entrypoint=notebook, worker="w1", requested=1,
+                adapter=adapter, source_digest=lambda t, n: "d" * 64,
+            )
+            smoke_result = REMOTE_CLI.cmd_submit(
+                target=target, entrypoint=notebook, worker="w1", requested=1,
+                adapter=adapter, source_digest=lambda t, n: "d" * 64, smoke=True,
+            )
+
+            # Different files -- the whole point of the design's rejection.
+            self.assertEqual(full_result["ledgerPath"].name, "ledger.jsonl")
+            self.assertEqual(smoke_result["ledgerPath"].name, "smoke.jsonl")
+            self.assertNotEqual(full_result["ledgerPath"], smoke_result["ledgerPath"])
+
+            main_lines = full_result["ledgerPath"].read_text(encoding="utf-8").splitlines()
+            # The smoke run's own submitted event never touched this file.
+            self.assertEqual(len(main_lines), 1)
+
+            state = LEDGER.fold(main_lines, live_digest="d" * 64)
+            entry = "tools/kaggle/search-a/runner.ipynb"
+            self.assertEqual(state.entrypoints[entry].state, "pending")
+            self.assertEqual(
+                state.latest[entry]["submissionId"], full_result["submission"].id,
+            )
+            self.assertNotEqual(
+                state.latest[entry]["submissionId"], smoke_result["submission"].id,
+            )
+
+    def test_smoke_first_then_full_still_leaves_the_full_run_as_latest(self) -> None:
+        """OPPOSITE order: a smoke submission before the real one must not
+        prevent the real one from becoming this entrypoint's latest."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            (target / "MIL-CREDA").mkdir(parents=True)
+            job_dir = _make_job_folder(target, "kaggle", "search-a")
+            notebook = job_dir / "runner.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+            (job_dir / "run-config.json").write_text(
+                json.dumps({"product": "MIL-CREDA"}), encoding="utf-8"
+            )
+
+            adapter = FakeAdapter(worker_id="w1", capacity=2)
+
+            REMOTE_CLI.cmd_submit(
+                target=target, entrypoint=notebook, worker="w1", requested=1,
+                adapter=adapter, source_digest=lambda t, n: "d" * 64, smoke=True,
+            )
+            full_result = REMOTE_CLI.cmd_submit(
+                target=target, entrypoint=notebook, worker="w1", requested=1,
+                adapter=adapter, source_digest=lambda t, n: "d" * 64,
+            )
+
+            main_lines = full_result["ledgerPath"].read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(main_lines), 1)
+            state = LEDGER.fold(main_lines, live_digest="d" * 64)
+            entry = "tools/kaggle/search-a/runner.ipynb"
+            self.assertEqual(
+                state.latest[entry]["submissionId"], full_result["submission"].id,
+            )
+
+    # -- (b) submit --smoke sets run_config['mode'], opaque to packer/ledger
+
+    def test_submit_smoke_sets_run_config_mode_full_submit_keeps_it_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            spy = _SpySubmitAdapter(worker_id="w1", capacity=2)
+            REMOTE_CLI.cmd_submit(
+                target=target, entrypoint=notebook, worker="w1", requested=1,
+                adapter=spy, source_digest=lambda t, n: "d" * 64, smoke=True,
+            )
+            self.assertEqual(dict(spy.last_job.run_config), {"mode": "smoke"})
+
+            REMOTE_CLI.cmd_submit(
+                target=target, entrypoint=notebook, worker="w1", requested=1,
+                adapter=spy, source_digest=lambda t, n: "d" * 64,
+            )
+            self.assertEqual(dict(spy.last_job.run_config), {})
+
+    def test_submit_parser_exposes_a_smoke_flag_defaulting_to_false(self) -> None:
+        parser = REMOTE_CLI._build_parser()
+        args = parser.parse_args([
+            "submit", "--target", "/tmp/x", "--entrypoint", "/tmp/x/a.ipynb",
+            "--worker", "w1", "--backend", "fake",
+        ])
+        self.assertFalse(args.smoke)
+
+        args = parser.parse_args([
+            "submit", "--target", "/tmp/x", "--entrypoint", "/tmp/x/a.ipynb",
+            "--worker", "w1", "--backend", "fake", "--smoke",
+        ])
+        self.assertTrue(args.smoke)
+
+    # -- (c) smoke record derives its verdict from completeness() alone ---
+
+    def test_smoke_record_passes_when_completeness_reports_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            commit = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=commit)
+
+            artifact = Path(tmp) / "shard.json"
+            artifact.write_text(
+                json.dumps({"evidence": {"commit": commit, "outputs": ["runs.jsonl"]}}),
+                encoding="utf-8",
+            )
+
+            result = REMOTE_CLI.cmd_smoke_record(
+                job_dir=job_dir, artifact_path=artifact, worker="w1",
+            )
+
+            self.assertEqual(result["result"], "pass")
+            self.assertEqual(result["missing"], [])
+            self.assertEqual(
+                result["requiredEvidence"], ["evidence.commit", "evidence.outputs"]
+            )
+            self.assertEqual(result["smokeLedgerPath"].name, "smoke.jsonl")
+            self.assertEqual(
+                result["smokeLedgerPath"].parent,
+                target.resolve() / "MIL-CREDA" / ".remote-execution",
+            )
+
+            lines = result["smokeLedgerPath"].read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 1)
+            event = json.loads(lines[0])
+            self.assertEqual(event["kind"], "smokeResult")
+            self.assertEqual(event["result"], "pass")
+            self.assertEqual(event["commit"], commit)
+            self.assertEqual(event["worker"], "w1")
+            self.assertEqual(event["jobName"], "search-a")
+            self.assertEqual(event["missing"], [])
+
+    def test_smoke_record_fails_when_completeness_reports_missing_fields(self) -> None:
+        """Triangulates the pass case with a stamp missing one path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            commit = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=commit)
+
+            artifact = Path(tmp) / "shard.json"
+            artifact.write_text(
+                json.dumps({"evidence": {"commit": commit}}), encoding="utf-8"
+            )
+
+            result = REMOTE_CLI.cmd_smoke_record(
+                job_dir=job_dir, artifact_path=artifact, worker="w1",
+            )
+
+            self.assertEqual(result["result"], "fail")
+            self.assertEqual(result["missing"], ["evidence.outputs"])
+
+            lines = result["smokeLedgerPath"].read_text(encoding="utf-8").splitlines()
+            event = json.loads(lines[0])
+            self.assertEqual(event["result"], "fail")
+            self.assertEqual(event["missing"], ["evidence.outputs"])
+
+    def test_required_evidence_comes_from_the_job_s_own_run_config_not_a_forge_constant(
+        self,
+    ) -> None:
+        """A DIFFERENT, unrelated vocabulary -- proving the list travels
+        from run-config.json, not a literal this module names itself."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            commit = self._init_repo(target)
+            job_dir = self._generate(
+                tmp, target, commit=commit, job_name="search-b",
+                required_evidence=["widget.gizmo"],
+            )
+
+            artifact = Path(tmp) / "shard.json"
+            artifact.write_text(
+                json.dumps({"widget": {"gizmo": "present"}}), encoding="utf-8"
+            )
+
+            result = REMOTE_CLI.cmd_smoke_record(
+                job_dir=job_dir, artifact_path=artifact, worker="w1",
+            )
+
+            self.assertEqual(result["requiredEvidence"], ["widget.gizmo"])
+            self.assertEqual(result["result"], "pass")
+
+    def test_remote_cli_source_names_no_evidence_field_of_its_own(self) -> None:
+        """Scans for literals this forge module has no business knowing."""
+        source = REMOTE_CLI_SCRIPT.read_text(encoding="utf-8")
+        for leaked in (
+            "evidence.commit", "evidence.outputs", "evidence.codeDigest",
+            "environment.torch", "environment.device",
+        ):
+            self.assertNotIn(leaked, source, leaked)
+
+    def test_smoke_record_propagates_job_folder_error_for_a_non_generated_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            not_a_job = Path(tmp) / "not-a-job"
+            not_a_job.mkdir()
+            artifact = Path(tmp) / "shard.json"
+            artifact.write_text("{}", encoding="utf-8")
+
+            with self.assertRaises(JOBFOLDER.JobFolderError):
+                REMOTE_CLI.cmd_smoke_record(
+                    job_dir=not_a_job, artifact_path=artifact, worker="w1"
+                )
+
+    def test_smoke_record_refuses_a_missing_artifact_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            commit = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=commit)
+
+            missing = Path(tmp) / "does-not-exist.json"
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError):
+                REMOTE_CLI.cmd_smoke_record(
+                    job_dir=job_dir, artifact_path=missing, worker="w1"
+                )
+
+    def test_smoke_record_parser_requires_job_dir_from_artifact_and_worker(self) -> None:
+        parser = REMOTE_CLI._build_parser()
+        args = parser.parse_args([
+            "smoke", "record",
+            "--job-dir", "/tmp/x/tools/svc/job",
+            "--from-artifact", "/tmp/x/shard.json",
+            "--worker", "w1",
+        ])
+        self.assertEqual(args.command, "smoke")
+        self.assertEqual(args.smoke_command, "record")
+        self.assertEqual(args.job_dir, Path("/tmp/x/tools/svc/job"))
+        self.assertEqual(args.from_artifact, Path("/tmp/x/shard.json"))
+        self.assertEqual(args.worker, "w1")
+
+    def test_generate_job_parser_exposes_repeatable_smoke_required_evidence(self) -> None:
+        parser = REMOTE_CLI._build_parser()
+        args = parser.parse_args([
+            "generate-job", "--target", "/tmp/x", "--service", "svc",
+            "--job-name", "job", "--product", "P", "--commit", "a" * 40,
+            "--repo-url", "https://example.invalid/r.git", "--repo-ref", "main",
+            "--run-module", "m", "--run-function", "f",
+            "--smoke-module", "m.smoke", "--smoke-function", "smoke",
+            "--smoke-required-evidence", "evidence.commit",
+            "--smoke-required-evidence", "evidence.outputs",
+        ])
+        self.assertEqual(
+            args.smoke_required_evidence, ["evidence.commit", "evidence.outputs"]
+        )
+
+    def test_build_run_config_refuses_required_evidence_without_a_smoke_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap, invoke = self._fixture_assets(tmp)
+            with self.assertRaises(JOBFOLDER.JobFolderError):
+                JOBFOLDER.build_run_config(
+                    product="P", service="svc", job_name="job", commit="a" * 40,
+                    repo_url="https://example.invalid/r.git", repo_ref="main",
+                    clone_paths=["src/A"], run_module="A.mod", run_function="f",
+                    run_kwargs=None, smoke_module=None, smoke_function=None,
+                    smoke_kwargs=None, bootstrap_asset=bootstrap, invoke_asset=invoke,
+                    smoke_required_evidence=["evidence.commit"],
+                )
+
+    # -- (d) readiness binds result + commit + worker; no clock -----------
+
+    def test_readiness_is_true_when_latest_smoke_record_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            commit = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=commit)
+
+            artifact = Path(tmp) / "shard.json"
+            artifact.write_text(
+                json.dumps({"evidence": {"commit": commit, "outputs": ["runs.jsonl"]}}),
+                encoding="utf-8",
+            )
+            REMOTE_CLI.cmd_smoke_record(job_dir=job_dir, artifact_path=artifact, worker="w1")
+
+            result = REMOTE_CLI.cmd_readiness(job_dir=job_dir, worker="w1")
+
+            self.assertTrue(result["ready"])
+            self.assertIsNone(result["reason"])
+            self.assertEqual(result["latestSmokeRecord"]["result"], "pass")
+
+    def test_readiness_is_false_when_worker_does_not_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            commit = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=commit)
+
+            artifact = Path(tmp) / "shard.json"
+            artifact.write_text(
+                json.dumps({"evidence": {"commit": commit, "outputs": ["runs.jsonl"]}}),
+                encoding="utf-8",
+            )
+            REMOTE_CLI.cmd_smoke_record(job_dir=job_dir, artifact_path=artifact, worker="w1")
+
+            result = REMOTE_CLI.cmd_readiness(job_dir=job_dir, worker="w2")
+
+            self.assertFalse(result["ready"])
+            self.assertIsNotNone(result["reason"])
+
+    def test_readiness_expires_when_the_job_repins_to_a_different_commit_no_clock(
+        self,
+    ) -> None:
+        """'Expiry falls out of the record's own fields; no clock.'
+        Re-pinning the job's commit invalidates a passing smoke record."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            commit = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=commit)
+
+            artifact = Path(tmp) / "shard.json"
+            artifact.write_text(
+                json.dumps({"evidence": {"commit": commit, "outputs": ["runs.jsonl"]}}),
+                encoding="utf-8",
+            )
+            REMOTE_CLI.cmd_smoke_record(job_dir=job_dir, artifact_path=artifact, worker="w1")
+            self.assertTrue(
+                REMOTE_CLI.cmd_readiness(job_dir=job_dir, worker="w1")["ready"]
+            )
+
+            (target / "src" / "MIL_CREDA_Benchmark" / "harness.py").write_text(
+                "def campaign(*args, **kwargs):\n    return 1\n", encoding="utf-8"
+            )
+            self._git(target, "add", "-A")
+            self._git(target, "commit", "-q", "-m", "advance")
+            new_commit = self._git(target, "rev-parse", "HEAD").stdout.strip()
+            self._generate(tmp, target, commit=new_commit, regenerate=True)
+
+            result = REMOTE_CLI.cmd_readiness(job_dir=job_dir, worker="w1")
+            self.assertFalse(result["ready"])
+            self.assertEqual(result["latestSmokeRecord"]["commit"], commit)
+
+    def test_readiness_is_false_with_no_smoke_record_on_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            commit = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=commit)
+
+            result = REMOTE_CLI.cmd_readiness(job_dir=job_dir, worker="w1")
+
+            self.assertFalse(result["ready"])
+            self.assertIsNone(result["latestSmokeRecord"])
+            self.assertIn("no smoke record", result["reason"])
+
+    def test_readiness_uses_the_latest_smoke_record_not_an_earlier_failing_one(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            commit = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=commit)
+
+            failing_artifact = Path(tmp) / "failing-shard.json"
+            failing_artifact.write_text(
+                json.dumps({"evidence": {"commit": commit}}), encoding="utf-8"
+            )
+            REMOTE_CLI.cmd_smoke_record(
+                job_dir=job_dir, artifact_path=failing_artifact, worker="w1"
+            )
+            self.assertFalse(
+                REMOTE_CLI.cmd_readiness(job_dir=job_dir, worker="w1")["ready"]
+            )
+
+            passing_artifact = Path(tmp) / "passing-shard.json"
+            passing_artifact.write_text(
+                json.dumps({"evidence": {"commit": commit, "outputs": ["runs.jsonl"]}}),
+                encoding="utf-8",
+            )
+            REMOTE_CLI.cmd_smoke_record(
+                job_dir=job_dir, artifact_path=passing_artifact, worker="w1"
+            )
+
+            result = REMOTE_CLI.cmd_readiness(job_dir=job_dir, worker="w1")
+            self.assertTrue(result["ready"])
+
+    def test_readiness_ignores_timestamp_entirely(self) -> None:
+        """An arbitrarily old `ts` still counts as ready -- nothing here
+        reads `ts` to decide anything."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            commit = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=commit)
+
+            smoke_ledger_path = (
+                target.resolve() / "MIL-CREDA" / ".remote-execution" / "smoke.jsonl"
+            )
+            LEDGER.append(
+                smoke_ledger_path,
+                {
+                    "kind": "smokeResult",
+                    "ts": "1970-01-01T00:00:00Z",
+                    "jobName": "search-a",
+                    "result": "pass",
+                    "commit": commit,
+                    "worker": "w1",
+                    "missing": [],
+                },
+            )
+
+            result = REMOTE_CLI.cmd_readiness(job_dir=job_dir, worker="w1")
+            self.assertTrue(result["ready"])
+
+    def test_readiness_parser_requires_job_dir_and_worker(self) -> None:
+        parser = REMOTE_CLI._build_parser()
+        args = parser.parse_args([
+            "readiness", "--job-dir", "/tmp/x/tools/svc/job", "--worker", "w1",
+        ])
+        self.assertEqual(args.command, "readiness")
+        self.assertEqual(args.job_dir, Path("/tmp/x/tools/svc/job"))
+        self.assertEqual(args.worker, "w1")
+
+    # -- (e) probe states the fact; no menu, no submission ----------------
+
+    def test_readiness_issues_no_submission_and_carries_no_menu(self) -> None:
+        """No `adapter` parameter at all -- structurally cannot submit,
+        the same signature-level guarantee `cmd_status()` already holds."""
+        parameters = inspect.signature(REMOTE_CLI.cmd_readiness).parameters
+        self.assertNotIn("adapter", parameters)
+
+    # -- end-to-end runtime harness: real remote_cli.main() calls ---------
+
+    def test_runtime_harness_submit_smoke_then_record_then_readiness_via_main(
+        self,
+    ) -> None:
+        """`submit --smoke` -> `smoke record` -> `readiness`, all through
+        the real `remote_cli.main()` entry point against `FakeAdapter`."""
+        backend_name = "smoke-harness-fake-backend"
+        ADAPTER.register(backend_name, FakeAdapter)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            commit = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=commit)
+            notebook = job_dir / "runner.ipynb"
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                exit_code = REMOTE_CLI.main([
+                    "submit",
+                    "--target", str(target),
+                    "--entrypoint", str(notebook),
+                    "--worker", "fake-1",  # FakeAdapter's own default worker id
+                    "--backend", backend_name,
+                    "--smoke",
+                ])
+            self.assertEqual(exit_code, 0)
+            submit_printed = json.loads(stdout.getvalue())
+            self.assertTrue(submit_printed["smoke"])
+            self.assertTrue(submit_printed["ledgerPath"].endswith("smoke.jsonl"))
+
+            # Stands in for what `fetch` would have materialized --
+            # `fetch()`'s own mechanics are covered by `FetchTests`.
+            artifact = Path(tmp) / "fetched-shard.json"
+            artifact.write_text(
+                json.dumps({"evidence": {"commit": commit, "outputs": ["runs.jsonl"]}}),
+                encoding="utf-8",
+            )
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                exit_code = REMOTE_CLI.main([
+                    "smoke", "record",
+                    "--job-dir", str(job_dir),
+                    "--from-artifact", str(artifact),
+                    "--worker", "w1",
+                ])
+            self.assertEqual(exit_code, 0)
+            record_printed = json.loads(stdout.getvalue())
+            self.assertEqual(record_printed["result"], "pass")
+            self.assertEqual(record_printed["missing"], [])
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                exit_code = REMOTE_CLI.main([
+                    "readiness", "--job-dir", str(job_dir), "--worker", "w1",
+                ])
+            self.assertEqual(exit_code, 0)
+            readiness_printed = json.loads(stdout.getvalue())
+            self.assertTrue(readiness_printed["ready"])
+
+    def test_remote_cli_module_names_no_service_still_holds(self) -> None:
+        """Re-confirms the guard stays green with the smoke/readiness
+        surface added -- no ninth guard needed, same module not a new
+        sibling (the family stays at eight).
+        """
+        source = REMOTE_CLI_SCRIPT.read_text(encoding="utf-8").lower()
+        for leaked in ("kaggle", "t4"):
+            self.assertNotIn(leaked, source, leaked)
 
 
 if __name__ == "__main__":

@@ -433,6 +433,7 @@ def build_run_config(
     bootstrap_asset: Path,
     invoke_asset: Path,
     unresolved_imports: Sequence[str] | None = None,
+    smoke_required_evidence: Sequence[str] | None = None,
 ) -> dict:
     """Assemble `run-config.json`'s exact shape from target-supplied values.
 
@@ -443,19 +444,41 @@ def build_run_config(
     `unresolved_imports`, when non-empty, is recorded verbatim as
     `unresolvedImports` — the `--accept-unresolved` escape hatch turning a
     silence into a recorded, reportable decision (design #744 section 3).
+
+    `smoke_required_evidence`, when given, is recorded verbatim as
+    `run.smoke.requiredEvidence` — the dot-separated field paths
+    `shard_io.completeness()` will later walk to judge a smoke run's own
+    returned stamp. This module never learns what any of those paths
+    MEAN; it only carries the list from the target's own declaration (a
+    repeatable `--smoke-required-evidence` CLI flag) to wherever `smoke
+    record` reads it back from — the SAME "caller brings the vocabulary"
+    discipline `completeness(stamp, required)` already holds in
+    `shard_io.py`. Given without also declaring a smoke block, it is
+    refused: a required-evidence list with no smoke run to judge is not a
+    value this schema can express.
     """
     validated_clone_paths = validate_clone_paths(clone_paths)
+    has_smoke_block = bool(smoke_module and smoke_function)
+    if smoke_required_evidence and not has_smoke_block:
+        raise JobFolderError(
+            "smoke_required_evidence was given but no smoke module/function "
+            "was declared; a required-evidence list with no smoke run to "
+            "judge is not a value run-config.json can express"
+        )
     run_block: dict = {
         "module": run_module,
         "function": run_function,
         "kwargs": dict(run_kwargs or {}),
     }
-    if smoke_module and smoke_function:
-        run_block["smoke"] = {
+    if has_smoke_block:
+        smoke_block: dict = {
             "module": smoke_module,
             "function": smoke_function,
             "kwargs": dict(smoke_kwargs or {}),
         }
+        if smoke_required_evidence:
+            smoke_block["requiredEvidence"] = list(smoke_required_evidence)
+        run_block["smoke"] = smoke_block
 
     run_config = {
         "schemaVersion": RUN_CONFIG_SCHEMA_VERSION,
@@ -529,6 +552,7 @@ def generate_job(
     smoke_module: str | None = None,
     smoke_function: str | None = None,
     smoke_kwargs: Mapping[str, object] | None = None,
+    smoke_required_evidence: Sequence[str] | None = None,
     regenerate: bool = False,
     bootstrap_asset: str | Path | None = None,
     invoke_asset: str | Path | None = None,
@@ -600,6 +624,7 @@ def generate_job(
         bootstrap_asset=resolved_bootstrap,
         invoke_asset=resolved_invoke,
         unresolved_imports=clone_resolution["unresolved"] if accept_unresolved else None,
+        smoke_required_evidence=smoke_required_evidence,
     )
     notebook = build_notebook(resolved_bootstrap, resolved_invoke)
     metadata_filename, metadata_text = ADAPTER.resolve_metadata(service)(run_config)
