@@ -174,15 +174,25 @@ def _extract_status_token(raw: str) -> str:
     return token.strip().lower()
 
 
-def _kernel_slug(entrypoint: Path) -> str:
-    """A deterministic slug derived from an entrypoint's own filename —
-    never a lookup, never state kept anywhere in this process. Kaggle
-    kernel refs are `<username>/<slug>`; this function supplies the second
-    half from the notebook this job actually names.
+def _slugify(text: str) -> str:
+    """A deterministic slug from raw text — never a lookup, never state
+    kept anywhere in this process. Kaggle kernel refs are
+    `<username>/<slug>`; this supplies the second half.
     """
-    lowered = entrypoint.stem.lower()
+    lowered = text.lower()
     slug = _SLUG_DISALLOWED.sub("-", lowered).strip("-")
     return slug or "kernel"
+
+
+def _kernel_slug(entrypoint: Path) -> str:
+    """A deterministic slug derived from an entrypoint's own filename —
+    the legacy shape's own source of one: `<Name>/Notebooks/<Something>.ipynb`
+    names exactly one notebook per file, so the filename is what actually
+    tells two legacy submissions apart. NEVER the right source for a
+    generated job folder, whose entrypoint is `runner.ipynb` for every
+    job — see `submit()`'s own docstring for why that distinction matters.
+    """
+    return _slugify(entrypoint.stem)
 
 
 def assemble_metadata(run_config: Mapping[str, object]) -> tuple[str, str]:
@@ -412,11 +422,26 @@ class KaggleAdapter(ADAPTER.Adapter):
         """Push a kernel version and report back the ref this adapter will
         recognize it by later.
 
-        The submission id is `<worker>/<slug>` — derived from `job.worker`
-        and `job.entrypoint`'s own filename ALONE, never read out of
-        anything the `kaggle` process printed. `poll()`, `fetch()` and
+        The submission id is `<worker>/<slug>`, never read out of anything
+        the `kaggle` process printed. `poll()`, `fetch()` and
         `list_active()` all recover `worker` from this same id, by
         splitting on the one `/` this construction guarantees is there.
+
+        The slug itself has two different sources depending on shape, and
+        conflating them was a real bug this docstring now exists to
+        prevent reintroducing: for a GENERATED job folder (metadata file
+        present), the slug is derived from the metadata's own `title` —
+        confirmed against a real Kaggle account that a newly-created
+        kernel's actual slug is the one the service derives from `title`,
+        not from the `id` field this method sends it. `job.entrypoint`'s
+        own filename is `runner.ipynb` for every generated job
+        (`jobfolder.py`'s `RUNNER_FILENAME` constant), so deriving the
+        slug from it instead — as this method used to — made every
+        job-folder submission to the same worker collide on the identical
+        ref `<worker>/runner`, silently overwriting one job's kernel with
+        the next one pushed. For the LEGACY shape (no metadata file), the
+        entrypoint genuinely does name one notebook per file, so its own
+        filename remains the right source there.
 
         A non-empty `job.run_config` marks a generated job — one whose
         directory `jobfolder.py` was supposed to have written
@@ -455,13 +480,15 @@ class KaggleAdapter(ADAPTER.Adapter):
             )
 
         handle = self._credential_for(job.worker)
-        ref = f"{job.worker}/{_kernel_slug(job.entrypoint)}"
 
         if metadata_path.is_file():
             with tempfile.TemporaryDirectory(prefix="kaggle-push-") as staging_dir:
                 staging_path = Path(staging_dir)
                 shutil.copytree(job.entrypoint.parent, staging_path, dirs_exist_ok=True)
                 template = json.loads(metadata_path.read_text(encoding="utf-8"))
+                title = template.get("title")
+                slug = _slugify(title) if title else _kernel_slug(job.entrypoint)
+                ref = f"{job.worker}/{slug}"
                 template["id"] = ref
                 template["code_file"] = job.entrypoint.name
                 (staging_path / KERNEL_METADATA_FILENAME).write_text(
@@ -469,6 +496,7 @@ class KaggleAdapter(ADAPTER.Adapter):
                 )
                 self._push(staging_path, handle)
         else:
+            ref = f"{job.worker}/{_kernel_slug(job.entrypoint)}"
             self._push(job.entrypoint.parent, handle)
 
         return ADAPTER.Submission(id=ref, worker=job.worker)

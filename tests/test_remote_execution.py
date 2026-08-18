@@ -2646,6 +2646,15 @@ class KaggleAdapterTests(unittest.TestCase):
         `kernel-metadata.json` inside the job folder itself byte-for-byte
         unchanged — the same folder pushed to a second worker must be able
         to receive a second, different `id` later.
+
+        The slug in `id` is derived from the metadata's own `title`
+        (`"papersmith-domain-adaptation"` here), never from the
+        entrypoint's filename: confirmed against a real Kaggle account
+        that a newly-created kernel's actual slug is the one the service
+        derives from `title`, and every generated job folder's entrypoint
+        is named `runner.ipynb` regardless of job — deriving the slug
+        from that constant filename made every job-folder submission to
+        the same worker collide on the identical ref `<worker>/runner`.
         """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -2700,10 +2709,10 @@ class KaggleAdapterTests(unittest.TestCase):
                 job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
                 submission = adapter.submit(job)
 
-            self.assertEqual(submission.id, "w1/runner")
+            self.assertEqual(submission.id, "w1/papersmith-domain-adaptation")
             self.assertTrue(captured_metadata.is_file())
             pushed = json.loads(captured_metadata.read_text(encoding="utf-8"))
-            self.assertEqual(pushed["id"], "w1/runner")
+            self.assertEqual(pushed["id"], "w1/papersmith-domain-adaptation")
             self.assertEqual(pushed["code_file"], "runner.ipynb")
             self.assertEqual(pushed["machine_shape"], "NvidiaTeslaT4")
 
@@ -2711,6 +2720,87 @@ class KaggleAdapterTests(unittest.TestCase):
                 (job_dir / "kernel-metadata.json").read_text(encoding="utf-8"),
                 original_metadata,
             )
+
+    def test_submit_slug_comes_from_title_not_the_constant_entrypoint_filename(
+        self,
+    ) -> None:
+        """Every generated job folder's entrypoint is named `runner.ipynb`
+        — `jobfolder.py`'s own `RUNNER_FILENAME` constant, the same for
+        every job. A slug derived from that filename alone is therefore
+        the same string for every job-folder submission to a given
+        worker, so two different jobs would silently collide on the
+        identical kernel ref. `title` (`"papersmith-<job-name>"`) is what
+        actually varies per job, and it is also what a real Kaggle
+        account gives the created kernel as its slug — reached here by
+        two different job names producing two different refs.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bin_dir = tmp_path / "bin"
+            _write_fake_kaggle(bin_dir)
+            token_path = tmp_path / "creds"
+            token_path.mkdir()
+            handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
+
+            refs = {}
+            for job_name in ("phase1-run-e2e", "phase2-run-e2e"):
+                job_dir = tmp_path / job_name
+                job_dir.mkdir()
+                entrypoint = job_dir / "runner.ipynb"
+                entrypoint.write_text("{}", encoding="utf-8")
+                (job_dir / "kernel-metadata.json").write_text(
+                    json.dumps({
+                        "id": "", "title": f"papersmith-{job_name}", "code_file": "",
+                        "language": "python", "kernel_type": "notebook",
+                        "is_private": True, "enable_internet": True,
+                        "machine_shape": "NvidiaTeslaT4",
+                    }),
+                    encoding="utf-8",
+                )
+                with unittest.mock.patch.dict(
+                    os.environ,
+                    {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"},
+                ):
+                    adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle})
+                    job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
+                    refs[job_name] = adapter.submit(job).id
+
+            assert refs["phase1-run-e2e"] != refs["phase2-run-e2e"], (
+                f"both jobs collided on the same ref: {refs}"
+            )
+            self.assertEqual(refs["phase1-run-e2e"], "w1/papersmith-phase1-run-e2e")
+            self.assertEqual(refs["phase2-run-e2e"], "w1/papersmith-phase2-run-e2e")
+
+    def test_submit_slug_falls_back_to_entrypoint_when_metadata_has_no_title(
+        self,
+    ) -> None:
+        """A degenerate/malformed metadata file with no `title` at all
+        must never crash `submit()` — it falls back to the same
+        entrypoint-derived slug the legacy shape already uses, rather
+        than raising on a missing key.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            job_dir = tmp_path / "job"
+            job_dir.mkdir()
+            entrypoint = job_dir / "runner.ipynb"
+            entrypoint.write_text("{}", encoding="utf-8")
+            (job_dir / "kernel-metadata.json").write_text("{}", encoding="utf-8")
+
+            bin_dir = tmp_path / "bin"
+            _write_fake_kaggle(bin_dir)
+            token_path = tmp_path / "creds"
+            token_path.mkdir()
+            handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
+
+            with unittest.mock.patch.dict(
+                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+            ):
+                adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle})
+                job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
+                submission = adapter.submit(job)
+
+            self.assertEqual(submission.id, "w1/runner")
 
     def test_credential_sentinel_absent_from_argv_stdout_stderr_ledger_and_quarantine(
         self,
