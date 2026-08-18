@@ -166,16 +166,38 @@ Three modules exist so far, each service-blind and stdlib-only:
   declared here, and here alone in this whole skill — a request, not a
   receipt; what a submission actually ran on is a fact the service states
   at poll/fetch time, never assumed from this constant. `assemble_metadata`
-  reads that constant into a `kernel-metadata.json` payload and is
+  writes that request, and every other worker-independent field a push
+  needs, into a `kernel-metadata.json` template: `machine_shape` (NOT
+  `accelerator`, which is not a key this schema has at all — confirmed
+  against an authenticated `kaggle kernels init` template and against
+  `kernels_push()`'s own field reads in the installed `kaggle` package),
+  `enable_internet: true` (the generated runner clones over git inside the
+  kernel, and Kaggle disables internet by default), `language`,
+  `kernel_type`, `is_private`, and a `title` derived from the job's own
+  name. `id` (`<owner>/<kernel-slug>`) and `code_file` are written BLANK —
+  no worker is assigned at `generate-job` time, and the same job folder
+  pushed to five different accounts needs five different `id` values, so a
+  static file written once cannot hold it. `assemble_metadata` is
   registered under `ADAPTER.register_metadata("kaggle", ...)`, the second
-  registry `adapter.py` exposes; `KaggleAdapter.submit()` refuses, before
+  registry `adapter.py` exposes. `KaggleAdapter.submit()` refuses, before
   ever shelling out to `kernels push`, when `job.run_config` is non-empty
   (a generated job) and `kernel-metadata.json` is absent beside the
   entrypoint — an empty `run_config` is the legacy shape and is never
   checked, which is what keeps the credential-sentinel test's legacy-shaped
-  `cmd_submit` call passing unchanged. `cancel()` refuses explicitly:
-  Kaggle's own CLI documents no single-kernel cancel operation, and this
-  adapter does not guess at an unofficial one.
+  `cmd_submit` call passing unchanged. When the metadata file IS present,
+  `submit()` completes it — filling in `id` from `job.worker` and the
+  entrypoint's own slug, and `code_file` from the entrypoint's own
+  basename — inside a STAGED COPY of the job folder in a temp directory,
+  and pushes that copy; the versioned `kernel-metadata.json` inside the
+  job folder itself is only ever read, never rewritten, so a second push
+  to a second worker starts from the same pristine template. This
+  completion is driven by the metadata file's own presence, not by
+  `run_config`: `cmd_submit` only ever sets `run_config["mode"] = "smoke"`
+  for a smoke run, so an ordinary (non-smoke) job-folder submission
+  reaches `submit()` with an EMPTY `run_config`, same as the legacy shape
+  — the metadata file's presence is what distinguishes them. `cancel()`
+  refuses explicitly: Kaggle's own CLI documents no single-kernel cancel
+  operation, and this adapter does not guess at an unofficial one.
 
 Every `remote_cli` command a user would invoke (`submit`, `status`, `poll`,
 `fetch`, `reconcile`) exists today. `submit`/`poll`/`fetch`/`reconcile` are

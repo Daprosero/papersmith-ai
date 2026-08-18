@@ -56,8 +56,10 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
@@ -185,19 +187,66 @@ def _kernel_slug(entrypoint: Path) -> str:
 
 def assemble_metadata(run_config: Mapping[str, object]) -> tuple[str, str]:
     """Build the `kernel-metadata.json` a generated job folder ships beside
-    its runner notebook, so `kernels push -p <dir>` requests the pinned
-    accelerator.
+    its runner notebook, so `kernels push -p <dir>` both accepts the push
+    and requests the pinned accelerator.
 
     Registered under `ADAPTER.register_metadata("kaggle", ...)` below —
     the ONE thing a caller above the adapter registry ever gets back is an
     opaque `(filename, text)` pair; nothing above this module ever learns
     what either one means, only that they exist and where to write them.
-    `run_config` is accepted for the seam's own signature shape
-    (`fn(run_config) -> (filename, text)`) and is not currently interpreted
-    — the accelerator request is fixed, not derived from a job's own
-    configuration.
+
+    The field set below is not guessed: it is exactly the shape
+    `kaggle kernels init -p <dir>` itself writes as a template (verified
+    against the installed `kaggle` 2.2.4 CLI, authenticated, against a
+    real account), cross-checked against `kernels_push()` in
+    `kaggle/api/kaggle_api_extended.py`, the client's own validation of
+    that file:
+
+    - `machine_shape` — NOT `accelerator`, which is not a key this schema
+      has at all and would be silently ignored by a real push. This is
+      the field `kernels_push()` reads a NAMED accelerator from
+      (`kagglesdk`'s own docstring lists `"NvidiaTeslaT4"` as one of
+      exactly three supported values); `enable_gpu`/`enable_tpu` are
+      documented DEPRECATED in favor of it and are deliberately omitted
+      here rather than carried as dead weight.
+    - `enable_internet` — `True`. The generated runner does `git init` /
+      `remote add` / `fetch` inside the kernel to reach the pinned commit,
+      and Kaggle kernels have internet access disabled by default; without
+      this the clone fails at runtime, after the push already succeeded.
+    - `language`/`kernel_type` — `"python"`/`"notebook"`: the runner this
+      skill generates is always a `.ipynb` file of Python cells.
+    - `is_private` — `True`, a deliberate default this brief left
+      unspecified: nothing about a submitted training run should default
+      to public.
+    - `id` and `code_file` — present, but deliberately BLANK. `id` is
+      `<owner>/<kernel-slug>`; it names the account, and no worker is
+      assigned yet at `generate-job` time — the packer only assigns one at
+      submit time, and the very same job folder pushed to five accounts
+      needs five different `id` values. `code_file` names the entrypoint
+      file relative to this folder, which this function has no path to
+      either (`run_config` carries no notebook path). Both are completed
+      by `KaggleAdapter.submit()` below, in a STAGED COPY of the job
+      folder — never by mutating this versioned file in place.
+    - `title` — derived from `run_config`'s own `jobName`, when present,
+      so the pushed kernel is identifiable; padded to satisfy the client's
+      own five-character minimum.
+
+    `run_config` is read only for `jobName`, with a fallback when absent
+    — this function must not crash on a caller (this module's own test
+    suite included) that hands it a partial mapping.
     """
-    payload = {"accelerator": REQUESTED_ACCELERATOR}
+    job_name = str(run_config.get("jobName") or "job")
+    title = f"papersmith-{job_name}"
+    payload = {
+        "id": "",
+        "title": title,
+        "code_file": "",
+        "language": "python",
+        "kernel_type": "notebook",
+        "is_private": True,
+        "enable_internet": True,
+        "machine_shape": REQUESTED_ACCELERATOR,
+    }
     return KERNEL_METADATA_FILENAME, json.dumps(payload)
 
 
@@ -360,8 +409,8 @@ class KaggleAdapter(ADAPTER.Adapter):
         ]
 
     def submit(self, job: "ADAPTER.Job") -> "ADAPTER.Submission":
-        """Push `job.entrypoint`'s own directory as a kernel version and
-        report back the ref this adapter will recognize it by later.
+        """Push a kernel version and report back the ref this adapter will
+        recognize it by later.
 
         The submission id is `<worker>/<slug>` — derived from `job.worker`
         and `job.entrypoint`'s own filename ALONE, never read out of
@@ -377,25 +426,66 @@ class KaggleAdapter(ADAPTER.Adapter):
         refusing here. An empty `run_config` is the legacy shape and is
         never checked — it behaves exactly as it did before this refusal
         existed.
+
+        The metadata file's own PRESENCE, not `job.run_config`, is what
+        decides whether this method completes and stages it: `cmd_submit`
+        only ever sets `run_config["mode"] = "smoke"` for a smoke run, so
+        an ordinary (non-smoke) job-folder submission carries an EMPTY
+        `run_config` exactly like the legacy shape does. `id` names an
+        account, which is only known here at submit time — the same
+        versioned job folder pushed to five different workers needs five
+        different `id` values, and a static file written once at
+        `generate-job` time cannot hold that. So when the metadata file is
+        present, this method reads the template `assemble_metadata()`
+        wrote, fills in `id` (`<worker>/<slug>`) and `code_file`
+        (`job.entrypoint`'s own basename — known here, never guessed at by
+        `assemble_metadata()`, which has no path to it), and writes the
+        completed file into a STAGED COPY of the job folder in a temp
+        directory — `kernels push -p <staged dir>` runs against that copy.
+        The versioned `kernel-metadata.json` inside the job folder itself
+        is read, never opened for writing, and stays byte-for-byte
+        unchanged: nothing here mutates a committed artifact per worker.
         """
-        if job.run_config:
-            metadata_path = job.entrypoint.parent / KERNEL_METADATA_FILENAME
-            if not metadata_path.is_file():
-                raise KaggleAdapterError(
-                    f"{job.entrypoint} carries a non-empty run_config but "
-                    f"{metadata_path} is absent: refusing to push a kernel "
-                    "the service would reject for missing metadata"
-                )
+        metadata_path = job.entrypoint.parent / KERNEL_METADATA_FILENAME
+        if job.run_config and not metadata_path.is_file():
+            raise KaggleAdapterError(
+                f"{job.entrypoint} carries a non-empty run_config but "
+                f"{metadata_path} is absent: refusing to push a kernel "
+                "the service would reject for missing metadata"
+            )
+
         handle = self._credential_for(job.worker)
         ref = f"{job.worker}/{_kernel_slug(job.entrypoint)}"
-        argv = [self._kaggle_executable, "kernels", "push", "-p", str(job.entrypoint.parent)]
+
+        if metadata_path.is_file():
+            with tempfile.TemporaryDirectory(prefix="kaggle-push-") as staging_dir:
+                staging_path = Path(staging_dir)
+                shutil.copytree(job.entrypoint.parent, staging_path, dirs_exist_ok=True)
+                template = json.loads(metadata_path.read_text(encoding="utf-8"))
+                template["id"] = ref
+                template["code_file"] = job.entrypoint.name
+                (staging_path / KERNEL_METADATA_FILENAME).write_text(
+                    json.dumps(template), encoding="utf-8"
+                )
+                self._push(staging_path, handle)
+        else:
+            self._push(job.entrypoint.parent, handle)
+
+        return ADAPTER.Submission(id=ref, worker=job.worker)
+
+    def _push(self, push_dir: Path, handle: CredentialHandle) -> None:
+        """Shell out to `kernels push -p <push_dir>`, the one composition
+        point `submit()`'s two branches (legacy, direct; generated,
+        staged) both funnel through — so neither can drift from the
+        other's error handling.
+        """
+        argv = [self._kaggle_executable, "kernels", "push", "-p", str(push_dir)]
         result = self._run(argv, env=self._env_for(handle))
         if result.returncode != 0:
             raise KaggleAdapterError(
-                f"kernels push for {job.entrypoint} exited {result.returncode}: "
+                f"kernels push for {push_dir} exited {result.returncode}: "
                 f"{result.stderr.strip()}"
             )
-        return ADAPTER.Submission(id=ref, worker=job.worker)
 
     def poll(self, submission_id: str) -> "ADAPTER.Status":
         """Ask Kaggle for one kernel's status and translate it into the

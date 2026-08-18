@@ -2515,13 +2515,30 @@ class KaggleAdapterTests(unittest.TestCase):
         """The one and only place `"NvidiaTeslaT4"` exists: `adapters/kaggle.py`
         registers `assemble_metadata` under the metadata registry, and
         calling it produces `kernel-metadata.json` naming the pinned
-        accelerator.
+        accelerator under `machine_shape` — the field Kaggle's own client
+        (`kernels_push`) actually reads for a named accelerator; a bare
+        `"accelerator"` key is not part of that schema at all and is
+        silently ignored. The template also carries every field a push
+        needs at minimum: `enable_internet` (the runner clones over git
+        inside the kernel, and Kaggle disables internet by default),
+        `language`, `kernel_type`, and `is_private`. `id` and `code_file`
+        are present but deliberately blank here — this call runs before a
+        worker is assigned, so neither can be known yet; `submit()`
+        completes both in a staged copy (see below).
         """
         assembler = ADAPTER.resolve_metadata("kaggle")
-        filename, text = assembler({"mode": "smoke"})
+        filename, text = assembler({"jobName": "domain-adaptation-2ep"})
         self.assertEqual(filename, "kernel-metadata.json")
         payload = json.loads(text)
-        self.assertEqual(payload["accelerator"], "NvidiaTeslaT4")
+        self.assertEqual(payload["machine_shape"], "NvidiaTeslaT4")
+        self.assertEqual(payload["language"], "python")
+        self.assertEqual(payload["kernel_type"], "notebook")
+        self.assertIs(payload["is_private"], True)
+        self.assertIs(payload["enable_internet"], True)
+        self.assertIn("id", payload)
+        self.assertIn("code_file", payload)
+        self.assertIn("title", payload)
+        self.assertGreaterEqual(len(payload["title"]), 5)
 
     def test_submit_refuses_when_run_config_is_non_empty_and_metadata_file_is_absent(
         self,
@@ -2611,6 +2628,89 @@ class KaggleAdapterTests(unittest.TestCase):
                 submission = adapter.submit(job)
 
             self.assertEqual(submission.worker, "w1")
+
+    def test_submit_completes_id_and_code_file_in_a_staged_copy_never_touching_the_job_folder(
+        self,
+    ) -> None:
+        """`id` is `<owner>/<slug>` — it names the account, which is only
+        known at submit time, not at `generate-job` time. `cmd_submit`
+        only ever sets `run_config["mode"] = "smoke"` for a smoke run; an
+        ordinary (non-smoke) job-folder submission carries an EMPTY
+        `run_config`, exactly like the legacy shape. So the signal that
+        must drive metadata completion is the metadata file's own
+        presence beside the entrypoint, not `run_config` truthiness — this
+        is the actual real-world path `generate-job` + `submit` takes.
+
+        `submit()` must complete `id` and `code_file` in a STAGED COPY of
+        the job folder and push that copy, leaving the versioned
+        `kernel-metadata.json` inside the job folder itself byte-for-byte
+        unchanged — the same folder pushed to a second worker must be able
+        to receive a second, different `id` later.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            job_dir = tmp_path / "job"
+            job_dir.mkdir()
+            entrypoint = job_dir / "runner.ipynb"
+            entrypoint.write_text("{}", encoding="utf-8")
+            original_metadata = json.dumps(
+                {
+                    "id": "",
+                    "title": "papersmith-domain-adaptation",
+                    "code_file": "",
+                    "language": "python",
+                    "kernel_type": "notebook",
+                    "is_private": True,
+                    "enable_internet": True,
+                    "machine_shape": "NvidiaTeslaT4",
+                }
+            )
+            (job_dir / "kernel-metadata.json").write_text(
+                original_metadata, encoding="utf-8"
+            )
+
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            captured_metadata = tmp_path / "captured-kernel-metadata.json"
+            fake_kaggle = bin_dir / "kaggle"
+            fake_kaggle.write_text(
+                "#!/usr/bin/env python3\n"
+                "import shutil, sys\n"
+                "from pathlib import Path\n"
+                "args = sys.argv[1:]\n"
+                "if args[:2] == ['kernels', 'push']:\n"
+                "    idx = args.index('-p')\n"
+                "    src = Path(args[idx + 1]) / 'kernel-metadata.json'\n"
+                f"    shutil.copyfile(src, {str(captured_metadata)!r})\n"
+                "    print('kernel version 1 successfully pushed')\n"
+                "    sys.exit(0)\n"
+                "sys.exit(1)\n",
+                encoding="utf-8",
+            )
+            fake_kaggle.chmod(0o755)
+
+            token_path = tmp_path / "creds"
+            token_path.mkdir()
+            handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
+
+            with unittest.mock.patch.dict(
+                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+            ):
+                adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle})
+                job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
+                submission = adapter.submit(job)
+
+            self.assertEqual(submission.id, "w1/runner")
+            self.assertTrue(captured_metadata.is_file())
+            pushed = json.loads(captured_metadata.read_text(encoding="utf-8"))
+            self.assertEqual(pushed["id"], "w1/runner")
+            self.assertEqual(pushed["code_file"], "runner.ipynb")
+            self.assertEqual(pushed["machine_shape"], "NvidiaTeslaT4")
+
+            self.assertEqual(
+                (job_dir / "kernel-metadata.json").read_text(encoding="utf-8"),
+                original_metadata,
+            )
 
     def test_credential_sentinel_absent_from_argv_stdout_stderr_ledger_and_quarantine(
         self,
