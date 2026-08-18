@@ -401,6 +401,7 @@ exactly what stops a launcher from being able to claim it implements anything.
 | `verify` reports structure drift | Report it as its own finding, ask before fixing |
 | `verify` reports stale modules | Report revision drift separately; ask before rewriting |
 | `verify` reports `unreachedModules` | An arm declares mathematics it never calls: report before any run |
+| `probe` reports `nextStep: "search-first"` | A declared search's record is absent from disk: the run has no chosen configuration yet, report before offering it |
 | `priorWork` reports `modified` | Say what changed and that correcting prior work belongs to a session of its own |
 | `priorWork` reports `reaching` | The change moves what an arm computes: the record is stale, report before any run |
 | `search` reports `incomplete` | A value is chosen by outcome and the search does not say enough about itself to be an experiment: report before quoting anything it chose |
@@ -632,7 +633,7 @@ an unticked item instead of as nothing at all.
 markdown item per agreement, unticked when made and ticked when the code carries it:
 
 ```markdown
-- [x] the ceiling stays at one and identical across arms
+- [x] the free scalar stays at its neutral and identical across arms
 - [ ] the figure shows the picture inline, not the path it wrote
 ```
 
@@ -818,9 +819,10 @@ through another module, while at least one arm declares its sections. Each entry
 carries the equations it implements and the arms that claim them, because the section
 is where it lives and the equation is what the reader acts on.
 
-This blocks the run, and ahead of a report in drift. A wrong report describes a sound
-run and costs a sentence; this costs the campaign, because every number came from an
-arm that was not computing what the table says it computed.
+This blocks the run, ahead of both a missing search configuration and a report in
+drift. A wrong report describes a sound run and costs a sentence; this costs the
+campaign, because every number came from an arm that was not computing what the table
+says it computed.
 
 Report it as its own finding and say when it started being material. It is almost
 never a fresh mistake: the arm reimplemented the term when the inline version was
@@ -833,6 +835,75 @@ Read what the correction implies before proposing it. Computing the arm as its
 proposal states can change what the two arms share, and that consequence gets measured
 and declared — it is never a reason to keep computing the method the prior work's way.
 See the hard rule on using the baseline as it is and the method as its proposal states.
+
+### `nextStep: "search-first"` — a declared search has not chosen anything yet
+
+`search` carries the same reading `verify` already reports (see the hard rule on a
+search being an experiment, declared as one, under
+[Proving the comparison measures anything at all](#proving-the-comparison-measures-anything-at-all)),
+and `recordFound` is the one field this rung acts on: a search block is declared, and
+its own `record` does not exist where the declaration says it lives. Nothing here
+learns what the search is choosing — the declaration does, and this only asks the
+filesystem whether the answer is there.
+
+**Why it sits after `wiring-first` and before `report-first`, and why that order is
+not a preference.** `wiring-first` stays ahead because correcting a fork changes what
+an arm computes, which changes what a search over that arm would find: searching
+first against a forked arm would spend the search on a term the proposal does not
+state, and none of that time is recoverable. `search-first` comes next because a run
+whose governing scalar has not been chosen does not yet have a configuration to run —
+worse than a wrong report, and far cheaper to catch before any machine time is spent.
+`report-first` stays last: a report in drift still describes a sound run, wrongly,
+which costs a sentence rather than the campaign.
+
+**The forecast is reported beside the declaration, never gated.** `costForecast`
+projects the search's own `requiredScale` from the same measured duration
+`_projected_cost` already uses for the benchmark, following the same discipline: a
+projection from data, not a guess, and a stated reason rather than a silent `None`
+when nothing was measured to project from. Read `aboveMeasuredScale` before saying
+anything about how long the search will take — **a search declares its own scale, and
+it is not the pilot's.** A pilot reporting a light scale says nothing about the
+search that is about to run first under a heavier one it declared for itself; missing
+that gap once is how a few minutes of pilot time gets mistaken for the cost of the
+whole flow.
+
+### `nextStep: "report-first"` — the document does not yet agree with the run
+
+`report` carries the same reading `verify` already reports (see
+[The report contract, and why `verify` reads the document too](#the-report-contract-and-why-verify-reads-the-document-too)),
+and this rung acts on nothing but its `status`: anything other than `ok` blocks the
+run, because a document a human reads is about to be offered and it does not yet
+say what the run says.
+
+**Why it sits last of the three that block a run, and why that is not a
+preference.** A forked arm costs the campaign, because every number came from
+mathematics the proposal does not state, and no repetition count repairs that. A
+missing search value costs nothing yet computed, because the run has no
+configuration to launch at all. A report in drift is narrower than either: it
+describes a sound run, wrongly, and correcting a sentence costs a sentence, not
+the campaign — which is exactly why it does not outrank a forked arm or an
+unchosen scalar. It still blocks, because a wrong sentence printed with the
+authority of thirty repetitions behind it is worse than no sentence.
+
+**Re-execute before judging.** A finding read off a stale notebook describes the
+run that happened, not the code that is there now. Correcting it before
+re-running corrects two different things at once, and the second correction is
+invented — nothing behind it was re-measured. Re-run first; if the finding
+survives the re-run, it is a claim about the code as it stands. If it does not,
+it was never a claim about the code at all, only about a run that no longer
+exists.
+
+**What the statuses mean here.** `report`'s own status describes the document: a
+report `drift` is the contract itself being violated — a number typed by hand,
+one measurement rendered twice, a table with no conclusion after it — and it can
+be true while every number the run produced is correct. A notebook's status
+describes the evidence the report was rendered from, on its own separate ladder:
+`empty` before any code cell has run, `errored` when one raised, `stale` when one
+has not run at all, and `stale-sources` when every cell ran clean but against
+code that has since changed underneath it. `fromStaleNotebook` on a finding is
+the join between the two — it says the finding was read off a notebook that is
+not `executed` against the current tree, so what it names is a property of a past
+run rather than a property of the document as it stands right now.
 
 ### `nextStep: "benchmark"` — propose the wiring, then train both and measure
 

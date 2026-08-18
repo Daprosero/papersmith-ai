@@ -597,6 +597,41 @@ def search_state(contract: dict, declared_records: list,
     }
 
 
+def search_cost_forecast(reduction: dict, required_scale: dict) -> dict | None:
+    """What the declared search would cost, projected from what was actually measured.
+
+    `requiredScale` is a search's own declaration of how large its run has to be,
+    kept apart from the scale a pilot happens to be running at for exactly one
+    reason: they are not the same number, and reading only one of them lets it
+    stand in for both. `_projected_cost` already knows how to scale a measured
+    duration by a declared target — the piece missing was pointing it at this
+    declaration instead of the benchmark's, so this does exactly that and adds
+    nothing to the arithmetic.
+
+    Reported, never gated, for the reason `_projected_cost` already gives:
+    whether the projected cost is worth paying is the user's call.
+    """
+    if not required_scale:
+        return {"projectedSeconds": None,
+                "reason": "the search declares no required scale, so there is "
+                          "nothing to project towards"}
+    forecast = dict(_projected_cost(reduction, required_scale) or {})
+    # The gap that makes this worth computing at all: a search whose declared
+    # scale sits above what actually produced the numbers on hand is a search
+    # about to run under a configuration nobody has measured anything at, and
+    # arithmetic alone will not say so unless it is asked to name the gap.
+    above = {
+        key: {"declared": _scale_of(wanted), "measuredAt": _scale_of(reduction.get(key))}
+        for key, wanted in required_scale.items()
+        if _scale_of(wanted) is not None
+        and _scale_of(reduction.get(key)) is not None
+        and _scale_of(wanted) > _scale_of(reduction.get(key))
+    }
+    if above:
+        forecast["aboveMeasuredScale"] = above
+    return forecast
+
+
 def records_state(target: Path, name: str, contract: dict) -> tuple[list, list]:
     """What the run left where its records live, against what the contract names.
 
@@ -1778,6 +1813,18 @@ def cmd_probe(args) -> dict:
     proposal belongs. With a baseline, an implementation computing with numpy cannot be
     trained at all, so the conversion is settled before the comparison is discussed;
     proposing a benchmark first would ask the user to approve a run that cannot happen.
+
+    Three checks stand between a trainable repository and the offer to run, and the
+    order among them is settled rather than a preference:
+
+    An arm computing mathematics it does not declare comes first, because correcting
+    it changes what the arm computes — which changes what any later step would find —
+    so anything read before that correction is read from a configuration about to
+    change under it. A declared search whose record is absent comes next: a run whose
+    governing value has not yet been chosen has no configuration at all, which is a
+    narrower failure than a wrong report and a cheaper one to catch before the machine
+    time is spent. The report comes last, because a report in drift still describes a
+    sound run — wrongly, which costs a sentence to fix rather than the campaign.
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
@@ -1805,18 +1852,34 @@ def cmd_probe(args) -> dict:
     else:
         next_step = "benchmark"
 
-    # Two things are read before the run is offered, and in this order.
+    # Three things are read before the run is offered, and in this order.
     #
     # An arm that never calls the mathematics it declares comes first, because it is
     # the only defect here that makes the run itself meaningless: every number would
     # come from an arm that was not computing what the table says it computed, and no
-    # amount of repetitions fixes that. The report comes second — a report in drift
-    # describes a sound run wrongly, which costs a sentence rather than the campaign,
-    # but still must not be printed with the authority of thirty repetitions behind it.
+    # amount of repetitions fixes that.
+    #
+    # A declared search whose record is absent comes second. A configuration whose
+    # governing scalar has not yet been chosen is not a configuration — nothing about
+    # what "trainable" or "benchmark" means changes, but the run about to be offered
+    # would have to invent a value it was never handed, silently or otherwise. That is
+    # worse than a report in drift and cheaper to catch before it runs.
+    #
+    # The report comes last — a report in drift describes a sound run wrongly, which
+    # costs a sentence rather than the campaign, but still must not be printed with
+    # the authority of thirty repetitions behind it.
     unfaithful = benchmark_unfaithfulness(target, name)
     report = report_state(target, name, package_name(name))
+    search = search_state(
+        read_declaration(
+            target / "src" / f"{package_name(name)}_Benchmark" / "__init__.py",
+            BENCHMARK_DECLARATION) or {},
+        list((report.get("declared") or {}).get("records") or []),
+        target / name)
     if next_step in ("benchmark", "piloted") and unfaithful:
         next_step = "wiring-first"
+    elif next_step in ("benchmark", "piloted") and search["recordFound"] is False:
+        next_step = "search-first"
     elif next_step in ("benchmark", "piloted") and report["status"] != "ok":
         next_step = "report-first"
 
@@ -1835,7 +1898,13 @@ def cmd_probe(args) -> dict:
         "results": state,
         "report": report,
         # Named here as well as in `verify`, because this is where the run is offered
-        # and a reason not to offer it belongs beside the offer.
+        # and a reason not to offer it belongs beside the offer. The forecast rides
+        # alongside the declaration it is projected from, rather than in `results`,
+        # because what it costs is a property of the search and not of the pilot.
+        "search": {**search,
+                   "costForecast": search_cost_forecast(
+                       state.get("reduction") or {},
+                       (search.get("declared") or {}).get("requiredScale") or {})},
         "unreachedModules": unfaithful,
         "nextStep": next_step,
         "wiring": proposal,

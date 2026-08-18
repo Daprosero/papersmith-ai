@@ -7,8 +7,10 @@ declares whether the user can still review it.
 """
 
 import argparse
+import inspect
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -2783,6 +2785,201 @@ class UnreachedMathematicsEndToEndTests(unittest.TestCase):
         self.assertEqual(leftover, [], leftover)
 
 
+class SearchDeclaredBeforeTheRunTests(unittest.TestCase):
+    """A run whose governing scalar has not yet been chosen has no
+    configuration at all — narrower than a wrong report and cheaper to catch
+    before any machine time is spent on it. `probe`'s ladder now asks about a
+    declared search between asking about a faithful arm and asking about a
+    sound report.
+
+    Fixtures reuse the toy shape `UnreachedMathematicsEndToEndTests` already
+    established: a module reached through an import (faithful) or not
+    (unfaithful), a `Prior` package to compare against, and a
+    `Method_Benchmark` package that carries the harness's own contract.
+    """
+
+    SEARCH = {
+        "what": "which free scalar this chooses",
+        "requiredScale": {"epochs": 20, "seeds": 3},
+        "role": "valid",
+        "tieRule": "the smallest value among the tied candidates",
+        "record": "Results/ceilings.json",
+    }
+
+    def _declaration(self, search):
+        search_line = f"    'search': {search!r},\n" if search is not None else ""
+        return ("__benchmark__ = {\n"
+                "    'revision': 'r01.md',\n"
+                "    'arms': {'floor': {'sections': ['3']}, "
+                "'full': {'sections': ['3']}},\n"
+                f"{search_line}"
+                "}\n")
+
+    def probe_with(self, wiring, *, search=None, record_present=False,
+                   pilot=False, suffix=""):
+        box = FORGE / "implementations" / f"_e2e_search_first_{suffix}_{os.getpid()}"
+        try:
+            (box / "src/Method").mkdir(parents=True)
+            (box / "src/Method_Benchmark").mkdir(parents=True)
+            (box / "src/Prior").mkdir(parents=True)
+            # The product folder, distinct from `src/Method`: `search_state`
+            # answers the filesystem's own question about it, and without it
+            # the question has nothing to be asked of.
+            (box / "Method").mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(box)], check=True,
+                           capture_output=True)
+            (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+            (box / "src/Method/called.py").write_text(
+                _module("r01.md", ["3"], ["11"], imports="import torch\n"),
+                encoding="utf-8")
+            (box / "src/Method/never_called.py").write_text(
+                _module("r01.md", ["3"], ["12"], imports="import torch\n"),
+                encoding="utf-8")
+            (box / "src/Prior/model.py").write_text("import torch\n", encoding="utf-8")
+            (box / "src/Method_Benchmark/__init__.py").write_text(
+                self._declaration(search), encoding="utf-8")
+            (box / "src/Method_Benchmark/wiring.py").write_text(wiring,
+                                                                encoding="utf-8")
+            if record_present:
+                results = box / "Method" / "Results"
+                results.mkdir(parents=True, exist_ok=True)
+                (results / "ceilings.json").write_text("{}", encoding="utf-8")
+            if pilot:
+                results = box / "Method" / "Results"
+                results.mkdir(parents=True, exist_ok=True)
+                (results / impl.PROBE_RESULTS).write_text(json.dumps({
+                    "revision": "r01.md",
+                    "comparison": {"metric": 1},
+                    "reduction": {"epochs": 1, "wallSeconds": 60},
+                    "targetScale": {"epochs": 5},
+                }), encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(CLI), "probe", "--target", str(box),
+                 "--name", "Method", "--revision", "r01.md"],
+                capture_output=True, text=True, cwd=FORGE)
+            return json.loads(proc.stdout or "{}")
+        finally:
+            shutil.rmtree(box, ignore_errors=True)
+
+    WITH = "from Method.called import called\nfrom Method.never_called import total\n"
+    WITHOUT = "from Method.called import called\n"
+
+    def test_a_missing_record_yields_search_first_from_what_would_be_benchmark(self):
+        """Reachable red: before this change `probe` never read `search` at
+        all, so this exact fixture answered `benchmark` — the offer a
+        repository whose free scalar was never chosen has no business
+        receiving."""
+        probe = self.probe_with(self.WITH, search=self.SEARCH, suffix="benchmark")
+        self.assertIs(probe["search"]["recordFound"], False)
+        self.assertEqual(probe["nextStep"], "search-first")
+
+    def test_a_missing_record_yields_search_first_from_piloted_too(self):
+        """The same defect, reachable from the other state the ladder offers
+        a run from: a below-scale pilot is still an offer to run, and a
+        search with nothing chosen yet still has to come first."""
+        probe = self.probe_with(self.WITH, search=self.SEARCH, pilot=True,
+                                suffix="piloted")
+        self.assertEqual(probe["nextStep"], "search-first")
+
+    def test_a_record_on_disk_does_not_trigger_search_first(self):
+        """The other pole: without it, a search that is declared and already
+        satisfied would still block every run behind a step it has already
+        passed."""
+        probe = self.probe_with(self.WITH, search=self.SEARCH,
+                                record_present=True, suffix="satisfied")
+        self.assertIs(probe["search"]["recordFound"], True)
+        self.assertNotEqual(probe["nextStep"], "search-first")
+
+    def test_no_declared_search_is_unaffected(self):
+        """Absence of a declaration is not a finding: most repositories
+        search nothing, and this rung has to stay silent for every one of
+        them."""
+        probe = self.probe_with(self.WITH, search=None, suffix="undeclared")
+        self.assertEqual(probe["search"]["status"], "none")
+        self.assertNotEqual(probe["nextStep"], "search-first")
+
+    def test_wiring_first_still_wins_over_search_first(self):
+        """The ordering test that matters most. Correcting a fork changes
+        what an arm computes, which changes what a search over that arm
+        would find — so the wired defect is settled first, or a search-first
+        report would spend itself on a configuration about to change out
+        from under it."""
+        probe = self.probe_with(self.WITHOUT, search=self.SEARCH,
+                                suffix="ordering")
+        self.assertEqual(probe["nextStep"], "wiring-first")
+
+    def test_search_first_wins_over_report_first(self):
+        """A missing configuration is worse than a report in drift and
+        cheaper to prevent, so it is asked about first even here, where both
+        conditions hold: the report is undeclared and the search's record is
+        absent."""
+        probe = self.probe_with(self.WITH, search=self.SEARCH,
+                                suffix="over_report")
+        self.assertNotEqual(probe["report"]["status"], "ok")
+        self.assertEqual(probe["nextStep"], "search-first")
+
+    def test_the_toy_targets_left_nothing_behind(self):
+        self.probe_with(self.WITH, search=self.SEARCH, suffix="cleanup")
+        leftover = list((FORGE / "implementations").glob("_e2e_search_first_*"))
+        self.assertEqual(leftover, [], leftover)
+
+
+class SearchCostForecastTests(unittest.TestCase):
+    """What a declared search costs, forecast from what was actually
+    measured rather than from whatever the pilot happens to be running at.
+
+    The trap this closes: a search declares its own scale, and it is not
+    the pilot's. Reading a low pilot scale and concluding the whole flow is
+    a short one misses that the run about to go first — the search — has
+    just declared a configuration nobody has measured anything at.
+    """
+
+    def test_it_projects_from_a_measured_duration(self):
+        forecast = impl.search_cost_forecast(
+            {"seconds": 600, "epochs": 3}, {"epochs": 30})
+        self.assertEqual(forecast["factor"], 10.0)
+        self.assertEqual(forecast["projectedSeconds"], 6000)
+
+    def test_it_explains_itself_when_it_cannot_project(self):
+        """A silent `None` reads as "the cost is fine" to anyone skimming."""
+        forecast = impl.search_cost_forecast({"epochs": 3}, {"epochs": 30})
+        self.assertIsNone(forecast["projectedSeconds"])
+        self.assertIn("no duration", forecast["reason"])
+
+        forecast = impl.search_cost_forecast({"seconds": 600}, {})
+        self.assertIsNone(forecast["projectedSeconds"])
+        self.assertIn("no required scale", forecast["reason"])
+
+    def test_it_names_the_gap_when_the_declared_scale_exceeds_what_ran(self):
+        """The whole trap, stated as a finding rather than left to
+        arithmetic nobody reads closely enough to notice."""
+        forecast = impl.search_cost_forecast(
+            {"seconds": 600, "epochs": 3}, {"epochs": 20})
+        self.assertEqual(forecast["aboveMeasuredScale"],
+                         {"epochs": {"declared": 20, "measuredAt": 3}})
+
+    def test_no_gap_is_named_when_the_declared_scale_does_not_exceed_it(self):
+        forecast = impl.search_cost_forecast(
+            {"seconds": 600, "epochs": 30}, {"epochs": 20})
+        self.assertNotIn("aboveMeasuredScale", forecast)
+
+    def test_the_new_code_names_no_dimension_of_its_own(self):
+        """Mirrors `test_it_names_no_dimension_of_its_own`, over what this
+        change adds instead of over `DISTRIBUTION_DECLARATION`.
+
+        Word boundaries, not bare substrings: a previous version of that
+        check had to be tightened because `arm` fired on `warm` and `harm`,
+        and nothing here has learned that lesson yet on its own account.
+        """
+        source = "\n".join(filter(None, [
+            inspect.getsource(impl.search_cost_forecast),
+            inspect.getsource(impl.cmd_probe),
+        ])).lower()
+        for leaked in ("kaggle", "t4", "seconds", "peakmib", "accuracy",
+                      "seed", "ceiling", "ramp"):
+            self.assertIsNone(re.search(rf"\b{leaked}\b", source), leaked)
+
+
 class RemoteExecutionLedgerSectionTests(unittest.TestCase):
     """`verify`'s ledger section, read service-blind through `ledger.py` alone.
 
@@ -2948,3 +3145,141 @@ class RemoteExecutionLedgerSectionTests(unittest.TestCase):
                 self.assertNotIn(worker, dumped, worker)
             self.assertIsInstance(state["workers"], int)
             self.assertEqual(state["workers"], len(service_shaped_workers))
+
+
+class NextStepSectionCoverageTests(unittest.TestCase):
+    """`probe` returns eight `nextStep` values; SKILL.md must define a
+    `### nextStep: "..."` section for exactly the ones that prescribe work.
+
+    The reachable red here is `test_no_next_step_is_named_without_a_definition`:
+    before `report-first` had its own section, `search-first`'s section already
+    named it by name, in prose, to explain the ordering — a reader arriving at
+    `report-first` from `probe` found nothing. Commenting out the `report-first`
+    section this suite pins turns that test red again.
+    """
+
+    SKILL_MD = CLI.parent.parent / "SKILL.md"
+
+    # The three `nextStep` values that prescribe no work, and therefore must
+    # never get a `### nextStep: "..."` section of their own. This split cannot
+    # be read off the CLI source — the source only says which strings
+    # `next_step` can hold, never which of them call for a procedure and which
+    # call for silence — so it is named here once, with the reason attached,
+    # rather than inferred from the shape of the list.
+    #
+    # `nothing-to-compare` and `already-benchmarked`: Flow B already says to ask
+    # the user and invent no work for either, so a section prescribing steps
+    # would be inventing exactly the work Flow B refuses to do.
+    #
+    # `piloted`: stronger than the other two, and on purpose. Its own rule in
+    # SKILL.md requires the question to stay open and calls out "not a menu" by
+    # name — the pilot is where somebody looks, adds a test, moves a proportion
+    # and runs it short again, and a list of steps closes exactly the door that
+    # rule exists to hold open. Giving `piloted` a section would not be filling
+    # a gap; it would violate the rule the section would be explaining. This is
+    # the assertion that stops a future contributor from "fixing the asymmetry"
+    # by handing `piloted` the menu its own text forbids.
+    NO_SECTION = frozenset({
+        "nothing-to-compare",
+        "already-benchmarked",
+        "piloted",
+    })
+
+    HEADING_RE = re.compile(r'^### `nextStep: "([a-z0-9-]+)"`', re.MULTILINE)
+
+    @classmethod
+    def all_next_steps(cls):
+        """Every literal `probe` can assign to `next_step`, read from the source.
+
+        Not hardcoded: every rung of the ladder in `cmd_probe` assigns the same
+        variable a string literal and nothing else, so scraping every
+        `next_step = "..."` assignment out of the function's own source recovers
+        the complete set without this test carrying a second copy of the list
+        that could drift out of sync with the code.
+        """
+        source = inspect.getsource(impl.cmd_probe)
+        return set(re.findall(r'next_step\s*=\s*"([a-z0-9-]+)"', source))
+
+    @classmethod
+    def headings(cls):
+        text = cls.SKILL_MD.read_text(encoding="utf-8")
+        return set(cls.HEADING_RE.findall(text))
+
+    def test_every_value_the_cli_can_return_is_accounted_for(self):
+        """Sanity check on the derivation itself, not on SKILL.md: a change to
+        `cmd_probe` that adds, removes or renames a rung should move this test,
+        not a typo in the scraping regex above."""
+        self.assertEqual(
+            self.all_next_steps(),
+            {"nothing-to-compare", "convert", "piloted", "already-benchmarked",
+             "benchmark", "wiring-first", "search-first", "report-first"})
+
+    def test_every_prescriptive_next_step_has_its_own_section(self):
+        prescriptive = self.all_next_steps() - self.NO_SECTION
+        missing = sorted(prescriptive - self.headings())
+        self.assertEqual(missing, [], f"no `### nextStep` heading for: {missing}")
+
+    def test_the_three_that_prescribe_no_work_have_no_section(self):
+        """See `NO_SECTION` above for why these three are withheld on purpose
+        rather than by oversight."""
+        present = sorted(self.NO_SECTION & self.headings())
+        self.assertEqual(present, [], f"unexpected `### nextStep` heading for: {present}")
+
+    def test_no_next_step_is_named_without_a_definition(self):
+        """A value mentioned in backticks anywhere in the document must either
+        have its own heading or be one of the three deliberately left unheaded
+        (`NO_SECTION`); anything else is a dangling reference — the exact shape
+        of the defect this change fixes."""
+        text = self.SKILL_MD.read_text(encoding="utf-8")
+        found_headings = self.headings()
+        dangling = []
+        for value in self.all_next_steps():
+            pattern = re.compile(r'`[^`]*\b' + re.escape(value) + r'\b[^`]*`')
+            mentioned = bool(pattern.search(text))
+            if mentioned and value not in found_headings and value not in self.NO_SECTION:
+                dangling.append(value)
+        self.assertEqual(dangling, [], f"referenced but never defined: {dangling}")
+
+
+class ReportFirstSectionProseTests(unittest.TestCase):
+    """The `report-first` section's own examples must stay generic: this is a
+    forge for papers, not for one benchmark.
+
+    Word boundaries, not bare substrings — mirroring
+    `test_the_new_code_names_no_dimension_of_its_own` — because `arm` is
+    legitimate vocabulary in this section and must not be treated as a leak
+    just because it is a substring of `warm` or `harm`.
+    """
+
+    SKILL_MD = CLI.parent.parent / "SKILL.md"
+    SECTION_RE = re.compile(
+        r'### `nextStep: "report-first"`.*?(?=\n### |\n## |\Z)', re.DOTALL)
+
+    def section_text(self):
+        text = self.SKILL_MD.read_text(encoding="utf-8")
+        match = self.SECTION_RE.search(text)
+        self.assertIsNotNone(match, "the report-first section itself is missing")
+        return match.group(0).lower()
+
+    def test_it_names_no_service_or_method_of_its_own(self):
+        section = self.section_text()
+        for leaked in ("kaggle", "t4", "ceiling", "ramp", "transfer", "creda"):
+            self.assertIsNone(re.search(rf"\b{leaked}\b", section), leaked)
+
+    def test_the_whole_document_borrows_no_repository_s_vocabulary(self):
+        """The guard covers the document, not the paragraph written last.
+
+        Scoped to one section it protects only whatever somebody just added,
+        which is the half least likely to have drifted. It was scoped that way
+        because the file already held one leak: the worked example of a
+        checklist carried a real agreement from a real target, copied in as if
+        it were neutral illustration. That is worse than clutter — a reader
+        takes an example for a general practice, so the forge would have been
+        teaching one repository's decision as everybody's default.
+        """
+        text = self.SKILL_MD.read_text(encoding="utf-8").lower()
+        for leaked in ("kaggle", "t4", "ceiling", "ramp", "transfer", "creda",
+                       "milcreda"):
+            self.assertIsNone(
+                re.search(rf"\b{leaked}\b", text),
+                f"{leaked!r} is some target's vocabulary, not the forge's")
