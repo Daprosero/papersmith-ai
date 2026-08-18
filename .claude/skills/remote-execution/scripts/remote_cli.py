@@ -150,39 +150,117 @@ LEDGER_DIRNAME = ".remote-execution"
 LEDGER_FILENAME = "ledger.jsonl"
 QUARANTINE_DIRNAME = "quarantine"
 PARTIAL_SUFFIX = ".partial"
+TOOLS_DIRNAME = "tools"
+RUN_CONFIG_FILENAME = "run-config.json"
 
 
-def name_for(target: Path, entrypoint: str | Path) -> str:
-    """Derive `<Name>` from a path known to live under `target` — the same
-    structural technique `guard_entrypoint()` uses for a submitted
-    notebook (resolve first, then read the first path component past
-    `target`), factored out so `fetch`'s quarantine path and `reconcile`'s
-    ledger selection call the SAME derivation rather than each growing its
-    own copy that could quietly disagree with `submit`'s about which
-    product a given path belongs to.
+def product_for(
+    target: Path,
+    entrypoint: str | Path,
+    explicit: str | None = None,
+) -> str:
+    """Resolve which product's ledger `entrypoint` belongs to — explicitly,
+    never guessed. Replaces `name_for()`, reusing its same resolve-first
+    discipline (resolve first, then read path components past `target`) so
+    `status`, `fetch`'s quarantine path, and `reconcile`'s ledger selection
+    keep calling the SAME derivation rather than each growing its own copy
+    that could quietly disagree.
+
+    Four steps, in this fixed order, mirroring the fold's own treatment of
+    an unrecognized event `kind`: an ambiguous input is refused, not
+    silently mapped to the least-wrong guess.
+
+    1. `explicit` — a caller-supplied `--product` — wins outright, over
+       both steps below, whatever the entrypoint's own shape says.
+    2. Else, for the job-folder shape (`<target>/tools/<service>/
+       <job-name>/*.ipynb`), the `product` field declared in that job's own
+       `run-config.json`, read beside the entrypoint. Absent, unreadable,
+       or missing that field falls through to step 3 rather than refusing
+       immediately — a job-folder path is only refused once every earlier
+       step has genuinely found nothing.
+    3. Else, for the legacy shape (`<target>/<Name>/Notebooks/**.ipynb`),
+       `<Name>` — the first path component past `target` — exactly as
+       `name_for()` always derived it.
+    4. Else: refused. `TOOLS_DIRNAME` ("tools") is a forge-layout constant,
+       not a product, and this function never derives it as one — a
+       job-folder path with no declared product is refused here rather
+       than falling back to `parts[0]` the way the legacy shape does.
+
+    Whatever step resolves a product, the result is validated the same way
+    regardless of source: it must name an existing directory directly
+    under `target`, and it must not be `TOOLS_DIRNAME` itself — an explicit
+    `--product tools` or a `run-config.json` misdeclaring `"product":
+    "tools"` is refused exactly like an unresolved one, because `tools` is
+    forge layout, never a product this skill's ledger can shard by.
 
     This forge's real target hosts two products (`CREDA`, `MIL-CREDA`);
     nothing in this skill is allowed to assume which one a caller means —
-    `<Name>` is always read off a path, never typed in as a bare string.
+    a product is always read off a path, a flag, or a job's own recorded
+    config, never typed in as a bare string by this function itself.
     """
     resolved = Path(entrypoint).resolve()
     try:
         relative = resolved.relative_to(target)
     except ValueError:
         raise RemoteCLIError(
-            f"cannot derive <Name>: {resolved} does not stay under target "
-            f"{target} at all"
+            f"cannot resolve a product: {resolved} does not stay under "
+            f"target {target} at all"
         ) from None
     if not relative.parts:
         raise RemoteCLIError(
-            f"cannot derive <Name>: {resolved} equals target {target} itself"
+            f"cannot resolve a product: {resolved} equals target {target} "
+            "itself"
         )
-    return relative.parts[0]
+
+    parts = relative.parts
+    product = explicit
+
+    if product is None and len(parts) == 4 and parts[0] == TOOLS_DIRNAME:
+        run_config_path = resolved.parent / RUN_CONFIG_FILENAME
+        if run_config_path.is_file():
+            try:
+                run_config = json.loads(
+                    run_config_path.read_text(encoding="utf-8")
+                )
+            except (json.JSONDecodeError, OSError):
+                run_config = None
+            declared = (
+                run_config.get("product")
+                if isinstance(run_config, dict)
+                else None
+            )
+            if isinstance(declared, str) and declared:
+                product = declared
+
+    if product is None and len(parts) >= 3 and parts[1] == NOTEBOOKS_DIRNAME:
+        product = parts[0]
+
+    if product is None:
+        raise RemoteCLIError(
+            f"cannot resolve a product for {resolved}: no explicit "
+            "--product, no product declared in its run-config.json, and "
+            "the legacy <Name>/Notebooks/ shape does not apply"
+        )
+
+    if product == TOOLS_DIRNAME:
+        raise RemoteCLIError(
+            f"refusing product {product!r}: {TOOLS_DIRNAME!r} is a "
+            "forge-layout constant, never a product"
+        )
+
+    product_dir = target / product
+    if not product_dir.is_dir():
+        raise RemoteCLIError(
+            f"refusing product {product!r}: {product_dir} is not an "
+            "existing directory"
+        )
+
+    return product
 
 
 def guard_entrypoint(target: Path, entrypoint: Path) -> Path:
-    """Refuse anything that is not a notebook living under this product's
-    `Notebooks/` tree.
+    """Refuse anything that is not a notebook living under one of exactly
+    two admitted shapes.
 
     THIS function is the single place in the entire remote-execution skill
     that holds an opinion about what KIND of file may run remotely.
@@ -193,32 +271,48 @@ def guard_entrypoint(target: Path, entrypoint: Path) -> Path:
     `entrypoint` as an opaque string, and the fold indexes by that same
     string without ever asking what it points to. That narrowing is
     deliberate, not an oversight left for later: a future workload that is
-    a plain script, not a notebook, becomes admissible by widening the two
-    checks below — and ONLY the two checks below. Nowhere else in this
-    skill needs to change: not `Job`, not the ledger's event schema, not
-    the fold's indices, not any downstream consumer that reads `entrypoint`
+    a plain script, not a notebook, becomes admissible by widening the
+    checks below — and ONLY the checks below. Nowhere else in this skill
+    needs to change: not `Job`, not the ledger's event schema, not the
+    fold's indices, not any downstream consumer that reads `entrypoint`
     today. Reworking all of those for a second file kind is exactly the
     refactor this one guard exists to make unnecessary.
 
     This forge's own layout rule, not a universal one, and not something a
     second deployment of this skill against a differently-shaped repository
-    should assume holds:
-    - the entrypoint's resolved path must stay under
-      `<target>/<Name>/Notebooks/`, for whatever `<Name>` it resolves under
-      — this function does not know or care which one
-    - the resolved path must end `.ipynb`
-    - anything else is refused, with a message naming both the path that
-      was refused and which of the two rules it failed
+    should assume holds. Exactly two shapes are admitted, both under
+    `<target>`:
 
-    `Path.resolve()` runs FIRST, and both checks below run only against the
-    RESOLVED path — never the literal argument this function received.
-    This order is load-bearing, not cosmetic: a symlink sitting inside
-    `<Name>/Notebooks/` can point anywhere else on disk, and a check made
-    against the literal path would see only the symlink's own in-bounds
-    location, never where it actually leads. Checking containment before
-    resolving is the exact hole a documentation-like escape (this skill's
-    own threat matrix) would walk straight through; resolving first and
-    checking the resolved target is what closes it.
+    - the legacy shape, `<Name>/Notebooks/**.ipynb` — the resolved path's
+      second component is `Notebooks` and it has at least three components
+      past `target`
+    - the job-folder shape, `tools/<service>/<job-name>/*.ipynb` — exactly
+      four components past `target`, the first of which is
+      `TOOLS_DIRNAME`. This depth is exact, not a minimum: a fifth
+      component (one level deeper than a job folder ever legitimately
+      goes) is refused exactly like a path with too few. A shallower
+      `tools/<service>/*.ipynb` is refused the same way — there is no
+      service-level entrypoint, only a job-level one.
+
+    `TOOLS_DIRNAME` ("tools") is a forge-layout constant fixed by this
+    skill's own directory convention, never a service name — it must never
+    be treated as one, and it is why it never appears in this module's own
+    no-service source scan.
+
+    Both shapes require the resolved path to end `.ipynb`; anything else is
+    refused, with a message naming both the path that was refused and
+    which rule it failed.
+
+    `Path.resolve()` runs FIRST, and both shape checks below run only
+    against the RESOLVED path — never the literal argument this function
+    received. This order is load-bearing, not cosmetic, for EITHER shape: a
+    symlink sitting inside `Notebooks/` or inside a job folder can point
+    anywhere else on disk, and a check made against the literal path would
+    see only the symlink's own in-bounds location, never where it actually
+    leads. Checking containment before resolving is the exact hole a
+    documentation-like escape (this skill's own threat matrix) would walk
+    straight through; resolving first and checking the resolved target is
+    what closes it, on both shapes alike.
     """
     resolved = Path(entrypoint).resolve()
 
@@ -231,10 +325,14 @@ def guard_entrypoint(target: Path, entrypoint: Path) -> Path:
         ) from None
 
     parts = relative.parts
-    if len(parts) < 3 or parts[1] != NOTEBOOKS_DIRNAME:
+    legacy_shape = len(parts) >= 3 and parts[1] == NOTEBOOKS_DIRNAME
+    job_folder_shape = len(parts) == 4 and parts[0] == TOOLS_DIRNAME
+
+    if not (legacy_shape or job_folder_shape):
         raise PathGuardError(
             f"refusing {entrypoint}: resolved path {resolved} does not stay "
-            f"under <target>/<Name>/{NOTEBOOKS_DIRNAME}/"
+            f"under <target>/<Name>/{NOTEBOOKS_DIRNAME}/ nor under "
+            f"<target>/{TOOLS_DIRNAME}/<service>/<job-name>/"
         )
 
     if resolved.suffix != NOTEBOOK_SUFFIX:
@@ -350,14 +448,14 @@ def cmd_status(
             f"--target {target} does not resolve to an existing directory"
         )
 
-    name = name_for(target, entrypoint)
-    ledger_path = target / name / LEDGER_DIRNAME / LEDGER_FILENAME
+    product = product_for(target, entrypoint)
+    ledger_path = target / product / LEDGER_DIRNAME / LEDGER_FILENAME
     ledger_lines: list[str] = []
     if ledger_path.exists():
         ledger_lines = ledger_path.read_text(encoding="utf-8").splitlines()
 
     digest_fn = source_digest or _load_source_digest()
-    live = digest_fn(target, name)
+    live = digest_fn(target, product)
     state = LEDGER.fold(ledger_lines, live_digest=live)
 
     return {
@@ -464,14 +562,14 @@ def cmd_fetch(
             f"--target {target} does not resolve to an existing directory"
         )
 
-    name = name_for(target, entrypoint)
-    ledger_path = target / name / LEDGER_DIRNAME / LEDGER_FILENAME
+    product = product_for(target, entrypoint)
+    ledger_path = target / product / LEDGER_DIRNAME / LEDGER_FILENAME
     ledger_lines: list[str] = []
     if ledger_path.exists():
         ledger_lines = ledger_path.read_text(encoding="utf-8").splitlines()
 
     digest_fn = source_digest or _load_source_digest()
-    live = digest_fn(target, name)
+    live = digest_fn(target, product)
     state = LEDGER.fold(ledger_lines, live_digest=live)
 
     submission = state.by_id.get(submission_id)
@@ -484,7 +582,7 @@ def cmd_fetch(
     if verdict == "current":
         final_dest = Path(dest).resolve()
     else:
-        final_dest = target / name / LEDGER_DIRNAME / QUARANTINE_DIRNAME / submission_id
+        final_dest = target / product / LEDGER_DIRNAME / QUARANTINE_DIRNAME / submission_id
 
     observed_concurrency = state.pending_for(submission["worker"])
 
@@ -562,14 +660,14 @@ def cmd_reconcile(
             f"--target {target} does not resolve to an existing directory"
         )
 
-    name = name_for(target, entrypoint)
-    ledger_path = target / name / LEDGER_DIRNAME / LEDGER_FILENAME
+    product = product_for(target, entrypoint)
+    ledger_path = target / product / LEDGER_DIRNAME / LEDGER_FILENAME
     ledger_lines: list[str] = []
     if ledger_path.exists():
         ledger_lines = ledger_path.read_text(encoding="utf-8").splitlines()
 
     digest_fn = source_digest or _load_source_digest()
-    live = digest_fn(target, name)
+    live = digest_fn(target, product)
     state = LEDGER.fold(ledger_lines, live_digest=live)
 
     remote_active = set(adapter.list_active(worker))

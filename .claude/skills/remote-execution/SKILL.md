@@ -61,11 +61,17 @@ Three modules exist so far, each service-blind and stdlib-only:
     in that order. `guard_entrypoint()` is the ONLY place in this whole
     skill that holds an opinion about what KIND of file may run remotely:
     `Path.resolve()` first, then refuse anything whose resolved path does
-    not stay under `<target>/<Name>/Notebooks/` and end `.ipynb`.
-    Everything below the guard (`Job.entrypoint`, the ledger's `entrypoint`
-    field, the fold's indices) stays deliberately blind to that question;
-    widening this one guard, not reworking any of those, is how a future
-    non-notebook workload becomes admissible.
+    not match one of exactly two admitted shapes and end `.ipynb`:
+    `<target>/<Name>/Notebooks/**.ipynb` (the legacy shape) or
+    `<target>/tools/<service>/<job-name>/*.ipynb` (the job-folder shape,
+    exactly four path components past `target` — not "at least four").
+    `TOOLS_DIRNAME` ("tools") is a forge-layout constant, never a service
+    name, and it is excluded from this module's own no-service source
+    scan for exactly that reason. Everything below the guard
+    (`Job.entrypoint`, the ledger's `entrypoint` field, the fold's indices)
+    stays deliberately blind to that question; widening this one guard,
+    not reworking any of those, is how a future non-notebook workload
+    becomes admissible.
   - `status` folds the ledger and reports per-entrypoint state, what is
     `staleInFlight`, what is quarantined, and `unreadableLines`. It accepts
     no `adapter` parameter at all — a structural fact, not a convention —
@@ -98,10 +104,19 @@ Three modules exist so far, each service-blind and stdlib-only:
     `orphanLocal` — reported, and `--resolve` (human-invoked only, default
     `False`) is the one path that appends `errored(reason="not-found-at-service")`
     for it.
-  - `name_for(target, entrypoint)` derives `<Name>` from a resolved path the
-    same way `guard_entrypoint()` does, factored out so `fetch`'s quarantine
-    path and `reconcile`'s ledger selection reuse the one derivation instead
-    of each growing a second copy that could quietly disagree with `submit`'s.
+  - `product_for(target, entrypoint, explicit=None)` resolves which
+    product's ledger an entrypoint belongs to — explicit, never guessed.
+    Replaces the narrower `name_for()`: an explicit `--product` wins over
+    everything; else, for the job-folder shape, the `product` field
+    declared in that job's own `run-config.json` (read beside the
+    entrypoint, if present); else, for the legacy shape, `<Name>` — the
+    first path component past `target`, exactly as `name_for()` always
+    derived it; else the call is refused, never silently mapped to a
+    guess. Whatever step resolves a product, it must name an existing
+    directory directly under `target` and must not be `TOOLS_DIRNAME`
+    itself. `status`, `fetch`'s quarantine path and `reconcile`'s ledger
+    selection all call this SAME function, so none of them can grow a
+    second copy that quietly disagrees with another.
 - `scripts/adapters/kaggle.py` — the ONE file below the adapter seam allowed
   to name a service. `workers()` reports usernames from kaggle-accounts' own
   sanctioned `list --json` command (run as a subprocess; this module never

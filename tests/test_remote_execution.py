@@ -1021,6 +1021,13 @@ def _make_product(target: Path, name: str) -> Path:
     return notebooks
 
 
+def _make_job_folder(target: Path, service: str, job_name: str) -> Path:
+    """Build `<target>/tools/<service>/<job-name>/` and return that dir."""
+    job_dir = target / "tools" / service / job_name
+    job_dir.mkdir(parents=True)
+    return job_dir
+
+
 class PathGuardTests(unittest.TestCase):
     """`remote_cli.guard_entrypoint()` — the sole holder of file-kind policy.
 
@@ -1077,6 +1084,179 @@ class PathGuardTests(unittest.TestCase):
 
             with self.assertRaises(REMOTE_CLI.PathGuardError):
                 REMOTE_CLI.guard_entrypoint(target.resolve(), elsewhere)
+
+    def test_job_folder_shaped_path_is_admitted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            job_dir = _make_job_folder(target, "kaggle", "search-a")
+            notebook = job_dir / "runner.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            resolved = REMOTE_CLI.guard_entrypoint(target.resolve(), notebook)
+            self.assertEqual(resolved, notebook.resolve())
+
+    def test_symlink_escaping_job_folder_shape_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            job_dir = _make_job_folder(target, "kaggle", "search-a")
+            outside = Path(tmp) / "outside.ipynb"
+            outside.write_text("{}", encoding="utf-8")
+
+            link = job_dir / "evil.ipynb"
+            os.symlink(outside, link)
+
+            # Same escape-proof requirement the legacy-shape fixture check
+            # above already applies: prove the fixture itself escapes
+            # before trusting a refusal to mean anything.
+            self.assertNotIn("tools", link.resolve().parts)
+            self.assertEqual(link.resolve(), outside.resolve())
+
+            with self.assertRaises(REMOTE_CLI.PathGuardError):
+                REMOTE_CLI.guard_entrypoint(target.resolve(), link)
+
+    def test_five_deep_tools_path_is_refused(self) -> None:
+        """The job-folder shape is exactly four components past `target`,
+        not "at least four" — a fifth component, one level deeper than a
+        job folder ever legitimately goes, is refused rather than admitted
+        the way a `>=` check would admit it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            too_deep = target / "tools" / "kaggle" / "search-a" / "extra"
+            too_deep.mkdir(parents=True)
+            notebook = too_deep / "runner.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            with self.assertRaises(REMOTE_CLI.PathGuardError):
+                REMOTE_CLI.guard_entrypoint(target.resolve(), notebook)
+
+    def test_three_deep_tools_path_is_refused(self) -> None:
+        """The opposite boundary: a path one component too SHALLOW to be a
+        genuine job folder (no `<job-name>` level at all) is refused the
+        same way — there is no service-level entrypoint, only a job-level
+        one.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            service_dir = target / "tools" / "kaggle"
+            service_dir.mkdir(parents=True)
+            notebook = service_dir / "runner.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            with self.assertRaises(REMOTE_CLI.PathGuardError):
+                REMOTE_CLI.guard_entrypoint(target.resolve(), notebook)
+
+
+class ProductForTests(unittest.TestCase):
+    """`remote_cli.product_for()` — replaces `name_for()`. Same resolve-first
+    discipline `name_for()` always had, plus the four-step resolution order
+    design #744 section 5 pins: an explicit `--product` wins outright, then
+    a job folder's own declared `product`, then the legacy shape's
+    `<Name>`, then refusal — never a guess.
+    """
+
+    def test_explicit_product_wins_over_a_declared_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            (target / "MIL-CREDA").mkdir(parents=True)
+            job_dir = _make_job_folder(target, "kaggle", "search-a")
+            notebook = job_dir / "runner.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+            (job_dir / "run-config.json").write_text(
+                json.dumps({"product": "SomeOtherProduct"}), encoding="utf-8"
+            )
+
+            product = REMOTE_CLI.product_for(
+                target.resolve(), notebook, explicit="MIL-CREDA"
+            )
+            self.assertEqual(product, "MIL-CREDA")
+
+    def test_job_folder_shape_reads_the_declared_product_from_run_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            (target / "MIL-CREDA").mkdir(parents=True)
+            job_dir = _make_job_folder(target, "kaggle", "search-a")
+            notebook = job_dir / "runner.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+            (job_dir / "run-config.json").write_text(
+                json.dumps({"product": "MIL-CREDA"}), encoding="utf-8"
+            )
+
+            product = REMOTE_CLI.product_for(target.resolve(), notebook)
+            self.assertEqual(product, "MIL-CREDA")
+
+    def test_legacy_shape_falls_back_to_the_first_path_component(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            product = REMOTE_CLI.product_for(target.resolve(), notebook)
+            self.assertEqual(product, "MIL-CREDA")
+
+    def test_job_folder_shape_with_no_run_config_at_all_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            job_dir = _make_job_folder(target, "kaggle", "search-a")
+            notebook = job_dir / "runner.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+            # No run-config.json at all: T7 is the task that ever writes
+            # one. This step must fall through cleanly, never guess "tools".
+
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError):
+                REMOTE_CLI.product_for(target.resolve(), notebook)
+
+    def test_job_folder_shape_with_run_config_present_but_no_product_field_is_refused(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            job_dir = _make_job_folder(target, "kaggle", "search-a")
+            notebook = job_dir / "runner.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+            (job_dir / "run-config.json").write_text(
+                json.dumps({"commit": "abc123"}), encoding="utf-8"
+            )
+
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError):
+                REMOTE_CLI.product_for(target.resolve(), notebook)
+
+    def test_resolved_product_must_be_an_existing_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            job_dir = _make_job_folder(target, "kaggle", "search-a")
+            notebook = job_dir / "runner.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+            # No `NoSuchProduct/` directory exists under target at all.
+
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError):
+                REMOTE_CLI.product_for(
+                    target.resolve(), notebook, explicit="NoSuchProduct"
+                )
+
+    def test_resolved_product_must_not_be_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            job_dir = _make_job_folder(target, "kaggle", "search-a")
+            notebook = job_dir / "runner.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+            # `tools/` genuinely exists as a directory under target — the
+            # refusal has to come from the name itself, not a missing dir.
+            self.assertTrue((target / "tools").is_dir())
+
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError):
+                REMOTE_CLI.product_for(target.resolve(), notebook, explicit="tools")
+
+    def test_path_outside_target_entirely_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            elsewhere = Path(tmp) / "elsewhere.ipynb"
+            elsewhere.write_text("{}", encoding="utf-8")
+
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError):
+                REMOTE_CLI.product_for(target.resolve(), elsewhere)
 
 
 class AdapterErrorAtTheSeamTests(unittest.TestCase):
@@ -1304,6 +1484,44 @@ class SubmitTests(unittest.TestCase):
             # started from (the repository checkout itself), which is what
             # a relative `--target` resolved against the wrong directory at
             # write time would otherwise have produced.
+            self.assertFalse((original_cwd / "repo").exists())
+
+    def test_relative_target_is_resolved_before_any_write_for_job_folder_shape(
+        self,
+    ) -> None:
+        """The same resolve-first guarantee the legacy-shape test above
+        proves, exercised against the job-folder shape too — `cmd_submit`'s
+        own `target = Path(target).resolve()` runs before
+        `guard_entrypoint()` ever sees either shape, not just the legacy
+        one.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            job_dir = _make_job_folder(target, "kaggle", "search-a")
+            notebook = job_dir / "runner.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            original_cwd = Path.cwd()
+            os.chdir(tmp)
+            try:
+                adapter = FakeAdapter(worker_id="w1", capacity=2)
+                result = REMOTE_CLI.cmd_submit(
+                    target=Path("repo"),
+                    entrypoint=Path("repo/tools/kaggle/search-a/runner.ipynb"),
+                    worker="w1",
+                    requested=1,
+                    adapter=adapter,
+                    source_digest=lambda t, n: "d" * 64,
+                )
+            finally:
+                os.chdir(original_cwd)
+
+            # The guard admitted the job-folder shape and resolved the
+            # entrypoint under the resolved (not relative) target, proven
+            # by the ledger existing at an absolute path with nothing
+            # leaking into the real process cwd this test started from.
+            self.assertTrue(Path(result["ledgerPath"]).is_absolute())
+            self.assertTrue(Path(result["ledgerPath"]).exists())
             self.assertFalse((original_cwd / "repo").exists())
 
     def test_remote_cli_module_names_no_service(self) -> None:
