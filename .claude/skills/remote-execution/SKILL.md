@@ -209,22 +209,46 @@ executable — no test in this suite reaches the network or a real account).
   staleness condition, out of bounds for this skill (see design #744
   section 2).
 
+- `assets/runner_bootstrap.py` (cell 0) and `assets/runner_invoke.py`
+  (cell 1) now hold their REAL content — copied byte-for-byte into every
+  generated `runner.ipynb`, with zero interpolation, by `jobfolder.py`'s
+  `build_notebook()` exactly as before. Both files are importable modules:
+  nothing runs at import time, and the one orchestrating call in each
+  (`bootstrap()`, `invoke()`) sits behind `if __name__ == "__main__":` —
+  the state a notebook cell's own top-level code runs in, and what lets
+  the forge test suite (`RunnerBootstrapTests`, `RunnerInvokeTests`)
+  import each file under its own module name and drive every function
+  directly against fake `run-config.json` payloads, with no notebook and
+  no real clone involved for most of them.
+  - `runner_bootstrap.py`'s `bootstrap()` runs, in order: read and
+    validate `run-config.json` (`load_run_config`); sparse-clone the
+    pinned commit (`clone_repo`, entirely through `_run_git()` — the one
+    composition point for every git call: `shell=False`, list argv, a
+    PATH-only env allowlist, an explicit timeout, non-zero exit is a
+    refusal); put the clone's `src/` on `sys.path`
+    (`add_clone_to_path`); import every declared entry module (the
+    normal `run.module` and, when present, `run.smoke.module`) and
+    assert each one's `__file__` resolves under that same clone
+    (`verify_imports_under_clone` — the "pip-installed copy" refusal);
+    detect hardware (`detect_hardware` — `torch` not importable IS
+    "hardware missing", with no silent CPU fallback); write
+    `bootstrap.json`. Any refusal along that path raises `SystemExit`
+    on the spot, before cell 1 ever gets a chance to run.
+  - `runner_invoke.py`'s `invoke()` selects the normal `run` block or its
+    `smoke` variant (when `run_config["mode"] == "smoke"`, the mode a
+    later slice's `submit --smoke` sets) via `select_block()`, resolves
+    `module`/`function` through `importlib` via `resolve_callable()`, and
+    calls it with its declared `kwargs`.
+  - Both files gained their own `*_module_names_no_service` guard, in the
+    same family as `jobfolder.py`'s, `adapter.py`'s, `remote_cli.py`'s
+    and `credentials.py`'s — eight in total across this skill now.
+
   **Not yet in this module**: the AST-based, transitive
   `resolve_clone_paths()` (declared-vs-computed clone paths, refusing
-  `computedNotDeclared` and uncertain imports, `--accept-unresolved`) and
-  the two runner assets' REAL content. `assets/runner_bootstrap.py` and
-  `assets/runner_invoke.py` exist today only as placeholders — real files,
-  at the real path `generate-job` reads by default, but each raises
-  `NotImplementedError` if actually executed. `jobfolder.py` copies
-  whatever bytes are at those two paths into the notebook's two cells
-  byte-for-byte, with zero interpolation, regardless of what those bytes
-  are; a later slice replaces the placeholder content in place with the
-  real, service-blind eight-responsibility bootstrap and the real invoke
-  cell, and adds their own unit tests (importable as modules, tested
-  directly against fake configs) plus `resolve_clone_paths()`. Until that
-  slice lands, a job folder `generate-job` produces has a real, valid,
-  atomically-written `run-config.json` and a real three-file layout, but
-  its `runner.ipynb` will not actually bootstrap or invoke anything if run.
+  `computedNotDeclared` and uncertain imports, `--accept-unresolved`) —
+  `generate_job()` still accepts `clonePaths` exactly as declared, with no
+  cross-check against what the target's own source actually imports. A
+  later slice wires that in.
 
   Open question this slice inherited from `cmd_submit`'s own `--product`
   migration (T6b) and did not change: `status`, `fetch` and `reconcile`

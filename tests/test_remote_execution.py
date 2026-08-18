@@ -98,6 +98,30 @@ KAGGLE_SPEC.loader.exec_module(KAGGLE)
 JOBFOLDER_SCRIPT = REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/jobfolder.py"
 JOBFOLDER = sys.modules["remote_execution_jobfolder"]
 
+# The two runner assets — loaded fresh (nothing above the seam execs
+# them; `jobfolder.py` only reads their bytes to copy verbatim). Each
+# guards its orchestrating call behind `if __name__ == "__main__":`, and
+# `__name__` here is the module name below, never `"__main__"`, so this
+# import fires nothing and lets the suite drive `RUNNER_BOOTSTRAP.bootstrap()`
+# / `RUNNER_INVOKE.invoke()` directly against fake configs.
+RUNNER_BOOTSTRAP_SCRIPT = REPOSITORY_ROOT / ".claude/skills/remote-execution/assets/runner_bootstrap.py"
+RUNNER_BOOTSTRAP_SPEC = importlib.util.spec_from_file_location(
+    "remote_execution_runner_bootstrap", RUNNER_BOOTSTRAP_SCRIPT
+)
+assert RUNNER_BOOTSTRAP_SPEC and RUNNER_BOOTSTRAP_SPEC.loader
+RUNNER_BOOTSTRAP = importlib.util.module_from_spec(RUNNER_BOOTSTRAP_SPEC)
+sys.modules[RUNNER_BOOTSTRAP_SPEC.name] = RUNNER_BOOTSTRAP
+RUNNER_BOOTSTRAP_SPEC.loader.exec_module(RUNNER_BOOTSTRAP)
+
+RUNNER_INVOKE_SCRIPT = REPOSITORY_ROOT / ".claude/skills/remote-execution/assets/runner_invoke.py"
+RUNNER_INVOKE_SPEC = importlib.util.spec_from_file_location(
+    "remote_execution_runner_invoke", RUNNER_INVOKE_SCRIPT
+)
+assert RUNNER_INVOKE_SPEC and RUNNER_INVOKE_SPEC.loader
+RUNNER_INVOKE = importlib.util.module_from_spec(RUNNER_INVOKE_SPEC)
+sys.modules[RUNNER_INVOKE_SPEC.name] = RUNNER_INVOKE
+RUNNER_INVOKE_SPEC.loader.exec_module(RUNNER_INVOKE)
+
 SHARD_IO_SCRIPT = REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/shard_io.py"
 SHARD_IO_SPEC = importlib.util.spec_from_file_location(
     "remote_execution_shard_io", SHARD_IO_SCRIPT
@@ -3265,6 +3289,476 @@ class JobFolderTests(unittest.TestCase):
                 "".join(notebook["cells"][0]["source"]),
                 JOBFOLDER.DEFAULT_BOOTSTRAP_ASSET.read_text(encoding="utf-8"),
             )
+
+
+def _make_origin_repo(tmp: str, files: dict) -> tuple:
+    """A real, throwaway local git repository — the sole `git` fixture
+    every `RunnerBootstrapTests` test that exercises `clone_repo()` or
+    `bootstrap()` end to end clones FROM. Real `git`, not a fake
+    executable: sparse-checkout and fetch-by-commit semantics are exactly
+    what this cell's own correctness depends on, and only real git proves
+    them.
+    """
+    origin = Path(tmp) / f"origin-{uuid.uuid4().hex}"
+    origin.mkdir()
+    for relative, content in files.items():
+        path = origin / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    env = dict(os.environ)
+    env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "runner-bootstrap-tests"
+    env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "runner-bootstrap-tests@example.invalid"
+    subprocess.run(["git", "init", "-q"], cwd=origin, env=env, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=origin, env=env, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "fixture"], cwd=origin, env=env, check=True
+    )
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=origin, env=env, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    return origin, commit
+
+
+class RunnerBootstrapTests(unittest.TestCase):
+    """`assets/runner_bootstrap.py` — cell 0's real content, driven as an
+    importable module against fake `run-config.json` payloads. Every test
+    in this class has a reachable red: before this task, the file raised
+    `NotImplementedError` at import time, and the module-loading block at
+    the top of this file would fail collection for the whole suite.
+    """
+
+    def _fake_run_config(self, **overrides) -> dict:
+        run_config = {
+            "schemaVersion": 1,
+            "product": "P",
+            "service": "runner-bootstrap-fake-service",
+            "jobName": "j",
+            "commit": "a" * 40,
+            "repo": {"url": "https://example.invalid/repo.git", "ref": "main"},
+            "clonePaths": ["src/fixturepkg"],
+            "run": {"module": "fixturepkg", "function": "run"},
+            "runnerTemplate": [{"path": "x", "sha256": "y"}],
+        }
+        run_config.update(overrides)
+        return run_config
+
+    def test_load_run_config_reads_a_valid_fixture_beside_the_notebook(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / RUNNER_BOOTSTRAP.CONFIG_FILENAME).write_text(
+                json.dumps(self._fake_run_config()), encoding="utf-8"
+            )
+            run_config = RUNNER_BOOTSTRAP.load_run_config(tmp)
+            self.assertEqual(run_config["run"]["module"], "fixturepkg")
+
+    def test_load_run_config_refuses_when_the_file_is_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(RUNNER_BOOTSTRAP.BootstrapError):
+                RUNNER_BOOTSTRAP.load_run_config(tmp)
+
+    def test_load_run_config_refuses_an_unknown_schema_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / RUNNER_BOOTSTRAP.CONFIG_FILENAME).write_text(
+                json.dumps(self._fake_run_config(schemaVersion=99)), encoding="utf-8"
+            )
+            with self.assertRaises(RUNNER_BOOTSTRAP.BootstrapError):
+                RUNNER_BOOTSTRAP.load_run_config(tmp)
+
+    def test_run_git_env_is_a_path_only_allowlist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            recorded_env = {}
+            real_run = subprocess.run
+
+            def recording_run(argv, **kwargs):
+                recorded_env.update(kwargs.get("env") or {})
+                return real_run(argv, **kwargs)
+
+            with unittest.mock.patch.object(
+                RUNNER_BOOTSTRAP.subprocess, "run", side_effect=recording_run
+            ), unittest.mock.patch.dict(os.environ, {"SOME_OTHER_VAR": "leak-me-not"}):
+                RUNNER_BOOTSTRAP._run_git(["init"], cwd=Path(tmp))
+
+            self.assertEqual(set(recorded_env), {"PATH"})
+
+    def test_run_git_non_zero_exit_is_a_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(RUNNER_BOOTSTRAP.BootstrapError):
+                RUNNER_BOOTSTRAP._run_git(
+                    ["this-is-not-a-real-git-subcommand"], cwd=Path(tmp)
+                )
+
+    def test_run_git_timeout_is_a_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with unittest.mock.patch.object(
+                RUNNER_BOOTSTRAP.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired(cmd=["git", "init"], timeout=1.0),
+            ):
+                with self.assertRaises(RUNNER_BOOTSTRAP.BootstrapError):
+                    RUNNER_BOOTSTRAP._run_git(["init"], cwd=Path(tmp), timeout=1.0)
+
+    def test_shell_metacharacters_in_a_git_argument_reach_argv_verbatim_and_execute_nothing(
+        self,
+    ) -> None:
+        """The mandated RED test: a value carrying shell metacharacters
+        reaches `_run_git`'s own argv verbatim and executes nothing —
+        `shell=False` plus a list argv means the whole malicious string
+        travels as ONE argv element, never evaluated by a shell.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            marker_name = "pwned-marker-bootstrap"
+            marker_path = Path.cwd() / marker_name
+            malicious = f"a$(touch {marker_name})`touch {marker_name}`;touch {marker_name}"
+            recorded_argv: list = []
+            real_run = subprocess.run
+
+            def recording_run(argv, **kwargs):
+                recorded_argv.append(list(argv))
+                return real_run(argv, **kwargs)
+
+            try:
+                with unittest.mock.patch.object(
+                    RUNNER_BOOTSTRAP.subprocess, "run", side_effect=recording_run
+                ):
+                    with self.assertRaises(RUNNER_BOOTSTRAP.BootstrapError):
+                        RUNNER_BOOTSTRAP._run_git(
+                            ["fetch", "--depth", "1", "origin", malicious], cwd=Path(tmp)
+                        )
+                self.assertFalse(marker_path.exists())
+                self.assertEqual(recorded_argv[-1][-1], malicious)
+            finally:
+                if marker_path.exists():
+                    marker_path.unlink()
+
+    def test_clone_repo_sparse_checks_out_only_the_declared_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            origin, commit = _make_origin_repo(
+                tmp,
+                {
+                    "src/fixturepkg/__init__.py": "VALUE = 1\n",
+                    "unrelated/file.txt": "not cloned\n",
+                },
+            )
+            run_config = self._fake_run_config(
+                commit=commit,
+                repo={"url": str(origin), "ref": "main"},
+                clonePaths=["src/fixturepkg"],
+            )
+            clone_dir = Path(tmp) / "clone"
+
+            RUNNER_BOOTSTRAP.clone_repo(run_config, clone_dir)
+
+            self.assertTrue((clone_dir / "src" / "fixturepkg" / "__init__.py").is_file())
+            self.assertFalse((clone_dir / "unrelated").exists())
+
+    def test_add_clone_to_path_inserts_the_clone_src_at_the_front(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            clone_dir = Path(tmp) / "clone"
+            (clone_dir / "src").mkdir(parents=True)
+            saved_path = list(sys.path)
+            try:
+                src_dir = RUNNER_BOOTSTRAP.add_clone_to_path(clone_dir)
+                self.assertEqual(Path(sys.path[0]).resolve(), src_dir.resolve())
+            finally:
+                sys.path[:] = saved_path
+
+    def test_declared_modules_includes_the_smoke_module_only_when_declared(self) -> None:
+        with_smoke = self._fake_run_config(
+            run={"module": "fixturepkg", "function": "run", "smoke": {"module": "fixturepkg.smoke", "function": "run"}}
+        )
+        without_smoke = self._fake_run_config()
+
+        self.assertEqual(
+            RUNNER_BOOTSTRAP.declared_modules(with_smoke), ["fixturepkg", "fixturepkg.smoke"]
+        )
+        self.assertEqual(RUNNER_BOOTSTRAP.declared_modules(without_smoke), ["fixturepkg"])
+
+    def test_verify_imports_under_clone_succeeds_when_the_module_resolves_inside_src(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            module_name = f"fixture_inside_{uuid.uuid4().hex}"
+            src_dir = Path(tmp) / "src"
+            (src_dir / module_name).mkdir(parents=True)
+            (src_dir / module_name / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+            saved_path = list(sys.path)
+            sys.path.insert(0, str(src_dir))
+            try:
+                verified = RUNNER_BOOTSTRAP.verify_imports_under_clone([module_name], src_dir)
+                self.assertEqual(
+                    Path(verified[module_name]).resolve(),
+                    (src_dir / module_name / "__init__.py").resolve(),
+                )
+            finally:
+                sys.path[:] = saved_path
+                sys.modules.pop(module_name, None)
+
+    def test_verify_imports_under_clone_refuses_the_pip_installed_copy_case(self) -> None:
+        """A module importable from somewhere ELSE already on `sys.path` —
+        never placed under the clone's own `src` at all — is exactly the
+        "pip-installed copy" this responsibility exists to catch.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            module_name = f"fixture_decoy_{uuid.uuid4().hex}"
+            decoy_root = Path(tmp) / "decoy-site-packages"
+            (decoy_root / module_name).mkdir(parents=True)
+            (decoy_root / module_name / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+            empty_src = Path(tmp) / "src"
+            empty_src.mkdir()
+            saved_path = list(sys.path)
+            sys.path.append(str(decoy_root))
+            try:
+                with self.assertRaises(RUNNER_BOOTSTRAP.BootstrapError) as ctx:
+                    RUNNER_BOOTSTRAP.verify_imports_under_clone([module_name], empty_src)
+                self.assertIn("pip-installed copy", str(ctx.exception))
+            finally:
+                sys.path[:] = saved_path
+                sys.modules.pop(module_name, None)
+
+    def test_detect_hardware_refuses_when_torch_is_not_importable(self) -> None:
+        def _no_torch(name: str):
+            raise ImportError(f"no module named {name!r}")
+
+        with self.assertRaises(RUNNER_BOOTSTRAP.BootstrapError) as ctx:
+            RUNNER_BOOTSTRAP.detect_hardware(import_module=_no_torch)
+        self.assertIn("hardware missing", str(ctx.exception))
+
+    def test_detect_hardware_succeeds_with_an_injected_torch(self) -> None:
+        fake_torch = SimpleNamespace(
+            __version__="9.9.9",
+            cuda=SimpleNamespace(is_available=lambda: True, get_device_name=lambda i: "FakeGPU"),
+        )
+
+        def _fake_import(name: str):
+            self.assertEqual(name, "torch")
+            return fake_torch
+
+        environment = RUNNER_BOOTSTRAP.detect_hardware(import_module=_fake_import)
+        self.assertEqual(environment["device"], {"kind": "cuda", "name": "FakeGPU"})
+        self.assertEqual(environment["torch"], "9.9.9")
+
+    def test_bootstrap_exits_before_cell_one_when_config_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit):
+                RUNNER_BOOTSTRAP.bootstrap(tmp)
+            self.assertFalse((Path(tmp) / RUNNER_BOOTSTRAP.BOOTSTRAP_OUTPUT_FILENAME).exists())
+
+    def test_bootstrap_exits_before_cell_one_when_code_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            origin, commit = _make_origin_repo(tmp, {"src/fixturepkg/__init__.py": "VALUE = 1\n"})
+            run_config = self._fake_run_config(
+                commit=commit,
+                repo={"url": str(origin), "ref": "main"},
+                clonePaths=["src/fixturepkg"],
+                run={"module": "this_module_does_not_exist_anywhere", "function": "run"},
+            )
+            (Path(tmp) / RUNNER_BOOTSTRAP.CONFIG_FILENAME).write_text(
+                json.dumps(run_config), encoding="utf-8"
+            )
+            saved_path = list(sys.path)
+            try:
+                with self.assertRaises(SystemExit):
+                    RUNNER_BOOTSTRAP.bootstrap(tmp)
+            finally:
+                sys.path[:] = saved_path
+            self.assertFalse((Path(tmp) / RUNNER_BOOTSTRAP.BOOTSTRAP_OUTPUT_FILENAME).exists())
+
+    def test_bootstrap_exits_before_cell_one_when_hardware_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            origin, commit = _make_origin_repo(tmp, {"src/fixturepkg/__init__.py": "VALUE = 1\n"})
+            run_config = self._fake_run_config(
+                commit=commit,
+                repo={"url": str(origin), "ref": "main"},
+                clonePaths=["src/fixturepkg"],
+                run={"module": "fixturepkg", "function": "run"},
+            )
+            (Path(tmp) / RUNNER_BOOTSTRAP.CONFIG_FILENAME).write_text(
+                json.dumps(run_config), encoding="utf-8"
+            )
+            saved_path = list(sys.path)
+
+            def _no_torch(name: str):
+                raise ImportError("no torch")
+
+            try:
+                with self.assertRaises(SystemExit):
+                    RUNNER_BOOTSTRAP.bootstrap(tmp, hardware_import=_no_torch)
+            finally:
+                sys.path[:] = saved_path
+                sys.modules.pop("fixturepkg", None)
+            self.assertFalse((Path(tmp) / RUNNER_BOOTSTRAP.BOOTSTRAP_OUTPUT_FILENAME).exists())
+
+    def test_bootstrap_succeeds_writes_bootstrap_json_and_returns_commit_environment_and_imports(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            origin, commit = _make_origin_repo(tmp, {"src/fixturepkg/__init__.py": "VALUE = 1\n"})
+            run_config = self._fake_run_config(
+                commit=commit,
+                repo={"url": str(origin), "ref": "main"},
+                clonePaths=["src/fixturepkg"],
+                run={"module": "fixturepkg", "function": "run"},
+            )
+            (Path(tmp) / RUNNER_BOOTSTRAP.CONFIG_FILENAME).write_text(
+                json.dumps(run_config), encoding="utf-8"
+            )
+            saved_path = list(sys.path)
+            fake_torch = SimpleNamespace(
+                __version__="1.2.3",
+                cuda=SimpleNamespace(is_available=lambda: False, get_device_name=lambda i: "n/a"),
+            )
+            try:
+                result = RUNNER_BOOTSTRAP.bootstrap(
+                    tmp, hardware_import=lambda name: fake_torch
+                )
+            finally:
+                sys.path[:] = saved_path
+                sys.modules.pop("fixturepkg", None)
+
+            self.assertEqual(result["commit"], commit)
+            self.assertEqual(result["environment"]["device"]["kind"], "cpu")
+            self.assertIn("fixturepkg", result["imports"])
+            output_path = Path(tmp) / RUNNER_BOOTSTRAP.BOOTSTRAP_OUTPUT_FILENAME
+            self.assertTrue(output_path.is_file())
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["commit"], commit)
+
+    def test_runner_bootstrap_module_names_no_service(self) -> None:
+        """This asset's own no-service guard — in the same family as
+        `test_adapter_module_names_no_service`,
+        `test_remote_cli_module_names_no_service`,
+        `test_credentials_module_names_no_service` and
+        `test_jobfolder_module_names_no_service`.
+        """
+        source = RUNNER_BOOTSTRAP_SCRIPT.read_text(encoding="utf-8").lower()
+        for leaked in ("kaggle", "t4"):
+            self.assertNotIn(leaked, source, leaked)
+
+
+class RunnerInvokeTests(unittest.TestCase):
+    """`assets/runner_invoke.py` — cell 1's real content, driven as an
+    importable module against fake `run-config.json` payloads. Every test
+    in this class has a reachable red for the same reason
+    `RunnerBootstrapTests` does: the file raised `NotImplementedError` at
+    import time before this task.
+    """
+
+    def _fixture_module(self, tmp: str) -> str:
+        module_name = f"fixture_invoke_target_{uuid.uuid4().hex}"
+        (Path(tmp) / f"{module_name}.py").write_text(
+            "def run(**kwargs):\n"
+            "    return {'ran': 'run', 'kwargs': kwargs}\n"
+            "\n"
+            "def smoke(**kwargs):\n"
+            "    return {'ran': 'smoke', 'kwargs': kwargs}\n"
+            "\n"
+            "NOT_CALLABLE = 'not-a-function'\n",
+            encoding="utf-8",
+        )
+        return module_name
+
+    def test_select_block_returns_the_normal_run_block_by_default(self) -> None:
+        run_config = {"run": {"module": "m", "function": "run"}}
+        self.assertEqual(
+            RUNNER_INVOKE.select_block(run_config), {"module": "m", "function": "run"}
+        )
+
+    def test_select_block_returns_the_smoke_block_when_mode_is_smoke(self) -> None:
+        run_config = {
+            "mode": "smoke",
+            "run": {
+                "module": "m", "function": "run",
+                "smoke": {"module": "m", "function": "smoke"},
+            },
+        }
+        self.assertEqual(
+            RUNNER_INVOKE.select_block(run_config), {"module": "m", "function": "smoke"}
+        )
+
+    def test_select_block_refuses_smoke_mode_with_no_declared_smoke_block(self) -> None:
+        run_config = {"mode": "smoke", "run": {"module": "m", "function": "run"}}
+        with self.assertRaises(RUNNER_INVOKE.InvokeError):
+            RUNNER_INVOKE.select_block(run_config)
+
+    def test_resolve_callable_succeeds_for_a_real_function(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            module_name = self._fixture_module(tmp)
+            saved_path = list(sys.path)
+            sys.path.insert(0, tmp)
+            try:
+                func = RUNNER_INVOKE.resolve_callable({"module": module_name, "function": "run"})
+                self.assertEqual(func(x=1), {"ran": "run", "kwargs": {"x": 1}})
+            finally:
+                sys.path[:] = saved_path
+                sys.modules.pop(module_name, None)
+
+    def test_resolve_callable_refuses_when_the_module_cannot_be_imported(self) -> None:
+        with self.assertRaises(RUNNER_INVOKE.InvokeError):
+            RUNNER_INVOKE.resolve_callable(
+                {"module": "this_module_does_not_exist_anywhere", "function": "run"}
+            )
+
+    def test_resolve_callable_refuses_a_missing_attribute_and_a_non_callable_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            module_name = self._fixture_module(tmp)
+            saved_path = list(sys.path)
+            sys.path.insert(0, tmp)
+            try:
+                with self.assertRaises(RUNNER_INVOKE.InvokeError):
+                    RUNNER_INVOKE.resolve_callable(
+                        {"module": module_name, "function": "no_such_function"}
+                    )
+                with self.assertRaises(RUNNER_INVOKE.InvokeError):
+                    RUNNER_INVOKE.resolve_callable(
+                        {"module": module_name, "function": "NOT_CALLABLE"}
+                    )
+            finally:
+                sys.path[:] = saved_path
+                sys.modules.pop(module_name, None)
+
+    def test_invoke_calls_the_normal_run_function_with_its_declared_kwargs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            module_name = self._fixture_module(tmp)
+            saved_path = list(sys.path)
+            sys.path.insert(0, tmp)
+            try:
+                run_config = {
+                    "run": {"module": module_name, "function": "run", "kwargs": {"seed": 3}}
+                }
+                self.assertEqual(
+                    RUNNER_INVOKE.invoke(run_config), {"ran": "run", "kwargs": {"seed": 3}}
+                )
+            finally:
+                sys.path[:] = saved_path
+                sys.modules.pop(module_name, None)
+
+    def test_invoke_calls_the_smoke_function_when_mode_is_smoke(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            module_name = self._fixture_module(tmp)
+            saved_path = list(sys.path)
+            sys.path.insert(0, tmp)
+            try:
+                run_config = {
+                    "mode": "smoke",
+                    "run": {
+                        "module": module_name, "function": "run", "kwargs": {"seed": 3},
+                        "smoke": {"module": module_name, "function": "smoke", "kwargs": {"seed": 0}},
+                    },
+                }
+                self.assertEqual(
+                    RUNNER_INVOKE.invoke(run_config), {"ran": "smoke", "kwargs": {"seed": 0}}
+                )
+            finally:
+                sys.path[:] = saved_path
+                sys.modules.pop(module_name, None)
+
+    def test_runner_invoke_module_names_no_service(self) -> None:
+        """This asset's own no-service guard, same family as
+        `test_runner_bootstrap_module_names_no_service` — the eighth in
+        the whole skill's `*_module_names_no_service` family.
+        """
+        source = RUNNER_INVOKE_SCRIPT.read_text(encoding="utf-8").lower()
+        for leaked in ("kaggle", "t4"):
+            self.assertNotIn(leaked, source, leaked)
 
 
 class ShardIoTests(unittest.TestCase):
