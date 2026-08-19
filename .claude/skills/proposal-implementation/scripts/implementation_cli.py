@@ -2355,6 +2355,53 @@ def revision_source(revision: str | None) -> str | None:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+def latest_revision(like: str | None) -> str | None:
+    """The newest managed revision of the same family as `like`.
+
+    Everything else here compares a bench against a revision somebody typed at
+    the command line. That check is only armed when the caller happens to type
+    the right one: hand it the revision the bench is already bound to and it
+    agrees with itself, whatever else has since landed under `proposals/`. The
+    field was called `latestRevision` and was an echo of the argument.
+
+    So the newest is discovered, not asserted. The family pattern is derived
+    from a name that arrived as data — the bench's own declared revision, or a
+    module's provenance — exactly the way `prose_state` derives its own, and
+    for the same reason: nothing here may know a naming convention. A forge
+    whose revisions are `draft-4.md` is served by the identical code.
+
+    The ordering is on the digits as integers, not on the string, or `r9` would
+    outrank `r10` and the check would report a newer revision as older — silent,
+    and in the direction that approves. Names with more than one number order on
+    the tuple, left to right. A name with no digits at all has no family and no
+    successor to find, and says so by returning `None`.
+    """
+    if not like:
+        return None
+    name = Path(like).name
+    if not re.search(r"\d", name):
+        return None
+    # `re.escape` leaves digits alone and escapes the suffix's dot, so the only
+    # thing turned into a wildcard is a run of digits. Anchored: a family is
+    # matched whole, never as a substring of a longer name.
+    stem = re.sub(r"\d+", r"(\\d+)", re.escape(name))
+    family = re.compile("^" + stem + "$")
+    root = proposals_root()
+    if not root.is_dir():
+        return None
+    best: tuple[tuple[int, ...], str] | None = None
+    for candidate in sorted(root.iterdir()):
+        if not candidate.is_file():
+            continue
+        found = family.match(candidate.name)
+        if not found:
+            continue
+        key = tuple(int(group) for group in found.groups())
+        if best is None or key > best[0]:
+            best = (key, candidate.name)
+    return best[1] if best else None
+
+
 def remedy_compatibility(findings: list[dict], revision: str | None) -> dict:
     """Is each remedy expressible inside the proposal as it stands?
 
@@ -4733,8 +4780,25 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "sections": prov.get("sections", []),
             "equations": prov.get("equations", []),
             "invariants": prov.get("invariants", []),
-            "stale": bool(args.revision) and prov.get("revision") != args.revision,
         })
+
+    # Which revision everything below is measured against. An explicit `--revision`
+    # is obeyed as given — a caller pinning one is answering this question, not
+    # asking it. Otherwise it is DISCOVERED, and only then does the field named
+    # `latestRevision` mean what it says. The family is derived from a name that
+    # arrived as data: the bench's own declared revision first, since that is the
+    # binding the check exists to age, and a module's provenance when no bench has
+    # declared one yet. Both are names this code was handed, never ones it knows.
+    resolved = resolve_benchmark_declaration(target, name)
+    declared_revision = (resolved["contract"] or {}).get("revision") \
+        if resolved["status"] == "declared" else None
+    family = declared_revision or next(
+        (m["revision"] for m in modules if m.get("revision")), None)
+    discovered = latest_revision(family)
+    revision = args.revision or discovered
+
+    for module in modules:
+        module["stale"] = bool(revision) and module["revision"] != revision
 
     tests = test_function_names(target / "tests")
     untested = sorted(i for i in declared_invariants if f"test_{i}" not in tests)
@@ -4743,7 +4807,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     # What actually changed, rather than "the revision string is different".
     # Marking every module stale because one equation moved tells the reader there is
     # work to do and nothing about where, which is the part they have to find anyway.
-    target_source = revision_source(args.revision) if args.revision else None
+    target_source = revision_source(revision) if revision else None
     drift_detail = []
     for module in modules:
         if not module["stale"]:
@@ -4766,7 +4830,6 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     # declare which revision it was built against and which sections each arm
     # exercises, so a changed section can name the arms it reaches.
     bench_package = f"{package_name(name)}_Benchmark"
-    resolved = resolve_benchmark_declaration(target, name)
     unreached: list[dict] = []
     if resolved["status"] == "absent":
         benchmark = {"status": "absent", "package": f"src/{bench_package}"}
@@ -4785,7 +4848,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         unreached = unreached_mathematics(
             modules, declaration,
             benchmark_reach(target, package_name(name), bench_package))
-        stale_revision = bool(args.revision) and built_against != args.revision
+        stale_revision = bool(revision) and built_against != revision
         benchmark = {
             # An arm that never calls what it claims outranks an arm built against an
             # older revision: the first says the experiment is not measuring what it
@@ -4805,10 +4868,13 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     without_evidence = sorted(f["id"] for f in findings if f"test_finding_{f['id']}" not in tests)
     without_remedy = sorted(f["id"] for f in findings if not f.get("remedy"))
     unvalidated = sorted(f["id"] for f in findings if f"test_remedy_{f['id']}" not in tests)
-    compatibility = remedy_compatibility(findings, args.revision)
-    ruling = admissibility_record(target, args.revision)
+    # The resolved revision, not the argument: these three ask what the proposal
+    # says as it stands now, and answering them against a revision nobody named
+    # left them permanently unknown on every ordinary invocation.
+    compatibility = remedy_compatibility(findings, revision)
+    ruling = admissibility_record(target, revision)
     uncontrolled = remedies_without_control(target / "tests", package_name(name))
-    source = revision_source(args.revision)
+    source = revision_source(revision)
     migration = migration_state(target, findings, source, package_name(name))
     unruled = sorted(f["id"] for f in findings
                      if f["id"] not in ruling.get("findings", {})) if findings else []
@@ -4855,7 +4921,10 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "not be checked for exhaustiveness, so an empty unpartitioned "
             "here is not evidence the split is complete")
 
-    if not args.revision:
+    # `unknown` now means the newest could not be established at all — no argument
+    # and nothing on disk to discover from. It used to mean only that nobody typed
+    # one, which is the ordinary case and left the check silent by default.
+    if not revision:
         fidelity_status = "unknown"
     elif stale or missing_provenance or untested or unreached:
         # A bench built against an older revision does not drift fidelity — that is a
@@ -4882,7 +4951,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         # Reported whatever it says, and it drifts nothing: a historical mention
         # of an older revision is legitimate, and a configuration key quoted like
         # a symbol is not a defect. These are facts for a reader, not verdicts.
-        "prose": prose_state(target, args.revision),
+        "prose": prose_state(target, revision),
         "search": search_state(
             resolved["contract"],
             list((report.get("declared") or {}).get("records") or []),
@@ -4893,7 +4962,12 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         "coupling": coupling_state(target, name, package_name(name)),
         "fidelity": {
             "status": fidelity_status,
-            "latestRevision": args.revision,
+            "latestRevision": revision,
+            # How that name was arrived at, so a reader never has to guess whether
+            # a green fidelity was checked against the newest revision or against
+            # whichever one the caller happened to name.
+            "revisionSource": "argument" if args.revision else (
+                "discovered" if discovered else "none"),
             "staleModules": stale,
             "drift": drift_detail,
             "benchmark": benchmark,
@@ -4981,7 +5055,10 @@ def main(argv: list[str] | None = None) -> int:
         if name == "apply":
             p.add_argument("--plan", required=True, help="path to the approved plan JSON")
         if name in {"verify", "admit", "handoff", "probe"}:
-            p.add_argument("--revision", default=None, help="latest research-concept-rNN.md")
+            p.add_argument("--revision", default=None,
+                           help="pin the revision to check against; "
+                                "omit it and verify discovers the newest of "
+                                "the family the bench declares")
 
     args = parser.parse_args(argv)
     try:

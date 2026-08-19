@@ -486,6 +486,13 @@ date. Drift is Flow B's fourth step, not a reason to start over.
 15. Run the suite with the target interpreter, then execute the notebook.
 16. **Final check.** `verify --revision <latest>` → report `structure`, `fidelity`,
     `audit` and `validation`.
+    - `--revision` is optional and pins the check. Omitted, `verify` discovers the
+      newest revision of the family the bench itself declares, and `fidelity`
+      reports which it used under `latestRevision` with `revisionSource` naming
+      how it got there — `argument`, `discovered`, or `none` when there was
+      nothing to discover from. Prefer omitting it: a revision you pass is a
+      revision you asserted, and asserting the one the bench is already bound to
+      is how a bench built against an older revision reads as current.
     - **Not faithful** → correct the code and re-enter from step 15. **At most
       three passes.** If the third still is not faithful, stop and hand the user
       the decision, with what the three attempts established. A loop with no bound

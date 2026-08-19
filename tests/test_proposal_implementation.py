@@ -4504,3 +4504,131 @@ class MaterializeBenchmarkDeclarationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             gaps = impl.scaffold_gaps(Path(raw), "Method")
         self.assertIn("src/Method_Benchmark/__init__.py", gaps)
+
+
+class LatestRevisionDiscoveryTests(unittest.TestCase):
+    """El campo se llamaba `latestRevision` y era el eco del argumento.
+
+    `verify` comparaba el banco contra la revisión que alguien escribiera en la
+    línea de comandos. Ese chequeo solo estaba armado si el que llamaba acertaba a
+    escribir la correcta: pasándole la revisión a la que el banco ya está atado, el
+    chequeo se da la razón a sí mismo por más que en `proposals/` haya aterrizado
+    algo más nuevo. Y sin argumento, `fidelity` contestaba `unknown` y ni lo
+    intentaba.
+
+    Los nombres del fixture son neutros a propósito. El patrón de familia se deriva
+    de un nombre que llega como dato, nunca de una convención que este código
+    conozca, así que una forja cuyas revisiones se llamen `draft-N.md` está servida
+    por el mismo código — y eso es exactamente lo que se pinea acá.
+    """
+
+    def _proposals(self, *names):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        for revision in names:
+            (root / revision).write_text("## 1\ntexto\n", encoding="utf-8")
+        return root
+
+    def _with_root(self, root):
+        previous = os.environ.get("IMPLEMENTATION_PROPOSALS")
+        os.environ["IMPLEMENTATION_PROPOSALS"] = str(root)
+
+        def restore():
+            if previous is None:
+                os.environ.pop("IMPLEMENTATION_PROPOSALS", None)
+            else:
+                os.environ["IMPLEMENTATION_PROPOSALS"] = previous
+
+        self.addCleanup(restore)
+
+    def test_the_newest_of_the_family_is_found(self):
+        self._with_root(self._proposals("draft-1.md", "draft-2.md", "draft-3.md"))
+        self.assertEqual(impl.latest_revision("draft-1.md"), "draft-3.md")
+
+    def test_ten_outranks_nine(self):
+        """El orden es sobre los dígitos como enteros. Sobre la cadena, `draft-9`
+        gana y el chequeo reporta la más nueva como más vieja: en silencio, y para
+        el lado que aprueba."""
+        self._with_root(self._proposals("draft-9.md", "draft-10.md"))
+        self.assertEqual(impl.latest_revision("draft-9.md"), "draft-10.md")
+
+    def test_another_family_is_not_a_successor(self):
+        self._with_root(self._proposals("draft-2.md", "otra-cosa-7.md"))
+        self.assertEqual(impl.latest_revision("draft-2.md"), "draft-2.md")
+
+    def test_a_name_without_digits_has_no_family(self):
+        self._with_root(self._proposals("draft-2.md"))
+        self.assertIsNone(impl.latest_revision("sin-numero.md"))
+
+    def test_nothing_to_derive_from_is_not_a_guess(self):
+        self._with_root(self._proposals("draft-2.md"))
+        self.assertIsNone(impl.latest_revision(None))
+
+
+class VerifyDiscoversTheNewestRevisionTests(unittest.TestCase):
+    """La costura, de punta a punta: el banco atado a una revisión vieja mientras
+    en `proposals/` ya vive una más nueva, y nadie pasa `--revision`.
+
+    Antes esto contestaba `unknown` y `latestRevision: null`. El banco podía estar
+    atado a cualquier cosa y el flujo no tenía nada que decir.
+    """
+
+    DECLARATION = (
+        "__benchmark__ = {\n"
+        "    'revision': 'draft-1.md',\n"
+        "    'arms': {'floor': {'sections': ['3']}},\n"
+        "}\n"
+    )
+
+    def verify_in(self, *proposals, revision=None):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        for name in proposals:
+            (root / name).write_text("## 3\ntexto\n", encoding="utf-8")
+
+        box = FORGE / "implementations" / f"_e2e_latest_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src/Method").mkdir(parents=True)
+        (box / "src/Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            self.DECLARATION, encoding="utf-8")
+
+        argv = [sys.executable, str(CLI), "verify", "--target", str(box),
+                "--name", "Method"]
+        if revision:
+            argv += ["--revision", revision]
+        environment = dict(os.environ, IMPLEMENTATION_PROPOSALS=str(root))
+        proc = subprocess.run(argv, capture_output=True, text=True, cwd=FORGE,
+                              env=environment)
+        return json.loads(proc.stdout or "{}")["fidelity"]
+
+    def test_a_bench_bound_to_an_older_revision_is_caught_without_being_told(self):
+        fidelity = self.verify_in("draft-1.md", "draft-2.md")
+        self.assertEqual(fidelity["latestRevision"], "draft-2.md")
+        self.assertEqual(fidelity["revisionSource"], "discovered")
+        self.assertTrue(fidelity["benchmark"]["staleRevision"])
+        self.assertEqual(fidelity["benchmark"]["status"], "stale")
+
+    def test_the_newest_being_the_bound_one_is_the_other_pole(self):
+        """Sin esto, un chequeo que siempre marca viejo no distingue un banco al
+        día de uno atrasado, y aprobar sería imposible."""
+        fidelity = self.verify_in("draft-1.md")
+        self.assertEqual(fidelity["latestRevision"], "draft-1.md")
+        self.assertFalse(fidelity["benchmark"]["staleRevision"])
+        self.assertEqual(fidelity["benchmark"]["status"], "ok")
+
+    def test_an_explicit_argument_still_wins(self):
+        """Quien fija una revisión está contestando la pregunta, no haciéndola."""
+        fidelity = self.verify_in("draft-1.md", "draft-2.md", revision="draft-1.md")
+        self.assertEqual(fidelity["latestRevision"], "draft-1.md")
+        self.assertEqual(fidelity["revisionSource"], "argument")
+        self.assertFalse(fidelity["benchmark"]["staleRevision"])
+
+    def test_nothing_on_disk_reports_itself_unable(self):
+        fidelity = self.verify_in()
+        self.assertIsNone(fidelity["latestRevision"])
+        self.assertEqual(fidelity["revisionSource"], "none")
+        self.assertEqual(fidelity["status"], "unknown")
