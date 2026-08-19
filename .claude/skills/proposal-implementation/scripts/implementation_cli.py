@@ -425,10 +425,63 @@ DISTRIBUTION_DECLARATION = {
     "perEnvironment": "the measurements that describe the machine that produced "
                       "them, which are read one machine at a time — averaging "
                       "them across two yields a number that describes neither",
+    "perRun": "the measurements that vary from one run to the next even holding "
+             "everything else fixed, so reading them one machine at a time "
+             "would claim a stability across runs that was never measured",
     "identicalAcrossShards": "what every shard must agree on. A difference there "
                              "is a different experiment rather than different "
                              "hardware, so the merge refuses instead of averaging",
 }
+
+
+#: The declared shape of each `distribution` field. A container answers by
+#: existing, even empty; a scalar answers only non-blank. Neither branch is
+#: trusted until the value's own type is confirmed first — that confirmation
+#: is what keeps a malformed value from being read as either.
+DISTRIBUTION_SHAPE = {
+    "axis": str,
+    "poolable": list,
+    "perEnvironment": list,
+    "perRun": list,
+    "identicalAcrossShards": list,
+}
+
+
+def _distribution_answered(dist: dict, field: str) -> bool:
+    """True when `field` carries a real answer of its declared shape.
+
+    A container answers by existing, even empty — a replication run can
+    measure that nothing belongs in it. A scalar answers only non-blank: an
+    empty string carries no measurement, so it reads the same as never having
+    been filled in.
+    """
+    if field not in dist:
+        return False
+    value = dist[field]
+    expected = DISTRIBUTION_SHAPE[field]
+    if not isinstance(value, expected):
+        return False
+    return value != "" if expected is str else True
+
+
+def _distribution_malformed(dist: dict, field: str) -> bool:
+    """True when the key is present but its value is not the declared shape.
+
+    Checked before `_distribution_answered` is trusted anywhere: a string
+    typo'd where a list belongs must never be smuggled in as either
+    present-and-empty or plainly missing — it is its own, third thing.
+    """
+    return field in dist and not isinstance(dist[field], DISTRIBUTION_SHAPE[field])
+
+
+def _distribution_list(dist: dict, field: str) -> list:
+    """The declared list for `field`, or empty if it is missing or malformed.
+
+    A malformed value must not be coerced into the partition —
+    `list("accuracy")` would silently read eight letters as eight dimensions.
+    """
+    value = dist.get(field)
+    return list(value) if isinstance(value, list) else []
 
 
 def _projected_cost(reduction: dict, target_scale: dict) -> dict | None:
@@ -481,11 +534,18 @@ def distribution_state(contract: dict, dimensions: dict,
     by any amount of care afterwards.
 
     **The partition must be exhaustive and disjoint.** Every declared dimension
-    belongs to exactly one half: pooled, or read one machine at a time. In
-    neither, and it is silently dropped — a column nobody notices is gone. In
-    both, and there are two answers to one question. Which dimension is which is
-    the repository's to say; this never learns what any of them measures, and the
-    names in a finding are echoed from the declaration rather than written here.
+    belongs to exactly one of three: pooled, read one machine at a time, or read
+    one run at a time. In none of them, and it is silently dropped — a column
+    nobody notices is gone. In more than one, and there are two answers to one
+    question. Which dimension is which is the repository's to say; this never
+    learns what any of them measures, and the names in a finding are echoed
+    from the declaration rather than written here.
+
+    **A field's presence and its shape are checked before its truth.** A key
+    that is absent is missing; a key present with a value of the wrong shape is
+    `malformed` — a third thing, never smuggled in as either missing or
+    answered. Among fields of the right shape, a container answers by existing,
+    even empty; a scalar answers only non-blank.
 
     **Shards agree on what they said had to agree.** Where a merge record exists,
     a disagreement is reported and the merge is refused, never averaged.
@@ -495,7 +555,7 @@ def distribution_state(contract: dict, dimensions: dict,
     """
     dist = contract.get("distribution")
     if not dist:
-        return {"status": "none", "declared": {}, "missing": [],
+        return {"status": "none", "declared": {}, "missing": [], "malformed": [],
                 "axisIsAComparison": False, "unpartitioned": [],
                 "inBothHalves": [], "notADimension": [], "shardsDisagree": [],
                 "note": "no distribution declared; a run on one machine has "
@@ -503,28 +563,39 @@ def distribution_state(contract: dict, dimensions: dict,
 
     missing = [{"field": field, "reason": reason}
                for field, reason in DISTRIBUTION_DECLARATION.items()
-               if not dist.get(field)]
+               if not _distribution_answered(dist, field)
+               and not _distribution_malformed(dist, field)]
+
+    malformed = [{"field": field, "expected": DISTRIBUTION_SHAPE[field].__name__,
+                 "found": type(dist[field]).__name__}
+                for field in DISTRIBUTION_DECLARATION
+                if _distribution_malformed(dist, field)]
 
     # The only axis this refuses, and it refuses it by name because the name is
     # its own: `arms` is part of the declaration schema, so what the ladder
     # compares along is something this can know without learning a vocabulary.
     axis_is_comparison = dist.get("axis") == "arm"
 
-    poolable = list(dist.get("poolable") or [])
-    per_environment = list(dist.get("perEnvironment") or [])
-    declared = set(poolable) | set(per_environment)
+    poolable = _distribution_list(dist, "poolable")
+    per_environment = _distribution_list(dist, "perEnvironment")
+    per_run = _distribution_list(dist, "perRun")
+    groups = (set(poolable), set(per_environment), set(per_run))
+    declared = groups[0] | groups[1] | groups[2]
     unpartitioned = sorted(d for d in dimensions if d not in declared)
-    in_both = sorted(set(poolable) & set(per_environment))
+    in_both = sorted(set.union(
+        groups[0] & groups[1], groups[0] & groups[2], groups[1] & groups[2]))
     not_a_dimension = sorted(d for d in declared if d not in dimensions)
 
     disagree = sorted(row.get("field") for row in (merged or {}).get("disagreements") or [])
 
-    clean = (not missing and not axis_is_comparison and not unpartitioned
-             and not in_both and not not_a_dimension and not disagree)
+    clean = (not missing and not malformed and not axis_is_comparison
+             and not unpartitioned and not in_both and not not_a_dimension
+             and not disagree)
     return {
         "status": "ok" if clean else "incomplete",
         "declared": dict(dist),
         "missing": missing,
+        "malformed": malformed,
         "axisIsAComparison": axis_is_comparison,
         "unpartitioned": unpartitioned,
         "inBothHalves": in_both,

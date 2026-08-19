@@ -1342,7 +1342,7 @@ apart, and each is cheap enough that skipping it is never the economical choice.
   one.** When a campaign is too large for the machine in front of you, it gets
   divided — and the division is a choice with a wrong answer. `verify` reports
   `distribution`: the `axis` a shard is a subset of, which measurements are
-  `poolable` and which are `perEnvironment`, and what must be
+  `poolable`, which are `perEnvironment`, which vary `perRun`, and what must be
   `identicalAcrossShards`.
 
   **The axis may be anything except a comparison.** Divide by repetition, by
@@ -1357,10 +1357,13 @@ apart, and each is cheap enough that skipping it is never the economical choice.
   **A measurement describes whichever machine produced it.** Accuracy is a
   property of the method and pools freely; wall time and peak memory are
   properties of the machine, and averaging them across two of them yields a
-  number that describes neither. So every declared dimension belongs to exactly
-  one half. In neither, and it is silently dropped — a column nobody notices is
-  gone. In both, and there are two answers to one question. Which is which the
-  repository says; nothing here learns what a dimension measures.
+  number that describes neither. A measurement that varies from one run to the
+  next even holding everything else fixed belongs to neither: it is `perRun`,
+  and reading it one machine at a time would claim a stability across runs that
+  was never measured. So every declared dimension belongs to exactly one of the
+  three. In none, and it is silently dropped — a column nobody notices is gone.
+  In more than one, and there are two answers to one question. Which is which
+  the repository says; nothing here learns what a dimension measures.
 
   **Requesting hardware and receiving it are two obligations.** A service
   allocates by availability, so a shard can ask for one class and land on

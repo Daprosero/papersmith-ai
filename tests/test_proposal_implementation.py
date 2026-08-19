@@ -2064,6 +2064,7 @@ class DistributionTests(unittest.TestCase):
         "axis": "seed",
         "poolable": ["accuracy"],
         "perEnvironment": ["cost"],
+        "perRun": [],
         "identicalAcrossShards": ["revision"],
     }
     DIMENSIONS = {"accuracy": "higher", "cost": "lower"}
@@ -2163,6 +2164,52 @@ class DistributionTests(unittest.TestCase):
             {"distribution": self.COMPLETE}, self.DIMENSIONS, merged)
         self.assertEqual(state["status"], "ok")
         self.assertEqual(state["missing"], [])
+
+    def test_per_run_dimensions_are_recognized_as_declared(self):
+        """A replication measured that nothing here is stable across machines
+        or across runs; `perRun` is the third way a dimension may be spoken for,
+        not a gap `unpartitioned` should keep naming."""
+        dist = {**self.COMPLETE, "poolable": [], "perRun": ["accuracy"]}
+        state = impl.distribution_state({"distribution": dist}, self.DIMENSIONS)
+        self.assertEqual(state["unpartitioned"], [])
+        self.assertEqual(state["status"], "ok")
+
+    def test_a_measured_empty_field_is_not_reported_missing(self):
+        """Someone measured and the answer was `[]`; that is not silence."""
+        state = impl.distribution_state(
+            {"distribution": {**self.COMPLETE, "perEnvironment": []}},
+            self.DIMENSIONS)
+        self.assertNotIn(
+            "perEnvironment", [row["field"] for row in state["missing"]])
+
+    def test_a_field_never_answered_is_reported_missing(self):
+        """The key was never set at all — nobody answered."""
+        incomplete = dict(self.COMPLETE)
+        del incomplete["perEnvironment"]
+        state = impl.distribution_state(
+            {"distribution": incomplete}, self.DIMENSIONS)
+        self.assertIn(
+            "perEnvironment", [row["field"] for row in state["missing"]])
+
+    def test_a_field_of_the_wrong_shape_is_malformed_not_missing_or_answered(self):
+        """A string typo'd where a list belongs is a third thing, not silently
+        read as either present-and-answered or plainly missing."""
+        state = impl.distribution_state(
+            {"distribution": {**self.COMPLETE, "poolable": "accuracy"}},
+            self.DIMENSIONS)
+        self.assertNotIn(
+            "poolable", [row["field"] for row in state["missing"]])
+        self.assertIn(
+            "poolable", [row["field"] for row in state["malformed"]])
+        self.assertEqual(state["status"], "incomplete")
+
+    def test_a_malformed_field_is_never_smuggled_into_the_partition(self):
+        """`list("accuracy")` would read three letters as three dimensions;
+        a malformed value must contribute nothing to the partition instead."""
+        state = impl.distribution_state(
+            {"distribution": {**self.COMPLETE, "poolable": "accuracy"}},
+            self.DIMENSIONS)
+        self.assertEqual(state["unpartitioned"], ["accuracy"])
 
 
 class DoctrineAmendmentTests(unittest.TestCase):
