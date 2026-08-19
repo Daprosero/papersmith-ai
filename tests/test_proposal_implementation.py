@@ -2390,6 +2390,143 @@ class VerifyDistributionUniverseTests(unittest.TestCase):
         self.assertIn("note", distribution)
 
 
+class ResolveBenchmarkDeclarationTests(unittest.TestCase):
+    """The one place every reader gets `__benchmark__` from.
+
+    Before this resolver, four call sites checked `__init__.py` only while two
+    checked both `__init__.py` and `config.py` — so a declaration written in
+    `config.py` alone passed for two readers and read as absent for the rest.
+    These pin the resolver's own contract; `ResolverCrossReaderAgreementTests`
+    below proves the split verdict itself is closed.
+    """
+
+    def bench(self, root: Path) -> Path:
+        path = root / "src" / "Method_Benchmark"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def test_no_benchmark_directory_is_absent(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            resolved = impl.resolve_benchmark_declaration(root, "Method")
+        self.assertEqual(resolved["status"], "absent")
+        self.assertIsNone(resolved["path"])
+        self.assertIsNone(resolved["detail"])
+        self.assertEqual(resolved["contract"], {})
+
+    def test_directory_with_neither_file_declaring_is_undeclared(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.bench(root)
+            resolved = impl.resolve_benchmark_declaration(root, "Method")
+        self.assertEqual(resolved["status"], "undeclared")
+        self.assertIsNone(resolved["path"])
+        self.assertIn("__benchmark__", resolved["detail"])
+        self.assertEqual(resolved["contract"], {})
+
+    def test_declared_in_init_py_is_found(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (self.bench(root) / "__init__.py").write_text(
+                "__benchmark__ = {'revision': 'r01.md'}\n", encoding="utf-8")
+            resolved = impl.resolve_benchmark_declaration(root, "Method")
+        self.assertEqual(resolved["status"], "declared")
+        self.assertEqual(resolved["path"], "src/Method_Benchmark/__init__.py")
+        self.assertEqual(resolved["contract"], {"revision": "r01.md"})
+
+    def test_declared_in_config_py_alone_is_found(self):
+        """The defect this resolver closes: a declaration living only in
+        `config.py` used to read as absent everywhere but two call sites."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (self.bench(root) / "config.py").write_text(
+                "__benchmark__ = {'revision': 'r01.md'}\n", encoding="utf-8")
+            resolved = impl.resolve_benchmark_declaration(root, "Method")
+        self.assertEqual(resolved["status"], "declared")
+        self.assertEqual(resolved["path"], "src/Method_Benchmark/config.py")
+        self.assertEqual(resolved["contract"], {"revision": "r01.md"})
+
+    def test_init_py_takes_precedence_over_config_py(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bench = self.bench(root)
+            (bench / "__init__.py").write_text(
+                "__benchmark__ = {'revision': 'fromInit'}\n", encoding="utf-8")
+            (bench / "config.py").write_text(
+                "__benchmark__ = {'revision': 'fromConfig'}\n", encoding="utf-8")
+            resolved = impl.resolve_benchmark_declaration(root, "Method")
+        self.assertEqual(resolved["contract"]["revision"], "fromInit")
+
+    def test_an_unparsable_declaration_is_undeclared_with_the_parse_error(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (self.bench(root) / "__init__.py").write_text(
+                "__benchmark__ = {\n", encoding="utf-8")
+            resolved = impl.resolve_benchmark_declaration(root, "Method")
+        self.assertEqual(resolved["status"], "undeclared")
+        self.assertEqual(resolved["path"], "src/Method_Benchmark/__init__.py")
+        self.assertIn("unparsable", resolved["detail"])
+        self.assertEqual(resolved["contract"], {})
+
+
+class ResolverCrossReaderAgreementTests(unittest.TestCase):
+    """A declaration living only in `config.py` must not be a split verdict.
+
+    Before the resolver, `unreached_mathematics`'s caller and `verify`'s
+    `benchmark` block saw a `config.py`-only declaration while
+    `report_contract`, `search_state` and `distribution_state` did not — the
+    same declaration, four different answers. This walks `cmd_verify` end to
+    end and confirms every reader now agrees it is present.
+    """
+
+    DECLARATION = (
+        "__benchmark__ = {\n"
+        "    'revision': 'r01.md',\n"
+        "    'arms': {},\n"
+        "    'search': {'material': 'validation split'},\n"
+        "    'report': {'renderers': ['tables.render']},\n"
+        "    'premises': '',\n"
+        "    'distribution': {\n"
+        "        'axis': 'seed',\n"
+        "        'poolable': [],\n"
+        "        'perEnvironment': [],\n"
+        "        'perRun': [],\n"
+        "        'identicalAcrossShards': [],\n"
+        "    },\n"
+        "}\n"
+    )
+
+    def _box(self) -> Path:
+        box = FORGE / "implementations" / f"_resolver_agreement_{os.getpid()}"
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        # Declared only in config.py, never in __init__.py — the shape that
+        # used to split the verdict.
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "config.py").write_text(
+            self.DECLARATION, encoding="utf-8")
+        return box
+
+    def test_every_reader_sees_a_declaration_that_lives_only_in_config_py(self):
+        box = self._box()
+        try:
+            result = impl.cmd_verify(
+                argparse.Namespace(target=str(box), name="Method", revision=None))
+            contract = impl.report_contract(box, "Method")
+        finally:
+            shutil.rmtree(box, ignore_errors=True)
+
+        benchmark = result["fidelity"]["benchmark"]
+        self.assertNotIn(benchmark["status"], ("absent", "undeclared"), benchmark)
+        self.assertNotEqual(result["search"]["status"], "none", result["search"])
+        self.assertNotEqual(result["distribution"]["status"], "none",
+                            result["distribution"])
+        self.assertEqual(contract, {"renderers": ["tables.render"]})
+
+
 class DoctrineAmendmentTests(unittest.TestCase):
     """The record's clause and the launcher's clause governed different things.
 

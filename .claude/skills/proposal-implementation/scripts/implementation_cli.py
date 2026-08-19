@@ -1438,12 +1438,10 @@ def benchmark_unfaithfulness(target: Path, name: str) -> list[dict]:
     package = package_name(name)
     bench_package = f"{package}_Benchmark"
     root = target / "src" / package
-    declaration = None
-    for candidate in ("__init__.py", "config.py"):
-        declaration = declaration or read_declaration(
-            target / "src" / bench_package / candidate, BENCHMARK_DECLARATION)
-    if not root.is_dir() or not declaration or "__error__" in declaration:
+    resolved = resolve_benchmark_declaration(target, name)
+    if not root.is_dir() or resolved["status"] != "declared":
         return []
+    declaration = resolved["contract"]
     modules = []
     for file in sorted(root.rglob("*.py")):
         if file.name == "__init__.py":
@@ -1966,9 +1964,7 @@ def cmd_probe(args) -> dict:
     remote = remote_execution_state(target, name, package_name(name))
     report = report_state(target, name, package_name(name))
     search = search_state(
-        read_declaration(
-            target / "src" / f"{package_name(name)}_Benchmark" / "__init__.py",
-            BENCHMARK_DECLARATION) or {},
+        resolve_benchmark_declaration(target, name)["contract"],
         list((report.get("declared") or {}).get("records") or []),
         target / name)
     if next_step in ("benchmark", "piloted") and unfaithful:
@@ -2729,13 +2725,9 @@ def introspect(target: Path, package: str, record: Path | None) -> dict:
         return {"status": "unavailable", "detail": "salida ilegible del intérprete"}
 
 
-def report_contract(target: Path, package: str) -> dict:
+def report_contract(target: Path, name: str) -> dict:
     """What the benchmark declares about its own report, or nothing."""
-    declaration = read_declaration(
-        target / "src" / f"{package}_Benchmark" / "__init__.py", BENCHMARK_DECLARATION)
-    if not isinstance(declaration, dict):
-        return {}
-    contract = declaration.get(REPORT_KEY)
+    contract = resolve_benchmark_declaration(target, name)["contract"].get(REPORT_KEY)
     return contract if isinstance(contract, dict) else {}
 
 
@@ -2786,7 +2778,7 @@ def report_state(target: Path, name: str, package: str) -> dict:
     Nothing here judges whether a conclusion is *correct*. That would need to know
     what the numbers mean, which is exactly what this file may not know.
     """
-    contract = report_contract(target, package)
+    contract = report_contract(target, name)
     renderers = set(contract.get("renderers") or [])
     conclusions = set(contract.get("conclusions") or [])
     drawings = set(contract.get("figures") or [])
@@ -3224,6 +3216,65 @@ def read_declaration(path: Path, name: str) -> dict | None:
             except ValueError:
                 return {"__error__": f"{name} is not a literal"}
     return None
+
+
+def resolve_benchmark_declaration(target: Path, name: str) -> dict:
+    """The one place every reader gets `__benchmark__` from.
+
+    Six call sites once read this contract each their own way. Two of them —
+    `unreached_mathematics`'s caller and `verify`'s `benchmark` block —
+    checked both `__init__.py` and `config.py`; the other four checked
+    `__init__.py` alone. A declaration written in `config.py` only then
+    passed for two readers and read as absent for the rest — a split
+    verdict from a single declaration. This is the same shape
+    `resolve_submission_ledger` closed for the ledger in `remote_cli.py`:
+    there is no second, ad hoc way left to spell "the declaration" that a
+    later call site could reinvent and drift from the other five.
+
+    `status` is one of three: `"absent"` (no `src/<Package>_Benchmark/`
+    directory at all — nothing could have declared anything), `"undeclared"`
+    (the directory exists but neither `__init__.py` nor `config.py` binds
+    `__benchmark__` to a readable literal), or `"declared"` (found and
+    parsed). `path` names which candidate file supplied it, relative to
+    `target`, or `None` when nothing did. `detail` explains an
+    `"undeclared"` result — the parse error from whichever file raised one,
+    or a generic note when neither names the literal at all — and is `None`
+    for the other two statuses. `contract` is the declaration dict when
+    `declared`, `{}` otherwise, so every caller that used to write
+    `read_declaration(...) or {}` keeps receiving exactly the same shape:
+    `search_state`, `distribution_state` and `report_contract` change
+    nothing about what they are handed or what they return.
+
+    Searched in the same order the two already-correct sites used:
+    `__init__.py` first, `config.py` second. The first candidate that binds
+    the name to anything at all — a parsed dict or a caught parse error —
+    wins; a candidate that does not bind the name is skipped, never treated
+    as "declares nothing".
+    """
+    package = package_name(name)
+    bench_root = target / "src" / f"{package}_Benchmark"
+    if not bench_root.is_dir():
+        return {"status": "absent", "path": None, "detail": None, "contract": {}}
+    declaration = None
+    found = None
+    for candidate in ("__init__.py", "config.py"):
+        path = bench_root / candidate
+        result = read_declaration(path, BENCHMARK_DECLARATION)
+        if result is not None:
+            declaration, found = result, path
+            break
+    if declaration is None:
+        return {
+            "status": "undeclared", "path": None,
+            "detail": f"no {BENCHMARK_DECLARATION} in __init__.py or config.py: "
+                      "nothing says which sections its arms exercise",
+            "contract": {},
+        }
+    if "__error__" in declaration:
+        return {"status": "undeclared", "path": str(found.relative_to(target)),
+                "detail": declaration["__error__"], "contract": {}}
+    return {"status": "declared", "path": str(found.relative_to(target)),
+            "detail": None, "contract": declaration}
 
 
 def declared_dimension_names(target: Path, package: str) -> list[str] | None:
@@ -3721,7 +3772,7 @@ def notebooks_state(target: Path, name: str, package: str) -> dict:
     """
     root = target / name / "Notebooks"
     current = source_digest(target, package)
-    contract = report_contract(target, package)
+    contract = report_contract(target, name)
     reports = []
     for notebook in sorted(root.glob("*.ipynb")) if root.is_dir() else []:
         state = notebook_execution(notebook)
@@ -4604,21 +4655,15 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     # declare which revision it was built against and which sections each arm
     # exercises, so a changed section can name the arms it reaches.
     bench_package = f"{package_name(name)}_Benchmark"
-    bench_root = target / "src" / bench_package
-    declaration = None
-    for candidate in ("__init__.py", "config.py"):
-        declaration = declaration or read_declaration(bench_root / candidate,
-                                                      BENCHMARK_DECLARATION)
+    resolved = resolve_benchmark_declaration(target, name)
     unreached: list[dict] = []
-    if not bench_root.is_dir():
+    if resolved["status"] == "absent":
         benchmark = {"status": "absent", "package": f"src/{bench_package}"}
-    elif declaration is None or "__error__" in (declaration or {}):
+    elif resolved["status"] == "undeclared":
         benchmark = {"status": "undeclared", "package": f"src/{bench_package}",
-                     "detail": (declaration or {}).get(
-                         "__error__",
-                         f"no {BENCHMARK_DECLARATION} in __init__.py or config.py: "
-                         f"nothing says which sections its arms exercise")}
+                     "detail": resolved["detail"]}
     else:
+        declaration = resolved["contract"]
         built_against = declaration.get("revision")
         moved = changed_sections(revision_source(built_against), target_source)
         arms = declaration.get("arms") or {}
@@ -4686,9 +4731,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     # "declares zero dimensions" — see `declared_dimension_names`.
     dimension_names = declared_dimension_names(target, package_name(name))
     distribution = distribution_state(
-        read_declaration(
-            target / "src" / f"{package_name(name)}_Benchmark" / "__init__.py",
-            BENCHMARK_DECLARATION) or {},
+        resolved["contract"],
         dimension_names if dimension_names is not None else {})
     distribution["dimensionSource"] = (
         sorted(dimension_names) if dimension_names is not None else None)
@@ -4728,9 +4771,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         # a symbol is not a defect. These are facts for a reader, not verdicts.
         "prose": prose_state(target, args.revision),
         "search": search_state(
-            read_declaration(
-                target / "src" / f"{package_name(name)}_Benchmark" / "__init__.py",
-                BENCHMARK_DECLARATION) or {},
+            resolved["contract"],
             list((report.get("declared") or {}).get("records") or []),
             target / name),
         "distribution": distribution,
