@@ -1467,6 +1467,17 @@ class ReportContractTests(unittest.TestCase):
         state = self.state(self.WELL_FORMED, declaration="__benchmark__ = {}\n")
         self.assertEqual(state["status"], "undeclared")
 
+    def test_no_benchmark_package_at_all_is_absent_not_undeclared(self):
+        """A directory that was never created is a different fact than one
+        that exists and names nothing — `report_contract` alone cannot tell
+        them apart (both read as `{}`), so this reaches for the resolver
+        directly rather than reporting the same `"undeclared"` for both."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method" / "Notebooks").mkdir(parents=True, exist_ok=True)
+            state = impl.report_state(root, "Method", "Method")
+        self.assertEqual(state["status"], "absent")
+
     def test_an_unavailable_live_check_never_reports_ok(self):
         """Sin intérprete del destino, dos de los chequeos no pudieron correr, y
         decir `ok` informaría su ausencia como su respuesta."""
@@ -1865,6 +1876,22 @@ class SearchIsAnExperimentTests(unittest.TestCase):
         self.assertEqual(state["status"], "none")
         self.assertIn("undeclaredRecords", state["note"])
 
+    def test_absent_and_undeclared_propagate_over_none(self):
+        """The tri-state `resolve_benchmark_declaration` computes must survive
+        into this reader instead of collapsing into the same `"none"` a
+        repository that legitimately searches nothing also reports."""
+        for status in ("absent", "undeclared"):
+            with self.subTest(status=status):
+                state = impl.search_state({}, [], declaration_status=status)
+                self.assertEqual(state["status"], status)
+
+    def test_declared_but_no_search_block_still_reads_none(self):
+        """A real declaration that simply names no search is the case `none`
+        exists for, and `declaration_status="declared"` must not disturb it."""
+        state = impl.search_state({"arms": {}}, [], declaration_status="declared")
+        self.assertEqual(state["status"], "none")
+        self.assertIn("undeclaredRecords", state["note"])
+
     def test_each_missing_piece_is_named_with_why_it_matters(self):
         for field in ("what", "requiredScale", "role", "tieRule"):
             partial = {k: v for k, v in self.COMPLETE.items() if k != field}
@@ -2072,6 +2099,22 @@ class DistributionTests(unittest.TestCase):
 
     def test_a_repository_that_distributes_nothing_has_nothing_to_declare(self):
         state = impl.distribution_state({}, self.DIMENSIONS)
+        self.assertEqual(state["status"], "none")
+
+    def test_absent_and_undeclared_propagate_over_none(self):
+        """Same escape `search_state` needed from the same collapse: a
+        Benchmark package that is absent, or one that declares nothing yet,
+        must not read like a repository that legitimately runs on one
+        machine."""
+        for status in ("absent", "undeclared"):
+            with self.subTest(status=status):
+                state = impl.distribution_state(
+                    {}, self.DIMENSIONS, declaration_status=status)
+                self.assertEqual(state["status"], status)
+
+    def test_declared_but_no_distribution_block_still_reads_none(self):
+        state = impl.distribution_state(
+            {"arms": {}}, self.DIMENSIONS, declaration_status="declared")
         self.assertEqual(state["status"], "none")
 
     def test_sharding_along_a_comparison_is_refused(self):
@@ -2468,6 +2511,36 @@ class ResolveBenchmarkDeclarationTests(unittest.TestCase):
         self.assertEqual(resolved["path"], "src/Method_Benchmark/__init__.py")
         self.assertIn("unparsable", resolved["detail"])
         self.assertEqual(resolved["contract"], {})
+
+    def test_a_declaration_that_parses_with_every_block_blank_is_undeclared(self):
+        """The companion decision: a scaffold that parses is not a scaffold
+        that has said anything. Every block at its empty value must read the
+        same as no `__benchmark__` at all, or a fresh Flow A scaffold would
+        pass for a finished declaration on the day it is written."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (self.bench(root) / "__init__.py").write_text(
+                "__benchmark__ = {'revision': '', 'premises': {}, 'arms': {}, "
+                "'search': {}, 'report': {}, 'distribution': {}}\n",
+                encoding="utf-8")
+            resolved = impl.resolve_benchmark_declaration(root, "Method")
+        self.assertEqual(resolved["status"], "undeclared")
+        self.assertIn("empty", resolved["detail"])
+        self.assertEqual(resolved["contract"], {})
+
+    def test_one_answered_block_among_five_blank_ones_is_declared(self):
+        """The other pole: a single answer anywhere is enough to leave
+        `undeclared` behind, because `arms`/`search`/`report`/`distribution`
+        each report their own state once the whole declaration is `declared`."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (self.bench(root) / "__init__.py").write_text(
+                "__benchmark__ = {'revision': 'r01.md', 'premises': {}, "
+                "'arms': {}, 'search': {}, 'report': {}, 'distribution': {}}\n",
+                encoding="utf-8")
+            resolved = impl.resolve_benchmark_declaration(root, "Method")
+        self.assertEqual(resolved["status"], "declared")
+        self.assertEqual(resolved["contract"]["revision"], "r01.md")
 
 
 class ResolverCrossReaderAgreementTests(unittest.TestCase):
@@ -3400,6 +3473,94 @@ class UnreachedMathematicsEndToEndTests(unittest.TestCase):
         self.assertEqual(leftover, [], leftover)
 
 
+class DeclareFirstBeforeTheRunTests(unittest.TestCase):
+    """A benchmark declaration that has said nothing yet blocks the run ahead
+    of every other rung the ladder can reach, because each of them reads that
+    same declaration and finds nothing wrong with a target that has not
+    started declaring — `wiring-first` reads `arms`, `search-first` reads
+    `search`, `report-first` reads `report`, and all three are empty in
+    exactly the same way a real defect in one of them would not be.
+
+    Fixtures reuse the toy shape `UnreachedMathematicsEndToEndTests`
+    established: a module reached through an import, and a `Prior` package to
+    compare against — enough to make `nextStep` reach `"benchmark"` before the
+    declaration is read at all.
+    """
+
+    def probe_with(self, *, benchmark_dir=True, declaration=None, suffix=""):
+        box = FORGE / "implementations" / f"_e2e_declare_first_{suffix}_{os.getpid()}"
+        try:
+            (box / "src/Method").mkdir(parents=True)
+            if benchmark_dir:
+                (box / "src/Method_Benchmark").mkdir(parents=True)
+            (box / "src/Prior").mkdir(parents=True)
+            (box / "Method").mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(box)], check=True,
+                           capture_output=True)
+            (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+            (box / "src/Method/called.py").write_text(
+                _module("r01.md", ["3"], ["11"], imports="import torch\n"),
+                encoding="utf-8")
+            (box / "src/Prior/model.py").write_text("import torch\n", encoding="utf-8")
+            if declaration is not None:
+                (box / "src/Method_Benchmark/__init__.py").write_text(
+                    declaration, encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(CLI), "probe", "--target", str(box),
+                 "--name", "Method", "--revision", "r01.md"],
+                capture_output=True, text=True, cwd=FORGE)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            return json.loads(proc.stdout or "{}")
+        finally:
+            shutil.rmtree(box, ignore_errors=True)
+
+    BLANK = ("__benchmark__ = {'revision': '', 'premises': {}, 'arms': {}, "
+             "'search': {}, 'report': {}, 'distribution': {}}\n")
+
+    def test_no_benchmark_package_at_all_yields_declare_first(self):
+        probe = self.probe_with(benchmark_dir=False, suffix="absent")
+        self.assertEqual(probe["nextStep"], "declare-first")
+
+    def test_a_scaffold_with_every_block_blank_yields_declare_first(self):
+        """The companion decision, proved end to end: the exact template
+        `materialize.py` writes must not be mistaken for a finished
+        declaration the day it is created."""
+        probe = self.probe_with(declaration=self.BLANK, suffix="blank")
+        self.assertEqual(probe["nextStep"], "declare-first")
+        self.assertNotEqual(probe["nextStep"], "benchmark")
+
+    def test_declare_first_does_not_change_the_process_exit_status(self):
+        """`probe` is read-only advisory guidance, never a gate on exit
+        status — declaring nothing yet is a state, not a failure."""
+        box = FORGE / "implementations" / f"_e2e_declare_first_exit_{os.getpid()}"
+        try:
+            (box / "src/Method").mkdir(parents=True)
+            (box / "src/Prior").mkdir(parents=True)
+            (box / "Method").mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(box)], check=True,
+                           capture_output=True)
+            (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+            (box / "src/Method/called.py").write_text(
+                _module("r01.md", ["3"], ["11"], imports="import torch\n"),
+                encoding="utf-8")
+            (box / "src/Prior/model.py").write_text("import torch\n", encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(CLI), "probe", "--target", str(box),
+                 "--name", "Method", "--revision", "r01.md"],
+                capture_output=True, text=True, cwd=FORGE)
+        finally:
+            shutil.rmtree(box, ignore_errors=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        result = json.loads(proc.stdout or "{}")
+        self.assertEqual(result["nextStep"], "declare-first")
+        self.assertEqual(result["kind"], "read-only")
+
+    def test_the_toy_targets_left_nothing_behind(self):
+        self.probe_with(benchmark_dir=False, suffix="cleanup")
+        leftover = list((FORGE / "implementations").glob("_e2e_declare_first_*"))
+        self.assertEqual(leftover, [], leftover)
+
+
 class SearchDeclaredBeforeTheRunTests(unittest.TestCase):
     """A run whose governing scalar has not yet been chosen has no
     configuration at all — narrower than a wrong report and cheaper to catch
@@ -4212,8 +4373,8 @@ class NextStepSectionCoverageTests(unittest.TestCase):
         self.assertEqual(
             self.all_next_steps(),
             {"nothing-to-compare", "convert", "piloted", "already-benchmarked",
-             "benchmark", "wiring-first", "poll-first", "search-first",
-             "report-first"})
+             "benchmark", "declare-first", "wiring-first", "poll-first",
+             "search-first", "report-first"})
 
     def test_every_prescriptive_next_step_has_its_own_section(self):
         prescriptive = self.all_next_steps() - self.NO_SECTION

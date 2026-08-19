@@ -520,7 +520,8 @@ def _projected_cost(reduction: dict, target_scale: dict) -> dict | None:
 
 
 def distribution_state(contract: dict, dimensions: dict,
-                       merged: dict | None = None) -> dict:
+                       merged: dict | None = None,
+                       declaration_status: str = "declared") -> dict:
     """Whether a run split across machines says enough about itself to be one run.
 
     Three obligations, and each one's prohibition is what keeps this general.
@@ -552,9 +553,21 @@ def distribution_state(contract: dict, dimensions: dict,
 
     Absence is `none`. Most repositories run on one machine and have nothing to
     declare, and demanding a declaration from them would be inventing a problem.
+
+    **`declaration_status` distinguishes silence from absence** — see
+    `search_state`'s note on the same parameter; both readers face the same
+    collapse in `resolve_benchmark_declaration`'s `{}` and need the same escape
+    from it.
     """
     dist = contract.get("distribution")
     if not dist:
+        if declaration_status in ("absent", "undeclared"):
+            return {"status": declaration_status, "declared": {}, "missing": [],
+                    "malformed": [], "axisIsAComparison": False,
+                    "unpartitioned": [], "inBothHalves": [], "notADimension": [],
+                    "shardsDisagree": [],
+                    "note": "no benchmark declaration to read a distribution "
+                            "from yet"}
         return {"status": "none", "declared": {}, "missing": [], "malformed": [],
                 "axisIsAComparison": False, "unpartitioned": [],
                 "inBothHalves": [], "notADimension": [], "shardsDisagree": [],
@@ -606,7 +619,8 @@ def distribution_state(contract: dict, dimensions: dict,
 
 
 def search_state(contract: dict, declared_records: list,
-                 product: Path | None = None) -> dict:
+                 product: Path | None = None,
+                 declaration_status: str = "declared") -> dict:
     """Whether a declared search says enough about itself to be an experiment.
 
     A search is an experiment and gets declared as one. Three things it needs are
@@ -632,9 +646,23 @@ def search_state(contract: dict, declared_records: list,
     disjoint from the verdict's, because it does not know the material. It can
     only require that the role be named, which is what puts the question in front
     of whoever writes it.
+
+    **`declaration_status` distinguishes silence from absence.** `contract` alone
+    cannot: `resolve_benchmark_declaration` returns `{}` for both `"absent"` (no
+    `src/<Package>_Benchmark/` at all) and `"undeclared"` (a directory with
+    nothing readable in it, or a scaffold every block of which is still blank),
+    and a caller that only hands over the empty dict has already thrown that
+    distinction away. The default, `"declared"`, is for callers that already know
+    a real declaration was found and are asking only whether *this* target names a
+    search — the ordinary case, and every direct unit test of this function.
     """
     search = contract.get("search")
     if not search:
+        if declaration_status in ("absent", "undeclared"):
+            return {"status": declaration_status, "declared": {}, "missing": [],
+                    "recordNotDeclared": None, "recordFound": None,
+                    "strayRecords": [],
+                    "note": "no benchmark declaration to read a search from yet"}
         return {"status": "none", "declared": {}, "missing": [],
                 "recordNotDeclared": None, "recordFound": None, "strayRecords": [],
                 "note": "no search declared; `undeclaredRecords` is what would "
@@ -1893,23 +1921,30 @@ def cmd_probe(args) -> dict:
     trained at all, so the conversion is settled before the comparison is discussed;
     proposing a benchmark first would ask the user to approve a run that cannot happen.
 
-    Four checks stand between a trainable repository and the offer to run, and the
+    Five checks stand between a trainable repository and the offer to run, and the
     order among them is settled rather than a preference:
 
-    An arm computing mathematics it does not declare comes first, because correcting
-    it changes what the arm computes — which changes what any later step would find —
-    so anything read before that correction is read from a configuration about to
-    change under it. A submission already pending on a remote worker comes next: a
-    submission sent under broken wiring is already answering the wrong question, so
-    the wiring is settled first, but once it is sound, an answer already on its way
-    outranks everything else a repository could be told to do — offering to run
-    again would spend real quota a second time on a question the first submission
-    is already answering. A declared search whose record is absent comes next: a run
-    whose governing value has not yet been chosen has no configuration at all, which
-    is a narrower failure than a wrong report and a cheaper one to catch before the
-    machine time is spent. The report comes last, because a report in drift still
-    describes a sound run — wrongly, which costs a sentence to fix rather than the
-    campaign.
+    A benchmark declaration that names nothing yet comes first, ahead of everything
+    else here, because every other check on this list reads that same declaration.
+    An arm that never calls its own mathematics is read from `arms`; a record a
+    search should have written is read from `search`; a report in drift is read
+    from `report`. None of them can tell a repository that has not started
+    declaring from one that declared and got it wrong, and answering any of them
+    before this one would tell the reader to fix a report, or a fork, that nobody
+    has written the first word about yet. An arm computing mathematics it does not
+    declare comes next, because correcting it changes what the arm computes — which
+    changes what any later step would find — so anything read before that
+    correction is read from a configuration about to change under it. A submission
+    already pending on a remote worker comes next: a submission sent under broken
+    wiring is already answering the wrong question, so the wiring is settled first,
+    but once it is sound, an answer already on its way outranks everything else a
+    repository could be told to do — offering to run again would spend real quota a
+    second time on a question the first submission is already answering. A declared
+    search whose record is absent comes next: a run whose governing value has not
+    yet been chosen has no configuration at all, which is a narrower failure than a
+    wrong report and a cheaper one to catch before the machine time is spent. The
+    report comes last, because a report in drift still describes a sound run —
+    wrongly, which costs a sentence to fix rather than the campaign.
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
@@ -1937,21 +1972,36 @@ def cmd_probe(args) -> dict:
     else:
         next_step = "benchmark"
 
-    # Four things are read before the run is offered, and in this order.
+    # Five things are read before the run is offered, and in this order.
     #
-    # An arm that never calls the mathematics it declares comes first, because it is
-    # the only defect here that makes the run itself meaningless: every number would
-    # come from an arm that was not computing what the table says it computed, and no
-    # amount of repetitions fixes that.
+    # A benchmark declaration with nothing answered in it comes first, ahead of
+    # even the wiring check. `unreachedModules` (below) is computed *from* the
+    # declaration's own `arms` block: with nothing declared it is always empty,
+    # so `wiring-first` can never fire on its own in this state — reading it
+    # first here would only ever find silence and let a blank scaffold fall
+    # through to the checks after it, which do have something to say and say
+    # it misleadingly. `report_state` already reports its own `"undeclared"`
+    # the moment nothing has been answered, and without this rung that already
+    # reaches the run offer through `report-first` — the wrong rung, because
+    # nothing about a document disagreeing with a run is true yet; nobody has
+    # written a report to disagree with. This rung is the honest one for that
+    # state, and it takes the whole ladder ahead of everything built on top of
+    # a declaration.
     #
-    # A submission already pending on a remote worker comes second. Once the wiring
-    # is sound, an answer already on its way outranks a missing search value and a
-    # report in drift alike: offering the run again would ask for a second submission
-    # of a question the first one is already answering, spending real quota nothing
-    # here can get back. Reused, not recomputed — see `remote_execution_state()`'s own
-    # docstring for why a second fold of the ledger was rejected.
+    # An arm that never calls the mathematics it declares comes next, because it
+    # is the only defect here that makes the run itself meaningless: every
+    # number would come from an arm that was not computing what the table says
+    # it computed, and no amount of repetitions fixes that.
     #
-    # A declared search whose record is absent comes third. A configuration whose
+    # A submission already pending on a remote worker comes next. Once the
+    # wiring is sound, an answer already on its way outranks a missing search
+    # value and a report in drift alike: offering the run again would ask for a
+    # second submission of a question the first one is already answering,
+    # spending real quota nothing here can get back. Reused, not recomputed —
+    # see `remote_execution_state()`'s own docstring for why a second fold of
+    # the ledger was rejected.
+    #
+    # A declared search whose record is absent comes next. A configuration whose
     # governing scalar has not yet been chosen is not a configuration — nothing about
     # what "trainable" or "benchmark" means changes, but the run about to be offered
     # would have to invent a value it was never handed, silently or otherwise. That is
@@ -1960,14 +2010,18 @@ def cmd_probe(args) -> dict:
     # The report comes last — a report in drift describes a sound run wrongly, which
     # costs a sentence rather than the campaign, but still must not be printed with
     # the authority of thirty repetitions behind it.
+    resolved = resolve_benchmark_declaration(target, name)
     unfaithful = benchmark_unfaithfulness(target, name)
     remote = remote_execution_state(target, name, package_name(name))
     report = report_state(target, name, package_name(name))
     search = search_state(
-        resolve_benchmark_declaration(target, name)["contract"],
+        resolved["contract"],
         list((report.get("declared") or {}).get("records") or []),
-        target / name)
-    if next_step in ("benchmark", "piloted") and unfaithful:
+        target / name, declaration_status=resolved["status"])
+    if next_step in ("benchmark", "piloted") and resolved["status"] in (
+            "absent", "undeclared"):
+        next_step = "declare-first"
+    elif next_step in ("benchmark", "piloted") and unfaithful:
         next_step = "wiring-first"
     # `drift` and `unreliable` are deliberately excluded: neither is fixed by
     # waiting. `drift` means the submission's source moved out from under it,
@@ -2820,9 +2874,17 @@ def report_state(target: Path, name: str, package: str) -> dict:
     stale = {r["notebook"] for r in notebooks_state(target, name, package)["reports"]
              if r["status"] != "executed"}
     if not contract:
+        # `report_contract` alone cannot tell "no Benchmark package at all" from
+        # "one exists and simply names no report" — both read as `{}`. Asking
+        # the resolver directly, only on this already-empty path, recovers the
+        # distinction without report_contract growing a status of its own (see
+        # `resolve_benchmark_declaration`'s docstring on why it keeps its
+        # narrow `-> dict` job).
+        absent = resolve_benchmark_declaration(target, name)["status"] == "absent"
         return {
-            "status": "undeclared",
-            "detail": (f"src/{package}_Benchmark/__init__.py declares no "
+            "status": "absent" if absent else "undeclared",
+            "detail": ("no Benchmark package declares anything yet" if absent else
+                       f"src/{package}_Benchmark/__init__.py declares no "
                        f"{BENCHMARK_DECLARATION}[{REPORT_KEY!r}], so nothing states "
                        f"which calls render and which conclude, and no check below "
                        f"could run without guessing at somebody's field"),
@@ -3220,6 +3282,33 @@ def read_declaration(path: Path, name: str) -> dict | None:
     return None
 
 
+#: The six top-level blocks the kit's scaffold writes (see
+#: `assets/kit/src_benchmark/__init__.py`), and the value each one carries when
+#: nobody has answered it yet: `""` for the lone scalar, `{}` for the five
+#: containers. Named once here so "blank" has one definition every reader of
+#: the resolver's `"declared"`/`"undeclared"` split shares, rather than each
+#: caller inventing its own idea of empty.
+BENCHMARK_BLOCKS = {
+    "revision": "", "premises": {}, "arms": {},
+    "search": {}, "report": {}, "distribution": {},
+}
+
+
+def _declaration_is_blank(contract: dict) -> bool:
+    """True when every block is present at its empty value — a scaffold
+    nobody has written into yet, not a declaration with content.
+
+    Emptiness means something different at this level than it does inside a
+    single block: `distribution_state` already treats `perEnvironment: []` as
+    an answered, measured result, because a repository can legitimately
+    measure that a field is empty. No repository ever means "I measured that
+    the whole `distribution` block is empty" the same way — a blank *block* is
+    unambiguously unanswered, never a result. So this checks truthiness at the
+    block level on purpose, the mirror image of the field-level rule.
+    """
+    return not any(contract.get(block) for block in BENCHMARK_BLOCKS)
+
+
 def resolve_benchmark_declaration(target: Path, name: str) -> dict:
     """The one place every reader gets `__benchmark__` from.
 
@@ -3236,16 +3325,28 @@ def resolve_benchmark_declaration(target: Path, name: str) -> dict:
     `status` is one of three: `"absent"` (no `src/<Package>_Benchmark/`
     directory at all — nothing could have declared anything), `"undeclared"`
     (the directory exists but neither `__init__.py` nor `config.py` binds
-    `__benchmark__` to a readable literal), or `"declared"` (found and
-    parsed). `path` names which candidate file supplied it, relative to
-    `target`, or `None` when nothing did. `detail` explains an
-    `"undeclared"` result — the parse error from whichever file raised one,
-    or a generic note when neither names the literal at all — and is `None`
-    for the other two statuses. `contract` is the declaration dict when
-    `declared`, `{}` otherwise, so every caller that used to write
-    `read_declaration(...) or {}` keeps receiving exactly the same shape:
-    `search_state`, `distribution_state` and `report_contract` change
-    nothing about what they are handed or what they return.
+    `__benchmark__` to a readable literal — **or one does, and every block it
+    binds is at its empty value**), or `"declared"` (found, parsed, and at
+    least one block answered). `path` names which candidate file supplied it,
+    relative to `target`, or `None` when nothing did. `detail` explains an
+    `"undeclared"` result — the parse error from whichever file raised one, a
+    generic note when neither names the literal at all, or a note that the
+    literal parsed but named nothing — and is `None` for the other two
+    statuses. `contract` is the declaration dict when `declared`, `{}`
+    otherwise, so every caller that used to write `read_declaration(...) or
+    {}` keeps receiving exactly the same shape: `search_state`,
+    `distribution_state` and `report_contract` change nothing about what they
+    are handed or what they return.
+
+    **A blank literal is `"undeclared"`, not `"declared"`.** The kit's scaffold
+    (`assets/kit/src_benchmark/__init__.py`) writes a `__benchmark__` that
+    parses cleanly — six blocks, each at its empty value — the moment a
+    target is materialized, before anybody has answered a single one. Treating
+    a successful parse alone as `"declared"` would make that scaffold read as
+    a finished declaration on the day it is created, which is the defect this
+    resolver exists to close, reintroduced through the fix that writes the
+    file. `_declaration_is_blank` is what keeps the two apart: parsing is
+    necessary for `"declared"`, never sufficient.
 
     Searched in the same order the two already-correct sites used:
     `__init__.py` first, `config.py` second. The first candidate that binds
@@ -3275,6 +3376,14 @@ def resolve_benchmark_declaration(target: Path, name: str) -> dict:
     if "__error__" in declaration:
         return {"status": "undeclared", "path": str(found.relative_to(target)),
                 "detail": declaration["__error__"], "contract": {}}
+    if _declaration_is_blank(declaration):
+        return {
+            "status": "undeclared", "path": str(found.relative_to(target)),
+            "detail": f"{BENCHMARK_DECLARATION} parses, but every block is "
+                      "still at its empty value: no arm, search, report or "
+                      "distribution has been answered yet",
+            "contract": {},
+        }
     return {"status": "declared", "path": str(found.relative_to(target)),
             "detail": None, "contract": declaration}
 
@@ -4734,10 +4843,12 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     dimension_names = declared_dimension_names(target, package_name(name))
     distribution = distribution_state(
         resolved["contract"],
-        dimension_names if dimension_names is not None else {})
+        dimension_names if dimension_names is not None else {},
+        declaration_status=resolved["status"])
     distribution["dimensionSource"] = (
         sorted(dimension_names) if dimension_names is not None else None)
-    if dimension_names is None and distribution["status"] != "none":
+    if dimension_names is None and distribution["status"] not in (
+            "none", "absent", "undeclared"):
         distribution["note"] = (
             "no DIMENSIONS dict literal found in config.py or benchmark.py "
             f"under src/{package_name(name)}_Benchmark; the partition could "
@@ -4775,7 +4886,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         "search": search_state(
             resolved["contract"],
             list((report.get("declared") or {}).get("records") or []),
-            target / name),
+            target / name, declaration_status=resolved["status"]),
         "distribution": distribution,
         "remoteExecution": remote_execution_state(target, name, package_name(name)),
         # A static fact, reported and never gating: see `notebook_coupling`.

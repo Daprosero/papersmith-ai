@@ -401,6 +401,7 @@ exactly what stops a launcher from being able to claim it implements anything.
 | `verify` reports structure drift | Report it as its own finding, ask before fixing |
 | `verify` reports stale modules | Report revision drift separately; ask before rewriting |
 | `verify` reports `unreachedModules` | An arm declares mathematics it never calls: report before any run |
+| `probe` reports `nextStep: "declare-first"` | The benchmark has no `src/<Package>_Benchmark/` at all, or has one whose every block is still at its scaffolded empty value: report before offering a run built on a declaration that has not happened |
 | `probe` reports `nextStep: "poll-first"` | A submission is already out to a remote worker with no result back yet: report before offering another run |
 | `probe` reports `nextStep: "search-first"` | A declared search's record is absent from disk: the run has no chosen configuration yet, report before offering it |
 | `priorWork` reports `modified` | Say what changed and that correcting prior work belongs to a session of its own |
@@ -801,6 +802,81 @@ whatever interpreter the target has. Both work the same whether the implementati
 computes with arrays or with tensors, because which one is right depends on the stage
 the proposal is at, not on this skill's preference.
 
+### The benchmark declaration, and its six blocks
+
+`src/<Package>_Benchmark/__init__.py` carries one literal, `__benchmark__`, and
+every check downstream of it — `search`, `distribution`, `report`, the wiring
+crossing behind `wiring-first`, `probe`'s whole ladder — reads that one dict
+and nothing else. The kit scaffolds it with all six top-level blocks present
+and empty (`assets/kit/src_benchmark/__init__.py`), so a freshly materialized
+target already has the file; what it does not yet have is anything written
+into it:
+
+    __benchmark__ = {
+        "revision": "r01.md",
+        "premises": {
+            "prediction": "a class label per subject",
+            "statisticalUnit": "subject",
+            "metric": "balancedAccuracy",
+            "direction": "higher",
+        },
+        "arms": {
+            "baseline": {"sections": ["3.1"]},
+            "proposed": {"sections": ["3.1", "3.4"]},
+        },
+        "search": {
+            "what": "the regularization weight",
+            "requiredScale": 30,
+            "role": "validation split",
+            "tieRule": "smallest value within one standard error of the best",
+        },
+        "report": {
+            "renderers": ["tables.render"],
+            "conclusions": ["tables.conclusion"],
+            "figures": ["figures.curves"],
+            "dimensions": {"accuracy": "higher", "seconds": "lower"},
+        },
+        "distribution": {
+            "axis": "seed",
+            "poolable": ["accuracy"],
+            "perEnvironment": [],
+            "perRun": [],
+            "identicalAcrossShards": ["datasetSize"],
+        },
+    }
+
+**`revision` and `premises` are asked by this flow, never invented.** `revision`
+names the managed revision this declaration is bound to — a filename under
+`proposals/`, not a value `materialize.py` or any other tool fabricates.
+`premises` says what kind of prediction the protocol assumes, over which
+statistical unit, by which metric and in which direction it is judged; nothing
+downstream validates its content — it is written for a person reading a drift
+report beside changed sections, not for a check to parse.
+
+**`arms`, `search`, `report` and `distribution` are never invented.** Each is
+read off the work as it happens — an arm's sections once it is wired, a
+search's own scale and tie rule once one is run, a report's renderers once
+they are written, a distribution's axis and partition once a run is actually
+split across machines. Flow A stops at the empty container for every one of
+them; filling them in is what the later steps of this skill are for.
+
+**Emptiness means something different at the block level than inside one.** A
+container that has been written into can legitimately stay empty —
+`perRun: []` is a declared, measured fact about a run that never divides per
+repetition, and `distribution` reports it as answered, not missing. A whole
+block still at its scaffolded empty value is not that: no repository ever
+means "I measured that `distribution` is empty" before a single shard has
+run. `declare-first`, below, is what tells the two apart.
+
+**`undeclared` covers a blank declaration, not only a missing one.** Both a
+target with no `src/<Package>_Benchmark/` directory at all (`absent`) and one
+whose `__init__.py` parses but leaves every block at its scaffolded, empty
+value (`undeclared`) are read the same way by `search`, `distribution`,
+`report` and `probe`'s `declare-first` — as nothing yet said, not as a
+finished declaration that happens to say little. Once any one block is
+answered, the declaration is `declared`, and each block reports its own state
+independently from there.
+
 ### `nextStep: "convert"` — port the implementation to PyTorch
 
 `backend` reports which files still compute with numpy. **[GATE]** ask, then convert
@@ -813,6 +889,39 @@ The mathematics does not change — this is a change of backend, not of method �
 invariant test must still hold. Re-run the audit: a remedy established over the numpy
 sweep has not been established over the converted one.
 
+### `nextStep: "declare-first"` — the benchmark has not been declared yet
+
+`resolve_benchmark_declaration`'s own three-way read is what this rung acts
+on: `absent` (no `src/<Package>_Benchmark/` directory at all — nothing could
+have declared anything yet) and `undeclared` (the directory exists, but
+either nothing parses as `__benchmark__`, or one does and every block in it is
+still at its scaffolded empty value — see
+[The benchmark declaration, and its six blocks](#the-benchmark-declaration-and-its-six-blocks))
+both block the run. `declared` — at least one block answered — does not, and
+lets the ladder continue to the checks below that read what was answered.
+
+**Why it sits first, ahead of every other rung here, and why that is not a
+preference.** `unreachedModules` — what `wiring-first` reads — is computed
+from this same declaration's `arms` block, and with nothing declared that
+block is always empty: `wiring-first` can never fire on its own while the
+declaration itself has said nothing, so placing this rung ahead of it costs
+nothing that rung would otherwise have caught. Left unguarded, a target that
+has declared nothing instead reaches `report-first` by accident: `report`
+already reports its own `"undeclared"` the moment its block has nothing in
+it, and that alone used to carry the run offer straight past a target that
+had not started declaring anything, into a rung whose whole premise is a
+document disagreeing with a run — when no report exists yet to disagree with.
+`declare-first` is the honest rung for that state, and it stands ahead of
+every check that is built on top of a declaration which has not happened.
+
+**Report it, and stop there.** Unlike `wiring-first`, this names nothing to
+correct: there is no fork to point at, only empty blocks and a person who has
+not yet worked through Flow A's ask for `revision` and `premises`, or filled
+`arms`, `search`, `report` and `distribution` in as the work happens. Say
+which of the two states applies — `absent` or `undeclared` — and, for
+`undeclared`, what the resolver's own `detail` names: no readable literal at
+all, or one that parses with nothing in it answered.
+
 ### `nextStep: "wiring-first"` — an arm declares mathematics it never calls
 
 `unreachedModules` names each module of the method that no arm reaches, directly or
@@ -821,7 +930,8 @@ carries the equations it implements and the arms that claim them, because the se
 is where it lives and the equation is what the reader acts on.
 
 This blocks the run, ahead of an already-pending submission, a missing search
-configuration and a report in drift. A wrong report describes a sound run and costs a
+configuration and a report in drift, and behind only a declaration that has not
+started. A wrong report describes a sound run and costs a
 sentence; this costs the campaign, because every number came from an arm that was not
 computing what the table says it computed.
 
