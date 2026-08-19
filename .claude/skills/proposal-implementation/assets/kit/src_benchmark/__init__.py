@@ -55,7 +55,7 @@ __benchmark__ = {
     #         "renderers": ["tables.render"],
     #         "conclusions": ["tables.conclusion"],
     #         "figures": ["figures.curves"],
-    #         "dimensions": {"targetAccuracy": "higher", "seconds": "lower"},
+    #         "dimensions": {"accuracy": "higher", "seconds": "lower"},
     #     }
     "report": {},
 
