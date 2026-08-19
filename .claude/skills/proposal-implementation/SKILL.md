@@ -401,6 +401,7 @@ exactly what stops a launcher from being able to claim it implements anything.
 | `verify` reports structure drift | Report it as its own finding, ask before fixing |
 | `verify` reports stale modules | Report revision drift separately; ask before rewriting |
 | `verify` reports `unreachedModules` | An arm declares mathematics it never calls: report before any run |
+| `probe` reports `nextStep: "poll-first"` | A submission is already out to a remote worker with no result back yet: report before offering another run |
 | `probe` reports `nextStep: "search-first"` | A declared search's record is absent from disk: the run has no chosen configuration yet, report before offering it |
 | `priorWork` reports `modified` | Say what changed and that correcting prior work belongs to a session of its own |
 | `priorWork` reports `reaching` | The change moves what an arm computes: the record is stale, report before any run |
@@ -819,10 +820,10 @@ through another module, while at least one arm declares its sections. Each entry
 carries the equations it implements and the arms that claim them, because the section
 is where it lives and the equation is what the reader acts on.
 
-This blocks the run, ahead of both a missing search configuration and a report in
-drift. A wrong report describes a sound run and costs a sentence; this costs the
-campaign, because every number came from an arm that was not computing what the table
-says it computed.
+This blocks the run, ahead of an already-pending submission, a missing search
+configuration and a report in drift. A wrong report describes a sound run and costs a
+sentence; this costs the campaign, because every number came from an arm that was not
+computing what the table says it computed.
 
 Report it as its own finding and say when it started being material. It is almost
 never a fresh mistake: the arm reimplemented the term when the inline version was
@@ -836,6 +837,37 @@ proposal states can change what the two arms share, and that consequence gets me
 and declared — it is never a reason to keep computing the method the prior work's way.
 See the hard rule on using the baseline as it is and the method as its proposal states.
 
+### `nextStep: "poll-first"` — a submission is already out, and its answer has not returned
+
+A session can end with work already sent to a remote worker and no result back yet.
+The next session's `probe` would otherwise say "run the benchmark" while that answer
+is still in flight, inviting a duplicate submission that spends real quota answering a
+question already being answered. `remoteExecution.status` already carries this —
+folded once by the ledger reader and read here, never re-folded — and `"pending"` is
+the one value this rung acts on: at least one entrypoint has a submission out with
+nothing terminal recorded against it yet.
+
+**Why it sits after `wiring-first` and before `search-first`, and why that order is
+not a preference.** A submission that went out under broken wiring is already
+answering the wrong question, and no amount of waiting fixes that — so `wiring-first`
+still corrects the arm before anything asks whether to wait or to run. Once the
+wiring is sound, an answer already on its way outranks a value nobody has chosen yet:
+where a search's own record is absent because the search itself is what is pending,
+answering `search-first` would ask the reader to resubmit exactly what is already in
+flight — the duplicate this rung exists to prevent. `poll-first` catches that case;
+`search-first` only fires once nothing is actually out there to check on.
+
+**`drift` and `unreliable` are deliberately not `poll-first`.** Both are real defects
+and neither is "wait for it." `drift` means a submission's source moved out from
+under it while it was in flight, or a result already arrived and was quarantined
+against a submission that was no longer current — the fix is reconciling the ledger
+by hand, not polling a value that waiting will not resolve. `unreliable` means a line
+of the log could not be read at all, so nothing about what is or is not out there can
+be trusted yet — polling would be asking a question of a record that cannot currently
+answer it. Both fall through this rung unresolved, exactly as they did before it
+existed; folding either into "poll" would tell the reader to wait for something a
+wait cannot fix.
+
 ### `nextStep: "search-first"` — a declared search has not chosen anything yet
 
 `search` carries the same reading `verify` already reports (see the hard rule on a
@@ -846,13 +878,17 @@ its own `record` does not exist where the declaration says it lives. Nothing her
 learns what the search is choosing — the declaration does, and this only asks the
 filesystem whether the answer is there.
 
-**Why it sits after `wiring-first` and before `report-first`, and why that order is
-not a preference.** `wiring-first` stays ahead because correcting a fork changes what
-an arm computes, which changes what a search over that arm would find: searching
-first against a forked arm would spend the search on a term the proposal does not
-state, and none of that time is recoverable. `search-first` comes next because a run
-whose governing scalar has not been chosen does not yet have a configuration to run —
-worse than a wrong report, and far cheaper to catch before any machine time is spent.
+**Why it sits after `wiring-first` and `poll-first`, and before `report-first`, and
+why that order is not a preference.** `wiring-first` stays ahead because correcting a
+fork changes what an arm computes, which changes what a search over that arm would
+find: searching first against a forked arm would spend the search on a term the
+proposal does not state, and none of that time is recoverable. `poll-first` comes
+next because a submission already out may be the very search this rung would send the
+reader to run again — asking a second time would spend real quota on a duplicate
+rather than catch a value nobody has chosen yet, so waiting is asked about before
+searching is. Once nothing is pending, `search-first` fires because a run whose
+governing scalar has not been chosen does not yet have a configuration to run — worse
+than a wrong report, and far cheaper to catch before any machine time is spent.
 `report-first` stays last: a report in drift still describes a sound run, wrongly,
 which costs a sentence rather than the campaign.
 
@@ -875,15 +911,18 @@ and this rung acts on nothing but its `status`: anything other than `ok` blocks 
 run, because a document a human reads is about to be offered and it does not yet
 say what the run says.
 
-**Why it sits last of the three that block a run, and why that is not a
+**Why it sits last of the four that block a run, and why that is not a
 preference.** A forked arm costs the campaign, because every number came from
-mathematics the proposal does not state, and no repetition count repairs that. A
-missing search value costs nothing yet computed, because the run has no
-configuration to launch at all. A report in drift is narrower than either: it
-describes a sound run, wrongly, and correcting a sentence costs a sentence, not
-the campaign — which is exactly why it does not outrank a forked arm or an
-unchosen scalar. It still blocks, because a wrong sentence printed with the
-authority of thirty repetitions behind it is worse than no sentence.
+mathematics the proposal does not state, and no repetition count repairs that. An
+already-pending submission costs real quota a second time when it is offered a fresh
+run instead of being waited on — quota already spent, not merely projected, which is
+why it outranks a value nobody has chosen yet. A missing search value costs nothing
+yet computed, because the run has no configuration to launch at all. A report in
+drift is narrower than any of the three: it describes a sound run, wrongly, and
+correcting a sentence costs a sentence, not the campaign — which is exactly why it
+does not outrank a forked arm, an already-pending submission, or an unchosen scalar.
+It still blocks, because a wrong sentence printed with the authority of thirty
+repetitions behind it is worse than no sentence.
 
 **Re-execute before judging.** A finding read off a stale notebook describes the
 run that happened, not the code that is there now. Correcting it before

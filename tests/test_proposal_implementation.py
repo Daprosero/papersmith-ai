@@ -3176,6 +3176,178 @@ class SearchDeclaredBeforeTheRunTests(unittest.TestCase):
         self.assertEqual(leftover, [], leftover)
 
 
+class RemoteExecutionPendingBeforeTheRunTests(unittest.TestCase):
+    """A session that submits work to a remote worker and then ends leaves
+    the next session's `probe` saying "run the benchmark" while results are
+    still in flight — inviting a duplicate run that spends real quota and
+    produces a second answer to a question already being answered.
+    `remote_execution_state()` already computes this (`status: "pending"`);
+    the ladder now asks it, reusing that one call rather than re-folding the
+    ledger a second time.
+
+    Fixtures reuse the toy shape `SearchDeclaredBeforeTheRunTests` already
+    established, plus a `.remote-execution/ledger.jsonl` under the product
+    folder — the one path `remote_execution_state()` reads.
+    """
+
+    def _declaration(self, search=None):
+        search_line = f"    'search': {search!r},\n" if search is not None else ""
+        return ("__benchmark__ = {\n"
+                "    'revision': 'r01.md',\n"
+                "    'arms': {'floor': {'sections': ['3']}, "
+                "'full': {'sections': ['3']}},\n"
+                f"{search_line}"
+                "}\n")
+
+    def probe_with(self, wiring, *, pending=False, digest="live", search=None,
+                   record_present=False, extra_ledger_lines=None, pilot=False,
+                   suffix=""):
+        box = FORGE / "implementations" / f"_e2e_poll_first_{suffix}_{os.getpid()}"
+        try:
+            (box / "src/Method").mkdir(parents=True)
+            (box / "src/Method_Benchmark").mkdir(parents=True)
+            (box / "src/Prior").mkdir(parents=True)
+            # The product folder, distinct from `src/Method`: the ledger the
+            # pending fixture writes lives under it, exactly where
+            # `remote_execution_state()` looks.
+            (box / "Method").mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(box)], check=True,
+                           capture_output=True)
+            (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+            (box / "src/Method/called.py").write_text(
+                _module("r01.md", ["3"], ["11"], imports="import torch\n"),
+                encoding="utf-8")
+            (box / "src/Method/never_called.py").write_text(
+                _module("r01.md", ["3"], ["12"], imports="import torch\n"),
+                encoding="utf-8")
+            (box / "src/Prior/model.py").write_text("import torch\n", encoding="utf-8")
+            (box / "src/Method_Benchmark/__init__.py").write_text(
+                self._declaration(search), encoding="utf-8")
+            (box / "src/Method_Benchmark/wiring.py").write_text(wiring,
+                                                                encoding="utf-8")
+            if record_present and search is not None:
+                results = box / "Method" / "Results"
+                results.mkdir(parents=True, exist_ok=True)
+                (results / "ceilings.json").write_text("{}", encoding="utf-8")
+            if pilot:
+                results = box / "Method" / "Results"
+                results.mkdir(parents=True, exist_ok=True)
+                (results / impl.PROBE_RESULTS).write_text(json.dumps({
+                    "revision": "r01.md",
+                    "comparison": {"metric": 1},
+                    "reduction": {"epochs": 1, "wallSeconds": 60},
+                    "targetScale": {"epochs": 5},
+                }), encoding="utf-8")
+            if pending or extra_ledger_lines:
+                lines = []
+                if pending:
+                    source_digest = (impl.source_digest(box, "Method")
+                                     if digest == "live" else "0" * 64)
+                    lines.append(json.dumps({
+                        "kind": "submitted", "ts": "2026-08-19T00:00:00Z",
+                        "entrypoint": "Method/Notebooks/probe.ipynb",
+                        "sourceDigest": source_digest, "submissionId": "s1",
+                        "worker": "w1", "requestedCapacity": 1,
+                        "grantedCapacity": 1,
+                    }))
+                if extra_ledger_lines:
+                    lines.extend(extra_ledger_lines)
+                ledger_dir = box / "Method" / ".remote-execution"
+                ledger_dir.mkdir(parents=True, exist_ok=True)
+                (ledger_dir / "ledger.jsonl").write_text(
+                    "\n".join(lines) + "\n", encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(CLI), "probe", "--target", str(box),
+                 "--name", "Method", "--revision", "r01.md"],
+                capture_output=True, text=True, cwd=FORGE)
+            return json.loads(proc.stdout or "{}")
+        finally:
+            shutil.rmtree(box, ignore_errors=True)
+
+    WITH = "from Method.called import called\nfrom Method.never_called import total\n"
+    WITHOUT = "from Method.called import called\n"
+
+    def test_a_pending_submission_yields_poll_first_from_what_would_be_benchmark(self):
+        """Reachable red: before this change `probe` never read
+        `remoteExecution` at all when choosing `nextStep`, so this exact
+        fixture answered `benchmark` — the offer a repository with an
+        answer already on its way to a remote worker has no business
+        receiving."""
+        probe = self.probe_with(self.WITH, pending=True, suffix="benchmark")
+        self.assertEqual(probe["remoteExecution"]["status"], "pending")
+        self.assertEqual(probe["nextStep"], "poll-first")
+
+    def test_a_pending_submission_yields_poll_first_from_piloted_too(self):
+        """The same defect, reachable from the other state the ladder offers
+        a run from: a below-scale pilot is still an offer to run, and a
+        submission already out still means the answer may already be on its
+        way."""
+        probe = self.probe_with(self.WITH, pending=True, pilot=True,
+                                suffix="piloted")
+        self.assertEqual(probe["nextStep"], "poll-first")
+
+    def test_no_pending_submission_is_unaffected(self):
+        """The pole. Without it, `poll-first` could be firing on anything at
+        all and none of the tests above would notice."""
+        probe = self.probe_with(self.WITH, pending=False, suffix="clean")
+        self.assertEqual(probe["remoteExecution"]["status"], "absent")
+        self.assertNotEqual(probe["nextStep"], "poll-first")
+
+    def test_wiring_first_still_wins_over_poll_first(self):
+        """A submission that went out under broken wiring is already
+        answering the wrong question, and no amount of waiting fixes that —
+        so the wired defect is still settled first, regardless of what is
+        already in flight."""
+        probe = self.probe_with(self.WITHOUT, pending=True, suffix="ordering")
+        self.assertEqual(probe["remoteExecution"]["status"], "pending")
+        self.assertEqual(probe["nextStep"], "wiring-first")
+
+    def test_poll_first_wins_over_search_first(self):
+        """The scenario this rung exists to catch: a search's own record is
+        absent because the search itself is the thing pending. Answering
+        `search-first` here would ask the reader to resubmit exactly what is
+        already in flight — the duplicate the gap describes."""
+        probe = self.probe_with(
+            self.WITH, pending=True,
+            search=SearchDeclaredBeforeTheRunTests.SEARCH, suffix="over_search")
+        self.assertIs(probe["search"]["recordFound"], False)
+        self.assertEqual(probe["nextStep"], "poll-first")
+
+    def test_poll_first_wins_over_report_first(self):
+        """Waiting on quota already spent outranks a document that merely
+        does not yet agree with the run — fixing a sentence never had to
+        compete with a submission still in flight."""
+        probe = self.probe_with(self.WITH, pending=True, suffix="over_report")
+        self.assertNotEqual(probe["report"]["status"], "ok")
+        self.assertEqual(probe["nextStep"], "poll-first")
+
+    def test_drift_does_not_trigger_poll_first(self):
+        """`drift` means a submission's source moved out from under it while
+        it was in flight — waiting does not repair that, so this rung leaves
+        it alone rather than telling the reader to poll for something a poll
+        cannot resolve."""
+        probe = self.probe_with(self.WITH, pending=True, digest="stale",
+                                suffix="drift")
+        self.assertEqual(probe["remoteExecution"]["status"], "drift")
+        self.assertNotEqual(probe["nextStep"], "poll-first")
+
+    def test_unreliable_does_not_trigger_poll_first(self):
+        """`unreliable` means a line of the log could not be read, so
+        nothing about what is or is not out there can be trusted yet —
+        polling would be asking a question of a record that cannot
+        currently answer it."""
+        probe = self.probe_with(self.WITH, pending=True,
+                                extra_ledger_lines=["{not valid json"],
+                                suffix="unreliable")
+        self.assertEqual(probe["remoteExecution"]["status"], "unreliable")
+        self.assertNotEqual(probe["nextStep"], "poll-first")
+
+    def test_the_toy_targets_left_nothing_behind(self):
+        self.probe_with(self.WITH, pending=True, suffix="cleanup")
+        leftover = list((FORGE / "implementations").glob("_e2e_poll_first_*"))
+        self.assertEqual(leftover, [], leftover)
+
+
 class SearchCostForecastTests(unittest.TestCase):
     """What a declared search costs, forecast from what was actually
     measured rather than from whatever the pilot happens to be running at.
@@ -3677,7 +3849,8 @@ class NextStepSectionCoverageTests(unittest.TestCase):
         self.assertEqual(
             self.all_next_steps(),
             {"nothing-to-compare", "convert", "piloted", "already-benchmarked",
-             "benchmark", "wiring-first", "search-first", "report-first"})
+             "benchmark", "wiring-first", "poll-first", "search-first",
+             "report-first"})
 
     def test_every_prescriptive_next_step_has_its_own_section(self):
         prescriptive = self.all_next_steps() - self.NO_SECTION

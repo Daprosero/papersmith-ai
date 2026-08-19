@@ -1824,17 +1824,23 @@ def cmd_probe(args) -> dict:
     trained at all, so the conversion is settled before the comparison is discussed;
     proposing a benchmark first would ask the user to approve a run that cannot happen.
 
-    Three checks stand between a trainable repository and the offer to run, and the
+    Four checks stand between a trainable repository and the offer to run, and the
     order among them is settled rather than a preference:
 
     An arm computing mathematics it does not declare comes first, because correcting
     it changes what the arm computes — which changes what any later step would find —
     so anything read before that correction is read from a configuration about to
-    change under it. A declared search whose record is absent comes next: a run whose
-    governing value has not yet been chosen has no configuration at all, which is a
-    narrower failure than a wrong report and a cheaper one to catch before the machine
-    time is spent. The report comes last, because a report in drift still describes a
-    sound run — wrongly, which costs a sentence to fix rather than the campaign.
+    change under it. A submission already pending on a remote worker comes next: a
+    submission sent under broken wiring is already answering the wrong question, so
+    the wiring is settled first, but once it is sound, an answer already on its way
+    outranks everything else a repository could be told to do — offering to run
+    again would spend real quota a second time on a question the first submission
+    is already answering. A declared search whose record is absent comes next: a run
+    whose governing value has not yet been chosen has no configuration at all, which
+    is a narrower failure than a wrong report and a cheaper one to catch before the
+    machine time is spent. The report comes last, because a report in drift still
+    describes a sound run — wrongly, which costs a sentence to fix rather than the
+    campaign.
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
@@ -1862,14 +1868,21 @@ def cmd_probe(args) -> dict:
     else:
         next_step = "benchmark"
 
-    # Three things are read before the run is offered, and in this order.
+    # Four things are read before the run is offered, and in this order.
     #
     # An arm that never calls the mathematics it declares comes first, because it is
     # the only defect here that makes the run itself meaningless: every number would
     # come from an arm that was not computing what the table says it computed, and no
     # amount of repetitions fixes that.
     #
-    # A declared search whose record is absent comes second. A configuration whose
+    # A submission already pending on a remote worker comes second. Once the wiring
+    # is sound, an answer already on its way outranks a missing search value and a
+    # report in drift alike: offering the run again would ask for a second submission
+    # of a question the first one is already answering, spending real quota nothing
+    # here can get back. Reused, not recomputed — see `remote_execution_state()`'s own
+    # docstring for why a second fold of the ledger was rejected.
+    #
+    # A declared search whose record is absent comes third. A configuration whose
     # governing scalar has not yet been chosen is not a configuration — nothing about
     # what "trainable" or "benchmark" means changes, but the run about to be offered
     # would have to invent a value it was never handed, silently or otherwise. That is
@@ -1879,6 +1892,7 @@ def cmd_probe(args) -> dict:
     # costs a sentence rather than the campaign, but still must not be printed with
     # the authority of thirty repetitions behind it.
     unfaithful = benchmark_unfaithfulness(target, name)
+    remote = remote_execution_state(target, name, package_name(name))
     report = report_state(target, name, package_name(name))
     search = search_state(
         read_declaration(
@@ -1888,6 +1902,14 @@ def cmd_probe(args) -> dict:
         target / name)
     if next_step in ("benchmark", "piloted") and unfaithful:
         next_step = "wiring-first"
+    # `drift` and `unreliable` are deliberately excluded: neither is fixed by
+    # waiting. `drift` means the submission's source moved out from under it,
+    # or a stale result already arrived — that needs `remote_cli reconcile`,
+    # not a poll. `unreliable` means a line of the log could not even be
+    # read, so nothing about what is or is not pending can be trusted yet.
+    # Only `pending` names a submission a wait can actually resolve.
+    elif next_step in ("benchmark", "piloted") and remote["status"] == "pending":
+        next_step = "poll-first"
     elif next_step in ("benchmark", "piloted") and search["recordFound"] is False:
         next_step = "search-first"
     elif next_step in ("benchmark", "piloted") and report["status"] != "ok":
@@ -1922,7 +1944,7 @@ def cmd_probe(args) -> dict:
         # folders exist right now (the filesystem) — reported, never
         # resolved, and never a submission. See `remote_execution_jobs_state`.
         "remoteExecution": {
-            **remote_execution_state(target, name, package_name(name)),
+            **remote,
             **remote_execution_jobs_state(target),
         },
         "nextStep": next_step,
