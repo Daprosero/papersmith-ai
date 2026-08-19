@@ -6458,5 +6458,231 @@ class BackendResolutionTests(unittest.TestCase):
         self.assertIn("could not run", result.stderr)
 
 
+class SmokeLedgerResolutionTests(unittest.TestCase):
+    """`cmd_status`, `cmd_fetch` and `cmd_reconcile` each hardcoded
+    `LEDGER_FILENAME` and never once referenced `smoke.jsonl` — so a
+    submission `submit --smoke` recorded could never be fetched, never
+    showed up in `status`, and a still-active smoke submission reconcile
+    should have accounted for instead misreported as `orphanRemote`.
+
+    `resolve_submission_ledger()` is the single-point fix every command
+    that resolves ONE submission id now goes through. It still folds
+    `ledger.jsonl` and `smoke.jsonl` SEPARATELY — never concatenated —
+    which is what keeps `test_smoke_submission_never_enters_the_fold_or_
+    supersedes_a_real_run` (above) true through this new code path too.
+    """
+
+    def test_status_reports_a_parallel_smoke_section_without_merging_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            main_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.LEDGER_FILENAME
+            )
+            smoke_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.SMOKE_LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                main_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="main-1", worker="w1", source_digest="d" * 64,
+            )
+            _append_pending_submission(
+                smoke_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="smoke-1", worker="w1", source_digest="d" * 64,
+            )
+
+            result = REMOTE_CLI.cmd_status(
+                target=target, entrypoint=notebook, source_digest=lambda t, n: "d" * 64,
+            )
+
+            self.assertEqual(
+                result["entrypoints"]["Notebooks/a.ipynb"]["state"], "pending",
+            )
+            self.assertIn("smoke", result)
+            self.assertEqual(
+                result["smoke"]["entrypoints"]["Notebooks/a.ipynb"]["state"],
+                "pending",
+            )
+            self.assertEqual(result["smoke"]["ledgerPath"], smoke_ledger_path)
+            # Reported side by side, never merged: the main section's own
+            # fold was computed from ledger.jsonl alone (one line), and
+            # stays that way regardless of what smoke.jsonl also holds.
+            self.assertEqual(
+                len(main_ledger_path.read_text(encoding="utf-8").splitlines()), 1,
+            )
+
+    def test_fetch_materializes_a_smoke_submissions_result_and_writes_only_smoke_jsonl(
+        self,
+    ) -> None:
+        """Before this fix, `cmd_fetch` could never find a submission
+        `submit --smoke` recorded at all — this is the reachable RED this
+        test pins.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            adapter = FakeAdapter(worker_id="w1", capacity=2)
+            submit_result = REMOTE_CLI.cmd_submit(
+                target=target, entrypoint=notebook, worker="w1", requested=1,
+                adapter=adapter, source_digest=lambda t, n: "d" * 64, smoke=True,
+            )
+            submission_id = submit_result["submission"].id
+            self.assertTrue(submit_result["ledgerPath"].name, "smoke.jsonl")
+
+            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+            fetch_result = REMOTE_CLI.cmd_fetch(
+                target=target, entrypoint=notebook, submission_id=submission_id,
+                dest=dest, adapter=adapter, source_digest=lambda t, n: "d" * 64,
+            )
+
+            self.assertTrue(fetch_result["complete"])
+            self.assertEqual(fetch_result["verdict"], "current")
+            self.assertTrue((dest / "result.txt").exists())
+
+            smoke_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.SMOKE_LEDGER_FILENAME
+            )
+            main_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.LEDGER_FILENAME
+            )
+            smoke_lines = smoke_ledger_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(smoke_lines), 2)  # submitted + returned
+            self.assertEqual(json.loads(smoke_lines[-1])["kind"], "returned")
+            # The smoke submission's own `returned` event never touched the
+            # main ledger -- ledger.jsonl was never even created.
+            self.assertFalse(main_ledger_path.exists())
+
+    def test_fetch_raises_a_clear_error_when_submission_is_in_neither_ledger(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            adapter = FakeAdapter(worker_id="w1", capacity=2)
+            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
+                REMOTE_CLI.cmd_fetch(
+                    target=target, entrypoint=notebook, submission_id="ghost",
+                    dest=dest, adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                )
+            message = str(ctx.exception)
+            self.assertIn(REMOTE_CLI.LEDGER_FILENAME, message)
+            self.assertIn(REMOTE_CLI.SMOKE_LEDGER_FILENAME, message)
+
+    def test_resolve_submission_ledger_refuses_when_id_is_recorded_in_both_files(
+        self,
+    ) -> None:
+        """Defensive: an id is only ever supposed to land in ONE file. If
+        it somehow reached both, guessing which one is authoritative would
+        hide a corruption instead of surfacing it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            (notebooks / "a.ipynb").write_text("{}", encoding="utf-8")
+
+            main_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.LEDGER_FILENAME
+            )
+            smoke_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.SMOKE_LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                main_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="dup-1", worker="w1", source_digest="d" * 64,
+            )
+            _append_pending_submission(
+                smoke_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="dup-1", worker="w1", source_digest="d" * 64,
+            )
+
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
+                REMOTE_CLI.resolve_submission_ledger(
+                    target.resolve(), "MIL-CREDA", "dup-1", "d" * 64,
+                )
+            self.assertIn("both", str(ctx.exception))
+
+    def test_reconcile_does_not_misreport_a_still_active_smoke_submission(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            smoke_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.SMOKE_LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                smoke_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="smk-1", worker="w1", source_digest="d" * 64,
+            )
+
+            adapter = ScriptedListActiveAdapter(worker_id="w1", active=("smk-1",))
+            result = REMOTE_CLI.cmd_reconcile(
+                target=target, entrypoint=notebook, worker="w1", adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
+
+            self.assertEqual(result["orphanRemote"], ())
+            self.assertEqual(result["orphanLocal"], ())
+
+    def test_reconcile_resolve_appends_errored_event_to_the_smoke_ledger_for_a_smoke_orphan(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            smoke_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.SMOKE_LEDGER_FILENAME
+            )
+            main_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                smoke_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="smk-2", worker="w1", source_digest="d" * 64,
+            )
+
+            # The service no longer lists smk-2 at all.
+            adapter = ScriptedListActiveAdapter(worker_id="w1", active=())
+            result = REMOTE_CLI.cmd_reconcile(
+                target=target, entrypoint=notebook, worker="w1", adapter=adapter,
+                resolve=True, source_digest=lambda t, n: "d" * 64,
+            )
+
+            self.assertEqual(result["orphanLocal"], ("smk-2",))
+            self.assertEqual(len(result["resolved"]), 1)
+            self.assertEqual(result["resolved"][0]["submissionId"], "smk-2")
+
+            smoke_lines = smoke_ledger_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(smoke_lines), 2)
+            self.assertEqual(json.loads(smoke_lines[-1])["kind"], "errored")
+            # Never touched: the orphan lived in smoke.jsonl alone.
+            self.assertFalse(main_ledger_path.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

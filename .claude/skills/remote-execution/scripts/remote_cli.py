@@ -502,11 +502,12 @@ def cmd_submit(
     digest_fn = source_digest or _load_source_digest()
     digest = digest_fn(target, resolved_product)
 
-    ledger_filename = SMOKE_LEDGER_FILENAME if smoke else LEDGER_FILENAME
-    ledger_path = target / resolved_product / LEDGER_DIRNAME / ledger_filename
-    ledger_lines: list[str] = []
-    if ledger_path.exists():
-        ledger_lines = ledger_path.read_text(encoding="utf-8").splitlines()
+    ledger_path = (
+        _smoke_ledger_path(target, resolved_product)
+        if smoke
+        else _main_ledger_path(target, resolved_product)
+    )
+    ledger_lines = _read_ledger_lines(ledger_path)
 
     plan = PACKER.plan(
         adapter=adapter,
@@ -548,11 +549,18 @@ def cmd_status(
 ) -> dict:
     """The fold, rendered for a human: per-entrypoint state, what is
     pending, what is `staleInFlight`, what is quarantined, and how many
-    lines could not be read at all.
+    lines could not be read at all — for `ledger.jsonl`, at this dict's own
+    top-level keys, exactly as before, PLUS the same shape folded from
+    `smoke.jsonl` alone, under `"smoke"`. The two are reported side by side,
+    never merged into one: `smoke.jsonl` is folded through its own,
+    separate `LEDGER.fold()` call, so a rehearsal submission still can never
+    become part of `entrypoints`' own `latest[entrypoint]` index — only a
+    second, clearly-labeled section a human can also see, where before
+    there was nothing to see at all for a smoke-only entrypoint.
 
     This function accepts no `adapter` parameter at all — not merely
     "does not call one" but structurally cannot, since none is in scope to
-    call. `status` reports what the ledger already says; it never resolves
+    call. `status` reports what the ledgers already say; it never resolves
     anything, and the signature itself is what makes that true rather than
     a rule this function's body would otherwise have to be trusted to
     follow.
@@ -564,27 +572,32 @@ def cmd_status(
         )
 
     product = product_for(target, entrypoint)
-    ledger_path = target / product / LEDGER_DIRNAME / LEDGER_FILENAME
-    ledger_lines: list[str] = []
-    if ledger_path.exists():
-        ledger_lines = ledger_path.read_text(encoding="utf-8").splitlines()
+    ledger_path = _main_ledger_path(target, product)
+    smoke_ledger_path = _smoke_ledger_path(target, product)
 
     digest_fn = source_digest or _load_source_digest()
     live = digest_fn(target, product)
-    state = LEDGER.fold(ledger_lines, live_digest=live)
+    state = LEDGER.fold(_read_ledger_lines(ledger_path), live_digest=live)
+    smoke_state = LEDGER.fold(_read_ledger_lines(smoke_ledger_path), live_digest=live)
+
+    def _render(folded: "LEDGER.LedgerState") -> dict:
+        return {
+            "entrypoints": {
+                entry_name: {
+                    "state": entry.state,
+                    "staleInFlight": entry.stale_in_flight,
+                }
+                for entry_name, entry in folded.entrypoints.items()
+            },
+            "staleInFlight": folded.stale_in_flight,
+            "quarantined": folded.from_stale_submission,
+            "unreadableLines": folded.unreadable_lines,
+        }
 
     return {
         "ledgerPath": ledger_path,
-        "entrypoints": {
-            entry_name: {
-                "state": entry.state,
-                "staleInFlight": entry.stale_in_flight,
-            }
-            for entry_name, entry in state.entrypoints.items()
-        },
-        "staleInFlight": state.stale_in_flight,
-        "quarantined": state.from_stale_submission,
-        "unreadableLines": state.unreadable_lines,
+        **_render(state),
+        "smoke": {"ledgerPath": smoke_ledger_path, **_render(smoke_state)},
         "staleness": _job_folder_staleness(Path(entrypoint).resolve()),
     }
 
@@ -679,20 +692,15 @@ def cmd_fetch(
         )
 
     product = product_for(target, entrypoint)
-    ledger_path = target / product / LEDGER_DIRNAME / LEDGER_FILENAME
-    ledger_lines: list[str] = []
-    if ledger_path.exists():
-        ledger_lines = ledger_path.read_text(encoding="utf-8").splitlines()
-
     digest_fn = source_digest or _load_source_digest()
     live = digest_fn(target, product)
-    state = LEDGER.fold(ledger_lines, live_digest=live)
 
-    submission = state.by_id.get(submission_id)
-    if submission is None:
-        raise RemoteCLIError(
-            f"no submitted event on record for submission {submission_id!r}"
-        )
+    # `resolve_submission_ledger()` is what makes this reach a submission
+    # recorded by `submit --smoke` into `smoke.jsonl` — this used to hardcode
+    # `LEDGER_FILENAME` and could never find one, at all, no matter how
+    # complete the artifact it was asked to fetch.
+    ledger_path, state = resolve_submission_ledger(target, product, submission_id, live)
+    submission = state.by_id[submission_id]
 
     verdict = LEDGER.currency_verdict(submission, state.latest, live)
     if verdict == "current":
@@ -763,15 +771,23 @@ def cmd_reconcile(
     leaving the ledger untouched is the guarantee-preserving choice;
     adoption is the guarantee-destroying one.
 
-    A `pending` submission the ledger still expects that `list_active()` no
-    longer lists is `orphanLocal`. It is always reported, regardless of
-    `resolve`. Only when `resolve=True` — reserved for a human explicitly
-    passing `--resolve`, never set by any automated caller in this skill —
-    does this function append one `errored` event per orphan, with
-    `reason="not-found-at-service"`, through the exact same
-    `LEDGER.append()` path every other terminal event goes through.
-    `resolve=False`, the default, appends nothing at all: an orphan-remote
-    id is reported without a single ledger write, on every call.
+    A `pending` submission EITHER ledger still expects — `ledger.jsonl` or
+    `smoke.jsonl`, both folded here, separately, the same way
+    `resolve_submission_ledger()` folds them for `fetch` — that
+    `list_active()` no longer lists is `orphanLocal`. A still-active SMOKE
+    submission is what `local_pending` including `smoke.jsonl`'s own pending
+    ids actually protects here: without it, a rehearsal the service still
+    considers active would misreport as `orphanRemote` on every call, since
+    a smoke submission never touches `ledger.jsonl` at all. It is always
+    reported, regardless of `resolve`. Only when `resolve=True` — reserved
+    for a human explicitly passing `--resolve`, never set by any automated
+    caller in this skill — does this function append one `errored` event
+    per orphan, through the exact same `LEDGER.append()` path every other
+    terminal event goes through, to WHICHEVER ledger that orphan's own
+    `submitted` event actually lives in (`resolve_submission_ledger()`
+    again — never assumed to be the main one). `resolve=False`, the
+    default, appends nothing at all: an orphan-remote id is reported
+    without a single ledger write, on every call.
     """
     target = Path(target).resolve()
     if not target.is_dir():
@@ -780,22 +796,26 @@ def cmd_reconcile(
         )
 
     product = product_for(target, entrypoint)
-    ledger_path = target / product / LEDGER_DIRNAME / LEDGER_FILENAME
-    ledger_lines: list[str] = []
-    if ledger_path.exists():
-        ledger_lines = ledger_path.read_text(encoding="utf-8").splitlines()
-
     digest_fn = source_digest or _load_source_digest()
     live = digest_fn(target, product)
-    state = LEDGER.fold(ledger_lines, live_digest=live)
+
+    main_state = LEDGER.fold(
+        _read_ledger_lines(_main_ledger_path(target, product)), live_digest=live
+    )
+    smoke_state = LEDGER.fold(
+        _read_ledger_lines(_smoke_ledger_path(target, product)), live_digest=live
+    )
+
+    def _pending_ids(folded: "LEDGER.LedgerState") -> set[str]:
+        return {
+            submission["submissionId"]
+            for submission in folded.latest.values()
+            if submission.get("worker") == worker
+            and folded.entrypoints[submission["entrypoint"]].state == "pending"
+        }
 
     remote_active = set(adapter.list_active(worker))
-    local_pending = {
-        submission["submissionId"]
-        for submission in state.latest.values()
-        if submission.get("worker") == worker
-        and state.entrypoints[submission["entrypoint"]].state == "pending"
-    }
+    local_pending = _pending_ids(main_state) | _pending_ids(smoke_state)
 
     orphan_remote = tuple(sorted(remote_active - local_pending))
     orphan_local = tuple(sorted(local_pending - remote_active))
@@ -803,10 +823,13 @@ def cmd_reconcile(
     resolved_events: list[dict] = []
     if resolve:
         for submission_id in orphan_local:
+            orphan_ledger_path, _ = resolve_submission_ledger(
+                target, product, submission_id, live
+            )
             event = LEDGER.errored_event(
                 submission_id=submission_id, reason="not-found-at-service"
             )
-            LEDGER.append(ledger_path, event)
+            LEDGER.append(orphan_ledger_path, event)
             resolved_events.append(event)
 
     return {
@@ -833,6 +856,72 @@ def _target_for_job_dir(resolved_job_dir: Path) -> Path:
 
 def _smoke_ledger_path(target: Path, product: str) -> Path:
     return target / product / LEDGER_DIRNAME / SMOKE_LEDGER_FILENAME
+
+
+def _main_ledger_path(target: Path, product: str) -> Path:
+    return target / product / LEDGER_DIRNAME / LEDGER_FILENAME
+
+
+def _read_ledger_lines(path: Path) -> list[str]:
+    return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+
+
+def resolve_submission_ledger(
+    target: Path, product: str, submission_id: str, live_digest: str,
+) -> tuple[Path, "LEDGER.LedgerState"]:
+    """The one place in this module that answers "which ledger holds THIS
+    submission id" — `ledger.jsonl` or `smoke.jsonl` — for every command
+    that needs to act on one specific submission afterward (`cmd_fetch`,
+    and `cmd_reconcile`'s `--resolve`). Neither command builds a ledger
+    path for a submission id any other way: getting one now has exactly
+    one route through this module, which is what keeps a future command
+    that resolves a submission from being written blind to `smoke.jsonl`
+    the way `cmd_status`, `cmd_fetch` and `cmd_reconcile` all were before
+    this function existed — there is no second, ad hoc way left to spell
+    "the ledger" that could quietly forget the smoke one exists.
+
+    `ledger.jsonl` and `smoke.jsonl` are folded SEPARATELY here, through
+    the exact same `LEDGER.fold()` every other reader in this module already
+    calls — never concatenated into one call, and never merged into one
+    `LedgerState`. That separation is not incidental: it is what
+    `test_smoke_submission_never_enters_the_fold_or_supersedes_a_real_run`
+    already pins — a smoke submission must never become part of the main
+    ledger's own `latest[entrypoint]` index — and folding the two logs
+    together here, even transiently, would do exactly that the moment this
+    function's caller reused the merged result for anything shaped like
+    "the main ledger's state". Each returned `LedgerState` is only ever
+    valid against the file it was folded from; this function hands back
+    both the path and that matching state together so no caller has to
+    remember which one goes with which.
+
+    A submission id absent from BOTH files is refused: there is nothing on
+    record for it anywhere this module looks. A submission id present in
+    BOTH is also refused, defensively — an id is only ever supposed to be
+    issued once, by one `adapter.submit()` call, into one file (`cmd_submit`
+    picks exactly one destination per call, never both); a submission id
+    that somehow reached both logs is a corruption this function has no
+    safe basis to arbitrate, and guessing which file is authoritative would
+    hide that corruption instead of surfacing it.
+    """
+    main_path = _main_ledger_path(target, product)
+    smoke_path = _smoke_ledger_path(target, product)
+    main_state = LEDGER.fold(_read_ledger_lines(main_path), live_digest=live_digest)
+    smoke_state = LEDGER.fold(_read_ledger_lines(smoke_path), live_digest=live_digest)
+
+    in_main = submission_id in main_state.by_id
+    in_smoke = submission_id in smoke_state.by_id
+
+    if in_main and in_smoke:
+        raise RemoteCLIError(
+            f"submission {submission_id!r} is recorded in both {main_path} "
+            f"and {smoke_path}; refusing to guess which one is authoritative"
+        )
+    if not in_main and not in_smoke:
+        raise RemoteCLIError(
+            f"no submitted event on record for submission {submission_id!r} "
+            f"in {main_path} or {smoke_path}"
+        )
+    return (main_path, main_state) if in_main else (smoke_path, smoke_state)
 
 
 def cmd_smoke_record(
