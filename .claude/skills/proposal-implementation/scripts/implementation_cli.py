@@ -2502,7 +2502,7 @@ BENCHMARK_DECLARATION = "__benchmark__"
 #:         "renderers":   ["tables.render", "harness.render_panorama"],
 #:         "conclusions": ["tables.conclusion", "tables.conclusion_rungs"],
 #:         "figures":     ["figures.curves", "latent.grid"],
-#:         "dimensions":  {"targetAccuracy": "higher", "seconds": "lower"},
+#:         "dimensions":  {"accuracy": "higher", "seconds": "lower"},
 #:     }
 #:
 #: `figures` is what lets the check below ask whether a picture was actually shown
