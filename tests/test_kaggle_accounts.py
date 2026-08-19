@@ -551,10 +551,31 @@ class AccountVocabularyLeakTests(unittest.TestCase):
                 "empty here) — nothing to check, not a proven-clean tree"
             )
         forbidden = self._forbidden_literals(usernames)
-        for script in sorted((REPOSITORY_ROOT / ".claude/skills").rglob("*.py")):
+        scripts = self._tracked_skill_scripts()
+        self.assertTrue(scripts, "no tracked skill sources found to scan")
+        for script in scripts:
             source = script.read_text(encoding="utf-8").lower()
             for leaked in forbidden:
                 self.assertNotIn(leaked, source, f"{leaked!r} in {script}")
+
+    @staticmethod
+    def _tracked_skill_scripts() -> list[Path]:
+        """The skill sources this repository versions, and only those.
+
+        Deliberately `git ls-files` rather than `rglob("*.py")`: a skill may
+        keep its own `.venv`, and walking the tree reaches vendored
+        third-party code — including fixtures that are not valid UTF-8 at
+        all, which made this guard raise `UnicodeDecodeError` instead of
+        reporting a leak. Scanning what is not ours also answers the wrong
+        question: a dependency naming something is not this skill leaking
+        it. What we version is what we are responsible for.
+        """
+        listed = subprocess.run(
+            ["git", "ls-files", "-z", "--", ".claude/skills/**/*.py"],
+            cwd=REPOSITORY_ROOT, capture_output=True, text=True, check=True,
+        )
+        return sorted(REPOSITORY_ROOT / name
+                      for name in listed.stdout.split("\0") if name)
 
 
 if __name__ == "__main__":
