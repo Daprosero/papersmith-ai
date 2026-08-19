@@ -6285,5 +6285,178 @@ class TargetVocabularyLeakTests(unittest.TestCase):
             self._assert_clean(script)
 
 
+class BackendResolutionTests(unittest.TestCase):
+    """`--backend` used to name an adapter nothing ever registered, for any
+    backend whose module `remote_cli.py` never imports — which, before this
+    task, was every backend: nothing in this file ever imported
+    `adapters/kaggle.py`, so `submit`/`poll`/`fetch`/`reconcile --backend
+    kaggle` all failed with `"no adapter registered under 'kaggle'"`
+    regardless of anything else being correct.
+
+    `REMOTE_CLI._load_backend_module()` is the fix: a generic, best-effort
+    side-loader that execs `adapters/<name>.py` (constrained to a bare
+    identifier, checked structurally against the resolved adapters
+    directory too) before `ADAPTER.resolve(name)` is asked to find
+    anything, so a module dropped into `adapters/` becomes reachable by its
+    own filename with zero changes to this CLI.
+    """
+
+    def test_unknown_backend_error_names_what_is_registered(self) -> None:
+        """The patch this replaces left a caller staring at "no adapter
+        registered under 'x'" with no way to tell a typo from a module that
+        was never even loaded. The fix names what IS available.
+        """
+        ADAPTER.register("known-fixture-for-message-test", FakeAdapter)
+        with self.assertRaises(KeyError) as ctx:
+            ADAPTER.resolve("definitely-not-registered-xyz")
+        message = str(ctx.exception)
+        self.assertIn("known-fixture-for-message-test", message)
+        self.assertIn("available", message)
+
+    def test_hostile_backend_value_cannot_escape_adapters_directory(self) -> None:
+        """`--backend`'s value is used to locate a module, so it is
+        constrained BEFORE it ever touches the filesystem: a bare
+        identifier only (letters, digits, `_`, `-`) — no `.`, `/`, or `\\`,
+        which is what makes `..`, an absolute path, or any other
+        directory-separator trick impossible to spell in the first place.
+
+        Proven here by planting a marker file OUTSIDE `adapters/` that
+        raises the instant it is ever exec'd, then feeding
+        `_load_backend_module()` values that would reach it if traversal
+        worked. `assertRaises` would surface that `RuntimeError` directly
+        if the guard ever failed; its absence, plus `ADAPTER.resolve()`
+        still raising `KeyError` for every one of these values afterward,
+        is the proof nothing outside `adapters/` was ever read, let alone
+        executed.
+        """
+        adapters_dir = REMOTE_CLI_SCRIPT.parent / "adapters"
+        marker = adapters_dir.parent / "zz_escape_marker_for_test.py"
+        marker.write_text(
+            "raise RuntimeError('a hostile --backend value executed this')\n",
+            encoding="utf-8",
+        )
+        self.addCleanup(marker.unlink)
+
+        hostile_values = (
+            "../zz_escape_marker_for_test",
+            "../../zz_escape_marker_for_test",
+            "/etc/passwd",
+            str(marker),
+            "kaggle/../../zz_escape_marker_for_test",
+            "..",
+            "./kaggle",
+        )
+        for value in hostile_values:
+            with self.subTest(value=value):
+                REMOTE_CLI._load_backend_module(value)  # must not raise
+                with self.assertRaises(KeyError):
+                    ADAPTER.resolve(value)
+
+    def test_dropping_a_module_into_adapters_becomes_reachable_by_backend_name(
+        self,
+    ) -> None:
+        """Genericity: a module this test writes at runtime, never imported
+        by ANY line in `remote_cli.py`, becomes resolvable purely by
+        dropping it into `adapters/` under a matching filename — and both
+        of its own registrations (`ADAPTER.register` AND
+        `ADAPTER.register_metadata`) take effect, not only the first.
+        """
+        adapters_dir = REMOTE_CLI_SCRIPT.parent / "adapters"
+        fixture_name = "zz_fixture_backend_for_test"
+        fixture_path = adapters_dir / f"{fixture_name}.py"
+        fixture_path.write_text(
+            "import importlib.util\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            "\n"
+            "def _load_adapter_seam():\n"
+            "    module_name = 'remote_execution_adapter'\n"
+            "    if module_name in sys.modules:\n"
+            "        return sys.modules[module_name]\n"
+            "    script = Path(__file__).resolve().parent.parent / 'adapter.py'\n"
+            "    spec = importlib.util.spec_from_file_location(module_name, script)\n"
+            "    module = importlib.util.module_from_spec(spec)\n"
+            "    sys.modules[module_name] = module\n"
+            "    spec.loader.exec_module(module)\n"
+            "    return module\n"
+            "\n"
+            "ADAPTER = _load_adapter_seam()\n"
+            "\n"
+            "class _FixtureAdapter(ADAPTER.Adapter):\n"
+            "    def workers(self):\n"
+            "        return []\n"
+            "    def submit(self, job):\n"
+            "        return ADAPTER.Submission(id='fixture-1', worker=job.worker)\n"
+            "    def poll(self, submission_id):\n"
+            "        return ADAPTER.Status(state='running', detail='fixture-marker')\n"
+            "    def fetch(self, submission_id, into):\n"
+            "        return ADAPTER.Fetched(path=into, complete=True, files=())\n"
+            "    def cancel(self, submission_id):\n"
+            "        return None\n"
+            "    def list_active(self, worker):\n"
+            "        return []\n"
+            "\n"
+            "ADAPTER.register('zz_fixture_backend_for_test', _FixtureAdapter)\n"
+            "ADAPTER.register_metadata(\n"
+            "    'zz_fixture_backend_for_test',\n"
+            "    lambda run_config: ('fixture-metadata.json', '{}'),\n"
+            ")\n",
+            encoding="utf-8",
+        )
+        self.addCleanup(fixture_path.unlink)
+        self.addCleanup(
+            lambda: shutil.rmtree(adapters_dir / "__pycache__", ignore_errors=True)
+        )
+
+        with self.assertRaises(KeyError):
+            ADAPTER.resolve(fixture_name)
+
+        REMOTE_CLI._load_backend_module(fixture_name)
+
+        adapter_cls = ADAPTER.resolve(fixture_name)
+        self.assertTrue(issubclass(adapter_cls, ADAPTER.Adapter))
+
+        metadata_fn = ADAPTER.resolve_metadata(fixture_name)
+        filename, text = metadata_fn({})
+        self.assertEqual(filename, "fixture-metadata.json")
+        self.assertEqual(text, "{}")
+
+    def test_live_poll_resolves_the_real_kaggle_adapter_without_any_network_call(
+        self,
+    ) -> None:
+        """A real, separate `python3 remote_cli.py poll --backend kaggle`
+        invocation, in a FRESH process — unlike every other test in this
+        file, which shares one process where `adapters/kaggle.py` is
+        already preloaded at module scope (see `KAGGLE` above), so
+        `ADAPTER.resolve('kaggle')` would trivially succeed in-process
+        regardless of whether `remote_cli.py` itself can resolve it.
+
+        `PATH` is forced empty for the child, so the `kaggle` executable is
+        guaranteed unfindable: `subprocess.run(['kaggle', ...])` fails with
+        a purely local `FileNotFoundError` before any network I/O is even
+        attempted, wrapped by `adapters/kaggle.py` into `"could not run
+        kaggle: ..."`. That message — NOT `"no adapter registered under
+        'kaggle'"` — is the proof `--backend kaggle` resolved to the real
+        adapter and got as far as trying to invoke it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            env = dict(os.environ)
+            env["PATH"] = ""
+            result = subprocess.run(
+                [
+                    sys.executable, str(REMOTE_CLI_SCRIPT),
+                    "poll",
+                    "--submission-id", "someuser/some-slug",
+                    "--backend", "kaggle",
+                    "--credential-dir", str(Path(tmp) / "fake-creds"),
+                ],
+                env=env, capture_output=True, text=True, timeout=30,
+            )
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn("no adapter registered", result.stderr)
+        self.assertIn("could not run", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

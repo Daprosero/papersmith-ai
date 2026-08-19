@@ -40,6 +40,7 @@ import importlib.util
 import inspect
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -1045,6 +1046,79 @@ def _accounts_cli_for(adapter_cls: type["ADAPTER.Adapter"]) -> Path | None:
     return getattr(adapter_cls, "CREDENTIAL_CLI", None)
 
 
+ADAPTERS_DIRNAME = "adapters"
+
+# `--backend`'s raw value is the one part of this mechanism actually driven
+# by untrusted input, so it is constrained before it ever reaches the
+# filesystem: a bare identifier only, no `.`, `/`, or `\\` — which is what
+# makes `..`, an absolute path, or any other directory-separator trick
+# impossible to SPELL in the first place, not merely unlikely to be tried.
+_BACKEND_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _load_backend_module(name: str) -> None:
+    """Best-effort: if `<this file's own directory>/adapters/<name>.py`
+    exists, exec it once so its own top-level `ADAPTER.register(...)` (and,
+    where present, `ADAPTER.register_metadata(...)`) calls run — before
+    `ADAPTER.resolve(name)` is ever asked to find anything under that same
+    name.
+
+    This is the whole mechanism that lets `--backend` name a concrete
+    adapter without this module ever importing one directly: a module
+    dropped into `adapters/` becomes reachable through `--backend <its own
+    filename, minus .py>` with no change to this file at all. It is also
+    what keeps this file free of naming a service itself — `name` arrives
+    at runtime, off the command line, typed by whoever is running this
+    command; nothing in this function or anywhere else in this module ever
+    spells a service's name as a literal.
+
+    `name` is constrained BEFORE it ever touches the filesystem:
+    `_BACKEND_NAME_RE` admits letters, digits, `_` and `-` only, so `..`, a
+    leading `/`, or a `\\` component can never be spelled in it at all —
+    refused structurally, not merely rejected after the fact by a
+    containment check that a differently-shaped hostile value might slip
+    past. The resolved candidate path is then checked a second, independent
+    way — `candidate.relative_to(adapters_dir)` — so a future loosening of
+    the regex alone could never reopen this by itself.
+
+    Any value failing either check, or naming no file, is left alone here,
+    silently: this function only ever ADDS a registration; it never raises
+    for a name nothing backs, and it never removes or second-guesses a
+    registration a caller already made directly (this skill's own test
+    suite registers several fake adapters exactly that way, under names no
+    file in `adapters/` ever backs). `ADAPTER.resolve()` still runs
+    immediately after every call site below, and stays the one place a
+    genuinely unknown backend is refused — now naming what IS registered,
+    which is what turns an unknown value into an actionable message instead
+    of a dead end.
+    """
+    if not _BACKEND_NAME_RE.match(name):
+        return
+
+    adapters_dir = (Path(__file__).resolve().parent / ADAPTERS_DIRNAME).resolve()
+    candidate = (adapters_dir / f"{name}.py").resolve()
+    try:
+        candidate.relative_to(adapters_dir)
+    except ValueError:
+        return
+    if not candidate.is_file():
+        return
+
+    module_name = f"remote_execution_adapters_{name.replace('-', '_')}"
+    if module_name in sys.modules:
+        return
+
+    spec = importlib.util.spec_from_file_location(module_name, candidate)
+    if spec is None or spec.loader is None:
+        return
+    module = importlib.util.module_from_spec(spec)
+    # Registered only once it has actually run — the same "retryable on
+    # failure, never cached half-loaded" ordering `_load_source_digest()`
+    # above already uses, for the same reason.
+    spec.loader.exec_module(module)
+    sys.modules[module_name] = module
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="remote_cli",
@@ -1212,6 +1286,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "submit":
         try:
+            _load_backend_module(args.backend)
             adapter_cls = ADAPTER.resolve(args.backend)
         except KeyError as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -1262,6 +1337,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "poll":
         try:
+            _load_backend_module(args.backend)
             adapter_cls = ADAPTER.resolve(args.backend)
         except KeyError as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -1288,6 +1364,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "fetch":
         try:
+            _load_backend_module(args.backend)
             adapter_cls = ADAPTER.resolve(args.backend)
         except KeyError as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -1324,6 +1401,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "reconcile":
         try:
+            _load_backend_module(args.backend)
             adapter_cls = ADAPTER.resolve(args.backend)
         except KeyError as exc:
             print(f"error: {exc}", file=sys.stderr)

@@ -242,11 +242,21 @@ def register(name: str, adapter_cls: type[Adapter]) -> None:
 
 
 def resolve(name: str) -> type[Adapter]:
-    """Look up a previously registered adapter class by name."""
+    """Look up a previously registered adapter class by name.
+
+    A miss names what IS registered, not just what was asked for: a caller
+    staring at "no adapter registered under 'x'" alone has no way to tell a
+    typo from a name whose module was never even loaded, and the available
+    list is exactly the fact that turns this from a dead end into something
+    actionable.
+    """
     try:
         return _REGISTRY[name]
     except KeyError:
-        raise KeyError(f"no adapter registered under {name!r}") from None
+        available = ", ".join(sorted(_REGISTRY)) if _REGISTRY else "none registered"
+        raise KeyError(
+            f"no adapter registered under {name!r}; available: {available}"
+        ) from None
 
 
 # A second, separate registry from the one above — deliberately not a
