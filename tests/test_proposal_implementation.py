@@ -2212,6 +2212,184 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(state["unpartitioned"], ["accuracy"])
 
 
+class DeclaredDimensionNamesTests(unittest.TestCase):
+    """The shard-level dimension universe, read the same way a target keeps it.
+
+    `distribution_state` needs names, never directions, so this reads only
+    `ast.Dict.keys` — the values are frequently bare names (`HIGHER`, `LOWER`)
+    that `ast.literal_eval` cannot evaluate at all.
+    """
+
+    def bench(self, root: Path) -> Path:
+        path = root / "src" / "Method_Benchmark"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def test_reads_keys_even_when_values_are_bare_names(self):
+        """The real shape: directions are module constants, not literals."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (self.bench(root) / "config.py").write_text(
+                "HIGHER, LOWER, DESCRIPTIVE = 'higher', 'lower', None\n"
+                "DIMENSIONS = {\n"
+                "    'targetAccuracy': HIGHER,\n"
+                "    'seconds': LOWER,\n"
+                "    'contribution': DESCRIPTIVE,\n"
+                "}\n", encoding="utf-8")
+            names = impl.declared_dimension_names(root, "Method")
+            self.assertEqual(names, ["targetAccuracy", "seconds", "contribution"])
+
+    def test_config_py_takes_precedence_over_benchmark_py(self):
+        """A materialized target keeps its own shard contract in config.py."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bench = self.bench(root)
+            (bench / "config.py").write_text(
+                "DIMENSIONS = {'fromConfig': None}\n", encoding="utf-8")
+            (bench / "benchmark.py").write_text(
+                "DIMENSIONS = {'fromKit': None}\n", encoding="utf-8")
+            names = impl.declared_dimension_names(root, "Method")
+            self.assertEqual(names, ["fromConfig"])
+
+    def test_falls_back_to_benchmark_py_when_config_py_has_none(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bench = self.bench(root)
+            (bench / "config.py").write_text("REDUCTION = {}\n", encoding="utf-8")
+            (bench / "benchmark.py").write_text(
+                "DIMENSIONS = {'fromKit': None}\n", encoding="utf-8")
+            names = impl.declared_dimension_names(root, "Method")
+            self.assertEqual(names, ["fromKit"])
+
+    def test_absent_universe_is_none_not_an_empty_list(self):
+        """`[]` reads as "declares zero dimensions" — trivially exhaustive.
+
+        Reachable red: returning `[]` here instead of `None` would make this
+        pass while silently emptying `unpartitioned` for every caller.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.bench(root)
+            names = impl.declared_dimension_names(root, "Method")
+            self.assertIsNone(names)
+
+    def test_a_non_dict_dimensions_is_not_read_as_no_dimensions(self):
+        """A name bound to something else is not a declaration of zero.
+
+        Reachable red: treating any non-dict as `[]` would make this pass
+        for the wrong reason — the assertion has to be `None`, not falsy.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (self.bench(root) / "config.py").write_text(
+                "DIMENSIONS = ['targetAccuracy', 'seconds']\n", encoding="utf-8")
+            names = impl.declared_dimension_names(root, "Method")
+            self.assertIsNone(names)
+
+    def test_a_non_dict_in_config_py_falls_through_to_benchmark_py(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bench = self.bench(root)
+            (bench / "config.py").write_text(
+                "DIMENSIONS = compute_dimensions()\n", encoding="utf-8")
+            (bench / "benchmark.py").write_text(
+                "DIMENSIONS = {'fromKit': None}\n", encoding="utf-8")
+            names = impl.declared_dimension_names(root, "Method")
+            self.assertEqual(names, ["fromKit"])
+
+    def test_an_unparsable_file_does_not_raise_and_falls_through(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bench = self.bench(root)
+            (bench / "config.py").write_text("DIMENSIONS = {\n", encoding="utf-8")
+            (bench / "benchmark.py").write_text(
+                "DIMENSIONS = {'fromKit': None}\n", encoding="utf-8")
+            names = impl.declared_dimension_names(root, "Method")
+            self.assertEqual(names, ["fromKit"])
+
+    def test_a_key_that_is_not_a_constant_string_is_skipped_not_raised(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (self.bench(root) / "config.py").write_text(
+                "OTHER = {'ghost': None}\n"
+                "DIMENSIONS = {**OTHER, 'real': None}\n", encoding="utf-8")
+            names = impl.declared_dimension_names(root, "Method")
+            self.assertEqual(names, ["real"])
+
+
+class VerifyDistributionUniverseTests(unittest.TestCase):
+    """`verify` classifies a shard's dimensions, not the report's.
+
+    A report can render latent-analysis quantities no shard ever carries —
+    a class-separation figure, an attention diagnostic — and none of those
+    belong in the partition a machine split has to be exhaustive over.
+    Demanding a classification for them is a category error, not a missing
+    declaration, and this is the seam where that used to leak in.
+    """
+
+    DECLARATION = (
+        "__benchmark__ = {\n"
+        "    'revision': 'r01.md',\n"
+        "    'arms': {},\n"
+        "    'report': {\n"
+        "        'dimensions': {'shardOnly': 'higher', 'latentOnly': None},\n"
+        "    },\n"
+        "    'distribution': {\n"
+        "        'axis': 'seed',\n"
+        "        'poolable': ['shardOnly'],\n"
+        "        'perEnvironment': [],\n"
+        "        'perRun': [],\n"
+        "        'identicalAcrossShards': [],\n"
+        "    },\n"
+        "}\n"
+    )
+
+    def _box(self, tag: str) -> Path:
+        box = FORGE / "implementations" / f"_dist_universe_{tag}_{os.getpid()}"
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            self.DECLARATION, encoding="utf-8")
+        return box
+
+    def test_a_dimension_the_report_renders_but_no_shard_carries_is_never_demanded(self):
+        """Reachable red: sourcing this from the report's dimensions instead
+        of `config.DIMENSIONS` would put `latentOnly` in `unpartitioned` and
+        report `incomplete` for a declaration that classified everything a
+        shard actually has."""
+        box = self._box("universe")
+        try:
+            (box / "src" / "Method_Benchmark" / "config.py").write_text(
+                "DIMENSIONS = {'shardOnly': None}\n", encoding="utf-8")
+            result = impl.cmd_verify(
+                argparse.Namespace(target=str(box), name="Method", revision=None))
+        finally:
+            shutil.rmtree(box, ignore_errors=True)
+
+        distribution = result["distribution"]
+        self.assertEqual(distribution["unpartitioned"], [])
+        self.assertEqual(distribution["status"], "ok")
+        self.assertEqual(distribution["dimensionSource"], ["shardOnly"])
+
+    def test_an_undetermined_universe_never_silently_reads_as_exhaustive(self):
+        """No `config.py`, no `benchmark.py`: the universe is unknown, and
+        that has to say so rather than pass by having nothing to check."""
+        box = self._box("unknown")
+        try:
+            result = impl.cmd_verify(
+                argparse.Namespace(target=str(box), name="Method", revision=None))
+        finally:
+            shutil.rmtree(box, ignore_errors=True)
+
+        distribution = result["distribution"]
+        self.assertIsNone(distribution["dimensionSource"])
+        self.assertEqual(distribution["unpartitioned"], [])
+        self.assertIn("note", distribution)
+
+
 class DoctrineAmendmentTests(unittest.TestCase):
     """The record's clause and the launcher's clause governed different things.
 

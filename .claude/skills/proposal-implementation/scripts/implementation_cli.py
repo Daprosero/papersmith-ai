@@ -3226,6 +3226,51 @@ def read_declaration(path: Path, name: str) -> dict | None:
     return None
 
 
+def declared_dimension_names(target: Path, package: str) -> list[str] | None:
+    """The shard-level dimension names a target declares, read without importing.
+
+    `distribution_state` needs names and never directions, so this walks only
+    `ast.Dict.keys` of a module-level `DIMENSIONS = {...}` — never
+    `ast.literal_eval`, which raises the moment a value is a bare name like
+    `HIGHER` rather than a literal (`config.py` writes exactly that: each
+    dimension's direction is `HIGHER`/`LOWER`/`DESCRIPTIVE`, three module
+    constants, not literals `ast.literal_eval` can evaluate). Reading the
+    keys and never the values sidesteps that, and is also the honest read:
+    only names are needed here.
+
+    Searched in `config.py` first — where a materialized target keeps its
+    own shard contract — then `benchmark.py`, where the kit's own template
+    defines it; the first candidate that binds `DIMENSIONS` to a dict wins.
+
+    `None` means the universe could not be determined: neither file binds
+    the name, the assignment is unparsable, or `DIMENSIONS` is bound to
+    something other than a dict literal. Every one of those collapses to the
+    same `None` rather than `[]`, because `[]` reads as "this target
+    declares zero dimensions" — trivially exhaustive, and a name bound to a
+    call or a list is not a declaration of zero dimensions, it is a
+    declaration this reading cannot make sense of.
+    """
+    bench_root = target / "src" / f"{package}_Benchmark"
+    for candidate in ("config.py", "benchmark.py"):
+        path = bench_root / candidate
+        if not path.exists():
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        for node in tree.body:
+            if not (isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "DIMENSIONS" for t in node.targets
+            )):
+                continue
+            if not isinstance(node.value, ast.Dict):
+                continue
+            return [key.value for key in node.value.keys
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str)]
+    return None
+
+
 def revision_sections(source: str | None) -> dict[str, str]:
     """Each numbered section of a revision, keyed by its number, hashed by content.
 
@@ -4633,6 +4678,27 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     notebooks = notebooks_state(target, name, package_name(name))
     trivial = trivial_assertions(target / "tests")
 
+    # The shard contract, not the report: the report also renders
+    # latent-analysis quantities (e.g. `geometry.ratio`, `domainSeparability`)
+    # that never sit on a shard, and demanding a partition classification for
+    # those is a category error, not a missing declaration. `None` here means
+    # the universe itself could not be determined, and that is never read as
+    # "declares zero dimensions" — see `declared_dimension_names`.
+    dimension_names = declared_dimension_names(target, package_name(name))
+    distribution = distribution_state(
+        read_declaration(
+            target / "src" / f"{package_name(name)}_Benchmark" / "__init__.py",
+            BENCHMARK_DECLARATION) or {},
+        dimension_names if dimension_names is not None else {})
+    distribution["dimensionSource"] = (
+        sorted(dimension_names) if dimension_names is not None else None)
+    if dimension_names is None and distribution["status"] != "none":
+        distribution["note"] = (
+            "no DIMENSIONS dict literal found in config.py or benchmark.py "
+            f"under src/{package_name(name)}_Benchmark; the partition could "
+            "not be checked for exhaustiveness, so an empty unpartitioned "
+            "here is not evidence the split is complete")
+
     if not args.revision:
         fidelity_status = "unknown"
     elif stale or missing_provenance or untested or unreached:
@@ -4667,11 +4733,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
                 BENCHMARK_DECLARATION) or {},
             list((report.get("declared") or {}).get("records") or []),
             target / name),
-        "distribution": distribution_state(
-            read_declaration(
-                target / "src" / f"{package_name(name)}_Benchmark" / "__init__.py",
-                BENCHMARK_DECLARATION) or {},
-            (report.get("declared") or {}).get("dimensions") or {}),
+        "distribution": distribution,
         "remoteExecution": remote_execution_state(target, name, package_name(name)),
         # A static fact, reported and never gating: see `notebook_coupling`.
         "coupling": coupling_state(target, name, package_name(name)),
