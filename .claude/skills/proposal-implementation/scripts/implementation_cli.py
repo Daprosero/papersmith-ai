@@ -2246,7 +2246,9 @@ def ignore_gaps(target: Path) -> list[str]:
 
 
 def scaffold_gaps(target: Path, name: str) -> list[str]:
-    wanted = [f"src/{package_name(name)}/__init__.py", "tests/test_smoke.py",
+    wanted = [f"src/{package_name(name)}/__init__.py",
+              f"src/{package_name(name)}_Benchmark/__init__.py",
+              "tests/test_smoke.py",
               "tests/findings.py", "tests/test_audit.py", "tests/test_remedies.py",
               f"{name}/Notebooks/verification.ipynb"]
     gaps = [w for w in wanted if not (target / w).exists()]

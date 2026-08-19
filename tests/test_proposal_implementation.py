@@ -7,6 +7,7 @@ declares whether the user can still review it.
 """
 
 import argparse
+import ast
 import inspect
 import json
 import os
@@ -4283,3 +4284,62 @@ class ReportFirstSectionProseTests(unittest.TestCase):
             self.assertIsNone(
                 re.search(rf"\b{leaked}\b", text),
                 f"{leaked!r} is some target's vocabulary, not the forge's")
+
+
+class MaterializeBenchmarkDeclarationTests(unittest.TestCase):
+    """Before this, `materialize.py` never created `src/<Package>_Benchmark/`
+    at all, so `scaffold_gaps` — the one check whose job is reporting what a
+    scaffold left out — checked five paths and none of them was the
+    declaration. These pin the fix: a fresh scaffold writes the declaration,
+    it parses empty, and `scaffold_gaps` can both see it present and see it
+    missing.
+    """
+
+    KIT = FORGE / ".claude/skills/proposal-implementation/assets/kit"
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(CLI.parent))
+        import materialize  # local import: path to scripts/ set above
+        cls.materialize = materialize
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_materialize_{os.getpid()}_{id(self)}"
+        box.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        return box
+
+    def _declared(self, box):
+        self.materialize.main(str(box), "Method", "1", str(self.KIT))
+        return box / "src" / "Method_Benchmark" / "__init__.py"
+
+    def test_a_fresh_scaffold_writes_a_declaration_that_parses_empty(self):
+        box = self._box()
+        declared = self._declared(box)
+        self.assertTrue(declared.exists())
+
+        tree = ast.parse(declared.read_text(encoding="utf-8"))
+        value = None
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "__benchmark__"
+                for t in node.targets
+            ):
+                value = ast.literal_eval(node.value)
+        self.assertIsNotNone(value, "no literal __benchmark__ assignment found")
+        self.assertEqual(
+            set(value),
+            {"revision", "premises", "arms", "search", "report", "distribution"})
+        for key, field in value.items():
+            self.assertIn(field, ("", {}, []), f"{key!r} is not empty: {field!r}")
+
+    def test_scaffold_gaps_no_longer_reports_it_missing_once_written(self):
+        box = self._box()
+        self._declared(box)
+        gaps = impl.scaffold_gaps(box, "Method")
+        self.assertNotIn("src/Method_Benchmark/__init__.py", gaps)
+
+    def test_scaffold_gaps_reports_it_missing_when_absent(self):
+        with tempfile.TemporaryDirectory() as raw:
+            gaps = impl.scaffold_gaps(Path(raw), "Method")
+        self.assertIn("src/Method_Benchmark/__init__.py", gaps)

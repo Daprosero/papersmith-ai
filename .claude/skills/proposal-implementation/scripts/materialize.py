@@ -40,6 +40,15 @@ def main(target: str, name: str, seed: str, kit: str | None = None) -> int:
     for module in sorted((KIT / "src").glob("*.py")):
         (package / module.name).write_text(module.read_text())
 
+    # The benchmark's declaration, copied verbatim like every other kit file —
+    # never substituted, never populated. `arms`, `search`, `report` and
+    # `distribution` stay whatever the shipped template says (empty), because
+    # nothing here has run a search, wired an arm or measured a split yet.
+    benchmark_package = root / "src" / f"{pkg}_Benchmark"
+    benchmark_package.mkdir(parents=True, exist_ok=True)
+    declaration = KIT / "src_benchmark" / "__init__.py"
+    (benchmark_package / "__init__.py").write_text(declaration.read_text())
+
     tests = root / "tests"
     tests.mkdir(parents=True, exist_ok=True)
     for test in sorted((KIT / "tests").glob("*.py")):
