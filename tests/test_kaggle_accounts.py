@@ -15,11 +15,14 @@ import contextlib
 import importlib.util
 import io
 import json
+import re
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
 import unittest.mock
+from collections import Counter
 from pathlib import Path
 
 
@@ -101,8 +104,8 @@ class CredentialListTests(unittest.TestCase):
         # Markdown italicises with `_` and Kaggle tokens contain it. Stripping it
         # turns a good key into a 401 that reads as an expired token and sends
         # somebody to regenerate one that was working.
-        (entry,) = ACCOUNTS.parse_credential_lines("- **Daprosero**: `KGAT_86ed_f00`\n")
-        self.assertEqual((entry["username"], entry["key"]), ("Daprosero", "KGAT_86ed_f00"))
+        (entry,) = ACCOUNTS.parse_credential_lines("- **SampleAccount**: `KGAT_86ed_f00`\n")
+        self.assertEqual((entry["username"], entry["key"]), ("SampleAccount", "KGAT_86ed_f00"))
 
     def test_reads_a_markdown_table(self) -> None:
         entries = ACCOUNTS.parse_credential_lines(
@@ -132,10 +135,10 @@ class CredentialListTests(unittest.TestCase):
         # Splitting on every separator at once means a field can never contain
         # one. The comma the person typed says where the boundary is.
         for line, expected in (
-            ("Trayectoria XX, KEY_1", ["Trayectoria XX", "KEY_1"]),
-            ("| Trayectoria XX | KEY_1 |", ["Trayectoria XX", "KEY_1"]),
-            ("- Trayectoria XX: KEY_1", ["Trayectoria XX", "KEY_1"]),
-            ("Trayectoria XX\tKEY_1", ["Trayectoria XX", "KEY_1"]),
+            ("Jane Doe, KEY_1", ["Jane Doe", "KEY_1"]),
+            ("| Jane Doe | KEY_1 |", ["Jane Doe", "KEY_1"]),
+            ("- Jane Doe: KEY_1", ["Jane Doe", "KEY_1"]),
+            ("Jane Doe\tKEY_1", ["Jane Doe", "KEY_1"]),
         ):
             self.assertEqual(ACCOUNTS.split_credential_line(line), expected, line)
 
@@ -145,13 +148,13 @@ class CredentialListTests(unittest.TestCase):
     def test_a_name_with_a_space_is_named_as_a_display_name_not_as_bad_punctuation(self) -> None:
         # It is not a typo: it is the other name Kaggle shows, and telling
         # somebody their fields are miscounted sends them to fix the wrong thing.
-        (entry,) = ACCOUNTS.parse_credential_lines("Trayectoria XX, KEY_1\n")
+        (entry,) = ACCOUNTS.parse_credential_lines("Jane Doe, KEY_1\n")
         self.assertIsNone(entry["username"])
         self.assertIn("display name", entry["problem"])
         self.assertNotIn("field(s)", entry["problem"])
 
     def test_a_rejected_username_never_carries_its_key_along(self) -> None:
-        (entry,) = ACCOUNTS.parse_credential_lines("Trayectoria XX, KEY_THAT_LEAKED\n")
+        (entry,) = ACCOUNTS.parse_credential_lines("Jane Doe, KEY_THAT_LEAKED\n")
         self.assertIsNone(entry["key"])
         self.assertNotIn("KEY_THAT_LEAKED", entry["problem"])
 
@@ -479,6 +482,79 @@ class MaterializeCommandTests(unittest.TestCase):
                 )
 
             self.assertFalse(dest.exists())
+
+
+class AccountVocabularyLeakTests(unittest.TestCase):
+    """A tenth guard, in the family of `remote-execution`'s eight
+    `*_module_names_no_service` tests plus its `TargetVocabularyLeakTests`
+    (`tests/test_remote_execution.py`). Those forbid naming a SERVICE outside
+    `adapters/kaggle.py`, and naming this forge's own TARGET product anywhere
+    in the skill. Neither one polices a third, independent axis: this
+    *machine's* real Kaggle account names — the vocabulary that leaked at
+    `accounts_cli.py:251`, where `split_credential_line`'s docstring named a
+    real account's display-name prefix as its worked example.
+
+    Design: this machine's own sanctioned account listing, not a hardcoded
+    list. `accounts_cli.py list --json` is the store's own sanctioned
+    surface — usernames only, never a key — so the forbidden set is derived
+    live rather than copied by hand. That means an account added tomorrow is
+    covered automatically, and removing one here needs no edit to this test.
+    The tradeoff is the one a hardcoded list does not have: the store lives
+    under `.claude/skills/kaggle-accounts/store/`, which is gitignored, so a
+    checkout with no accounts ever stored yields an empty forbidden set. This
+    test SKIPS rather than passes when that happens, so "0 accounts to check"
+    is visibly distinct in the run summary (`skipped=1`) from "N accounts
+    checked, none leaked" — a pass here is never proof of a clean tree on a
+    machine that never authenticated one.
+
+    Past the literal usernames, this generalizes the same way
+    `TargetVocabularyLeakTests` generalized `creda` past its exact spelling
+    — but only when the generalization is corroborated by the store itself.
+    Two or more stored usernames that share a digit-stripped stem (`Trayec-
+    toria51` and `Trayectoria50` both stem to `Trayectoria`) prove that the
+    stem is the human-meaningful, reused part, the same way multiple real
+    spellings of one product proved `creda` was. A singleton account's stem
+    is deliberately NOT added on its own — `Diego9901` stems to `Diego`, a
+    common first name, and banning it unconditionally would flag ordinary
+    prose (a citation, an example name) that has nothing to do with this
+    leak. That is narrower than exhaustive: an account whose exact spelling
+    is disguised in a way no other stored account corroborates (as `Trayec-
+    toria XX` disguised `Trayectoria51`/`Trayectoria50` before this test
+    existed) would slip through unless a sibling account happens to share
+    its stem.
+
+    Scoped to every `.py` under `.claude/skills/`, mirroring
+    `TargetVocabularyLeakTests`'s scope. This test's own file lives under
+    `tests/`, outside that tree, so it does not scan itself — it necessarily
+    contains these same account names as literals here in this docstring and
+    below, exactly as `test_remote_execution.py` freely contains `kaggle`.
+    """
+
+    def _stored_usernames(self) -> list[str]:
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "list", "--json"],
+            capture_output=True, text=True, check=True,
+        )
+        return [a["username"] for a in json.loads(result.stdout)["accounts"]]
+
+    def _forbidden_literals(self, usernames: list[str]) -> set[str]:
+        stems = [re.sub(r"\d+$", "", u) for u in usernames]
+        stem_counts = Counter(s.lower() for s in stems)
+        shared_stems = {s.lower() for s in stems if stem_counts[s.lower()] >= 2}
+        return {u.lower() for u in usernames} | shared_stems
+
+    def test_no_skill_source_names_a_real_account_of_this_machine(self) -> None:
+        usernames = self._stored_usernames()
+        if not usernames:
+            self.skipTest(
+                "no accounts stored on this machine (store is gitignored and "
+                "empty here) — nothing to check, not a proven-clean tree"
+            )
+        forbidden = self._forbidden_literals(usernames)
+        for script in sorted((REPOSITORY_ROOT / ".claude/skills").rglob("*.py")):
+            source = script.read_text(encoding="utf-8").lower()
+            for leaked in forbidden:
+                self.assertNotIn(leaked, source, f"{leaked!r} in {script}")
 
 
 if __name__ == "__main__":

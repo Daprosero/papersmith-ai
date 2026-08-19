@@ -248,7 +248,7 @@ def split_credential_line(line: str) -> list[str]:
 
     An explicit delimiter wins over whitespace, and that ordering is the whole
     point. Splitting on any of them at once means a field can never *contain*
-    one — so `Trayectoria XX, KGAT_…` came apart into three fields and was
+    one — so `Jane Doe, KGAT_…` came apart into three fields and was
     reported as malformed, when the person writing it had already said where the
     boundary was by putting a comma there. A delimiter someone typed is a
     statement; a space is a guess. Take the statement.
