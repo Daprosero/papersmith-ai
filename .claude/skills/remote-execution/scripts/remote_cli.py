@@ -217,7 +217,7 @@ def product_for(
     "tools"` is refused exactly like an unresolved one, because `tools` is
     forge layout, never a product this skill's ledger can shard by.
 
-    This forge's real target hosts two products (`CREDA`, `MIL-CREDA`);
+    This forge's real target has hosted more than one product at once;
     nothing in this skill is allowed to assume which one a caller means —
     a product is always read off a path, a flag, or a job's own recorded
     config, never typed in as a bare string by this function itself.

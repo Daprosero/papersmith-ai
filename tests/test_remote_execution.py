@@ -6229,5 +6229,61 @@ class SmokeTests(unittest.TestCase):
             self.assertNotIn(leaked, source, leaked)
 
 
+class TargetVocabularyLeakTests(unittest.TestCase):
+    """The `*_module_names_no_service` family above (eight tests) forbids
+    naming a SERVICE outside `adapters/kaggle.py`. Nothing forbade naming a
+    TARGET repository's own product, and that gap is exactly how two
+    mentions of `MIL_CREDA_Benchmark` — this forge's real target package —
+    reached `jobfolder.py` unnoticed: every existing guard above was blind
+    to that literal, since none of them looked for it.
+
+    Scoped to the literal that actually leaked, generalized past its exact
+    spelling — `CREDA`, `MIL-CREDA`, `MIL_CREDA_Benchmark` and `MilCreda`
+    all share the substring `creda`, so any casing or punctuation variant
+    is caught, not only the one string seen today — plus this forge's real
+    target dataset names, added on the same reasoning even though none has
+    leaked yet: proper nouns with no ordinary-English collision, exactly
+    like `creda`.
+
+    Deliberately NOT extended to generic ML/benchmark vocabulary (`epoch`,
+    `seed`, `checkpoint`, `arm`, `transfer`, `ceiling`): this skill's own
+    modules legitimately use words like these in illustrative prose —
+    `adapter.py` names "a set of seeds" as an example of an opaque
+    `run_config` key it never reads — and a skill-wide ban on them would
+    fail that legitimate usage, not catch a leak. `shard_io.py` already
+    forbids `transfer`/`arm` for itself alone, in
+    `test_shard_io_source_names_no_service_and_no_domain_term`, because
+    that module's own job is reading dimension-keyed shard trees; nothing
+    here widens that narrower, module-specific choice.
+
+    Every module in the skill is checked, including `adapters/kaggle.py`:
+    that file may name the SERVICE it backs, never the TARGET it happens
+    to run today — the two are independent axes, and the existing
+    `*_module_names_no_service` tests only ever policed the first one.
+    """
+
+    TARGET_LITERALS = ("creda", "mnist", "usps", "svhn")
+
+    def _assert_clean(self, script: Path) -> None:
+        source = script.read_text(encoding="utf-8").lower()
+        for leaked in self.TARGET_LITERALS:
+            self.assertNotIn(leaked, source, f"{leaked!r} in {script}")
+
+    def test_no_module_in_the_skill_names_the_target(self) -> None:
+        for script in (
+            SCRIPT,
+            ADAPTER_SCRIPT,
+            PACKER_SCRIPT,
+            REMOTE_CLI_SCRIPT,
+            REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/credentials.py",
+            JOBFOLDER_SCRIPT,
+            KAGGLE_SCRIPT,
+            RUNNER_BOOTSTRAP_SCRIPT,
+            RUNNER_INVOKE_SCRIPT,
+            SHARD_IO_SCRIPT,
+        ):
+            self._assert_clean(script)
+
+
 if __name__ == "__main__":
     unittest.main()

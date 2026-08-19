@@ -317,10 +317,10 @@ def resolve_clone_paths(
     `A/__init__.py` — never to `A/sub.py` when `sub` is a submodule FILE
     rather than an attribute `__init__.py` itself defines, so `sub.py`'s
     own imports were never walked at all. A generated job's `from
-    MIL_CREDA_Benchmark import bags, config, report_digest, wiring` (an
-    empty `__init__.py`) let `wiring.py`'s own further import slip past
-    this check undeclared, and a real clone failed at runtime with
-    `ModuleNotFoundError` for exactly that reason. Resolving the
+    PackageName import alpha, beta, gamma, delta` (an empty `__init__.py`)
+    let `delta.py`'s own further import slip past this check undeclared,
+    and a real clone failed at runtime with `ModuleNotFoundError` for
+    exactly that reason. Resolving the
     candidate first, rather than enqueuing every imported name
     unconditionally, is what keeps an ordinary `from A import
     some_attribute` from becoming a spurious `unresolved` entry.
@@ -400,11 +400,11 @@ def resolve_clone_paths(
                     # when `sub` is actually a submodule FILE rather than
                     # an attribute `__init__.py` itself defines. A real
                     # production gap this conservative widening closes: a
-                    # generated job's `from MIL_CREDA_Benchmark import
-                    # bags, config, report_digest, wiring` (an empty
-                    # `__init__.py`) let `wiring.py`'s own further imports
-                    # slip past this walk entirely, undeclared, and the
-                    # clone failed at runtime with `ModuleNotFoundError`.
+                    # generated job's `from PackageName import alpha, beta,
+                    # gamma, delta` (an empty `__init__.py`) let `delta.py`'s
+                    # own further imports slip past this walk entirely,
+                    # undeclared, and the clone failed at runtime with
+                    # `ModuleNotFoundError`.
                     # Enqueued ONLY when `candidate` resolves to an actual
                     # file on disk — an ordinary `from A import
                     # some_attribute`, where `some_attribute` is merely a
