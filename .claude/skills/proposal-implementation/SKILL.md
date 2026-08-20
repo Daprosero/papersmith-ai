@@ -463,10 +463,10 @@ date. Drift is Flow B's fourth step, not a reason to start over.
    `structure.scaffoldGaps` report the same thirteen, and every one of them is
    written from the kit at `assets/kit/`. Writing four of them leaves a target
    `verify` reports incomplete, and the cheapest reading of that is that the
-   checker is wrong. `scripts/materialize.py` performs this exact mapping for
-   all thirteen: the two rows marked `authored:` are written rather than copied,
-   and the `.gitignore` is merged into whatever the repository already has
-   instead of written over it.
+   checker is wrong. `scripts/materialize.py` — the forge's own harness, never
+   a step of Flow A — performs this exact mapping for all thirteen: the two
+   rows marked `authored:` are written rather than copied, and the `.gitignore`
+   is merged into whatever the repository already has instead of written over it.
 
    | Gap `plan` and `verify` report | Written from |
    | --- | --- |

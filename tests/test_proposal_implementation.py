@@ -7609,6 +7609,8 @@ class MaterializeIsNotAProductionStepTests(unittest.TestCase):
       because the kit names the *production engine* four times, legitimately;
     - no flow diagram draws the harness as a node;
     - the count step 5 attributes to the harness is one its own table yields;
+    - step 5 repeats the standing the harness claims for itself, in the
+      harness's own words rather than in a third copy of them;
     - the production engine never reaches the harness, while the harness reaches
       the engine — the direction is the fact;
     - everything doctrine tells the agent to run is a real CLI command.
@@ -7620,6 +7622,8 @@ class MaterializeIsNotAProductionStepTests(unittest.TestCase):
     MERMAID_RE = re.compile(r"^```mermaid\n(.*?)^```", re.DOTALL | re.MULTILINE)
     RUN_RE = re.compile(r"Run `([^` ]+)")
     HEADING_RE = re.compile(r"^\d+\. \*\*")
+    STANDING_RE = re.compile(
+        r"[^.]*\b(?:never|not)\b[^.]*\bflow\s+\w+", re.IGNORECASE)
 
     NUMBER_WORDS = {
         word: value for value, word in enumerate(
@@ -7658,6 +7662,19 @@ class MaterializeIsNotAProductionStepTests(unittest.TestCase):
             found.append(int(token) if token.isdigit()
                          else cls.NUMBER_WORDS[token.lower()])
         return found
+
+    @classmethod
+    def standing_clause(cls, text):
+        """The one sentence in `text` that denies the harness a flow's standing.
+
+        Found by its meaning — a negation and the name of a flow inside one
+        sentence — rather than by where it sits, so neither the document nor the
+        docstring has to keep the sentence in place for this to keep pointing at
+        it. Whitespace is flattened first: doctrine wraps its prose and a
+        docstring wraps it differently.
+        """
+        match = cls.STANDING_RE.search(" ".join(text.split()))
+        return match.group(0).strip() if match else None
 
     @staticmethod
     def import_roots(source):
@@ -7743,6 +7760,20 @@ class MaterializeIsNotAProductionStepTests(unittest.TestCase):
                 if self.HEADING_RE.match(lines[index])]
         return "\n".join(lines[starts[-1]:ends[0] if ends else len(lines)])
 
+    def harness_clause(self, step):
+        """The paragraph of `step` that names the harness.
+
+        One spelling for the two tests that read it, because two copies of the
+        same three lines is the drift this change exists to end.
+        """
+        harness = self.harness()
+        index = step.find(harness.name)
+        self.assertNotEqual(
+            index, -1,
+            f"step 5 no longer names {harness.name}; if the mention was removed "
+            "on purpose, remove this test with it rather than leaving it green")
+        return step[index:].split("\n\n")[0]
+
     def test_the_count_step_five_attributes_to_the_harness_is_one_its_table_yields(self):
         """Reachable red, and the exact claim that was false: "performs this
         exact mapping for eight of the nine" was wrong in both halves — the
@@ -7766,12 +7797,7 @@ class MaterializeIsNotAProductionStepTests(unittest.TestCase):
         total = len(rows)
         authored = sum(1 for row in rows if row[1].startswith("authored:"))
 
-        index = step.find(harness.name)
-        self.assertNotEqual(
-            index, -1,
-            f"step 5 no longer names {harness.name}; if the mention was removed "
-            "on purpose, remove this test with it rather than leaving it green")
-        clause = step[index:].split("\n\n")[0]
+        clause = self.harness_clause(step)
 
         counts = self.counts_in(clause)
         self.assertTrue(
@@ -7786,6 +7812,51 @@ class MaterializeIsNotAProductionStepTests(unittest.TestCase):
             sorted(set(counts) - {total, authored}), [],
             f"step 5's clause about {harness.name} states a count its table "
             f"does not yield; the table has {total} rows, {authored} authored")
+
+    def test_step_five_carries_the_standing_the_harness_claims_for_itself(self):
+        """Reachable red, and red when it was written: step 5 named the harness
+        inside the very step that tells an agent to fill the gaps, and said
+        nothing about what the harness is.
+
+        `README.md` and the script's own docstring both deny it the standing of
+        a flow step. `SKILL.md` — the document an agent actually reads — did
+        not, so a reader stopped at step 5 could take the mention for an
+        invitation to run it.
+
+        The sentence is not spelled here. It is read out of the harness's own
+        docstring, where the claim belongs, and doctrine is required to repeat
+        it: there is no third copy for the other two to drift away from, and
+        rewording the denial means rewording it at its source. It is required in
+        the harness's own clause rather than anywhere in the step, because the
+        sentence that names the script is the one a reader takes the invitation
+        from.
+
+        **Knowingly weaker than its behavioural partners, and says so.** All
+        this holds is that doctrine states the fact.
+        `test_the_production_engine_never_reaches_the_harness` holds the fact
+        itself, and
+        `test_the_only_things_doctrine_tells_the_agent_to_run_are_cli_commands`
+        holds that doctrine never tells an agent to run it. Delete either of
+        those and a document still repeating this sentence would pass over a
+        harness that had quietly become a production step.
+        """
+        harness = self.harness()
+        docstring = ast.get_docstring(
+            ast.parse(harness.read_text(encoding="utf-8")))
+        standing = self.standing_clause(docstring or "")
+        self.assertIsNotNone(
+            standing,
+            f"{harness.name}'s own docstring no longer denies that it is a step "
+            "of the flow, and that docstring is the source this reads; the "
+            "claim has to be made there before doctrine can be held to it")
+
+        clause = " ".join(self.harness_clause(self.step_five()).split())
+        self.assertIn(
+            standing.lower(), clause.lower(),
+            f"the step that tells the agent to fill the gaps names "
+            f"{harness.name} without saying \"{standing}\"; the script's own "
+            "docstring says it and the README says it, and the document an "
+            "agent actually reads is the one where it matters")
 
     def test_the_production_engine_never_reaches_the_harness(self):
         """The claim behind all three documents, held as behaviour rather than
