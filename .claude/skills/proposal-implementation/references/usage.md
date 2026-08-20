@@ -412,6 +412,22 @@ Omit `--revision` and `fidelity.status` is `unknown`: the modules' declared
 revisions are still listed, but nothing is compared. Never report an
 implementation as up to date from an `unknown` run.
 
+`fidelity.status` carries four values, and the headline never reads better than
+the block underneath it:
+
+| value | meaning |
+| --- | --- |
+| `unknown` | no revision could be established at all — none was given and none discovered — so nothing was compared |
+| `drift` | something that exists is defective: a stale module, missing provenance, an untested invariant, or an arm that never calls what it declares |
+| `undeclared` | the Benchmark package exists and every block of `__benchmark__` is still at its scaffolded empty value; `fidelity.benchmark.status` reports the same word |
+| `ok` | a declared benchmark, and none of the above |
+
+`drift` outranks `undeclared` on purpose, the way `unfaithful` already outranks
+`stale` inside `fidelity.benchmark`: a stale module is a defect in something that
+exists, and an undeclared benchmark is the absence of a declaration. An
+**absent** Benchmark package is deliberately not folded in — there is nothing to
+be unfaithful to, and `structure.scaffoldGaps` already names the missing file.
+
 ## `handoff` — back to the deliberation, sized by reach
 
 ```bash

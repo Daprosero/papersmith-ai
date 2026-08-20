@@ -5014,6 +5014,19 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         # calls is a defect, and a defect that stays inside `benchmark` while the
         # headline reads `ok` is the silence this check exists to break.
         fidelity_status = "drift"
+    elif resolved["status"] == "undeclared":
+        # The four conditions above are all about a declaration that exists. None
+        # of them can fire for one that has said nothing yet — `unreached` is only
+        # ever computed inside the `declared` branch — so a target with real
+        # provenance and every invariant tested reported `ok` with
+        # `benchmark.status: "undeclared"` printed directly underneath it, and a
+        # reader who acts on the headline stops there. The word is the one the
+        # nested block already uses, so the two cannot be read as different facts.
+        #
+        # `absent` is deliberately not folded in: a target with no Benchmark
+        # package has nothing to be unfaithful to, and `structure.scaffoldGaps`
+        # already names the file it is missing.
+        fidelity_status = "undeclared"
     else:
         fidelity_status = "ok"
 

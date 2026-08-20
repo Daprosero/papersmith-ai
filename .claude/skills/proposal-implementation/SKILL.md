@@ -401,6 +401,7 @@ exactly what stops a launcher from being able to claim it implements anything.
 | `verify` reports structure drift | Report it as its own finding, ask before fixing |
 | `verify` reports stale modules | Report revision drift separately; ask before rewriting |
 | `verify` reports `unreachedModules` | An arm declares mathematics it never calls: report before any run |
+| `verify` reports `fidelity: "undeclared"` | The Benchmark package exists and every block of `__benchmark__` is still at its scaffolded empty value: fill the declaration before quoting any fidelity result, because nothing measured against it has been checked yet |
 | `probe` reports `nextStep: "declare-first"` | The benchmark has no `src/<Package>_Benchmark/` at all, or has one whose every block is still at its scaffolded empty value: report before offering a run built on a declaration that has not happened |
 | `probe` reports `nextStep: "poll-first"` | A submission is already out to a remote worker with no result back yet: report before offering another run |
 | `probe` reports `nextStep: "search-first"` | A declared search's record is absent from disk: the run has no chosen configuration yet, report before offering it |

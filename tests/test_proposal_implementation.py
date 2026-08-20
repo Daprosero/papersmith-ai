@@ -5280,3 +5280,151 @@ class HarnessPlacementTests(unittest.TestCase):
         self.doCleanups()
         self.assertEqual(
             list((FORGE / "implementations").glob("_harness_placement_*")), [])
+
+
+class FidelityUndeclaredTests(unittest.TestCase):
+    """The headline read `ok` beside a benchmark it had just called `undeclared`.
+
+    `fidelity.status` was computed from `stale or missing_provenance or untested
+    or unreached`, and `unreached` is only ever populated inside the `declared`
+    branch. So a target with real provenance on every module, every invariant
+    tested and a `__benchmark__` still at the kit's six empty blocks satisfied
+    none of the four and reported `ok` — with `fidelity.benchmark.status:
+    "undeclared"` sitting directly underneath it.
+
+    A reader who acts on the headline stops there. The fourth value is the word
+    the nested block already uses, so the two say the same thing.
+    """
+
+    KIT_DECLARATION = (FORGE / ".claude/skills/proposal-implementation"
+                       / "assets/kit/src_benchmark/__init__.py")
+
+    DECLARED = (
+        "__benchmark__ = {\n"
+        "    'revision': 'r01.md',\n"
+        "    'arms': {'floor': {'sections': ['3']}},\n"
+        "}\n"
+    )
+
+    MODULE = _module("r01.md", ["3"], ["11"])
+
+    # The declared control needs an arm that actually calls its own mathematics,
+    # or `unreachedModules` fires and the control measures the wrong thing.
+    WIRING = "from Method.estimator import estimate\n"
+
+    def verify(self, *, suffix, declaration, module=None, revision="r01.md",
+               bench_package=True, wiring=None):
+        """A target that is clean on every arm of the headline except the one
+        under test: real provenance, and the one invariant it declares tested."""
+        box = FORGE / "implementations" / f"_fidelity_undeclared_{suffix}_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src/Method").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        (box / "src/Method/estimator.py").write_text(
+            module if module is not None else self.MODULE, encoding="utf-8")
+        (box / "tests/test_invariants.py").write_text(
+            "def test_bounded():\n    pass\n", encoding="utf-8")
+        if bench_package:
+            (box / "src/Method_Benchmark").mkdir(parents=True)
+            (box / "src/Method_Benchmark/__init__.py").write_text(
+                declaration, encoding="utf-8")
+            if wiring is not None:
+                (box / "src/Method_Benchmark/wiring.py").write_text(
+                    wiring, encoding="utf-8")
+
+        empty_proposals = Path(tempfile.mkdtemp(prefix="pp-fidelity-proposals-"))
+        self.addCleanup(shutil.rmtree, empty_proposals, ignore_errors=True)
+        argv = [sys.executable, str(CLI), "verify", "--target", str(box),
+                "--name", "Method"]
+        if revision:
+            argv += ["--revision", revision]
+        return subprocess.run(
+            argv, capture_output=True, text=True, cwd=FORGE,
+            env={**os.environ, "IMPLEMENTATION_PROPOSALS": str(empty_proposals)})
+
+    def fidelity(self, **kwargs):
+        proc = self.verify(**kwargs)
+        self.assertNotIn("Traceback", proc.stderr)
+        return json.loads(proc.stdout or "{}")["fidelity"]
+
+    def test_an_otherwise_clean_undeclared_target_does_not_read_green(self):
+        """The four arms of the old condition are all clean here, and that was
+        the whole test: nothing was stale, nothing lacked provenance, no
+        invariant was untested, and `unreached` cannot be non-empty for a
+        declaration that never named an arm."""
+        fidelity = self.fidelity(
+            suffix="undeclared",
+            declaration=self.KIT_DECLARATION.read_text(encoding="utf-8"))
+
+        self.assertEqual(fidelity["benchmark"]["status"], "undeclared")
+        self.assertNotEqual(fidelity["status"], "ok")
+        self.assertEqual(fidelity["status"], "undeclared")
+        self.assertEqual(fidelity["staleModules"], [])
+        self.assertEqual(fidelity["missingProvenance"], [])
+        self.assertEqual(fidelity["invariantsWithoutTest"], [])
+
+    def test_the_process_exit_status_is_untouched(self):
+        """`verify` reports; only a refusal exits non-zero. A new reported value
+        that changed the exit status would break every caller that reads the
+        status instead of the JSON, and no requirement asks for it."""
+        proc = self.verify(
+            suffix="exit",
+            declaration=self.KIT_DECLARATION.read_text(encoding="utf-8"))
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["fidelity"]["status"], "undeclared")
+
+    def test_a_defect_still_outranks_a_state(self):
+        """`drift` stays above `undeclared` for the same reason `unfaithful`
+        already stands above `stale` one block down: a stale module is a defect
+        in something that exists, an undeclared benchmark is the absence of a
+        declaration. The defect is what a reader has to act on."""
+        fidelity = self.fidelity(
+            suffix="drift",
+            declaration=self.KIT_DECLARATION.read_text(encoding="utf-8"),
+            module=_module("r00.md", ["3"], ["11"]))
+
+        self.assertEqual(fidelity["benchmark"]["status"], "undeclared")
+        self.assertEqual(fidelity["staleModules"], ["src/Method/estimator.py"])
+        self.assertEqual(fidelity["status"], "drift")
+
+    def test_a_revision_nobody_could_establish_still_ranks_first(self):
+        """`unknown` means nothing was measured at all, so it cannot be
+        displaced by a statement about what was measured."""
+        fidelity = self.fidelity(
+            suffix="unknown",
+            declaration=self.KIT_DECLARATION.read_text(encoding="utf-8"),
+            module=_module(None, ["3"], ["11"]), revision=None)
+
+        self.assertEqual(fidelity["latestRevision"], None)
+        self.assertEqual(fidelity["status"], "unknown")
+
+    def test_an_absent_benchmark_package_is_deliberately_not_folded_in(self):
+        """A target with no Benchmark package has nothing to be unfaithful to,
+        and `structure.scaffoldGaps` already names the file it is missing.
+        Reporting it twice, in a field about fidelity, would teach the reader
+        that `undeclared` means two different things."""
+        proc = self.verify(suffix="absent", declaration="", bench_package=False)
+        result = json.loads(proc.stdout or "{}")
+
+        self.assertEqual(result["fidelity"]["benchmark"]["status"], "absent")
+        self.assertEqual(result["fidelity"]["status"], "ok")
+        self.assertIn("src/Method_Benchmark/__init__.py",
+                      result["structure"]["scaffoldGaps"])
+
+    def test_a_declared_benchmark_still_reports_ok(self):
+        """The control pole. Without it a ladder that always answered
+        `undeclared` would pass every assertion above."""
+        fidelity = self.fidelity(suffix="declared", declaration=self.DECLARED,
+                                 wiring=self.WIRING)
+
+        self.assertEqual(fidelity["benchmark"]["status"], "ok")
+        self.assertEqual(fidelity["status"], "ok")
+
+    def test_the_toy_targets_left_nothing_behind(self):
+        self.verify(suffix="cleanup", declaration=self.DECLARED)
+        self.doCleanups()
+        self.assertEqual(
+            list((FORGE / "implementations").glob("_fidelity_undeclared_*")), [])
