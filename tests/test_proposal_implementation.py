@@ -5459,12 +5459,12 @@ class NotebookSealAgreementTests(unittest.TestCase):
         is the cell that calls `stamp()` on the one implementation.
         """
         found = []
-        for _, source in self.code_cells(notebook):
+        for index, source in self.code_cells(notebook):
             tree = ast.parse(source)
             for node in ast.walk(tree):
                 if (isinstance(node, ast.Call)
                         and ast.unparse(node.func).endswith("report_digest.stamp")):
-                    found.append((source, tree))
+                    found.append((index, source, tree))
                     break
         self.assertEqual(
             len(found), 1,
@@ -5472,26 +5472,44 @@ class NotebookSealAgreementTests(unittest.TestCase):
             f"implementation; found {len(found)}")
         return found[0]
 
-    def executed_seal(self, box, notebook_path):
+    @staticmethod
+    def spawns_a_process(tree):
+        """Whether a cell runs the report's work rather than describing it.
+
+        Read as a call, not as a name: `probe.ipynb` imports `subprocess` in the
+        cell that binds `ROOT`, several cells before the one that uses it, and
+        skipping that cell would leave every later cell without a repository.
+        """
+        return any(isinstance(node, ast.Call)
+                   and ast.unparse(node.func) in ("subprocess.run", "pytest.main")
+                   for node in ast.walk(tree))
+
+    def executed_seal(self, notebook_path, through):
         """The seal a notebook actually prints, obtained by running it.
 
-        No cell is singled out here on purpose. Whichever cell carries the
-        stamping is the one under test, so the notebook's own code cells are run
-        in order and the seal is read off standard output — the same way
-        `notebook_execution` reads it out of a stored cell's output.
+        The notebook's own code cells run in order, up to and including the one
+        that stamps, and the seal is read off standard output — the same way
+        `notebook_execution` reads it out of a stored cell's output. Nothing
+        after the stamping cell is run: in the probe those cells read a record
+        the harness has not written.
 
-        Cells that spawn another process are skipped: they are the report's
-        work, not its seal, and running them here would run the target's suite.
+        Cells that spawn another process are skipped. They are the report's
+        work, not its seal, and running them here would run the target's suite
+        or train a model.
         """
         loaded = json.loads(notebook_path.read_text(encoding="utf-8"))
-        script = "\n".join(
-            "".join(cell["source"]) for cell in loaded["cells"]
-            if cell["cell_type"] == "code"
-            and not {"subprocess", "pytest"} & set(
-                re.findall(r"\w+", "".join(cell["source"]))))
+        sources = []
+        for index, cell in enumerate(loaded["cells"]):
+            if index > through:
+                break
+            if cell["cell_type"] != "code":
+                continue
+            source = "".join(cell["source"])
+            if not self.spawns_a_process(ast.parse(source)):
+                sources.append(source)
         completed = subprocess.run(
-            [sys.executable, "-c", script], cwd=str(notebook_path.parent),
-            text=True, capture_output=True)
+            [sys.executable, "-c", "\n".join(sources)],
+            cwd=str(notebook_path.parent), text=True, capture_output=True)
         self.assertEqual(completed.returncode, 0,
                          f"the notebook's own cells failed:\n{completed.stderr[-2000:]}")
         seals = [line for line in completed.stdout.splitlines()
@@ -5499,6 +5517,23 @@ class NotebookSealAgreementTests(unittest.TestCase):
         self.assertEqual(len(seals), 1,
                          f"the notebook printed {len(seals)} seals, not one")
         return seals[0]
+
+    def stamped_as_executed(self, notebook_path, seal, through):
+        """The notebook as it looks after a run that got as far as the seal.
+
+        `notebook_execution` reads `execution_count` and the stored outputs, so
+        that is what is written here. Every code cell counts as run — a probe
+        whose harness cell never ran is unexecuted for a reason that has nothing
+        to do with the seal, and would answer a different question.
+        """
+        loaded = json.loads(notebook_path.read_text(encoding="utf-8"))
+        for index, cell in enumerate(loaded["cells"]):
+            if cell["cell_type"] != "code":
+                continue
+            cell["execution_count"] = 1
+            cell["outputs"] = ([{"output_type": "stream", "name": "stdout",
+                                 "text": [seal + "\n"]}] if index == through else [])
+        notebook_path.write_text(json.dumps(loaded), encoding="utf-8")
 
     def test_no_kit_notebook_computes_a_digest_of_its_own(self):
         """One algorithm, or the agreement is a coincidence waiting to end."""
@@ -5521,7 +5556,7 @@ class NotebookSealAgreementTests(unittest.TestCase):
     def test_the_verification_notebook_imports_the_seal_it_stamps(self):
         """It can, and only because the seal now has a scaffold destination
         inside the package: that cell already puts `src/` on `sys.path`."""
-        source, tree = self.stamping_cell("verification.ipynb")
+        _, source, tree = self.stamping_cell("verification.ipynb")
         imported = [node for node in ast.walk(tree)
                     if isinstance(node, ast.ImportFrom)
                     and any(alias.name == "report_digest" for alias in node.names)]
@@ -5535,11 +5570,12 @@ class NotebookSealAgreementTests(unittest.TestCase):
     def test_the_seal_the_notebook_stamps_is_the_seal_verify_recomputes(self):
         """The whole finding, as behaviour: run the notebook, run the checker,
         compare the two strings over the same tree."""
+        index, _, _ = self.stamping_cell("verification.ipynb")
         box = doctrine_scaffold(self, self.NAME, self.SEED)
         notebook = box / self.NAME / "Notebooks" / "verification.ipynb"
         self.assertTrue(notebook.is_file(), "the scaffold carries no report")
         self.assertEqual(
-            self.executed_seal(box, notebook),
+            self.executed_seal(notebook, index),
             f"{impl.DIGEST_MARKER} {impl.source_digest(box, self.PACKAGE)}")
 
     def test_an_executed_report_is_not_born_stale(self):
@@ -5549,24 +5585,110 @@ class NotebookSealAgreementTests(unittest.TestCase):
         a string the checker recomputes differently is `stale-sources` the
         moment it is written — and nothing about the target is wrong.
         """
+        index, _, _ = self.stamping_cell("verification.ipynb")
         box = doctrine_scaffold(self, self.NAME, self.SEED)
         notebook = box / self.NAME / "Notebooks" / "verification.ipynb"
-        seal = self.executed_seal(box, notebook)
-
-        loaded = json.loads(notebook.read_text(encoding="utf-8"))
-        for cell in loaded["cells"]:
-            if cell["cell_type"] != "code":
-                continue
-            cell["execution_count"] = 1
-            cell["outputs"] = [{"output_type": "stream", "name": "stdout",
-                                "text": [seal + "\n"]}]
-        notebook.write_text(json.dumps(loaded), encoding="utf-8")
+        seal = self.executed_seal(notebook, index)
+        self.stamped_as_executed(notebook, seal, index)
 
         state = impl.notebooks_state(box, self.NAME, self.PACKAGE)
         self.assertEqual([report["status"] for report in state["reports"]],
                          ["executed"])
         self.assertEqual(state["unstamped"], [])
         self.assertEqual(state["status"], "ok")
+
+    # -- the probe, which is not the same edit ------------------------------
+
+    #: The tokens a probe carries beyond the five the scaffold answers. The
+    #: agent answers these at step 12; nothing in the CLI writes them, so a
+    #: fixture that wants an executable probe has to answer them itself.
+    PROBE_ANSWERS = {
+        "{{BASELINE}}": "Example-Baseline",
+        "{{DATASET}}": "example-collection",
+        "{{FRACTION}}": "0.05",
+        "{{EPOCHS}}": "1",
+        "{{SEEDS}}": "[0, 1]",
+        "{{PROBE_RESULTS}}": impl.PROBE_RESULTS,
+    }
+
+    def placed_probe(self, box):
+        """The probe where the copy step puts it, with every token answered.
+
+        The probe is stage 2 — `scaffold_gaps` never asks for it — so a scaffold
+        does not carry it and this is the placement doctrine's copy-step table
+        states.
+        """
+        text = scaffold_substitute(
+            (KIT / "nb" / impl.PROBE_NOTEBOOK).read_text(encoding="utf-8"),
+            self.NAME, self.SEED)
+        for token, value in self.PROBE_ANSWERS.items():
+            text = text.replace(token, value)
+        placed = box / self.NAME / "Notebooks" / impl.PROBE_NOTEBOOK
+        placed.parent.mkdir(parents=True, exist_ok=True)
+        placed.write_text(text, encoding="utf-8")
+        return placed
+
+    def test_the_probe_notebook_carries_its_own_path_insert(self):
+        """The one way this is not the report's edit repeated.
+
+        `verification.ipynb` stamps inside the cell that already put `src/` on
+        `sys.path`. The probe's `ROOT` and `sys` first exist in the cell that
+        writes the reduction, and that cell inserts nothing, so a stamping cell
+        copied from the report would import a package that is not importable.
+        """
+        _, source, tree = self.stamping_cell(impl.PROBE_NOTEBOOK)
+        inserts = [node for node in ast.walk(tree)
+                   if isinstance(node, ast.Call)
+                   and ast.unparse(node.func) == "sys.path.insert"]
+        self.assertEqual(len(inserts), 1,
+                         "the probe's stamping cell must put `src/` on the path "
+                         "itself; no earlier cell of the probe does")
+        self.assertEqual(ast.unparse(inserts[0].args[1]), "str(ROOT / 'src')")
+        imported = [node.module for node in ast.walk(tree)
+                    if isinstance(node, ast.ImportFrom)
+                    and any(alias.name == "report_digest" for alias in node.names)]
+        self.assertEqual(imported, [f"{self.PACKAGE}_Benchmark"])
+        self.assertNotIn("subprocess", source,
+                         "stamping adds no process; the harness cell is untouched")
+
+    def test_an_executed_probe_can_be_stamped(self):
+        """The finding, as behaviour.
+
+        `notebooks_state` names an executed notebook that stamped nothing, and
+        it counts: `unstamped` is what keeps a report that cannot be told from a
+        relic out of `ok`. With no stamping cell at all, the probe could never
+        leave that list, so `validation.status` was pinned to `incomplete` by a
+        cell that was never written rather than by anything about the target.
+        """
+        index, _, _ = self.stamping_cell(impl.PROBE_NOTEBOOK)
+        box = doctrine_scaffold(self, self.NAME, self.SEED)
+        probe = self.placed_probe(box)
+
+        seal = self.executed_seal(probe, index)
+        self.assertEqual(
+            seal, f"{impl.DIGEST_MARKER} {impl.source_digest(box, self.PACKAGE)}")
+        self.stamped_as_executed(probe, seal, index)
+
+        state = impl.notebooks_state(box, self.NAME, self.PACKAGE)
+        report = next(r for r in state["reports"]
+                      if r["notebook"].endswith(impl.PROBE_NOTEBOOK))
+        self.assertEqual(report["status"], "executed")
+        self.assertIs(report["sourcesMatch"], True)
+        self.assertEqual(state["unstamped"], [])
+
+    def test_the_probe_stamps_before_it_runs_the_harness(self):
+        """A seal the harness cell can decide not to print is not a seal.
+
+        The digest is over source, which the run does not change, so stamping
+        early costs nothing and survives a harness that fails — which is the
+        state a probe is most often read in.
+        """
+        index, _, _ = self.stamping_cell(impl.PROBE_NOTEBOOK)
+        harness = [cell_index for cell_index, source
+                   in self.code_cells(impl.PROBE_NOTEBOOK)
+                   if self.spawns_a_process(ast.parse(source))]
+        self.assertEqual(len(harness), 1, "exactly one cell runs the harness")
+        self.assertLess(index, harness[0])
 
 
 class StageTwoInstructionsTests(unittest.TestCase):
