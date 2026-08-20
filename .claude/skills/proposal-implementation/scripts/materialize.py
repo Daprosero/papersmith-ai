@@ -115,9 +115,15 @@ def main(target: str, name: str, seed: str, kit: str | None = None) -> int:
         'where = ["src"]\n'
     )
     if "[tool.pytest.ini_options]" not in text:
+        # `["src"]`, the way `assets/pyproject.template.toml` and step 5 both
+        # spell it. `tests` was listed here too and nothing announced the
+        # difference: pytest's prepend import mode already puts a test file's own
+        # directory on `sys.path`, so the flat `from sweep import ...` style the
+        # kit uses resolves either way. Naming `tests` explicitly would make the
+        # forge depend on a path where it depends on that behaviour.
         text += ('\n[tool.pytest.ini_options]\n'
                  'testpaths = ["tests"]\n'
-                 'pythonpath = ["src", "tests"]\n')
+                 'pythonpath = ["src"]\n')
     pyproject.write_text(text)
 
     # Merged into whatever the repository already has, never written over it —

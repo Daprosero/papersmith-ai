@@ -5812,6 +5812,56 @@ class MaterializeWritesStageOneTests(unittest.TestCase):
 
         self.assertEqual(broken, {})
 
+    @staticmethod
+    def declared_pythonpath(pyproject):
+        """The one `pythonpath` a pyproject declares, read as the list it is."""
+        line = next(line for line in pyproject.read_text(encoding="utf-8").splitlines()
+                    if line.strip().startswith("pythonpath"))
+        return ast.literal_eval(line.split("=", 1)[1].strip())
+
+    def test_the_pythonpath_it_writes_is_the_one_the_template_declares(self):
+        """Two spellings of the same anchor, and only one of them is documented.
+
+        `assets/pyproject.template.toml` and step 5 both say `["src"]`. The
+        materializer wrote `["src", "tests"]`, and pytest's prepend import mode
+        hid the difference: it puts a test file's own directory on `sys.path`
+        already, so the flat `from sweep import ...` style resolves either way
+        and neither spelling ever announced itself.
+        """
+        box = self.materialized()
+
+        self.assertEqual(self.declared_pythonpath(box / "pyproject.toml"),
+                         self.declared_pythonpath(PYPROJECT_TEMPLATE))
+
+    def test_the_flat_test_imports_still_resolve_without_tests_on_the_path(self):
+        """Why the doctrine's spelling is the one to keep, run rather than argued.
+
+        Listing `tests` would make the forge depend on an explicit path where it
+        already depends on a pytest behaviour that is load-bearing everywhere
+        else: prepend import mode puts a test file's own directory on
+        `sys.path`, and `tests/` carries no `__init__.py` for it to prefer the
+        rootdir over.
+
+        What this locks is exactly that behaviour, and no more. Measured: an
+        empty `pythonpath` collects too, because nothing under `tests/` imports
+        the package until run time. The entry `tests/__init__.py` is what breaks
+        it — prepend mode then inserts the rootdir instead, and `findings` and
+        `admissibility` stop resolving, which is #807's failure returning by
+        another route. The value itself is held by the agreement above.
+
+        Collection is the bar: `test_smoke.py` must still fail at run time,
+        because `MODULES` names a module step 9 has not written.
+        """
+        box = self.materialized()
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "--collect-only", "-q"],
+            cwd=str(box), capture_output=True, text=True)
+
+        self.assertNotIn("ModuleNotFoundError", proc.stdout + proc.stderr,
+                         proc.stdout[-3000:])
+        self.assertNotIn("error", proc.stdout.splitlines()[-1].lower(),
+                         proc.stdout[-3000:])
+
     def test_the_package_exports_nothing_it_does_not_define(self):
         """`__all__` was read off `assets/kit/src/*.py` — the stage-2 template
         directory — so the package advertised a `module` name that only existed
