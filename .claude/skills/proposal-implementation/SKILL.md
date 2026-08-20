@@ -458,7 +458,27 @@ date. Drift is Flow B's fourth step, not a reason to start over.
      this long is approved without being read, and an unread approval is not one.
      Say so, and hand the user a self-contained prompt that performs exactly this
      reorganization in a separate session. Then continue without it.
-5. Fill scaffold gaps from `assets/` (pyproject, `__init__.py`, smoke test, notebook).
+5. **Fill every scaffold gap.** `plan`'s `scaffoldFiles` and `verify`'s
+   `structure.scaffoldGaps` report the same nine, and every one of them is
+   written from the kit at `assets/kit/`. Writing four of them leaves a target
+   `verify` reports incomplete, and the cheapest reading of that is that the
+   checker is wrong. `scripts/materialize.py` performs this exact mapping for
+   eight of the nine; the ninth is authored, because a `.gitignore` is merged
+   into whatever the repository already has rather than copied over it.
+
+   | Gap `plan` and `verify` report | Written from |
+   | --- | --- |
+   | `.gitignore (.venv/, __pycache__/, .ipynb_checkpoints/)` | authored: the entries a virtualenv inside the target needs kept out of the index |
+   | `pyproject.toml [tool.pytest.ini_options] pythonpath` | `assets/pyproject.template.toml`, or the anchor appended to the existing file |
+   | `src/<Package>/__init__.py` | authored: exports the module list found in `assets/kit/src/` |
+   | `src/<Package>_Benchmark/__init__.py` | `assets/kit/src_benchmark/__init__.py`, copied verbatim and never populated |
+   | `tests/test_smoke.py` | `assets/kit/tests/test_smoke.py` |
+   | `tests/findings.py` | `assets/kit/tests/findings.py` |
+   | `tests/test_audit.py` | `assets/kit/tests/test_audit.py` |
+   | `tests/test_remedies.py` | `assets/kit/tests/test_remedies.py` |
+   | `<Name>/Notebooks/verification.ipynb` | `assets/kit/nb/verification.ipynb` |
+
+   Substitute the `{{TOKEN}}` placeholders as `references/usage.md` lists them.
 6. **Ask for the name.** Run `name --name "<whatever they typed>"` and show both
    forms it returns — the `<Name>/` directory and the `src/<Package>/` package —
    then **[GATE]** confirm before writing anything with them.

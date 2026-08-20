@@ -4413,9 +4413,61 @@ class ReportFirstSectionProseTests(unittest.TestCase):
     just because it is a substring of `warm` or `harm`.
     """
 
-    SKILL_MD = CLI.parent.parent / "SKILL.md"
+    SKILL_ROOT = CLI.parent.parent
+    SKILL_MD = SKILL_ROOT / "SKILL.md"
     SECTION_RE = re.compile(
         r'### `nextStep: "report-first"`.*?(?=\n### |\n## |\Z)', re.DOTALL)
+
+    #: Directories a checkout accumulates and nobody writes prose into.
+    CACHES = ("__pycache__", ".pytest_cache", ".ipynb_checkpoints")
+    #: Suffixes that are not text, so scanning them for words says nothing.
+    BINARY_SUFFIXES = (".pyc", ".pyo", ".png", ".jpg", ".jpeg", ".gif", ".pdf",
+                       ".pth", ".npz", ".npy", ".zip", ".ico")
+
+    def guarded_documents(self):
+        """Every surface of the forge a target's vocabulary could leak into.
+
+        `SKILL.md` is what an agent reads, but it is not the only thing a
+        target copies: `references/usage.md` is the worked walkthrough, and
+        `assets/` is the kit a scaffold is literally made of. A leak in a
+        template ships into every repository materialized from it.
+        """
+        documents = [self.SKILL_MD, self.SKILL_ROOT / "references" / "usage.md"]
+        for path in sorted((self.SKILL_ROOT / "assets").rglob("*")):
+            if not path.is_file():
+                continue
+            if any(part in self.CACHES for part in path.parts):
+                continue
+            if path.suffix.lower() in self.BINARY_SUFFIXES:
+                continue
+            documents.append(path)
+        return documents
+
+    def scannable_text(self, document: Path) -> str:
+        """The document, minus the one place a service name is a fact.
+
+        Detecting which hosted notebook service you are running on requires
+        naming them, and the kit's `hosted_runtime()` names four of them
+        symmetrically rather than defaulting to any one — the same shape the
+        forge already uses for `remote-execution/scripts/adapters/`, where a
+        single designated module names a service and every seam around it
+        names none. That function is exempted here and nothing else is: the
+        same word two lines below it still fails this test.
+        """
+        text = document.read_text(encoding="utf-8", errors="replace")
+        if document.suffix == ".py":
+            try:
+                tree = ast.parse(text)
+            except SyntaxError:
+                return text.lower()
+            lines = text.splitlines()
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.FunctionDef)
+                        and node.name == "hosted_runtime"):
+                    for index in range(node.lineno - 1, node.end_lineno):
+                        lines[index] = ""
+            text = "\n".join(lines)
+        return text.lower()
 
     def section_text(self):
         text = self.SKILL_MD.read_text(encoding="utf-8")
@@ -4428,8 +4480,8 @@ class ReportFirstSectionProseTests(unittest.TestCase):
         for leaked in ("kaggle", "t4", "ceiling", "ramp", "transfer", "creda"):
             self.assertIsNone(re.search(rf"\b{leaked}\b", section), leaked)
 
-    def test_the_whole_document_borrows_no_repository_s_vocabulary(self):
-        """The guard covers the document, not the paragraph written last.
+    def test_the_whole_forge_borrows_no_repository_s_vocabulary(self):
+        """The guard covers every surface, not the paragraph written last.
 
         Scoped to one section it protects only whatever somebody just added,
         which is the half least likely to have drifted. It was scoped that way
@@ -4438,13 +4490,19 @@ class ReportFirstSectionProseTests(unittest.TestCase):
         it were neutral illustration. That is worse than clutter — a reader
         takes an example for a general practice, so the forge would have been
         teaching one repository's decision as everybody's default.
+
+        Widened from `SKILL.md` alone to the usage reference and the kit,
+        because those are the surfaces a target copies from verbatim and
+        neither had ever been scanned.
         """
-        text = self.SKILL_MD.read_text(encoding="utf-8").lower()
-        for leaked in ("kaggle", "t4", "ceiling", "ramp", "transfer", "creda",
-                       "milcreda"):
-            self.assertIsNone(
-                re.search(rf"\b{leaked}\b", text),
-                f"{leaked!r} is some target's vocabulary, not the forge's")
+        for document in self.guarded_documents():
+            with self.subTest(document=str(document.relative_to(self.SKILL_ROOT))):
+                text = self.scannable_text(document)
+                for leaked in ("kaggle", "t4", "ceiling", "ramp", "transfer",
+                               "creda", "milcreda"):
+                    self.assertIsNone(
+                        re.search(rf"\b{leaked}\b", text),
+                        f"{leaked!r} is some target's vocabulary, not the forge's")
 
 
 class MaterializeBenchmarkDeclarationTests(unittest.TestCase):
@@ -4920,3 +4978,116 @@ class SearchDeclarationShapeTests(unittest.TestCase):
         for box in (FORGE / "implementations").glob("_search_shape_cleanup_*"):
             shutil.rmtree(box, ignore_errors=True)
         self.assertEqual(list((FORGE / "implementations").glob("_search_shape_*")), [])
+
+
+class ScaffoldInstructionsAgreementTests(unittest.TestCase):
+    """The producer instructions and the gap checker were two lists, and only
+    one of them was executable.
+
+    Step 5 told the agent to write four files "from `assets/`"; `scaffold_gaps`
+    required nine, from `assets/kit/`. An agent that followed the instruction
+    exactly produced a target `verify` then reported incomplete, and the
+    quickest reading of that is that the checker is wrong. Prose cannot be
+    generated from code here — SKILL.md is what an agent reads, not a rendered
+    artifact — so it is held to the code by tests that go red the moment either
+    side moves alone.
+
+    `Example-Method` is the name the usage reference already works its
+    examples in, so the substituted placeholders land on paths a reader of
+    that document recognizes.
+    """
+
+    SKILL_ROOT = CLI.parent.parent
+    SKILL_MD = SKILL_ROOT / "SKILL.md"
+    USAGE = SKILL_ROOT / "references" / "usage.md"
+    ASSETS = SKILL_ROOT / "assets"
+
+    EXAMPLE_NAME = "Example-Method"
+    EXAMPLE_PACKAGE = "Example_Method"
+
+    TABLE_HEADER = "| Gap `plan` and `verify` report | Written from |"
+    TOKEN_RE = re.compile(r"\{\{[A-Z0-9_]+\}\}")
+    CACHES = ("__pycache__", ".pytest_cache", ".ipynb_checkpoints")
+    BINARY_SUFFIXES = (".pyc", ".pyo", ".png", ".jpg", ".jpeg", ".gif", ".pdf",
+                       ".pth", ".npz", ".npy", ".zip", ".ico")
+
+    def required_gaps(self):
+        """What the checker demands of a repository holding none of it."""
+        empty = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, empty, ignore_errors=True)
+        return impl.scaffold_gaps(empty, self.EXAMPLE_NAME)
+
+    def gap_class(self, gap: str) -> str:
+        """Two gaps carry a computed tail — which ignore entries are missing,
+        and which anchor the pyproject lacks — so they are matched by the
+        thing they name rather than by the sentence they name it in."""
+        for prefix in (".gitignore", "pyproject.toml"):
+            if gap.startswith(prefix):
+                return prefix
+        return gap
+
+    def documented_gaps(self):
+        lines = self.SKILL_MD.read_text(encoding="utf-8").splitlines()
+        stripped = [line.strip() for line in lines]
+        self.assertIn(self.TABLE_HEADER, stripped,
+                      "step 5 carries no gap → template table")
+        start = stripped.index(self.TABLE_HEADER)
+        documented = []
+        for line in stripped[start + 2:]:
+            if not line.startswith("|"):
+                break
+            cell = line.split("|")[1].strip().strip("`")
+            documented.append(cell.replace("<Name>", self.EXAMPLE_NAME)
+                                  .replace("<Package>", self.EXAMPLE_PACKAGE))
+        return documented
+
+    def kit_tokens(self):
+        found = set()
+        for path in sorted(self.ASSETS.rglob("*")):
+            if not path.is_file():
+                continue
+            if any(part in self.CACHES for part in path.parts):
+                continue
+            if path.suffix.lower() in self.BINARY_SUFFIXES:
+                continue
+            found.update(self.TOKEN_RE.findall(
+                path.read_text(encoding="utf-8", errors="replace")))
+        return found
+
+    def test_the_documented_file_list_equals_the_gap_checker(self):
+        """Reachable red: step 5 named four files while `scaffold_gaps`
+        required nine, and the four did not include the benchmark
+        declaration — the one file the whole declaration contract is read
+        from."""
+        documented = self.documented_gaps()
+        self.assertEqual(
+            sorted(self.gap_class(gap) for gap in documented),
+            sorted(self.gap_class(gap) for gap in self.required_gaps()))
+
+    def test_the_documented_tokens_cover_every_kit_template_token(self):
+        """Both directions. A token the kit uses and the doc omits is a
+        substitution nobody performs, which ships `{{PKG}}` into a target's
+        source; a token the doc lists and no template carries is an
+        instruction to substitute nothing."""
+        documented = set(self.TOKEN_RE.findall(
+            self.USAGE.read_text(encoding="utf-8")))
+        self.assertEqual(documented, self.kit_tokens())
+
+    def test_the_worked_scaffold_file_example_is_the_whole_list(self):
+        """The example is what a reader copies. Showing four of nine teaches
+        a scaffold that `verify` reports incomplete."""
+        text = self.USAGE.read_text(encoding="utf-8")
+        blocks = re.findall(r"```json\n(.*?)```", text, re.DOTALL)
+        worked = [json.loads(block) for block in blocks
+                  if '"scaffoldFiles"' in block]
+        self.assertTrue(worked, "the usage reference works no plan example")
+        self.assertEqual(sorted(worked[0]["scaffoldFiles"]),
+                         sorted(self.required_gaps()))
+
+    def test_the_template_root_is_the_one_the_templates_live_in(self):
+        """`../assets/` resolves to the forge root's own `assets/`, which does
+        not exist. Every template lives under the skill's `assets/kit/`."""
+        lines = self.USAGE.read_text(encoding="utf-8").splitlines()
+        self.assertEqual([line for line in lines if "../assets/" in line], [])
+        self.assertTrue([line for line in lines if "assets/kit/" in line],
+                        "the usage reference names no template root at all")

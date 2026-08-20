@@ -91,7 +91,12 @@ python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py pla
   ],
   "conflicts": [],
   "unclassified": ["notes.docx"],
-  "scaffoldFiles": ["pyproject.toml", "src/Example_Method/__init__.py", "tests/test_smoke.py",
+  "scaffoldFiles": [".gitignore (.venv/, __pycache__/, .ipynb_checkpoints/)",
+                    "pyproject.toml [tool.pytest.ini_options] pythonpath",
+                    "src/Example_Method/__init__.py",
+                    "src/Example_Method_Benchmark/__init__.py",
+                    "tests/test_smoke.py", "tests/findings.py",
+                    "tests/test_audit.py", "tests/test_remedies.py",
                     "Example-Method/Notebooks/verification.ipynb"]
 }
 ```
@@ -187,9 +192,34 @@ without that check `apply` would rewrite a file that was never on the list the
 user approved. On success everything lands in one commit — `git revert <commit>`
 undoes the whole migration.
 
-Then write the files listed in `scaffoldFiles` from `../assets/`, substituting
-`{{NAME}}`, `{{NAME_LOWER}}`, `{{REVISION}}`, `{{MODULE}}`, `{{FUNCTION_NAME}}`
-and `{{INVARIANT_ID}}`.
+Then write every file listed in `scaffoldFiles`. The templates live under
+`assets/kit/` inside this skill — `kit/src/`, `kit/src_benchmark/`, `kit/tests/`
+and `kit/nb/` — with `assets/pyproject.template.toml` beside them. SKILL.md
+step 5 carries the gap → template mapping file by file.
+
+Substitute these placeholders. Every one of them occurs in some template, and
+no template carries any other:
+
+| Token | Substituted with |
+| --- | --- |
+| `{{NAME}}` | the `<Name>/` product folder form |
+| `{{NAME_LOWER}}` | the distribution name, lowercased and hyphenated |
+| `{{PKG}}` | the `src/<Package>/` importable form |
+| `{{MODULE}}` | the module being written, without its suffix |
+| `{{FUNCTION_NAME}}` | the function that module's invariant is asserted over |
+| `{{INVARIANT_ID}}` | the invariant's identifier, as `__provenance__` declares it |
+| `{{REVISION}}` | the bound revision's filename |
+| `{{SECTION}}` | the section of the proposal the module implements |
+| `{{EQUATION}}` | the equation it implements, by tag |
+| `{{ONE_LINE_STATEMENT_OF_THE_MATHEMATICAL_OBJECT}}` | one line saying what the module computes |
+| `{{SEED}}` | the seed the suite fixes |
+| `{{SEEDS}}` | the seeds a probe run repeats over |
+| `{{EPOCHS}}` | the epoch count a probe run reduces to |
+| `{{FRACTION}}` | the fraction of the data a probe run uses |
+| `{{DATASET}}` | the dataset a probe run reads |
+| `{{BASELINE}}` | the baseline a probe compares against |
+| `{{PROBE_RESULTS}}` | the filename a probe writes its record to |
+| `{{EXPECTATION}}` | what a synthetic case is expected to produce |
 
 ## 5. Verify
 
