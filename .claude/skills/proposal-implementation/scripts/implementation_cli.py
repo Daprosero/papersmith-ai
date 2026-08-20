@@ -2402,6 +2402,15 @@ def latest_revision(like: str | None) -> str | None:
     return best[1] if best else None
 
 
+# How a paper labels an equation, and the only place this skill decides it.
+# A tag is whatever the author put between the braces: `3.1`, `A.2`, `B.10`.
+# Every reader — `admit`, this compatibility audit, `compose` and `handoff` —
+# reads it through this one pattern. Two of them used to carry a digits-only
+# copy of their own, which ruled a citation absent from a document that
+# carries it, and gave that false reason to whoever was reading.
+TAG_RE = re.compile(r"\\tag\{([^}]+)\}")
+
+
 def remedy_compatibility(findings: list[dict], revision: str | None) -> dict:
     """Is each remedy expressible inside the proposal as it stands?
 
@@ -2421,7 +2430,7 @@ def remedy_compatibility(findings: list[dict], revision: str | None) -> dict:
         return {"status": "unknown", "reason": f"revision {revision!r} not readable",
                 "unknownEquations": [], "undefinedNotation": [], "introducesNotation": []}
 
-    tags = set(re.findall(r"\\tag\{(\d+)\}", source))
+    tags = set(TAG_RE.findall(source))
     unknown_equations: list[str] = []
     undefined_notation: list[str] = []
     introduces: list[str] = []
@@ -4345,7 +4354,6 @@ def cmd_handoff(args: argparse.Namespace) -> dict:
 
 
 DISPLAY_BLOCK_RE = re.compile(r"\$\$.*?\$\$", re.DOTALL)
-TAG_RE = re.compile(r"\\tag\{([^}]+)\}")
 
 
 def cmd_compose(args: argparse.Namespace) -> dict:
@@ -4422,7 +4430,7 @@ def cmd_admit(args: argparse.Namespace) -> dict:
                       f"{args.revision!r} is not readable under {FORGE_ROOT / 'proposals'}; "
                       "admissibility cannot be ruled on and no remedy may be measured.")
 
-    tags = set(re.findall(r"\\tag\{(\d+)\}", source))
+    tags = set(TAG_RE.findall(source))
     findings = read_findings(target)
     if not findings:
         raise Refused("NO_FINDINGS", "tests/findings.py declares no finding to rule on.")

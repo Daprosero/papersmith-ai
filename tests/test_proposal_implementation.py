@@ -4632,3 +4632,155 @@ class VerifyDiscoversTheNewestRevisionTests(unittest.TestCase):
         self.assertIsNone(fidelity["latestRevision"])
         self.assertEqual(fidelity["revisionSource"], "none")
         self.assertEqual(fidelity["status"], "unknown")
+
+
+class EquationTagRecognitionTests(unittest.TestCase):
+    """One `\\tag{...}` reader, because three of them disagreed.
+
+    `compose` and `handoff` read a tag as anything between the braces, which is
+    what a paper actually writes: `3.1`, `A.2`, `B.10`. `admit` and the
+    compatibility audit each carried their own digits-only copy, so the same
+    document that `compose` reads happily made `admit` rule a finding
+    inadmissible for "citing equations absent from the revision" — equations
+    that are right there — and made `verify`'s audit report the revision
+    incompatible. The reason given was false in both cases.
+
+    The fixture is neutral on purpose: a two-section draft whose equations are
+    labelled the way a numbered paper labels them.
+    """
+
+    REVISION = (
+        "## 3\n"
+        "\n"
+        "$$\n"
+        "a = b \\tag{3.1}\n"
+        "$$\n"
+        "\n"
+        "## A\n"
+        "\n"
+        "$$\n"
+        "c = d \\tag{A.2}\n"
+        "$$\n"
+        "\n"
+        "Throughout, the estimator is written E[x].\n"
+    )
+
+    ENTRY = "$$\nc = d \\tag{A.2}\n$$"
+    REMEDY_BLOCK = "$$\nc = e + f \\tag{A.2}\n$$"
+
+    FINDINGS = (
+        "FINDINGS = [\n"
+        "    {\n"
+        "        'id': 'lettered-tags',\n"
+        "        'equations': ['3.1'],\n"
+        "        'remedy_equations': ['A.2'],\n"
+        "        'uses': ['E[x]'],\n"
+        "        'introduces': [],\n"
+        "        'adoption': {'absent': 'c = d', 'expect': ['c = e + f']},\n"
+        "        'remedy_block': '$$\\nc = e + f \\\\tag{A.2}\\n$$',\n"
+        "    },\n"
+        "]\n"
+    )
+
+    ABSENT_CITATION_FINDINGS = (
+        "FINDINGS = [\n"
+        "    {\n"
+        "        'id': 'cites-nothing-real',\n"
+        "        'equations': ['9.9'],\n"
+        "        'remedy_equations': [],\n"
+        "        'uses': ['E[x]'],\n"
+        "        'introduces': [],\n"
+        "        'adoption': {'absent': 'c = d', 'expect': ['c = e + f']},\n"
+        "    },\n"
+        "]\n"
+    )
+
+    DECLARATION = (
+        "__benchmark__ = {\n"
+        "    'revision': 'draft-1.md',\n"
+        "    'arms': {'floor': {'sections': ['3']}},\n"
+        "}\n"
+    )
+
+    def _proposals(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / "draft-1.md").write_text(self.REVISION, encoding="utf-8")
+        previous = os.environ.get("IMPLEMENTATION_PROPOSALS")
+        os.environ["IMPLEMENTATION_PROPOSALS"] = str(root)
+
+        def restore():
+            if previous is None:
+                os.environ.pop("IMPLEMENTATION_PROPOSALS", None)
+            else:
+                os.environ["IMPLEMENTATION_PROPOSALS"] = previous
+
+        self.addCleanup(restore)
+        return root
+
+    def _box(self, tag: str, findings: str) -> Path:
+        box = FORGE / "implementations" / f"_tags_{tag}_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            self.DECLARATION, encoding="utf-8")
+        (box / "tests" / "findings.py").write_text(findings, encoding="utf-8")
+        return box
+
+    def test_a_dotted_or_lettered_citation_is_admissible(self):
+        """The equations are in the document. Ruling the finding inadmissible
+        for their absence states something about the revision that is false."""
+        self._proposals()
+        box = self._box("admit", self.FINDINGS)
+        result = impl.cmd_admit(
+            argparse.Namespace(target=str(box), name="Method", revision="draft-1.md"))
+
+        self.assertEqual(result["inadmissible"], {})
+        self.assertEqual(result["admitted"], ["lettered-tags"])
+        self.assertEqual(result["status"], "admitted")
+
+    def test_the_compatibility_audit_reads_the_same_tags(self):
+        """The second copy of the narrow pattern: it drove
+        `audit.compatibility` to `incompatible` on a revision nothing is wrong
+        with."""
+        self._proposals()
+        box = self._box("audit", self.FINDINGS)
+        result = impl.cmd_verify(
+            argparse.Namespace(target=str(box), name="Method", revision="draft-1.md"))
+
+        compatibility = result["audit"]["compatibility"]
+        self.assertEqual(compatibility["unknownEquations"], [])
+        self.assertNotEqual(compatibility["status"], "incompatible")
+
+    def test_compose_and_admit_agree_on_one_tag_set(self):
+        """The whole defect in one assertion: `compose` locates `A.2` in this
+        document while `admit` used to answer that `A.2` is not in it."""
+        self._proposals()
+        box = self._box("agree", self.FINDINGS)
+        composed = impl.cmd_compose(
+            argparse.Namespace(target=str(box), finding="lettered-tags",
+                               entry_text=self.ENTRY))
+        admitted = impl.cmd_admit(
+            argparse.Namespace(target=str(box), name="Method", revision="draft-1.md"))
+
+        self.assertEqual(composed["equation"], "A.2")
+        self.assertIn("lettered-tags", admitted["admitted"])
+
+    def test_a_citation_the_revision_does_not_carry_is_still_refused(self):
+        """The lock on the widening: recognizing more tags must not turn into
+        recognizing every tag. `9.9` is nowhere in the document."""
+        self._proposals()
+        box = self._box("absent", self.ABSENT_CITATION_FINDINGS)
+        result = impl.cmd_admit(
+            argparse.Namespace(target=str(box), name="Method", revision="draft-1.md"))
+
+        self.assertEqual(result["status"], "inadmissible")
+        self.assertIn("cites-nothing-real", result["inadmissible"])
+        self.assertTrue(
+            any("absent from the revision" in reason
+                for reason in result["inadmissible"]["cites-nothing-real"]),
+            result["inadmissible"])
