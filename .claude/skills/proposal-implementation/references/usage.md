@@ -96,6 +96,8 @@ python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py pla
                     "src/Example_Method/__init__.py",
                     "src/Example_Method_Benchmark/__init__.py",
                     "tests/test_smoke.py", "tests/findings.py",
+                    "tests/conftest.py", "tests/sweep.py",
+                    "tests/admissibility.py",
                     "tests/test_audit.py", "tests/test_remedies.py",
                     "Example-Method/Notebooks/verification.ipynb"]
 }

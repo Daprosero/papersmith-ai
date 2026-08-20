@@ -2377,7 +2377,15 @@ def scaffold_gaps(target: Path, name: str) -> list[str]:
     wanted = [f"src/{package_name(name)}/__init__.py",
               f"src/{package_name(name)}_Benchmark/__init__.py",
               "tests/test_smoke.py",
-              "tests/findings.py", "tests/test_audit.py", "tests/test_remedies.py",
+              # `conftest.py`, `sweep.py` and `admissibility.py` are not tests and
+              # were never asked for, so a scaffold built from exactly this list
+              # could not be collected: `test_audit.py` and `test_remedies.py`
+              # below both open by importing them. `admissibility.py` fixes its
+              # own destination — its RULING_PATH resolves beside itself, which is
+              # where `admit` writes the ruling.
+              "tests/findings.py", "tests/conftest.py", "tests/sweep.py",
+              "tests/admissibility.py",
+              "tests/test_audit.py", "tests/test_remedies.py",
               f"{name}/Notebooks/verification.ipynb"]
     gaps = [w for w in wanted if not (target / w).exists()]
     if pytest_anchor_missing(target):

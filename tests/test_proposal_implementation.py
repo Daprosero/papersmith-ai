@@ -4993,7 +4993,7 @@ class ScaffoldInstructionsAgreementTests(unittest.TestCase):
     one of them was executable.
 
     Step 5 told the agent to write four files "from `assets/`"; `scaffold_gaps`
-    required nine, from `assets/kit/`. An agent that followed the instruction
+    required twelve, from `assets/kit/`. An agent that followed the instruction
     exactly produced a target `verify` then reported incomplete, and the
     quickest reading of that is that the checker is wrong. Prose cannot be
     generated from code here — SKILL.md is what an agent reads, not a rendered
@@ -5064,7 +5064,7 @@ class ScaffoldInstructionsAgreementTests(unittest.TestCase):
 
     def test_the_documented_file_list_equals_the_gap_checker(self):
         """Reachable red: step 5 named four files while `scaffold_gaps`
-        required nine, and the four did not include the benchmark
+        required twelve, and the four did not include the benchmark
         declaration — the one file the whole declaration contract is read
         from."""
         documented = self.documented_gaps()
@@ -5082,7 +5082,7 @@ class ScaffoldInstructionsAgreementTests(unittest.TestCase):
         self.assertEqual(documented, self.kit_tokens())
 
     def test_the_worked_scaffold_file_example_is_the_whole_list(self):
-        """The example is what a reader copies. Showing four of nine teaches
+        """The example is what a reader copies. Showing four of twelve teaches
         a scaffold that `verify` reports incomplete."""
         text = self.USAGE.read_text(encoding="utf-8")
         blocks = re.findall(r"```json\n(.*?)```", text, re.DOTALL)
@@ -5099,6 +5099,152 @@ class ScaffoldInstructionsAgreementTests(unittest.TestCase):
         self.assertEqual([line for line in lines if "../assets/" in line], [])
         self.assertTrue([line for line in lines if "assets/kit/" in line],
                         "the usage reference names no template root at all")
+
+
+class ScaffoldImportClosureTests(unittest.TestCase):
+    """A scaffold built from exactly the paths doctrine names could not import.
+
+    Two of the files step 5 sends into `tests/` open with an absolute import of
+    a sibling the same table never names: `test_audit.py` imports `sweep`, and
+    `test_remedies.py` imports `admissibility` and `sweep`. Neither sibling is
+    among the gaps `scaffold_gaps` requires, so an agent that followed the
+    instruction exactly wrote every file it was asked for and got a tree pytest
+    refuses to collect — while `verify` reported `scaffoldGaps: []` and exited
+    `0`, because a checker only ever asks for what doctrine already names.
+
+    The count is the mechanism, not the defect. Closure is what keeps it
+    closed: a stage-1 test may only import siblings that are themselves stage 1,
+    so the next file added to `kit/tests/` cannot repeat this quietly.
+
+    `conftest.py` is deliberately outside closure's reach and is named here so
+    nobody looks for it: pytest loads it by convention, nothing in the kit
+    imports it, and its `rng`/`TOL` are used by no shipped template. Only the
+    coverage register can hold it. Closure and coverage are complements.
+    """
+
+    SKILL_ROOT = CLI.parent.parent
+    KIT_TESTS = SKILL_ROOT / "assets" / "kit" / "tests"
+    KIT_NB = SKILL_ROOT / "assets" / "kit" / "nb"
+    KIT_BENCH = SKILL_ROOT / "assets" / "kit" / "src_benchmark"
+    TEMPLATE = SKILL_ROOT / "assets" / "pyproject.template.toml"
+
+    NAME = "Example-Method"
+    PACKAGE = "Example_Method"
+    SEED = "7"
+
+    def required_gaps(self):
+        """What the checker demands of a repository holding none of it."""
+        empty = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, empty, ignore_errors=True)
+        return impl.scaffold_gaps(empty, self.NAME)
+
+    def stage_one_test_stems(self):
+        """The kit tests doctrine actually places, by module name."""
+        gaps = self.required_gaps()
+        return {Path(gap).stem for gap in gaps if gap.startswith("tests/")}
+
+    @staticmethod
+    def absolute_import_roots(source: str) -> set:
+        """Every top-level name this module imports from outside a package.
+
+        `level == 0` excludes explicit relative imports, which resolve inside a
+        package and can never name a flat sibling on `sys.path`.
+        """
+        roots = set()
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Import):
+                roots.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                roots.add(node.module.split(".")[0])
+        return roots
+
+    def test_every_stage_one_kit_test_imports_only_stage_one_siblings(self):
+        """Reachable red: `test_audit.py` and `test_remedies.py` are both gaps
+        `scaffold_gaps` requires, and both import siblings it does not."""
+        siblings = {path.stem for path in self.KIT_TESTS.glob("*.py")}
+        placed = self.stage_one_test_stems()
+        unplaced = {}
+        for stem in sorted(placed):
+            template = self.KIT_TESTS / f"{stem}.py"
+            if not template.exists():
+                continue
+            for root in sorted(self.absolute_import_roots(
+                    template.read_text(encoding="utf-8"))):
+                if root in siblings and root not in placed:
+                    unplaced.setdefault(f"{stem}.py", []).append(root)
+        self.assertEqual(
+            unplaced, {},
+            "a stage-1 kit test imports a sibling the scaffold never places: "
+            f"{unplaced}")
+
+    def scaffold(self):
+        """A target holding exactly the paths `scaffold_gaps` reports as wanted.
+
+        Written gap by gap, the way an agent reading step 5 writes them — never
+        by shelling `materialize.py`, which writes a different tree and is what
+        let this stay hidden.
+        """
+        box = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+
+        def substitute(text: str) -> str:
+            return (text.replace("{{NAME}}", self.NAME)
+                        .replace("{{NAME_LOWER}}", self.NAME.lower())
+                        .replace("{{PKG}}", self.PACKAGE)
+                        .replace("{{SEED}}", self.SEED)
+                        .replace("{{REVISION}}", "research-concept-r01.md"))
+
+        for gap in self.required_gaps():
+            if gap.startswith(".gitignore"):
+                (box / ".gitignore").write_text(
+                    "".join(f"{entry}\n" for entry in impl.IGNORE_ENTRIES),
+                    encoding="utf-8")
+                continue
+            if gap.startswith("pyproject.toml"):
+                (box / "pyproject.toml").write_text(
+                    substitute(self.TEMPLATE.read_text(encoding="utf-8")),
+                    encoding="utf-8")
+                continue
+            destination = box / gap
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if gap == f"src/{self.PACKAGE}/__init__.py":
+                destination.write_text(
+                    f'"""Reference implementation of the {self.NAME} formulation."""\n\n'
+                    "__all__ = []\n", encoding="utf-8")
+            elif gap == f"src/{self.PACKAGE}_Benchmark/__init__.py":
+                destination.write_text(
+                    (self.KIT_BENCH / "__init__.py").read_text(encoding="utf-8"),
+                    encoding="utf-8")
+            elif gap.startswith("tests/"):
+                destination.write_text(
+                    substitute((self.KIT_TESTS / destination.name)
+                               .read_text(encoding="utf-8")), encoding="utf-8")
+            else:
+                destination.write_text(
+                    substitute((self.KIT_NB / destination.name)
+                               .read_text(encoding="utf-8")), encoding="utf-8")
+        return box
+
+    def test_a_doctrine_faithful_scaffold_is_collected_without_error(self):
+        """Reachable red, and the one that was measured rather than argued:
+
+            tests/test_audit.py:11: in <module>
+                from sweep import SWEEP_SIZE, sweep
+            E   ModuleNotFoundError: No module named 'sweep'
+            2 tests collected, 2 errors
+
+        Collection, not passing, is the bar. `test_smoke.py` must still fail at
+        run time — `MODULES` names a module step 9 has not written — and that
+        red is protected, not repaired.
+        """
+        box = self.scaffold()
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "--collect-only", "-q"],
+            cwd=str(box), capture_output=True, text=True)
+        self.assertNotIn("ModuleNotFoundError", proc.stdout + proc.stderr,
+                         proc.stdout[-3000:])
+        self.assertNotIn("error", proc.stdout.splitlines()[-1].lower(),
+                         proc.stdout[-3000:])
 
 
 class HarnessPlacementTests(unittest.TestCase):
@@ -5127,7 +5273,7 @@ class HarnessPlacementTests(unittest.TestCase):
     def scaffold(self, suffix):
         """A target scaffolded from the kit exactly as doctrine instructs.
 
-        `materialize.py` performs eight of the nine gap fills; the `.gitignore`
+        `materialize.py` performs eleven of the twelve gap fills; the `.gitignore`
         is authored, as the scaffold step says. Then the two harness modules go
         into `src/<Package>_Benchmark/` and the notebook into
         `<Name>/Notebooks/`, which is the placement under test.

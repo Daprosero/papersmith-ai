@@ -460,12 +460,12 @@ date. Drift is Flow B's fourth step, not a reason to start over.
      Say so, and hand the user a self-contained prompt that performs exactly this
      reorganization in a separate session. Then continue without it.
 5. **Fill every scaffold gap.** `plan`'s `scaffoldFiles` and `verify`'s
-   `structure.scaffoldGaps` report the same nine, and every one of them is
+   `structure.scaffoldGaps` report the same twelve, and every one of them is
    written from the kit at `assets/kit/`. Writing four of them leaves a target
    `verify` reports incomplete, and the cheapest reading of that is that the
    checker is wrong. `scripts/materialize.py` performs this exact mapping for
-   eight of the nine; the ninth is authored, because a `.gitignore` is merged
-   into whatever the repository already has rather than copied over it.
+   eleven of the twelve; the twelfth is authored, because a `.gitignore` is
+   merged into whatever the repository already has rather than copied over it.
 
    | Gap `plan` and `verify` report | Written from |
    | --- | --- |
@@ -475,9 +475,18 @@ date. Drift is Flow B's fourth step, not a reason to start over.
    | `src/<Package>_Benchmark/__init__.py` | `assets/kit/src_benchmark/__init__.py`, copied verbatim and never populated |
    | `tests/test_smoke.py` | `assets/kit/tests/test_smoke.py` |
    | `tests/findings.py` | `assets/kit/tests/findings.py` |
+   | `tests/conftest.py` | `assets/kit/tests/conftest.py` |
+   | `tests/sweep.py` | `assets/kit/tests/sweep.py` |
+   | `tests/admissibility.py` | `assets/kit/tests/admissibility.py` |
    | `tests/test_audit.py` | `assets/kit/tests/test_audit.py` |
    | `tests/test_remedies.py` | `assets/kit/tests/test_remedies.py` |
    | `<Name>/Notebooks/verification.ipynb` | `assets/kit/nb/verification.ipynb` |
+
+   `conftest.py`, `sweep.py` and `admissibility.py` declare no test of their own,
+   and skipping them for that reason is what breaks the scaffold: `test_audit.py`
+   and `test_remedies.py` both open by importing them, so a tree without them is
+   not collected at all. `admissibility.py` belongs in `tests/` specifically —
+   it reads the ruling from beside itself, which is where `admit` writes it.
 
    Substitute the `{{TOKEN}}` placeholders as `references/usage.md` lists them.
 6. **Ask for the name.** Run `name --name "<whatever they typed>"` and show both
