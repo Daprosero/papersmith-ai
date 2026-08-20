@@ -39,6 +39,31 @@ STAGE_TWO_HEADER = "| Written into | Written from |"
 
 ASSET_RE = re.compile(r"`(assets/[^`]+)`")
 
+# The register's domain, and `kit_tokens()`'s, from one definition so the two can
+# never drift. Generated artifacts are not assets: `.pytest_cache/` and
+# `__pycache__/` appear under `assets/kit/nb/` on any machine that has run the kit
+# there. Measured: all six such files are untracked, so there is nothing to
+# delete — only a domain to state, so they are never mistaken for unplaced assets.
+CACHES = ("__pycache__", ".pytest_cache", ".ipynb_checkpoints")
+BINARY_SUFFIXES = (".pyc", ".pyo", ".png", ".jpg", ".jpeg", ".gif", ".pdf",
+                   ".pth", ".npz", ".npy", ".zip", ".ico")
+
+
+def kit_assets(root=None):
+    """Every text file under `assets/**` the register has to account for.
+
+    `root` is overridable so the domain rule can be proven against a tree built
+    for the purpose, rather than against whatever caches this checkout happens
+    to be carrying.
+    """
+    base = SKILL_ROOT if root is None else Path(root)
+    return sorted(
+        str(path.relative_to(base))
+        for path in (base / "assets").rglob("*")
+        if path.is_file()
+        and not any(part in CACHES for part in path.parts)
+        and path.suffix.lower() not in BINARY_SUFFIXES)
+
 
 def markdown_table_rows(text, header):
     """Every row of every table introduced by exactly this header line.
@@ -5115,9 +5140,8 @@ class ScaffoldInstructionsAgreementTests(unittest.TestCase):
 
     TABLE_HEADER = "| Gap `plan` and `verify` report | Written from |"
     TOKEN_RE = re.compile(r"\{\{[A-Z0-9_]+\}\}")
-    CACHES = ("__pycache__", ".pytest_cache", ".ipynb_checkpoints")
-    BINARY_SUFFIXES = (".pyc", ".pyo", ".png", ".jpg", ".jpeg", ".gif", ".pdf",
-                       ".pth", ".npz", ".npy", ".zip", ".ico")
+    CACHES = CACHES
+    BINARY_SUFFIXES = BINARY_SUFFIXES
 
     def required_gaps(self):
         """What the checker demands of a repository holding none of it."""
@@ -5468,6 +5492,231 @@ class SubstitutionStageTests(unittest.TestCase):
         self.assertEqual(
             sorted(token for token, stage in staged.items() if stage == "scaffold"),
             sorted(SCAFFOLD_TOKENS))
+
+
+class KitAssetRegisterTests(unittest.TestCase):
+    """Nothing held the kit's contents to the instructions that place them.
+
+    Every defect this change repairs is one shape: a file ships in the kit and
+    no instruction says where it goes, or an instruction exists and no producer
+    honours it. Each was invisible for the same reason — the kit's contents were
+    an input to no check. `scaffold_gaps` asks only for what doctrine already
+    names, so a file nobody wrote down is a file nobody misses, and `verify`
+    reported `scaffoldGaps: []` over a tree that could not be imported.
+
+    The repair is a relation, not another list. Every text file under `assets/**`
+    must appear in exactly one of three registers, and the coverage is asserted
+    in both directions:
+
+    - **stage 1** — written at scaffold time; step 5's table, `scaffold_gaps`'s
+      `wanted` and the worked example, which an existing test already forces to
+      agree with each other.
+    - **stage 2** — written later, when the work its tokens answer has happened;
+      the two `Written into` tables.
+    - **forge-side, never placed** — used by the forge itself and copied into no
+      target. Named explicitly below rather than inferred from absence, because
+      a register that treats "unmatched" as a category has no way to tell a
+      deliberate exclusion from a forgotten row.
+
+    The walk runs assets to registers, never registers to assets. That direction
+    is deliberate: `wiring.py` is an instruction with no template — the agent
+    writes it from the map, and there is nothing to copy — and the inverse walk
+    would report that healthy case as a defect. Do not "fix" it.
+    """
+
+    FORGE_SIDE = {
+        "assets/requirements-dev.txt":
+            "installed into the target's virtualenv by `env`, never copied into it",
+    }
+
+    NAME = "Example-Method"
+    PACKAGE = "Example_Method"
+
+    def stage_one(self):
+        """Destination → the asset it is written from, for the scaffold.
+
+        Column 1 is a gap string rather than a path — two of them carry a
+        computed tail — so it is read as `scaffold_gaps` reports it and compared
+        by what it names.
+        """
+        tables = markdown_table_rows(SKILL_MD.read_text(encoding="utf-8"),
+                                     STAGE_ONE_HEADER)
+        self.assertEqual(len(tables), 1, "step 5 carries no gap table")
+        return {row[0].strip("`"): declared_assets(row[1]) for row in tables[0]}
+
+    def stage_two(self):
+        tables = markdown_table_rows(SKILL_MD.read_text(encoding="utf-8"),
+                                     STAGE_TWO_HEADER)
+        self.assertEqual(len(tables), 2, "SKILL.md states stage 2 in %d tables"
+                         % len(tables))
+        return {row[0].strip("`"): declared_assets(row[1])
+                for table in tables for row in table}
+
+    def registered_assets(self):
+        found = {}
+        for register, entries in (("stage 1", self.stage_one()),
+                                  ("stage 2", self.stage_two())):
+            for destination, assets in entries.items():
+                for asset in assets:
+                    found.setdefault(asset, []).append(f"{register} → {destination}")
+        for asset in self.FORGE_SIDE:
+            found.setdefault(asset, []).append("forge-side, never placed")
+        return found
+
+    def test_every_asset_appears_in_exactly_one_register(self):
+        """Both directions at once. An asset in no register is a file that ships
+        with no instruction — F-A's and F-E's shape. An asset in two is an
+        instruction contradicting another.
+
+        Reachable red both ways: adding a file to `assets/kit/` fails this until
+        it is registered, and so does deleting any row that places one.
+        """
+        registered = self.registered_assets()
+        assets = set(kit_assets())
+
+        unregistered = sorted(assets - set(registered))
+        self.assertEqual(unregistered, [],
+                         "these ship in the kit and no instruction places them")
+
+        duplicated = {asset: where for asset, where in registered.items()
+                      if len(where) > 1}
+        self.assertEqual(duplicated, {}, "these are placed twice")
+
+        phantom = sorted(set(registered) - assets)
+        self.assertEqual(phantom, [],
+                         "these are placed by an instruction and do not exist")
+
+    def test_the_stage_one_destinations_are_what_the_gap_checker_requires(self):
+        """The register and the checker are the same set or the register is
+        decoration. `ScaffoldInstructionsAgreementTests` already ties step 5's
+        column 1 to `wanted`; this ties it to the assets as well, so a row
+        cannot be moved between registers without moving the gap."""
+        empty = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, empty, ignore_errors=True)
+
+        def named(gap):
+            for prefix in (".gitignore", "pyproject.toml"):
+                if gap.startswith(prefix):
+                    return prefix
+            return gap
+
+        documented = {named(gap.replace("<Name>", self.NAME)
+                               .replace("<Package>", self.PACKAGE))
+                      for gap in self.stage_one()}
+        self.assertEqual(documented,
+                         {named(gap) for gap in impl.scaffold_gaps(empty, self.NAME)})
+
+    def test_a_stage_one_template_parses_once_the_scaffold_has_substituted_it(self):
+        """The stage discriminator, and it runs one way only.
+
+        A template that does not parse after the five scaffold-time tokens are
+        answered has no business being written at scaffold time — its remaining
+        tokens are answers to work nobody has done. Such a template is rejected
+        from stage 1, never exempted from the check: teaching the checker to
+        tolerate a file it cannot parse is worse than the file.
+
+        The converse does not hold and is not asserted. `benchmark.py` carries no
+        token at all and parses perfectly, and is still stage 2, because when a
+        file is written is a question about the work, not about its syntax.
+        """
+        for destination, assets in sorted(self.stage_one().items()):
+            for asset in assets:
+                text = (SKILL_ROOT / asset).read_text(encoding="utf-8")
+                for token, value in zip(SCAFFOLD_TOKENS,
+                                        (self.NAME, self.NAME.lower(),
+                                         self.PACKAGE, "7", "r01.md")):
+                    text = text.replace(token, value)
+                sources = []
+                if asset.endswith(".ipynb"):
+                    sources = ["".join(cell["source"])
+                               for cell in json.loads(text)["cells"]
+                               if cell["cell_type"] == "code"]
+                elif asset.endswith(".py"):
+                    sources = [text]
+                for source in sources:
+                    try:
+                        ast.parse(source)
+                    except SyntaxError as exc:
+                        self.fail(
+                            f"{asset} is registered stage 1 for {destination} and "
+                            f"does not parse once the scaffold has substituted it: "
+                            f"{exc.msg} at line {exc.lineno}. Its remaining tokens "
+                            "answer work that has not happened, so it belongs in "
+                            "stage 2 — the check is not what gives way.")
+
+    def test_every_declared_destination_is_a_legal_place_for_it(self):
+        """`SOURCE_ROOTS` is the boundary `strayModules` reports against, and it
+        is not widened here. A notebook is the one thing that legally lives
+        outside it — `.ipynb` is not `.py`, so the stray check never applies to
+        it — and `<Name>/Notebooks/` is where the layout puts one."""
+        for register in (self.stage_one(), self.stage_two()):
+            for destination in register:
+                path = (destination.replace("<Name>", self.NAME)
+                                   .replace("<Package>", self.PACKAGE))
+                if path.startswith((".gitignore", "pyproject.toml")):
+                    continue
+                with self.subTest(destination=destination):
+                    if path.endswith(".ipynb"):
+                        self.assertTrue(path.startswith(f"{self.NAME}/Notebooks/"))
+                    else:
+                        self.assertTrue(path.startswith(impl.SOURCE_ROOTS),
+                                        f"{path} is a stray module by SOURCE_ROOTS")
+
+    def test_the_forge_side_register_is_explicit_and_earns_its_place(self):
+        """Named, and provably used by the forge. A category nobody has to
+        justify becomes the place unregistered files go to be forgotten."""
+        lines = CLI.read_text(encoding="utf-8").splitlines()
+        for asset, reason in self.FORGE_SIDE.items():
+            self.assertTrue((SKILL_ROOT / asset).is_file(), asset)
+            self.assertTrue(reason.strip(), asset)
+            # The bare filename is not evidence, and an inversion caught it
+            # passing on one: `requirements-dev.txt` also occurs in the list of
+            # dependency manifests the planner classifies, which says nothing
+            # about who installs this one. The reference has to resolve it under
+            # `assets/`, which only the forge-side use does.
+            self.assertTrue(
+                [line for line in lines
+                 if Path(asset).name in line and "assets" in line],
+                f"{asset} is registered as forge-side and no line of the CLI "
+                "resolves it under `assets/`")
+
+    def test_an_instruction_that_ships_no_template_is_not_a_defect(self):
+        """`wiring.py` is written from the object → module map, not copied, so
+        it has no asset and must not be reported as a missing one. Pinned so the
+        walk's direction survives somebody's tidy-up."""
+        self.assertIn("wiring.py", SKILL_MD.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [asset for asset in kit_assets() if asset.endswith("wiring.py")], [])
+        self.assertNotIn("assets/kit/nb/wiring.py", self.registered_assets())
+
+    def test_a_generated_cache_is_never_granted_a_destination(self):
+        """The register's domain, proven rather than declared.
+
+        Running pytest inside `assets/kit/nb/` leaves `.pytest_cache/` and
+        `__pycache__/` there. Measured: all six such files are untracked, so
+        nothing is deleted here — but without a stated domain they read as
+        assets nobody placed and demand rows for build output.
+
+        Asserting that against this checkout's own caches would be circular: the
+        walk would be filtered by the same constant the assertion reads. So the
+        rule is exercised on a tree built to contain exactly one real asset and
+        one artifact of each kind.
+        """
+        box = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for relative in ("assets/kit/tests/real_asset.py",
+                         "assets/kit/nb/__pycache__/generated.cpython-311.pyc",
+                         "assets/kit/nb/.pytest_cache/v/cache/nodeids",
+                         "assets/kit/nb/.ipynb_checkpoints/notebook-checkpoint.ipynb"):
+            path = box / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("generated\n", encoding="utf-8")
+
+        self.assertEqual(kit_assets(box), ["assets/kit/tests/real_asset.py"])
+        self.assertEqual(
+            [asset for asset in self.registered_assets()
+             if any(part in CACHES for part in Path(asset).parts)], [],
+            "a generated artifact was granted a destination")
 
 
 class HarnessPlacementTests(unittest.TestCase):
