@@ -90,9 +90,9 @@ def declared_assets(cell):
     """The kit assets a `Written from` cell names.
 
     A cell beginning `authored:` names none — the scaffold writes those files
-    from what the target already has rather than from a template. Reading its
-    backticks blindly would lift `assets/kit/src/` out of such a sentence and
-    register a directory as if it were a file.
+    from what the target already has rather than from a template. Reading such a
+    cell's backticks blindly would lift whatever path its sentence happens to
+    mention into the register and treat it as an asset that ships.
     """
     if cell.startswith("authored:"):
         return []
@@ -100,7 +100,7 @@ def declared_assets(cell):
 
 
 def doctrine_scaffold(case, name="Example-Method", seed="7",
-                      revision="research-concept-r01.md"):
+                      revision="research-concept-r01.md", box=None):
     """A target holding exactly the paths `scaffold_gaps` reports as wanted.
 
     Written gap by gap, the way an agent reading step 5 writes them — never by
@@ -110,10 +110,16 @@ def doctrine_scaffold(case, name="Example-Method", seed="7",
     Each gap resolves to its template by basename under `assets/kit/`, which is
     the mapping step 5's table states file by file. The two authored gaps are
     the exceptions the table itself marks as authored.
+
+    `box` is overridable because `verify` refuses any target outside
+    `<forge>/implementations`, so a scaffold the CLI has to read cannot live in
+    the system temporary directory the default picks.
     """
     package = name.replace("-", "_")
-    box = Path(tempfile.mkdtemp())
-    case.addCleanup(shutil.rmtree, box, ignore_errors=True)
+    if box is None:
+        box = Path(tempfile.mkdtemp())
+        case.addCleanup(shutil.rmtree, box, ignore_errors=True)
+    box = Path(box)
 
     def substitute(text):
         for token, value in zip(SCAFFOLD_TOKENS,
@@ -5719,6 +5725,194 @@ class KitAssetRegisterTests(unittest.TestCase):
             "a generated artifact was granted a destination")
 
 
+class MaterializeWritesStageOneTests(unittest.TestCase):
+    """Three of the files a fresh scaffold contained could not be parsed.
+
+    `materialize.py` copied `assets/kit/src/module.py`,
+    `assets/kit/tests/test_invariants.py` and `assets/kit/tests/test_synthetic.py`
+    into the target and substituted only `{{PKG}}` and `{{SEED}}` over them.
+    Their remaining tokens — `{{FUNCTION_NAME}}`, `{{INVARIANT_ID}}`,
+    `{{EXPECTATION}}` — are not names; they are placeholders sitting where
+    identifiers have to be, so the three files did not survive `ast.parse` and
+    the tree could not be collected.
+
+    Those tokens are answers to the object map step 8 approves, and nothing
+    could have answered them at scaffold time. So the repair is not to write
+    them more carefully — it is not to write them yet. Writing them with the
+    tokens intact and exempting them from the parse checks teaches the checker
+    to tolerate a file that cannot be imported; substituting dummy identifiers
+    is worse still, because the result parses, collects and *passes* while
+    asserting nothing.
+    """
+
+    NAME = "Example-Method"
+    PACKAGE = "Example_Method"
+    SEED = "7"
+
+    STAGE_TWO = ("src/Example_Method/module.py",
+                 "tests/test_invariants.py",
+                 "tests/test_synthetic.py")
+
+    def materialized(self):
+        box = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        subprocess.run(
+            [sys.executable, str(SKILL_ROOT / "scripts/materialize.py"),
+             str(box), self.NAME, self.SEED], check=True, capture_output=True)
+        return box
+
+    @staticmethod
+    def files(box):
+        return sorted(str(path.relative_to(box)) for path in box.rglob("*")
+                      if path.is_file())
+
+    def test_it_writes_the_stage_one_tree_and_nothing_besides(self):
+        """The producer's tree and the doctrine's tree, compared directly.
+
+        Nothing compared them before: the fixture that called itself
+        doctrine-faithful was built by this producer, so the superset it wrote
+        was measured against itself and agreed every time.
+        """
+        box = self.materialized()
+
+        self.assertEqual(self.files(box),
+                         self.files(doctrine_scaffold(self, self.NAME, self.SEED)))
+
+    def test_it_leaves_no_scaffold_gap_behind(self):
+        """`.gitignore` was the one gap it never filled, which is why a fixture
+        had to hand-patch it afterwards — and a hand-patch beside a producer is
+        how the two trees drifted without either being wrong on its own."""
+        box = self.materialized()
+
+        self.assertEqual(impl.scaffold_gaps(box, self.NAME), [])
+
+    def test_no_stage_two_template_is_written_before_its_question_is_asked(self):
+        box = self.materialized()
+
+        self.assertEqual(
+            [path for path in self.STAGE_TWO if (box / path).exists()], [],
+            "a template whose tokens answer step 8's map was written at step 5")
+
+    def test_every_python_file_it_writes_parses(self):
+        """The behaviour, stated without naming the three: any file the
+        materializer writes has to survive `ast.parse`, whichever file it is."""
+        box = self.materialized()
+        broken = {}
+        for path in sorted(box.rglob("*.py")):
+            try:
+                ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            except SyntaxError as exc:
+                broken[str(path.relative_to(box))] = f"{exc.msg} at line {exc.lineno}"
+
+        self.assertEqual(broken, {})
+
+    def test_the_package_exports_nothing_it_does_not_define(self):
+        """`__all__` was read off `assets/kit/src/*.py` — the stage-2 template
+        directory — so the package advertised a `module` name that only existed
+        because the unparseable template had been copied in beside it."""
+        box = self.materialized()
+        source = (box / "src" / self.PACKAGE / "__init__.py").read_text(encoding="utf-8")
+        exported = next(
+            ast.literal_eval(node.value) for node in ast.parse(source).body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets))
+
+        self.assertEqual(exported, [],
+                         "step 9 has written no module, so the package exports none")
+
+
+class UnparsableTestVisibilityTests(unittest.TestCase):
+    """A test file that could not be parsed was indistinguishable from one that
+    declared no tests.
+
+    `test_function_names` swallows `SyntaxError` and moves to the next file, so
+    a `tests/` directory holding nothing but a broken file returns the same
+    empty set as one holding nothing at all. `read_provenance` already refuses
+    that silence — it reports an unparseable module as `__error__` — and this
+    collector was the last reader that did not.
+
+    The field is additive; the gate is not. A target carrying a file under
+    `tests/` that cannot be parsed cannot be collected, and `structure.status`
+    saying `ok` beside it is the same shape as a headline reading `ok` beside a
+    benchmark it had just called `undeclared`.
+    """
+
+    NAME = "Example-Method"
+
+    def box(self):
+        box = FORGE / "implementations" / f"_unparsable_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        box.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        doctrine_scaffold(self, self.NAME, box=box)
+        for product in impl.PRODUCT_DIRS:
+            if product != "Data":
+                (box / self.NAME / product).mkdir(parents=True, exist_ok=True)
+        return box
+
+    def verify(self, box):
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box),
+             "--name", self.NAME], capture_output=True, text=True, cwd=FORGE)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(proc.stdout or "{}")["structure"]
+
+    def test_a_complete_scaffold_names_no_unparsable_test(self):
+        """The control the gate is worth nothing without: every file a
+        doctrine-faithful scaffold places under `tests/` parses today."""
+        structure = self.verify(self.box())
+
+        self.assertEqual(structure["unparsableTests"], [])
+        self.assertEqual(structure["status"], "ok")
+
+    def test_a_test_file_that_cannot_be_parsed_is_named_and_gates_the_status(self):
+        """The same tree, one file later. Nothing else about it changed, so the
+        status can only have moved for this reason."""
+        box = self.box()
+        (box / "tests" / "sweep.py").write_text(
+            "def collapse({{FUNCTION_NAME}}):\n    return None\n", encoding="utf-8")
+        structure = self.verify(box)
+
+        self.assertEqual(structure["unparsableTests"], ["tests/sweep.py"])
+        self.assertNotEqual(structure["status"], "ok")
+
+    def test_a_broken_file_is_no_longer_read_as_an_empty_one(self):
+        """The mechanism, isolated from `verify`: the collector returns the same
+        empty set either way, and the sibling is what tells the two apart."""
+        broken = Path(tempfile.mkdtemp()) / "tests"
+        self.addCleanup(shutil.rmtree, broken.parent, ignore_errors=True)
+        broken.mkdir()
+        (broken / "test_broken.py").write_text("def f(:\n", encoding="utf-8")
+        silent = Path(tempfile.mkdtemp()) / "tests"
+        self.addCleanup(shutil.rmtree, silent.parent, ignore_errors=True)
+        silent.mkdir()
+        (silent / "test_silent.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+        self.assertEqual(impl.test_function_names(broken),
+                         impl.test_function_names(silent),
+                         "the collector cannot tell them apart, and never could")
+        self.assertEqual(impl.unparsable_tests(broken), ["tests/test_broken.py"])
+        self.assertEqual(impl.unparsable_tests(silent), [])
+
+    def test_the_collector_keeps_its_contract_and_the_reader_is_a_sibling(self):
+        """The wrapper idiom, not a rewrite: `test_function_names` keeps its
+        exact signature, its set return and both of its callers, because the
+        invariant pairing that reads it must not move for this."""
+        signature = inspect.signature(impl.test_function_names)
+
+        self.assertEqual(list(signature.parameters), ["tests_dir"])
+        self.assertIsNot(impl.unparsable_tests, impl.test_function_names)
+        with tempfile.TemporaryDirectory() as raw:
+            (Path(raw) / "test_one.py").write_text(
+                "def test_alpha():\n    pass\n", encoding="utf-8")
+            self.assertEqual(impl.test_function_names(Path(raw)), {"test_alpha"})
+
+    def test_a_directory_that_does_not_exist_names_nothing(self):
+        with tempfile.TemporaryDirectory() as raw:
+            self.assertEqual(impl.unparsable_tests(Path(raw) / "absent"), [])
+
+
 class HarnessPlacementTests(unittest.TestCase):
     """Exactly one directory holds the probe harness, and it is `src/<Package>_Benchmark/`.
 
@@ -5745,9 +5939,8 @@ class HarnessPlacementTests(unittest.TestCase):
     def scaffold(self, suffix):
         """A target scaffolded from the kit exactly as doctrine instructs.
 
-        `materialize.py` performs twelve of the thirteen gap fills; the `.gitignore`
-        is authored, as the scaffold step says. Then the two harness modules go
-        into `src/<Package>_Benchmark/` and the notebook into
+        `materialize.py` performs all thirteen gap fills. Then the two harness
+        modules go into `src/<Package>_Benchmark/` and the notebook into
         `<Name>/Notebooks/`, which is the placement under test.
         """
         box = FORGE / "implementations" / f"_harness_placement_{suffix}_{os.getpid()}"

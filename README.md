@@ -782,7 +782,7 @@ igual.
 | Archivo | Qué hace y por qué existe |
 |---------|---------------------------|
 | `scripts/implementation_cli.py` | El motor entero. Biblioteca estándar solamente, keyless, offline. **Nunca importa ni ejecuta el código del destino**: lee las declaraciones estáticamente con `ast`. |
-| `scripts/materialize.py` | Hace de andamiero: copia el kit al destino sustituyendo los marcadores. Acepta un kit alternativo, y la razón está escrita en su docstring: *una forja de papers no puede cargar con el contenido de un paper*. |
+| `scripts/materialize.py` | El andamiero **de la propia forja**, no un paso del Flujo A: el agente rellena los huecos leyendo el paso 5, y este script hace lo mismo para que la suite pueda examinar un destino recién andamiado. Copia el kit sustituyendo los marcadores, y sólo escribe las plantillas que ya se pueden escribir: las del paso 9 esperan al mapa de objetos. Acepta un kit alternativo, y la razón está escrita en su docstring: *una forja de papers no puede cargar con el contenido de un paper*. |
 | `references/usage.md` | Invocaciones reales, copiables, de cada comando, con salidas de ejemplo y la tabla de códigos de rechazo. Existe para que el agente no invente banderas. |
 | `assets/pyproject.template.toml` | El marcador de aislamiento. Sin su configuración de `pythonpath`, la suite del destino no puede importar su propio paquete offline. |
 | `assets/requirements-dev.txt` | Lo que se instala en el `.venv` **del destino**, nunca en el de la forja. |
@@ -878,7 +878,7 @@ flowchart TD
     F -- Grande --> G["No se aplica. Se entrega como sesión aparte"]
     F -- Revisable --> H["apply: un commit atómico de migración"]
     H --> I["Compuerta: confirmar Name y Package"]
-    I --> J["materialize: kit a src/, tests/, Notebooks/"]
+    I --> J["Paso 5: el agente rellena cada hueco del andamio<br/>desde assets/kit/, a src/, tests/ y Notebooks/"]
     J --> K["Compuerta: autorización para implementar"]
     K --> L["Escribe módulos ATANDO latest como procedencia"]
     L --> M["Barrido de auditoría: 200 configuraciones"]

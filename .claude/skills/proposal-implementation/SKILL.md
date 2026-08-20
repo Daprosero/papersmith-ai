@@ -464,14 +464,15 @@ date. Drift is Flow B's fourth step, not a reason to start over.
    written from the kit at `assets/kit/`. Writing four of them leaves a target
    `verify` reports incomplete, and the cheapest reading of that is that the
    checker is wrong. `scripts/materialize.py` performs this exact mapping for
-   twelve of the thirteen; the thirteenth is authored, because a `.gitignore`
-   is merged into whatever the repository already has rather than copied over it.
+   all thirteen: the two rows marked `authored:` are written rather than copied,
+   and the `.gitignore` is merged into whatever the repository already has
+   instead of written over it.
 
    | Gap `plan` and `verify` report | Written from |
    | --- | --- |
    | `.gitignore (.venv/, __pycache__/, .ipynb_checkpoints/)` | authored: the entries a virtualenv inside the target needs kept out of the index |
    | `pyproject.toml [tool.pytest.ini_options] pythonpath` | `assets/pyproject.template.toml`, or the anchor appended to the existing file |
-   | `src/<Package>/__init__.py` | authored: exports the module list found in `assets/kit/src/` |
+   | `src/<Package>/__init__.py` | authored: exports the target's own modules, and step 9 has written none of them yet, so it exports nothing |
    | `src/<Package>_Benchmark/__init__.py` | `assets/kit/src_benchmark/__init__.py`, copied verbatim and never populated |
    | `src/<Package>_Benchmark/report_digest.py` | `assets/kit/nb/report_digest.py` |
    | `tests/test_smoke.py` | `assets/kit/tests/test_smoke.py` |

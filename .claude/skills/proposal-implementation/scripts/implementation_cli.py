@@ -4155,6 +4155,36 @@ def test_function_names(tests_dir: Path) -> set[str]:
     return names
 
 
+def unparsable_tests(tests_dir: Path) -> list[str]:
+    """Every file under `tests/` that does not survive `ast.parse`.
+
+    A sibling rather than a change to the collector above, which keeps its
+    signature and both of its callers: the invariant pairing reads a set of test
+    names and has no business also carrying this.
+
+    The collector swallows `SyntaxError` and moves to the next file, which is
+    right for what it collects and silent about what it skipped — a directory
+    holding one broken file returns exactly the empty set a directory holding
+    one silent file returns. `read_provenance` already refuses that silence for
+    modules, reporting an unparsable one as `__error__`; this was the last
+    reader that did not. A file under `tests/` that cannot be parsed cannot be
+    collected either, so the fact belongs in the report rather than in the gap
+    between two readers.
+
+    Paths are named as the target sees them, the way `strayModules` and
+    `scaffoldGaps` name theirs.
+    """
+    if not tests_dir.is_dir():
+        return []
+    broken: list[str] = []
+    for file in sorted(tests_dir.rglob("*.py")):
+        try:
+            ast.parse(file.read_text(encoding="utf-8"), filename=str(file))
+        except (SyntaxError, UnicodeDecodeError):
+            broken.append(str(file.relative_to(tests_dir.parent)))
+    return broken
+
+
 # --------------------------------------------------------------------------
 # commands
 # --------------------------------------------------------------------------
@@ -4927,7 +4957,13 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     # Static check, nothing is executed: does anything still address a product
     # folder that no longer exists?
     stale_refs = scan_stale_references(target, name, paths)
+    # Gating, not merely reported. A file under `tests/` that cannot be parsed
+    # cannot be collected, and `structure.status: "ok"` printed beside it is the
+    # same silence as a headline reading `ok` beside a benchmark it had just
+    # called `undeclared`.
+    unparsable = unparsable_tests(target / "tests")
     structure_ok = (not missing_dirs and not stray and not stale_refs
+                    and not unparsable
                     and not scaffold_gaps(target, name))
 
     package = target / "src" / package_name(name)
@@ -5126,6 +5162,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "status": "ok" if structure_ok else "drift",
             "missingDirs": missing_dirs,
             "strayModules": stray,
+            "unparsableTests": unparsable,
             "staleReferences": stale_refs,
             "scaffoldGaps": scaffold_gaps(target, name),
         },
