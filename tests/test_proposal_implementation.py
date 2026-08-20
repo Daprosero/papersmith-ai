@@ -4590,24 +4590,35 @@ class ReportFirstSectionProseTests(unittest.TestCase):
     BINARY_SUFFIXES = (".pyc", ".pyo", ".png", ".jpg", ".jpeg", ".gif", ".pdf",
                        ".pth", ".npz", ".npy", ".zip", ".ico")
 
-    def guarded_documents(self):
+    def guarded_documents(self, root=None):
         """Every surface of the forge a target's vocabulary could leak into.
 
         `SKILL.md` is what an agent reads, but it is not the only thing a
         target copies: `references/usage.md` is the worked walkthrough, and
         `assets/` is the kit a scaffold is literally made of. A leak in a
         template ships into every repository materialized from it.
+
+        `scripts/` is here for a different reason. Nothing copies it, but it is
+        the forge's own code, it is read by anyone extending the skill, and it
+        is edited by every change that touches the checker or the materializer —
+        including this one. A guard whose surface stops at the documents leaves
+        the surface that changes most often unscanned.
+
+        `root` is overridable so the rule can be proven against a tree built for
+        the purpose rather than only against a checkout that happens to be clean.
         """
-        documents = [self.SKILL_MD, self.SKILL_ROOT / "references" / "usage.md"]
-        for path in sorted((self.SKILL_ROOT / "assets").rglob("*")):
-            if not path.is_file():
-                continue
-            if any(part in self.CACHES for part in path.parts):
-                continue
-            if path.suffix.lower() in self.BINARY_SUFFIXES:
-                continue
-            documents.append(path)
-        return documents
+        base = self.SKILL_ROOT if root is None else Path(root)
+        documents = [base / "SKILL.md", base / "references" / "usage.md"]
+        for directory in ("assets", "scripts"):
+            for path in sorted((base / directory).rglob("*")):
+                if not path.is_file():
+                    continue
+                if any(part in self.CACHES for part in path.parts):
+                    continue
+                if path.suffix.lower() in self.BINARY_SUFFIXES:
+                    continue
+                documents.append(path)
+        return [path for path in documents if path.is_file()]
 
     def scannable_text(self, document: Path) -> str:
         """The document, minus the one place a service name is a fact.
@@ -4669,6 +4680,76 @@ class ReportFirstSectionProseTests(unittest.TestCase):
                     self.assertIsNone(
                         re.search(rf"\b{leaked}\b", text),
                         f"{leaked!r} is some target's vocabulary, not the forge's")
+
+    def test_the_guard_scans_the_scripts_this_forge_ships(self):
+        """The surface that changes most often was the one never scanned.
+
+        Nothing copies `scripts/`, which is why it was left out, but that is the
+        wrong test: it is the forge's own code, read by anyone extending the
+        skill and edited by every change that touches the checker or the
+        materializer. It had exactly one leak when it was first scanned.
+        """
+        scanned = {str(path.relative_to(self.SKILL_ROOT))
+                   for path in self.guarded_documents()}
+        expected = {str(path.relative_to(self.SKILL_ROOT))
+                    for path in sorted((self.SKILL_ROOT / "scripts").rglob("*"))
+                    if path.is_file()
+                    and not any(part in self.CACHES for part in path.parts)
+                    and path.suffix.lower() not in self.BINARY_SUFFIXES}
+        self.assertTrue(expected, "the forge ships no scripts, which cannot be")
+        self.assertEqual(sorted(expected - scanned), [])
+
+    def test_a_leak_into_a_script_is_caught(self):
+        """Proven against a tree built for it, not against a clean checkout.
+
+        A guard that passes because nothing is wrong today has not been shown to
+        do anything. This builds the forge's shape, plants one leak in a script
+        and one in a comment, and reads what the guard would scan.
+        """
+        base = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        (base / "references").mkdir()
+        (base / "assets").mkdir()
+        (base / "scripts").mkdir()
+        (base / "SKILL.md").write_text("Generic doctrine.\n", encoding="utf-8")
+        (base / "references" / "usage.md").write_text("Generic.\n", encoding="utf-8")
+        (base / "scripts" / "leaky.py").write_text(
+            "# reached only by the ramp\nVALUE = 1\n", encoding="utf-8")
+        (base / "scripts" / "clean.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+        caught = {}
+        for document in self.guarded_documents(base):
+            text = self.scannable_text(document)
+            hits = [word for word in ("kaggle", "t4", "ceiling", "ramp",
+                                      "transfer", "creda", "milcreda")
+                    if re.search(rf"\b{word}\b", text)]
+            if hits:
+                caught[str(document.relative_to(base))] = hits
+        self.assertEqual(caught, {"scripts/leaky.py": ["ramp"]})
+
+    def test_the_tests_stay_unguarded_and_it_is_measured(self):
+        """Why the widening stops at `scripts/`.
+
+        `remote-execution` ships an adapter for one hosted service, so the suite
+        that tests it names that service constantly and legitimately. Guarding
+        `tests/` would mean exempting the file that most needs its vocabulary,
+        which is not a guard. Measured rather than asserted, so the day the
+        number goes to zero somebody can reconsider.
+        """
+        suite_root = FORGE / "tests"
+        self.assertEqual(
+            [str(path) for path in self.guarded_documents()
+             if suite_root in path.parents], [],
+            "the forge's own suite is not a guarded surface")
+
+        suite = suite_root / "test_remote_execution.py"
+        self.assertTrue(suite.is_file())
+        occurrences = len(re.findall(
+            r"\bkaggle\b", suite.read_text(encoding="utf-8").lower()))
+        self.assertGreater(
+            occurrences, 100,
+            "one test file names the service hundreds of times because the "
+            "skill under test ships an adapter for it")
 
 
 class MaterializeBenchmarkDeclarationTests(unittest.TestCase):

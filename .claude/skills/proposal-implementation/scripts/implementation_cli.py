@@ -41,11 +41,15 @@ WORKSPACE = FORGE_ROOT / "implementations"
 # `remote_cli.py`, which itself loads `jobfolder.py`, `adapter.py`,
 # `packer.py`, `credentials.py` and `shard_io.py` — every one of the eight
 # modules the skill's own `*_module_names_no_service` guard family already
-# holds to naming no service. `adapters/kaggle.py`, the ONE module that
-# skill lets name a service, is never imported by `remote_cli.py` itself at
-# module scope — it is reached only by the CLI's own lazy, per-command
-# dispatch, which neither function below ever calls — so this widening
-# still never puts a service name within this file's reach.
+# holds to naming no service. The one module under `adapters/` that skill
+# lets name a service is never imported by `remote_cli.py` itself at module
+# scope — it is reached only by the CLI's own lazy, per-command dispatch,
+# which neither function below ever calls — so this widening still never
+# puts a service name within this file's reach. That module is named here by
+# what it is rather than by its filename: this file is scanned by the forge's
+# own vocabulary guard, and a guard whose surface is prose cannot carry a
+# hole for prose. `remote-execution`'s `*_module_names_no_service` family is
+# where that audit fact is pinned.
 REMOTE_EXECUTION_LEDGER_SCRIPT = (
     FORGE_ROOT / ".claude" / "skills" / "remote-execution" / "scripts" / "ledger.py"
 )
