@@ -497,6 +497,20 @@ date. Drift is Flow B's fourth step, not a reason to start over.
    this is given.
 8. Present the object → module map. Wait for approval. Only then write code.
 9. Write one module per object with `__provenance__`, plus its invariant tests.
+
+   | Written into | Written from |
+   | --- | --- |
+   | `src/<Package>/<module>.py` | `assets/kit/src/module.py` |
+   | `tests/test_invariants.py` | `assets/kit/tests/test_invariants.py` |
+   | `tests/test_synthetic.py` | `assets/kit/tests/test_synthetic.py` |
+
+   None of the three is a scaffold gap, and step 5's table does not name them on
+   purpose: their tokens — `{{MODULE}}`, `{{FUNCTION_NAME}}`, `{{INVARIANT_ID}}`,
+   `{{SECTION}}`, `{{EQUATION}}`, `{{EXPECTATION}}` — are answers to the map step 8
+   has just approved, and nothing could have answered them before that. This is
+   also why `tests/test_smoke.py`, which the scaffold does write, fails until this
+   step runs: its `MODULES` names a module that does not exist yet. That failure is
+   the question being asked, not a defect to suppress.
 10. Audit: sweep 200 configurations, declare each finding in `tests/findings.py`
     with its kind, status, measured rate and proposed remedy.
 11. `admit --revision <latest>`: rule on admissibility before anything is
@@ -1169,9 +1183,16 @@ the reported common environment would be an intersection with that list rather t
 the environment the prior results came from. `build_data` belongs to the wiring for
 the same reason the builders do.
 
-Copy `benchmark.py`, `verdict.py` and `probe.ipynb` from `assets/kit/nb/` — the two
-modules into `src/<Package>_Benchmark/`, the notebook into `<Name>/Notebooks/` — fill
-in the reduction, and execute the notebook. Python that lives beside a notebook is a
+Place these three, fill in the reduction, and execute the notebook:
+
+| Written into | Written from |
+| --- | --- |
+| `src/<Package>_Benchmark/benchmark.py` | `assets/kit/nb/benchmark.py` |
+| `src/<Package>_Benchmark/verdict.py` | `assets/kit/nb/verdict.py` |
+| `<Name>/Notebooks/probe.ipynb` | `assets/kit/nb/probe.ipynb` |
+
+`assets/kit/nb/` stages what the notebooks need; it does not mirror where any of it
+ends up. Python that lives beside a notebook is a
 stray module the moment it is committed; see [Target layout](#target-layout). The
 notebook therefore addresses the harness by repository-relative path from `src/`, and
 runs it from the harness's own directory so that its `verdict.py` and `wiring.py`

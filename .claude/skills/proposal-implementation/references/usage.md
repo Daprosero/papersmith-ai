@@ -201,28 +201,34 @@ and `kit/nb/` — with `assets/pyproject.template.toml` beside them. SKILL.md
 step 5 carries the gap → template mapping file by file.
 
 Substitute these placeholders. Every one of them occurs in some template, and
-no template carries any other:
+no template carries any other.
 
-| Token | Substituted with |
-| --- | --- |
-| `{{NAME}}` | the `<Name>/` product folder form |
-| `{{NAME_LOWER}}` | the distribution name, lowercased and hyphenated |
-| `{{PKG}}` | the `src/<Package>/` importable form |
-| `{{MODULE}}` | the module being written, without its suffix |
-| `{{FUNCTION_NAME}}` | the function that module's invariant is asserted over |
-| `{{INVARIANT_ID}}` | the invariant's identifier, as `__provenance__` declares it |
-| `{{REVISION}}` | the bound revision's filename |
-| `{{SECTION}}` | the section of the proposal the module implements |
-| `{{EQUATION}}` | the equation it implements, by tag |
-| `{{ONE_LINE_STATEMENT_OF_THE_MATHEMATICAL_OBJECT}}` | one line saying what the module computes |
-| `{{SEED}}` | the seed the suite fixes |
-| `{{SEEDS}}` | the seeds a probe run repeats over |
-| `{{EPOCHS}}` | the epoch count a probe run reduces to |
-| `{{FRACTION}}` | the fraction of the data a probe run uses |
-| `{{DATASET}}` | the dataset a probe run reads |
-| `{{BASELINE}}` | the baseline a probe compares against |
-| `{{PROBE_RESULTS}}` | the filename a probe writes its record to |
-| `{{EXPECTATION}}` | what a synthetic case is expected to produce |
+`Answered at` says when the value exists, which is not the same as when the file
+carrying the token is written. `tests/test_smoke.py` is placed by the scaffold and
+carries `{{MODULE}}`, which only step 9 can answer: a leftover `{{MODULE}}` there
+is the scaffold posing its question, not a substitution somebody missed. Guessing
+a value to make it disappear produces a suite that passes while asserting nothing.
+
+| Token | Substituted with | Answered at |
+| --- | --- | --- |
+| `{{NAME}}` | the `<Name>/` product folder form | scaffold |
+| `{{NAME_LOWER}}` | the distribution name, lowercased and hyphenated | scaffold |
+| `{{PKG}}` | the `src/<Package>/` importable form | scaffold |
+| `{{MODULE}}` | the module being written, without its suffix | step 9 |
+| `{{FUNCTION_NAME}}` | the function that module's invariant is asserted over | step 9 |
+| `{{INVARIANT_ID}}` | the invariant's identifier, as `__provenance__` declares it | step 9 |
+| `{{REVISION}}` | the bound revision's filename | scaffold |
+| `{{SECTION}}` | the section of the proposal the module implements | step 9 |
+| `{{EQUATION}}` | the equation it implements, by tag | step 9 |
+| `{{ONE_LINE_STATEMENT_OF_THE_MATHEMATICAL_OBJECT}}` | one line saying what the module computes | step 9 |
+| `{{SEED}}` | the seed the suite fixes | scaffold |
+| `{{SEEDS}}` | the seeds a probe run repeats over | probe |
+| `{{EPOCHS}}` | the epoch count a probe run reduces to | probe |
+| `{{FRACTION}}` | the fraction of the data a probe run uses | probe |
+| `{{DATASET}}` | the dataset a probe run reads | probe |
+| `{{BASELINE}}` | the baseline a probe compares against | probe |
+| `{{PROBE_RESULTS}}` | the filename a probe writes its record to | probe |
+| `{{EXPECTATION}}` | what a synthetic case is expected to produce | step 9 |
 
 ## 5. Verify
 

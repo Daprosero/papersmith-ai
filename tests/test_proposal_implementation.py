@@ -31,6 +31,48 @@ PYPROJECT_TEMPLATE = SKILL_ROOT / "assets" / "pyproject.template.toml"
 
 SCAFFOLD_TOKENS = ("{{NAME}}", "{{NAME_LOWER}}", "{{PKG}}", "{{SEED}}", "{{REVISION}}")
 
+SKILL_MD = SKILL_ROOT / "SKILL.md"
+USAGE_MD = SKILL_ROOT / "references" / "usage.md"
+
+STAGE_ONE_HEADER = "| Gap `plan` and `verify` report | Written from |"
+STAGE_TWO_HEADER = "| Written into | Written from |"
+
+ASSET_RE = re.compile(r"`(assets/[^`]+)`")
+
+
+def markdown_table_rows(text, header):
+    """Every row of every table introduced by exactly this header line.
+
+    One shape, read one way, wherever doctrine states a placement. Prose cannot
+    be held to code — SKILL.md is what an agent reads, not a rendered artifact —
+    so the instruction has to be written in something a test can parse.
+    """
+    lines = [line.strip() for line in text.splitlines()]
+    tables = []
+    for index, line in enumerate(lines):
+        if line != header:
+            continue
+        rows = []
+        for row in lines[index + 2:]:
+            if not row.startswith("|"):
+                break
+            rows.append([cell.strip() for cell in row.strip("|").split("|")])
+        tables.append(rows)
+    return tables
+
+
+def declared_assets(cell):
+    """The kit assets a `Written from` cell names.
+
+    A cell beginning `authored:` names none — the scaffold writes those files
+    from what the target already has rather than from a template. Reading its
+    backticks blindly would lift `assets/kit/src/` out of such a sentence and
+    register a directory as if it were a file.
+    """
+    if cell.startswith("authored:"):
+        return []
+    return ASSET_RE.findall(cell)
+
 
 def doctrine_scaffold(case, name="Example-Method", seed="7",
                       revision="research-concept-r01.md"):
@@ -5322,6 +5364,110 @@ class ReportSealPlacementTests(unittest.TestCase):
              str(box), self.NAME, self.SEED], check=True, capture_output=True)
         self.assertTrue((box / self.DESTINATION).is_file(),
                         "`materialize.py` writes no report seal")
+
+
+class StageTwoInstructionsTests(unittest.TestCase):
+    """The step that writes a module per object never named the template it
+    writes it from.
+
+    Step 9 has always told the agent what to produce — one module per object
+    with `__provenance__`, plus its invariant tests — and the kit has always
+    shipped `module.py`, `test_invariants.py` and `test_synthetic.py` for
+    exactly that. Nothing joined the two. An agent reading step 9 had no way to
+    learn a template existed, and the templates had no reader.
+
+    The placement further down, for `benchmark.py`, `verdict.py` and
+    `probe.ipynb`, was stated correctly but as a sentence. A sentence cannot be
+    held to code, so it could be reworded into something false with nothing
+    going red. Both sites now use one table shape, read one way — the same
+    relation step 5 already carries for the scaffold.
+    """
+
+    STEP_NINE = {
+        "src/<Package>/<module>.py": "assets/kit/src/module.py",
+        "tests/test_invariants.py": "assets/kit/tests/test_invariants.py",
+        "tests/test_synthetic.py": "assets/kit/tests/test_synthetic.py",
+    }
+    COPY_STEP = {
+        "src/<Package>_Benchmark/benchmark.py": "assets/kit/nb/benchmark.py",
+        "src/<Package>_Benchmark/verdict.py": "assets/kit/nb/verdict.py",
+        "<Name>/Notebooks/probe.ipynb": "assets/kit/nb/probe.ipynb",
+    }
+
+    def tables(self):
+        return markdown_table_rows(
+            SKILL_MD.read_text(encoding="utf-8"), STAGE_TWO_HEADER)
+
+    def test_both_stage_two_placements_are_stated_as_a_parseable_table(self):
+        """Reachable red: step 9 carried no table at all, and the copy step
+        carried a sentence."""
+        self.assertEqual(
+            len(self.tables()), 2,
+            "SKILL.md states stage-2 placement in a table at neither site, or "
+            "at only one of them")
+
+    def test_the_stage_two_tables_name_every_template_they_place(self):
+        """Both directions, so neither a template without a reader nor an
+        instruction without a template survives."""
+        placements = {}
+        for table in self.tables():
+            for row in table:
+                self.assertEqual(len(row), 2, row)
+                assets = declared_assets(row[1])
+                self.assertEqual(len(assets), 1,
+                                 f"stage-2 row names {len(assets)} assets: {row}")
+                placements[row[0].strip("`")] = assets[0]
+        self.assertEqual(placements, {**self.STEP_NINE, **self.COPY_STEP})
+
+    def test_every_stage_two_template_exists_on_disk(self):
+        """A pointer at a file the kit does not ship is worse than no pointer:
+        the agent goes looking, finds nothing, and writes something else."""
+        for table in self.tables():
+            for row in table:
+                for asset in declared_assets(row[1]):
+                    self.assertTrue((SKILL_ROOT / asset).is_file(),
+                                    f"{asset} is named by doctrine and absent")
+
+
+class SubstitutionStageTests(unittest.TestCase):
+    """Which tokens an agent can answer, and when.
+
+    `test_smoke.py` is placed at scaffold time and carries `{{MODULE}}`, a token
+    only step 9 can answer. Without a stage beside each token there is no way to
+    read that off the registry, and the agent either substitutes a guess or
+    reads the leftover `{{MODULE}}` as a defect of the scaffold. It is neither:
+    it is the question the scaffold is posing, and `test_smoke.py` failing until
+    step 9 answers it is the suite doing its job.
+
+    Five tokens are answerable at scaffold time, seven at step 9, six when the
+    probe's reduction is chosen.
+    """
+
+    STAGES = ("scaffold", "step 9", "probe")
+    TOKEN_RE = re.compile(r"\{\{[A-Z0-9_]+\}\}")
+
+    def staged_tokens(self):
+        tables = markdown_table_rows(USAGE_MD.read_text(encoding="utf-8"),
+                                     "| Token | Substituted with | Answered at |")
+        self.assertEqual(len(tables), 1,
+                         "the usage reference's token registry declares no stage")
+        return {row[0].strip("`"): row[2] for row in tables[0]}
+
+    def test_every_documented_token_declares_the_stage_that_answers_it(self):
+        """Reachable red: the registry was two columns, so nothing said when."""
+        staged = self.staged_tokens()
+        documented = set(self.TOKEN_RE.findall(USAGE_MD.read_text(encoding="utf-8")))
+        self.assertEqual(set(staged), documented)
+        self.assertEqual(sorted(set(staged.values())), sorted(self.STAGES))
+
+    def test_the_scaffold_stage_is_exactly_what_the_scaffold_can_substitute(self):
+        """The registry's `scaffold` rows and the tokens a scaffold-time
+        substitution actually resolves must be the same five. This is the
+        column the kit's own stage discriminator reads."""
+        staged = self.staged_tokens()
+        self.assertEqual(
+            sorted(token for token, stage in staged.items() if stage == "scaffold"),
+            sorted(SCAFFOLD_TOKENS))
 
 
 class HarnessPlacementTests(unittest.TestCase):
