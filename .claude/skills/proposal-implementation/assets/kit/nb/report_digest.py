@@ -1,19 +1,21 @@
-"""El sello que ata un informe al código que lo produjo.
+"""The seal that binds a report to the code that produced it.
 
-Un cuaderno ejecutado dice que sus celdas corrieron alguna vez, no que corrieron
-contra este código. Sin sello, un informe viejo y uno recién generado se ven
-idénticos, y el viejo se sigue creyendo mientras el código se mueve por debajo.
+An executed notebook says its cells ran once, not that they ran against this
+code. Without a seal an old report and a freshly generated one look identical,
+and the old one keeps being believed while the code moves out from under it.
 
-Este módulo lo estampa. El cuaderno lo imprime al final, la verificación lo
-recomputa, y si no coinciden el informe es una reliquia.
+This module stamps it. The notebook prints it at the end, verification
+recomputes it, and if the two disagree the report is a relic.
 
-Vive en el paquete del banco porque es parte de producir el informe, no de la
-formulación: no implementa ninguna ecuación y por eso no declara `__provenance__`.
+It lives in the benchmark package because it belongs to producing the report,
+not to the formulation: it implements no equation and so declares no
+`__provenance__`.
 
-**Las dos mitades tienen que dar el mismo número.** Esta la escribe el destino y
-la otra la recomputa la verificación, así que probar cada una contra un fixture
-propio verificaría las dos mitades y nunca la unión, que es lo único que importa
-acá. La forja tiene una prueba que corre las dos sobre el mismo árbol y compara.
+**The two halves have to produce the same number.** The destination writes this
+one and verification recomputes the other, so testing each against a fixture of
+its own would verify both halves and never their union, which is the only thing
+that matters here. The forge has a test that runs both over the same tree and
+compares them.
 """
 
 from __future__ import annotations
@@ -21,34 +23,36 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-#: Lo que el cuaderno imprime antes del digest. La verificación lo busca literal.
+#: What the notebook prints before the digest. Verification looks for it literally.
 MARKER = "SOURCES-SHA256"
 
 
 def source_digest(repository: Path, package: str) -> str:
-    """Un hash sobre todo de lo que dependen las afirmaciones de un informe.
+    """One hash over everything a report's claims depend on.
 
-    Las fechas de modificación no sirven: un clon las reescribe todas con la hora
-    del checkout y el orden se pierde. El contenido sí.
+    Modification times cannot serve here: a clone rewrites all of them with the
+    checkout time and the ordering is gone. Content can.
 
-    Cubre `src/` entero, y nada más. Esa frontera es la afirmación: un informe
-    depende del código que la corrida ejecuta, y de nada más.
+    It covers all of `src/`, and nothing else. That boundary is the claim: a
+    report depends on the code the run executes, and on nothing else.
 
-    Nombrar los paquetes uno por uno fallaba en las dos direcciones. Dejaba
-    afuera al trabajo previo, del que el banco importa — mover ahí lo que
-    computa un brazo dejaba a los cuadernos diciendo `executed` con los números
-    viejos, y la sesión aparte que arregla el trabajo previo y vuelve es
-    exactamente el caso que lo dispara. Y metía adentro a `tests/`, que ningún
-    cuaderno importa: agregar cualquier prueba marcaba rancio todo informe del
-    repositorio y pedía re-ejecutar la campaña para re-estampar un hash.
+    Naming the packages one by one failed in both directions. It left out prior
+    work, which the benchmark imports — moving what an arm computes there left
+    the notebooks reporting `executed` over stale numbers, and the separate
+    session that goes and fixes prior work and comes back is precisely the case
+    that triggers it. And it pulled in `tests/`, which no notebook imports:
+    adding any test at all marked every report in the repository stale and asked
+    for the campaign to be re-run to restamp a hash.
 
-    El paquete del banco sigue adentro, ahora por pertenecer a `src/` en vez de
-    por estar nombrado, y por la misma razón de antes: es el módulo que renderiza
-    las tablas y escribe las conclusiones. Dejarlo afuera permitía corregir una
-    conclusión y que el registro siguiera afirmando la vieja con todo en verde.
+    The benchmark package stays inside, now by belonging to `src/` rather than
+    by being named, and for the same reason as before: it is the module that
+    renders the tables and writes the conclusions. Leaving it out allowed a
+    conclusion to be corrected while the record went on asserting the old one
+    with everything green.
 
-    `package` ya no se usa para elegir qué entra. Sigue en la firma porque las dos
-    mitades tienen que llamarse igual y el destino lo pasa desde `_here()`.
+    `package` no longer chooses what goes in. It stays in the signature because
+    the two halves have to be called the same way and the destination passes it
+    from `_here()`.
     """
     digest = hashlib.sha256()
     root = repository / "src"
@@ -62,25 +66,26 @@ def source_digest(repository: Path, package: str) -> str:
 
 
 def _here() -> tuple[Path, str]:
-    """El repositorio y el paquete, deducidos de dónde vive este archivo.
+    """The repository and the package, deduced from where this file lives.
 
-    Sin argumentos a propósito. La versión anterior los pedía, y el primer cuaderno
-    que no usaba exactamente los mismos nombres que los demás falló al estampar y
-    quedó informado como rancio — el sello dejaba afuera justo al cuaderno que se
-    salía del molde, que es el que más falta hace vigilar.
+    It takes no arguments on purpose. The previous version asked for them, and
+    the first notebook that did not use exactly the same names as the rest
+    failed to stamp and was reported stale — the seal left out precisely the
+    notebook that departed from the mould, which is the one that most needs
+    watching.
 
-    Este archivo vive en `<repo>/src/<Paquete>_Benchmark/`, así que las dos cosas
-    están en su propia ruta y ningún cuaderno tiene que saberlas.
+    This file lives in `<repo>/src/<Package>_Benchmark/`, so both facts are in
+    its own path and no notebook has to know them.
     """
     package_dir = Path(__file__).resolve().parent
     return package_dir.parents[1], package_dir.name.removesuffix("_Benchmark")
 
 
 def stamp(repository: Path | None = None, package: str | None = None) -> str:
-    """La línea que el cuaderno imprime para dejar constancia de contra qué corrió.
+    """The line the notebook prints to record what it ran against.
 
-    Se llama sin argumentos desde cualquier cuaderno; los admite solo para poder
-    probarla contra un árbol que no es este.
+    It is called without arguments from any notebook; it accepts them only so it
+    can be tested against a tree that is not this one.
     """
     if repository is None or package is None:
         found_repository, found_package = _here()

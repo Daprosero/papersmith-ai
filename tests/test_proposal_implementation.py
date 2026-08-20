@@ -5691,6 +5691,131 @@ class NotebookSealAgreementTests(unittest.TestCase):
         self.assertLess(index, harness[0])
 
 
+class KitSurfaceLanguageTests(unittest.TestCase):
+    """The kit ships into a target and is read there. It has one language.
+
+    Seventeen of the eighteen assets are written in English; one is not. A
+    reader who opens the file the scaffold placed in their package finds a
+    language the rest of their tree does not use, and the skill has no way to
+    say which one it meant.
+
+    The rule is about language, not about bytes. A "no non-ASCII" rule sounds
+    stricter and is wrong here: measured over this kit it flags ten files and
+    sixty-six lines — em-dashes in prose, `±` in a printed interval, `§` and `→`
+    in comments — all of them legitimate English typography. The Spanish
+    accented-letter class isolates exactly the one file, so that is the rule.
+    """
+
+    ACCENTED = re.compile(r"[áéíóúÁÉÍÓÚñÑüÜ¿¡]")
+
+    def test_no_asset_is_written_in_another_language(self):
+        offenders = {}
+        for asset in kit_assets():
+            lines = (SKILL_ROOT / asset).read_text(encoding="utf-8").splitlines()
+            hits = [number for number, line in enumerate(lines, 1)
+                    if self.ACCENTED.search(line)]
+            if hits:
+                offenders[asset] = hits
+        self.assertEqual(
+            {asset: len(hits) for asset, hits in offenders.items()}, {},
+            "an asset the kit ships into a target is written in another language")
+
+    def test_the_rule_reads_language_and_not_bytes(self):
+        """Why this class does not simply ban non-ASCII.
+
+        Stated as a test rather than as a comment, because the tempting
+        "strengthening" is to widen the class until it catches everything, and
+        that would turn every em-dash in the kit's own English into a defect.
+        """
+        english = "the interval is 0.5 ± 0.1 — see §3 → the reduction table"
+        spanish = "el árbol que produjo el informe, según la verificación"
+        self.assertIsNone(self.ACCENTED.search(english),
+                          "English typography is not another language")
+        self.assertIsNotNone(self.ACCENTED.search(spanish))
+
+    def test_the_seal_still_computes_the_digest_it_computed_before(self):
+        """The translation must not move a byte of behaviour.
+
+        A live target already holds its own copy of this file and is not edited
+        here (C2), so nothing pairs the two copies and a changed algorithm would
+        surface as a stale report rather than as an error. The digest is
+        therefore pinned to a literal, over a tree the file itself is not part
+        of — `stamp` takes its arguments for exactly this.
+        """
+        import importlib.util
+
+        box = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        package = box / "src" / "Example_Method"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text(
+            '"""Reference implementation of the Example-Method formulation."""\n'
+            "\n__all__ = []\n", encoding="utf-8")
+        (package / "kernel.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+        seal = KIT / "nb" / "report_digest.py"
+        spec = importlib.util.spec_from_file_location("kit_report_digest", seal)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        self.assertEqual(module.MARKER, impl.DIGEST_MARKER)
+        self.assertEqual(
+            module.stamp(box, "Example_Method"),
+            "SOURCES-SHA256 "
+            "a949588e5ddc5b528213b6ac5474309798fa50119b01e7e68fb858e1634a77b5")
+
+    def test_the_translation_touched_no_code(self):
+        """Same claim from the other side: the code is byte-identical.
+
+        Read as a tree with every docstring dropped, so an identifier, a default
+        or an annotation that moved shows up here even if it happened to leave
+        this one fixture's digest alone.
+
+        Comments are outside what this can see, and are outside what it claims:
+        the translation reaches every line of prose in the file, docstring or
+        comment, and neither is behaviour. What is asserted is that no line the
+        interpreter reads changed.
+        """
+        tree = ast.parse((KIT / "nb" / "report_digest.py").read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef)):
+                continue
+            if (node.body and isinstance(node.body[0], ast.Expr)
+                    and isinstance(node.body[0].value, ast.Constant)
+                    and isinstance(node.body[0].value.value, str)):
+                node.body.pop(0)
+        self.assertEqual(
+            ast.unparse(ast.fix_missing_locations(tree)),
+            "from __future__ import annotations\n"
+            "import hashlib\n"
+            "from pathlib import Path\n"
+            "MARKER = 'SOURCES-SHA256'\n"
+            "\n"
+            "def source_digest(repository: Path, package: str) -> str:\n"
+            "    digest = hashlib.sha256()\n"
+            "    root = repository / 'src'\n"
+            "    if root.is_dir():\n"
+            "        for file in sorted(root.rglob('*.py')):\n"
+            "            if '__pycache__' in file.parts:\n"
+            "                continue\n"
+            "            digest.update(str(file.relative_to(repository))"
+            ".encode('utf-8'))\n"
+            "            digest.update(file.read_bytes())\n"
+            "    return digest.hexdigest()\n"
+            "\n"
+            "def _here() -> tuple[Path, str]:\n"
+            "    package_dir = Path(__file__).resolve().parent\n"
+            "    return (package_dir.parents[1], "
+            "package_dir.name.removesuffix('_Benchmark'))\n"
+            "\n"
+            "def stamp(repository: Path | None=None, package: str | None=None) -> str:\n"
+            "    if repository is None or package is None:\n"
+            "        (found_repository, found_package) = _here()\n"
+            "        repository = repository or found_repository\n"
+            "        package = package or found_package\n"
+            "    return f'{MARKER} {source_digest(repository, package)}'")
+
+
 class StageTwoInstructionsTests(unittest.TestCase):
     """The step that writes a module per object never named the template it
     writes it from.
