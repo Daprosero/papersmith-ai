@@ -460,12 +460,12 @@ date. Drift is Flow B's fourth step, not a reason to start over.
      Say so, and hand the user a self-contained prompt that performs exactly this
      reorganization in a separate session. Then continue without it.
 5. **Fill every scaffold gap.** `plan`'s `scaffoldFiles` and `verify`'s
-   `structure.scaffoldGaps` report the same twelve, and every one of them is
+   `structure.scaffoldGaps` report the same thirteen, and every one of them is
    written from the kit at `assets/kit/`. Writing four of them leaves a target
    `verify` reports incomplete, and the cheapest reading of that is that the
    checker is wrong. `scripts/materialize.py` performs this exact mapping for
-   eleven of the twelve; the twelfth is authored, because a `.gitignore` is
-   merged into whatever the repository already has rather than copied over it.
+   twelve of the thirteen; the thirteenth is authored, because a `.gitignore`
+   is merged into whatever the repository already has rather than copied over it.
 
    | Gap `plan` and `verify` report | Written from |
    | --- | --- |
@@ -473,6 +473,7 @@ date. Drift is Flow B's fourth step, not a reason to start over.
    | `pyproject.toml [tool.pytest.ini_options] pythonpath` | `assets/pyproject.template.toml`, or the anchor appended to the existing file |
    | `src/<Package>/__init__.py` | authored: exports the module list found in `assets/kit/src/` |
    | `src/<Package>_Benchmark/__init__.py` | `assets/kit/src_benchmark/__init__.py`, copied verbatim and never populated |
+   | `src/<Package>_Benchmark/report_digest.py` | `assets/kit/nb/report_digest.py` |
    | `tests/test_smoke.py` | `assets/kit/tests/test_smoke.py` |
    | `tests/findings.py` | `assets/kit/tests/findings.py` |
    | `tests/conftest.py` | `assets/kit/tests/conftest.py` |

@@ -95,6 +95,7 @@ python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py pla
                     "pyproject.toml [tool.pytest.ini_options] pythonpath",
                     "src/Example_Method/__init__.py",
                     "src/Example_Method_Benchmark/__init__.py",
+                    "src/Example_Method_Benchmark/report_digest.py",
                     "tests/test_smoke.py", "tests/findings.py",
                     "tests/conftest.py", "tests/sweep.py",
                     "tests/admissibility.py",

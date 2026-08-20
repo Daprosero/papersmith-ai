@@ -2376,6 +2376,11 @@ def ignore_gaps(target: Path) -> list[str]:
 def scaffold_gaps(target: Path, name: str) -> list[str]:
     wanted = [f"src/{package_name(name)}/__init__.py",
               f"src/{package_name(name)}_Benchmark/__init__.py",
+              # The seal every notebook stamps by importing, rather than by
+              # hashing a tree of its own. It belongs inside the package because
+              # `_here()` reads the repository off its own path as `parents[1]`,
+              # and because producing the report is what the bench package does.
+              f"src/{package_name(name)}_Benchmark/report_digest.py",
               "tests/test_smoke.py",
               # `conftest.py`, `sweep.py` and `admissibility.py` are not tests and
               # were never asked for, so a scaffold built from exactly this list

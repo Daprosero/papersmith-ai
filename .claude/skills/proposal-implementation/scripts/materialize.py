@@ -49,6 +49,13 @@ def main(target: str, name: str, seed: str, kit: str | None = None) -> int:
     declaration = KIT / "src_benchmark" / "__init__.py"
     (benchmark_package / "__init__.py").write_text(declaration.read_text())
 
+    # The report seal, staged in `nb/` beside the notebooks that print it but
+    # placed inside the package, the way `benchmark.py` and `verdict.py` are.
+    # `_here()` reads the repository off `parents[1]`, so this is the one
+    # location from which a notebook's stamp matches what `verify` recomputes.
+    seal = KIT / "nb" / "report_digest.py"
+    (benchmark_package / seal.name).write_text(seal.read_text())
+
     tests = root / "tests"
     tests.mkdir(parents=True, exist_ok=True)
     for test in sorted((KIT / "tests").glob("*.py")):

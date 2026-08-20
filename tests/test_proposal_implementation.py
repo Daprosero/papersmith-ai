@@ -25,6 +25,64 @@ CLI = FORGE / ".claude/skills/proposal-implementation/scripts/implementation_cli
 sys.path.insert(0, str(CLI.parent))
 import implementation_cli as impl  # noqa: E402  (path set above)
 
+SKILL_ROOT = CLI.parent.parent
+KIT = SKILL_ROOT / "assets" / "kit"
+PYPROJECT_TEMPLATE = SKILL_ROOT / "assets" / "pyproject.template.toml"
+
+SCAFFOLD_TOKENS = ("{{NAME}}", "{{NAME_LOWER}}", "{{PKG}}", "{{SEED}}", "{{REVISION}}")
+
+
+def doctrine_scaffold(case, name="Example-Method", seed="7",
+                      revision="research-concept-r01.md"):
+    """A target holding exactly the paths `scaffold_gaps` reports as wanted.
+
+    Written gap by gap, the way an agent reading step 5 writes them — never by
+    shelling `materialize.py`, which writes a different tree, and whose standing
+    in for the doctrine is what let the two drift apart unobserved.
+
+    Each gap resolves to its template by basename under `assets/kit/`, which is
+    the mapping step 5's table states file by file. The two authored gaps are
+    the exceptions the table itself marks as authored.
+    """
+    package = name.replace("-", "_")
+    box = Path(tempfile.mkdtemp())
+    case.addCleanup(shutil.rmtree, box, ignore_errors=True)
+
+    def substitute(text):
+        for token, value in zip(SCAFFOLD_TOKENS,
+                                (name, name.lower(), package, seed, revision)):
+            text = text.replace(token, value)
+        return text
+
+    templates = {path.name: path for path in sorted(KIT.rglob("*"))
+                 if path.is_file() and path.name != "__init__.py"}
+    templates["__init__.py"] = KIT / "src_benchmark" / "__init__.py"
+
+    for gap in impl.scaffold_gaps(box, name):
+        if gap.startswith(".gitignore"):
+            (box / ".gitignore").write_text(
+                "".join(f"{entry}\n" for entry in impl.IGNORE_ENTRIES),
+                encoding="utf-8")
+            continue
+        if gap.startswith("pyproject.toml"):
+            (box / "pyproject.toml").write_text(
+                substitute(PYPROJECT_TEMPLATE.read_text(encoding="utf-8")),
+                encoding="utf-8")
+            continue
+        destination = box / gap
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if gap == f"src/{package}/__init__.py":
+            # Authored, as the table says: the target's own modules, and step 9
+            # has not written any of them yet.
+            destination.write_text(
+                f'"""Reference implementation of the {name} formulation."""\n\n'
+                "__all__ = []\n", encoding="utf-8")
+            continue
+        destination.write_text(
+            substitute(templates[destination.name].read_text(encoding="utf-8")),
+            encoding="utf-8")
+    return box
+
 
 class NormalizeNameTests(unittest.TestCase):
     def assertPair(self, raw, directory, package):
@@ -4993,7 +5051,7 @@ class ScaffoldInstructionsAgreementTests(unittest.TestCase):
     one of them was executable.
 
     Step 5 told the agent to write four files "from `assets/`"; `scaffold_gaps`
-    required twelve, from `assets/kit/`. An agent that followed the instruction
+    required thirteen, from `assets/kit/`. An agent that followed the instruction
     exactly produced a target `verify` then reported incomplete, and the
     quickest reading of that is that the checker is wrong. Prose cannot be
     generated from code here — SKILL.md is what an agent reads, not a rendered
@@ -5064,7 +5122,7 @@ class ScaffoldInstructionsAgreementTests(unittest.TestCase):
 
     def test_the_documented_file_list_equals_the_gap_checker(self):
         """Reachable red: step 5 named four files while `scaffold_gaps`
-        required twelve, and the four did not include the benchmark
+        required thirteen, and the four did not include the benchmark
         declaration — the one file the whole declaration contract is read
         from."""
         documented = self.documented_gaps()
@@ -5082,7 +5140,7 @@ class ScaffoldInstructionsAgreementTests(unittest.TestCase):
         self.assertEqual(documented, self.kit_tokens())
 
     def test_the_worked_scaffold_file_example_is_the_whole_list(self):
-        """The example is what a reader copies. Showing four of twelve teaches
+        """The example is what a reader copies. Showing four of thirteen teaches
         a scaffold that `verify` reports incomplete."""
         text = self.USAGE.read_text(encoding="utf-8")
         blocks = re.findall(r"```json\n(.*?)```", text, re.DOTALL)
@@ -5178,52 +5236,7 @@ class ScaffoldImportClosureTests(unittest.TestCase):
             f"{unplaced}")
 
     def scaffold(self):
-        """A target holding exactly the paths `scaffold_gaps` reports as wanted.
-
-        Written gap by gap, the way an agent reading step 5 writes them — never
-        by shelling `materialize.py`, which writes a different tree and is what
-        let this stay hidden.
-        """
-        box = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
-
-        def substitute(text: str) -> str:
-            return (text.replace("{{NAME}}", self.NAME)
-                        .replace("{{NAME_LOWER}}", self.NAME.lower())
-                        .replace("{{PKG}}", self.PACKAGE)
-                        .replace("{{SEED}}", self.SEED)
-                        .replace("{{REVISION}}", "research-concept-r01.md"))
-
-        for gap in self.required_gaps():
-            if gap.startswith(".gitignore"):
-                (box / ".gitignore").write_text(
-                    "".join(f"{entry}\n" for entry in impl.IGNORE_ENTRIES),
-                    encoding="utf-8")
-                continue
-            if gap.startswith("pyproject.toml"):
-                (box / "pyproject.toml").write_text(
-                    substitute(self.TEMPLATE.read_text(encoding="utf-8")),
-                    encoding="utf-8")
-                continue
-            destination = box / gap
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if gap == f"src/{self.PACKAGE}/__init__.py":
-                destination.write_text(
-                    f'"""Reference implementation of the {self.NAME} formulation."""\n\n'
-                    "__all__ = []\n", encoding="utf-8")
-            elif gap == f"src/{self.PACKAGE}_Benchmark/__init__.py":
-                destination.write_text(
-                    (self.KIT_BENCH / "__init__.py").read_text(encoding="utf-8"),
-                    encoding="utf-8")
-            elif gap.startswith("tests/"):
-                destination.write_text(
-                    substitute((self.KIT_TESTS / destination.name)
-                               .read_text(encoding="utf-8")), encoding="utf-8")
-            else:
-                destination.write_text(
-                    substitute((self.KIT_NB / destination.name)
-                               .read_text(encoding="utf-8")), encoding="utf-8")
-        return box
+        return doctrine_scaffold(self, self.NAME, self.SEED)
 
     def test_a_doctrine_faithful_scaffold_is_collected_without_error(self):
         """Reachable red, and the one that was measured rather than argued:
@@ -5245,6 +5258,70 @@ class ScaffoldImportClosureTests(unittest.TestCase):
                          proc.stdout[-3000:])
         self.assertNotIn("error", proc.stdout.splitlines()[-1].lower(),
                          proc.stdout[-3000:])
+
+
+class ReportSealPlacementTests(unittest.TestCase):
+    """The seal that binds a report to its code shipped with no instruction
+    naming where it goes.
+
+    `assets/kit/nb/report_digest.py` is the one implementation of the source
+    digest: it agrees with `implementation_cli.source_digest` line for line, and
+    it is what a notebook is supposed to import instead of hashing a tree of its
+    own. No table, no `wanted` entry and no worked example ever named a
+    destination for it, so a target scaffolded exactly as doctrine instructs
+    does not contain it — and every notebook that would import it cannot.
+
+    `assets/kit/nb/` is a staging folder, not a mirror of where its contents
+    end up: `benchmark.py` and `verdict.py` already ship out of it into
+    `src/<Package>_Benchmark/`. So the repair is a row, and the file does not
+    move.
+    """
+
+    NAME = "Example-Method"
+    PACKAGE = "Example_Method"
+    SEED = "7"
+    DESTINATION = "src/Example_Method_Benchmark/report_digest.py"
+
+    def test_the_seal_is_placed_where_a_notebook_can_import_it(self):
+        """Reachable red: a scaffold built from exactly the gaps `scaffold_gaps`
+        reports holds no `report_digest.py` anywhere."""
+        box = doctrine_scaffold(self, self.NAME, self.SEED)
+        self.assertTrue(
+            (box / self.DESTINATION).is_file(),
+            "a doctrine-faithful scaffold does not carry the report seal; "
+            f"it holds {sorted(str(p.relative_to(box)) for p in box.rglob('*.py'))}")
+
+    def test_the_placed_seal_agrees_with_the_digest_verify_recomputes(self):
+        """Why the row exists, stated as behaviour rather than as a row.
+
+        The seal is only worth placing if the string it stamps is the string
+        `verify` recomputes. Loading it from where the scaffold puts it also
+        proves the placement itself: `_here()` resolves the repository as
+        `parents[1]` of its own directory, which is only the target's root when
+        the file sits in `src/<Package>_Benchmark/`.
+        """
+        import importlib.util
+
+        box = doctrine_scaffold(self, self.NAME, self.SEED)
+        placed = box / self.DESTINATION
+        self.assertTrue(placed.is_file(), "the seal was never placed")
+        spec = importlib.util.spec_from_file_location("placed_report_digest", placed)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        self.assertEqual(module.stamp(),
+                         f"{module.MARKER} {impl.source_digest(box, self.PACKAGE)}")
+
+    def test_the_materializer_places_the_seal_too(self):
+        """A destination nothing honours is a destination in name only, so the
+        commit that declares it is the commit that teaches the producer."""
+        box = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        subprocess.run(
+            [sys.executable, str(SKILL_ROOT / "scripts/materialize.py"),
+             str(box), self.NAME, self.SEED], check=True, capture_output=True)
+        self.assertTrue((box / self.DESTINATION).is_file(),
+                        "`materialize.py` writes no report seal")
 
 
 class HarnessPlacementTests(unittest.TestCase):
@@ -5273,7 +5350,7 @@ class HarnessPlacementTests(unittest.TestCase):
     def scaffold(self, suffix):
         """A target scaffolded from the kit exactly as doctrine instructs.
 
-        `materialize.py` performs eleven of the twelve gap fills; the `.gitignore`
+        `materialize.py` performs twelve of the thirteen gap fills; the `.gitignore`
         is authored, as the scaffold step says. Then the two harness modules go
         into `src/<Package>_Benchmark/` and the notebook into
         `<Name>/Notebooks/`, which is the placement under test.
