@@ -99,6 +99,19 @@ def declared_assets(cell):
     return ASSET_RE.findall(cell)
 
 
+def gap_path(gap):
+    """The path a gap string names.
+
+    Two gaps carry a computed tail — which ignore entries are missing, and which
+    anchor the pyproject lacks — so they are matched by the thing they name
+    rather than by the sentence they name it in.
+    """
+    for prefix in (".gitignore", "pyproject.toml"):
+        if gap.startswith(prefix):
+            return prefix
+    return gap
+
+
 def doctrine_scaffold(case, name="Example-Method", seed="7",
                       revision="research-concept-r01.md", box=None):
     """A target holding exactly the paths `scaffold_gaps` reports as wanted.
@@ -5155,14 +5168,7 @@ class ScaffoldInstructionsAgreementTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, empty, ignore_errors=True)
         return impl.scaffold_gaps(empty, self.EXAMPLE_NAME)
 
-    def gap_class(self, gap: str) -> str:
-        """Two gaps carry a computed tail — which ignore entries are missing,
-        and which anchor the pyproject lacks — so they are matched by the
-        thing they name rather than by the sentence they name it in."""
-        for prefix in (".gitignore", "pyproject.toml"):
-            if gap.startswith(prefix):
-                return prefix
-        return gap
+    gap_class = staticmethod(gap_path)
 
     def documented_gaps(self):
         lines = self.SKILL_MD.read_text(encoding="utf-8").splitlines()
@@ -5936,12 +5942,70 @@ class HarnessPlacementTests(unittest.TestCase):
     NAME = "Example-Method"
     PACKAGE = "Example_Method"
 
-    def scaffold(self, suffix):
-        """A target scaffolded from the kit exactly as doctrine instructs.
+    def substituted(self, path):
+        return path.replace("<Name>", self.NAME).replace("<Package>", self.PACKAGE)
 
-        `materialize.py` performs all thirteen gap fills. Then the two harness
-        modules go into `src/<Package>_Benchmark/` and the notebook into
-        `<Name>/Notebooks/`, which is the placement under test.
+    def copy_step(self):
+        """The stage-2 placements the copy step performs, read from its table.
+
+        Two tables state stage 2. Step 9's writes a module per object from
+        `assets/kit/src/` and `assets/kit/tests/`, and no fixture can perform it
+        — the object map it answers does not exist. The copy step's is the other
+        one, and every asset it names is staged under `assets/kit/nb/`, which is
+        the property this reads it by. A third table, or a copy step that
+        started staging from somewhere else, turns this red rather than silently
+        placing the wrong three files.
+        """
+        staged = []
+        for table in markdown_table_rows(SKILL_MD.read_text(encoding="utf-8"),
+                                         STAGE_TWO_HEADER):
+            assets = [declared_assets(row[1]) for row in table]
+            if assets and all(len(a) == 1 and a[0].startswith("assets/kit/nb/")
+                              for a in assets):
+                staged.append({row[0].strip("`"): declared_assets(row[1])[0]
+                               for row in table})
+        self.assertEqual(len(staged), 1,
+                         "%d stage-2 tables stage out of `assets/kit/nb/`" % len(staged))
+        return staged[0]
+
+    def expected_files(self):
+        """Every path a doctrine-faithful tree holds, computed rather than listed.
+
+        Both halves are read from doctrine: the gaps `scaffold_gaps` reports for
+        a repository holding none of it, and the copy step's own table. Nothing
+        here is a literal, which is the point — the expected set used to be
+        whatever the producer happened to write, so a producer writing one file
+        more than doctrine names agreed with itself every time.
+        """
+        empty = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, empty, ignore_errors=True)
+        return sorted(
+            [gap_path(gap) for gap in impl.scaffold_gaps(empty, self.NAME)]
+            + [self.substituted(destination) for destination in self.copy_step()])
+
+    @staticmethod
+    def present_files(box):
+        """What the tree actually holds, minus what git keeps for itself."""
+        return sorted(
+            str(path.relative_to(box)) for path in box.rglob("*")
+            if path.is_file() and ".git" not in path.parts
+            and "__pycache__" not in path.parts)
+
+    def scaffold(self, suffix):
+        """A target holding exactly the tree doctrine describes, and nothing more.
+
+        The fixture used to call itself doctrine-faithful while shelling
+        `materialize.py` for its contents, and nothing compared the two. So the
+        producer's superset — three files it could not parse — was the standard
+        the fixture measured against, `scaffoldGaps: []` was satisfied by a tree
+        larger than the one doctrine names, and each broken path kept the other
+        out of sight. The tree is still produced by the materializer, because
+        that is the path under test; what changed is that it is now checked
+        against a set computed from `scaffold_gaps` and the copy step's table.
+
+        The placement under test follows: the harness modules into
+        `src/<Package>_Benchmark/` and the notebook into `<Name>/Notebooks/`,
+        both read from the copy step rather than named here.
         """
         box = FORGE / "implementations" / f"_harness_placement_{suffix}_{os.getpid()}"
         self.addCleanup(shutil.rmtree, box, ignore_errors=True)
@@ -5950,16 +6014,18 @@ class HarnessPlacementTests(unittest.TestCase):
         subprocess.run(
             [sys.executable, str(self.SKILL / "scripts/materialize.py"),
              str(box), self.NAME, "7"], check=True, capture_output=True)
-        (box / ".gitignore").write_text(
-            "".join(f"{entry}\n" for entry in impl.IGNORE_ENTRIES), encoding="utf-8")
         for product in impl.PRODUCT_DIRS:
             if product != "Data":
                 (box / self.NAME / product).mkdir(parents=True, exist_ok=True)
-        bench = box / "src" / f"{self.PACKAGE}_Benchmark"
-        for module in (impl.BENCHMARK_MODULE, "verdict.py"):
-            shutil.copy(self.KIT / "nb" / module, bench / module)
-        shutil.copy(self.KIT / "nb" / impl.PROBE_NOTEBOOK,
-                    box / self.NAME / "Notebooks" / impl.PROBE_NOTEBOOK)
+        for destination, asset in self.copy_step().items():
+            placed = box / self.substituted(destination)
+            placed.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(self.SKILL / asset, placed)
+
+        self.assertEqual(
+            self.present_files(box), self.expected_files(),
+            "the fixture is not the doctrine's tree, so nothing it asserts is "
+            "about the doctrine's tree")
         return box
 
     def run_cli(self, command, box):
