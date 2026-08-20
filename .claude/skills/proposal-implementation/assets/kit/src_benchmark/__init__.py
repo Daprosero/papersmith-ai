@@ -43,7 +43,7 @@ __benchmark__ = {
     # means anything, e.g.:
     #     "search": {
     #         "what": "the regularization weight",
-    #         "requiredScale": 30,
+    #         "requiredScale": {"epochs": 20, "seeds": 3},
     #         "role": "validation split",
     #         "tieRule": "smallest value within one standard error of the best",
     #     }

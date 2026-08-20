@@ -4784,3 +4784,139 @@ class EquationTagRecognitionTests(unittest.TestCase):
             any("absent from the revision" in reason
                 for reason in result["inadmissible"]["cites-nothing-real"]),
             result["inadmissible"])
+
+
+class SearchDeclarationShapeTests(unittest.TestCase):
+    """The `search` declaration had no shape table, and the published example
+    was a scalar every consumer iterated as a mapping.
+
+    `distribution` has been guarded by `DISTRIBUTION_SHAPE` since it was
+    written: a key of the wrong type is a third thing, neither answered nor
+    missing. `search` had nothing of the kind, so `search_state` accepted
+    `requiredScale: 30` as answered on bare truthiness — and then
+    `_projected_cost` iterated `.items()` on it and `probe` died with a
+    traceback, emitting no JSON at all. The value came from the kit's own
+    template, so the first target to copy the example it was handed hit it.
+    """
+
+    KIT_DECLARATION = (FORGE / ".claude/skills/proposal-implementation"
+                       / "assets/kit/src_benchmark/__init__.py")
+    DOCTRINE = FORGE / ".claude/skills/proposal-implementation/SKILL.md"
+
+    MAPPING_SEARCH = {
+        "what": "which free scalar this chooses",
+        "requiredScale": {"epochs": 20, "seeds": 3},
+        "role": "valid",
+        "tieRule": "the smallest value among the tied candidates",
+    }
+    SCALAR_SEARCH = {**MAPPING_SEARCH, "requiredScale": 30}
+
+    def _published_search_example(self, path: Path) -> dict:
+        """The `search` example a target is invited to copy, read from where it
+        is published rather than restated here.
+
+        Restating it would let the two drift, which is exactly how a scalar
+        stayed in both places long enough for a target to adopt it.
+        """
+        body: list[str] = []
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip().lstrip("#").strip()
+            if body:
+                body.append(line)
+                if line in ("}", "},"):
+                    break
+            elif line == '"search": {':
+                body.append(line)
+        self.assertTrue(body, f"no published search example found in {path}")
+        return ast.literal_eval("{" + "\n".join(body).rstrip(",") + "}")["search"]
+
+    def _declaration(self, search) -> str:
+        return ("__benchmark__ = {\n"
+                "    'revision': 'r01.md',\n"
+                "    'arms': {'floor': {'sections': ['3']}},\n"
+                f"    'search': {search!r},\n"
+                "}\n")
+
+    def _probe(self, search, *, suffix):
+        box = FORGE / "implementations" / f"_search_shape_{suffix}_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src/Method").mkdir(parents=True)
+        (box / "src/Method_Benchmark").mkdir(parents=True)
+        # The product folder, distinct from `src/Method`: the pilot record the
+        # forecast is projected from lives under it.
+        (box / "Method" / "Results").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            self._declaration(search), encoding="utf-8")
+        (box / "Method" / "Results" / impl.PROBE_RESULTS).write_text(json.dumps({
+            "revision": "r01.md",
+            "comparison": {"metric": 1},
+            "reduction": {"epochs": 1, "wallSeconds": 60},
+            "targetScale": {"epochs": 5},
+        }), encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, str(CLI), "probe", "--target", str(box),
+             "--name", "Method", "--revision", "r01.md"],
+            capture_output=True, text=True, cwd=FORGE)
+
+    def test_a_scalar_required_scale_is_reported_and_never_crashed_on(self):
+        """The live reproduction: `AttributeError: 'int' object has no
+        attribute 'items'`, raised where the forecast is projected. `main`
+        catches only `Refused`, so the process ended on a traceback and
+        whoever called `probe` got no JSON to read at all."""
+        proc = self._probe(self.SCALAR_SEARCH, suffix="scalar")
+
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        result = json.loads(proc.stdout or "{}")
+        self.assertEqual(result["search"]["status"], "incomplete")
+        self.assertEqual([m["field"] for m in result["search"]["malformed"]],
+                         ["requiredScale"])
+
+    def test_a_scalar_required_scale_reads_as_malformed_not_as_answered(self):
+        """Bare truthiness accepted `30` as an answer. A declaration nobody
+        type-checked is the producer half of the same defect, and guarding
+        only the arithmetic downstream would have left it in place."""
+        state = impl.search_state({"search": self.SCALAR_SEARCH}, [])
+
+        self.assertEqual([m["field"] for m in state["malformed"]], ["requiredScale"])
+        self.assertEqual(state["malformed"][0]["expected"], "dict")
+        self.assertEqual(state["malformed"][0]["found"], "int")
+        self.assertEqual(state["status"], "incomplete")
+        self.assertEqual([m["field"] for m in state["missing"]], [])
+
+    def test_every_published_example_is_one_a_target_can_run(self):
+        """The regression test that makes the doc and the code one contract:
+        the example is read from the two places it is published and run
+        through `probe` exactly as a target would copy it."""
+        for path in (self.KIT_DECLARATION, self.DOCTRINE):
+            with self.subTest(published=path.name):
+                example = self._published_search_example(path)
+                self.assertIsInstance(example["requiredScale"], dict)
+                proc = self._probe(example, suffix=f"published_{path.suffix.strip('.')}")
+                self.assertNotIn("Traceback", proc.stderr)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                search = json.loads(proc.stdout or "{}")["search"]
+                self.assertEqual(search["malformed"], [])
+
+    def test_a_mapping_required_scale_still_projects_the_forecast(self):
+        """Characterization: the arithmetic the guard sits in front of is not
+        touched. 60 measured seconds at one epoch, twenty declared, so twenty
+        times the measurement — and `seeds`, which the pilot never recorded,
+        scales nothing rather than being guessed at."""
+        proc = self._probe(self.MAPPING_SEARCH, suffix="mapping")
+        forecast = json.loads(proc.stdout or "{}")["search"]["costForecast"]
+
+        self.assertEqual(forecast["measuredSeconds"], 60)
+        self.assertEqual(forecast["factor"], 20.0)
+        self.assertEqual(forecast["projectedSeconds"], 1200)
+        self.assertEqual(forecast["aboveMeasuredScale"],
+                         {"epochs": {"declared": 20, "measuredAt": 1}})
+
+    def test_the_toy_targets_left_nothing_behind(self):
+        self._probe(self.MAPPING_SEARCH, suffix="cleanup")
+        for box in (FORGE / "implementations").glob("_search_shape_cleanup_*"):
+            shutil.rmtree(box, ignore_errors=True)
+        self.assertEqual(list((FORGE / "implementations").glob("_search_shape_*")), [])

@@ -259,6 +259,59 @@ SEARCH_DECLARATION = {
 }
 
 
+#: The declared shape of each `search` field, the same way `DISTRIBUTION_SHAPE`
+#: declares `distribution`'s. `requiredScale` is a scale along named axes, so it
+#: is a mapping and never a bare number: `30` cannot say whether it means epochs,
+#: seeds or runs, and there is no axis to project a cost along. Without this
+#: table the field was accepted on bare truthiness and the arithmetic downstream
+#: iterated a scalar, which ended the process on a traceback instead of a result.
+SEARCH_SHAPE = {
+    "what": str,
+    "requiredScale": dict,
+    "role": str,
+    "tieRule": str,
+}
+
+
+def _search_answered(search: dict, field: str) -> bool:
+    """True when `field` carries a real answer of its declared shape.
+
+    Same rule `_distribution_answered` applies: a container answers by
+    existing, a scalar answers only non-blank, and neither is trusted until
+    the value's own type is confirmed first.
+    """
+    if field not in search:
+        return False
+    value = search[field]
+    expected = SEARCH_SHAPE[field]
+    if not isinstance(value, expected):
+        return False
+    return value != "" if expected is str else True
+
+
+def _search_malformed(search: dict, field: str) -> bool:
+    """True when the key is present but its value is not the declared shape.
+
+    A third thing, neither answered nor missing: reporting a scalar
+    `requiredScale` as absent would tell whoever wrote it to declare a field
+    they already declared, and reporting it as answered is what crashed.
+    """
+    return field in search and not isinstance(search[field], SEARCH_SHAPE[field])
+
+
+def declared_required_scale(search: dict) -> dict:
+    """The declared scale a cost may be projected towards, or nothing.
+
+    Takes what `search_state` reported rather than the raw contract, so the
+    shape has already been ruled on by the time the arithmetic sees it. A
+    value of any other shape yields `{}`, which the forecast already knows how
+    to answer — and it is reported as malformed beside the forecast, so the
+    empty answer is never the only thing said about it.
+    """
+    declared = (search.get("declared") or {}).get("requiredScale")
+    return dict(declared) if isinstance(declared, dict) else {}
+
+
 #: A token in prose that looks like something in the code: dotted, underscored or
 #: shouted. A bare lowercase word is an English word far more often than a symbol,
 #: and reporting those would bury the ones that matter.
@@ -660,17 +713,28 @@ def search_state(contract: dict, declared_records: list,
     if not search:
         if declaration_status in ("absent", "undeclared"):
             return {"status": declaration_status, "declared": {}, "missing": [],
+                    "malformed": [],
                     "recordNotDeclared": None, "recordFound": None,
                     "strayRecords": [],
                     "note": "no benchmark declaration to read a search from yet"}
-        return {"status": "none", "declared": {}, "missing": [],
+        return {"status": "none", "declared": {}, "missing": [], "malformed": [],
                 "recordNotDeclared": None, "recordFound": None, "strayRecords": [],
                 "note": "no search declared; `undeclaredRecords` is what would "
                         "surface one that left an artefact"}
 
     missing = [{"field": field, "reason": reason}
                for field, reason in SEARCH_DECLARATION.items()
-               if not search.get(field)]
+               if not _search_answered(search, field)
+               and not _search_malformed(search, field)]
+
+    # A value of the wrong shape is reported as itself. Folding it into
+    # `missing` would ask for a field that is already there, and folding it
+    # into the answered set is what let a scalar reach the arithmetic.
+    malformed = [{"field": field,
+                  "expected": SEARCH_SHAPE[field].__name__,
+                  "found": type(search[field]).__name__}
+                 for field in SEARCH_DECLARATION
+                 if _search_malformed(search, field)]
 
     # The join between the two declarations: a search that writes a record and
     # never names it there is a second experiment arriving unaccounted for, which
@@ -696,12 +760,13 @@ def search_state(contract: dict, declared_records: list,
                      if p.is_file()]
 
     return {
-        "status": ("ok" if not missing and covered and found is not False
-                   else "incomplete"),
+        "status": ("ok" if not missing and not malformed and covered
+                   and found is not False else "incomplete"),
         "declared": dict(search),
         "recordFound": found,
         "strayRecords": stray,
         "missing": missing,
+        "malformed": malformed,
         "recordNotDeclared": None if covered else record,
     }
 
@@ -2054,10 +2119,14 @@ def cmd_probe(args) -> dict:
         # and a reason not to offer it belongs beside the offer. The forecast rides
         # alongside the declaration it is projected from, rather than in `results`,
         # because what it costs is a property of the search and not of the pilot.
+        # The declared scale is passed on only when it is a mapping. `search`
+        # has already reported a value of any other shape as malformed, and a
+        # forecast projected from a scale nobody can name an axis of would be a
+        # number invented to fill the field.
         "search": {**search,
                    "costForecast": search_cost_forecast(
                        state.get("reduction") or {},
-                       (search.get("declared") or {}).get("requiredScale") or {})},
+                       declared_required_scale(search))},
         "unreachedModules": unfaithful,
         # A static fact, reported and never gating: see `notebook_coupling`.
         "coupling": coupling_state(target, name, package_name(name)),
