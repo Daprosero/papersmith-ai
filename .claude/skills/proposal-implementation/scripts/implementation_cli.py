@@ -2102,7 +2102,12 @@ def cmd_probe(args) -> dict:
         next_step = "report-first"
 
     proposal = wiring_proposal(target, name, baselines) if next_step == "benchmark" else None
-    harness = target / name / "Notebooks" / BENCHMARK_MODULE
+    # The harness is a module of the benchmark package, not a file beside a
+    # notebook: `.py` outside `SOURCE_ROOTS` is a stray module, `wiring.py` has to
+    # sit next to it, and `declared_dimension_names` and `benchmark_reach` both
+    # read only under `src/<Package>_Benchmark/`. Looking beside the notebooks
+    # reported `harness: null` on a target that had followed doctrine exactly.
+    harness = target / "src" / f"{package_name(name)}_Benchmark" / BENCHMARK_MODULE
     notebook = target / name / "Notebooks" / PROBE_NOTEBOOK
     return {
         "status": "ok",

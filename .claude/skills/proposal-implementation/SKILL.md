@@ -1149,7 +1149,10 @@ the same reason the builders do.
 Copy `benchmark.py`, `verdict.py` and `probe.ipynb` from `assets/kit/nb/` — the two
 modules into `src/<Package>_Benchmark/`, the notebook into `<Name>/Notebooks/` — fill
 in the reduction, and execute the notebook. Python that lives beside a notebook is a
-stray module the moment it is committed; see [Target layout](#target-layout). Without
+stray module the moment it is committed; see [Target layout](#target-layout). The
+notebook therefore addresses the harness by repository-relative path from `src/`, and
+runs it from the harness's own directory so that its `verdict.py` and `wiring.py`
+siblings resolve. Without
 `wiring.py` the harness refuses and says what is missing. It trains each
 implementation over every seed, measures accuracy, wall time, peak memory and
 parameter count, and writes `<Name>/Results/Probe_results.json`.

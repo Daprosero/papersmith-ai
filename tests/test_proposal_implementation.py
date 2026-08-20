@@ -658,37 +658,44 @@ class InterpreterGuardTests(unittest.TestCase):
         self.KIT = Path(impl.SKILL_ROOT) / "assets/kit/nb"
 
     def stage(self, root_name="repo"):
-        """Lay the harness out where it expects to be: <repo>/<Name>/Notebooks/."""
-        box = Path(tempfile.mkdtemp(prefix="pp-interp-"))
-        notebooks = box / root_name / "Name" / "Notebooks"
-        notebooks.mkdir(parents=True)
-        for asset in (impl.BENCHMARK_MODULE, "verdict.py"):
-            shutil.copy(self.KIT / asset, notebooks / asset)
-        (notebooks / "config.json").write_text("{}")
-        return box / root_name, notebooks
+        """Lay the harness out where doctrine puts it: <repo>/src/<Package>_Benchmark/.
 
-    def run_harness(self, notebooks, executable=sys.executable):
+        `environment()` says that address in prose and then derives the repository
+        as `parents[2]`, which is exactly this depth. It reached a repository root
+        from `<Name>/Notebooks/` too, and that coincidence is the whole reason the
+        two placements could disagree without anything going red.
+        """
+        box = Path(tempfile.mkdtemp(prefix="pp-interp-"))
+        bench = box / root_name / "src" / "Example_Method_Benchmark"
+        bench.mkdir(parents=True)
+        for asset in (impl.BENCHMARK_MODULE, "verdict.py"):
+            shutil.copy(self.KIT / asset, bench / asset)
+        (bench / "config.json").write_text("{}")
+        return box / root_name, bench
+
+    def run_harness(self, bench, executable=sys.executable):
         return subprocess.run(
             [executable, impl.BENCHMARK_MODULE, "--config", "config.json",
              "--out", "out.json"],
-            cwd=str(notebooks), capture_output=True, text=True)
+            cwd=str(bench), capture_output=True, text=True)
 
     def test_a_foreign_interpreter_is_refused_before_anything_is_measured(self):
         # Not hygiene: wall time and peak memory ARE the measurement, so another
         # interpreter measures a different environment correctly and the summary
         # would attribute it to this repository.
-        repository, notebooks = self.stage()
-        proc = self.run_harness(notebooks)
+        repository, bench = self.stage()
+        proc = self.run_harness(bench)
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("refusing to run under", proc.stdout + proc.stderr)
-        self.assertFalse((notebooks / "out.json").exists(),
+        self.assertFalse((bench / "out.json").exists(),
                          "a refused run must not leave a summary behind")
 
     def test_the_refusal_names_the_interpreter_the_user_should_use(self):
-        repository, notebooks = self.stage()
-        output = "".join(self.run_harness(notebooks)[1:3] if False else
-                         [self.run_harness(notebooks).stdout,
-                          self.run_harness(notebooks).stderr])
+        """The refusal is built from `parents[2]`, so it also pins that the new
+        depth still resolves to the repository and not to `src/`."""
+        repository, bench = self.stage()
+        output = "".join([self.run_harness(bench).stdout,
+                          self.run_harness(bench).stderr])
         self.assertIn(str(repository / ".venv"), output,
                       "a refusal that does not say what to run instead is a dead end")
 
@@ -696,8 +703,8 @@ class InterpreterGuardTests(unittest.TestCase):
         # Order matters: under a foreign interpreter the wiring question is not yet
         # the user's problem, and reporting it first would send them to fix the
         # wrong thing.
-        repository, notebooks = self.stage()
-        output = self.run_harness(notebooks).stdout + self.run_harness(notebooks).stderr
+        repository, bench = self.stage()
+        output = self.run_harness(bench).stdout + self.run_harness(bench).stderr
         self.assertIn("refusing to run under", output)
         self.assertNotIn("wiring.py is missing", output)
 
@@ -5091,3 +5098,185 @@ class ScaffoldInstructionsAgreementTests(unittest.TestCase):
         self.assertEqual([line for line in lines if "../assets/" in line], [])
         self.assertTrue([line for line in lines if "assets/kit/" in line],
                         "the usage reference names no template root at all")
+
+
+class HarnessPlacementTests(unittest.TestCase):
+    """Exactly one directory holds the probe harness, and it is `src/<Package>_Benchmark/`.
+
+    Doctrine has always said so: the scaffold step sends `benchmark.py` and
+    `verdict.py` into the Benchmark package, `wiring.py` is written beside them,
+    and the harness's own `environment()` states its address in prose before it
+    derives the repository from it. Two consumers disagreed and looked under
+    `<Name>/Notebooks/` instead — `cmd_probe`, which therefore reported
+    `harness: null` on a target that had followed the instructions exactly, and
+    the kit's own probe notebook, which invoked a file beside itself.
+
+    The contradiction stayed silent because `parents[2]` happens to reach the
+    repository from either depth. Nothing else does: Python beside a notebook is
+    a stray module by `SOURCE_ROOTS`, `wiring.py` cannot live there for the same
+    reason, and both `declared_dimension_names` and `benchmark_reach` look only
+    under `src/<Package>_Benchmark/`.
+    """
+
+    SKILL = FORGE / ".claude/skills/proposal-implementation"
+    KIT = SKILL / "assets/kit"
+    NAME = "Example-Method"
+    PACKAGE = "Example_Method"
+
+    def scaffold(self, suffix):
+        """A target scaffolded from the kit exactly as doctrine instructs.
+
+        `materialize.py` performs eight of the nine gap fills; the `.gitignore`
+        is authored, as the scaffold step says. Then the two harness modules go
+        into `src/<Package>_Benchmark/` and the notebook into
+        `<Name>/Notebooks/`, which is the placement under test.
+        """
+        box = FORGE / "implementations" / f"_harness_placement_{suffix}_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        box.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        subprocess.run(
+            [sys.executable, str(self.SKILL / "scripts/materialize.py"),
+             str(box), self.NAME, "7"], check=True, capture_output=True)
+        (box / ".gitignore").write_text(
+            "".join(f"{entry}\n" for entry in impl.IGNORE_ENTRIES), encoding="utf-8")
+        for product in impl.PRODUCT_DIRS:
+            if product != "Data":
+                (box / self.NAME / product).mkdir(parents=True, exist_ok=True)
+        bench = box / "src" / f"{self.PACKAGE}_Benchmark"
+        for module in (impl.BENCHMARK_MODULE, "verdict.py"):
+            shutil.copy(self.KIT / "nb" / module, bench / module)
+        shutil.copy(self.KIT / "nb" / impl.PROBE_NOTEBOOK,
+                    box / self.NAME / "Notebooks" / impl.PROBE_NOTEBOOK)
+        return box
+
+    def run_cli(self, command, box):
+        proc = subprocess.run(
+            [sys.executable, str(CLI), command, "--target", str(box),
+             "--name", self.NAME],
+            capture_output=True, text=True, cwd=FORGE)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(proc.stdout or "{}")
+
+    def test_a_doctrine_faithful_scaffold_reports_no_stray_modules(self):
+        """The reason the harness cannot move to the notebooks instead: a `.py`
+        outside `SOURCE_ROOTS` is a stray module, and admitting `Notebooks/`
+        would readmit every stray the check exists to catch."""
+        structure = self.run_cli("verify", self.scaffold("structure"))["structure"]
+
+        self.assertEqual(structure["strayModules"], [])
+        self.assertEqual(structure["scaffoldGaps"], [])
+        self.assertEqual(structure["status"], "ok")
+
+    def test_probe_finds_the_harness_doctrine_told_the_agent_to_write(self):
+        """`harness: null` on a target that followed the instructions exactly.
+        The reader's cheapest conclusion is that they wrote the file in the
+        wrong place, and the instructions were right."""
+        probe = self.run_cli("probe", self.scaffold("probe"))
+
+        self.assertEqual(probe["harness"],
+                         f"src/{self.PACKAGE}_Benchmark/{impl.BENCHMARK_MODULE}")
+        self.assertEqual(probe["notebook"],
+                         f"{self.NAME}/Notebooks/{impl.PROBE_NOTEBOOK}")
+
+    def test_the_harness_becoming_visible_does_not_turn_the_distribution_red(self):
+        """New, and worth pinning. Placing the harness where doctrine says makes
+        the kit's own `DIMENSIONS` reachable to `declared_dimension_names` for the
+        first time, so a fresh scaffold now has a dimension universe where it had
+        none. That must inform the reading, never fail it: the declaration has
+        answered nothing yet, so there is nothing for a universe to contradict."""
+        verify = self.run_cli("verify", self.scaffold("distribution"))
+        distribution = verify["distribution"]
+
+        self.assertEqual(distribution["status"], "undeclared")
+        self.assertEqual(distribution["unpartitioned"], [])
+        self.assertEqual(distribution["notADimension"], [])
+        self.assertNotIn("could not be checked", distribution.get("note") or "",
+                         "the universe is readable now, so nothing may say it is not")
+        self.assertEqual(
+            distribution["dimensionSource"],
+            sorted(self.declared_kit_dimensions()),
+            "the kit's own harness declares the universe once it is reachable")
+
+    def test_the_harness_reaches_no_method_module_it_does_not_call(self):
+        """The other half of the new visibility: `benchmark_reach` now walks the
+        harness too. A fresh scaffold declares no arm, so nothing is claimed and
+        nothing may be reported unreached."""
+        probe = self.run_cli("probe", self.scaffold("reach"))
+
+        self.assertEqual(probe["unreachedModules"], [])
+
+    def declared_kit_dimensions(self):
+        source = (self.KIT / "nb" / impl.BENCHMARK_MODULE).read_text(encoding="utf-8")
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "DIMENSIONS" for t in node.targets
+            ):
+                return [key.value for key in node.value.keys]
+        self.fail("the kit's harness declares no DIMENSIONS")
+
+    # -- the notebook half -------------------------------------------------
+
+    def harness_cell(self):
+        """The notebook cell that invokes the harness, parsed rather than matched.
+
+        A substring assertion over notebook JSON passes on a path that appears in
+        a comment. The command is built by an expression, so the expression is
+        what gets read.
+        """
+        notebook = json.loads(
+            (self.KIT / "nb" / impl.PROBE_NOTEBOOK).read_text(encoding="utf-8"))
+        cells = [c for c in notebook["cells"] if c["cell_type"] == "code"
+                 and "subprocess.run" in "".join(c["source"])]
+        self.assertEqual(len(cells), 1, "exactly one cell invokes the harness")
+        return ast.parse("".join(cells[0]["source"]))
+
+    @staticmethod
+    def path_chain(node):
+        """`base / "a" / "b"` read as its base and its literal segments."""
+        segments = []
+        while isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            segments.append(node.right.value if isinstance(node.right, ast.Constant)
+                            else ast.unparse(node.right))
+            node = node.left
+        return ast.unparse(node), list(reversed(segments))
+
+    def assigned(self, tree, target):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == target for t in node.targets
+            ):
+                return node.value
+        self.fail(f"the harness cell binds no {target}")
+
+    def test_the_notebook_builds_the_harness_path_under_the_source_root(self):
+        """It composed `HERE / "benchmark.py"`, and `HERE` is the notebook's own
+        directory: the notebook shipped in the kit could only ever have run a
+        harness in the one place doctrine forbids."""
+        base, segments = self.path_chain(self.assigned(self.harness_cell(), "HARNESS"))
+
+        self.assertEqual(base, "ROOT", "the harness is addressed from the repository")
+        self.assertEqual(segments, ["src", "{{PKG}}_Benchmark", impl.BENCHMARK_MODULE])
+
+    def test_the_notebook_runs_the_harness_from_the_harness_own_directory(self):
+        """`benchmark.py` imports `verdict` and `wiring` flat, which resolves
+        because a script invoked by path puts its own directory on `sys.path` and
+        all three are siblings there. Every path it is handed is absolute, so the
+        working directory is free to be the one the imports need."""
+        tree = self.harness_cell()
+        call = next(node for node in ast.walk(tree)
+                    if isinstance(node, ast.Call)
+                    and ast.unparse(node.func) == "subprocess.run")
+        keywords = {kw.arg: ast.unparse(kw.value) for kw in call.keywords}
+        argv = [ast.unparse(element) for element in call.args[0].elts]
+
+        self.assertEqual(argv[0], "sys.executable")
+        self.assertEqual(argv[1], "str(HARNESS)")
+        self.assertEqual(keywords["cwd"], "str(HARNESS.parent)")
+
+    def test_the_toy_targets_left_nothing_behind(self):
+        self.scaffold("cleanup")
+        self.doCleanups()
+        self.assertEqual(
+            list((FORGE / "implementations").glob("_harness_placement_*")), [])
