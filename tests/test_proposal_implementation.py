@@ -116,6 +116,39 @@ def scaffold_substitute(text, name="Example-Method", seed="7",
     return text
 
 
+def kit_notebook_cells(notebook, name="Example-Method"):
+    """Every non-empty code cell of a kit notebook, as the scaffold writes it.
+
+    The tokens are answered first because `{{PKG}}_Benchmark` in an import is
+    not Python and would fail to parse for a reason that has nothing to do with
+    what is being asserted. The stage-2 tokens are left standing; they sit
+    inside strings and literals and parse as they are.
+    """
+    loaded = json.loads((KIT / "nb" / notebook).read_text(encoding="utf-8"))
+    return [(index, scaffold_substitute("".join(cell["source"]), name))
+            for index, cell in enumerate(loaded["cells"])
+            if cell["cell_type"] == "code" and "".join(cell["source"]).strip()]
+
+
+def cells_calling(notebook, function, name="Example-Method"):
+    """Every code cell of a kit notebook that calls the named function.
+
+    Read as a call and never as a substring: a marker, a path or an exit code
+    written in a comment reads exactly like one written in an expression, and a
+    cell is what it executes rather than what it mentions. Two classes select
+    their subject this way, so the selection is defined once.
+    """
+    found = []
+    for index, source in kit_notebook_cells(notebook, name):
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and ast.unparse(node.func).endswith(function)):
+                found.append((index, source, tree))
+                break
+    return found
+
+
 def gap_path(gap):
     """The path a gap string names.
 
@@ -5519,17 +5552,10 @@ class NotebookSealAgreementTests(unittest.TestCase):
 
     @classmethod
     def code_cells(cls, notebook):
-        """Every non-empty code cell of a kit notebook, as the scaffold writes it.
-
-        The tokens are answered first because `{{PKG}}_Benchmark` in an import
-        is not Python and would fail to parse for a reason that has nothing to
-        do with what is being asserted. The stage-2 tokens are left standing;
-        they sit inside strings and literals and parse as they are.
-        """
-        loaded = json.loads((KIT / "nb" / notebook).read_text(encoding="utf-8"))
-        return [(index, scaffold_substitute("".join(cell["source"]), cls.NAME))
-                for index, cell in enumerate(loaded["cells"])
-                if cell["cell_type"] == "code" and "".join(cell["source"]).strip()]
+        """Every non-empty code cell of a kit notebook, as the scaffold writes
+        it. The reading moved to module level once a second class needed it; the
+        name stays because this class's tests read better through it."""
+        return kit_notebook_cells(notebook, cls.NAME)
 
     def stamping_cell(self, notebook):
         """The cell that stamps the seal, identified by what it calls.
@@ -5539,14 +5565,7 @@ class NotebookSealAgreementTests(unittest.TestCase):
         of this class is that a comment cannot be executed. The cell that stamps
         is the cell that calls `stamp()` on the one implementation.
         """
-        found = []
-        for index, source in self.code_cells(notebook):
-            tree = ast.parse(source)
-            for node in ast.walk(tree):
-                if (isinstance(node, ast.Call)
-                        and ast.unparse(node.func).endswith("report_digest.stamp")):
-                    found.append((index, source, tree))
-                    break
+        found = cells_calling(notebook, "report_digest.stamp", self.NAME)
         self.assertEqual(
             len(found), 1,
             f"exactly one cell of {notebook} stamps the seal by calling the one "
@@ -5770,6 +5789,217 @@ class NotebookSealAgreementTests(unittest.TestCase):
                    if self.spawns_a_process(ast.parse(source))]
         self.assertEqual(len(harness), 1, "exactly one cell runs the harness")
         self.assertLess(index, harness[0])
+
+
+class SuiteFailureReachesTheVerdictTests(unittest.TestCase):
+    """`verify` never runs the suite, and one unguarded line is why it may not.
+
+    The chain is real and it is sound. `validation.status` reads `ok` only when
+    the report reached `notebooks.status: ok`, and a report reaches that only
+    when every code cell carries an `execution_count` and no cell stored an
+    error output. The report's own cell runs the target's suite and asserts the
+    exit code is zero, so a red tree stores an `AssertionError` on that cell and
+    the whole chain reports `incomplete`. An executed, error-free report
+    therefore does mean the suite was green when it ran.
+
+    All of which hangs on a single statement in a template that nothing held.
+    Write `pytest.main(...)` bare, or print the code instead of asserting on
+    it, and a failing suite executes cleanly, stores no error, and
+    `validation.status` reads `ok` over a red tree — silently. That is the
+    failure this change exists to kill, one link further down the same chain.
+
+    Two locks, because the chain has two ends and either one alone leaves the
+    other free to rot: the template must raise on a non-zero exit code, and the
+    reader must refuse `ok` to a report that stored an error. They are
+    complements in the way the asset register and import closure are — one holds
+    what ships, the other holds what reads it.
+    """
+
+    NAME = "Example-Method"
+    PACKAGE = "Example_Method"
+    SEED = "7"
+    NOTEBOOK = "verification.ipynb"
+
+    def one_cell(self, function):
+        """The single cell of the report that calls this function."""
+        found = cells_calling(self.NOTEBOOK, function, self.NAME)
+        self.assertEqual(
+            len(found), 1,
+            f"exactly one cell of {self.NOTEBOOK} calls `{function}`; "
+            f"found {len(found)}")
+        return found[0]
+
+    # -- the template: a red suite has to raise -----------------------------
+
+    def test_the_suite_cell_binds_its_exit_code_and_reads_it_back(self):
+        """Half the link, read structurally, and only half — measured, not claimed.
+
+        A bare `pytest.main(...)` is a complete, legal, silent cell: it runs the
+        suite, returns the exit code and drops it on the floor. This holds the
+        cell to binding that code and to reading the name back somewhere at its
+        own scope, which a comment about the exit code cannot do.
+
+        It stops there, and the stopping point was found by inversion rather
+        than reasoned about: rewriting the assertion as `print(code)` passes
+        this test, because printing is reading it back. Nothing structural
+        separates a cell that reports the verdict from one that acts on it —
+        `test_a_red_suite_raises_out_of_the_cell_that_ran_it` is what closes
+        that, and this test is not a substitute for it.
+        """
+        _, _, tree = self.one_cell("pytest.main")
+
+        bound = [target.id
+                 for node in tree.body
+                 if isinstance(node, ast.Assign)
+                 and isinstance(node.value, ast.Call)
+                 and ast.unparse(node.value.func).endswith("pytest.main")
+                 for target in node.targets if isinstance(target, ast.Name)]
+        self.assertEqual(len(bound), 1,
+                         "the cell that runs the suite must bind the exit code "
+                         "it is given, not discard it")
+        readers = [statement for statement in tree.body
+                   if not isinstance(statement, ast.Assign)
+                   and any(isinstance(node, ast.Name) and node.id == bound[0]
+                           for node in ast.walk(statement))]
+        self.assertTrue(readers,
+                        f"nothing in the cell reads `{bound[0]}` back, so the "
+                        f"suite's verdict leaves no trace in the report")
+
+    def suite_cell_program(self, code):
+        """The suite cell as it ships, compiled to run with the exit code pytest
+        would have handed it.
+
+        Only the call is replaced, by node and not by text. Every other byte of
+        the cell is the one the scaffold writes, so a rewrite that keeps the
+        guard in some other spelling still passes and one that drops it does
+        not: this asserts that the code is acted on, not how.
+        """
+        _, _, tree = self.one_cell("pytest.main")
+
+        class Answer(ast.NodeTransformer):
+            def visit_Call(self, node):
+                self.generic_visit(node)
+                if ast.unparse(node.func).endswith("pytest.main"):
+                    return ast.Constant(value=code)
+                return node
+
+        prepared = ast.fix_missing_locations(Answer().visit(tree))
+        return compile(prepared, f"<{self.NOTEBOOK}>", "exec")
+
+    def test_a_green_suite_leaves_the_cell_silent(self):
+        """The control the lock below is worth nothing without: a cell that
+        raised whatever it was told would prove only that it raises."""
+        exec(self.suite_cell_program(0), {})
+
+    def test_a_red_suite_raises_out_of_the_cell_that_ran_it(self):
+        """The finding itself. Nothing else about the cell changed, so a run
+        that ends quietly here can only have ended quietly for this reason.
+
+        The exception type is pinned rather than left open because it is the
+        `ename` nbconvert stores on the cell, and it is the one the reader half
+        below writes into its fixture: both locks have to be naming the same
+        event or they are not two ends of one chain.
+        """
+        program = self.suite_cell_program(1)
+
+        with self.assertRaises(AssertionError) as raised:
+            exec(program, {})
+        self.assertIn("1", str(raised.exception),
+                      "the failure has to name the exit code it saw")
+
+    # -- the reader: a stored error has to gate the verdict ------------------
+
+    def box(self):
+        """A doctrine-exact target `verify` will agree to read.
+
+        `verify` refuses any target outside `<forge>/implementations`, and it
+        refuses a tree that is not a repository, so the box lives there and is
+        initialized before it is read.
+        """
+        box = FORGE / "implementations" / f"_suite_gate_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        box.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        doctrine_scaffold(self, self.NAME, self.SEED, box=box)
+        for product in impl.PRODUCT_DIRS:
+            if product != "Data":
+                (box / self.NAME / product).mkdir(parents=True, exist_ok=True)
+        return box
+
+    def executed(self, box, errored):
+        """The report as a run leaves it: every code cell counted, the seal on
+        the cell that stamps it, and — when the suite was red — the error that
+        run stored on the cell that ran it.
+
+        The seal is written from `impl.source_digest` rather than by executing
+        the notebook. That the two agree is exactly what
+        `NotebookSealAgreementTests` holds them to; this class is about what
+        happens to a report that ran and failed, and borrowing that agreement
+        here would only measure it twice.
+        """
+        stamping, _, _ = self.one_cell("report_digest.stamp")
+        suite, _, _ = self.one_cell("pytest.main")
+        notebook = box / self.NAME / "Notebooks" / self.NOTEBOOK
+        seal = f"{impl.DIGEST_MARKER} {impl.source_digest(box, self.PACKAGE)}"
+
+        loaded = json.loads(notebook.read_text(encoding="utf-8"))
+        for index, cell in enumerate(loaded["cells"]):
+            if cell["cell_type"] != "code":
+                continue
+            cell["execution_count"] = 1
+            outputs = []
+            if index == stamping:
+                outputs = [{"output_type": "stream", "name": "stdout",
+                            "text": [seal + "\n"]}]
+            if errored and index == suite:
+                outputs = [{"output_type": "error", "ename": "AssertionError",
+                            "evalue": "test suite failed (pytest exit code 1)",
+                            "traceback": []}]
+            cell["outputs"] = outputs
+        notebook.write_text(json.dumps(loaded), encoding="utf-8")
+        return suite
+
+    def verify(self, box):
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box),
+             "--name", self.NAME], capture_output=True, text=True, cwd=FORGE)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(proc.stdout or "{}")["validation"]
+
+    def test_a_report_that_ran_clean_reaches_ok(self):
+        """The control, and it is not decoration: a verdict already reading
+        `incomplete` for some unrelated reason would make the lock below
+        vacuous, and this is the assertion that says it is not."""
+        box = self.box()
+        self.executed(box, errored=False)
+        validation = self.verify(box)
+
+        self.assertEqual(validation["notebooks"]["status"], "ok")
+        self.assertEqual(validation["status"], "ok")
+
+    def test_a_report_whose_suite_cell_errored_never_reaches_ok(self):
+        """The same tree, one stored output later. It is the whole reason
+        `verify` is allowed not to run the suite itself.
+
+        `unstamped` is asserted empty on purpose: the seal is present and it
+        matches, so nothing but the stored error can be holding the verdict
+        back, and the day something else does this test says so.
+        """
+        box = self.box()
+        suite = self.executed(box, errored=True)
+        validation = self.verify(box)
+        notebooks = validation["notebooks"]
+
+        self.assertEqual([report["status"] for report in notebooks["reports"]],
+                         ["errored"])
+        self.assertEqual(validation["notebook"]["errors"],
+                         [f"cell {suite}: AssertionError"])
+        self.assertEqual(notebooks["unstamped"], [],
+                         "the seal is there and it matches; the stored error is "
+                         "the only thing gating this")
+        self.assertNotEqual(notebooks["status"], "ok")
+        self.assertNotEqual(validation["status"], "ok")
 
 
 class KitSurfaceLanguageTests(unittest.TestCase):
