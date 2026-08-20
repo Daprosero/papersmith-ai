@@ -31,6 +31,11 @@ PYPROJECT_TEMPLATE = SKILL_ROOT / "assets" / "pyproject.template.toml"
 
 SCAFFOLD_TOKENS = ("{{NAME}}", "{{NAME_LOWER}}", "{{PKG}}", "{{SEED}}", "{{REVISION}}")
 
+#: A placeholder as every template spells one. Two classes already carried a copy
+#: of this pattern and a third now needs it, so it is stated once and they alias
+#: it: three spellings of the same rule is how a token stops being one.
+TOKEN_RE = re.compile(r"\{\{[A-Z0-9_]+\}\}")
+
 SKILL_MD = SKILL_ROOT / "SKILL.md"
 USAGE_MD = SKILL_ROOT / "references" / "usage.md"
 
@@ -5286,7 +5291,7 @@ class ScaffoldInstructionsAgreementTests(unittest.TestCase):
     EXAMPLE_PACKAGE = "Example_Method"
 
     TABLE_HEADER = "| Gap `plan` and `verify` report | Written from |"
-    TOKEN_RE = re.compile(r"\{\{[A-Z0-9_]+\}\}")
+    TOKEN_RE = TOKEN_RE  # the module-level pattern; call sites are unchanged
     CACHES = CACHES
     BINARY_SUFFIXES = BINARY_SUFFIXES
 
@@ -6205,7 +6210,7 @@ class SubstitutionStageTests(unittest.TestCase):
     """
 
     STAGES = ("scaffold", "step 9", "probe")
-    TOKEN_RE = re.compile(r"\{\{[A-Z0-9_]+\}\}")
+    TOKEN_RE = TOKEN_RE  # the module-level pattern; call sites are unchanged
 
     def staged_tokens(self):
         tables = markdown_table_rows(USAGE_MD.read_text(encoding="utf-8"),
@@ -7466,3 +7471,375 @@ class PremiseContractAgreementTests(unittest.TestCase):
         self.assertEqual(len(kit), 4,
                          f"the kit's premise example names {sorted(kit)}")
         self.assertEqual(sorted(kit), sorted(doctrine))
+
+
+class FreshScaffoldStaysRedTests(unittest.TestCase):
+    """The one red this forge exists to keep red was held by nothing but prose.
+
+    `assets/kit/tests/test_smoke.py` names `{{PKG}}.{{MODULE}}` — a module step 9
+    has not written and could not have written, because the object map step 8
+    approves is what answers `{{MODULE}}`. So a freshly scaffolded target's smoke
+    suite MUST fail, and that failure is the scaffold posing its question rather
+    than a defect in it. A suite that passed here would be asserting nothing, and
+    a target reading green while step 9 has written no code is exactly the lie
+    the whole change was built to prevent.
+
+    Two tests in this file already *mention* that invariant in their docstrings.
+    Neither asserted it. Rewriting the shipped template's `MODULES` to `["{{PKG}}"]`
+    — the single edit that makes a fresh scaffold go green — left all 394 tests
+    passing.
+
+    **Which end is held, and why.** Pinning the literal `["{{PKG}}.{{MODULE}}"]`
+    would be the cheap lock and the weakest: it holds a spelling, and commit 12
+    already measured what a spelling is worth — `print(code)` kept the shape of
+    reading a name back while dropping the meaning, and the structural half went
+    green. So the lock here is behavioural. It builds the doctrine's own scaffold
+    with `doctrine_scaffold()`, runs the smoke file, and requires the run to be
+    red *for the stated reason*: no test passed, nothing was skipped, and the
+    error names a module of the target's own package that the tree does not hold.
+    It never reads `MODULES`, so renaming it changes nothing, and it cannot be
+    satisfied by a rewrite that keeps the name and drops the question.
+
+    Requiring the *reason* is not decoration. The edit that flipped this green
+    still leaves the suite red — `MODULES = ["{{PKG}}"]` imports the package
+    fine and then fails on the missing `__provenance__` — so a lock that asked
+    only "does the suite fail?" would have passed over the exact defect.
+    """
+
+    NAME = "Example-Method"
+    PACKAGE = "Example_Method"
+    SEED = "7"
+
+    SMOKE = "tests/test_smoke.py"
+
+    @staticmethod
+    def tally(output, word):
+        """What pytest's own summary line counted, or zero when it counted none."""
+        match = re.search(rf"(\d+) {word}\b", output)
+        return int(match.group(1)) if match else 0
+
+    def test_a_fresh_scaffold_s_smoke_suite_fails_naming_an_unwritten_module(self):
+        """Reachable red, proven by inversion: with `MODULES = ["{{PKG}}"]` the
+        package imports, one smoke test passes and the error is an absent
+        `__provenance__` rather than an absent module — so `passed == 0` and the
+        `ModuleNotFoundError` clause both fire, while a bare "it fails" would not.
+        """
+        box = doctrine_scaffold(self, self.NAME, self.SEED)
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", self.SMOKE],
+            cwd=str(box), capture_output=True, text=True)
+        output = proc.stdout + proc.stderr
+        tail = output[-3000:]
+
+        self.assertNotEqual(
+            proc.returncode, 0,
+            "a freshly scaffolded target's smoke suite passed; step 9 has "
+            f"written nothing, so there is nothing for it to assert\n{tail}")
+        self.assertEqual(
+            self.tally(output, "passed"), 0,
+            f"a smoke test passed over a target holding no module\n{tail}")
+        self.assertEqual(
+            self.tally(output, "skipped"), 0,
+            f"the red was suppressed by skipping rather than left red\n{tail}")
+        self.assertGreaterEqual(
+            self.tally(output, "failed"), 1,
+            f"nothing failed, so nothing was asserted\n{tail}")
+
+        missing = re.findall(r"No module named '([^']+)'", output)
+        self.assertTrue(
+            missing,
+            "the smoke suite is red for some reason other than the module step "
+            f"9 has not written\n{tail}")
+        for name in missing:
+            self.assertEqual(
+                name.split(".")[0], self.PACKAGE,
+                f"the red names {name!r}, which is not the target's own package: "
+                "a missing dependency is not the question the scaffold poses")
+            inside = box / "src" / Path(*name.split("."))
+            self.assertFalse(
+                inside.with_suffix(".py").is_file() or (inside / "__init__.py").is_file(),
+                f"{name!r} is reported missing and the scaffold wrote it anyway")
+
+    def test_the_smoke_template_still_carries_a_question_the_scaffold_cannot_answer(self):
+        """Why the red is reachable at all, stated as the mechanism.
+
+        This is the weaker half and says so. A token surviving substitution is
+        not the same as a token being imported: moving `{{MODULE}}` into a
+        comment would satisfy this and still hand a fresh target a green suite.
+        The behavioural test above is what closes that, and this one is not a
+        substitute for it — it only records that the template still asks
+        something the scaffold has no answer for, which is what makes the
+        behavioural red reachable rather than incidental.
+        """
+        template = (KIT / "tests" / "test_smoke.py").read_text(encoding="utf-8")
+        survivors = sorted(set(TOKEN_RE.findall(scaffold_substitute(template))))
+        self.assertTrue(
+            survivors,
+            "the smoke template is fully answered at scaffold time, so a fresh "
+            "target's suite has nothing left to be red about")
+
+
+class MaterializeIsNotAProductionStepTests(unittest.TestCase):
+    """Three documents told three different lies about the same script, and no
+    test read any of them.
+
+    `scripts/materialize.py` is the forge's own harness. An agent fills the
+    scaffold gaps by reading step 5; the script plays that part so this suite can
+    examine a freshly scaffolded target. It is not a step of Flow A and it has no
+    production caller. All three sites that once said otherwise —
+    `SKILL.md`'s step 5 ("performs this exact mapping for eight of the nine",
+    false in both halves), `README.md`'s Flow A diagram, and the docstring of
+    `assets/kit/src_benchmark/__init__.py`, a template that ships *into* targets
+    and told their readers the script had written their file — were corrected.
+    Reinstating all three at once left all 394 tests passing.
+
+    **What is held, and where the guard deliberately does not go.** `README.md`
+    is not added to `guarded_documents()`. That set is the C1 vocabulary guard,
+    and the README legitimately names one hosted service fourteen times because
+    it documents the skill that ships an adapter for it; widening C1 to reach the
+    README would fail on the first run for a reason that has nothing to do with
+    this finding, and would force an exemption broad enough to make the guard
+    stop meaning anything. So the README is read here, by one narrow test, for
+    one fact — and the C1 surface is left exactly as commit 11 set it.
+
+    Each site is held at the level its claim lives at rather than by matching the
+    sentence that happened to be written:
+
+    - the shipped kit names no forge harness at all, and the test is non-vacuous
+      because the kit names the *production engine* four times, legitimately;
+    - no flow diagram draws the harness as a node;
+    - the count step 5 attributes to the harness is one its own table yields;
+    - the production engine never reaches the harness, while the harness reaches
+      the engine — the direction is the fact;
+    - everything doctrine tells the agent to run is a real CLI command.
+    """
+
+    SCRIPTS = SKILL_ROOT / "scripts"
+    README = FORGE / "README.md"
+
+    MERMAID_RE = re.compile(r"^```mermaid\n(.*?)^```", re.DOTALL | re.MULTILINE)
+    RUN_RE = re.compile(r"Run `([^` ]+)")
+    HEADING_RE = re.compile(r"^\d+\. \*\*")
+
+    NUMBER_WORDS = {
+        word: value for value, word in enumerate(
+            "zero one two three four five six seven eight nine ten eleven "
+            "twelve thirteen fourteen fifteen sixteen seventeen eighteen "
+            "nineteen twenty".split())}
+    COUNT_RE = re.compile(
+        r"\b({}|\d+)\b".format(
+            "|".join(sorted(NUMBER_WORDS, key=len, reverse=True))),
+        re.IGNORECASE)
+
+    def harness(self):
+        """The one script the forge ships that is not the production engine.
+
+        Derived rather than named, so renaming the harness renames it here too
+        and the lock does not quietly stop pointing at anything.
+        """
+        others = sorted(path for path in self.SCRIPTS.glob("*.py")
+                        if path.resolve() != CLI.resolve())
+        self.assertEqual(
+            len(others), 1,
+            f"the forge ships {len(others)} scripts besides its engine; these "
+            "tests are written for exactly one harness and need revisiting")
+        return others[0]
+
+    @classmethod
+    def counts_in(cls, text):
+        """Every count the text states, in order, spelled either way.
+
+        Doctrine writes its quantities as words; a later edit may well write one
+        as a digit, and a lock that only read one spelling would go quiet at
+        exactly the moment the sentence changed.
+        """
+        found = []
+        for token in cls.COUNT_RE.findall(text):
+            found.append(int(token) if token.isdigit()
+                         else cls.NUMBER_WORDS[token.lower()])
+        return found
+
+    @staticmethod
+    def import_roots(source):
+        """Every top-level name a module imports, absolute or relative."""
+        roots = set()
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Import):
+                roots.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                roots.add(node.module.split(".")[0])
+        return roots
+
+    def test_no_asset_the_scaffold_ships_names_the_forge_s_own_harness(self):
+        """Reachable red: the template's docstring once opened by telling a
+        target's readers that `materialize.py` had written their file.
+
+        Absence is the whole assertion, so it is proven non-vacuous by the
+        inverse: the kit names `implementation_cli.py` four times, because a
+        target really does run the engine. Naming a script is possible here; the
+        harness is the one that must never be named.
+        """
+        harness = self.harness()
+        named, engine = {}, []
+        for asset in kit_assets():
+            text = (SKILL_ROOT / asset).read_text(
+                encoding="utf-8", errors="replace").lower()
+            if harness.stem in text:
+                named[asset] = harness.name
+            if CLI.stem in text:
+                engine.append(asset)
+
+        self.assertEqual(
+            named, {},
+            f"a file the scaffold copies into a target names {harness.name}, "
+            "which is the forge's own harness and nothing a target ever runs")
+        self.assertTrue(
+            engine,
+            "no shipped asset names the engine either, so this scan proves "
+            "nothing about whether it can see a script name at all")
+
+    def test_no_flow_diagram_draws_the_harness_as_a_step(self):
+        """Reachable red: the Flow A diagram drew `materialize.py` as the node
+        that fills the scaffold, where the agent belongs.
+
+        Non-vacuous by the same inverse: the diagrams do name real CLI commands,
+        so a node naming a script would have been drawn and read.
+        """
+        harness = self.harness()
+        blocks = self.MERMAID_RE.findall(
+            self.README.read_text(encoding="utf-8"))
+        self.assertTrue(blocks, "the README draws no flow at all")
+
+        commanded = {command for block in blocks for command in impl.COMMANDS
+                     if re.search(rf"\b{command}\b", block)}
+        self.assertTrue(
+            commanded,
+            "no diagram names a single CLI command, so this scan proves nothing")
+
+        for index, block in enumerate(blocks):
+            with self.subTest(diagram=index):
+                self.assertNotIn(
+                    harness.stem, block.lower(),
+                    f"a flow diagram draws {harness.name} as a step; it is the "
+                    "forge's harness, and the agent is what fills the scaffold")
+
+    def step_five(self):
+        """The producer step carrying the stage-1 table.
+
+        Located by the table rather than by its own wording, so rewording the
+        step does not silently move this test off the paragraph it holds.
+        """
+        lines = SKILL_MD.read_text(encoding="utf-8").splitlines()
+        anchors = [index for index, line in enumerate(lines)
+                   if line.strip() == STAGE_ONE_HEADER]
+        self.assertEqual(len(anchors), 1,
+                         "SKILL.md carries the stage-1 table neither once nor "
+                         f"once only: {len(anchors)} occurrences")
+        anchor = anchors[0]
+        starts = [index for index in range(anchor)
+                  if self.HEADING_RE.match(lines[index])]
+        self.assertTrue(starts, "the stage-1 table sits inside no numbered step")
+        ends = [index for index in range(anchor + 1, len(lines))
+                if self.HEADING_RE.match(lines[index])]
+        return "\n".join(lines[starts[-1]:ends[0] if ends else len(lines)])
+
+    def test_the_count_step_five_attributes_to_the_harness_is_one_its_table_yields(self):
+        """Reachable red, and the exact claim that was false: "performs this
+        exact mapping for eight of the nine" was wrong in both halves — the
+        harness covers all of them, and there are thirteen, not nine.
+
+        The clause is required to state a count. A prose rewrite that drops the
+        number states nothing false, but it also leaves the coverage claim held
+        by nobody, which is the condition this whole change exists to end. That
+        the harness's tree really is the stage-1 register is a separate and
+        behavioural matter, and `MaterializeWritesStageOneTests` owns it; what is
+        held here is only that the number doctrine prints agrees with the table
+        doctrine prints it beside.
+        """
+        harness = self.harness()
+        step = self.step_five()
+
+        tables = markdown_table_rows(
+            SKILL_MD.read_text(encoding="utf-8"), STAGE_ONE_HEADER)
+        self.assertEqual(len(tables), 1)
+        rows = tables[0]
+        total = len(rows)
+        authored = sum(1 for row in rows if row[1].startswith("authored:"))
+
+        index = step.find(harness.name)
+        self.assertNotEqual(
+            index, -1,
+            f"step 5 no longer names {harness.name}; if the mention was removed "
+            "on purpose, remove this test with it rather than leaving it green")
+        clause = step[index:].split("\n\n")[0]
+
+        counts = self.counts_in(clause)
+        self.assertTrue(
+            counts,
+            f"step 5 attributes no count at all to {harness.name}; the coverage "
+            "claim it makes is what this test holds, so it has to make one")
+        self.assertEqual(
+            counts[0], total,
+            f"step 5 says {harness.name} covers {counts[0]} of the gaps and its "
+            f"own table has {total} rows")
+        self.assertEqual(
+            sorted(set(counts) - {total, authored}), [],
+            f"step 5's clause about {harness.name} states a count its table "
+            f"does not yield; the table has {total} rows, {authored} authored")
+
+    def test_the_production_engine_never_reaches_the_harness(self):
+        """The claim behind all three documents, held as behaviour rather than
+        as prose: the harness is test-only.
+
+        The direction is the fact, so both directions are asserted. The harness
+        imports the engine — that is what gives `.gitignore` one author instead
+        of a producer writing half and a fixture hand-patching the other — and
+        the engine imports nothing back. A dependency that ran the other way
+        would make the harness a production path whatever any document said.
+        """
+        harness = self.harness()
+        engine_source = CLI.read_text(encoding="utf-8")
+
+        self.assertNotIn(
+            harness.stem, self.import_roots(engine_source),
+            f"the engine imports {harness.name}; the harness is test-only and "
+            "an import is what would stop it being that")
+
+        mentions = sorted(
+            {node.value for node in ast.walk(ast.parse(engine_source))
+             if isinstance(node, ast.Constant) and isinstance(node.value, str)
+             and harness.name in node.value})
+        self.assertEqual(
+            mentions, [],
+            f"the engine carries {harness.name} in a string, which is how a "
+            f"script gets shelled without being imported: {mentions}")
+
+        self.assertIn(
+            CLI.stem, self.import_roots(harness.read_text(encoding="utf-8")),
+            f"{harness.name} no longer imports the engine, so the one-way "
+            "dependency this asserts the direction of is not there to assert")
+
+    def test_the_only_things_doctrine_tells_the_agent_to_run_are_cli_commands(self):
+        """"The path an agent runs" is a testable notion: SKILL.md's imperative
+        for invoking anything is ``Run `x` ``, and every `x` must be a command the
+        CLI actually dispatches.
+
+        Reachable red by adding ``Run `materialize.py <target>` `` anywhere in the
+        document. This is the general form of the finding rather than its
+        instance — the harness is only the script that happened to be drawn as a
+        step; nothing else may be either.
+        """
+        harness = self.harness()
+        invoked = self.RUN_RE.findall(SKILL_MD.read_text(encoding="utf-8"))
+        self.assertTrue(
+            invoked,
+            "doctrine tells the agent to run nothing at all, so this scan "
+            "proves nothing about what it tells the agent to run")
+        self.assertEqual(
+            sorted(set(invoked) - set(impl.COMMANDS)), [],
+            "doctrine tells the agent to run something that is not a command "
+            f"the CLI dispatches; it dispatches {sorted(impl.COMMANDS)}")
+        self.assertNotIn(
+            harness.stem, impl.COMMANDS,
+            f"{harness.name} became a CLI command, which is the one thing the "
+            "framing of this change says it must never be")
