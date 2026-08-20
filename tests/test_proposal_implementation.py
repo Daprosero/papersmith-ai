@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -5628,3 +5629,190 @@ class RevisionDiscoveryMarkerTests(unittest.TestCase):
         self.doCleanups()
         self.assertEqual(
             list((FORGE / "implementations").glob("_marker_discovery_*")), [])
+
+
+class DecisionGateDocumentationTests(unittest.TestCase):
+    """The Decision Gates table is where a reader is told what to do about a
+    reported state, and nothing held it to the states the code reports.
+
+    `fidelity.status` gained a fourth value and the table gained the row that
+    says what it means, but the row was prose sitting beside code: delete it,
+    or rename the value on one side alone, and nothing goes red. The scaffold
+    file list is held to the gap checker in exactly this shape, and for the
+    same reason — SKILL.md is what an agent reads, not a rendered artifact, so
+    the only thing that can keep it true is a test that fails the moment either
+    side moves alone.
+    """
+
+    SKILL_MD = CLI.parent.parent / "SKILL.md"
+    GATES_HEADING = "## Decision Gates"
+    HEADER_CELLS = ("Situation", "Action")
+    FIDELITY_RE = re.compile(r'`fidelity: "([a-z]+)"`')
+
+    def gate_rows(self):
+        """Every `(situation, action)` pair in the table under the heading.
+
+        The header and rule rows are dropped by what they are rather than by
+        where they sit, so a row inserted above the ones read here does not
+        shift the parse.
+        """
+        lines = [line.strip() for line
+                 in self.SKILL_MD.read_text(encoding="utf-8").splitlines()]
+        self.assertIn(self.GATES_HEADING, lines,
+                      "the skill carries no Decision Gates section")
+
+        table = []
+        for line in lines[lines.index(self.GATES_HEADING) + 1:]:
+            if line.startswith("|"):
+                table.append(line)
+            elif table:
+                break
+        self.assertNotEqual(
+            table, [], "the Decision Gates heading is followed by no table")
+
+        rows = []
+        for line in table:
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            if len(cells) != 2:
+                continue
+            if tuple(cells) == self.HEADER_CELLS:
+                continue
+            if set("".join(cells)) <= set("-: "):
+                continue
+            rows.append((cells[0], cells[1]))
+        self.assertNotEqual(rows, [], "nothing was scanned")
+        return rows
+
+    def documented_fidelity_gates(self):
+        """The fidelity states the table quotes, each mapped to its next step."""
+        gates = {}
+        for situation, action in self.gate_rows():
+            found = self.FIDELITY_RE.search(situation)
+            if found:
+                gates[found.group(1)] = action
+        return gates
+
+    def reportable_fidelity_states(self):
+        """Every value `cmd_verify` can assign to the headline, read off the
+        tree. Restating the four here would make this test a third copy of the
+        contract rather than a check on the other two."""
+        tree = ast.parse(textwrap.dedent(inspect.getsource(impl.cmd_verify)))
+        states = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if not isinstance(node.value, ast.Constant):
+                continue
+            if not isinstance(node.value.value, str):
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "fidelity_status":
+                    states.add(node.value.value)
+        self.assertNotEqual(states, set(), "nothing was scanned")
+        return states
+
+    def test_the_undeclared_fidelity_gate_is_documented(self):
+        """Reachable red: without the row, a reader who runs `verify` on a
+        target whose declaration is still the kit's six empty blocks learns the
+        state's name from the JSON and nothing about what to do with it."""
+        gates = self.documented_fidelity_gates()
+
+        self.assertIn("undeclared", gates,
+                      "no gate row names `verify` reporting fidelity undeclared")
+        self.assertNotEqual(gates["undeclared"], "",
+                            "the row names the state but no next step")
+
+    def test_every_documented_fidelity_gate_is_one_verify_can_report(self):
+        """The other direction, and the half that catches a rename. A row
+        quoting a value the ladder cannot assign describes a state no target
+        can ever be in, which is worse than no row at all: a reader waits for
+        a signal that never arrives."""
+        documented = set(self.documented_fidelity_gates())
+        reportable = self.reportable_fidelity_states()
+
+        self.assertEqual(
+            documented - reportable, set(),
+            f"the table documents a state `verify` never reports; the ladder "
+            f"assigns {sorted(reportable)}")
+
+
+class PremiseContractAgreementTests(unittest.TestCase):
+    """One premise contract, spelled in two files and checked by neither.
+
+    The kit template comments the shape of the premise block beside the empty
+    value it scaffolds; the declaration doctrine works the same block in full.
+    Nothing parses `premises` — by decision, not by omission — so no consumer
+    would ever report the two drifting apart. A field renamed in one file and
+    not the other simply ships: every target scaffolded from the kit carries
+    one spelling while every reader of the doctrine writes the other, and the
+    first to notice is whoever reads a drift report and finds that the field
+    they were told to write is not the field that is there.
+    """
+
+    SKILL_ROOT = CLI.parent.parent
+    SKILL_MD = SKILL_ROOT / "SKILL.md"
+    KIT_DECLARATION = SKILL_ROOT / "assets/kit/src_benchmark/__init__.py"
+
+    BLOCK = "premises"
+
+    def kit_block(self):
+        """The kit writes its example inside a comment, because the value it
+        scaffolds has to stay empty. Uncomment it and read it as the literal
+        it is."""
+        opener = f'"{self.BLOCK}": {{'
+        body = []
+        for line in self.KIT_DECLARATION.read_text(encoding="utf-8").splitlines():
+            text = line.strip()
+            if not text.startswith("#"):
+                continue
+            text = text[1:].strip()
+            if not body and text != opener:
+                continue
+            body.append(text)
+            if text == "}":
+                break
+        self.assertNotEqual(body, [],
+                            f"the kit comments no {self.BLOCK!r} example")
+        self.assertEqual(body[-1], "}", "the commented example never closes")
+        return ast.literal_eval("{" + " ".join(body) + "}")[self.BLOCK]
+
+    def doctrine_block(self):
+        """The doctrine works the whole declaration as an indented literal, so
+        it is read as one: a worked example that stopped parsing fails here
+        rather than sitting in a passage nobody notices is broken."""
+        opener = "__benchmark__ = {"
+        body = []
+        for line in self.SKILL_MD.read_text(encoding="utf-8").splitlines():
+            if not body and line.strip() != opener:
+                continue
+            body.append(line)
+            if line.strip() == "}":
+                break
+        self.assertNotEqual(body, [],
+                            "the doctrine works no `__benchmark__` example")
+
+        tree = ast.parse(textwrap.dedent("\n".join(body)))
+        declared = None
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                    isinstance(target, ast.Name) and target.id == "__benchmark__"
+                    for target in node.targets):
+                declared = ast.literal_eval(node.value)
+        self.assertIsNotNone(
+            declared, "the worked example is not a `__benchmark__` literal")
+        self.assertIn(self.BLOCK, declared,
+                      f"the worked example declares no {self.BLOCK!r}")
+        return declared[self.BLOCK]
+
+    def test_the_kit_and_the_doctrine_name_the_same_premise_fields(self):
+        """`premises` is written for a person reading a drift report beside
+        changed sections, so no check parses it and no check would ever catch
+        the two spellings diverging. This is that check, and it is the only
+        one. The count is asserted too, because two examples emptied together
+        would agree on nothing and pass."""
+        kit = self.kit_block()
+        doctrine = self.doctrine_block()
+
+        self.assertEqual(len(kit), 4,
+                         f"the kit's premise example names {sorted(kit)}")
+        self.assertEqual(sorted(kit), sorted(doctrine))
