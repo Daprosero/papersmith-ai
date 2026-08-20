@@ -99,6 +99,23 @@ def declared_assets(cell):
     return ASSET_RE.findall(cell)
 
 
+def scaffold_substitute(text, name="Example-Method", seed="7",
+                        revision="research-concept-r01.md"):
+    """A template as the scaffold can write it: the five scaffold-time tokens
+    answered, and no others.
+
+    One definition, because every caller has to answer them the same way. A
+    template whose remaining tokens are stage-2 answers still parses when they
+    sit inside a string or a literal, which is exactly the property the stage
+    discriminator reads.
+    """
+    for token, value in zip(SCAFFOLD_TOKENS,
+                            (name, name.lower(), name.replace("-", "_"),
+                             seed, revision)):
+        text = text.replace(token, value)
+    return text
+
+
 def gap_path(gap):
     """The path a gap string names.
 
@@ -135,10 +152,7 @@ def doctrine_scaffold(case, name="Example-Method", seed="7",
     box = Path(box)
 
     def substitute(text):
-        for token, value in zip(SCAFFOLD_TOKENS,
-                                (name, name.lower(), package, seed, revision)):
-            text = text.replace(token, value)
-        return text
+        return scaffold_substitute(text, name, seed, revision)
 
     templates = {path.name: path for path in sorted(KIT.rglob("*"))
                  if path.is_file() and path.name != "__init__.py"}
@@ -5402,6 +5416,159 @@ class ReportSealPlacementTests(unittest.TestCase):
                         "`materialize.py` writes no report seal")
 
 
+class NotebookSealAgreementTests(unittest.TestCase):
+    """The kit notebook stamped a digest over a tree the verifier never reads.
+
+    Three implementations of one source digest shipped together.
+    `implementation_cli.source_digest` covers all of `src/` and no `tests/`;
+    `assets/kit/nb/report_digest.py` is byte-for-byte the same algorithm; and
+    `verification.ipynb` inlined a third one over `src/<Pkg>` union `tests/`.
+
+    The third one can never agree with the first. A report executed one second
+    ago stamps a string `verify` recomputes differently, so `notebooks.status`
+    reads `drift` and `validation.status` reads `incomplete` — permanently, and
+    for no reason a reader of either file could see. The repair is deleting the
+    copy that disagrees, not reconciling two formulas: the kit already carries
+    the one implementation, and the notebook only has to import it.
+    """
+
+    NAME = "Example-Method"
+    PACKAGE = "Example_Method"
+    SEED = "7"
+
+    @classmethod
+    def code_cells(cls, notebook):
+        """Every non-empty code cell of a kit notebook, as the scaffold writes it.
+
+        The tokens are answered first because `{{PKG}}_Benchmark` in an import
+        is not Python and would fail to parse for a reason that has nothing to
+        do with what is being asserted. The stage-2 tokens are left standing;
+        they sit inside strings and literals and parse as they are.
+        """
+        loaded = json.loads((KIT / "nb" / notebook).read_text(encoding="utf-8"))
+        return [(index, scaffold_substitute("".join(cell["source"]), cls.NAME))
+                for index, cell in enumerate(loaded["cells"])
+                if cell["cell_type"] == "code" and "".join(cell["source"]).strip()]
+
+    def stamping_cell(self, notebook):
+        """The cell that stamps the seal, identified by what it calls.
+
+        Parsed, never matched as a substring: a marker or a path inside a
+        comment reads the same as one inside an expression, and the whole point
+        of this class is that a comment cannot be executed. The cell that stamps
+        is the cell that calls `stamp()` on the one implementation.
+        """
+        found = []
+        for _, source in self.code_cells(notebook):
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Call)
+                        and ast.unparse(node.func).endswith("report_digest.stamp")):
+                    found.append((source, tree))
+                    break
+        self.assertEqual(
+            len(found), 1,
+            f"exactly one cell of {notebook} stamps the seal by calling the one "
+            f"implementation; found {len(found)}")
+        return found[0]
+
+    def executed_seal(self, box, notebook_path):
+        """The seal a notebook actually prints, obtained by running it.
+
+        No cell is singled out here on purpose. Whichever cell carries the
+        stamping is the one under test, so the notebook's own code cells are run
+        in order and the seal is read off standard output — the same way
+        `notebook_execution` reads it out of a stored cell's output.
+
+        Cells that spawn another process are skipped: they are the report's
+        work, not its seal, and running them here would run the target's suite.
+        """
+        loaded = json.loads(notebook_path.read_text(encoding="utf-8"))
+        script = "\n".join(
+            "".join(cell["source"]) for cell in loaded["cells"]
+            if cell["cell_type"] == "code"
+            and not {"subprocess", "pytest"} & set(
+                re.findall(r"\w+", "".join(cell["source"]))))
+        completed = subprocess.run(
+            [sys.executable, "-c", script], cwd=str(notebook_path.parent),
+            text=True, capture_output=True)
+        self.assertEqual(completed.returncode, 0,
+                         f"the notebook's own cells failed:\n{completed.stderr[-2000:]}")
+        seals = [line for line in completed.stdout.splitlines()
+                 if line.startswith(impl.DIGEST_MARKER)]
+        self.assertEqual(len(seals), 1,
+                         f"the notebook printed {len(seals)} seals, not one")
+        return seals[0]
+
+    def test_no_kit_notebook_computes_a_digest_of_its_own(self):
+        """One algorithm, or the agreement is a coincidence waiting to end."""
+        offenders = {}
+        for notebook in ("verification.ipynb", impl.PROBE_NOTEBOOK):
+            for index, source in self.code_cells(notebook):
+                for node in ast.walk(ast.parse(source)):
+                    named = (isinstance(node, ast.Import)
+                             and any(alias.name.split(".")[0] == "hashlib"
+                                     for alias in node.names))
+                    called = (isinstance(node, ast.Call)
+                              and "hashlib" in ast.unparse(node.func))
+                    if named or called:
+                        offenders.setdefault(notebook, []).append(index)
+                        break
+        self.assertEqual(offenders, {},
+                         "a kit notebook hashes a tree of its own instead of "
+                         "importing the one implementation")
+
+    def test_the_verification_notebook_imports_the_seal_it_stamps(self):
+        """It can, and only because the seal now has a scaffold destination
+        inside the package: that cell already puts `src/` on `sys.path`."""
+        source, tree = self.stamping_cell("verification.ipynb")
+        imported = [node for node in ast.walk(tree)
+                    if isinstance(node, ast.ImportFrom)
+                    and any(alias.name == "report_digest" for alias in node.names)]
+        self.assertEqual(
+            [node.module for node in imported], [f"{self.PACKAGE}_Benchmark"],
+            "the notebook must import the seal from the package the scaffold "
+            "places it in")
+        self.assertIn("sys.path.insert", source,
+                      "the import only resolves once `src/` is on the path")
+
+    def test_the_seal_the_notebook_stamps_is_the_seal_verify_recomputes(self):
+        """The whole finding, as behaviour: run the notebook, run the checker,
+        compare the two strings over the same tree."""
+        box = doctrine_scaffold(self, self.NAME, self.SEED)
+        notebook = box / self.NAME / "Notebooks" / "verification.ipynb"
+        self.assertTrue(notebook.is_file(), "the scaffold carries no report")
+        self.assertEqual(
+            self.executed_seal(box, notebook),
+            f"{impl.DIGEST_MARKER} {impl.source_digest(box, self.PACKAGE)}")
+
+    def test_an_executed_report_is_not_born_stale(self):
+        """What the disagreement cost, read through the checker that reports it.
+
+        The digest is what `notebooks_state` compares, so a report that stamped
+        a string the checker recomputes differently is `stale-sources` the
+        moment it is written — and nothing about the target is wrong.
+        """
+        box = doctrine_scaffold(self, self.NAME, self.SEED)
+        notebook = box / self.NAME / "Notebooks" / "verification.ipynb"
+        seal = self.executed_seal(box, notebook)
+
+        loaded = json.loads(notebook.read_text(encoding="utf-8"))
+        for cell in loaded["cells"]:
+            if cell["cell_type"] != "code":
+                continue
+            cell["execution_count"] = 1
+            cell["outputs"] = [{"output_type": "stream", "name": "stdout",
+                                "text": [seal + "\n"]}]
+        notebook.write_text(json.dumps(loaded), encoding="utf-8")
+
+        state = impl.notebooks_state(box, self.NAME, self.PACKAGE)
+        self.assertEqual([report["status"] for report in state["reports"]],
+                         ["executed"])
+        self.assertEqual(state["unstamped"], [])
+        self.assertEqual(state["status"], "ok")
+
+
 class StageTwoInstructionsTests(unittest.TestCase):
     """The step that writes a module per object never named the template it
     writes it from.
@@ -5633,11 +5800,9 @@ class KitAssetRegisterTests(unittest.TestCase):
         """
         for destination, assets in sorted(self.stage_one().items()):
             for asset in assets:
-                text = (SKILL_ROOT / asset).read_text(encoding="utf-8")
-                for token, value in zip(SCAFFOLD_TOKENS,
-                                        (self.NAME, self.NAME.lower(),
-                                         self.PACKAGE, "7", "r01.md")):
-                    text = text.replace(token, value)
+                text = scaffold_substitute(
+                    (SKILL_ROOT / asset).read_text(encoding="utf-8"),
+                    self.NAME, "7", "r01.md")
                 sources = []
                 if asset.endswith(".ipynb"):
                     sources = ["".join(cell["source"])
