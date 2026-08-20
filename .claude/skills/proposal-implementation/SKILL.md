@@ -514,6 +514,18 @@ date. Drift is Flow B's fourth step, not a reason to start over.
       nothing to discover from. Prefer omitting it: a revision you pass is a
       revision you asserted, and asserting the one the bench is already bound to
       is how a bench built against an older revision reads as current.
+    - Discovery considers only **published** revisions. A revision is published
+      when the deliberation skill wrote the artifact marker as the file's first
+      bytes; a draft, an export or a copy left in the same directory carries no
+      marker and is passed over, because marking every module stale against a
+      document nobody published is drift the tool invented. The rule is the
+      marker and never a filename shape: if any candidate of the family carries
+      it, `fidelity.markerOwned` is `true` and every unmarked candidate is named
+      in `fidelity.nonManagedCandidates`; if none does, resolution is unchanged
+      and `markerOwned` is `false`, so a hand-authored family still works. Two
+      candidates that tie are listed in `fidelity.revisionTie` rather than
+      decided in silence. All three are reported and none of them refuses —
+      report what was passed over, and let the user say whether it matters.
     - **Not faithful** → correct the code and re-enter from step 15. **At most
       three passes.** If the third still is not faithful, stop and hand the user
       the decision, with what the three attempts established. A loop with no bound

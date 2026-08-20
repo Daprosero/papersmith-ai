@@ -5428,3 +5428,203 @@ class FidelityUndeclaredTests(unittest.TestCase):
         self.doCleanups()
         self.assertEqual(
             list((FORGE / "implementations").glob("_fidelity_undeclared_*")), [])
+
+
+class RevisionDiscoveryMarkerTests(unittest.TestCase):
+    """Two resolvers answered "which revision is the latest" and disagreed.
+
+    The deliberation skill publishes a revision by writing an artifact marker as
+    the first bytes of the file, and its own store refuses to consider anything
+    that lacks it. This resolver derived a family from the digit runs of a name
+    it was handed and took the highest, marker-blind. So an unmanaged file
+    dropped into `proposals/` — a draft, a copy, an export — became "the latest"
+    here while deliberation still reported the published one, and every module
+    was marked stale against a document nobody ever published.
+
+    The discriminator is the marker, never a filename shape. Teaching this side
+    the other's naming convention would have created a third copy of a rule that
+    already has two, and would have cost `latest_revision` the convention
+    independence its docstring promises. If nothing in the family carries the
+    marker the directory is not marker-owned and resolution is exactly what it
+    was, which is what keeps every hand-authored family working.
+    """
+
+    STORE = (FORGE / ".claude/skills/proposal-deliberation"
+             / "engine/revision-lifecycle-store.ts")
+
+    DECLARATION = (
+        "__benchmark__ = {\n"
+        "    'revision': 'draft-r17.md',\n"
+        "    'arms': {'floor': {'sections': ['3']}},\n"
+        "}\n"
+    )
+    WIRING = "from Method.estimator import estimate\n"
+
+    def proposals(self, managed=(), unmanaged=(), body="## 3\ntext\n"):
+        root = Path(tempfile.mkdtemp(prefix="pp-marker-proposals-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        for name in managed:
+            (root / name).write_bytes(
+                impl.MANAGED_ARTIFACT_MARKER + body.encode("utf-8"))
+        for name in unmanaged:
+            (root / name).write_bytes(body.encode("utf-8"))
+        return root
+
+    def with_root(self, root):
+        previous = os.environ.get("IMPLEMENTATION_PROPOSALS")
+        os.environ["IMPLEMENTATION_PROPOSALS"] = str(root)
+        self.addCleanup(
+            lambda: os.environ.__setitem__("IMPLEMENTATION_PROPOSALS", previous)
+            if previous is not None
+            else os.environ.pop("IMPLEMENTATION_PROPOSALS", None))
+        return root
+
+    def verify_against(self, root, *, suffix, revision=None):
+        box = FORGE / "implementations" / f"_marker_discovery_{suffix}_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src/Method").mkdir(parents=True)
+        (box / "src/Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        (box / "src/Method/estimator.py").write_text(
+            _module("draft-r17.md", ["3"], ["11"]), encoding="utf-8")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            self.DECLARATION, encoding="utf-8")
+        (box / "src/Method_Benchmark/wiring.py").write_text(
+            self.WIRING, encoding="utf-8")
+
+        argv = [sys.executable, str(CLI), "verify", "--target", str(box),
+                "--name", "Method"]
+        if revision:
+            argv += ["--revision", revision]
+        return subprocess.run(
+            argv, capture_output=True, text=True, cwd=FORGE,
+            env=dict(os.environ, IMPLEMENTATION_PROPOSALS=str(root)))
+
+    # -- the marker is one contract in two languages -----------------------
+
+    def test_the_marker_is_the_one_the_publisher_writes(self):
+        """Restating the bytes here would be a third copy of the rule. It is read
+        out of the store that writes them, so the day one side moves this goes
+        red instead of the two silently disagreeing again."""
+        published = re.search(r"const MARKER=Buffer\.from\('(.*?)'\);",
+                              self.STORE.read_text(encoding="utf-8"))
+        self.assertTrue(published, "the deliberation store declares no MARKER")
+        expected = published.group(1).encode("utf-8").decode("unicode_escape")
+
+        self.assertEqual(impl.MANAGED_ARTIFACT_MARKER, expected.encode("utf-8"))
+
+    def test_the_marker_is_a_leading_prefix_and_not_a_mention(self):
+        """The store compares `bytes.subarray(0, MARKER.length)`. A document that
+        quotes the marker further down is not a published artifact, and reading
+        it as one would readmit exactly the file this excludes."""
+        marker = impl.MANAGED_ARTIFACT_MARKER.decode("utf-8")
+        root = self.with_root(self.proposals(
+            unmanaged=("draft-1.md",), body=f"## 3\n{marker}text\n"))
+
+        self.assertFalse(impl.revision_discovery("draft-1.md")["markerOwned"])
+        self.assertEqual(list(root.glob("*.md")) and
+                         impl.revision_discovery("draft-1.md")["revision"],
+                         "draft-1.md")
+
+    # -- discovery ---------------------------------------------------------
+
+    def test_an_unmanaged_newer_file_cannot_manufacture_drift(self):
+        """The reported failure. `draft-r18.md` is a file somebody dropped in;
+        deliberation never published it, so nothing is stale against it."""
+        root = self.proposals(managed=("draft-r17.md",), unmanaged=("draft-r18.md",))
+        proc = self.verify_against(root, suffix="drift")
+        fidelity = json.loads(proc.stdout or "{}")["fidelity"]
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(fidelity["latestRevision"], "draft-r17.md")
+        self.assertEqual(fidelity["staleModules"], [])
+        self.assertFalse(fidelity["benchmark"]["staleRevision"])
+        self.assertEqual(fidelity["status"], "ok")
+
+    def test_the_excluded_candidate_is_named_rather_than_swallowed(self):
+        """Silently filtering it would be the same defect one layer over: the
+        reader would see a resolution and never learn what was passed over.
+        `verify` reads and reports; it refuses nothing."""
+        root = self.proposals(managed=("draft-r17.md",), unmanaged=("draft-r18.md",))
+        fidelity = json.loads(
+            self.verify_against(root, suffix="named").stdout)["fidelity"]
+
+        self.assertTrue(fidelity["markerOwned"])
+        self.assertEqual(fidelity["nonManagedCandidates"], ["draft-r18.md"])
+        self.assertEqual(fidelity["revisionTie"], [])
+
+    def test_a_directory_nobody_manages_behaves_exactly_as_it_did(self):
+        """The fallback that keeps every hand-authored family working, and the
+        reason the whole existing suite stays green. It is disclosed rather than
+        assumed, so a reader can tell the two regimes apart."""
+        root = self.with_root(self.proposals(unmanaged=("draft-1.md", "draft-2.md")))
+
+        discovery = impl.revision_discovery("draft-1.md")
+
+        self.assertEqual(discovery["revision"], "draft-2.md")
+        self.assertFalse(discovery["markerOwned"])
+        self.assertEqual(discovery["nonManaged"], [])
+        self.assertEqual(impl.latest_revision("draft-1.md"), "draft-2.md")
+        self.assertTrue(root.is_dir())
+
+    def test_a_tie_on_the_digit_tuple_is_reported_not_decided_in_silence(self):
+        """`draft-1.md` and `draft-01.md` are one family and tie on the tuple.
+        Today's deterministic pick is preserved — changing it would move a
+        resolution nobody asked to move — but the ambiguity is now visible, the
+        way deliberation surfaces MULTIPLE_ACTIVE_REVISIONS instead of guessing."""
+        self.with_root(self.proposals(managed=("draft-1.md", "draft-01.md")))
+
+        discovery = impl.revision_discovery("draft-1.md")
+
+        self.assertEqual(discovery["revision"], "draft-01.md")
+        self.assertEqual(discovery["tied"], ["draft-01.md", "draft-1.md"])
+
+    def test_an_explicit_revision_is_still_read_verbatim(self):
+        """The filter is on discovery only. A caller naming a file is answering
+        the question, not asking it, and a forge whose revisions are authored by
+        hand must keep working."""
+        root = self.with_root(
+            self.proposals(managed=("draft-r17.md",), unmanaged=("draft-r18.md",)))
+
+        self.assertIn("text", impl.revision_source("draft-r18.md"))
+        fidelity = json.loads(self.verify_against(
+            root, suffix="argument", revision="draft-r18.md").stdout)["fidelity"]
+        self.assertEqual(fidelity["latestRevision"], "draft-r18.md")
+        self.assertEqual(fidelity["revisionSource"], "argument")
+        self.assertEqual(fidelity["staleModules"], ["src/Method/estimator.py"])
+
+    def test_the_resolver_knows_no_naming_convention(self):
+        """Its docstring promises a forge whose revisions are `draft-4.md` is
+        served by the identical code. A filename prefix compiled in here would
+        make that false, and would be the third copy of a rule that already has
+        two."""
+        function = ast.parse(inspect.getsource(impl.revision_discovery)).body[0]
+        # The docstring is scanned out on purpose: it names `draft-4.md` as the
+        # family it deliberately does NOT know, and a guard that flagged its own
+        # counter-example would be measuring the prose instead of the code.
+        body = function.body[1:] if ast.get_docstring(function) else function.body
+        literals = [node.value for statement in body for node in ast.walk(statement)
+                    if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+
+        self.assertNotEqual(literals, [], "nothing was scanned")
+        for literal in literals:
+            self.assertNotIn(".md", literal, f"a filename suffix is compiled in: {literal!r}")
+            self.assertNotIn("research", literal.lower(),
+                             f"a project's revision family is compiled in: {literal!r}")
+
+    def test_latest_revision_keeps_its_signature(self):
+        """Five unit tests and one production caller read it as `str | None`.
+        The richer answer is additive, never a replacement."""
+        self.with_root(self.proposals(unmanaged=("draft-1.md", "draft-2.md")))
+
+        self.assertEqual(impl.latest_revision("draft-1.md"), "draft-2.md")
+        self.assertIsNone(impl.latest_revision(None))
+        self.assertIsNone(impl.latest_revision("no-digits.md"))
+
+    def test_the_toy_targets_left_nothing_behind(self):
+        self.verify_against(self.proposals(managed=("draft-r17.md",)), suffix="cleanup")
+        self.doCleanups()
+        self.assertEqual(
+            list((FORGE / "implementations").glob("_marker_discovery_*")), [])

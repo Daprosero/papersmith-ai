@@ -2419,6 +2419,16 @@ def proposals_root() -> Path:
     return Path(override) if override else FORGE_ROOT / "proposals"
 
 
+#: The first bytes a published revision carries, and the only fact about a
+#: managed artifact a TypeScript producer and a Python reader can agree on
+#: without either importing the other's conventions.
+#:
+#: The deliberation skill writes it and its own store compares
+#: `bytes.subarray(0, MARKER.length)` — a leading prefix, byte for byte, never a
+#: mention further down and never a decoded string. It is read here the same way.
+MANAGED_ARTIFACT_MARKER = b"<!-- proposal-workspace:artifact:v1 -->\n"
+
+
 def revision_source(revision: str | None) -> str | None:
     """The bound revision's text, read from the proposals directory."""
     if not revision:
@@ -2429,8 +2439,23 @@ def revision_source(revision: str | None) -> str | None:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
-def latest_revision(like: str | None) -> str | None:
-    """The newest managed revision of the same family as `like`.
+def is_managed_artifact(path: Path) -> bool:
+    """Whether a file carries the publisher's marker as its very first bytes.
+
+    Read as bytes and compared as a leading prefix, which is what the producing
+    side does. Decoding first would make an unreadable file an exception instead
+    of an answer, and searching for the marker anywhere in the text would count a
+    document that merely quotes it — that is precisely the file this excludes.
+    """
+    try:
+        with path.open("rb") as handle:
+            return handle.read(len(MANAGED_ARTIFACT_MARKER)) == MANAGED_ARTIFACT_MARKER
+    except OSError:
+        return False
+
+
+def revision_discovery(like: str | None) -> dict:
+    """The newest revision of the same family as `like`, and what was passed over.
 
     Everything else here compares a bench against a revision somebody typed at
     the command line. That check is only armed when the caller happens to type
@@ -2449,12 +2474,39 @@ def latest_revision(like: str | None) -> str | None:
     and in the direction that approves. Names with more than one number order on
     the tuple, left to right. A name with no digits at all has no family and no
     successor to find, and says so by returning `None`.
+
+    A family is not the same question as a publication, and that is the second
+    reader this had to be reconciled with. The deliberation skill publishes a
+    revision by writing an artifact marker as the file's first bytes, and refuses
+    to consider anything without it; this side took the highest digits it could
+    find. So a draft, an export or a copy dropped into the same directory became
+    "the latest" here while deliberation still named the published one, and every
+    module was reported stale against a document nobody ever published.
+
+    The discriminator is therefore the marker and never a filename shape —
+    teaching this side the other's naming rule would be a third copy of a
+    convention that already has two, and would cost the independence the
+    paragraph above promises. If ANY candidate in the family carries the marker
+    the directory is marker-owned and only marked candidates are eligible, with
+    the rest named in `nonManaged`. If none does, resolution is exactly what it
+    was and `markerOwned` says so, which is what keeps a hand-authored family
+    working.
+
+    A tie on the digit tuple is real — `draft-1.md` and `draft-01.md` are one
+    family and one key — and it is reported in `tied` rather than decided in
+    silence, mirroring the multiple-active notion the other resolver already
+    surfaces. The deterministic pick is preserved: moving it would move a
+    resolution nobody asked to move.
+
+    Reported, never refused. `verify` is a reader, and a stray file in a
+    directory must not be able to stop the whole check.
     """
+    empty = {"revision": None, "markerOwned": False, "nonManaged": [], "tied": []}
     if not like:
-        return None
+        return empty
     name = Path(like).name
     if not re.search(r"\d", name):
-        return None
+        return empty
     # `re.escape` leaves digits alone and escapes the suffix's dot, so the only
     # thing turned into a wildcard is a run of digits. Anchored: a family is
     # matched whole, never as a substring of a longer name.
@@ -2462,18 +2514,40 @@ def latest_revision(like: str | None) -> str | None:
     family = re.compile("^" + stem + "$")
     root = proposals_root()
     if not root.is_dir():
-        return None
-    best: tuple[tuple[int, ...], str] | None = None
+        return empty
+
+    candidates: list[tuple[tuple[int, ...], str, bool]] = []
     for candidate in sorted(root.iterdir()):
         if not candidate.is_file():
             continue
         found = family.match(candidate.name)
         if not found:
             continue
-        key = tuple(int(group) for group in found.groups())
-        if best is None or key > best[0]:
-            best = (key, candidate.name)
-    return best[1] if best else None
+        candidates.append((tuple(int(group) for group in found.groups()),
+                           candidate.name, is_managed_artifact(candidate)))
+
+    marker_owned = any(managed for _, _, managed in candidates)
+    eligible = [c for c in candidates if c[2]] if marker_owned else candidates
+    non_managed = sorted(nm for _, nm, managed in candidates
+                         if marker_owned and not managed)
+    if not eligible:
+        return {**empty, "markerOwned": marker_owned, "nonManaged": non_managed}
+
+    best = max(key for key, _, _ in eligible)
+    # Insertion order is `sorted(root.iterdir())`, so the first of a tie is the
+    # same one the strictly-greater comparison used to keep.
+    tied = [candidate for key, candidate, _ in eligible if key == best]
+    return {
+        "revision": tied[0],
+        "markerOwned": marker_owned,
+        "nonManaged": non_managed,
+        "tied": tied if len(tied) > 1 else [],
+    }
+
+
+def latest_revision(like: str | None) -> str | None:
+    """The discovered revision alone, for the readers that only want the name."""
+    return revision_discovery(like)["revision"]
 
 
 # How a paper labels an equation, and the only place this skill decides it.
@@ -4876,7 +4950,8 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         if resolved["status"] == "declared" else None
     family = declared_revision or next(
         (m["revision"] for m in modules if m.get("revision")), None)
-    discovered = latest_revision(family)
+    discovery = revision_discovery(family)
+    discovered = discovery["revision"]
     revision = args.revision or discovered
 
     for module in modules:
@@ -5063,6 +5138,12 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             # whichever one the caller happened to name.
             "revisionSource": "argument" if args.revision else (
                 "discovered" if discovered else "none"),
+            # What discovery could and could not consider, so a reader never has
+            # to guess why a file sitting in `proposals/` was passed over. All
+            # three are reported and none of them gates: `verify` reads.
+            "markerOwned": discovery["markerOwned"],
+            "nonManagedCandidates": discovery["nonManaged"],
+            "revisionTie": discovery["tied"],
             "staleModules": stale,
             "drift": drift_detail,
             "benchmark": benchmark,

@@ -428,6 +428,30 @@ exists, and an undeclared benchmark is the absence of a declaration. An
 **absent** Benchmark package is deliberately not folded in — there is nothing to
 be unfaithful to, and `structure.scaffoldGaps` already names the missing file.
 
+### Which revision counts as the newest
+
+Without `--revision`, `verify` derives a family from the name the bench itself
+declares and discovers the newest member. Only **published** revisions are
+eligible: a revision is published when the deliberation skill writes the artifact
+marker as the file's first bytes, and a draft, an export or a copy dropped into
+the same directory carries no marker. Before that rule existed, such a file
+became "the newest" and every module was reported stale against a document nobody
+had published.
+
+The discriminator is the marker, never a filename shape — the resolver knows no
+naming convention, by design, so a forge whose revisions are `draft-4.md` is
+served by the identical code. Three additive fields say what discovery saw:
+
+| field | meaning |
+| --- | --- |
+| `fidelity.markerOwned` | `true` when at least one candidate of the family carries the marker, so only marked candidates were eligible; `false` when none does and resolution is exactly what it always was |
+| `fidelity.nonManagedCandidates` | the unmarked candidates that were passed over, named rather than silently filtered |
+| `fidelity.revisionTie` | candidates tying on the digit tuple (`draft-1.md` and `draft-01.md` are one family and one key); the deterministic pick is preserved and the ambiguity is reported |
+
+All three are reported and none of them refuses: `verify` reads, and a stray file
+in a directory must not stop the whole check. The filter applies to discovery
+only — an explicit `--revision` is read verbatim, whether or not it is marked.
+
 ## `handoff` — back to the deliberation, sized by reach
 
 ```bash
