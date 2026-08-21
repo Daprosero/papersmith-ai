@@ -1,6 +1,6 @@
 ---
 name: remote-execution
-description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry), the packer's capacity clamp, the full `remote_cli` front door (`submit` with its path guard and `--smoke`, `status`, `poll`, `fetch` with quarantine, `reconcile`, `generate-job`, `smoke record`, `readiness`), and one concrete backend: `adapters/kaggle.py` — the ONLY file in this entire skill allowed to name a service. It shells out to the `kaggle` CLI (never imports the `kaggle` package), derives worker identity solely from kaggle-accounts' own sanctioned `list --json` command, and accepts credentials only as a `CredentialHandle(worker_id, token_path)` carrying a path, never a value — its single sink is `KAGGLE_API_TOKEN` on a child process's environment. A rehearsal run (`smoke.jsonl`, a distinct file from the main ledger) proves readiness from evidence-completeness, never a human assertion, and never a clock. Stdlib-only, no venv."
+description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry), the packer's capacity clamp, the full `remote_cli` front door (`submit` with its path guard and `--smoke`, `status`, `poll`, `fetch` with quarantine, `reconcile`, `generate-job`, `smoke record`, `readiness`), and one concrete backend: `adapters/kaggle.py` — the ONLY file in this entire skill allowed to name a service. It shells out to the `kaggle` CLI (never imports the `kaggle` package), derives worker identity solely from kaggle-accounts' own sanctioned `list --json` command, and accepts credentials only as a `CredentialHandle(worker_id, token_path)` — read at exactly one expression, in that one file, and put on `KAGGLE_API_TOKEN` for one child process, because the installed client authenticates that variable by value and checks no path. A rehearsal run (`smoke.jsonl`, a distinct file from the main ledger) proves readiness from evidence-completeness, never a human assertion, and never a clock. Stdlib-only, no venv."
 ---
 
 # Remote Execution
@@ -155,14 +155,35 @@ Three modules exist so far, each service-blind and stdlib-only:
   seam's five-value vocabulary and never passes it through; the raw text
   goes in `Status.detail` only. `CredentialHandle(worker_id, token_path)` is
   the only credential type this adapter accepts, exposes no read method, and
-  has exactly one sink in the whole file: `env["KAGGLE_API_TOKEN"] =
-  str(handle.token_path)` — a token FILE path, not a config directory:
-  `kagglesdk` reads `KAGGLE_API_TOKEN` as a path, checks it exists, and
-  authenticates the token found there through Kaggle's modern (non-legacy)
-  path, which is what lets an access token (`KGAT...`) this skill's
-  credential store issues actually authenticate; the legacy
-  `KAGGLE_CONFIG_DIR`/`kaggle.json` shape routes that same token through a
-  Basic-auth path it was never meant for. `REQUESTED_ACCELERATOR = "NvidiaTeslaT4"` is
+  is consumed at exactly one expression in the whole skill: `_env_for()`
+  reads the file that path names and puts its stripped CONTENT on
+  `KAGGLE_API_TOKEN` for one child process.
+
+  **The credential travels by value, and that is a trade, not a wording
+  change.** The installed client's `_try_fill_auth()` reads
+  `KAGGLE_API_TOKEN` and hands it straight to `BearerAuth(api_token)` — by
+  value, with no path check of any kind — so a path in that variable becomes
+  the literal text of an `Authorization: Bearer` header and authenticates
+  nothing. The legacy `KAGGLE_CONFIG_DIR`/`kaggle.json` shape is not an
+  escape from that either: it routes an access token (`KGAT...`, the shape
+  this skill's credential store issues) through a Basic-auth path it was
+  never meant for, and Kaggle answers 401 for every account regardless of
+  validity. There is no by-path option left to prefer, so the by-path
+  invariant this skill used to claim is spent. What replaces it is narrower,
+  structural, and each row below is held to a test rather than to a reader's
+  memory.
+
+| # | id | Guarantee | Enforced by | Proven by |
+|---|---|---|---|---|
+| 1 | `by-value` | `KAGGLE_API_TOKEN` carries the token file's stripped content, never its path — the only shape the installed client authenticates | `_env_for()` | `test_the_env_value_is_the_files_stripped_content_and_never_its_path` |
+| 2 | `stripped` | The newline `kaggle-accounts`' `materialize` writes never reaches the header; a newline inside a bearer header is a malformed header, not a credential | `_env_for()` | `test_the_newline_materialize_writes_never_reaches_the_header` |
+| 3 | `single-reader` | No module above the adapter touches `token_path` at all, so a credential value has no route into any of them | `_env_for()`, and the absence of the attribute everywhere else | `test_no_module_above_the_adapter_can_reach_the_credential_file` |
+| 4 | `fails-closed` | A credential file that cannot be read is a refusal naming the path, never a request sent without one | `_env_for()` | `test_a_credential_file_that_cannot_be_read_is_a_refusal` |
+| 5 | `no-empty-bearer` | A credential file holding nothing once stripped is a refusal naming the worker — never an empty bearer header | `_env_for()` | `test_an_empty_credential_file_is_refused_rather_than_sent_as_a_bare_bearer` |
+| 6 | `per-process` | Two concurrent submissions for two workers carry two distinct, uncrossed credentials: one fresh env dict per `subprocess.run`, never a shared or process-wide one | `_env_for()`, `_run()` | `test_two_concurrent_submissions_carry_two_distinct_uncrossed_credentials` |
+| 7 | `really-concurrent` | The isolation above is proven under genuine overlap, not against two runs that merely happened in sequence | the falsifier's own fake `kaggle`, which records when it started and finished | `test_the_two_submissions_genuinely_overlapped_in_time` |
+
+  `REQUESTED_ACCELERATOR = "NvidiaTeslaT4"` is
   declared here, and here alone in this whole skill — a request, not a
   receipt; what a submission actually ran on is a fact the service states
   at poll/fetch time, never assumed from this constant. `assemble_metadata`

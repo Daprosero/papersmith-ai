@@ -143,25 +143,25 @@ class Fetched:
 
 @dataclass(frozen=True)
 class CredentialHandle:
-    """One worker's credential, carried by PATH only — never by value.
+    """One worker's credential, as a path to it.
 
-    `token_path` names a filesystem path a concrete adapter's own
-    environment plumbing points a service's client at; this dataclass holds
-    no opinion about which environment variable that is, or whether the
-    path names a file or a directory, because both the variable's name and
-    the shape it expects are facts about a credential that ARE
-    service-specific (the concrete adapter that reads `token_path` is the
-    one place that names either). Everything else about a credential handle
-    is common to every backend this seam could ever hold, which is why this
-    shape lives here instead of being redefined inside each adapter module.
+    `token_path` names a filesystem path a concrete adapter consumes; this
+    dataclass holds no opinion about how — which environment variable it
+    ends up in, whether the path names a file or a directory, or whether
+    the client behind it wants the path or the bytes at it. All of those
+    are facts about one service's client, and the concrete adapter is the
+    one place allowed to know them. Everything else about a credential
+    handle is common to every backend this seam could ever hold, which is
+    why this shape lives here instead of being redefined inside each
+    adapter module.
 
-    It exposes no read method. The only thing anywhere in this seam's
-    dependency graph that ever does anything with `token_path` beyond
-    carrying it is handing its string form to a child process's own
-    environment — never opening it, never parsing whatever file lives at
-    it. A credential VALUE therefore has no route into this process's
-    memory at all: nothing between where a handle is produced and where it
-    is consumed is even capable of reading one.
+    It exposes no read method, and nothing in this seam reads one. The
+    guarantee is scoped exactly that far and no further: `token_path` is
+    carried here, and every module ABOVE a concrete adapter is structurally
+    incapable of turning it into a value, because none of them touches the
+    attribute at all. Whether the credential's VALUE is read below this
+    seam is a question about one client, answered in the adapter that
+    names it — not a promise this shape can make on every backend's behalf.
     """
 
     worker_id: str

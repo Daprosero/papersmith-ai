@@ -3883,6 +3883,116 @@ class ParallelCredentialIsolationTests(unittest.TestCase):
         )
 
 
+class CredentialTransportDoctrineTests(unittest.TestCase):
+    """`SKILL.md` must state how a credential actually travels, and the
+    suite holds that statement to the tests that enforce it.
+
+    The same parseable-table idiom `PinConditionDoctrineTests` established,
+    for the same reason and against a defect of the same family: the skill
+    documented a by-path contract, the client had no by-path behavior to
+    hold it to, and no test could contradict a paragraph. The binding here
+    runs both ways — a lock with no row is undocumented, a row naming no
+    test is a claim nothing enforces — so the two cannot drift apart again
+    without a red test.
+
+    The parser is deliberately small and local, exactly as it is in
+    `PinConditionDoctrineTests`: this suite does not import across test
+    modules.
+    """
+
+    HEADER = "| # | id | Guarantee | Enforced by | Proven by |"
+
+    # Every test in these classes is a credential-transport lock, so every
+    # one of them must appear in the table. A lock added here with no row
+    # is a guarantee an operator cannot look up.
+    LOCK_CLASSES = ("CredentialValueDeliveryTests", "ParallelCredentialIsolationTests")
+
+    def _table_rows(self, text: str, header: str) -> list:
+        lines = text.split("\n")
+        try:
+            start = next(i for i, line in enumerate(lines) if line.strip() == header)
+        except StopIteration:
+            self.fail(
+                f"SKILL.md has no credential-transport table: the exact header "
+                f"{header!r} was not found"
+            )
+        rows = []
+        for line in lines[start + 1:]:
+            stripped = line.strip()
+            if not stripped.startswith("|"):
+                break
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            if all(set(cell) <= {"-", ":"} and cell for cell in cells):
+                continue  # the separator row
+            rows.append(cells)
+        return rows
+
+    def _rows(self) -> list:
+        return self._table_rows(SKILL_MD.read_text(encoding="utf-8"), self.HEADER)
+
+    def test_every_row_is_complete_and_every_id_is_named_once(self) -> None:
+        rows = self._rows()
+        self.assertGreater(len(rows), 0, "the table documents nothing")
+        ids = []
+        for row in rows:
+            self.assertEqual(len(row), 5, row)
+            for cell in row:
+                self.assertTrue(cell, row)
+            ids.append(row[1])
+        self.assertEqual(sorted(ids), sorted(set(ids)), f"a row id is repeated: {ids}")
+
+    def test_every_row_names_a_test_this_suite_actually_runs(self) -> None:
+        """A row whose `Proven by` cell names nothing real is exactly the
+        claim this change exists to end.
+        """
+        module_tests = {
+            node.name
+            for node in ast.walk(ast.parse(Path(__file__).read_text(encoding="utf-8")))
+            if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")
+        }
+        for row in self._rows():
+            named = row[4].strip("`")
+            self.assertIn(named, module_tests, f"row {row[1]!r} names no real test")
+
+    def test_every_credential_transport_lock_is_documented(self) -> None:
+        documented = {row[4].strip("`") for row in self._rows()}
+        for class_name in self.LOCK_CLASSES:
+            cls = globals()[class_name]
+            for name in dir(cls):
+                if name.startswith("test_"):
+                    self.assertIn(
+                        name,
+                        documented,
+                        f"{class_name}.{name} enforces a guarantee SKILL.md's "
+                        f"credential-transport table does not document",
+                    )
+
+    def test_the_retracted_by_path_claim_survives_nowhere(self) -> None:
+        """The old doctrine said the client "checks it exists" before
+        treating `KAGGLE_API_TOKEN` as a literal. It does not, and never
+        did in the installed version. Rewording that sentence would have
+        left the same claim in softer words, so this asserts its absence
+        outright — in the skill's own surface, in the adapter, and in the
+        seam that must not name a service at all.
+        """
+        retracted = (
+            "checks `Path(...).exists()`",
+            "Path(KAGGLE_API_TOKEN).exists()",
+            "checks it exists",
+            "carried by PATH only",
+            "move BY PATH, never by value",
+        )
+        for path in (
+            SKILL_MD,
+            KAGGLE_SCRIPT,
+            ADAPTER_SCRIPT,
+            REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/credentials.py",
+        ):
+            text = path.read_text(encoding="utf-8")
+            for claim in retracted:
+                self.assertNotIn(claim, text, f"{claim!r} still stated in {path}")
+
+
 class JobFolderTests(unittest.TestCase):
     """`jobfolder.generate_job()` — this slice's whole surface: the
     `generate-job` CLI command, `run-config.json`'s schema, and atomic,

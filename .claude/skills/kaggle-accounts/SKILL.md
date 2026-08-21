@@ -1,6 +1,6 @@
 ---
 name: kaggle-accounts
-description: "Trigger: check that this project's Kaggle accounts actually authenticate, take in new credentials left in kaggle-inbox/, or remove accounts. Two interactive options — validate or remove. Stdlib-only, no venv."
+description: "Trigger: check that this project's Kaggle accounts actually authenticate, take in new credentials left in kaggle-inbox/, or remove accounts. Two interactive options — validate or remove. A third command, `materialize`, exists for code rather than a human: it writes one worker's stored credential to a plain-text token file and prints back where, never what. Stdlib-only, no venv."
 ---
 
 # Kaggle Accounts
@@ -74,9 +74,12 @@ python3 .claude/skills/kaggle-accounts/scripts/accounts_cli.py <command>
 ```
 
 - `validate` — re-check every stored account, take in the inbox, keep what passes.
-- `remove <username>…` — delete stored accounts.
+- `remove <username>…` — delete stored accounts, and the token file each one materialized.
 - `list [--json]` — stored accounts, never their keys.
 - `discover [--json]` — credential files lying around and the accounts in each.
+- `materialize --worker <username> [--into <dir>] --json` — write that
+  worker's credential to a token file and print back where. For code, not
+  for a human: it asks nothing, and it prints a destination, never a value.
 
 ## Validating
 
@@ -215,6 +218,35 @@ credential is written rather than after.
 Writes are atomic: a truncated write would cost every credential in the file,
 not just the one being added.
 
+## What `materialize` writes
+
+`materialize` is the one way a credential this store holds reaches another
+process, and the file it writes has a **shape another skill depends on**. That
+shape belongs here, in the doctrine of the skill that owns it, not only in a
+docstring: the consuming skill and this one disagreed about it for as long as
+they did precisely because there was no place the two statements could be put
+side by side. Every row below is re-derived from a real `materialize` run by
+this skill's own test suite — a row that stops being true fails a test.
+
+| # | id | Property | Held to code by |
+|---|---|---|---|
+| 1 | `destination` | `store/workers/<username>/token`, unless `--into <dir>` names another directory — then `<dir>/token` | `worker_token_path()`, the one place that spelling exists |
+| 2 | `content` | The token itself and nothing else: no JSON wrapper, no `username` field, no surrounding quotes | `cmd_materialize()` |
+| 3 | `trailing-newline` | Exactly one `\n` after the token. The consumer strips it — a newline inside an `Authorization` header is a malformed header, not a credential | `cmd_materialize()` |
+| 4 | `encoding` | UTF-8 | `cmd_materialize()` |
+| 5 | `file-mode` | `0600`, set on the descriptor before the first byte is written | `cmd_materialize()` |
+| 6 | `directory-mode` | `0700` | `cmd_materialize()` |
+| 7 | `atomicity` | `mkstemp` inside the destination then `os.replace`, so a reader finds the old file or the new one and never a partial one; no `.kaggle-` temporary file survives | `cmd_materialize()` |
+| 8 | `removal` | `remove <username>` deletes it, before the store entry is saved | `cmd_remove()` |
+
+**The consumer reads the value, not the path.** Kaggle's own client
+authenticates `KAGGLE_API_TOKEN` by value and checks no path, so whatever points
+a client at this file ends up reading it and sending its stripped content. That
+is a fact about the client, not a choice this command makes — but it is why row 3
+matters and why this file holds a bare token rather than the legacy
+`kaggle.json` container, which routes a bearer token through a Basic-auth path
+and answers 401 for every account regardless of validity.
+
 ## Decision Gates
 
 | Situation | Action |
@@ -239,6 +271,8 @@ not just the one being added.
 | A `.gitignore` missing or not matching | Refuse to write; say to restore it |
 | Store file unreadable or malformed | Report it; write nothing |
 | Asked which accounts exist | Run `list`; never read the store file directly |
+| Code needs one account's credential as a file | `materialize --worker <username> --json`; report the destination, never the value |
+| An account is removed | Its materialized token file goes with it; say the credential file was deleted too |
 
 ## Output Reporting
 

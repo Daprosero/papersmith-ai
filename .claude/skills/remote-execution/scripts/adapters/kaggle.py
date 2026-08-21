@@ -23,18 +23,31 @@ what this file's own dependency graph can even reach:
    can reach a caller even by accident). This module never imports that
    script; it only runs it, exactly the way a human at a terminal would.
 
-2. Credentials move BY PATH, never by value. `CredentialHandle` below is
-   the only credential type this adapter accepts, and it carries a path,
-   not a secret. Its single sink, in the whole file, is
-   `env["KAGGLE_API_TOKEN"] = str(handle.token_path)` on exactly one
-   subprocess call. `KAGGLE_API_TOKEN` is Kaggle's own client-side
-   environment variable for a token FILE path — checked with
-   `Path(...).exists()` before ever being treated as a literal value, which
-   is what keeps this a path-only sink rather than a second value-shaped
-   hole. Nothing in this module ever opens, reads or parses that file — the
-   `kaggle` executable does that, in its own process, with its own
-   environment, and this module never inspects what that process printed
-   for anything other than a translated status word and an exit code.
+2. A credential VALUE is read at exactly one expression, here, and
+   reaches exactly one child process's own environment. `CredentialHandle`
+   below is the only credential type this adapter accepts; it carries a
+   path, and `_env_for()` — the single sink in the whole file — reads the
+   file that path names and puts its stripped content on
+   `KAGGLE_API_TOKEN`.
+
+   This is a TRADE, not a preserved invariant, and the old by-path claim
+   is retracted rather than reworded: the installed client's
+   `_try_fill_auth()` reads `KAGGLE_API_TOKEN` and hands it straight to
+   `BearerAuth(api_token)`, by value, with no path check of any kind, so a
+   path in that variable becomes the literal text of an
+   `Authorization: Bearer` header and authenticates nothing. The legacy
+   `KAGGLE_CONFIG_DIR`/`kaggle.json` shape is not an escape either — it
+   routes an access token through a Basic-auth path it was never meant for
+   and answers 401 for every account regardless of validity.
+
+   What genuinely holds, and is locked by tests rather than stated here:
+   `.token_path` is touched in no module above this one, so no credential
+   value has any route into `credentials.py`, `remote_cli.py`, `ledger.py`,
+   `packer.py` or `jobfolder.py`; the value is never logged, never
+   interpolated into a refusal, and never returned upward; and a file that
+   cannot be read, or that holds nothing once stripped, is refused instead
+   of sent. See `SKILL.md`'s credential-transport table for the full list
+   and the test that proves each row.
 
 Every subprocess call here is `shell=False` with a list argv, an explicit
 timeout, and an env built from an allowlist (`PATH` plus, when a credential

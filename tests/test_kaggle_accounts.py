@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import importlib.util
+import inspect
 import io
 import json
 import re
@@ -28,6 +29,11 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPOSITORY_ROOT / ".claude/skills/kaggle-accounts/scripts/accounts_cli.py"
+
+# Doctrine, as a path the suite can read: `MaterializedTokenDoctrineTests`
+# holds this document's materialized-token table to what `materialize`
+# actually writes. Prose cannot be held to code; a table can.
+SKILL_MD = REPOSITORY_ROOT / ".claude/skills/kaggle-accounts/SKILL.md"
 SPEC = importlib.util.spec_from_file_location("accounts_cli", SCRIPT)
 assert SPEC and SPEC.loader
 ACCOUNTS = importlib.util.module_from_spec(SPEC)
@@ -568,6 +574,174 @@ class RemoveCommandTests(unittest.TestCase):
                 )
 
             self.assertTrue(token_path.exists())
+
+
+class MaterializedTokenDoctrineTests(unittest.TestCase):
+    """`SKILL.md` must state the byte shape `materialize` writes, and the
+    suite holds that statement to what the command actually does.
+
+    Why this exists at all: `materialize` appeared NOWHERE in this skill's
+    doctrine. The shape it writes was stated only in a docstring and a
+    test, and the skill that consumes it stated a different shape in its
+    own doctrine — so the producer and the consumer disagreed for as long
+    as they did because there was no place the two could be compared. A
+    prose paragraph would not have fixed that; a table each row of which is
+    re-derived from a real `materialize` run does.
+
+    The enumeration below lives here rather than in `accounts_cli.py`
+    because nothing in the command needs it — every entry is bound to an
+    assertion made against a genuinely materialized file, so a row cannot
+    be added without writing the check that proves it, and a check cannot
+    exist without a row naming it.
+    """
+
+    HEADER = "| # | id | Property | Held to code by |"
+
+    CHECKS = (
+        "destination",
+        "content",
+        "trailing-newline",
+        "encoding",
+        "file-mode",
+        "directory-mode",
+        "atomicity",
+        "removal",
+    )
+
+    KEY = "K-not-a-real-key"
+
+    def _table_rows(self) -> list:
+        text = SKILL_MD.read_text(encoding="utf-8")
+        lines = text.split("\n")
+        try:
+            start = next(
+                i for i, line in enumerate(lines) if line.strip() == self.HEADER
+            )
+        except StopIteration:
+            self.fail(
+                f"kaggle-accounts/SKILL.md has no materialized-token table: the "
+                f"exact header {self.HEADER!r} was not found"
+            )
+        rows = []
+        for line in lines[start + 1:]:
+            stripped = line.strip()
+            if not stripped.startswith("|"):
+                break
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            if all(set(cell) <= {"-", ":"} and cell for cell in cells):
+                continue
+            rows.append(cells)
+        return rows
+
+    @contextlib.contextmanager
+    def _materialized(self):
+        """One real `materialize` run, into a temp store the command
+        believes is its own. Every check below reads this same file.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            store_dir = Path(tmp) / "store"
+            dest = store_dir / "workers" / "w1"
+            dest.mkdir(parents=True)
+            (dest / ".gitignore").write_text("*\n", encoding="utf-8")
+            store = {"version": 1, "accounts": [{"username": "w1", "key": self.KEY}]}
+            buffer = io.StringIO()
+            with unittest.mock.patch.object(ACCOUNTS, "load_store", lambda: store), \
+                    unittest.mock.patch.object(ACCOUNTS, "STORE_DIR", store_dir):
+                with contextlib.redirect_stdout(buffer):
+                    code = ACCOUNTS.cmd_materialize(
+                        argparse.Namespace(worker="w1", into=None, json=True)
+                    )
+                self.assertEqual(code, 0)
+                yield store_dir, json.loads(buffer.getvalue())
+
+    def _check_destination(self, store_dir: Path, payload: dict) -> None:
+        expected = store_dir / "workers" / "w1" / "token"
+        self.assertEqual(Path(payload["tokenPath"]), expected)
+        with unittest.mock.patch.object(ACCOUNTS, "STORE_DIR", store_dir):
+            self.assertEqual(ACCOUNTS.worker_token_path("w1"), expected)
+
+    def _check_content(self, store_dir: Path, payload: dict) -> None:
+        text = Path(payload["tokenPath"]).read_text(encoding="utf-8")
+        self.assertEqual(text.strip(), self.KEY)
+        # Nothing else: no JSON wrapper, no `username` field.
+        self.assertNotIn("username", text)
+        self.assertNotIn("{", text)
+
+    def _check_trailing_newline(self, store_dir: Path, payload: dict) -> None:
+        self.assertTrue(
+            Path(payload["tokenPath"]).read_text(encoding="utf-8").endswith("\n")
+        )
+
+    def _check_encoding(self, store_dir: Path, payload: dict) -> None:
+        raw = Path(payload["tokenPath"]).read_bytes()
+        self.assertEqual(raw.decode("utf-8"), self.KEY + "\n")
+
+    def _check_file_mode(self, store_dir: Path, payload: dict) -> None:
+        mode = stat.S_IMODE(Path(payload["tokenPath"]).stat().st_mode)
+        self.assertEqual(mode, 0o600)
+
+    def _check_directory_mode(self, store_dir: Path, payload: dict) -> None:
+        mode = stat.S_IMODE(Path(payload["tokenPath"]).parent.stat().st_mode)
+        self.assertEqual(mode, 0o700)
+
+    def _check_atomicity(self, store_dir: Path, payload: dict) -> None:
+        dest = Path(payload["tokenPath"]).parent
+        self.assertEqual(
+            [p.name for p in dest.iterdir() if p.name.startswith(".kaggle-")], []
+        )
+        source = inspect.getsource(ACCOUNTS.cmd_materialize)
+        self.assertIn("mkstemp", source)
+        self.assertIn("os.replace", source)
+
+    def _check_removal(self, store_dir: Path, payload: dict) -> None:
+        token_path = Path(payload["tokenPath"])
+        self.assertTrue(token_path.exists())
+        store = {"version": 1, "accounts": [{"username": "w1", "key": self.KEY}]}
+        with unittest.mock.patch.object(ACCOUNTS, "load_store", lambda: store), \
+                unittest.mock.patch.object(ACCOUNTS, "save_store", lambda payload: None), \
+                unittest.mock.patch.object(ACCOUNTS, "STORE_DIR", store_dir):
+            with contextlib.redirect_stdout(io.StringIO()):
+                ACCOUNTS.cmd_remove(argparse.Namespace(usernames=["w1"]))
+        self.assertFalse(token_path.exists())
+
+    def test_the_table_documents_exactly_the_properties_held_to_code(self) -> None:
+        documented = [row[1].strip("`") for row in self._table_rows()]
+        undocumented = [c for c in self.CHECKS if c not in documented]
+        self.assertEqual(
+            undocumented, [],
+            f"proven by this suite and absent from SKILL.md's table: {undocumented}",
+        )
+        invented = [c for c in documented if c not in self.CHECKS]
+        self.assertEqual(
+            invented, [],
+            f"documented in SKILL.md's table and proven nowhere: {invented}",
+        )
+        self.assertEqual(documented, list(self.CHECKS), "the table's order is the contract")
+
+    def test_every_row_names_a_property_and_where_it_is_held(self) -> None:
+        rows = self._table_rows()
+        for row in rows:
+            self.assertEqual(len(row), 4, row)
+            for cell in row:
+                self.assertTrue(cell, row)
+
+    def test_every_documented_property_holds_against_a_real_materialize(self) -> None:
+        with self._materialized() as (store_dir, payload):
+            for row_id in self.CHECKS:
+                with self.subTest(property=row_id):
+                    check = getattr(self, "_check_" + row_id.replace("-", "_"))
+                    check(store_dir, payload)
+
+    def test_the_doctrine_names_the_command_and_what_reads_what_it_writes(self) -> None:
+        """The gap this change closes is total: `materialize` was not named
+        anywhere in this document, so the one command another skill depends
+        on was invisible to the doctrine that governs this one.
+        """
+        text = SKILL_MD.read_text(encoding="utf-8")
+        self.assertIn("materialize", text)
+        lowered = text.lower()
+        self.assertIn("stripped", lowered)
+        self.assertIn("value", lowered)
 
 
 class AccountVocabularyLeakTests(unittest.TestCase):
