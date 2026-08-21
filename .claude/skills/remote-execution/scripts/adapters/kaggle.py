@@ -449,17 +449,50 @@ class KaggleAdapter(ADAPTER.Adapter):
         would leak every other variable this process happens to be
         carrying, credential-shaped or not.
 
-        `KAGGLE_API_TOKEN` is Kaggle's own client-side variable for a token
-        FILE path: `kagglesdk`'s environment resolution checks
-        `Path(KAGGLE_API_TOKEN).exists()` before treating the value as a
-        literal token, so a path here is read as a path, never as a value —
-        the same by-path-only contract `KAGGLE_CONFIG_DIR` held, on the
-        environment variable that actually authenticates the access-token
-        shape kaggle-accounts keeps for each worker.
+        `KAGGLE_API_TOKEN` carries the token's VALUE, and this is the one
+        expression in this skill that ever reads one. Measured, not
+        assumed: `kagglesdk`'s `_try_fill_auth()` reads that variable and
+        hands it straight to `BearerAuth(api_token)` — by value, with no
+        path check of any kind — so a path here becomes the literal text of
+        an `Authorization: Bearer` header and authenticates nothing. The
+        legacy `KAGGLE_CONFIG_DIR`/`kaggle.json` shape is not an escape
+        from that: it routes an access token through a Basic-auth path it
+        was never meant for and answers 401 for every account regardless of
+        validity.
+
+        So the by-path-only contract this adapter used to hold is SPENT,
+        not preserved, and saying so is the point: what still holds is
+        narrower and structural. The read happens here, in the one file
+        allowed to name a service, in a single expression whose result goes
+        straight onto one child process's environment; no module above this
+        one touches `token_path` at all, and the value is never logged,
+        never interpolated into a message, and never returned upward.
+
+        `.strip()` is load-bearing: the credential file ends with the
+        newline `materialize` writes, and a newline inside a bearer header
+        is a malformed header rather than a credential. A file that cannot
+        be read, or that holds nothing once stripped, is refused here —
+        the same fail-closed discipline every other unusable answer in this
+        module gets, rather than a request sent with a header the service
+        can only answer 401 to.
         """
         env = {"PATH": os.environ.get("PATH", "")}
         if handle is not None:
-            env["KAGGLE_API_TOKEN"] = str(handle.token_path)
+            try:
+                env["KAGGLE_API_TOKEN"] = handle.token_path.read_text(
+                    encoding="utf-8"
+                ).strip()
+            except OSError as exc:
+                raise KaggleAdapterError(
+                    f"could not read the credential file for worker "
+                    f"{handle.worker_id!r}: {exc}"
+                ) from exc
+            if not env["KAGGLE_API_TOKEN"]:
+                raise KaggleAdapterError(
+                    f"the credential file for worker {handle.worker_id!r} holds "
+                    "nothing once stripped; materialize that worker's credential "
+                    "again rather than sending an empty bearer header"
+                )
         return env
 
     def _run(self, argv: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:

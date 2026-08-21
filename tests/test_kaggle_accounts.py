@@ -484,6 +484,92 @@ class MaterializeCommandTests(unittest.TestCase):
             self.assertFalse(dest.exists())
 
 
+class RemoveCommandTests(unittest.TestCase):
+    """`remove` deletes what it says it deletes.
+
+    Reachable red: before this change it deleted the store entry and left
+    `store/workers/<username>/token` behind — a live credential for an
+    account this store no longer admits to holding, sitting at the exact
+    path the consuming skill's `materialize` contract names. The store
+    said the account was gone; the filesystem disagreed.
+    """
+
+    def _remove(
+        self, usernames: list[str], store_dir: Path, accounts: list[dict]
+    ) -> tuple[int, dict, str]:
+        store = {"version": 1, "accounts": accounts}
+        saved: dict = {}
+        buffer = io.StringIO()
+        with unittest.mock.patch.object(ACCOUNTS, "load_store", lambda: store), \
+                unittest.mock.patch.object(
+                    ACCOUNTS, "save_store", lambda payload: saved.update(payload)
+                ), \
+                unittest.mock.patch.object(ACCOUNTS, "STORE_DIR", store_dir):
+            with contextlib.redirect_stdout(buffer):
+                code = ACCOUNTS.cmd_remove(argparse.Namespace(usernames=usernames))
+        return code, saved, buffer.getvalue()
+
+    @staticmethod
+    def _materialized(store_dir: Path, username: str, key: str) -> Path:
+        token_path = store_dir / "workers" / username / "token"
+        token_path.parent.mkdir(parents=True)
+        token_path.write_text(key + "\n", encoding="utf-8")
+        return token_path
+
+    def test_removing_an_account_deletes_the_credential_materialize_wrote(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store_dir = Path(tmp) / "store"
+            token_path = self._materialized(store_dir, "w1", "K-not-a-real-key")
+            kept = self._materialized(store_dir, "w2", "K-also-not-a-real-key")
+
+            code, saved, out = self._remove(
+                ["w1"],
+                store_dir,
+                [{"username": "w1", "key": "K-not-a-real-key"},
+                 {"username": "w2", "key": "K-also-not-a-real-key"}],
+            )
+
+            self.assertEqual(code, 0)
+            self.assertFalse(token_path.exists())
+            self.assertFalse(token_path.parent.exists())
+            self.assertEqual([a["username"] for a in saved["accounts"]], ["w2"])
+            # The account that stays keeps the credential it materialized.
+            self.assertTrue(kept.exists())
+            self.assertNotIn("K-not-a-real-key", out)
+
+    def test_an_account_that_never_materialized_one_is_removed_without_complaint(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store_dir = Path(tmp) / "store"
+
+            code, saved, out = self._remove(
+                ["w1"], store_dir, [{"username": "w1", "key": "K-not-a-real-key"}]
+            )
+
+            self.assertEqual(code, 0)
+            self.assertEqual(saved["accounts"], [])
+            self.assertIn("Removed 1", out)
+
+    def test_a_refused_batch_deletes_no_credential_at_all(self) -> None:
+        """The same all-or-nothing rule the store entries already had: a
+        typo that deletes only the names it happened to match is worse than
+        deleting nothing.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            store_dir = Path(tmp) / "store"
+            token_path = self._materialized(store_dir, "w1", "K-not-a-real-key")
+
+            with self.assertRaisesRegex(ACCOUNTS.UsageError, "no such account"):
+                self._remove(
+                    ["w1", "ghost"],
+                    store_dir,
+                    [{"username": "w1", "key": "K-not-a-real-key"}],
+                )
+
+            self.assertTrue(token_path.exists())
+
+
 class AccountVocabularyLeakTests(unittest.TestCase):
     """A tenth guard, in the family of `remote-execution`'s eight
     `*_module_names_no_service` tests plus its `TargetVocabularyLeakTests`

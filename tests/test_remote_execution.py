@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import concurrent.futures
 import contextlib
 import dataclasses
 import hashlib
@@ -2275,6 +2276,31 @@ class ReconcileTests(unittest.TestCase):
             self.assertEqual(appended["reason"], "not-found-at-service")
 
 
+# A stand-in credential in the shape kaggle-accounts actually materializes
+# — the `KGAT_` prefix plus 32 hex characters, as a plain-text file — with
+# an obviously fake body no real account could ever hold. Deliberately NOT
+# a value any assertion in this module also matches by accident: a fixture
+# whose own name satisfies the assertion made of it is how a test in this
+# suite already went falsely green once.
+FIXTURE_TOKEN = "KGAT_" + "0123456789abcdef" * 2
+
+
+def _write_fake_token(directory: Path, value: str = FIXTURE_TOKEN) -> Path:
+    """Write a credential file the way `cmd_materialize` writes one — the
+    token itself and a single trailing newline, nothing else — and answer
+    with its path.
+
+    The trailing newline is not decoration: it is the byte
+    `accounts_cli.py`'s `cmd_materialize` genuinely appends, and a fixture
+    without it could not tell a consumer that strips from one that does
+    not.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    token_path = directory / "token"
+    token_path.write_text(value + "\n", encoding="utf-8")
+    return token_path
+
+
 def _write_fake_kaggle(
     bin_dir: Path,
     *,
@@ -2445,8 +2471,7 @@ class KaggleAdapterTests(unittest.TestCase):
             tmp_path = Path(tmp)
             bin_dir = tmp_path / "bin"
             _write_fake_kaggle(bin_dir, status_text="cancelAcknowledged")
-            token_path = tmp_path / "creds"
-            token_path.mkdir()
+            token_path = _write_fake_token(tmp_path / "creds")
 
             handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
             with unittest.mock.patch.dict(
@@ -2463,8 +2488,7 @@ class KaggleAdapterTests(unittest.TestCase):
             tmp_path = Path(tmp)
             bin_dir = tmp_path / "bin"
             _write_fake_kaggle(bin_dir, status_text="running")
-            token_path = tmp_path / "creds"
-            token_path.mkdir()
+            token_path = _write_fake_token(tmp_path / "creds")
 
             handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
             with unittest.mock.patch.dict(
@@ -2488,8 +2512,7 @@ class KaggleAdapterTests(unittest.TestCase):
             tmp_path = Path(tmp)
             bin_dir = tmp_path / "bin"
             _write_fake_kaggle(bin_dir, status_text="KernelWorkerStatus.RUNNING")
-            token_path = tmp_path / "creds"
-            token_path.mkdir()
+            token_path = _write_fake_token(tmp_path / "creds")
 
             handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
             with unittest.mock.patch.dict(
@@ -2506,8 +2529,7 @@ class KaggleAdapterTests(unittest.TestCase):
             tmp_path = Path(tmp)
             bin_dir = tmp_path / "bin"
             _write_fake_kaggle(bin_dir, exit_code=7)
-            token_path = tmp_path / "creds"
-            token_path.mkdir()
+            token_path = _write_fake_token(tmp_path / "creds")
 
             handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
             with unittest.mock.patch.dict(
@@ -2522,8 +2544,7 @@ class KaggleAdapterTests(unittest.TestCase):
             tmp_path = Path(tmp)
             bin_dir = tmp_path / "bin"
             _write_fake_kaggle(bin_dir, sleep_seconds=5)
-            token_path = tmp_path / "creds"
-            token_path.mkdir()
+            token_path = _write_fake_token(tmp_path / "creds")
 
             handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
             with unittest.mock.patch.dict(
@@ -2540,8 +2561,7 @@ class KaggleAdapterTests(unittest.TestCase):
             tmp_path = Path(tmp)
             bin_dir = tmp_path / "bin"
             _write_fake_kaggle(bin_dir)
-            token_path = tmp_path / "creds"
-            token_path.mkdir()
+            token_path = _write_fake_token(tmp_path / "creds")
             # No "/" anywhere in this string: `poll()` derives a worker id
             # from a submission id by splitting on the FIRST "/", and this
             # test's own `/kernel-1` suffix is what that split is meant to
@@ -2631,8 +2651,7 @@ class KaggleAdapterTests(unittest.TestCase):
             entrypoint.write_text("{}", encoding="utf-8")
             # Deliberately no kernel-metadata.json beside it.
 
-            token_path = tmp_path / "creds"
-            token_path.mkdir()
+            token_path = _write_fake_token(tmp_path / "creds")
             handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
             adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle})
             job = ADAPTER.Job(entrypoint=entrypoint, run_config={"mode": "full"}, worker="w1")
@@ -2658,8 +2677,7 @@ class KaggleAdapterTests(unittest.TestCase):
 
             bin_dir = tmp_path / "bin"
             _write_fake_kaggle(bin_dir)
-            token_path = tmp_path / "creds"
-            token_path.mkdir()
+            token_path = _write_fake_token(tmp_path / "creds")
             handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
 
             with unittest.mock.patch.dict(
@@ -2689,8 +2707,7 @@ class KaggleAdapterTests(unittest.TestCase):
 
             bin_dir = tmp_path / "bin"
             _write_fake_kaggle(bin_dir)
-            token_path = tmp_path / "creds"
-            token_path.mkdir()
+            token_path = _write_fake_token(tmp_path / "creds")
             handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
 
             with unittest.mock.patch.dict(
@@ -2771,8 +2788,7 @@ class KaggleAdapterTests(unittest.TestCase):
             )
             fake_kaggle.chmod(0o755)
 
-            token_path = tmp_path / "creds"
-            token_path.mkdir()
+            token_path = _write_fake_token(tmp_path / "creds")
             handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
 
             with unittest.mock.patch.dict(
@@ -2811,8 +2827,7 @@ class KaggleAdapterTests(unittest.TestCase):
             tmp_path = Path(tmp)
             bin_dir = tmp_path / "bin"
             _write_fake_kaggle(bin_dir)
-            token_path = tmp_path / "creds"
-            token_path.mkdir()
+            token_path = _write_fake_token(tmp_path / "creds")
             handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
 
             refs = {}
@@ -2862,8 +2877,7 @@ class KaggleAdapterTests(unittest.TestCase):
 
             bin_dir = tmp_path / "bin"
             _write_fake_kaggle(bin_dir)
-            token_path = tmp_path / "creds"
-            token_path.mkdir()
+            token_path = _write_fake_token(tmp_path / "creds")
             handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
 
             with unittest.mock.patch.dict(
@@ -2956,8 +2970,7 @@ class KaggleAdapterTests(unittest.TestCase):
             )
             fake_kaggle.chmod(0o755)
 
-            token_path = tmp_path / "creds"
-            token_path.mkdir()
+            token_path = _write_fake_token(tmp_path / "creds")
             handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
 
             with unittest.mock.patch.dict(
@@ -3051,8 +3064,7 @@ class KaggleAdapterTests(unittest.TestCase):
             )
             fake_kaggle.chmod(0o755)
 
-            token_path = tmp_path / "creds"
-            token_path.mkdir()
+            token_path = _write_fake_token(tmp_path / "creds")
             handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
 
             with unittest.mock.patch.dict(
@@ -3166,8 +3178,7 @@ class KaggleAdapterTests(unittest.TestCase):
             )
             fake_kaggle.chmod(0o755)
 
-            token_path = tmp_path / "creds"
-            token_path.mkdir()
+            token_path = _write_fake_token(tmp_path / "creds")
             handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
 
             with unittest.mock.patch.dict(
@@ -3341,7 +3352,7 @@ def _write_fake_materialize_cli(
         "dest.mkdir(parents=True, exist_ok=True)\n"
         f"key = {key!r}\n"
         "token_path = dest / 'token'\n"
-        "token_path.write_text(key)\n"
+        "token_path.write_text(key + chr(10))\n"
         "os.chmod(token_path, 0o600)\n"
         "print(json.dumps({'worker': args.worker, 'tokenPath': str(token_path)}))\n",
         encoding="utf-8",
@@ -3369,28 +3380,37 @@ def _is_under(candidate: object, root: Path) -> bool:
 def _interposition_guard(guarded_root: Path):
     """Interpose `Path.read_text`, `Path.read_bytes` and `builtins.open`
     for the duration of the `with` block, recording every call whose
-    argument resolves under `guarded_root`. Every call is still forwarded
+    argument resolves under `guarded_root` — how it read, what it read,
+    and the file the calling code lives in. Every call is still forwarded
     to the real implementation — this only OBSERVES, it never blocks —
     so the guarded code path keeps running exactly as it would otherwise.
     """
-    hits: list[str] = []
+    hits: list[dict] = []
     real_read_text = Path.read_text
     real_read_bytes = Path.read_bytes
     real_open = builtins.open
 
+    def _record(how: str, target: object) -> None:
+        # The immediate caller's own file, so a hit names WHICH module read
+        # the credential — the whole invariant now that the value, not the
+        # path, is what a client is handed.
+        hits.append(
+            {"how": how, "path": str(target), "caller": sys._getframe(2).f_code.co_filename}
+        )
+
     def guarded_read_text(path_self, *a, **kw):
         if _is_under(path_self, guarded_root):
-            hits.append(f"Path.read_text:{path_self}")
+            _record("Path.read_text", path_self)
         return real_read_text(path_self, *a, **kw)
 
     def guarded_read_bytes(path_self, *a, **kw):
         if _is_under(path_self, guarded_root):
-            hits.append(f"Path.read_bytes:{path_self}")
+            _record("Path.read_bytes", path_self)
         return real_read_bytes(path_self, *a, **kw)
 
     def guarded_open(file, *a, **kw):
         if _is_under(file, guarded_root):
-            hits.append(f"open:{file}")
+            _record("open", file)
         return real_open(file, *a, **kw)
 
     with unittest.mock.patch.object(Path, "read_text", guarded_read_text), \
@@ -3476,14 +3496,29 @@ class CredentialSecurityTests(unittest.TestCase):
             "interposition_hits": hits,
         }
 
-    def test_zero_file_read_interposition_across_a_full_submit_poll_fetch_status_run(
+    def test_only_the_adapter_reads_the_credential_across_a_full_submit_poll_fetch_status_run(
         self,
     ) -> None:
-        """C2."""
+        """C2. The credential file IS read inside this process now — a
+        client that authenticates only by value left no other route — so
+        the invariant is no longer "nobody reads it" but "exactly one file
+        reads it, and it is the one file allowed to name a service".
+
+        Every hit's caller is checked, not just its count: a read from
+        `remote_cli.py`, `ledger.py` or `credentials.py` is the failure
+        this guards against, and those would otherwise be invisible behind
+        a passing count.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             cycle = self._run_full_cycle(Path(tmp))
             self.assertGreater(len(cycle["calls"]), 0)
-            self.assertEqual(cycle["interposition_hits"], [])
+
+            hits = cycle["interposition_hits"]
+            self.assertGreater(len(hits), 0, "the credential was never read at all")
+            for hit in hits:
+                self.assertEqual(hit["how"], "Path.read_text", hit)
+                self.assertTrue(hit["path"].endswith("/token"), hit)
+                self.assertEqual(hit["caller"], str(KAGGLE_SCRIPT), hit)
 
     def test_planted_sentinel_leaks_nowhere_including_materializes_own_stdout(
         self,
@@ -3568,19 +3603,284 @@ class CredentialSecurityTests(unittest.TestCase):
         self.assertEqual(len(accesses), 1)
 
     def test_the_only_sink_is_kaggle_api_token_on_the_child_environment(self) -> None:
-        """C6."""
+        """C6. The sink is still exactly one variable on exactly one child
+        environment; what changed is what that variable carries. The client
+        this adapter shells out to reads `KAGGLE_API_TOKEN` as a token
+        VALUE with no path check of any kind, so a path here authenticates
+        nothing — see `CredentialValueDeliveryTests` for that contract in
+        full.
+        """
         with tempfile.TemporaryDirectory() as tmp:
-            token_path = Path(tmp) / "creds"
-            token_path.mkdir()
+            token_path = _write_fake_token(Path(tmp) / "creds")
             handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
             adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle})
 
             env = adapter._env_for(handle)
-            self.assertEqual(env.get("KAGGLE_API_TOKEN"), str(token_path))
+            self.assertEqual(env.get("KAGGLE_API_TOKEN"), FIXTURE_TOKEN)
             self.assertEqual(sorted(env), ["KAGGLE_API_TOKEN", "PATH"])
 
             env_without_handle = adapter._env_for(None)
             self.assertEqual(sorted(env_without_handle), ["PATH"])
+
+
+def _write_recording_kaggle(
+    bin_dir: Path, record_dir: Path, *, sleep_seconds: float
+) -> Path:
+    """A fake `kaggle` that records the credential IT ACTUALLY RECEIVED,
+    plus when it started and finished, and nothing else.
+
+    The record directory is baked into the script's own source rather than
+    passed through the environment, because the environment is exactly what
+    this fixture exists to observe: `_env_for` builds the child's whole env
+    from an allowlist (`PATH` plus `KAGGLE_API_TOKEN`), so a second variable
+    naming the record directory could not reach this process anyway.
+
+    Never touches a network and never reads any file: it answers
+    `kernels push` well enough to drive `submit()` and writes one JSON
+    record per invocation, under a unique name, so two concurrent
+    invocations cannot overwrite each other's record.
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    record_dir.mkdir(parents=True, exist_ok=True)
+    script = bin_dir / "kaggle"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys, time, uuid\n"
+        "from pathlib import Path\n"
+        f"RECORD_DIR = Path({str(record_dir)!r})\n"
+        f"SLEEP = {sleep_seconds!r}\n"
+        "started = time.time()\n"
+        "time.sleep(SLEEP)\n"
+        "record = {\n"
+        "    'argv': sys.argv[1:],\n"
+        "    'credential': os.environ.get('KAGGLE_API_TOKEN'),\n"
+        "    'started': started,\n"
+        "    'finished': time.time(),\n"
+        "}\n"
+        "(RECORD_DIR / (uuid.uuid4().hex + '.json')).write_text(\n"
+        "    json.dumps(record), encoding='utf-8')\n"
+        "print('kernel version 1 successfully pushed')\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return script
+
+
+class CredentialValueDeliveryTests(unittest.TestCase):
+    """`_env_for` hands the service client the token's VALUE, because the
+    client this adapter shells out to reads `KAGGLE_API_TOKEN` as a value
+    and as nothing else.
+
+    Reachable red: `_env_for` assigned `str(handle.token_path)` before this
+    change, so a submission sent `Authorization: Bearer /path/to/token` and
+    every assertion below that names the file's stripped CONTENT failed
+    against a path.
+
+    What still holds, and is asserted here rather than assumed: no module
+    above the adapter can reach the credential file at all — the value is
+    read in exactly one file, at exactly one expression, and reaches
+    exactly one child process's own environment.
+    """
+
+    def _env_for(self, token_path: Path) -> dict:
+        handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
+        return KAGGLE.KaggleAdapter(credentials={"w1": handle})._env_for(handle)
+
+    def test_the_env_value_is_the_files_stripped_content_and_never_its_path(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            token_path = _write_fake_token(Path(tmp) / "creds")
+
+            env = self._env_for(token_path)
+
+            self.assertEqual(env["KAGGLE_API_TOKEN"], FIXTURE_TOKEN)
+            self.assertNotEqual(env["KAGGLE_API_TOKEN"], str(token_path))
+            self.assertNotIn(str(token_path), env["KAGGLE_API_TOKEN"])
+            self.assertEqual(sorted(env), ["KAGGLE_API_TOKEN", "PATH"])
+
+    def test_the_newline_materialize_writes_never_reaches_the_header(self) -> None:
+        """`cmd_materialize` writes the key followed by `\\n`. A bearer
+        header carrying that newline is a malformed header, not a
+        credential — so the surrounding whitespace is stripped here, at the
+        one place the value is read.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            token_path = Path(tmp) / "token"
+            token_path.write_text(f"\n {FIXTURE_TOKEN} \n", encoding="utf-8")
+
+            value = self._env_for(token_path)["KAGGLE_API_TOKEN"]
+
+            self.assertEqual(value, FIXTURE_TOKEN)
+            self.assertNotIn("\n", value)
+            self.assertEqual(value, value.strip())
+
+    def test_a_credential_file_that_cannot_be_read_is_a_refusal(self) -> None:
+        """Fails closed, the same way every other unusable answer in this
+        module does: a missing token file is a `KaggleAdapterError` naming
+        the path, never a request sent with no credential at all.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "creds" / "token"
+
+            with self.assertRaises(KAGGLE.KaggleAdapterError) as caught:
+                self._env_for(missing)
+
+            self.assertIn(str(missing), str(caught.exception))
+
+    def test_an_empty_credential_file_is_refused_rather_than_sent_as_a_bare_bearer(
+        self,
+    ) -> None:
+        """The refusal names the worker, not the path: naming the path
+        would need a second `handle.token_path` access, and the single-
+        access lock in `CredentialSecurityTests` is worth more than a
+        friendlier message. The worker id is enough to re-materialize.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            token_path = Path(tmp) / "token"
+            token_path.write_text("\n", encoding="utf-8")
+
+            with self.assertRaises(KAGGLE.KaggleAdapterError) as caught:
+                self._env_for(token_path)
+
+            self.assertIn("w1", str(caught.exception))
+            self.assertNotIn(FIXTURE_TOKEN, str(caught.exception))
+
+    def test_no_module_above_the_adapter_can_reach_the_credential_file(self) -> None:
+        """The structural half of the trade this change makes: the adapter
+        now reads a VALUE, so what keeps a value out of everything else is
+        that nothing else ever touches `token_path` at all.
+
+        Parsed as an AST rather than scanned as raw text, exactly like the
+        single-access lock in `CredentialSecurityTests`, so a docstring
+        naming the attribute in prose (as `adapter.py`'s own
+        `CredentialHandle` docstring does) is not mistaken for a real
+        access. `credentials.py` names `token_path` only as a local
+        variable and a keyword argument, neither of which is an attribute
+        access on a handle.
+        """
+        scripts = (
+            REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/credentials.py",
+            REMOTE_CLI_SCRIPT,
+            PACKER_SCRIPT,
+            SCRIPT,
+            ADAPTER_SCRIPT,
+            JOBFOLDER_SCRIPT,
+        )
+        for path in scripts:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            accesses = [
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Attribute) and node.attr == "token_path"
+            ]
+            self.assertEqual(
+                accesses, [], f"{path} reaches a credential handle's own path"
+            )
+
+
+class ParallelCredentialIsolationTests(unittest.TestCase):
+    """Two concurrent submissions for two workers carry two distinct,
+    uncrossed credentials — the requirement this whole change exists to
+    serve, locked rather than assumed.
+
+    True by construction (`_run` builds a fresh env dict per call and hands
+    it to one `subprocess.run`), which is exactly why it needs a falsifier:
+    a shared credential, a crossed one, or one written into a place a
+    second call could read back would all still look like working code.
+    The fake `kaggle` on `PATH` records the credential it was actually
+    handed, so the claim dies if the two recorded values are equal, crossed,
+    or path-shaped.
+
+    No network: the fake executable is the only thing either submission
+    ever reaches.
+    """
+
+    SLEEP_SECONDS = 0.5
+
+    def _two_concurrent_submissions(self, tmp_path: Path) -> tuple:
+        tokens = {
+            "worker-alpha": "KGAT_" + "a" * 32,
+            "worker-beta": "KGAT_" + "b" * 32,
+        }
+        record_dir = tmp_path / "records"
+        bin_dir = tmp_path / "bin"
+        _write_recording_kaggle(bin_dir, record_dir, sleep_seconds=self.SLEEP_SECONDS)
+
+        credentials = {}
+        jobs = {}
+        for worker, value in tokens.items():
+            token_path = _write_fake_token(tmp_path / "creds" / worker, value)
+            credentials[worker] = KAGGLE.CredentialHandle(
+                worker_id=worker, token_path=token_path
+            )
+            job_dir = tmp_path / f"job-for-{worker}"
+            job_dir.mkdir()
+            entrypoint = job_dir / "a.ipynb"
+            entrypoint.write_text("{}", encoding="utf-8")
+            jobs[worker] = ADAPTER.Job(
+                entrypoint=entrypoint, run_config={}, worker=worker
+            )
+
+        adapter = KAGGLE.KaggleAdapter(credentials=credentials)
+        with unittest.mock.patch.dict(
+            os.environ,
+            {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"},
+        ):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                futures = {
+                    worker: pool.submit(adapter.submit, job)
+                    for worker, job in jobs.items()
+                }
+                submissions = {
+                    worker: future.result() for worker, future in futures.items()
+                }
+
+        records = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in sorted(record_dir.iterdir())
+        ]
+        return tokens, records, submissions
+
+    @staticmethod
+    def _worker_of(record: dict) -> str:
+        argv = record["argv"]
+        push_dir = Path(argv[argv.index("-p") + 1])
+        return push_dir.name.replace("job-for-", "")
+
+    def test_two_concurrent_submissions_carry_two_distinct_uncrossed_credentials(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tokens, records, submissions = self._two_concurrent_submissions(Path(tmp))
+
+        self.assertEqual(len(records), 2)
+        received = {self._worker_of(record): record["credential"] for record in records}
+        # One assertion kills all three ways this can be wrong: a shared
+        # credential, a crossed one, and a path where a value belongs.
+        self.assertEqual(received, tokens)
+        self.assertEqual(
+            sorted(submissions), ["worker-alpha", "worker-beta"]
+        )
+        for worker, value in received.items():
+            self.assertNotIn(os.sep, value, worker)
+
+    def test_the_two_submissions_genuinely_overlapped_in_time(self) -> None:
+        """Without this, the isolation test above would pass just as well
+        against two submissions that never ran at the same time — and
+        "parallel" is the requirement, not "twice".
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            _, records, _ = self._two_concurrent_submissions(Path(tmp))
+
+        self.assertEqual(len(records), 2)
+        first, second = sorted(records, key=lambda record: record["started"])
+        self.assertLess(
+            second["started"],
+            first["finished"],
+            "the two pushes never overlapped: this run proves nothing about "
+            "credential isolation under concurrency",
+        )
 
 
 class JobFolderTests(unittest.TestCase):
@@ -8668,6 +8968,12 @@ class BackendResolutionTests(unittest.TestCase):
         adapter and got as far as trying to invoke it.
         """
         with tempfile.TemporaryDirectory() as tmp:
+            # A real credential file, because the adapter now reads one
+            # before it shells out: an unreadable path would refuse EARLIER
+            # than the invocation this test is about, and the refusal it
+            # proved would be the wrong one.
+            fake_credential = Path(tmp) / "fake-creds"
+            fake_credential.write_text(FIXTURE_TOKEN + "\n", encoding="utf-8")
             env = dict(os.environ)
             env["PATH"] = ""
             result = subprocess.run(
@@ -8676,7 +8982,7 @@ class BackendResolutionTests(unittest.TestCase):
                     "poll",
                     "--submission-id", "someuser/some-slug",
                     "--backend", "kaggle",
-                    "--credential-dir", str(Path(tmp) / "fake-creds"),
+                    "--credential-dir", str(fake_credential),
                 ],
                 env=env, capture_output=True, text=True, timeout=30,
             )

@@ -102,6 +102,22 @@ CREDENTIAL_GLOB = "kaggle*.json"
 INBOX_LIST_GLOBS = ("*.txt", "*.md")
 
 
+TOKEN_FILENAME = "token"
+WORKERS_DIRNAME = "workers"
+
+
+def worker_token_path(worker: str) -> Path:
+    """Where `materialize` puts one worker's credential when no `--into`
+    overrides it — stated once, here, because two commands depend on it
+    being the same place.
+
+    `materialize` writes it and `remove` deletes it; a second spelling of
+    this path in either one is how `remove` came to leave a live credential
+    behind for an account the store no longer held.
+    """
+    return STORE_DIR / WORKERS_DIRNAME / worker / TOKEN_FILENAME
+
+
 class UsageError(Exception):
     """The invocation itself is wrong; nothing was touched."""
 
@@ -726,12 +742,12 @@ def cmd_materialize(args: argparse.Namespace) -> int:
     if account is None:
         raise UsageError(f"no such account: {args.worker}")
 
-    dest_dir = (
-        Path(args.into).expanduser().resolve()
+    token_path = (
+        Path(args.into).expanduser().resolve() / TOKEN_FILENAME
         if args.into
-        else STORE_DIR / "workers" / args.worker
+        else worker_token_path(args.worker)
     )
-    token_path = dest_dir / "token"
+    dest_dir = token_path.parent
     # The same precondition the store itself enforces before it ever writes
     # a token to disk, checked again here because THIS destination has
     # never been proven safe before — a caller passing `--into` names a
@@ -765,6 +781,17 @@ def cmd_materialize(args: argparse.Namespace) -> int:
 
 
 def cmd_remove(args: argparse.Namespace) -> int:
+    """Delete accounts from the store, and with them whatever `materialize`
+    already wrote to disk for those accounts.
+
+    Deleting the store entry alone used to leave a live credential at
+    `store/workers/<username>/token` — the exact path the consuming skill
+    is pointed at — so an account this file said it no longer held stayed
+    usable by anything that had already been handed that path. The token
+    file goes first, before the store is saved: a failure there must leave
+    the store describing what is actually on disk, and a store already
+    saved cannot be un-saved.
+    """
     store = load_store()
     present = {a["username"] for a in store["accounts"]}
     unknown = [username for username in args.usernames if username not in present]
@@ -774,9 +801,35 @@ def cmd_remove(args: argparse.Namespace) -> int:
         raise UsageError(f"no such account: {', '.join(unknown)}")
 
     targets = set(args.usernames)
+    materialized = []
+    for username in sorted(targets):
+        token_path = worker_token_path(username)
+        try:
+            token_path.unlink()
+        except FileNotFoundError:
+            continue  # nothing was ever materialized for this one
+        except OSError as exc:
+            raise StoreError(
+                f"{token_path} could not be deleted: {exc.strerror}; nothing "
+                "was removed from the store"
+            )
+        materialized.append(username)
+        try:
+            token_path.parent.rmdir()
+        except OSError:
+            # Something else lives in that worker's directory. Leaving it
+            # is correct; the credential itself is already gone.
+            pass
+
     store["accounts"] = [a for a in store["accounts"] if a["username"] not in targets]
     save_store(store)
     print(f"Removed {len(targets)}: {', '.join(sorted(targets))}")
+    if materialized:
+        # A destination, never a value — the same rule `materialize` prints by.
+        print(
+            f"Deleted the credential file previously materialized for: "
+            f"{', '.join(materialized)}"
+        )
     return 0
 
 
