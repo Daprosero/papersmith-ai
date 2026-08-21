@@ -8053,6 +8053,68 @@ FORGE_LEXICON: dict[str, str] = {
 EXAMPLE_MODULE_NAMES = frozenset({"tables", "figures"})
 
 
+class RehearsalAuthorityTests(unittest.TestCase):
+    """A rehearsal is not a campaign, and this flow only ever declined the
+    campaign.
+
+    The remote-execution roster's `submit` row says this flow "offers a campaign
+    to a human and never sends one itself" — a sentence about the long run, and
+    the right one for it: a campaign costs hours and real quota, so a person
+    authorizes it. A rehearsal is the opposite thing. It is one arm, one seed,
+    minutes, and it exists to find cheaply what the long run would find
+    expensively.
+
+    Nothing forbade the agent from running it. Nothing told it to either, so it
+    stopped and asked — and asking is what made the cheap check feel as costly as
+    the expensive one. The gap was a missing instruction, not a rule to relax.
+
+    Deliberately untouched: `smokeReady` still gates nothing. It cannot, for the
+    reason the doctrine already gives — the fact answers identically for a
+    repository with no remote-execution CLI at all and one that has generated no
+    job — and this change does not pretend otherwise. What routes the agent is
+    the Decision Gates row a reader already follows, not a new rung.
+    """
+
+    def rehearsal_paragraph(self) -> str:
+        text = SKILL_MD.read_text(encoding="utf-8")
+        marker = "### The rehearsal is the agent's to run"
+        self.assertIn(marker, text,
+                      "no section says whose job the rehearsal is, so an agent "
+                      "reaching a job that never rehearsed can only ask")
+        return text.split(marker, 1)[1].split("\n## ", 1)[0].split("\n### ", 1)[0]
+
+    def test_the_flow_is_told_to_run_the_rehearsal_and_names_the_command(self):
+        """An instruction that never names the command is a sentence a reader
+        agrees with and cannot act on.
+        """
+        paragraph = self.rehearsal_paragraph()
+        self.assertIn("--smoke", paragraph)
+        self.assertIn("smoke record", paragraph)
+        self.assertIn("readiness", paragraph)
+
+    def test_the_campaign_stays_the_human_s_to_authorise(self):
+        """The distinction is the whole point: relaxing the rehearsal must not
+        quietly relax the run it protects.
+        """
+        paragraph = self.rehearsal_paragraph()
+        self.assertRegex(paragraph, r"campaign")
+        text = SKILL_MD.read_text(encoding="utf-8")
+        self.assertIn("never sends one itself", text,
+                      "the campaign's own refusal was removed along with the "
+                      "rehearsal's permission")
+
+    def test_smoke_ready_still_gates_nothing(self):
+        """Locked because this change is exactly the kind that would erode it:
+        permitting the rehearsal is not the same as branching on the fact, and
+        the fact still cannot tell `not ready` from `not applicable`.
+        """
+        text = SKILL_MD.read_text(encoding="utf-8")
+        row = [line for line in text.splitlines()
+               if line.startswith("| `smokeReady` |")]
+        self.assertEqual(len(row), 1, "no smokeReady row to hold")
+        self.assertIn("**Never**", row[0])
+
+
 class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
     """A guard that scans a fixed word list can only catch a leak somebody has
     already found. This derives the denylist from the targets on disk instead.

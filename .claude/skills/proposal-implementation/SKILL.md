@@ -1938,6 +1938,43 @@ them. If the fact ever grew a per-job link to the campaign about to be offered �
 tying an unrehearsed job to *this* run rather than to the repository in general —
 the difference becomes expressible and this position should be revisited.
 
+### The rehearsal is the agent's to run
+
+The `submit` row above says this flow offers a campaign to a human and never
+sends one itself. That sentence is about the campaign, and it is right about
+it: a full run costs hours and real quota, and what it costs is the reason a
+person authorizes it rather than reads about it afterwards.
+
+A rehearsal is not that. It is the smallest slice that still exercises the whole wire — minutes — and
+it exists precisely to find cheaply what the long run would find expensively.
+Nothing here ever forbade running one. Nothing told the agent to either, so on
+reaching a job that had never rehearsed the only thing left to do was ask, and
+asking made the cheap check cost the same conversation as the expensive one.
+
+**So the rehearsal is run, not offered.** When the Decision Gates row for a job
+with `smokeReady: false` sends you here, on the worker the campaign would use:
+
+| Step | Command | What it establishes |
+| --- | --- | --- |
+| Rehearse | `remote_cli submit --smoke` | the wire carries current on this worker, at this pinned commit |
+| Bring it back | `remote_cli fetch` | the shard the rehearsal wrote is on disk to be read |
+| Write the verdict down | `remote_cli smoke record` | the verdict is evidence-derived, never a human's assertion |
+| Read it | `remote_cli readiness` | whether that worker is ready, and when it is not, why |
+
+Report what comes back either way. A rehearsal that fails is the cheapest
+result this flow can produce, and it is worth more than a campaign that failed
+for the same reason six hours later.
+
+**Per worker, and it does not carry over.** A rehearsal binds to the worker and
+the commit it ran on. A pass on one account says nothing about another, so a
+campaign spread across several needs one on each.
+
+**None of this makes `smokeReady` a gate.** It still cannot be one, for the
+reason given above — the fact answers identically for a repository with no
+remote-execution CLI at all — and permitting the rehearsal is not the same as
+branching on the fact. What routes a reader here is the Decision Gates row,
+which is prose a reader follows, not a rung the ladder computes.
+
 ## References
 
 - `references/usage.md` — worked invocations of every command.
