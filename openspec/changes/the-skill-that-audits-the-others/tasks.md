@@ -150,88 +150,88 @@ before 1.
 
 ## Phase 2 — Slice 2: `roster` (PR 2, ~380 lines) — after Phase 1
 
-- [ ] 2.1 RED — **D3, the most dangerous failure mode.** An extraction matching nothing **raises**;
+- [x] 2.1 RED — **D3, the most dangerous failure mode.** An extraction matching nothing **raises**;
       it must never return an empty set. `roster` exits `0` for any verdict including findings and
       **`2`** when the probe could not be driven or the extraction matched nothing. Assert both
       exit codes are distinguishable. An empty code side makes every doctrine row a phantom — a
       broken probe dressed as a result.
-- [ ] 2.2 RED — refusal probe: driving `cli.mjs` as a **subprocess** with a nonce recovers the nine
+- [x] 2.2 RED — refusal probe: driving `cli.mjs` as a **subprocess** with a nonce recovers the nine
       accepted operations from the refusal text alone, and **no operation name appears as a literal
       anywhere in the auditor**. Assert with `assertNotIn` against the auditor's own bytes. Spec
       Group 5. **Subprocess, never mock** — a wholesale double cannot hold a claim about a process.
-- [ ] 2.3 RED — token-present, not token-absent: omitting the operation key entirely produces no
+- [x] 2.3 RED — token-present, not token-absent: omitting the operation key entirely produces no
       refusal, and `roster` reports the probe as having **yielded nothing**, never an empty
       accepted set (`cli.mjs:319` fires only when the key is present).
-- [ ] 2.4 RED — self-audit subcommand roster: drive `audit_cli.py` with a nonsense subcommand, take
+- [x] 2.4 RED — self-audit subcommand roster: drive `audit_cli.py` with a nonsense subcommand, take
       argparse's own refusal (wording pinned at 0.4, **stderr, exit 2**) as the roster, and hold it
       to the `| Subcommand | Derives | Emits |` table. Three sets, never a boolean.
-- [ ] 2.5 RED — **D2, the closure claim.** A doctrine table counts as a roster site **only if** its
+- [x] 2.5 RED — **D2, the closure claim.** A doctrine table counts as a roster site **only if** its
       descriptor declares `scope` and quotes `headingVerbatim`, which `roster` then checks against
       disk. Without it, `.claude/skills/proposal-deliberation/SKILL.md:243-252` — headed
       `## Other engine operations`, a **complement set** of four rows — yields **five false
       `unregistered` rows**. Assert the honoured-scope path and the refused-scope path separately.
-- [ ] 2.6 RED — `no-closed-roster` as a **first-class result**: `SKILL.md` (complement),
+- [x] 2.6 RED — `no-closed-roster` as a **first-class result**: `SKILL.md` (complement),
       `references/usage.md:264-266` (prose, forbidden by soundness condition 5) and the `.mjs`
       test (a JS array) all emit `no-closed-roster` with the searched `file:line` range. It SHALL
       NOT raise, SHALL NOT exit non-zero as an error, and SHALL NOT report the surface as clean.
       This is the structural finding the proposal predicted.
-- [ ] 2.7 RED — `no derivation available for this surface` as a first-class result for a surface
+- [x] 2.7 RED — `no derivation available for this surface` as a first-class result for a surface
       with neither probe (spec Group 5).
-- [ ] 2.8 RED — **soundness condition 1, mechanised.** Parse the `ast` of the doctrine-derivation
+- [x] 2.8 RED — **soundness condition 1, mechanised.** Parse the `ast` of the doctrine-derivation
       function and assert its syntax tree contains **no reference of any kind** to the probe module
       or `subprocess` — not a call, not an import, not a borrowed constant. Forbidding only a
       *call for contents* is insufficient: `tests/test_proposal_implementation.py:267` is
       `for gap in impl.scaffold_gaps(box, name):` — a producer call deciding the **path set** — and
       `:270` borrows `impl.IGNORE_ENTRIES`, under a docstring at `:240` claiming a doctrine-faithful
       target.
-- [ ] 2.9 RED — three sets, never a boolean: `unregistered`, `phantom`, `duplicated` all present
+- [x] 2.9 RED — three sets, never a boolean: `unregistered`, `phantom`, `duplicated` all present
       and independently populated; plus `numeralMismatch` and `notes`.
-- [ ] 2.10 RED — `duplicated` fires on hand-restatements **even when every restatement agrees**.
-- [ ] 2.11 RED — numeral check **excludes hedged numerals**. Read-confirmed necessity:
+- [x] 2.10 RED — `duplicated` fires on hand-restatements **even when every restatement agrees**.
+- [x] 2.11 RED — numeral check **excludes hedged numerals**. Read-confirmed necessity:
       `cli.mjs:20-21` says "~63 TS files" and "roughly 0.72s"; a check firing on those is noise, and
       noise gets exempted until it means nothing. Live target: `remote-execution/SKILL.md:19` says
       "Three modules exist so far" above bullets at `:21`, `:32`, `:50`, `:57` — **four**. Assert
       the finding names the numeral's `file:line` **and** the enumeration's `file:line`.
-- [ ] 2.12 RED — **threat matrix, subprocess composition** (the one Applicable row; N/A rows
+- [x] 2.12 RED — **threat matrix, subprocess composition** (the one Applicable row; N/A rows
       omitted): (a) a descriptor with `cwd: "../.."` escaping `--subject` → **refused**; (b) a
       descriptor argv containing `;` → passed as **one literal argument**, never interpreted
       (`subprocess.run(shell=False, ...)`, argv as a list, never a string); (c) a hanging subject →
       **timeout, exit 2**. The nonce is a fixed literal, never user text.
-- [ ] 2.13 RED — fixture-name precondition: every lock matching a needle against generated output
+- [x] 2.13 RED — fixture-name precondition: every lock matching a needle against generated output
       asserts `assertNotIn(needle, fixture_name)` **first**, before its own assertion (Group 3).
-- [ ] 2.14 RED — reachability: a fixture that cannot reach the guarded branch fails as
+- [x] 2.14 RED — reachability: a fixture that cannot reach the guarded branch fails as
       **unreachable** rather than passing (Group 3).
-- [ ] 2.15 RED — copied-helper byte-identity: `markdown_table_rows`, `returned_keys`,
+- [x] 2.15 RED — copied-helper byte-identity: `markdown_table_rows`, `returned_keys`,
       `dict_literal_keys`, `subcommand_surface` each byte-identical to their originals at
       `tests/test_proposal_implementation.py:82`, `:103`, `:9017`, `:9118`. **Copy, do not share** —
       sharing means editing a 75-class suite inside a change about a different skill.
-- [ ] 2.16 GREEN — implement `roster --subject <dir> --probe-spec <file>` in `audit_cli.py`:
+- [x] 2.16 GREEN — implement `roster --subject <dir> --probe-spec <file>` in `audit_cli.py`:
       subprocess probe, descriptor-driven `stream`/`exit`/`extract`/`split`, table parse,
       heading-verbatim check, three sets, `numeralMismatch`, `notes`.
-- [ ] 2.17 GREEN — author
+- [x] 2.17 GREEN — author
       `.claude/skills/skill-audit/references/probes/proposal-deliberation.accepted-operations.json`.
       `stream` and `exit` are **descriptor fields, not constants**: `cli.mjs` writes JSON to
       **stdout** and exits **1** (`cli.mjs:371-373`); argparse writes to **stderr** and exits **2**.
       A single hardcoded contract fits neither.
-- [ ] 2.18 GREEN — author `references/probes/skill-audit.subcommands.json` for the self-audit.
-- [ ] 2.19 GREEN — copy the four helpers into `tests/test_skill_audit.py` byte-identically.
-- [ ] 2.20 **Inversion — subcommand roster, both directions.** Add a subparser with no table row →
+- [x] 2.18 GREEN — author `references/probes/skill-audit.subcommands.json` for the self-audit.
+- [x] 2.19 GREEN — copy the four helpers into `tests/test_skill_audit.py` byte-identically.
+- [x] 2.20 **Inversion — subcommand roster, both directions.** Add a subparser with no table row →
       `unregistered` fires naming it; delete a table row while its subparser remains → `phantom`
       fires naming it. Restore each by inverse patch; confirm with `cmp` and `shasum -c`.
-- [ ] 2.21 **Inversion — D3.** Corrupt the descriptor's `extract` → **exit 2**, not an empty `code`
+- [x] 2.21 **Inversion — D3.** Corrupt the descriptor's `extract` → **exit 2**, not an empty `code`
       set. Restore by inverse patch; confirm with `cmp`.
-- [ ] 2.22 **Inversion — D2 heading verbatim.** Change `## Other engine operations` **in the
+- [x] 2.22 **Inversion — D2 heading verbatim.** Change `## Other engine operations` **in the
       fixture** (never in `proposal-deliberation`) → fires. Restore by inverse patch; confirm with
       `cmp`.
-- [ ] 2.23 **Inversion — soundness condition 1.** Add `import audit_cli` (and separately, a
+- [x] 2.23 **Inversion — soundness condition 1.** Add `import audit_cli` (and separately, a
       borrowed constant reference) to the derivation helper → fires naming the reference. Restore
       each by inverse patch; confirm with `cmp`.
-- [ ] 2.24 **Inversion — copied-helper drift.** Edit one copied helper → the drift lock fires naming
+- [x] 2.24 **Inversion — copied-helper drift.** Edit one copied helper → the drift lock fires naming
       the helper and **both** locations. Restore by inverse patch; confirm with `cmp`.
-- [ ] 2.25 **Inversion — numeral check.** Change a hedged numeral to unhedged → fires; and change an
+- [x] 2.25 **Inversion — numeral check.** Change a hedged numeral to unhedged → fires; and change an
       unhedged one to match its list → stops firing. Restore both by inverse patch; confirm `cmp`.
-- [ ] 2.26 Run the full discover; confirm the count **rose** again and record it.
-- [ ] 2.27 Commit: `feat(skill-audit): the roster four sites restate by hand was never derived from the running code`
+- [x] 2.26 Run the full discover; confirm the count **rose** again and record it.
+- [x] 2.27 Commit: `feat(skill-audit): the roster four sites restate by hand was never derived from the running code`
 
 ## Phase 3 — Slice 4: `check-report` and `usage.md` (PR 4, ~280 lines) — after Phases 1–2
 

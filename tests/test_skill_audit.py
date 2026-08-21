@@ -533,3 +533,747 @@ class VocabularyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ==========================================================================
+# Slice 2 — `roster`: the code side is a process, the documented side is a
+# table, and inability to look never wears the same exit code as absence of
+# findings.
+# ==========================================================================
+
+PD = FORGE / ".claude" / "skills" / "proposal-deliberation"
+PD_SPEC = PROBES / "proposal-deliberation.accepted-operations.json"
+SELF_SPEC = PROBES / "skill-audit.subcommands.json"
+
+#: Boxes live here and never in the system temporary directory. `implementations`
+#: is gitignored, which is exactly why their removal is proven by listing content
+#: rather than by `git status` — porcelain over an ignored tree is empty by
+#: construction and would report a box that is still sitting there as cleaned.
+BOXES = FORGE / "implementations"
+
+#: The producer, declared. The documented side of any comparison may not name
+#: these: not call them, not import them, not borrow a constant from them. A
+#: declared set rather than an inferred one, because the comparison's domain has
+#: to be closed before the comparison runs.
+PRODUCER_NAMES = ("subprocess", "probe_code_side")
+
+#: The functions that make up the documented side of every comparison this tool
+#: performs. The gate is applied to each.
+DOCTRINE_DERIVATION = ("doctrine_side", "markdown_table_rows",
+                       "numeral_mismatches", "bullet_run_length",
+                       "table_run_length", "enumeration_after",
+                       "is_size_claim", "restatement_of")
+
+
+def audit_cli_module():
+    sys.path.insert(0, str(CLI.parent))
+    import audit_cli
+    return audit_cli
+
+
+def roster_json(spec, subject, repo=FORGE, extra=()):
+    """Drive `roster` as a process and parse what it wrote to stdout."""
+    result = run_cli("roster", "--subject", str(subject),
+                     "--probe-spec", str(spec), "--repo-root", str(repo), *extra)
+    try:
+        return result, json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise AssertionError(
+            f"roster exited {result.returncode} without JSON on stdout.\n"
+            f"stdout={result.stdout!r}\nstderr={result.stderr!r}")
+
+
+def function_source(path, name):
+    """The exact bytes of one function definition, for byte-identity checks."""
+    text = path.read_text(encoding="utf-8")
+    tree = ast.parse(text)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            lines = text.splitlines(keepends=True)
+            return "".join(lines[node.lineno - 1:node.end_lineno])
+    raise AssertionError(f"{path.name} defines no {name}")
+
+
+class BoxMixin:
+    """A throwaway directory, contained and proven gone.
+
+    Under `implementations/_<name>`, never `/tmp`, and its removal is confirmed
+    by asking the filesystem what is there rather than by asking version control,
+    which cannot see an ignored tree at all.
+    """
+
+    def make_box(self, name):
+        box = BOXES / f"_skill_audit_{name}"
+        self.assertEqual(
+            box.parent, BOXES,
+            "a box must sit directly under implementations/, never elsewhere")
+        if box.exists():
+            self._erase(box)
+        box.mkdir(parents=True)
+        self.addCleanup(self._prove_erased, box)
+        return box
+
+    def _erase(self, box):
+        for path in sorted(box.rglob("*"), reverse=True):
+            path.rmdir() if path.is_dir() else path.unlink()
+        box.rmdir()
+
+    def _prove_erased(self, box):
+        if box.exists():
+            self._erase(box)
+        remaining = sorted(str(p) for p in BOXES.glob("_skill_audit_*"))
+        self.assertEqual(
+            remaining, [],
+            "a box survived cleanup; its absence is proven by listing content, "
+            "never by `git status`, which is empty over an ignored tree")
+
+    def write(self, box, relative, text):
+        path = box / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def recipe(self, box, **fields):
+        spec = box / "recipe.json"
+        spec.write_text(json.dumps(fields, indent=2), encoding="utf-8")
+        return spec
+
+    def echo_probe(self, box, members, name="subject.py"):
+        """A subject that refuses a nonce and names what it would accept.
+
+        A real process, driven with real argv. A double that replaced a function
+        wholesale could not hold any claim about the process it stood in for.
+        """
+        self.write(box, name, "import sys\n"
+                              "print('REFUSED: ' + sys.argv[1] + ' is not one of '\n"
+                              "      + ', '.join(sys.argv[2:]))\n"
+                              "sys.exit(1)\n")
+        return ["python3", name, "__AUDIT_NONCE__", *members]
+
+
+class RosterExitCodeTests(BoxMixin, unittest.TestCase):
+    """D3: inability to look must never share an exit code with no findings.
+
+    An empty code side yields `unregistered` empty and `phantom` holding every
+    documented row — a broken probe wearing a finding's clothes, and the fourth
+    failure mode in its most dangerous form.
+    """
+
+    def test_a_verdict_with_findings_still_exits_zero(self):
+        box = self.make_box("exit_findings")
+        argv = self.echo_probe(box, ["ALPHA", "BETA"])
+        self.write(box, "DOC.md",
+                   "| Op | Use |\n| --- | --- |\n| `ALPHA` | a |\n| `GHOST` | b |\n")
+        spec = self.recipe(
+            box, surface="s", probe="refusal", argv=argv, cwd=".",
+            stream="stdout", exit=1,
+            extract=r"is not one of (?P<roster>.+)$", split=", ",
+            doctrineSites=[{"path": "DOC.md", "table": "| Op | Use |",
+                            "column": 0}])
+        result, payload = roster_json(spec, box)
+        self.assertEqual(result.returncode, 0,
+                         "findings are a verdict, and a verdict exits 0")
+        self.assertEqual(payload["phantom"], ["GHOST"])
+        self.assertEqual(payload["unregistered"], ["BETA"])
+
+    def test_an_extraction_matching_nothing_exits_two(self):
+        box = self.make_box("exit_nomatch")
+        argv = self.echo_probe(box, ["ALPHA"])
+        spec = self.recipe(
+            box, surface="s", probe="refusal", argv=argv, cwd=".",
+            stream="stdout", exit=1,
+            extract=r"this phrase is nowhere (?P<roster>.+)$", split=", ",
+            doctrineSites=[])
+        result, payload = roster_json(spec, box)
+        self.assertEqual(result.returncode, 2,
+                         "an extraction that matched nothing is an inability "
+                         "to look, not an empty roster")
+        self.assertEqual(payload["status"], "unprobeable")
+        self.assertNotIn("code", payload,
+                         "no code side may be reported when none was derived")
+
+    def test_the_two_exit_codes_are_distinguishable(self):
+        box = self.make_box("exit_distinct")
+        argv = self.echo_probe(box, ["ALPHA"])
+        good = self.recipe(
+            box, surface="s", probe="refusal", argv=argv, cwd=".",
+            stream="stdout", exit=1,
+            extract=r"is not one of (?P<roster>.+)$", split=", ",
+            doctrineSites=[])
+        looked = run_cli("roster", "--subject", str(box),
+                         "--probe-spec", str(good), "--repo-root", str(FORGE))
+        blind = run_cli("roster", "--subject", str(box),
+                        "--probe-spec", str(box / "absent.json"),
+                        "--repo-root", str(FORGE))
+        self.assertNotEqual(
+            looked.returncode, blind.returncode,
+            "looking and being unable to look must not share an exit code")
+        self.assertEqual((looked.returncode, blind.returncode), (0, 2))
+
+
+class RefusalProbeTests(unittest.TestCase):
+    """Move 2, against the live subject on disk.
+
+    The subject is driven as a subprocess with a token it cannot accept, and its
+    own refusal is the roster. No source of the subject is parsed, so there is no
+    second parser to drift from the first.
+    """
+
+    def test_the_refusal_yields_the_accepted_set(self):
+        result, payload = roster_json(PD_SPEC, PD)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            len(payload["code"]), 9,
+            f"the running host names its own accepted set: {payload['code']}")
+        for name in payload["code"]:
+            with self.subTest(name=name):
+                self.assertRegex(name, r"^[A-Z][A-Z_]+$")
+
+    def test_no_operation_name_appears_as_a_literal_in_the_auditor(self):
+        """The auditor restates nothing it derives.
+
+        The needles come from the executed probe, never from a list written
+        here, so this cannot pass by agreeing with a stale copy of the set.
+        """
+        _, payload = roster_json(PD_SPEC, PD)
+        auditor = sorted(path for path in SKILL_ROOT.rglob("*")
+                         if path.is_file())
+        auditor.append(Path(__file__))
+        for path in auditor:
+            text = path.read_text(encoding="utf-8")
+            for name in payload["code"]:
+                with self.subTest(path=path.name, name=name):
+                    self.assertNotIn(
+                        name, text,
+                        f"{path.name} restates {name!r}; a roster written down "
+                        "is a roster that drifts")
+
+    def test_the_probe_writes_nothing_into_the_subject(self):
+        """`validateRequest` is `run()`'s first statement, so the refusal
+        precedes every write. Claimed by the design; measured here."""
+        before = {p: p.stat().st_mtime_ns for p in PD.rglob("*") if p.is_file()}
+        roster_json(PD_SPEC, PD)
+        after = {p: p.stat().st_mtime_ns for p in PD.rglob("*") if p.is_file()}
+        self.assertEqual(before, after,
+                         "the probe touched the subject it was auditing")
+
+
+class TokenPresenceTests(BoxMixin, unittest.TestCase):
+    """The guard fires when the token is present, not when it is absent.
+
+    A probe that omits the key entirely produces no refusal at all, and the
+    honest report of that is "the probe yielded nothing" — never an accepted set
+    that happens to be empty.
+    """
+
+    def test_a_probe_that_produces_no_refusal_yields_nothing(self):
+        box = self.make_box("token_absent")
+        self.write(box, "quiet.py", "import sys\nsys.exit(0)\n")
+        spec = self.recipe(
+            box, surface="s", probe="refusal",
+            argv=["python3", "quiet.py"], cwd=".", stream="stdout", exit=0,
+            extract=r"is not one of (?P<roster>.+)$", split=", ",
+            doctrineSites=[])
+        result, payload = roster_json(spec, box)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(payload["status"], "unprobeable")
+        self.assertIn("matched nothing", payload["error"])
+
+    def test_the_live_host_is_silent_when_the_key_is_omitted(self):
+        """Measured against the real subject, per `cli.mjs:319`: the guard reads
+        `operation !== undefined && ...`, so an omitted key is not refused."""
+        recipe = json.loads(PD_SPEC.read_text(encoding="utf-8"))
+        argv = list(recipe["argv"])
+        argv[-1] = '{"instruction":"probe"}'
+        completed = subprocess.run(argv, cwd=str(PD), shell=False,
+                                   capture_output=True, text=True, timeout=60)
+        self.assertNotIn(
+            "is not one of", completed.stdout + completed.stderr,
+            "omitting the key must not produce a refusal; a probe built on "
+            "token-absence would recover no roster at all")
+
+
+class SelfAuditSubcommandRosterTests(unittest.TestCase):
+    """The auditor's own subcommand surface, taken from argparse's refusal.
+
+    Move 0 pointed back at the tool. Nothing else in this repository reads the
+    documented side of this surface, so without it a subparser could ship with
+    no row and a row could outlive its subparser.
+    """
+
+    def test_the_subcommand_roster_reports_three_sets_and_no_boolean(self):
+        result, payload = roster_json(SELF_SPEC, SKILL_ROOT)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for key in ("code", "doctrine", "unregistered", "phantom",
+                    "duplicated", "numeralMismatch", "notes"):
+            with self.subTest(key=key):
+                self.assertIn(key, payload)
+        self.assertEqual(payload["unregistered"], [])
+        self.assertEqual(payload["phantom"], [])
+        self.assertEqual(sorted(payload["code"]), ["check-report", "roster"])
+
+    def test_the_roster_comes_from_argparse_and_not_from_a_list(self):
+        _, payload = roster_json(SELF_SPEC, SKILL_ROOT)
+        declared = sorted(subcommand_surface(CLI, "build_parser"))
+        self.assertEqual(sorted(payload["code"]), declared,
+                         "the executed refusal and the parser must agree")
+
+
+class ClosureClaimTests(BoxMixin, unittest.TestCase):
+    """D2: a documented table is a roster site only if it claims closure, and
+    the claim is checked against disk.
+
+    Without this the auditor's first output on its first subject would be a
+    screenful of confident nonsense: `## Other engine operations` is a complement
+    set, and diffing it against the full runtime roster invents a finding for
+    every operation it deliberately omits.
+    """
+
+    def _complement_box(self, name, heading):
+        box = self.make_box(name)
+        argv = self.echo_probe(box, ["ALPHA", "BETA", "GAMMA", "DELTA"])
+        self.write(box, "DOC.md",
+                   f"{heading}\n\n| Op | Use |\n| --- | --- |\n"
+                   "| `ALPHA` | a |\n| `BETA` | b |\n")
+        return box, argv
+
+    def test_an_honoured_complement_claim_invents_no_unregistered_rows(self):
+        box, argv = self._complement_box("scope_ok", "## Other engine operations")
+        spec = self.recipe(
+            box, surface="s", probe="refusal", argv=argv, cwd=".",
+            stream="stdout", exit=1,
+            extract=r"is not one of (?P<roster>.+)$", split=", ",
+            doctrineSites=[{"path": "DOC.md", "table": "| Op | Use |",
+                            "column": 0, "scope": "complement",
+                            "headingVerbatim": "## Other engine operations"}])
+        result, payload = roster_json(spec, box)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(
+            payload["unregistered"], [],
+            "a complement table omits members on purpose; calling those "
+            "omissions unregistered is the auditor inventing findings")
+        self.assertEqual(payload["phantom"], [],
+                         "every complement row is really accepted")
+
+    def test_a_scope_claim_whose_heading_is_not_on_disk_is_refused(self):
+        box, argv = self._complement_box("scope_bad", "## Engine operations")
+        spec = self.recipe(
+            box, surface="s", probe="refusal", argv=argv, cwd=".",
+            stream="stdout", exit=1,
+            extract=r"is not one of (?P<roster>.+)$", split=", ",
+            doctrineSites=[{"path": "DOC.md", "table": "| Op | Use |",
+                            "column": 0, "scope": "complement",
+                            "headingVerbatim": "## Other engine operations"}])
+        result, payload = roster_json(spec, box)
+        self.assertEqual(result.returncode, 0)
+        kinds = [note["kind"] for note in payload["notes"]]
+        self.assertIn(
+            "heading-not-found", kinds,
+            "the editorial judgement is falsifiable: rename the heading and "
+            f"the claim stops being honoured. notes={payload['notes']}")
+
+
+class NoClosedRosterTests(unittest.TestCase):
+    """"There is no closed roster here" is a result, not an error.
+
+    On the first subject all of its documented sites emit it: SKILL.md carries a
+    complement, `references/usage.md` states the set in prose, and the surface
+    test restates it as a JavaScript array. That is the finding the proposal
+    predicted survives.
+    """
+
+    def test_every_documented_site_of_the_first_subject_reports_it(self):
+        result, payload = roster_json(PD_SPEC, PD)
+        self.assertEqual(result.returncode, 0,
+                         "no-closed-roster is a verdict, not a failure")
+        notes = [n for n in payload["notes"] if n["kind"] == "no-closed-roster"]
+        self.assertEqual(
+            len(notes), 3,
+            f"expected all three documented sites to report it: {payload['notes']}")
+        for note in notes:
+            with self.subTest(path=note["path"]):
+                self.assertRegex(
+                    note["searched"], r".+:\d+-\d+$",
+                    "the result must name the range that was searched")
+
+    def test_a_prose_site_reports_it_against_a_planted_fixture(self):
+        """The needle is proven absent from the fixture's own name first.
+
+        One lock in this repository's history went green because the string it
+        searched for was sitting in the filename it searched. The precondition
+        is asserted before the assertion, and the ordering is itself enforced by
+        `PlantedFixtureDisciplineTests`.
+        """
+        box = BOXES / "_skill_audit_planted_prose"
+        try:
+            box.mkdir(parents=True, exist_ok=True)
+            needle = "no-closed-roster"
+            fixture = box / "site.md"
+            self.assertNotIn(
+                needle, str(fixture),
+                "the fixture's own path carries the needle, so a match would "
+                "prove nothing about what the tool produced")
+            fixture.write_text("The set is ALPHA, BETA and GAMMA, in prose.\n",
+                               encoding="utf-8")
+            (box / "subject.py").write_text(
+                "import sys\n"
+                "print('is not one of ' + ', '.join(['ALPHA', 'BETA']))\n"
+                "sys.exit(1)\n", encoding="utf-8")
+            (box / "recipe.json").write_text(json.dumps({
+                "surface": "s", "probe": "refusal",
+                "argv": ["python3", "subject.py"], "cwd": ".",
+                "stream": "stdout", "exit": 1,
+                "extract": r"is not one of (?P<roster>.+)$", "split": ", ",
+                "doctrineSites": [{"path": "site.md", "table": None}]}),
+                encoding="utf-8")
+            _, payload = roster_json(box / "recipe.json", box)
+            self.assertIn(needle, [note["kind"] for note in payload["notes"]])
+        finally:
+            for path in sorted(box.rglob("*"), reverse=True):
+                path.unlink()
+            box.rmdir()
+            self.assertFalse(box.exists(), "the box survived its own cleanup")
+
+    def test_the_surface_is_not_reported_clean(self):
+        _, payload = roster_json(PD_SPEC, PD)
+        self.assertNotEqual(
+            payload["notes"], [],
+            "a surface with no closed roster anywhere is not a clean surface")
+        self.assertEqual(
+            payload["comparison"], "not-run",
+            "with no closed documented side there is nothing to compare, and "
+            "reporting nine unregistered rows would be the same invented "
+            "finding the complement check exists to prevent")
+
+
+class NoDerivationTests(BoxMixin, unittest.TestCase):
+    """A surface with neither probe is reported, never passed over."""
+
+    def test_a_surface_with_no_probe_is_a_first_class_result(self):
+        box = self.make_box("no_derivation")
+        spec = self.recipe(box, surface="s", probe="none", doctrineSites=[])
+        result, payload = roster_json(spec, box)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("no derivation available for this surface",
+                      [note["kind"] for note in payload["notes"]])
+        self.assertEqual(payload["comparison"], "not-run")
+
+
+class SoundnessGateTests(unittest.TestCase):
+    """Condition 1, mechanised: the documented side never names the producer.
+
+    Forbidding only a call for *contents* is not enough. The precedent this is
+    modelled on derives file contents from doctrine but takes its element set
+    from the producer — `tests/test_proposal_implementation.py:267` is
+    `for gap in impl.scaffold_gaps(box, name):`, a producer call deciding which
+    paths exist, under a docstring at `:240` claiming a doctrine-faithful target.
+    A comparison built that way cannot see an element missing from both sides,
+    which is the one defect the comparison exists to catch. So any reference of
+    any kind is refused: a call, an import, or a borrowed constant.
+    """
+
+    def _references(self, name):
+        tree = ast.parse(CLI.read_text(encoding="utf-8"))
+        definition = next(
+            (n for n in ast.walk(tree)
+             if isinstance(n, ast.FunctionDef) and n.name == name), None)
+        self.assertIsNotNone(definition, f"audit_cli.py defines no {name}")
+        found = set()
+        for node in ast.walk(definition):
+            if isinstance(node, ast.Name):
+                found.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                found.add(node.attr)
+                if isinstance(node.value, ast.Name):
+                    found.add(node.value.id)
+            elif isinstance(node, ast.Import):
+                found.update(a.name.split(".")[0] for a in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                found.add(node.module.split(".")[0])
+                found.update(a.name for a in node.names)
+        return found
+
+    def test_no_doctrine_derivation_names_the_producer(self):
+        for function in DOCTRINE_DERIVATION:
+            referenced = self._references(function)
+            for producer in PRODUCER_NAMES:
+                with self.subTest(function=function, producer=producer):
+                    self.assertNotIn(
+                        producer, referenced,
+                        f"{function} names {producer!r}; the documented side "
+                        "may not reach for the producer, not even to decide "
+                        "which elements to build")
+
+    def test_the_precedent_this_gate_is_modelled_on_would_fail_it(self):
+        """The gate has a subject, and the subject is a real function.
+
+        A gate proven only against a fixture is a gate that has never met the
+        shape it was written for.
+        """
+        source = function_source(ORIGINAL_HELPERS, "doctrine_scaffold")
+        self.assertIn(
+            "impl.scaffold_gaps", source,
+            "the precedent takes its element set from the producer, which is "
+            "the exact shape this gate refuses")
+
+
+class ThreeSetsTests(BoxMixin, unittest.TestCase):
+    """Condition 3: three sets, never a boolean.
+
+    They are different defects with different remedies, and each is proven
+    non-empty on its own rather than by one fixture that happens to fire all of
+    them at once.
+    """
+
+    def _run(self, name, code_members, doc_members):
+        box = self.make_box(name)
+        argv = self.echo_probe(box, code_members)
+        rows = "".join(f"| `{m}` | x |\n" for m in doc_members)
+        self.write(box, "DOC.md", f"| Op | Use |\n| --- | --- |\n{rows}")
+        spec = self.recipe(
+            box, surface="s", probe="refusal", argv=argv, cwd=".",
+            stream="stdout", exit=1,
+            extract=r"is not one of (?P<roster>.+)$", split=", ",
+            doctrineSites=[{"path": "DOC.md", "table": "| Op | Use |",
+                            "column": 0}])
+        return roster_json(spec, box)[1]
+
+    def test_unregistered_populates_alone(self):
+        payload = self._run("set_unreg", ["ALPHA", "BETA"], ["ALPHA"])
+        self.assertEqual(payload["unregistered"], ["BETA"])
+        self.assertEqual(payload["phantom"], [])
+
+    def test_phantom_populates_alone(self):
+        payload = self._run("set_phantom", ["ALPHA"], ["ALPHA", "GHOST"])
+        self.assertEqual(payload["phantom"], ["GHOST"])
+        self.assertEqual(payload["unregistered"], [])
+
+    def test_the_verdict_is_never_a_boolean(self):
+        payload = self._run("set_shape", ["ALPHA"], ["ALPHA"])
+        for absent in ("pass", "ok", "valid", "clean"):
+            with self.subTest(key=absent):
+                self.assertNotIn(absent, payload)
+
+
+class DuplicatedTests(unittest.TestCase):
+    """A set restated by hand is reported even when every restatement agrees.
+
+    Agreement today is not derivation. This repository's own history records a
+    stale operation name that survived precisely because every restatement of it
+    agreed with the stale one.
+    """
+
+    def test_the_first_subject_has_more_than_one_hand_restatement(self):
+        _, payload = roster_json(PD_SPEC, PD)
+        self.assertGreaterEqual(
+            len(payload["duplicated"]), 2,
+            f"a set restated in one place is not duplicated: {payload['duplicated']}")
+        for site in payload["duplicated"]:
+            with self.subTest(path=site["path"]):
+                self.assertGreaterEqual(site["line"], 1)
+                self.assertNotEqual(site["members"], [])
+
+    def test_agreement_does_not_excuse_a_restatement(self):
+        _, payload = roster_json(PD_SPEC, PD)
+        restated = {m for site in payload["duplicated"] for m in site["members"]}
+        self.assertTrue(
+            restated <= set(payload["code"]),
+            "every restatement here agrees with the running code, and every "
+            "one of them is still reported")
+
+
+class NumeralCheckTests(BoxMixin, unittest.TestCase):
+    """A numeral above a list, held to the list.
+
+    Hedged numerals are excluded on measured need: a neighbouring engine's own
+    header says "~63 TS files" and "roughly 0.72s" two lines apart, and a check
+    firing on those is noise. Noise gets exempted until the check means nothing.
+    """
+
+    def test_a_hedged_numeral_is_not_a_claim(self):
+        box = self.make_box("numeral_hedged")
+        path = self.write(box, "hedged.md",
+                          "This host compiles the engine's ~63 TS files, at\n"
+                          "roughly 0.72s per process. There are about three:\n\n"
+                          "- alpha\n- beta\n- gamma\n- delta\n")
+        self.assertEqual(
+            audit_cli_module().numeral_mismatches(path), [],
+            "a hedged numeral states an estimate, not a size")
+
+    def test_an_unhedged_numeral_above_a_longer_list_is_a_finding(self):
+        box = self.make_box("numeral_plain")
+        path = self.write(box, "plain.md",
+                          "The modules are these three:\n\n"
+                          "- alpha\n- beta\n- gamma\n- delta\n")
+        found = audit_cli_module().numeral_mismatches(path)
+        self.assertEqual(len(found), 1, found)
+        self.assertEqual((found[0]["stated"], found[0]["counted"]), (3, 4))
+
+    def test_the_live_target_names_both_halves_at_file_and_line(self):
+        """Move 2, on a real document: a skill that says three above a list of
+        more than three, in the repository as it stands."""
+        found = audit_cli_module().numeral_mismatches(
+            FORGE / ".claude" / "skills" / "remote-execution" / "SKILL.md")
+        self.assertEqual(len(found), 1, found)
+        finding = found[0]
+        self.assertEqual(finding["numeralLine"], 19)
+        self.assertEqual(finding["stated"], 3)
+        self.assertGreater(
+            finding["counted"], finding["stated"],
+            "the list beneath the numeral is longer than the numeral claims")
+        self.assertGreater(finding["enumerationLine"], finding["numeralLine"],
+                           "a finding names both halves, each at its own line")
+
+    def test_a_continuation_line_does_not_end_the_list_it_belongs_to(self):
+        """The reason the live count is what it is, isolated.
+
+        A long indented item hides the next bullet below the fold, and an
+        enumeration counted by eye stops at the fold. This is the difference
+        between the count a reader reports and the count a machine reports.
+        """
+        box = self.make_box("numeral_fold")
+        path = self.write(box, "fold.md",
+                          "The parts are these two:\n\n"
+                          "- alpha\n" + "  continued\n" * 40 + "\n- beta\n\n- gamma\n")
+        found = audit_cli_module().numeral_mismatches(path)
+        self.assertEqual(len(found), 1, found)
+        self.assertEqual(found[0]["counted"], 3)
+
+
+class SubprocessCompositionTests(BoxMixin, unittest.TestCase):
+    """The one applicable row of the threat matrix.
+
+    `roster` executes argv a recipe supplies, so the recipe is the boundary.
+    """
+
+    def test_a_cwd_escaping_the_subject_is_refused(self):
+        box = self.make_box("threat_cwd")
+        argv = self.echo_probe(box, ["ALPHA"])
+        spec = self.recipe(
+            box, surface="s", probe="refusal", argv=argv, cwd="../..",
+            stream="stdout", exit=1,
+            extract=r"is not one of (?P<roster>.+)$", split=", ",
+            doctrineSites=[])
+        result, payload = roster_json(spec, box)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("outside --subject", payload["error"])
+
+    def test_a_metacharacter_crosses_as_one_literal_argument(self):
+        box = self.make_box("threat_shell")
+        payload_arg = "ALPHA; touch pwned"
+        self.write(box, "subject.py",
+                   "import sys\n"
+                   "print('is not one of ' + '|'.join(sys.argv[1:]))\n"
+                   "sys.exit(1)\n")
+        spec = self.recipe(
+            box, surface="s", probe="refusal",
+            argv=["python3", "subject.py", payload_arg], cwd=".",
+            stream="stdout", exit=1,
+            extract=r"is not one of (?P<roster>.+)$", split="|",
+            doctrineSites=[])
+        result, parsed = roster_json(spec, box)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(
+            parsed["code"], [payload_arg],
+            "argv is a list and there is no shell in the path, so a semicolon "
+            "is a character in an argument and never a command separator")
+        self.assertFalse((box / "pwned").exists(),
+                         "the metacharacter was interpreted")
+
+    def test_a_hanging_subject_times_out_into_exit_two(self):
+        box = self.make_box("threat_hang")
+        self.write(box, "hang.py", "import time\ntime.sleep(120)\n")
+        spec = self.recipe(
+            box, surface="s", probe="refusal",
+            argv=["python3", "hang.py"], cwd=".", stream="stdout", exit=1,
+            extract=r"is not one of (?P<roster>.+)$", split=", ",
+            doctrineSites=[])
+        result, payload = roster_json(spec, box, extra=("--timeout", "2"))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("did not answer", payload["error"])
+
+
+class PlantedFixtureDisciplineTests(unittest.TestCase):
+    """A lock must not pass off its own fixture's name.
+
+    One in this repository's history went green because the needle it searched
+    for was sitting in the fixture's filename. Every lock here that matches a
+    needle against generated output is named `..._against_a_planted_fixture`, and
+    this meta-lock reads their syntax trees to confirm the precondition is
+    asserted first.
+    """
+
+    def _planted(self):
+        tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+        return [node for node in ast.walk(tree)
+                if isinstance(node, ast.FunctionDef)
+                and node.name.endswith("_against_a_planted_fixture")]
+
+    def test_there_is_at_least_one_planted_fixture_lock_to_govern(self):
+        self.assertNotEqual(
+            self._planted(), [],
+            "a discipline with no subject is a rule nobody keeps")
+
+    def test_every_planted_lock_clears_its_fixture_name_first(self):
+        for definition in self._planted():
+            calls = [node.func.attr for node in ast.walk(definition)
+                     if isinstance(node, ast.Call)
+                     and isinstance(node.func, ast.Attribute)
+                     and node.func.attr in ("assertIn", "assertNotIn")]
+            with self.subTest(lock=definition.name):
+                self.assertNotEqual(calls, [], "no membership assertion found")
+                self.assertEqual(
+                    calls[0], "assertNotIn",
+                    f"{definition.name} looks for its needle before proving the "
+                    "needle is absent from the fixture's own name")
+
+
+class ReachabilityTests(BoxMixin, unittest.TestCase):
+    """A fixture that cannot reach the guarded branch fails as unreachable.
+
+    An assertion over a branch the fixture never enters is unfalsifiable, and an
+    unfalsifiable assertion passes.
+    """
+
+    def assert_branch_reached(self, payload, kind):
+        kinds = [note["kind"] for note in payload["notes"]]
+        if kind not in kinds:
+            self.fail(f"unreachable: the fixture never entered the {kind!r} "
+                      f"branch, so any assertion about it is unfalsifiable. "
+                      f"Branches actually entered: {kinds}")
+
+    def test_the_guarded_branch_is_proven_entered_before_it_is_asserted_on(self):
+        _, payload = roster_json(PD_SPEC, PD)
+        self.assert_branch_reached(payload, "no-closed-roster")
+
+    def test_a_fixture_that_misses_the_branch_fails_rather_than_passes(self):
+        with self.assertRaises(self.failureException) as raised:
+            self.assert_branch_reached({"notes": []}, "no-closed-roster")
+        self.assertIn("unreachable", str(raised.exception))
+
+
+class CopiedHelperFidelityTests(unittest.TestCase):
+    """The copies are byte-identical to their originals.
+
+    Copied and not shared: sharing means editing a seventy-five-class suite from
+    inside a change about a different skill. The price of copying is drift, and
+    this is where drift is paid for — as a red, not as a later discovery.
+    """
+
+    COPIES = {
+        "markdown_table_rows": (Path(__file__), CLI),
+        "returned_keys": (Path(__file__),),
+        "dict_literal_keys": (Path(__file__),),
+        "subcommand_surface": (Path(__file__),),
+    }
+
+    def test_every_copy_is_byte_identical_to_its_original(self):
+        for helper, locations in self.COPIES.items():
+            original = function_source(ORIGINAL_HELPERS, helper)
+            for path in locations:
+                with self.subTest(helper=helper, path=path.name):
+                    self.assertEqual(
+                        function_source(path, helper), original,
+                        f"{helper} has drifted between "
+                        f"{ORIGINAL_HELPERS.name} and {path.name}; both "
+                        "locations must be edited together")

@@ -86,14 +86,20 @@ def doctrine_side(text, site):
 
     `site` is a recipe entry, never a roster. It names the table's header line
     and the column to read, and it may claim the table is a *complement* set —
-    a table of the members that are deliberately outside the main flow. Such a
-    claim is honoured only if the recipe also quotes the heading verbatim and
-    that heading is found in the text, so the editorial judgement is falsifiable
-    by renaming the heading.
+    a table of the members deliberately outside the main flow. Such a claim is
+    honoured only if the recipe also quotes the heading verbatim and that
+    heading is found in the text, so the editorial judgement is falsifiable by
+    renaming the heading and watching the claim stop being honoured.
 
-    Returns `(members, note)`. A site with no parseable table returns no members
-    and the note `no-closed-roster`, which is a first-class result: the finding
-    is that this subject states its set in prose.
+    Returns `(members, status)`. A site with no parseable table yields no
+    members and `no-closed-roster`, which is a first-class result rather than an
+    error: the finding is that this subject states its set in prose, and prose
+    is what condition 5 forbids the documented side from being read out of.
+
+    A complement is not a closed roster either. It is a deliberate subset, so it
+    can support the `phantom` direction — a documented member with nothing
+    behind it — but never the `unregistered` direction, where every member the
+    complement omits on purpose would be reported as missing documentation.
     """
     header = site.get("table")
     if not header:
@@ -119,6 +125,33 @@ def doctrine_side(text, site):
             continue
         members.append(row[column].strip().strip("`").strip())
     return [member for member in members if member], scope or "closed"
+
+
+def restatement_of(text, members, quorum):
+    """Where a set is written out by hand, and which of its members are there.
+
+    A place that mentions one member is not restating the set; a place carrying
+    at least `quorum` of them is. The quorum comes from the recipe so the
+    domain is declared before the search runs rather than tuned afterwards to
+    make an inconvenient result go away.
+
+    Returns `(matched, line)` — the members found and the first line any of them
+    appears on, so the report can name the restatement at `file:line` instead of
+    gesturing at a file.
+    """
+    lines = text.splitlines()
+    matched = []
+    first = 0
+    for member in members:
+        for number, line in enumerate(lines, start=1):
+            if member in line:
+                matched.append(member)
+                if first == 0 or number < first:
+                    first = number
+                break
+    if len(matched) < quorum:
+        return [], 0
+    return sorted(matched), first
 
 
 def bullet_run_length(lines, start):
@@ -182,6 +215,34 @@ def enumeration_after(lines, index):
     return None
 
 
+def is_size_claim(stripped, end):
+    """Whether the numeral ending at `end` is sizing something, or just counting.
+
+    A numeral sizes an enumeration in one of two positions, and in no others:
+    ahead of the plural noun it quantifies ("Three modules ...:"), or postposed
+    at the end of the lead-in ("the modules are these three:").
+
+    Everything else is a numeral doing a different job, and the two shapes that
+    matter here were both found in a real document rather than imagined. An
+    ordinal step marker sizes nothing -- `### 2. Build one X per Y` is the
+    second step, not two of anything. A distributive sizes nothing either --
+    "one X per Y" is a rate, and the singular noun is what says so.
+
+    This is a narrowing of the rule, not an exemption from it. An exemption
+    names the case that was inconvenient; this names the grammar a size claim
+    has, so a new document that makes the claim is caught without being
+    listed here first.
+    """
+    tail = stripped[end:]
+    if tail.strip().rstrip("*_`") in ("", ":"):
+        return True
+    word = re.match(r"[\s*_]*([A-Za-z`'\"]+)", tail)
+    if not word:
+        return False
+    noun = word.group(1).strip("`'\"")
+    return len(noun) > 2 and noun.lower().endswith("s")
+
+
 def numeral_mismatches(path):
     """Unhedged numerals that state a size the enumeration beneath them denies.
 
@@ -209,6 +270,8 @@ def numeral_mismatches(path):
             token = match.group(1)
             before = stripped[:match.start()].lower()
             if any(hedge in before[-24:] for hedge in HEDGES):
+                continue
+            if not is_size_claim(stripped, match.end()):
                 continue
             value = CARDINALS.get(token.lower())
             if value is None:
@@ -319,6 +382,8 @@ def build_parser():
                         help="the subject's root directory")
     roster.add_argument("--probe-spec", required=True,
                         help="the JSON recipe describing how to derive it")
+    roster.add_argument("--repo-root", default=".",
+                        help="the root a site declaring root=repo resolves under")
     roster.add_argument("--timeout", type=int, default=30,
                         help="seconds before a hanging subject is exit 2")
 
@@ -333,18 +398,134 @@ def emit(payload):
     sys.stdout.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
-def run_roster(args):
-    """Not yet implemented; ships in the roster slice of this change.
+def resolve_site(site, subject, repo):
+    """A site's path, under the root the recipe declares and nowhere else.
 
-    Refusing loudly with the reason is deliberate. A subcommand that answered
-    `{}` and exited `0` while doing nothing would be a green result with no
-    observation behind it, which is the fourth failure mode in this skill's own
-    doctrine.
+    Read-only, but still refused if it climbs out: a recipe that can name any
+    path on the machine is a recipe that can quietly widen the domain a
+    comparison declared.
     """
-    del args
-    emit({"error": "roster is declared but not yet implemented",
-          "status": "unimplemented"})
-    return 2
+    root = repo if site.get("root") == "repo" else subject
+    relative = site.get("path", "")
+    parts = Path(relative).parts
+    if not relative or Path(relative).is_absolute() or ".." in parts:
+        raise Unprobeable(
+            f"a site path must stay under its declared root: {relative!r}")
+    return Path(root) / relative
+
+
+def read_site(path):
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise Unprobeable(f"a documented site could not be read: {error}")
+
+
+def run_roster(args):
+    """Derive both halves of one closed surface and report the difference.
+
+    Exit `0` for any verdict, findings included; exit `2` only when the tool
+    could not look. Everything that could make the code side empty raises
+    instead of returning, because an empty code side turns every documented row
+    into a phantom and prints a broken probe as a page of findings.
+    """
+    spec_path = Path(args.probe_spec)
+    if not spec_path.is_file():
+        raise Unprobeable(f"no probe recipe at {spec_path}")
+    try:
+        recipe = json.loads(spec_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise Unprobeable(f"the probe recipe is unreadable: {error}")
+
+    subject = Path(args.subject).resolve()
+    repo = Path(args.repo_root).resolve()
+    notes = []
+
+    if recipe.get("probe") != "refusal":
+        notes.append({
+            "detail": "the subject exposes neither a refusal message nor a "
+                      "parser, so neither language-independent probe applies",
+            "kind": "no derivation available for this surface",
+            "path": str(spec_path),
+            "searched": f"{spec_path}:1-1",
+        })
+        return finish([], [], notes, [], [], "not-run", recipe, subject, repo)
+
+    code = sorted(set(probe_code_side(recipe, subject, timeout=args.timeout)))
+
+    doctrine = set()
+    closed_seen = False
+    for site in recipe.get("doctrineSites", []):
+        path = resolve_site(site, subject, repo)
+        text = read_site(path)
+        members, status = doctrine_side(text, site)
+        span = f"{path}:1-{max(len(text.splitlines()), 1)}"
+        doctrine.update(members)
+        if status == "closed":
+            closed_seen = True
+            continue
+        kind = status if status != "complement" else "no-closed-roster"
+        detail = {
+            "complement": "this table is a deliberate subset, so it supports "
+                          "the phantom direction and never the unregistered one",
+            "no-closed-roster": "the set is stated in prose or in another "
+                                "language here, and prose is what the "
+                                "documented side may not be read out of",
+            "heading-not-found": "the recipe claims a scope for this table but "
+                                 "its quoted heading is not on disk, so the "
+                                 "claim is refused rather than trusted",
+            "scope-claimed-without-heading": "a scope claim with no quoted "
+                                             "heading is unfalsifiable",
+        }[status]
+        notes.append({"detail": detail, "kind": kind, "path": str(path),
+                      "searched": span})
+
+    search = recipe.get("restatementSearch", {})
+    duplicated = []
+    for site in search.get("paths", []):
+        path = resolve_site(site, subject, repo)
+        matched, line = restatement_of(read_site(path), code,
+                                       search.get("quorum", 2))
+        if matched:
+            duplicated.append({"line": line, "members": matched,
+                               "path": str(path)})
+    if len(duplicated) < 2:
+        duplicated = []
+
+    comparison = "run" if closed_seen else "not-run"
+    if comparison == "not-run":
+        notes.append({
+            "detail": "no site yielded a closed roster, so the unregistered "
+                      "direction is not computed; reporting every accepted "
+                      "member as undocumented would invent one finding per "
+                      "member and none of them would be about this subject",
+            "kind": "comparison-not-run",
+            "path": str(subject),
+            "searched": f"{subject}:1-1",
+        })
+    unregistered = sorted(set(code) - doctrine) if closed_seen else []
+    phantom = sorted(doctrine - set(code))
+    return finish(code, sorted(doctrine), notes, unregistered, phantom,
+                  comparison, recipe, subject, repo, duplicated)
+
+
+def finish(code, doctrine, notes, unregistered, phantom, comparison,
+           recipe, subject, repo, duplicated=None):
+    mismatches = []
+    for site in recipe.get("numeralPaths", []):
+        mismatches.extend(numeral_mismatches(resolve_site(site, subject, repo)))
+    emit({
+        "code": code,
+        "comparison": comparison,
+        "doctrine": doctrine,
+        "duplicated": duplicated or [],
+        "notes": notes,
+        "numeralMismatch": mismatches,
+        "phantom": phantom,
+        "surface": recipe.get("surface", ""),
+        "unregistered": unregistered,
+    })
+    return 0
 
 
 def run_check_report(args):
