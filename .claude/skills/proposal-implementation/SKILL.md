@@ -1642,6 +1642,24 @@ apart, and each is cheap enough that skipping it is never the economical choice.
   than different hardware, and one table drawn over both is a table nobody can
   attribute.
 
+  **`verify --shards <dir>` is what produces that refusal**, and it is the only
+  way to. Give it the directory the returned shards landed in — one
+  subdirectory per shard, each holding its own `shard.json` stamp — and
+  `distribution.shardsDisagree` names every `identicalAcrossShards` field the
+  stamps disagree on, while `distribution.shardsArrived` lists the shards that
+  were actually read. Omit the flag and both are empty, which means nothing was
+  checked rather than nothing was wrong: a refusal nobody attempted reads
+  exactly like a merge nobody objected to, and that is what this flag exists to
+  separate.
+
+  **What refuses here and what averages is a division of labour, not an
+  oversight.** This skill refuses and stops. It never averages, pools or merges
+  a shard result, because a refusal is general — it needs only the fields the
+  declaration marked identical — and an average is not: what may legitimately
+  be pooled, and how, is the repository's own question, answered in its own
+  harness with its own vocabulary. A forge that averaged would have to learn
+  what a cell means, which is exactly the knowledge it may not have.
+
   And scale is recomputed from what came back, never from what was asked for.
   Three shards planned and two returned is a smaller campaign, not a failed one,
   and the record says which repetitions the verdict actually rests on.

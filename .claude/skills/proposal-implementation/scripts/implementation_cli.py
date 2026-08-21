@@ -35,9 +35,11 @@ FORGE_ROOT = Path(__file__).resolve().parents[4]
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE = FORGE_ROOT / "implementations"
 
-# The two files this module is allowed to path-import from the forge's
+# The three files this module is allowed to path-import from the forge's
 # `remote-execution` skill. `remote_execution_state()` reads `ledger.py`
-# alone; `remote_execution_jobs_state()` (design #744 section 9) reads
+# alone; `cmd_verify`'s `--shards` branch reads `shard_io.py` alone, which is
+# stdlib-only, defines no class and names no service; and
+# `remote_execution_jobs_state()` (design #744 section 9) reads
 # `remote_cli.py`, which itself loads `jobfolder.py`, `adapter.py`,
 # `packer.py`, `credentials.py` and `shard_io.py` — every one of the eight
 # modules the skill's own `*_module_names_no_service` guard family already
@@ -55,6 +57,9 @@ REMOTE_EXECUTION_LEDGER_SCRIPT = (
 )
 REMOTE_EXECUTION_CLI_SCRIPT = (
     FORGE_ROOT / ".claude" / "skills" / "remote-execution" / "scripts" / "remote_cli.py"
+)
+REMOTE_EXECUTION_SHARD_IO_SCRIPT = (
+    FORGE_ROOT / ".claude" / "skills" / "remote-execution" / "scripts" / "shard_io.py"
 )
 
 PRODUCT_DIRS = ("Notebooks", "Data", "Results", "Models")
@@ -622,12 +627,13 @@ def distribution_state(contract: dict, dimensions: dict,
             return {"status": declaration_status, "declared": {}, "missing": [],
                     "malformed": [], "axisIsAComparison": False,
                     "unpartitioned": [], "inBothHalves": [], "notADimension": [],
-                    "shardsDisagree": [],
+                    "shardsDisagree": [], "shardsArrived": [],
                     "note": "no benchmark declaration to read a distribution "
                             "from yet"}
         return {"status": "none", "declared": {}, "missing": [], "malformed": [],
                 "axisIsAComparison": False, "unpartitioned": [],
                 "inBothHalves": [], "notADimension": [], "shardsDisagree": [],
+                "shardsArrived": [],
                 "note": "no distribution declared; a run on one machine has "
                         "nothing to split and nothing to say about splitting it"}
 
@@ -672,6 +678,13 @@ def distribution_state(contract: dict, dimensions: dict,
         "notADimension": not_a_dimension,
         "shardsDisagree": disagree,
         "shardsArrived": list((merged or {}).get("shardsArrived") or []),
+        # Every branch reports every key, including this one and the two shard
+        # keys above. A key that appears on some branches and not others
+        # vanishes for exactly the callers that took the early ones, and
+        # nothing downstream can tell an absent key from an absent answer.
+        # `None` here is the honest note for a distribution that was read:
+        # there is nothing to explain away.
+        "note": None,
     }
 
 
@@ -4828,6 +4841,33 @@ def _load_remote_execution_cli():
     return module
 
 
+def _load_remote_execution_shard_io():
+    """Path-import `shard_io.py`, and only that module.
+
+    Loaded directly rather than reached through `_load_remote_execution_cli()`
+    and its re-exported `SHARD_IO`. Reusing the already-authorized import would
+    be one line shorter and would drag `jobfolder.py`, `adapter.py`,
+    `packer.py`, `credentials.py` and a service-adapter dispatch surface into a
+    read-only checker that runs on every target — including every target that
+    sends work nowhere at all. `shard_io.py` is stdlib-only and names no
+    service, and its own docstring says it is the half that belongs to a forge
+    serving more than one paper.
+
+    No `sys.modules` key, unlike the two loaders above. Both of those cache
+    because a second, separately exec'd copy would hand back a class the
+    `isinstance` and `except` clauses here could never match. `shard_io.py`
+    defines no class and no exception at all — it is two functions over dicts —
+    so that argument does not apply, and this is called at most once per
+    process anyway.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "remote_execution_shard_io", REMOTE_EXECUTION_SHARD_IO_SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _discovered_job_folders(target: Path, rcli) -> list[Path]:
     """Every `<target>/tools/<service>/<job-name>/` directory that holds a
     `run-config.json` — the job-folder shape `remote_cli.guard_entrypoint()`
@@ -5124,9 +5164,28 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     # the universe itself could not be determined, and that is never read as
     # "declares zero dimensions" — see `declared_dimension_names`.
     dimension_names = declared_dimension_names(target, package_name(name))
+    # The shard directory is optional and read only when it is given. Omitted,
+    # `merged` stays `None` and `distribution_state` answers exactly what it
+    # answered before this flag existed.
+    #
+    # `getattr` rather than `args.shards`: ten call sites in the suite build an
+    # `argparse.Namespace` by hand, and an optional flag must not turn each of
+    # them into an edit. The cost — a mis-wired flag name would read as an
+    # omitted one — is paid off by the cross-join test, which invokes the real
+    # parser rather than a hand-built namespace.
+    merged = None
+    shards_root = getattr(args, "shards", None)
+    if shards_root:
+        shard_io = _load_remote_execution_shard_io()
+        shards = shard_io.read_shards(Path(shards_root))
+        fields = list(((resolved["contract"] or {}).get("distribution") or {})
+                      .get("identicalAcrossShards") or [])
+        merged = {"disagreements": shard_io.disagreements(shards, fields),
+                  "shardsArrived": [entry["shard"] for entry in shards]}
     distribution = distribution_state(
         resolved["contract"],
         dimension_names if dimension_names is not None else {},
+        merged=merged,
         declaration_status=resolved["status"])
     distribution["dimensionSource"] = (
         sorted(dimension_names) if dimension_names is not None else None)
@@ -5291,6 +5350,16 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--name", required=True, help="package name chosen by the user")
         if name == "apply":
             p.add_argument("--plan", required=True, help="path to the approved plan JSON")
+        if name == "verify":
+            # `verify` only. `admit`, `handoff` and `probe` read no shard
+            # directory, and giving them a flag they ignore would be a promise
+            # this file does not keep.
+            p.add_argument("--shards", default=None,
+                           help="a directory of returned shards; each "
+                                "subdirectory holds a shard.json stamp. Given, "
+                                "verify reports which declared-identical "
+                                "fields the shards disagree on, and which "
+                                "shards arrived")
         if name in {"verify", "admit", "handoff", "probe"}:
             p.add_argument("--revision", default=None,
                            help="pin the revision to check against; "

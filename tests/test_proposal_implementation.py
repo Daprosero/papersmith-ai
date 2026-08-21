@@ -9178,3 +9178,232 @@ class RemoteExecutionCommandRosterTests(unittest.TestCase):
                 len(shown), len(declared[command]),
                 f"`usage.md` reprints every flag {command} declares, which is "
                 "a second copy of a list this skill does not own")
+
+
+class ShardRefusalCrossJoinTests(unittest.TestCase):
+    """The doctrine promised a refusal nothing could produce.
+
+    `SKILL.md` says a merge refuses when shards disagree on what they declared
+    had to agree — "Not averages — refuses" — and `distribution_state` has
+    read a `merged` argument for that purpose since it was written. Nothing in
+    this skill ever built one. `shardsDisagree` was empty on every target
+    because the only input that could fill it had no caller, and a reader
+    seeing an empty list read a refusal that had never been attempted.
+
+    `verify --shards <dir>` is that caller. The disagreement is computed by
+    `shard_io.disagreements`, which reads a stamp field at a time and names no
+    grouping vocabulary, so the refusal stays as general as the doctrine
+    claiming it.
+
+    And the same key that reports the arrived shards was missing from three
+    of `distribution_state`'s branches, so it vanished for exactly the targets
+    that declare no distribution. That was found by the roster helper rather
+    than by reading: its all-returns-agree assertion is what makes a key that
+    exists on some branches and not others a failure instead of a surprise.
+    """
+
+    def test_every_distribution_branch_reports_the_same_keys(self):
+        """Red by construction: the `none`, `absent` and `undeclared` branches
+        return `shardsDisagree` and omit `shardsArrived`, so which keys a
+        caller gets depends on which branch answered."""
+        self.assertIn("shardsArrived", returned_keys(CLI, "distribution_state"))
+
+    DECLARATION = (
+        "__benchmark__ = {\n"
+        "    'revision': 'r01.md',\n"
+        "    'arms': {'floor': {'sections': ['3']}, "
+        "'full': {'sections': ['3']}},\n"
+        "    'distribution': {'axis': 'repetition',\n"
+        "                     'poolable': ['score'],\n"
+        "                     'perEnvironment': ['wallSeconds'],\n"
+        "                     'perRun': ['seed'],\n"
+        "                     'identicalAcrossShards': ['epochs', 'datasetSize']},\n"
+        "}\n")
+
+    def build_target(self, suffix):
+        box = FORGE / "implementations" / f"_shardbox_{suffix}_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "src/Method_Benchmark", "Method"):
+            (box / directory).mkdir(parents=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            self.DECLARATION, encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        return box
+
+    def build_shards(self, stamps):
+        """A real shard directory on disk, in the ambient shape `read_shards`
+        assumes: one directory per shard, each holding a `shard.json` stamp.
+
+        Written rather than faked, because the whole objection this repairs is
+        that a number nobody read off a disk is a number nobody measured.
+        """
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        for shard, stamp in stamps.items():
+            folder = root / shard
+            folder.mkdir()
+            (folder / "shard.json").write_text(json.dumps(stamp),
+                                               encoding="utf-8")
+        return root
+
+    def verify(self, box, shards=None, expect=0):
+        argv = [sys.executable, str(CLI), "verify", "--target", str(box),
+                "--name", "Method"]
+        if shards is not None:
+            argv += ["--shards", str(shards)]
+        proc = subprocess.run(argv, capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, expect, proc.stderr)
+        return proc
+
+    def test_verify_accepts_a_shard_directory(self):
+        """Red by construction: the flag the doctrine's refusal needs in order
+        to have any input at all does not exist, so `argparse` rejects it
+        before the command runs."""
+        box = self.build_target("flag")
+        shards = self.build_shards({"a": {"epochs": 5}})
+        proc = self.verify(box, shards)
+        self.assertNotIn("unrecognized arguments", proc.stderr)
+
+    AGREE = {"a": {"epochs": 5, "datasetSize": 100, "score": 0.1},
+             "b": {"epochs": 5, "datasetSize": 100, "score": 0.2},
+             "c": {"epochs": 5, "datasetSize": 100, "score": 0.3}}
+    DISAGREE = {"a": {"epochs": 5, "datasetSize": 100},
+                "b": {"epochs": 9, "datasetSize": 100}}
+
+    def distribution(self, box, shards=None):
+        return json.loads(self.verify(box, shards).stdout)["distribution"]
+
+    def test_shards_that_disagree_are_refused_and_named(self):
+        """The refusal the doctrine promised, produced for the first time.
+
+        Read off the command's own stdout rather than off a call to
+        `distribution_state`, because the claim is about what `verify` reports
+        and every layer between the flag and the report is part of it.
+        """
+        box = self.build_target("disagree")
+        distribution = self.distribution(box, self.build_shards(self.DISAGREE))
+
+        self.assertEqual(distribution["shardsDisagree"], ["epochs"])
+        self.assertEqual(distribution["shardsArrived"], ["a", "b"])
+        self.assertEqual(distribution["status"], "incomplete")
+
+    def test_shards_that_agree_report_no_disagreement_and_still_name_what_arrived(self):
+        """The pole. Without it the refusal could be firing on any shard
+        directory at all and nothing here would notice."""
+        box = self.build_target("agree")
+        distribution = self.distribution(box, self.build_shards(self.AGREE))
+
+        self.assertEqual(distribution["shardsDisagree"], [])
+        self.assertEqual(distribution["shardsArrived"], ["a", "b", "c"])
+        # And the shards changed no verdict: agreeing shards are exactly as
+        # silent as no shards at all. Compared against the same target rather
+        # than against a literal, because this fixture declares dimensions no
+        # `config.py` names and would report `incomplete` for that reason
+        # alone — which has nothing to do with what came back.
+        self.assertEqual(distribution["status"],
+                         self.distribution(box)["status"])
+
+    def test_the_arrived_count_is_read_from_disk_and_not_from_a_fixture(self):
+        """Behavioural variation rather than inversion.
+
+        A number a test hands to itself proves nothing about a campaign. So one
+        shard directory is deleted between two runs of the same command over
+        the same target, and what the command reports has to move with it.
+        """
+        box = self.build_target("shrink")
+        shards = self.build_shards(self.AGREE)
+        self.assertEqual(self.distribution(box, shards)["shardsArrived"],
+                         ["a", "b", "c"])
+
+        shutil.rmtree(shards / "b")
+        self.assertEqual(self.distribution(box, shards)["shardsArrived"],
+                         ["a", "c"])
+
+    def test_omitting_the_flag_changes_nothing_else_verify_reports(self):
+        """A new optional argument is a promise that everything else is where
+        it was. Measured by running the same command twice over the same
+        target and diffing everything but the three keys the flag exists to
+        move."""
+        box = self.build_target("omitted")
+        without = json.loads(self.verify(box).stdout)
+        with_shards = json.loads(self.verify(box, self.build_shards(
+            self.DISAGREE)).stdout)
+
+        self.assertEqual(without["distribution"]["shardsDisagree"], [])
+        self.assertEqual(without["distribution"]["shardsArrived"], [])
+        moved = {"shardsDisagree", "shardsArrived", "status"}
+        self.assertEqual(
+            {key: value for key, value in without["distribution"].items()
+             if key not in moved},
+            {key: value for key, value in with_shards["distribution"].items()
+             if key not in moved})
+        self.assertEqual({k: v for k, v in without.items() if k != "distribution"},
+                         {k: v for k, v in with_shards.items()
+                          if k != "distribution"})
+
+    def test_a_shard_directory_that_does_not_exist_is_a_smaller_campaign(self):
+        """Three shards planned and none returned is a legitimate answer, not
+        an error: the doctrine already says the scale is recomputed from what
+        came back. So an absent directory reports nothing arrived rather than
+        refusing."""
+        box = self.build_target("absent")
+        missing = Path(tempfile.mkdtemp()) / "never-written"
+        self.addCleanup(shutil.rmtree, missing.parent, ignore_errors=True)
+        distribution = self.distribution(box, missing)
+
+        self.assertEqual(distribution["shardsArrived"], [])
+        self.assertEqual(distribution["shardsDisagree"], [])
+
+    def test_a_shard_that_cannot_be_read_is_not_treated_as_a_shard_that_never_came(self):
+        """The other half of the same boundary, and the one that has to be
+        loud. A `shard.json` that is not JSON is not a smaller campaign; it is
+        an unreadable one, and reporting it as absent is exactly the silence
+        this skill exists to break."""
+        box = self.build_target("malformed")
+        shards = self.build_shards({"a": {"epochs": 5}})
+        (shards / "a" / "shard.json").write_text("{not json", encoding="utf-8")
+        proc = self.verify(box, shards, expect=1)
+
+        self.assertIn("JSONDecodeError", proc.stderr)
+        self.assertIn("read_shards", proc.stderr)
+
+    def test_a_target_declaring_no_distribution_still_reports_both_keys(self):
+        """The symmetry half, end to end. `shardsArrived` used to vanish for
+        exactly the targets that declare no distribution, so a reader could
+        not tell an absent key from an absent answer."""
+        box = self.build_target("undeclared")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            "__benchmark__ = {'revision': 'r01.md'}\n", encoding="utf-8")
+        distribution = self.distribution(box)
+
+        self.assertEqual(distribution["status"], "none")
+        self.assertEqual(distribution["shardsDisagree"], [])
+        self.assertEqual(distribution["shardsArrived"], [])
+
+    def test_the_toy_targets_left_nothing_behind(self):
+        self.build_target("cleanup")
+        self.doCleanups()
+        leftover = list((FORGE / "implementations").glob("_shardbox_*"))
+        self.assertEqual(leftover, [], leftover)
+
+    def test_the_doctrine_names_the_flag_and_says_which_half_refuses(self):
+        """A promise with no producer is what this repairs, so the doctrine has
+        to name the producer — and has to say plainly that refusing is where
+        this skill stops, because the alternative reading is that a forge which
+        refuses will eventually average."""
+        text = SKILL_MD.read_text(encoding="utf-8")
+        section = text[text.index("**Shards agree on what they said had to agree"):]
+        section = section[:section.index("\n- **", 1)]
+        self.assertIn("`verify --shards <dir>`", section)
+        self.assertIn("shardsArrived", section)
+        self.assertIn("never averages, pools or merges", section)
+
+    def test_the_usage_reference_works_the_shard_invocation(self):
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("### `--shards` — the refusal"):]
+        section = section[:section.index("\n### ", 1)]
+        self.assertIn("--shards", section)
+        self.assertIn("`shardsDisagree`", section)
+        self.assertIn("`shardsArrived`", section)

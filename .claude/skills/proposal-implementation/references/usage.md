@@ -280,6 +280,38 @@ python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py ver
 }
 ```
 
+### `--shards` — the refusal a split campaign needs
+
+A campaign divided across machines comes back as a directory of shards, one
+subdirectory each, every one holding its own `shard.json` stamp. Hand `verify`
+that directory and it checks what the declaration said had to be identical:
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py verify \
+  --target implementations/<repo> --name <Name> --shards <Name>/Results/shards
+```
+
+```json
+{ "distribution": { "status": "incomplete",
+                    "shardsDisagree": ["epochs"],
+                    "shardsArrived": ["shard-00", "shard-01"] } }
+```
+
+`shardsDisagree` names the fields, not the shards, because the field is what
+the declaration promised and the shards are where the promise broke.
+`shardsArrived` is read off the disk every time, so three shards planned and two
+returned reports two — a smaller campaign, not a failed one.
+
+Omit the flag and both are empty. That means nothing was checked, not that
+nothing was wrong, and the difference is the whole reason the flag exists. A
+shard directory that is not there yet reports nothing arrived; a `shard.json`
+that is not JSON raises, because an unreadable shard is not a shard that never
+came back and must not be quietly counted as one.
+
+`verify` never averages or pools what it read. Merging what may legitimately be
+merged is the target's own work, in its own harness — see `SKILL.md` for why
+that division is deliberate.
+
 ### The notebook is read, not counted
 
 `notebook.status` answers whether the report was produced, not whether the file
