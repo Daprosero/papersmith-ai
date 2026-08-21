@@ -8891,3 +8891,104 @@ class ProbeReportedFactsRosterTests(unittest.TestCase):
         self.doCleanups()
         leftover = list((FORGE / "implementations").glob("_smokebox_*"))
         self.assertEqual(leftover, [], leftover)
+
+
+def dict_literal_keys(source: Path, name: str) -> list[str]:
+    """The string keys of a module-level dict assigned to `name`.
+
+    The same argument `returned_keys` makes, one scope out: a list of commands
+    written twice — once in the code that dispatches them and once in the
+    reference somebody reads — is a list that loses one. Read it from the
+    dispatch table instead.
+    """
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Dict):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            continue
+        return sorted(key.value for key in node.value.keys
+                      if isinstance(key, ast.Constant)
+                      and isinstance(key.value, str))
+    raise AssertionError(f"{source.name} assigns no module-level dict {name}")
+
+
+class WorkedInvocationRosterTests(unittest.TestCase):
+    """`usage.md` opens by promising that everything below it is a real
+    invocation of the CLI, and three of the CLI's nine commands had none.
+
+    `probe` is the one that costs something. It is the command the whole
+    benchmark half of this skill turns on — it is what answers `nextStep`,
+    what the Decision Gates rows are written about, and what a reader is sent
+    to before every offer to run — and the worked-invocation reference never
+    showed anybody how to call it. `name` and `compose` are the same absence
+    with less riding on it.
+
+    The lock is a roster rather than three assertions, so a command added to
+    the dispatch table fails this suite until somebody has shown how to run
+    it. What it cannot check is whether the invocation shown is *correct*:
+    that the flags exist is asserted below against the parser, but that the
+    output described underneath is what the command actually prints is prose,
+    and the end-to-end tests elsewhere in this file are what carry it.
+    """
+
+    INVOCATION_RE = re.compile(r"implementation_cli\.py\s+([a-z][a-z-]*)")
+
+    def worked_invocations(self):
+        return sorted(set(self.INVOCATION_RE.findall(
+            USAGE_MD.read_text(encoding="utf-8"))))
+
+    def dispatched_commands(self):
+        return dict_literal_keys(CLI, "COMMANDS")
+
+    def test_every_command_the_cli_dispatches_has_a_worked_invocation(self):
+        dispatched = self.dispatched_commands()
+        self.assertTrue(dispatched, "the dispatch table was read as empty")
+        worked = self.worked_invocations()
+        self.assertEqual(
+            sorted(set(dispatched) - set(worked)), [],
+            "the CLI dispatches these and `usage.md` works none of them, "
+            "though it opens by saying everything below it is a real "
+            "invocation")
+        self.assertEqual(
+            sorted(set(worked) - set(dispatched)), [],
+            "`usage.md` works these and the CLI dispatches no such command")
+
+    def worked_block(self, command):
+        """The fenced invocation for one command, as argv."""
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        block = usage[usage.index(f"implementation_cli.py {command}"):]
+        block = block[:block.index("```")]
+        argv = [command]
+        for line in block.splitlines()[1:]:
+            argv.extend(line.strip().rstrip("\\").strip().split())
+        return argv
+
+    def test_the_probe_invocation_uses_flags_the_real_parser_accepts(self):
+        """A worked invocation nobody can run is a worse promise than none.
+
+        Proven against the CLI's own parser rather than against a second copy
+        of its argument list: the example is handed to the real process with a
+        target that does not exist, so argparse sees every flag. A guard
+        refusal prints JSON and means the flags were accepted; an unrecognized
+        flag never gets that far.
+        """
+        argv = self.worked_block("probe")
+        self.assertIn("--target", argv)
+        self.assertIn("--name", argv)
+        proc = subprocess.run(
+            [sys.executable, str(CLI), *argv], capture_output=True, text=True,
+            cwd=FORGE)
+        self.assertNotIn("unrecognized arguments", proc.stderr)
+        self.assertEqual(json.loads(proc.stdout or "{}").get("status"),
+                         "refused", proc.stderr)
+
+    def test_the_reference_shows_what_probe_answers(self):
+        """An invocation with no output beside it teaches a reader to run the
+        command and nothing about how to read what comes back. `nextStep` is
+        the answer, so it belongs where the invocation is."""
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("## Probe — what stands between this"):]
+        section = section[:section.index("\n## ", 1)]
+        self.assertIn("implementation_cli.py probe", section)
+        self.assertIn("`nextStep`", section)

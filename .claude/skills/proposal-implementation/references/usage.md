@@ -47,6 +47,25 @@ with each weight present as a 133-byte pointer. Every command here works on
 paths and on `.py` sources, so the pointers are sufficient — and the LFS quota
 stays untouched. Fetch real blobs only when the user actually runs a model.
 
+### The name, normalized before the directory exists
+
+The product directory and the Python package are two spellings of one name, and
+a hyphen is legal in exactly one of them. `name` answers that before anything is
+created, which is the only moment the answer is free:
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py name \
+  --name "Example-Method"
+```
+
+```json
+{ "status": "ok", "name": "Example-Method", "package": "Example_Method" }
+```
+
+It is the one command that takes no `--target`: normalizing a name runs before a
+repository exists. Show the pair to the user before scaffolding either, because
+renaming afterwards is a migration and this is a question.
+
 ## 2. The isolated environment
 
 ```bash
@@ -402,6 +421,27 @@ are expressible as they stand, and the fourth — freezing the confidence with
 the revision does not define. That is a decision for the deliberation, not a
 verdict this skill may issue.
 
+### `compose` — the remedy takes the entry's place
+
+A deliberation replaces a whole entry, and an entry is almost always more than
+the equation at issue. `compose` substitutes the remedy inside the resolved
+entry's own text rather than handing back the bare block, so every neighbouring
+line the entry carries survives:
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py compose \
+  --target implementations/<repo> --finding <finding-id> --entry-text -
+```
+
+`--entry-text -` reads the entry from stdin, which is what you want for anything
+longer than a line. The finding's own `remedy_block` supplies the replacement,
+and the equation's `\tag{n}` is the identity used to find what it replaces — so
+the substitution lands on the equation the finding names and not on whatever
+happens to look similar.
+
+Refusals are named rather than silent: `NO_SUCH_FINDING`, `NO_REMEDY_BLOCK` for a
+finding whose correction was never written, and `EMPTY_ENTRY`.
+
 ## Reading `verify`
 
 Two independent findings, reported separately:
@@ -473,6 +513,39 @@ served by the identical code. Three additive fields say what discovery saw:
 All three are reported and none of them refuses: `verify` reads, and a stray file
 in a directory must not stop the whole check. The filter applies to discovery
 only — an explicit `--revision` is read verbatim, whether or not it is marked.
+
+## Probe — what stands between this repository and a benchmark
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py probe \
+  --target implementations/<repo> --name <Name> --revision research-concept-r05.md
+```
+
+`--revision` is optional here for the same reason it is optional on `verify`:
+omit it and the newest published revision of the family the bench declares is
+discovered. Everything else is required.
+
+```json
+{ "status": "ok", "nextStep": "benchmark", "comparable": true,
+  "backend": { "trainable": true },
+  "results": { "status": "absent" },
+  "remoteExecution": { "status": "absent", "jobs": [], "services": 0,
+                       "smokeReady": {} },
+  "kind": "read-only" }
+```
+
+`probe` runs nothing and changes nothing — `kind` says so in the output itself,
+and the exit status is `0` whatever it finds. `nextStep` is the answer and there
+is exactly one of them: the ladder is ordered, so the first thing standing in
+the way is the only thing reported. Ten values are possible. Seven prescribe
+work and each has its own section in `SKILL.md` — `convert`, `declare-first`,
+`wiring-first`, `poll-first`, `search-first`, `report-first` and `benchmark`.
+The other three prescribe none, and deliberately have no section:
+`nothing-to-compare`, `piloted` and `already-benchmarked`.
+
+Never read past the answer for a reason to skip it. A rung fires because
+everything above it is already settled, so the next one down says nothing about
+whether the campaign is a good idea yet.
 
 ## Reading `probe`
 
