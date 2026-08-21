@@ -288,7 +288,8 @@ executable — no test in this suite reaches the network or a real account).
 |---|---|---|---|---|
 | 1 | `clean-worktree` | The working tree is clean over the declared clone paths — `git status --porcelain`, so an untracked file counts and an ignored one does not. Not a repository, or no commits, refuses too. | `generate-job`, `submit` | Every offending path, and `git add`/`git commit`/`git restore` as the remedy |
 | 2 | `pin-is-head` | The pin is HEAD, or nothing changed between the pin and HEAD under the declared clone paths. `unknown` refuses as firmly as `drift`. | `generate-job`, `submit` | The changed clone paths, the pin and HEAD, and git's own message |
-| 3 | `pin-published` | The declared remote can serve the pin — `git fetch --dry-run --depth 1` from a scratch repository. | `generate-job`, `submit` | The commit, the remote URL, the missing push addressed to `--repo-ref`, and git's own message |
+| 3 | `declared-paths-exist` | Every declared clone path exists at the pin — `git cat-file -e <pin>:<path>`, asked of the pin and never of the working tree. `sparse-checkout` accepts a path the tree does not contain and fetches nothing for it, silently. | `generate-job`, `submit` | Every absent path, and that the remedy is committing them and pinning the commit that carries them |
+| 4 | `pin-published` | The declared remote can serve the pin — `git fetch --dry-run --depth 1` from a scratch repository. | `generate-job`, `submit` | The commit, the remote URL, the missing push addressed to `--repo-ref`, and git's own message |
 
   **Why condition (1) exists, and why it is `status` and not `diff`.**
   `resolve_clone_paths()` walks the WORKING TREE. Without this condition

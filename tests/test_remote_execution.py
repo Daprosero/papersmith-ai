@@ -5829,14 +5829,22 @@ class PinIsHeadTests(unittest.TestCase):
             decision=decision,
         )
 
-    def test_pin_is_head_sits_between_the_two_local_and_the_network_condition(self) -> None:
-        """Order is the contract, and it is cheapest-first: two local,
-        instant questions before the one that reaches a network.
+    def test_every_local_condition_runs_before_the_one_that_reaches_a_network(self) -> None:
+        """Order is the contract, and it is cheapest-first: every local,
+        instant question before the one that dials out. Named as the property
+        rather than by counting, because the count changed once a fourth
+        condition arrived and a test that asserts the count has to be edited
+        for a reason that is not about order at all.
         """
+        conditions = list(JOBFOLDER.PIN_CONDITIONS)
         self.assertEqual(
-            list(JOBFOLDER.PIN_CONDITIONS),
-            ["clean-worktree", "pin-is-head", "pin-published"],
+            conditions,
+            ["clean-worktree", "pin-is-head", "declared-paths-exist",
+             "pin-published"],
         )
+        self.assertEqual(conditions[-1], "pin-published",
+                         "the network condition must be last, whatever else "
+                         "is added before it")
 
     def test_a_pin_behind_head_under_the_clone_paths_refuses(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -8961,6 +8969,99 @@ class AdapterEnvironmentTests(unittest.TestCase):
         self.assertIn(KAGGLE.KAGGLE_EXECUTABLE, body,
                       "the Environment section never names the service CLI the "
                       "shipped adapter shells out to")
+
+
+class ClonePathExistenceTests(unittest.TestCase):
+    """A declared clone path that does not exist at the pin arrives as nothing.
+
+    `git sparse-checkout set` accepts a path the tree does not contain and
+    checks out nothing for it, without a word. So a job could declare the data
+    file its run depends on, generate cleanly, push, spend the quota, and have
+    the kernel refuse for the absence of a file the operator believed they had
+    declared their way to.
+
+    Generation already cross-checks clone paths against what the entry modules
+    import. That answers "is every import covered", never "does every declared
+    path exist" — and a data path is in the second question's domain and not
+    the first's.
+
+    Checked at the PIN, not in the working tree, because the pin is what the
+    runner fetches. A file created and not committed is exactly the case that
+    would otherwise pass here and fail there.
+    """
+
+    def target_with_remote(self, root: Path):
+        origin = root / "origin.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+        target = root / "target"
+        subprocess.run(["git", "init", "-q", str(target)], check=True)
+        package = target / "src" / "pkg"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        (package / "harness.py").write_text(
+            "def run():\n    return {}\n", encoding="utf-8")
+        git = ["git", "-C", str(target), "-c", "user.email=t@t", "-c", "user.name=t"]
+        subprocess.run([*git, "add", "-A"], check=True)
+        subprocess.run([*git, "commit", "-q", "-m", "seed"], check=True)
+        subprocess.run([*git, "remote", "add", "origin", str(origin)], check=True)
+        subprocess.run([*git, "push", "-q", "origin", "HEAD:refs/heads/main"], check=True)
+        return origin, target, git
+
+    def generate(self, target: Path, origin: Path, *extra_paths: str):
+        argv = [sys.executable, str(REMOTE_CLI_SCRIPT), "generate-job",
+                "--target", str(target), "--service", "kaggle",
+                "--job-name", "probe-job", "--product", "Product",
+                "--repo-url", str(origin), "--repo-ref", "main",
+                "--clone-path", "src/pkg"]
+        for path in extra_paths:
+            argv += ["--clone-path", path]
+        argv += ["--run-module", "pkg.harness", "--run-function", "run"]
+        return subprocess.run(argv, capture_output=True, text=True, cwd=str(target))
+
+    def test_a_declared_path_absent_from_the_pin_refuses_and_names_it(self):
+        with tempfile.TemporaryDirectory() as raw:
+            origin, target, _ = self.target_with_remote(Path(raw))
+            completed = self.generate(target, origin, "Results/ceilings.json")
+            output = completed.stdout + completed.stderr
+            self.assertNotEqual(completed.returncode, 0,
+                                "generation declared a path the pin does not "
+                                "contain: " + output.strip()[:300])
+            self.assertIn("Results/ceilings.json", output)
+            self.assertFalse((target / "tools").exists(),
+                             "a job folder was written for an absent clone path")
+
+    def test_a_path_that_exists_only_in_the_working_tree_still_refuses(self):
+        """The runner fetches the pin. A file the operator can see and the pin
+        cannot is the case this check exists for, and the one a working-tree
+        check would miss.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            origin, target, _ = self.target_with_remote(Path(raw))
+            data = target / "Results"
+            data.mkdir()
+            (data / "ceilings.json").write_text("{}\n", encoding="utf-8")
+            completed = self.generate(target, origin, "Results/ceilings.json")
+            output = completed.stdout + completed.stderr
+            self.assertNotEqual(completed.returncode, 0,
+                                "an uncommitted file passed as a declared path")
+            self.assertIn("Results/ceilings.json", output)
+
+    def test_a_declared_path_present_in_the_pin_is_accepted(self):
+        """Non-vacuity: the check must pass for a committed data path, or it is
+        only ever refusing and proves nothing about what it admits.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            origin, target, git = self.target_with_remote(Path(raw))
+            data = target / "Results"
+            data.mkdir()
+            (data / "ceilings.json").write_text("{}\n", encoding="utf-8")
+            subprocess.run([*git, "add", "-A"], check=True)
+            subprocess.run([*git, "commit", "-q", "-m", "record"], check=True)
+            subprocess.run([*git, "push", "-q", "origin", "HEAD:refs/heads/main"],
+                           check=True)
+            completed = self.generate(target, origin, "Results/ceilings.json")
+            self.assertEqual(completed.returncode, 0,
+                             (completed.stdout + completed.stderr).strip()[:300])
 
 
 class PublishedPinResolutionTests(unittest.TestCase):

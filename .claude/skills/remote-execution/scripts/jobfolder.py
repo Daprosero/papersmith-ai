@@ -1130,7 +1130,8 @@ def _verify_commit_reachable(
 # reaches a network. It is a module constant rather than a sequence of
 # statements so that `SKILL.md`'s doctrine table can be held to it by the
 # suite — prose cannot be held to code, a table can.
-PIN_CONDITIONS = ("clean-worktree", "pin-is-head", "pin-published")
+PIN_CONDITIONS = ("clean-worktree", "pin-is-head", "declared-paths-exist",
+                  "pin-published")
 
 
 def _refuse_dirty_worktree(
@@ -1266,6 +1267,48 @@ def _refuse_stale_pin(
     )
 
 
+def _refuse_absent_clone_paths(
+    *, target: Path, commit: str, clone_paths: Sequence[str], decision: str,
+    **_unused: object,
+) -> None:
+    """Condition (3) — every declared clone path must exist at the pin.
+
+    `git sparse-checkout set` accepts a path the tree does not contain and
+    checks out nothing for it, silently. So a job could declare the data file
+    its run depends on, generate cleanly, push, spend the quota, and have the
+    kernel refuse for the absence of a file the operator believed they had
+    declared their way to — the failure this whole family of conditions exists
+    to move from the kernel to here.
+
+    Generation's existing cross-check answers a different question. It asks
+    whether every import the entry modules make is covered by a declared path;
+    it never asks whether a declared path is anything at all. A data path — a
+    record a run reads rather than a module it imports — lives entirely in the
+    second question's domain.
+
+    Asked of the PIN and never of the working tree, because the pin is what the
+    runner fetches. A file the operator can see and the pin cannot is precisely
+    the case a working-tree check would wave through.
+
+    Local, so it sits ahead of the network condition: there is no reason to ask
+    a remote about a pin whose own contents already refuse.
+    """
+    missing = []
+    for path in clone_paths:
+        try:
+            _run_git(["cat-file", "-e", f"{commit}:{path}"], cwd=target)
+        except JobFolderError:
+            missing.append(path)
+    if missing:
+        raise JobFolderError(
+            f"{decision} refuses: these declared clone paths do not exist at "
+            f"{commit!r}, so a runner's sparse checkout would fetch nothing for "
+            f"them and the run would fail inside the kernel after quota is "
+            f"already spent: {missing}. Commit them and pin the commit that "
+            "carries them, or stop declaring them."
+        )
+
+
 def _refuse_unpublished_pin(
     *,
     commit: str,
@@ -1289,6 +1332,7 @@ def _refuse_unpublished_pin(
 _PIN_CONDITION_CHECKS = {
     "clean-worktree": _refuse_dirty_worktree,
     "pin-is-head": _refuse_stale_pin,
+    "declared-paths-exist": _refuse_absent_clone_paths,
     "pin-published": _refuse_unpublished_pin,
 }
 
