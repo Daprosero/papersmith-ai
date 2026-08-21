@@ -70,6 +70,7 @@ import ast
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -130,6 +131,25 @@ REQUIRED_RUN_CONFIG_FIELDS = (
     "schemaVersion", "product", "service", "jobName", "commit", "repo",
     "clonePaths", "run", "runnerTemplate",
 )
+
+# A pin is an object name, never a name that resolves to one. Lowercase
+# hex, 40 characters (sha1) or 64 (sha256) — the two full object-name
+# widths git writes; nothing shorter, because an abbreviated name is
+# ambiguous by construction, and nothing uppercase, because git never
+# writes one and accepting it would make two spellings of the same pin
+# compare unequal in `readiness`'s `latest.commit == run_config["commit"]`
+# binding.
+#
+# This is not a cosmetic tightening. `--commit main` satisfied every
+# other guard in this module: the reachability probe succeeds because
+# `main` really is a ref the remote can serve, `_staleness_for()`'s
+# `cat-file -e main^{commit}` succeeds because `main` really does resolve
+# locally, and the staleness diff compares `main` against `HEAD`, which
+# is usually the same commit. The job folder then records the string
+# `"main"` as the code that produced a number, and the runner checks out
+# whatever `main` points at on the day it runs. A pin that moves,
+# recorded as if it were immutable, with every downstream check agreeing.
+COMMIT_PATTERN = re.compile(r"\A(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 
 
 def resolve_target(target: str | Path) -> Path:
@@ -457,6 +477,14 @@ def validate_run_config(run_config: Mapping[str, object]) -> None:
     `generate_job()` calls it on the very config it is about to write, so a
     caller a later slice adds to `jobfolder.read()` needs no second copy of
     this logic.
+
+    `commit` is checked for SHAPE here rather than beside the `--commit`
+    flag, and the reason is this function's own re-run-on-every-read
+    property: a job folder that acquired a name-shaped pin any other way —
+    hand-edited, written by an older generator, copied between machines —
+    is refused when it is READ, not only when it is written. A guard that
+    lived at the CLI flag would let exactly that job folder through, and a
+    job folder is read at submit, status, fetch, reconcile and readiness.
     """
     if not isinstance(run_config, Mapping):
         raise JobFolderError("run-config.json must decode to a JSON object")
@@ -468,6 +496,16 @@ def validate_run_config(run_config: Mapping[str, object]) -> None:
             f"run-config.json declares schemaVersion "
             f"{run_config.get('schemaVersion')!r}; this generator writes and "
             f"reads only {RUN_CONFIG_SCHEMA_VERSION}"
+        )
+    commit = run_config["commit"]
+    if not isinstance(commit, str) or not COMMIT_PATTERN.match(commit):
+        raise JobFolderError(
+            f"run-config.json declares commit {commit!r}, which is not a "
+            "commit object name: a pin must be lowercase hex, 40 or 64 "
+            "characters. A branch or tag name is not a pin — it resolves to "
+            "a different commit tomorrow, and the runner would check out "
+            "whatever it points at then, not the code this job was "
+            "validated against. Pass the output of `git rev-parse HEAD`."
         )
     validate_clone_paths(run_config["clonePaths"])
     run_block = run_config["run"]

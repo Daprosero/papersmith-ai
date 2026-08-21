@@ -3999,6 +3999,167 @@ class JobFolderTests(unittest.TestCase):
             self.assertIn("__import__", run_config["unresolvedImports"][0])
 
 
+class CommitShapeTests(unittest.TestCase):
+    """`jobfolder.validate_run_config()` — a pin must be a commit, not a
+    name.
+
+    Nothing checked `commit`'s shape at all before this class existed, and
+    the consequence was not cosmetic: `--commit main` passed every guard
+    downstream of it. The reachability probe succeeds because `main` IS a
+    ref name the remote can serve; `_staleness_for()`'s `cat-file -e
+    main^{commit}` succeeds because `main` resolves locally; `readiness`
+    compares the recorded string `"main"` against itself forever. The
+    runner then checks out whatever `main` pointed at on the day it ran.
+    A pin that moves was being recorded as if it were immutable, and every
+    later check agreed with it.
+
+    Shape validation lives in `validate_run_config()` rather than beside
+    the CLI flag deliberately: that function is re-run on every `read()`,
+    so a job folder that acquired a name-shaped pin any other way is
+    refused when it is read, not only when it is written.
+    """
+
+    FAKE_SERVICE = "commit-shape-fake-service"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        ADAPTER.register_metadata(
+            cls.FAKE_SERVICE,
+            lambda run_config: ("fake-metadata.json", json.dumps({"ok": True})),
+        )
+
+    def setUp(self) -> None:
+        # Shape validation is what this class exercises; reachability is
+        # `CommitReachabilityTests`' job. Stubbed so this class stays
+        # offline, and so a refusal here can only be the shape one.
+        patcher = unittest.mock.patch.object(
+            JOBFOLDER, "_verify_commit_reachable", return_value=None
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _run_config(self, commit: str) -> dict:
+        return {
+            "schemaVersion": 1,
+            "product": "MIL-CREDA",
+            "service": self.FAKE_SERVICE,
+            "jobName": "search-a",
+            "commit": commit,
+            "repo": {"url": "https://example.invalid/repo.git", "ref": "main"},
+            "clonePaths": ["src/MIL_CREDA_Benchmark"],
+            "run": {"module": "MIL_CREDA_Benchmark.harness", "function": "campaign"},
+            "runnerTemplate": [],
+        }
+
+    def _generate(self, tmp: str, target: Path, *, commit: str) -> Path:
+        bootstrap = Path(tmp) / "fixture_bootstrap.py"
+        invoke = Path(tmp) / "fixture_invoke.py"
+        bootstrap.write_text("# cell-0\n", encoding="utf-8")
+        invoke.write_text("# cell-1\n", encoding="utf-8")
+        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        harness.parent.mkdir(parents=True, exist_ok=True)
+        harness.write_text("def campaign(*a, **k):\n    pass\n", encoding="utf-8")
+        return JOBFOLDER.generate_job(
+            target=target,
+            service=self.FAKE_SERVICE,
+            job_name="search-a",
+            product="MIL-CREDA",
+            commit=commit,
+            repo_url="https://example.invalid/repo.git",
+            repo_ref="main",
+            clone_paths=["src/MIL_CREDA_Benchmark"],
+            run_module="MIL_CREDA_Benchmark.harness",
+            run_function="campaign",
+            bootstrap_asset=bootstrap,
+            invoke_asset=invoke,
+        )
+
+    def test_a_branch_name_is_refused_and_the_message_names_it(self) -> None:
+        with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+            JOBFOLDER.validate_run_config(self._run_config("main"))
+        self.assertIn("main", str(caught.exception))
+
+    def test_a_branch_name_refuses_generation_and_writes_no_job_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                self._generate(tmp, target, commit="main")
+
+            self.assertIn("main", str(caught.exception))
+            self.assertFalse((target / "tools").exists())
+
+    def test_the_refusal_says_a_branch_or_tag_name_is_not_a_pin(self) -> None:
+        with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+            JOBFOLDER.validate_run_config(self._run_config("v1.2.0"))
+        message = str(caught.exception).lower()
+        self.assertIn("branch", message)
+        self.assertIn("tag", message)
+
+    def test_uppercase_hex_is_refused(self) -> None:
+        with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+            JOBFOLDER.validate_run_config(self._run_config("D903D14" + "a" * 33))
+        self.assertIn("D903D14", str(caught.exception))
+
+    def test_an_abbreviated_hex_pin_is_refused(self) -> None:
+        with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+            JOBFOLDER.validate_run_config(self._run_config("d903d14"))
+        self.assertIn("d903d14", str(caught.exception))
+
+    def test_a_lowercase_forty_hex_pin_is_accepted(self) -> None:
+        JOBFOLDER.validate_run_config(self._run_config("a1b2c3d4" + "e" * 32))
+
+    def test_a_lowercase_sixty_four_hex_pin_is_accepted(self) -> None:
+        """sha256 object names are 64 hex; refusing them would make this
+        guard the thing that breaks when git's transition lands.
+        """
+        JOBFOLDER.validate_run_config(self._run_config("f" * 64))
+
+    def test_a_forty_hex_pin_generates_a_job_folder_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+
+            job_dir = self._generate(tmp, target, commit="b" * 40)
+
+            written = json.loads((job_dir / "run-config.json").read_text(encoding="utf-8"))
+            self.assertEqual(written["commit"], "b" * 40)
+
+    def test_a_commit_carrying_shell_metacharacters_is_refused_by_shape(self) -> None:
+        """The companion to `StalenessTests`'s argv-verbatim lock. That one
+        proves `_run_git()` never lets such a value reach a shell; this one
+        proves it can no longer reach a job folder at all. Two layers, and
+        the outer one is not a reason to remove the inner one.
+        """
+        malicious = "a$(touch pwned)`touch pwned`;touch pwned"
+        with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+            JOBFOLDER.validate_run_config(self._run_config(malicious))
+        self.assertIn("touch pwned", str(caught.exception))
+
+    def test_a_non_string_commit_is_refused_rather_than_crashing(self) -> None:
+        with self.assertRaises(JOBFOLDER.JobFolderError):
+            JOBFOLDER.validate_run_config(self._run_config(None))
+
+    def test_reading_a_job_folder_whose_pin_is_a_name_refuses(self) -> None:
+        """`validate_run_config()` runs on every read, so a job folder that
+        acquired a name-shaped pin by hand is refused when it is read.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            job_dir = self._generate(tmp, target, commit="c" * 40)
+            config_path = job_dir / "run-config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["commit"] = "main"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                JOBFOLDER.read(job_dir)
+
+            self.assertIn("main", str(caught.exception))
+
+
 class CommitReachabilityTests(unittest.TestCase):
     """`jobfolder._verify_commit_reachable()` — generation refuses when
     the pinned `--commit` cannot be confirmed reachable on the declared
@@ -5140,6 +5301,17 @@ class StalenessTests(unittest.TestCase):
         execute nothing — `shell=False` plus a list argv means the whole
         malicious string travels as ONE argv element, never evaluated by a
         shell.
+
+        Driven straight at `_staleness_for()` rather than through a
+        generated job folder, because commit-shape validation now refuses
+        such a value at `build_run_config()` and again at every `read()`:
+        it can no longer reach a job folder at all
+        (`CommitShapeTests.test_a_commit_carrying_shell_metacharacters_is_refused_by_shape`
+        holds that half). The claim this test makes is about `_run_git()`,
+        not about the job folder that used to be the only way to reach it,
+        and it is worth keeping precisely because the outer layer is not a
+        reason to stop proving the inner one: `_staleness_for()` is called
+        with a pin from a config this process did not necessarily write.
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
@@ -5147,7 +5319,6 @@ class StalenessTests(unittest.TestCase):
             marker_name = "pwned-marker-jobfolder"
             marker_path = Path.cwd() / marker_name
             malicious = f"a$(touch {marker_name})`touch {marker_name}`;touch {marker_name}"
-            job_dir = self._generate(tmp, target, commit=malicious)
 
             recorded_argv: list = []
             real_run = subprocess.run
@@ -5160,9 +5331,11 @@ class StalenessTests(unittest.TestCase):
                 with unittest.mock.patch.object(
                     JOBFOLDER.subprocess, "run", side_effect=recording_run
                 ):
-                    result = JOBFOLDER.read(job_dir)
+                    staleness = JOBFOLDER._staleness_for(
+                        target.resolve(), malicious, ["src/MIL_CREDA_Benchmark"]
+                    )
 
-                self.assertEqual(result.staleness["status"], "unknown")
+                self.assertEqual(staleness["status"], "unknown")
                 self.assertFalse(marker_path.exists())
                 self.assertTrue(
                     any(malicious in "".join(call) for call in recorded_argv)
