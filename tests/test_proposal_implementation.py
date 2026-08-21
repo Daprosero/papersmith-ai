@@ -100,6 +100,65 @@ def markdown_table_rows(text, header):
     return tables
 
 
+def returned_keys(source: Path, function: str) -> list[str]:
+    """The top-level keys a function's dict returns are built from.
+
+    A command's reported statuses are doctrine's subject and the code's return
+    value, and holding one to the other needs the second read from the code
+    rather than restated beside it. `ast` rather than calling the function,
+    because a command needs a target on disk to run and this needs to be
+    answerable about a command nobody invoked.
+
+    **Every** dict return is read, not the first, and they are required to agree.
+    That second half is not decoration: a function whose early branches return a
+    smaller dict than its late ones makes a key vanish for exactly the callers
+    that took the early branch, and nothing else in this suite would notice.
+
+    Returns whose value is not a dict literal are invisible here — a function
+    that builds its dict in a variable and returns the name reports nothing, and
+    that limitation is stated rather than guessed at.
+    """
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    definition = next(
+        (node for node in ast.walk(tree)
+         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+         and node.name == function), None)
+    if definition is None:
+        raise AssertionError(f"{source.name} defines no {function}")
+
+    # Nested definitions are not descended into: a helper written inside the
+    # function returns for itself, and counting its returns here would report
+    # somebody else's key set as this function's.
+    nested = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+    returns: list[ast.Return] = []
+
+    def visit(node):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, nested):
+                continue
+            if isinstance(child, ast.Return):
+                returns.append(child)
+            visit(child)
+
+    visit(definition)
+
+    key_sets = []
+    for node in returns:
+        if not isinstance(node.value, ast.Dict):
+            continue
+        key_sets.append(sorted(
+            key.value for key in node.value.keys
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)))
+    if not key_sets:
+        raise AssertionError(f"{function} returns no dict literal to read")
+    if any(keys != key_sets[0] for keys in key_sets):
+        raise AssertionError(
+            f"{function}'s dict returns do not agree on their keys, so the key "
+            "set a caller gets depends on which branch answered: "
+            + " vs ".join(str(keys) for keys in key_sets))
+    return key_sets[0]
+
+
 def declared_assets(cell):
     """The kit assets a `Written from` cell names.
 
@@ -8459,3 +8518,103 @@ class DeclarationBlockRosterTests(unittest.TestCase):
         self.assertIn(
             "asked for by the flow, never invented here",
             self.KIT_DECLARATION.read_text(encoding="utf-8"))
+
+
+class VerifyStatusRosterTests(unittest.TestCase):
+    """The Output Contract enumerated eleven statuses and `verify` reports
+    thirteen.
+
+    `coupling` and `lfs` were computed, returned and named in no doctrine at
+    all — not in the contract that lists what the command reports, not in the
+    usage reference a reader follows to read the output. A reader who took the
+    contract at its word would find two keys in the JSON nobody had told them
+    existed, and would have no way to know whether either one gates.
+
+    The repair is not a longer sentence. A prose list cannot be held to a return
+    statement, so the list becomes a table with one row per status, and the
+    table is derived-against rather than proof-read: adding a status to `verify`
+    now fails this suite until its row exists, which is the whole point.
+
+    What the table cannot do: columns two and three are prose and are not
+    asserted. That a row says `never gates` is a claim a human makes; the
+    behavioural partner for `coupling` is the `coupling_state` tests that
+    already exist.
+    """
+
+    STATUS_TABLE_HEADER = "| Status | What it reports | Gates? |"
+
+    #: The envelope, not a status: which command answered, about what, under
+    #: which name. Documenting these as statuses would be documenting the shape
+    #: of the reply rather than anything the command found.
+    IDENTITY_KEYS = frozenset({"command", "target", "name"})
+
+    def reported_statuses(self):
+        return sorted(set(returned_keys(CLI, "cmd_verify")) - self.IDENTITY_KEYS)
+
+    def status_rows(self):
+        tables = markdown_table_rows(
+            SKILL_MD.read_text(encoding="utf-8"), self.STATUS_TABLE_HEADER)
+        self.assertEqual(
+            len(tables), 1,
+            "`verify`'s statuses are stated in no parseable table, so the "
+            "Output Contract cannot be held to what the command returns")
+        return tables[0]
+
+    def documented_statuses(self):
+        return sorted(row[0].strip("`") for row in self.status_rows())
+
+    def test_the_contract_names_every_status_verify_reports(self):
+        reported = self.reported_statuses()
+        documented = self.documented_statuses()
+        self.assertEqual(
+            sorted(set(reported) - set(documented)), [],
+            "`verify` returns these and the Output Contract names them nowhere")
+        self.assertEqual(
+            sorted(set(documented) - set(reported)), [],
+            "the Output Contract names these and `verify` returns no such key")
+
+    def test_coupling_is_documented_as_reported_and_never_gating(self):
+        """The row that had to exist before the roster could be honest.
+
+        The rejected fourth rule was "every reported fact must be branched on or
+        documented", and it is false by construction: `coupling` is computed,
+        reported, and deliberately gates nothing. So the bar is documentation,
+        and the `Gates?` column is what carries the difference.
+        """
+        gating = {row[0].strip("`"): row[2] for row in self.status_rows()}
+        self.assertIn("coupling", gating)
+        self.assertIn("never", gating["coupling"].lower())
+
+    def test_the_usage_reference_tells_a_reader_how_to_read_them(self):
+        """The contract says what is reported; `usage.md` is where somebody
+        goes to find out what to do about it. Two statuses reached the JSON
+        without reaching either."""
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("## Reading `verify`"):]
+        section = section[:section.index("\n## ", 1)]
+        for status in ("coupling", "lfs"):
+            self.assertIn(f"`{status}`", section)
+
+    def test_the_roster_names_a_renamed_key(self):
+        """Reachability, measured rather than asserted.
+
+        This test is red by construction — it was written against a contract
+        naming eleven statuses and a command returning thirteen — so it needs no
+        inversion of the doctrine. What it does still owe is a demonstration
+        that the failure *names* the divergence rather than reporting a bare
+        inequality, which is the difference between a lock somebody can act on
+        and one they have to go looking behind.
+        """
+        scratch = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
+        copy = scratch / "renamed_cli.py"
+        copy.write_text(
+            CLI.read_text(encoding="utf-8").replace(
+                '        "lfs": lfs_state(target),',
+                '        "largeFiles": lfs_state(target),'),
+            encoding="utf-8")
+        renamed = set(returned_keys(copy, "cmd_verify")) - self.IDENTITY_KEYS
+        self.assertEqual(sorted(renamed - set(self.documented_statuses())),
+                         ["largeFiles"])
+        self.assertEqual(sorted(set(self.documented_statuses()) - renamed),
+                         ["lfs"])

@@ -1793,9 +1793,33 @@ have to count rows to learn the answer.
 ## Output Contract
 
 Report: the bound revision, the target path, the migration commit hash (if
-any), the object → module map, the test result, and the verification statuses
-(`structure`, `priorWork`, `agreements`, `search`, `distribution`, `remoteExecution`,
-`prose`, `fidelity`, `report`, `audit`, `validation`) separately. `priorWork`, `agreements` and `prose` are reported whatever they
+any), the object → module map, the test result, and every verification status
+`verify` returns, separately. There are thirteen of them, and a list written
+inline is a list that loses one — two of these were computed, returned and named
+in no doctrine at all, so a reader met them first in the JSON:
+
+| Status | What it reports | Gates? |
+| --- | --- | --- |
+| `structure` | Missing directories, stray modules, unparsable tests, stale references and scaffold gaps | Yes — `drift` is a layout that no longer matches |
+| `priorWork` | That prior work is untouched | Reported whatever it says |
+| `agreements` | The state of `AGREEMENTS.md`, item by item | Yes — never report work done while an item is `open` |
+| `prose` | Historical revision mentions and symbol-shaped configuration keys | Reported whatever it says; these are facts, not verdicts |
+| `search` | Whether a declared search says enough about itself for its chosen value to mean anything | Yes |
+| `distribution` | What a run split across shards declares, and whether the shards that arrived agree | Yes |
+| `remoteExecution` | The state of the remote-execution ledger and its job folders | Yes |
+| `coupling` | Which notebook cells reach into the target's internals instead of its declared surface | **Never** — a static fact, reported so somebody can decide about it |
+| `fidelity` | The revision each module is bound to, provenance, untested invariants, and how the revision was resolved | Yes |
+| `lfs` | Which large files are real content and which are unfetched pointers | Reported whatever it says |
+| `report` | Whether the document a human reads obeys the rules the numbers already do | Yes |
+| `audit` | Findings, their evidence, their remedies, admissibility and compatibility | Yes |
+| `validation` | Smoke test, invariant tests, trivial assertions and every notebook of the product | Yes |
+
+Column one is read by the suite against `verify`'s own return, so a status added
+to the command fails the tests until it has a row here. Columns two and three are
+prose and are not asserted: that a row says a status never gates is a claim a
+human makes, and `coupling`'s is carried by the tests that already exercise it.
+
+`priorWork`, `agreements` and `prose` are reported whatever they
 say: that prior work is untouched, and that nothing was left open, are facts the
 reader is owed, and a check that only speaks up when something is wrong teaches
 nobody what it was watching. Never report the work done while `agreements` is

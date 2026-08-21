@@ -417,6 +417,19 @@ Two independent findings, reported separately:
   in `--revision`; `invariantsWithoutTest` are claims declared in code with no
   test enforcing them. Both need the user's decision before you touch anything.
 
+Two more are reported and neither is a finding, which is exactly why they were
+easy to leave undocumented:
+
+- **`coupling`** — which notebook cells reach into the target's internals instead
+  of going through its declared surface. It **never gates**: it is a static
+  reading, and a cell that reaches inside is sometimes the right thing to have
+  written. Read it before deciding a notebook is portable, and do not treat a
+  non-empty result as a defect to fix on sight.
+- **`lfs`** — which large files under the target are real content and which are
+  still unfetched pointers. A pointer is not a missing file and not a broken
+  one; it is a file nobody has paid to download yet. Read it when a run reports
+  data it cannot open, because that is what it usually is.
+
 Omit `--revision` and `fidelity.status` is `unknown`: the modules' declared
 revisions are still listed, but nothing is compared. Never report an
 implementation as up to date from an `unknown` run.
