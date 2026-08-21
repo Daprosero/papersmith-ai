@@ -1644,7 +1644,14 @@ def main(argv: list[str] | None = None) -> int:
                     "jobFolder": str(destination),
                     "staleness": staleness,
                     "commit": job_folder.run_config["commit"],
-                    "commitSource": "explicit" if args.commit else "default-head",
+                    # Three sources, not two, and the third is why this is
+                    # derived rather than inferred from the flag alone: an
+                    # omitted `--commit` may resolve to HEAD or to the declared
+                    # ref's published tip, and a reader who is told
+                    # `default-head` when the pin is neither has been told the
+                    # wrong thing about which code will run.
+                    "commitSource": JOBFOLDER.pin_source(
+                        args.target, args.commit, job_folder.run_config["commit"]),
                 },
                 sort_keys=True,
             )

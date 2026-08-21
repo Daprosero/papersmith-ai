@@ -768,7 +768,8 @@ def generate_job(
     resolved_target = resolve_target(target)
     destination = resolve_destination(resolved_target, service, job_name)
 
-    commit = _resolve_pin(resolved_target, commit)
+    commit = _resolve_pin(resolved_target, commit, repo_url=repo_url,
+                          repo_ref=repo_ref, clone_paths=clone_paths)
     verify_pin_preconditions(
         target=resolved_target,
         commit=commit,
@@ -1292,7 +1293,36 @@ _PIN_CONDITION_CHECKS = {
 }
 
 
-def _resolve_pin(target: Path, commit: str | None) -> str:
+def pin_source(target: Path | str, explicit: str | None, recorded: str) -> str:
+    """Which of the three ways the pin arrived, named for an operator.
+
+    Lives here rather than in the CLI because answering it needs to know what
+    HEAD is, and this module is the one place that asks git that — the same
+    reason `_resolve_pin` is shared. A second `rev-parse` in the front door
+    would be a second definition of HEAD, and a test forbids exactly that.
+
+    `explicit` when the caller typed it. Otherwise the default resolved either
+    to HEAD or, when HEAD was unpublished and the declared ref's published tip
+    carried the same clone-path content, to that tip — different facts about
+    which code will run, so different words.
+
+    Silent when HEAD cannot be read: this is operator feedback, and a feedback
+    string is never worth failing a generation that already succeeded.
+    """
+    if explicit:
+        return "explicit"
+    try:
+        head = _run_git(["rev-parse", "HEAD"], cwd=Path(target)).stdout.strip()
+    except JobFolderError:
+        return "default"
+    if not head:
+        return "default"
+    return "default-head" if head == recorded else "default-published-tip"
+
+
+def _resolve_pin(target: Path, commit: str | None, *,
+                 repo_url: str | None = None, repo_ref: str | None = None,
+                 clone_paths: Sequence[str] | None = None) -> str:
     """The pin, defaulted to the target's HEAD when the caller gave none.
 
     One implementation, shared by the Python API and the CLI, so the two
@@ -1326,7 +1356,61 @@ def _resolve_pin(target: Path, commit: str | None) -> str:
             f"--commit was omitted and {target} has no HEAD to default to: "
             f"{exc}"
         ) from exc
-    return head
+    published = _published_equivalent(target, head, repo_url, repo_ref, clone_paths)
+    return published or head
+
+
+def _published_equivalent(
+    target: Path, head: str, repo_url: str | None, repo_ref: str | None,
+    clone_paths: Sequence[str] | None,
+) -> str | None:
+    """The declared ref's published tip, when it delivers the same clone-path
+    content as `head` — otherwise `None`, and `head` stands.
+
+    This is not the remote-derived default the caller above refuses. That one
+    pins whatever is newest on the remote and can be OLDER than the caller's
+    code; this one pins a published commit only after proving, by diff, that a
+    runner cloning it receives byte-identical code. When the diff is not empty
+    it returns nothing and the ordinary refusal follows, unchanged.
+
+    Written because the guard refused its own author. Generating a job folder
+    writes under `tools/`; committing that moves HEAD past the remote; the next
+    generation defaults to the unpublished HEAD and condition (3) refuses — over
+    a commit whose entire content is the job folder being regenerated, and which
+    the runner never clones. Measured on a live target: the blocking commit
+    touched nothing but its own job folder, and its diff against the published
+    commit over every declared clone path was empty.
+
+    `ls-remote` asks for one ref by name and transfers no objects, so the cost is
+    a round trip and nothing else. It is also the first reader `repo.ref` has
+    ever had: the field was written into every `run-config.json` and consulted by
+    nothing.
+
+    Silent on every uncertainty. No remote declared, no ref, no clone paths, an
+    unreachable network, a tip that is not an ancestor of `head` — each returns
+    `None` and leaves `head` to face the conditions exactly as before. A default
+    that cannot prove itself does not get to lower a guard.
+    """
+    if not (repo_url and repo_ref and clone_paths):
+        return None
+    try:
+        listed = _run_git(["ls-remote", repo_url, repo_ref], cwd=target).stdout
+    except JobFolderError:
+        return None
+    tip = listed.split("\t", 1)[0].strip() if listed.strip() else ""
+    if len(tip) != 40 or tip == head:
+        return None
+    try:
+        # An ancestor, never merely a commit that happens to differ: pinning a
+        # tip `head` does not descend from would silently ship a different
+        # lineage rather than the same code at an earlier point on this one.
+        _run_git(["merge-base", "--is-ancestor", tip, head], cwd=target)
+        changed = _run_git(
+            ["diff", "--name-only", tip, head, "--", *clone_paths], cwd=target
+        ).stdout.strip()
+    except JobFolderError:
+        return None
+    return None if changed else tip
 
 
 def verify_pin_preconditions(

@@ -8963,6 +8963,100 @@ class AdapterEnvironmentTests(unittest.TestCase):
                       "shipped adapter shells out to")
 
 
+class PublishedPinResolutionTests(unittest.TestCase):
+    """Defaulting to HEAD refuses a pin the runner would never have noticed.
+
+    Generating a job folder writes files under `tools/`, and committing them
+    moves HEAD past what the remote has. The next generation then defaults to
+    that unpublished HEAD and condition (3) refuses — correctly, since a runner
+    cannot fetch it — over a commit that touched nothing the runner clones. The
+    author is told to push a commit whose entire content is the job folder they
+    are in the middle of regenerating.
+
+    Measured on the live target rather than imagined: `03ac154` changed only
+    `tools/kaggle/ceiling-search/`, and `git diff d903d14 03ac154 -- <every
+    clone path>` came back empty. The runner would have received byte-identical
+    code from the published commit.
+
+    So the default narrows: when HEAD is unpublished and the declared ref's
+    published tip carries the same clone-path content, pin the tip. This is not
+    the remote-derived default `_resolve_pin`'s docstring rejects — that one
+    pins whatever is newest on the remote and can be OLDER than the caller's
+    code. This one pins a published commit only after proving it delivers the
+    same code, and refuses exactly as before when it does not.
+    """
+
+    def published_target(self, root: Path):
+        """A bare origin plus a clone holding one published commit."""
+        origin = root / "origin.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+        target = root / "target"
+        subprocess.run(["git", "init", "-q", str(target)], check=True)
+        package = target / "src" / "pkg"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        (package / "harness.py").write_text(
+            "def run():\n    return {}\n", encoding="utf-8")
+        git = ["git", "-C", str(target), "-c", "user.email=t@t", "-c", "user.name=t"]
+        subprocess.run([*git, "add", "-A"], check=True)
+        subprocess.run([*git, "commit", "-q", "-m", "published"], check=True)
+        subprocess.run([*git, "remote", "add", "origin", str(origin)], check=True)
+        subprocess.run([*git, "push", "-q", "origin", "HEAD:refs/heads/main"], check=True)
+        published = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True,
+                                   text=True, check=True).stdout.strip()
+        return origin, target, git, published
+
+    def commit_local_only(self, target: Path, git, relative: str):
+        path = target / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("local\n", encoding="utf-8")
+        subprocess.run([*git, "add", "-A"], check=True)
+        subprocess.run([*git, "commit", "-q", "-m", "local only"], check=True)
+        return subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True,
+                              text=True, check=True).stdout.strip()
+
+    def generate(self, target: Path, origin: Path):
+        return subprocess.run(
+            [sys.executable, str(REMOTE_CLI_SCRIPT), "generate-job",
+             "--target", str(target), "--service", "kaggle",
+             "--job-name", "probe-job", "--product", "Product",
+             "--repo-url", str(origin), "--repo-ref", "main",
+             "--clone-path", "src/pkg",
+             "--run-module", "pkg.harness", "--run-function", "run"],
+            capture_output=True, text=True, cwd=str(target))
+
+    def test_an_unpublished_head_that_changes_no_cloned_code_pins_the_published_tip(self):
+        with tempfile.TemporaryDirectory() as raw:
+            origin, target, git, published = self.published_target(Path(raw))
+            head = self.commit_local_only(target, git, "tools/kaggle/job/run-config.json")
+            self.assertNotEqual(head, published)
+
+            completed = self.generate(target, origin)
+            self.assertEqual(completed.returncode, 0,
+                             "generation refused over a commit the runner never "
+                             "clones: " + (completed.stdout + completed.stderr)[:300])
+            reported = json.loads(completed.stdout)
+            self.assertEqual(reported["commit"], published,
+                             "the pin is an unpublished commit the runner cannot fetch")
+            self.assertNotEqual(reported["commitSource"], "default-head")
+
+    def test_an_unpublished_head_that_does_change_cloned_code_still_refuses(self):
+        """The narrowing must not become permission. When the unpublished commit
+        touches what the runner clones, pinning the published tip would ship
+        older code — which is the failure `_resolve_pin` already refuses to
+        create, and this must not create it by another door.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            origin, target, git, published = self.published_target(Path(raw))
+            self.commit_local_only(target, git, "src/pkg/later.py")
+
+            completed = self.generate(target, origin)
+            self.assertNotEqual(completed.returncode, 0,
+                                "generation pinned around unpublished cloned code")
+            output = completed.stdout + completed.stderr
+            self.assertIn("could not be confirmed reachable", output)
+
+
 class ServiceResolutionTests(unittest.TestCase):
     """The defect `BackendResolutionTests` closed, surviving under a second
     spelling of the same concept.
