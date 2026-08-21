@@ -856,6 +856,27 @@ reporte de `env` es donde está la razón— y no distingue un marcador de un ar
 genuinamente corrupto: los dos se leen como material ausente, que es la lectura
 conservadora.
 
+*Una corrida larga en esta máquina es invisible mientras corre.* `probe` sabe decir
+que hay una submisión afuera cuya respuesta no volvió —es el peldaño `poll-first`— y lo
+puede decir porque `remote-execution` mantiene un registro append-only que la forja lee.
+Consultás en mitad de un envío, te lo dice, y te vas a hacer otra cosa. **Por qué en
+local no pasa lo mismo:** una corrida en tu propia máquina deja lo que el repositorio
+destino haya decidido dejar —un parcial, un checkpoint, un lock— con un nombre que sólo
+ese repositorio conoce, y mirarlo obligaría a cablear el vocabulario de un paper dentro
+de una herramienta que tiene que servir a todos. **Qué pasa entonces:** lanzás una
+búsqueda o una campaña larga, consultás mientras corre, y `verify` lee que el registro
+declarado no existe — reporta el trabajo como no empezado y `probe` te ofrece lanzarlo
+otra vez. **Qué podés hacer mientras tanto:** mirar si el registro que tu declaración
+nombra en `record` ya existe, o si al lado quedó un parcial; dos `ls` contestan la
+pregunta. **Qué no hace:** no borra nada ni pisa la corrida en curso, y si el
+repositorio destino sabe retomar desde su parcial el segundo lanzamiento salta lo ya
+medido. Lo que falta no es la protección: es el aviso, que es justamente para lo que uno
+consulta. **Qué necesitaría para cerrarse:** que el hecho sea **declarado y no
+adivinado** —igual que hoy se declara dónde vive el registro— y que distinga *no hay
+nada corriendo* de *este repositorio no lo declara*, porque un hecho cuyo valor vacío no
+separa esos dos casos no sirve para gatillar nada. Es la misma razón por la que
+`smokeReady` se reporta y nunca decide.
+
 **Deuda de mantenimiento.** *El inventario del `SKILL.md` nombra 5 de los 9 comandos.*
 En su sección de referencias, la línea que describe `implementation_cli.py` lista `env`,
 `plan`, `apply`, `admit` y `verify` — se quedaron afuera `name`, `handoff`, `compose` y
