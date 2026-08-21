@@ -1,3 +1,4 @@
 PyMuPDF>=1.23
 PyYAML>=6.0
 jsonschema>=4.0
+kaggle>=1.7

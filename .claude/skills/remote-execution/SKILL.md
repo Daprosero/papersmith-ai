@@ -628,8 +628,27 @@ by `latest[entrypoint]`. `smoke.jsonl` is a physically separate file (see
 
 ## Environment
 
-**None.** Stdlib-only — no `.venv`, no `setup.sh`, no `requirements.txt`.
-Requires Python 3.10+.
+**This skill's own Python: none.** Stdlib-only — no `.venv`, no `setup.sh`, no
+import of any packaged client. Requires Python 3.10+.
+
+**Its shipped backend is a different question, and saying "none" here hid it.**
+`adapters/kaggle.py` reaches the service by shelling out to the `kaggle`
+command line — deliberately, so no credential ever passes through this
+process — and that command arrives with `pip install kaggle`, listed in the
+repository's own `requirements.txt`. Nothing else in this skill needs it: the
+ledger, the packer, the seam and every command that only reads them run with
+no backend installed at all. But `submit`, `poll`, `fetch` and `smoke` all
+end at that executable, so on a machine without it they cannot start.
+
+Check pip's own note about where it put the script: if that directory is not
+on `PATH`, the executable exists and is still unreachable, which reads exactly
+like not having installed it. A backend that cannot be found refuses by name
+and says this — see `KaggleAdapter._run` — rather than surfacing the operating
+system's own error and leaving a reader to guess.
+
+A second backend brings its own answer to this section: nothing above the
+adapter seam knows a service exists, so nothing above it knows what a service
+needs.
 
 ## Ledger data location
 

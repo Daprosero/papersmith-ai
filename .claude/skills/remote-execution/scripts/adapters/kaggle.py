@@ -478,7 +478,20 @@ class KaggleAdapter(ADAPTER.Adapter):
                 "at a status or a completion this process never confirmed"
             ) from exc
         except OSError as exc:
-            raise KaggleAdapterError(f"could not run {argv[0]}: {exc}") from exc
+            # Naming what failed is not naming what to do. On a machine where
+            # the service CLI was never installed this is the whole question,
+            # and the skill's own `## Environment` section is where a reader
+            # would look — so the sentence lives here, in the one file this
+            # skill lets name a service, rather than in a seam that must not.
+            remedy = ""
+            if argv and argv[0] == self._kaggle_executable:
+                remedy = (
+                    f" — this adapter shells out to the {argv[0]!r} command line, "
+                    "which arrives with `pip install kaggle`; install it and make "
+                    "sure the directory pip reports putting it in is on PATH"
+                )
+            raise KaggleAdapterError(
+                f"could not run {argv[0]}: {exc}{remedy}") from exc
 
     def workers(self) -> list["ADAPTER.Worker"]:
         """Usernames from the sanctioned `list --json` command, each

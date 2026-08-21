@@ -8396,6 +8396,58 @@ class TargetVocabularyLeakTests(unittest.TestCase):
             self._assert_clean(script)
 
 
+class AdapterEnvironmentTests(unittest.TestCase):
+    """This skill's `## Environment` section says `None. Stdlib-only`, and that
+    is true of its Python and false of the one backend it ships: the adapter
+    shells out to a service CLI that arrives through `pip install kaggle` and
+    that nothing in the skill, the README, or any requirements file names.
+
+    So the first person to reach the service on a machine without it meets a
+    bare `FileNotFoundError` from `subprocess`, with no sentence saying what is
+    missing — a dependency whose instruction half was never written, which is
+    exactly the shape this repository has spent the session closing.
+    """
+
+    def test_a_missing_service_cli_says_what_to_install_not_just_what_failed(self) -> None:
+        """`_run` already wraps `OSError` into a refusal that names the binary
+        (`could not run <argv0>: [Errno 2] ...`), which is where this test's
+        first draft went falsely green: the fixture binary was named
+        `...-not-an-installed-binary-...`, so a check for "install" matched the
+        fixture's own name rather than any guidance. The name below carries no
+        such substring, so the assertion can only pass on a real sentence.
+
+        Naming the binary says WHAT failed. It does not say what to do, and on
+        a machine where the service CLI was never installed that is the whole
+        question — the skill's own `## Environment` section says `None`, so a
+        reader has nowhere else to learn it.
+        """
+        absent = "zzz-no-such-service-binary-zzz"
+        adapter = KAGGLE.KaggleAdapter(kaggle_executable=absent)
+        with self.assertRaises(KAGGLE.KaggleAdapterError) as ctx:
+            adapter._run([absent, "--version"])
+        message = str(ctx.exception)
+        self.assertIn(absent, message)
+        self.assertNotIn("install", absent,
+                         "the fixture name must not contain the word this "
+                         "assertion looks for")
+        self.assertIn("install", message.lower(),
+                      "the refusal names what failed and never what to install")
+
+    def test_the_environment_section_states_the_cli_this_adapter_shells_out_to(self) -> None:
+        """Doctrine held to the code that contradicts it. `Environment` claiming
+        `None` is what let the dependency stay unwritten; a reader who follows
+        it installs nothing and cannot submit.
+        """
+        text = (REPOSITORY_ROOT / ".claude" / "skills" / "remote-execution"
+                / "SKILL.md").read_text(encoding="utf-8")
+        section = text.split("## Environment", 1)
+        self.assertEqual(len(section), 2, "no Environment section to hold")
+        body = section[1].split("\n## ", 1)[0]
+        self.assertIn(KAGGLE.KAGGLE_EXECUTABLE, body,
+                      "the Environment section never names the service CLI the "
+                      "shipped adapter shells out to")
+
+
 class ServiceResolutionTests(unittest.TestCase):
     """The defect `BackendResolutionTests` closed, surviving under a second
     spelling of the same concept.
