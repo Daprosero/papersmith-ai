@@ -405,6 +405,8 @@ exactly what stops a launcher from being able to claim it implements anything.
 | `probe` reports `nextStep: "declare-first"` | The benchmark has no `src/<Package>_Benchmark/` at all, or has one whose every block is still at its scaffolded empty value: report before offering a run built on a declaration that has not happened |
 | `probe` reports `nextStep: "poll-first"` | A submission is already out to a remote worker with no result back yet: report before offering another run |
 | `probe` reports `nextStep: "search-first"` | A declared search's record is absent from disk: the run has no chosen configuration yet, report before offering it |
+| `probe` reports a job with `smokeReady: false` | A job folder exists that no rehearsal has ever passed on its pinned commit: read it before offering a campaign, because a rehearsal finds cheaply what the long run would find expensively |
+| `probe` reports a job whose `staleness` is `drift` | The repository moved past the commit that job is pinned to: regenerate the job, or say plainly that the run measures the older code, before offering a campaign |
 | `priorWork` reports `modified` | Say what changed and that correcting prior work belongs to a session of its own |
 | `priorWork` reports `reaching` | The change moves what an arm computes: the record is stale, report before any run |
 | `search` reports `incomplete` | A value is chosen by outcome and the search does not say enough about itself to be an experiment: report before quoting anything it chose |
@@ -1828,6 +1830,59 @@ its kind, the equations it touches, its status with the measured rate, and the
 remedy with the equations the remedy would change. State scope left out. Never
 claim verification passed without the `verify` output and a green suite, and
 never report a finding whose remedy validation did not run.
+
+### What `probe` reports, and why none of the job facts is a gate
+
+`probe` answers `nextStep` and reports thirteen facts around it. The ladder
+that chooses `nextStep` reads most of them; the rest are read by a human
+before deciding what to do with the answer, and a fact nobody was told about
+is a fact nobody reads:
+
+| Fact | What it reports | Gates? |
+| --- | --- | --- |
+| `backend` | Whether the implementation can be trained at all, and what it computes with | Yes — `convert` is the answer when it cannot |
+| `baselines` | The prior implementations there are to compare against | Yes — nothing to compare against outranks everything else on the ladder |
+| `comparable` | Whether that list is non-empty, stated once so nobody re-derives it | Reported whatever it says |
+| `coupling` | Which notebook cells reach into the target's internals instead of its declared surface | **Never** — a static fact, reported so somebody can decide about it |
+| `harness` | Where the benchmark module is, or `null` when the package has none yet | Reported whatever it says |
+| `nextStep` | The one thing to do next | This is the answer, not a fact feeding it |
+| `notebook` | Where the pilot notebook is, or `null` | Reported whatever it says |
+| `remoteExecution` | The ledger's fold, plus the job folders that exist on disk right now | Yes — a submission already out is `poll-first` |
+| `report` | Whether the document a human reads agrees with the run | Yes — a document in drift is `report-first` |
+| `results` | What the last pilot measured, and at what scale | Yes — below scale is `piloted`, at scale is `already-benchmarked` |
+| `search` | Whether a declared search chose anything, and what a full run would cost | Yes — a record absent from disk is `search-first` |
+| `unreachedModules` | Arms declaring mathematics they never call | Yes — that is `wiring-first` |
+| `wiring` | The proposed wiring, present only when the answer is `benchmark` | Reported whatever it says |
+
+Column one is read by the suite against `probe`'s own return, exactly as the
+table above is read against `verify`'s: a fact added to the command fails the
+tests until it has a row here. Columns two and three are prose and are not
+asserted.
+
+**`remoteExecution` folds two sources under one key**, and a reader has to know
+which one they are looking at. The ledger's own fields say what went out to a
+worker and what came back. These three say what exists on disk right now:
+
+| Job fact | What it reports | Gates? |
+| --- | --- | --- |
+| `jobs` | Every generated job folder found under `tools/`, each with its product and its own `staleness` verdict | **Never** — reported beside the answer, read before a campaign |
+| `services` | How many services those folders are spread across, as a count | **Never** — a count, so that no service is ever named here |
+| `smokeReady` | Per job, whether a rehearsal has already passed on the commit that job is pinned to | **Never** — for the reason below |
+
+**Why neither of the two is a gate, and what would change that.** `smokeReady`
+and a job's `staleness` are exactly the two facts somebody wants before paying
+for a long run, and neither one can become a rung. The function computing them
+answers `{"jobs": [], "services": 0, "smokeReady": {}}` for a repository with no
+remote-execution CLI on disk at all — byte-identical to what it answers for a
+repository that has one and has generated no job yet. "Nothing is ready" and
+"none of this applies" are the same three keys, and a rung needs to tell them
+apart. Branching anyway would withhold the benchmark offer from every repository
+that never sends work anywhere, which is most of them.
+
+So both are reported, and the Decision Gates table is what sends a reader to
+them. If the fact ever grew a per-job link to the campaign about to be offered —
+tying an unrehearsed job to *this* run rather than to the repository in general —
+the difference becomes expressible and this position should be revisited.
 
 ## References
 

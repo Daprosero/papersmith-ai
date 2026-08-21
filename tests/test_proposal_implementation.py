@@ -8618,3 +8618,276 @@ class VerifyStatusRosterTests(unittest.TestCase):
                          ["largeFiles"])
         self.assertEqual(sorted(set(self.documented_statuses()) - renamed),
                          ["lfs"])
+
+
+class ProbeReportedFactsRosterTests(unittest.TestCase):
+    """`probe` computes seventeen keys and the doctrine enumerated none of
+    them, so two facts a reader needs before spending machine time — whether
+    a job ever rehearsed, and whether the commit it is pinned to still
+    matches the repository — reached the JSON and no page.
+
+    **Why they are documented and never gating, stated as a position rather
+    than left as an omission.** `remote_execution_jobs_state()` answers
+    `{"jobs": [], "services": 0, "smokeReady": {}}` when the remote-execution
+    CLI is not on disk at all, which is byte-identical to what it answers for
+    a repository that has the CLI and has generated no job. The fact as
+    computed cannot tell "not ready" from "does not apply", and a rung needs
+    exactly that difference: branching on it would suppress a legitimate
+    `benchmark` answer for every repository that never sends work anywhere.
+    So the ladder is left alone and the reader is handed the fact beside the
+    answer.
+
+    **The falsifier, recorded rather than implied.** If
+    `remote_execution_jobs_state()` grew a per-job link to the campaign about
+    to be offered — so that an unrehearsed job could be tied to the run being
+    proposed rather than to the repository in general — the distinction
+    becomes expressible and this position should be revisited. Until then it
+    is not, and the behavioural test below is what makes that a decision
+    somebody can overturn instead of a gap nobody noticed.
+
+    What this roster cannot do is the same limit the `verify` roster carries:
+    columns two and three are prose and are not asserted. That a row says a
+    fact never gates is a claim a human makes; the behavioural test in this
+    class is what carries it for `smokeReady`.
+    """
+
+    FACT_TABLE_HEADER = "| Fact | What it reports | Gates? |"
+    JOB_FACT_TABLE_HEADER = "| Job fact | What it reports | Gates? |"
+    GATES_TABLE_HEADER = "| Situation | Action |"
+
+    #: The envelope, not a fact about the repository: `status` and `kind` are
+    #: string literals in the return, identical for every target that reaches
+    #: it, and `target`/`name` say which repository was asked. Documenting any
+    #: of the four as a reported fact would document the shape of the reply.
+    IDENTITY_KEYS = frozenset({"status", "target", "name", "kind"})
+
+    def reported_facts(self):
+        return sorted(set(returned_keys(CLI, "cmd_probe")) - self.IDENTITY_KEYS)
+
+    def fact_rows(self):
+        tables = markdown_table_rows(
+            SKILL_MD.read_text(encoding="utf-8"), self.FACT_TABLE_HEADER)
+        self.assertEqual(
+            len(tables), 1,
+            "`probe`'s reported facts are stated in no parseable table, so "
+            "the doctrine cannot be held to what the command returns")
+        return tables[0]
+
+    def job_fact_rows(self):
+        tables = markdown_table_rows(
+            SKILL_MD.read_text(encoding="utf-8"), self.JOB_FACT_TABLE_HEADER)
+        self.assertEqual(
+            len(tables), 1,
+            "the job-folder facts folded into `remoteExecution` are stated in "
+            "no parseable sub-table, so nothing holds them to the function "
+            "that computes them")
+        return tables[0]
+
+    def test_the_doctrine_names_every_fact_probe_reports(self):
+        reported = self.reported_facts()
+        documented = sorted(row[0].strip("`") for row in self.fact_rows())
+        self.assertEqual(
+            sorted(set(reported) - set(documented)), [],
+            "`probe` returns these and the doctrine names them nowhere")
+        self.assertEqual(
+            sorted(set(documented) - set(reported)), [],
+            "the doctrine names these and `probe` returns no such key")
+
+    def test_the_remote_execution_row_carries_its_job_facts(self):
+        """`remoteExecution` is two sources folded under one key: the ledger
+        and the filesystem. One row cannot say what a reader is looking at,
+        so the row has a sub-table, and the sub-table is derived from the
+        function that computes the second half.
+        """
+        derived = sorted(returned_keys(CLI, "remote_execution_jobs_state"))
+        documented = sorted(row[0].strip("`") for row in self.job_fact_rows())
+        self.assertEqual(
+            sorted(set(derived) - set(documented)), [],
+            "`remote_execution_jobs_state` returns these and the sub-table "
+            "names them nowhere")
+        self.assertEqual(
+            sorted(set(documented) - set(derived)), [],
+            "the sub-table names these and no such key is computed")
+
+    def test_smoke_ready_is_documented_as_reported_and_never_gating(self):
+        gating = {row[0].strip("`"): row[2] for row in self.job_fact_rows()}
+        self.assertIn("smokeReady", gating)
+        self.assertIn("never", gating["smokeReady"].lower())
+
+    def test_the_decision_gates_send_a_reader_to_both_facts(self):
+        """A fact reported beside an offer to run is only read if something
+        tells the reader to read it. The Decision Gates table is where this
+        skill says what to do about a state, so that is where both belong.
+        """
+        rows = markdown_table_rows(
+            SKILL_MD.read_text(encoding="utf-8"), self.GATES_TABLE_HEADER)
+        self.assertEqual(len(rows), 1, "the Decision Gates table moved")
+        situations = "\n".join(row[0] for row in rows[0])
+        self.assertIn("smokeReady", situations,
+                      "no gate row tells a reader to read a job that never "
+                      "rehearsed before offering a campaign")
+        self.assertIn("staleness", situations,
+                      "no gate row tells a reader to read a job pinned to a "
+                      "commit the repository has moved past")
+
+    def test_the_usage_reference_tells_a_reader_what_to_do_about_them(self):
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("## Reading `probe`"):]
+        section = section[:section.index("\n## ", 1)]
+        for fact in ("smokeReady", "staleness"):
+            self.assertIn(f"`{fact}`", section)
+
+    #: A target the ladder actually offers a run for. Every earlier rung has
+    #: to be satisfied — a baseline to compare against, a trainable backend,
+    #: a declaration, a faithful arm, no submission out, no declared search,
+    #: and a report that agrees with the code — because a fixture answering
+    #: `report-first` would never reach the branch this class is about.
+    DECLARATION = (
+        "__benchmark__ = {\n"
+        "    'revision': 'r01.md',\n"
+        "    'arms': {'floor': {'sections': ['3']}, "
+        "'full': {'sections': ['3']}},\n"
+        "    'report': {'renderers': ['tables.render'],\n"
+        "               'conclusions': ['tables.conclude'],\n"
+        "               'conclusionEntry': 'tables.conclude',\n"
+        "               'objectiveEntry': 'tables.aim',\n"
+        "               'figures': [],\n"
+        "               'dimensions': {'scale': 'higher'},\n"
+        "               'components': {'first': 'the first term'},\n"
+        "               'record': 'summary.json',\n"
+        "               'records': ['Results/summary.json']},\n"
+        "}\n")
+    WIRING = ("from Method.called import called\n"
+              "from Method.never_called import total\n")
+    TABLES = ("def render(record):\n"
+              "    return record\n\n"
+              "def aim(record):\n"
+              "    return {'scale': 0.5}\n\n"
+              "def conclude(record):\n"
+              "    return {'scale': f\"{record['cells'][0]['value']}\"}\n")
+
+    def build_target(self, suffix):
+        """A target the ladder answers `benchmark` for, built for the purpose.
+
+        The interpreter under `.venv/` is a link to the one running this suite
+        rather than a built environment: the live half of the report check only
+        needs an interpreter that can import the target's own package off
+        `src/`, and building a real environment per test would buy nothing and
+        cost seconds.
+        """
+        box = FORGE / "implementations" / f"_smokebox_{suffix}_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "src/Method_Benchmark", "src/Prior",
+                          "Method/Results"):
+            (box / directory).mkdir(parents=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        (box / "src/Method/called.py").write_text(
+            _module("r01.md", ["3"], ["11"], imports="import torch\n"),
+            encoding="utf-8")
+        (box / "src/Method/never_called.py").write_text(
+            _module("r01.md", ["3"], ["12"], imports="import torch\n"),
+            encoding="utf-8")
+        (box / "src/Prior/model.py").write_text("import torch\n", encoding="utf-8")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            self.DECLARATION, encoding="utf-8")
+        (box / "src/Method_Benchmark/wiring.py").write_text(
+            self.WIRING, encoding="utf-8")
+        (box / "src/Method_Benchmark/config.py").write_text(
+            "SCALES = [1, 2, 3]\n", encoding="utf-8")
+        (box / "src/Method_Benchmark/tables.py").write_text(
+            self.TABLES, encoding="utf-8")
+        (box / "Method/Results/summary.json").write_text(
+            json.dumps({"cells": [{"value": 1.0, "first": 0.5}]}),
+            encoding="utf-8")
+
+        bin_dir = box / ".venv" / ("Scripts" if os.name == "nt" else "bin")
+        bin_dir.mkdir(parents=True)
+        os.symlink(sys.executable,
+                   bin_dir / ("python.exe" if os.name == "nt" else "python"))
+
+        git = ["git", "-c", "user.email=forge@example.invalid",
+               "-c", "user.name=forge", "-C", str(box)]
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        subprocess.run(git + ["add", "-A"], check=True, capture_output=True)
+        subprocess.run(git + ["commit", "-qm", "toy"], check=True,
+                       capture_output=True)
+        head = subprocess.run(git + ["rev-parse", "HEAD"], check=True,
+                              capture_output=True, text=True).stdout.strip()
+        return box, head
+
+    def write_job_folder(self, box, commit):
+        """One job folder in the shape `guard_entrypoint()` admits and
+        `generate-job` writes — `<target>/tools/<service>/<job-name>/` around a
+        `run-config.json`. Written to disk rather than faked, because the fact
+        under test is read from disk by the same reader every other command
+        uses, and a hand-shaped dict would prove nothing about what `probe`
+        finds.
+        """
+        job_dir = box / "tools" / "service" / "job"
+        job_dir.mkdir(parents=True)
+        (job_dir / "run-config.json").write_text(json.dumps({
+            "schemaVersion": 1,
+            "product": "Method",
+            "service": "service",
+            "jobName": "job",
+            "commit": commit,
+            "repo": {"url": "https://example.invalid/toy.git", "ref": "main"},
+            "clonePaths": ["src"],
+            "run": {"module": "Method_Benchmark.wiring", "function": "main",
+                    "kwargs": {}},
+            "runnerTemplate": {},
+        }), encoding="utf-8")
+
+    def probe(self, box):
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "probe", "--target", str(box),
+             "--name", "Method", "--revision", "r01.md"],
+            capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(proc.stdout or "{}")
+
+    def test_the_fixture_reaches_the_run_offer_before_any_job_folder_exists(self):
+        """The pole. Without it every assertion below could be passing because
+        the ladder never got near the offer, and nothing would say so."""
+        box, _ = self.build_target("pole")
+        probe = self.probe(box)
+        self.assertEqual(probe["report"]["status"], "ok")
+        self.assertEqual(probe["nextStep"], "benchmark")
+
+    def test_a_job_that_never_rehearsed_still_reaches_the_benchmark_offer(self):
+        """The position, made behavioural.
+
+        A sentence saying the ladder does not branch on `smokeReady` is a
+        sentence anybody can contradict with four lines of code and nothing
+        going red. This is the test such a change has to break.
+        """
+        box, head = self.build_target("ready")
+        self.write_job_folder(box, head)
+        probe = self.probe(box)
+        self.assertEqual(
+            probe["remoteExecution"]["smokeReady"], {"job": False},
+            "the fixture stopped producing an unrehearsed job, so this test "
+            "is no longer about anything")
+        self.assertEqual(probe["nextStep"], "benchmark")
+
+    def test_a_job_pinned_to_a_commit_that_is_not_in_the_history_still_offers_the_run(self):
+        """The other half of the same position. A pin nothing in the history
+        matches reports `unknown` — the honest verdict, and still not a rung.
+        """
+        box, _ = self.build_target("stale")
+        self.write_job_folder(box, "0" * 40)
+        probe = self.probe(box)
+        self.assertEqual(
+            [job["staleness"]["status"]
+             for job in probe["remoteExecution"]["jobs"]],
+            ["unknown"])
+        self.assertEqual(probe["nextStep"], "benchmark")
+
+    def test_the_toy_targets_left_nothing_behind(self):
+        box, head = self.build_target("cleanup")
+        self.write_job_folder(box, head)
+        self.probe(box)
+        self.doCleanups()
+        leftover = list((FORGE / "implementations").glob("_smokebox_*"))
+        self.assertEqual(leftover, [], leftover)

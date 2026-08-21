@@ -474,6 +474,35 @@ All three are reported and none of them refuses: `verify` reads, and a stray fil
 in a directory must not stop the whole check. The filter applies to discovery
 only — an explicit `--revision` is read verbatim, whether or not it is marked.
 
+## Reading `probe`
+
+`probe` looks and reports: it runs nothing, submits nothing, and never changes
+the exit status. `nextStep` is the answer; everything else is what a human needs
+in order to decide what to do about the answer.
+
+Two facts about remote execution are reported beside that answer and gate
+nothing, which is exactly what makes them easy to walk past:
+
+- **`smokeReady`** — per job folder, whether a rehearsal has already passed on
+  the commit that job is pinned to. `false` does not mean the job is broken; it
+  means either that nothing has been rehearsed yet, or that the rehearsal on
+  record was against a different commit. Read it before offering a long run: a
+  rehearsal finds cheaply what the long run would find expensively. Recording one
+  belongs to the `remote-execution` skill's own CLI — `probe` never submits.
+- **`staleness`** — per job folder, inside `remoteExecution.jobs`. `fresh` means
+  the pinned commit still matches the declared clone paths; `drift` means the
+  repository has moved and the job would clone older code than the one on disk;
+  `unknown` means the question could not be answered at all, because there is no
+  git history or the pinned commit is not in it. `unreadable` is a fourth verdict
+  and a different problem: that job's own `run-config.json` could not be parsed,
+  so staleness was never attempted and a blank cell would have read as "nothing
+  wrong".
+
+Neither one is a rung on the ladder, and that is a position rather than an
+oversight: the fact as computed cannot tell a repository that is not ready apart
+from one that never sends work anywhere. `SKILL.md`'s Output Contract carries the
+argument and states what would change it.
+
 ## `handoff` — back to the deliberation, sized by reach
 
 ```bash
