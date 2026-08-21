@@ -309,6 +309,68 @@ def _job_folder_staleness(resolved_entrypoint: Path) -> dict | None:
         return None
 
 
+def _gate_job_folder_pin(resolved_entrypoint: Path) -> None:
+    """Put a job-folder submission's own declared pin through the same
+    three conditions `generate-job` enforces — BEFORE the digest walk, the
+    plan, `adapter.submit()` and `LEDGER.append()`.
+
+    `cmd_submit` used to compute a staleness verdict and place it in its
+    return value, after the ledger event had already been appended. By the
+    time an operator could read it, the adapter had accepted the job, the
+    quota was gone and the ledger recorded a submission. That is not a
+    gate; it is a receipt with a warning printed on it. Refusing has to
+    happen while refusing still costs nothing, which is why this sits
+    immediately after `product_for()` and before anything is computed,
+    uploaded or written.
+
+    It calls `jobfolder.verify_pin_preconditions()` — the same one
+    function, in the same `PIN_CONDITIONS` order — with the job folder's
+    OWN declared pin, clone paths and remote, read back through
+    `JOBFOLDER.read()`. Not the caller's arguments: what is being
+    submitted is the job folder, and the job folder is what promised a
+    runner a commit.
+
+    **The discriminator is `run-config.json`'s presence, deliberately not
+    `_job_folder_staleness()`.** That helper returns `None` on TWO paths,
+    not one: the legacy shape, and a `run-config.json` `read()` cannot make
+    sense of. Reusing it here would let a job folder skip all three
+    conditions by being unreadable, which is the worse half of the defect
+    class this whole change is about. So a `JobFolderError` from `read()`
+    is NOT swallowed — the same restraint `cmd_smoke_record()` already
+    applies, and for the same reason. A malformed job folder refusing at
+    submit is a new refusal path, and it is the intended one.
+
+    A legacy entrypoint skipping all three conditions is not a finding and
+    is left exactly as it was: it has no declared pin, no declared clone
+    paths and no declared remote, so there is nothing to check, and unlike
+    a job folder it never promised a runner a commit.
+
+    A rehearsal (`submit --smoke`) meets this gate too. A rehearsal dials
+    out, uploads a staged copy and spends quota; exempting it would make
+    the gate optional in the workflow that runs most often, and it would
+    break the very binding `cmd_readiness` depends on — that the rehearsed
+    bytes and the submitted bytes are the same bytes.
+
+    Raises `JobFolderError`, unwrapped, so the message reaching stderr is
+    byte-identical to the one generation would have printed.
+    """
+    job_dir = resolved_entrypoint.parent
+    if not (job_dir / RUN_CONFIG_FILENAME).is_file():
+        return
+
+    job_folder = JOBFOLDER.read(job_dir)
+    run_config = job_folder.run_config
+    repo = run_config["repo"]
+    JOBFOLDER.verify_pin_preconditions(
+        target=_target_for_job_dir(job_folder.path),
+        commit=run_config["commit"],
+        clone_paths=run_config["clonePaths"],
+        repo_url=repo["url"],
+        repo_ref=repo["ref"],
+        decision="submission",
+    )
+
+
 def guard_entrypoint(target: Path, entrypoint: Path) -> Path:
     """Refuse anything that is not a notebook living under one of exactly
     two admitted shapes.
@@ -471,7 +533,17 @@ def cmd_submit(
     particular, which `product_for()` itself refuses to ever return) and
     before the adapter is given any chance to run — this is what keeps a
     job-folder submission with no resolvable product a clean refusal rather
-    than a silently mis-recorded one. `source_digest()` is called FRESH
+    than a silently mis-recorded one. `_gate_job_folder_pin()` runs
+    immediately after it and before everything else, so a job folder whose
+    pin fails any of the three conditions is refused while refusing still
+    costs nothing: no digest walk, no plan, no adapter call, no ledger
+    line. This function used to compute a staleness verdict and place it
+    in its return value AFTER `LEDGER.append()`, which reported on a
+    submission that had already happened — a receipt with a warning
+    printed on it rather than a gate. That verdict is still in the return
+    payload for callers that read it; it is simply no longer the only
+    thing standing between a stale pin and spent quota. `source_digest()`
+    is called FRESH
     here, at submit time, and its result is never reused from a notebook's
     own post-hoc marker or from any earlier call in this process — that
     freshness is the one thing that later lets the ledger's fold tell a
@@ -495,6 +567,7 @@ def cmd_submit(
 
     resolved_entrypoint = guard_entrypoint(target, Path(entrypoint))
     resolved_product = product_for(target, resolved_entrypoint, explicit=product)
+    _gate_job_folder_pin(resolved_entrypoint)
     relative_entrypoint = _relative_entrypoint(
         target, resolved_entrypoint, resolved_product
     )
@@ -1395,7 +1468,7 @@ def main(argv: list[str] | None = None) -> int:
                 smoke=args.smoke,
             )
         except (RemoteCLIError, PACKER.PackerError, LEDGER.LedgerError,
-                ADAPTER.AdapterError) as exc:
+                ADAPTER.AdapterError, JOBFOLDER.JobFolderError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 

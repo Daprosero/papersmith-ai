@@ -1067,6 +1067,39 @@ def _make_job_folder(target: Path, service: str, job_name: str) -> Path:
     return job_dir
 
 
+def _write_job_folder_run_config(job_dir: Path, **overrides: object) -> dict:
+    """A COMPLETE `run-config.json` beside a job-folder-shaped fixture.
+
+    Several `cmd_submit` fixtures used to write `{"product": "..."}` alone
+    — enough for `product_for()`, which tolerates an incomplete config on
+    purpose, and nowhere near what a real generated job folder contains.
+    Once `submit` gates on the job folder's own declared pin, an
+    incomplete config stops being a shortcut and becomes a malformed job
+    folder, which now refuses. Completing the fixture is a fidelity
+    repair: it makes these tests describe the artifact `generate-job`
+    actually writes. Their own subjects — product resolution, ledger
+    placement, smoke isolation — are untouched, and `product_for()`'s
+    tolerance of an incomplete config keeps its own coverage in
+    `ProductForTests`, which does not submit.
+    """
+    run_config = {
+        "schemaVersion": 1,
+        "product": "MIL-CREDA",
+        "service": "kaggle",
+        "jobName": job_dir.name,
+        "commit": "a" * 40,
+        "repo": {"url": "https://example.invalid/repo.git", "ref": "main"},
+        "clonePaths": ["src/MIL_CREDA_Benchmark"],
+        "run": {"module": "MIL_CREDA_Benchmark.harness", "function": "campaign"},
+        "runnerTemplate": [],
+    }
+    run_config.update(overrides)
+    (job_dir / "run-config.json").write_text(
+        json.dumps(run_config), encoding="utf-8"
+    )
+    return run_config
+
+
 class PathGuardTests(unittest.TestCase):
     """`remote_cli.guard_entrypoint()` — the sole holder of file-kind policy.
 
@@ -1410,6 +1443,20 @@ class SubmitTests(unittest.TestCase):
     class; `adapters/kaggle.py` does not exist yet (a later task).
     """
 
+    def setUp(self) -> None:
+        # `submit` now gates a job-folder submission on the three pin
+        # conditions. This class's subject is the submit path itself —
+        # product resolution, ledger placement, capacity — and its
+        # fixtures are plain directories rather than git repositories, so
+        # the whole-precondition seam is stubbed to keep the class offline
+        # and deterministic. `SubmitPinGateTests` drives the gate against
+        # real git repositories.
+        patcher = unittest.mock.patch.object(
+            JOBFOLDER, "verify_pin_preconditions", return_value=None
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_submit_appends_exactly_one_submitted_event_with_a_fresh_digest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
@@ -1550,9 +1597,7 @@ class SubmitTests(unittest.TestCase):
             job_dir = _make_job_folder(target, "kaggle", "search-a")
             notebook = job_dir / "runner.ipynb"
             notebook.write_text("{}", encoding="utf-8")
-            (job_dir / "run-config.json").write_text(
-                json.dumps({"product": "MIL-CREDA"}), encoding="utf-8"
-            )
+            _write_job_folder_run_config(job_dir)
 
             original_cwd = Path.cwd()
             os.chdir(tmp)
@@ -1598,9 +1643,7 @@ class SubmitTests(unittest.TestCase):
             job_dir = _make_job_folder(target, "kaggle", "search-a")
             notebook = job_dir / "runner.ipynb"
             notebook.write_text("{}", encoding="utf-8")
-            (job_dir / "run-config.json").write_text(
-                json.dumps({"product": "MIL-CREDA"}), encoding="utf-8"
-            )
+            _write_job_folder_run_config(job_dir)
 
             digest_calls: list[tuple[Path, str]] = []
 
@@ -1651,9 +1694,7 @@ class SubmitTests(unittest.TestCase):
             job_dir = _make_job_folder(target, "kaggle", "search-a")
             notebook = job_dir / "runner.ipynb"
             notebook.write_text("{}", encoding="utf-8")
-            (job_dir / "run-config.json").write_text(
-                json.dumps({"product": "MIL-CREDA"}), encoding="utf-8"
-            )
+            _write_job_folder_run_config(job_dir)
             # "MIL-CREDA" is deliberately never created under target: if the
             # declared value were used instead of the override, product_for
             # would refuse for a not-existing-directory reason, not silently
@@ -6117,6 +6158,391 @@ class StalenessTests(unittest.TestCase):
             self.assertNotIn(leaked, source, leaked)
 
 
+class SubmitPinGateTests(unittest.TestCase):
+    """`remote_cli._gate_job_folder_pin()` — `submit` refuses before quota
+    is spent, instead of reporting after it.
+
+    `cmd_submit` computed a staleness verdict and put it in its RETURN
+    VALUE, after `LEDGER.append(event)` had already run. By the time the
+    operator could read it, the adapter had accepted the job, the quota was
+    gone and the ledger said a submission had happened. It reported on a
+    submission that had already occurred, which is not a gate — it is a
+    receipt with a warning printed on it.
+
+    The gate runs the same three conditions, from the same one function
+    `generate-job` calls, against the job folder's OWN declared pin, clone
+    paths and remote. It sits after `product_for()` and before the digest
+    walk, the plan, `adapter.submit()` and `LEDGER.append()`, so a refusal
+    costs nothing and leaves no trace.
+
+    It discriminates on `run-config.json`'s PRESENCE, deliberately not on
+    `_job_folder_staleness()`, which returns `None` on two different paths:
+    the legacy shape AND a `run-config.json` it cannot read. Reusing it
+    would let a job folder skip all three conditions by being unreadable,
+    which is the worse half of this change's own defect class. A legacy
+    entrypoint skipping the conditions is not a finding — it has no
+    declared pin, no declared clone paths and no declared remote, so there
+    is nothing to check, and it never promised a runner a commit.
+    """
+
+    FAKE_SERVICE = "submit-gate-fake-service"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        ADAPTER.register_metadata(
+            cls.FAKE_SERVICE,
+            lambda run_config: ("fake-metadata.json", json.dumps({"ok": True})),
+        )
+
+    def _git(self, cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "submit-gate-tests"
+        env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "submit-gate-tests@example.invalid"
+        return subprocess.run(
+            ["git", *args], cwd=cwd, env=env, capture_output=True, text=True, check=check
+        )
+
+    def _init_repo(self, target: Path) -> str:
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "MIL-CREDA").mkdir(parents=True, exist_ok=True)
+        (target / "MIL-CREDA" / ".keep").write_text("", encoding="utf-8")
+        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        harness.parent.mkdir(parents=True, exist_ok=True)
+        harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
+        self._git(target, "init", "-q")
+        self._git(target, "add", "-A")
+        self._git(target, "commit", "-q", "-m", "initial")
+        return self._git(target, "rev-parse", "HEAD").stdout.strip()
+
+    def _commit_all(self, target: Path, message: str) -> str:
+        self._git(target, "add", "-A")
+        self._git(target, "commit", "-q", "-m", message)
+        return self._git(target, "rev-parse", "HEAD").stdout.strip()
+
+    def _generate(self, tmp: str, target: Path, *, commit: str) -> Path:
+        bootstrap = Path(tmp) / "fixture_bootstrap.py"
+        invoke = Path(tmp) / "fixture_invoke.py"
+        bootstrap.write_text("# cell-0\n", encoding="utf-8")
+        invoke.write_text("# cell-1\n", encoding="utf-8")
+        with unittest.mock.patch.object(
+            JOBFOLDER, "verify_pin_preconditions", return_value=None
+        ):
+            return JOBFOLDER.generate_job(
+                target=target,
+                service=self.FAKE_SERVICE,
+                job_name="search-a",
+                product="MIL-CREDA",
+                commit=commit,
+                repo_url="https://example.invalid/repo.git",
+                repo_ref="main",
+                clone_paths=["src/MIL_CREDA_Benchmark"],
+                run_module="MIL_CREDA_Benchmark.harness",
+                run_function="campaign",
+                bootstrap_asset=bootstrap,
+                invoke_asset=invoke,
+            )
+
+    class _SpyAdapter(FakeAdapter):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.submitted: list = []
+
+        def submit(self, job):
+            self.submitted.append(job)
+            return super().submit(job)
+
+    def _submit(self, target: Path, notebook: Path, adapter) -> dict:
+        return REMOTE_CLI.cmd_submit(
+            target=target,
+            entrypoint=notebook,
+            worker="w1",
+            requested=1,
+            adapter=adapter,
+            source_digest=lambda t, n: "d" * 64,
+        )
+
+    def _ledger_path(self, target: Path) -> Path:
+        return target.resolve() / "MIL-CREDA" / ".remote-execution" / "ledger.jsonl"
+
+    # -- the three conditions, at submit time ----------------------------
+
+    def test_a_dirty_tree_refuses_with_no_adapter_call_and_no_ledger_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=head)
+            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+                "def search():\n    pass\n", encoding="utf-8"
+            )
+            adapter = self._SpyAdapter(worker_id="w1", capacity=2)
+
+            with unittest.mock.patch.object(
+                JOBFOLDER, "_verify_commit_reachable", return_value=None
+            ):
+                with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                    self._submit(target, job_dir / "runner.ipynb", adapter)
+
+            self.assertIn("run_search.py", str(caught.exception))
+            self.assertEqual(adapter.submitted, [], "the adapter was called anyway")
+            self.assertFalse(
+                self._ledger_path(target).exists(), "a ledger line was appended anyway"
+            )
+
+    def test_a_drifted_pin_refuses_before_the_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=head)
+            harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+            harness.write_text("def campaign():\n    return 2\n", encoding="utf-8")
+            self._commit_all(target, "move the harness on")
+            adapter = self._SpyAdapter(worker_id="w1", capacity=2)
+
+            with unittest.mock.patch.object(
+                JOBFOLDER, "_verify_commit_reachable", return_value=None
+            ):
+                with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                    self._submit(target, job_dir / "runner.ipynb", adapter)
+
+            self.assertIn(head, str(caught.exception))
+            self.assertEqual(adapter.submitted, [])
+            self.assertFalse(self._ledger_path(target).exists())
+
+    def test_an_unpushed_pin_refuses_naming_the_commit_the_remote_and_the_push(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=head)
+            adapter = self._SpyAdapter(worker_id="w1", capacity=2)
+
+            def fake_run_git(args, *, cwd, timeout=None):
+                if args and args[0] == "fetch":
+                    raise JOBFOLDER.JobFolderError(
+                        "git fetch --dry-run exited 128: fatal: remote error: "
+                        "upload-pack: not our ref"
+                    )
+                return REAL_RUN_GIT(args, cwd=cwd, timeout=timeout)
+
+            REAL_RUN_GIT = JOBFOLDER._run_git
+            with unittest.mock.patch.object(
+                JOBFOLDER, "_run_git", side_effect=fake_run_git
+            ):
+                with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                    self._submit(target, job_dir / "runner.ipynb", adapter)
+
+            message = str(caught.exception)
+            self.assertIn(head, message)
+            self.assertIn("https://example.invalid/repo.git", message)
+            self.assertIn("push", message)
+            self.assertEqual(adapter.submitted, [])
+            self.assertFalse(self._ledger_path(target).exists())
+
+    def test_the_refusal_says_submission_not_generation(self) -> None:
+        """One implementation, two callers, and exactly one word different
+        between them — the word that says which decision was refused.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=head)
+            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+                "x = 1\n", encoding="utf-8"
+            )
+
+            with unittest.mock.patch.object(
+                JOBFOLDER, "_verify_commit_reachable", return_value=None
+            ):
+                with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                    self._submit(
+                        target,
+                        job_dir / "runner.ipynb",
+                        self._SpyAdapter(worker_id="w1", capacity=2),
+                    )
+
+            self.assertIn("submission refuses", str(caught.exception))
+
+    def test_a_clean_job_folder_still_submits_and_keeps_staleness_in_the_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=head)
+            adapter = self._SpyAdapter(worker_id="w1", capacity=2)
+
+            with unittest.mock.patch.object(
+                JOBFOLDER, "_verify_commit_reachable", return_value=None
+            ):
+                result = self._submit(target, job_dir / "runner.ipynb", adapter)
+
+            self.assertEqual(len(adapter.submitted), 1)
+            self.assertEqual(result["staleness"]["status"], "fresh")
+            self.assertTrue(self._ledger_path(target).exists())
+
+    def test_the_gate_runs_before_the_digest_walk(self) -> None:
+        """Refusing must cost nothing. The digest walk reads the whole
+        product tree; running it first would make every refusal pay for a
+        submission that is not going to happen.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=head)
+            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+                "x = 1\n", encoding="utf-8"
+            )
+            digest_calls = []
+
+            with unittest.mock.patch.object(
+                JOBFOLDER, "_verify_commit_reachable", return_value=None
+            ):
+                with self.assertRaises(JOBFOLDER.JobFolderError):
+                    REMOTE_CLI.cmd_submit(
+                        target=target,
+                        entrypoint=job_dir / "runner.ipynb",
+                        worker="w1",
+                        requested=1,
+                        adapter=self._SpyAdapter(worker_id="w1", capacity=2),
+                        source_digest=lambda t, n: digest_calls.append((t, n)) or "d" * 64,
+                    )
+
+            self.assertEqual(digest_calls, [], "the digest walk ran before the gate")
+
+    def test_a_smoke_rehearsal_meets_the_same_gate(self) -> None:
+        """A rehearsal is a real submission: it dials out, uploads and
+        spends quota. Exempting it would make the gate optional in
+        exactly the workflow that runs most often.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=head)
+            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+                "x = 1\n", encoding="utf-8"
+            )
+            adapter = self._SpyAdapter(worker_id="w1", capacity=2)
+
+            with unittest.mock.patch.object(
+                JOBFOLDER, "_verify_commit_reachable", return_value=None
+            ):
+                with self.assertRaises(JOBFOLDER.JobFolderError):
+                    REMOTE_CLI.cmd_submit(
+                        target=target,
+                        entrypoint=job_dir / "runner.ipynb",
+                        worker="w1",
+                        requested=1,
+                        adapter=adapter,
+                        source_digest=lambda t, n: "d" * 64,
+                        smoke=True,
+                    )
+
+            self.assertEqual(adapter.submitted, [])
+
+    # -- the discriminator ------------------------------------------------
+
+    def test_a_legacy_entrypoint_with_no_run_config_is_unaffected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            self._init_repo(target)
+            notebooks = target / "MIL-CREDA" / "Notebooks"
+            notebooks.mkdir(parents=True)
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+            # Deliberately dirty, and deliberately not a job folder: there
+            # is no declared pin, no declared clone paths and no declared
+            # remote here, so there is nothing for the gate to check.
+            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+                "x = 1\n", encoding="utf-8"
+            )
+            adapter = self._SpyAdapter(worker_id="w1", capacity=2)
+
+            result = self._submit(target, notebook, adapter)
+
+            self.assertEqual(len(adapter.submitted), 1)
+            self.assertIsNone(result["staleness"])
+
+    def test_a_malformed_run_config_refuses_rather_than_skipping_every_condition(self) -> None:
+        """`_job_folder_staleness()` returns `None` for BOTH the legacy
+        shape and an unreadable `run-config.json`. Discriminating on that
+        return value would let a job folder skip all three conditions by
+        being unreadable — a new refusal path this change adds
+        deliberately, and the one place it is stricter than the spec's own
+        wording. Precedent: `cmd_smoke_record` already refuses to swallow
+        a `JobFolderError` for the same reason.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=head)
+            (job_dir / "run-config.json").write_text(
+                json.dumps({"product": "MIL-CREDA"}), encoding="utf-8"
+            )
+            adapter = self._SpyAdapter(worker_id="w1", capacity=2)
+
+            with self.assertRaises(JOBFOLDER.JobFolderError):
+                self._submit(target, job_dir / "runner.ipynb", adapter)
+
+            self.assertEqual(adapter.submitted, [])
+            self.assertFalse(self._ledger_path(target).exists())
+
+    def test_the_gate_does_not_reuse_the_staleness_helper_as_its_discriminator(self) -> None:
+        """A source-level lock on the finding above: `_job_folder_staleness`
+        is tolerant by design and must not become the gate's fork.
+        """
+        tree = ast.parse(REMOTE_CLI_SCRIPT.read_text(encoding="utf-8"))
+        gate = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_gate_job_folder_pin"
+        )
+        called = {
+            node.func.id
+            for node in ast.walk(gate)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        # Read off the code, never off the prose: the docstring names the
+        # tolerant helper precisely in order to say why it is not used.
+        self.assertNotIn("_job_folder_staleness", called)
+        names = {
+            node.id for node in ast.walk(gate) if isinstance(node, ast.Name)
+        }
+        self.assertIn("RUN_CONFIG_FILENAME", names)
+
+    def test_a_job_folder_refusal_reaches_stderr_through_the_cli(self) -> None:
+        """`submit`'s CLI except-tuple has to carry `JobFolderError`
+        unwrapped, so the message an operator sees at submit is
+        byte-identical to the one generation would have printed.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=head)
+            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+                "x = 1\n", encoding="utf-8"
+            )
+            stderr = io.StringIO()
+
+            with unittest.mock.patch.object(
+                JOBFOLDER, "_verify_commit_reachable", return_value=None
+            ), unittest.mock.patch.object(
+                REMOTE_CLI, "_load_backend_module", return_value=None
+            ), unittest.mock.patch.object(
+                REMOTE_CLI.ADAPTER, "resolve", return_value=FakeAdapter
+            ), unittest.mock.patch.object(
+                REMOTE_CLI, "_construct_adapter",
+                return_value=FakeAdapter(worker_id="w1", capacity=2),
+            ), contextlib.redirect_stderr(stderr):
+                exit_code = REMOTE_CLI.main([
+                    "submit",
+                    "--target", str(target),
+                    "--entrypoint", str(job_dir / "runner.ipynb"),
+                    "--worker", "w1",
+                    "--requested", "1",
+                    "--backend", "fake",
+                ])
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("run_search.py", stderr.getvalue())
+            self.assertIn("submission refuses", stderr.getvalue())
+
+
 class StalenessRoutingTests(unittest.TestCase):
     """Every existing job-folder-touching command in `remote_cli.py` routes
     staleness reporting through `jobfolder.read()` — design #744 section 4:
@@ -6238,16 +6664,29 @@ class StalenessRoutingTests(unittest.TestCase):
             self.assertIsNotNone(result["staleness"])
             self.assertEqual(result["staleness"]["status"], "fresh")
 
-    def test_cmd_submit_tolerates_an_incomplete_run_config_and_reports_no_staleness(
+    def test_cmd_submit_refuses_an_incomplete_run_config_rather_than_tolerating_it(
         self,
     ) -> None:
-        """A pre-existing `SubmitTests` fixture shape (a minimal
-        `run-config.json` declaring only `product`) must keep behaving
-        exactly as it did before this task: `cmd_submit` still succeeds,
-        it just reports `staleness: None` rather than raising, because
-        `jobfolder.read()` cannot validate a run-config this incomplete.
-        Routing through `read()` must never make an already-tolerant
-        command stricter.
+        """Corrected in place, because the behaviour it asserted is the
+        behaviour this change removes.
+
+        It used to require that a job folder with a minimal
+        `run-config.json` (declaring only `product`) still submitted, and
+        merely reported `staleness: None`, on the reasoning that routing
+        staleness REPORTING through `read()` must not make an
+        already-tolerant command stricter. That reasoning was correct for
+        reporting and is wrong for gating. `_job_folder_staleness()`
+        returns `None` on two paths — the legacy shape and an unreadable
+        config — so a gate that inherited that tolerance would let a job
+        folder skip all three pin conditions by being malformed, which is
+        the worse half of the defect this change exists to close.
+
+        This is a new refusal path the spec does not name, adopted
+        deliberately. The tolerance it replaces still exists exactly where
+        it belongs: `_job_folder_staleness()` is unchanged, and
+        `product_for()`'s own tolerance of an incomplete config keeps its
+        coverage in `ProductForTests`. Precedent for refusing rather than
+        swallowing at a decision point: `cmd_smoke_record()`.
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
@@ -6260,17 +6699,37 @@ class StalenessRoutingTests(unittest.TestCase):
             )
 
             adapter = FakeAdapter(worker_id="w1", capacity=2)
-            result = REMOTE_CLI.cmd_submit(
-                target=target,
-                entrypoint=notebook,
-                worker="w1",
-                requested=1,
-                adapter=adapter,
-                source_digest=lambda t, n: "d" * 64,
+            with self.assertRaises(JOBFOLDER.JobFolderError):
+                REMOTE_CLI.cmd_submit(
+                    target=target,
+                    entrypoint=notebook,
+                    worker="w1",
+                    requested=1,
+                    adapter=adapter,
+                    source_digest=lambda t, n: "d" * 64,
+                )
+
+            self.assertFalse(
+                (target.resolve() / "MIL-CREDA" / ".remote-execution").exists()
             )
 
-            self.assertIsNone(result["staleness"])
-            self.assertTrue(Path(result["ledgerPath"]).exists())
+    def test_the_staleness_helper_itself_stays_tolerant(self) -> None:
+        """The tolerance was not deleted, only removed from the gate's
+        path. `_job_folder_staleness()` still falls through cleanly for an
+        unreadable config, because REPORTING staleness beside whatever
+        else a command reports must not become the thing that breaks it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            (target / "MIL-CREDA").mkdir(parents=True)
+            job_dir = _make_job_folder(target, "kaggle", "search-a")
+            notebook = job_dir / "runner.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+            (job_dir / "run-config.json").write_text(
+                json.dumps({"product": "MIL-CREDA"}), encoding="utf-8"
+            )
+
+            self.assertIsNone(REMOTE_CLI._job_folder_staleness(notebook))
 
     def test_cmd_fetch_reports_staleness_for_a_job_folder_shaped_entrypoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -7105,9 +7564,7 @@ class SmokeTests(unittest.TestCase):
             job_dir = _make_job_folder(target, "kaggle", "search-a")
             notebook = job_dir / "runner.ipynb"
             notebook.write_text("{}", encoding="utf-8")
-            (job_dir / "run-config.json").write_text(
-                json.dumps({"product": "MIL-CREDA"}), encoding="utf-8"
-            )
+            _write_job_folder_run_config(job_dir)
 
             adapter = FakeAdapter(worker_id="w1", capacity=2)
 
@@ -7148,9 +7605,7 @@ class SmokeTests(unittest.TestCase):
             job_dir = _make_job_folder(target, "kaggle", "search-a")
             notebook = job_dir / "runner.ipynb"
             notebook.write_text("{}", encoding="utf-8")
-            (job_dir / "run-config.json").write_text(
-                json.dumps({"product": "MIL-CREDA"}), encoding="utf-8"
-            )
+            _write_job_folder_run_config(job_dir)
 
             adapter = FakeAdapter(worker_id="w1", capacity=2)
 
