@@ -8332,3 +8332,130 @@ class UndeclaredRecordEndToEndTests(unittest.TestCase):
         self.doCleanups()
         leftover = list((FORGE / "implementations").glob("_norecord_*"))
         self.assertEqual([str(path) for path in leftover], [])
+
+
+class DeclarationBlockRosterTests(unittest.TestCase):
+    """Three places say this flow asks for the declaration's `revision` and
+    `premises`, and no step of it did.
+
+    The doctrine says so where the declaration is described, `declare-first`
+    blames the reader for not having done it, and the kit's own scaffold says
+    the value is "asked for by the flow, never invented here". Flow A's sixteen
+    steps contain no such ask: every `revision` in them is the `--revision` flag
+    of `admit` and `verify`, and `premises` appears nowhere at all. So the first
+    pass of every new target ends at a rung whose named remedy does not exist.
+
+    What this holds is weaker than it looks and is stated rather than claimed
+    away: Flow A is prose executed by an agent, so there is no runtime path to
+    assert against and no behavioural partner for these tests. What they can do
+    is hold every declaration block to a step that exists and mentions it, which
+    is what makes a renumbering or a deleted step fail here instead of silently
+    on somebody's first pass.
+    """
+
+    KIT_DECLARATION = KIT / "src_benchmark" / "__init__.py"
+    BLOCK_TABLE_HEADER = "| Block | Filled by | When |"
+    FLOW_HEADING = "## Flow A — first pass"
+    STEP_RE = re.compile(r"^(\d+)\.\s")
+
+    def declared_blocks(self):
+        """The six top-level keys of `__benchmark__`, read from the kit.
+
+        From the file the scaffold actually copies, so a block added there has
+        to be given a filling step rather than appearing in a target nobody told
+        how to fill it.
+        """
+        tree = ast.parse(self.KIT_DECLARATION.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            if "__benchmark__" not in names:
+                continue
+            self.assertIsInstance(node.value, ast.Dict)
+            return [key.value for key in node.value.keys
+                    if isinstance(key, ast.Constant)]
+        self.fail("the kit declares no `__benchmark__` literal")
+
+    def flow_steps(self):
+        """Flow A's numbered steps, as {number: the whole step's text}."""
+        text = SKILL_MD.read_text(encoding="utf-8")
+        start = text.index(self.FLOW_HEADING)
+        end = text.index("\n## ", start + len(self.FLOW_HEADING))
+        steps: dict[int, list[str]] = {}
+        current = None
+        for line in text[start:end].splitlines():
+            match = self.STEP_RE.match(line)
+            if match:
+                current = int(match.group(1))
+                steps[current] = []
+            if current is not None:
+                steps[current].append(line)
+        return {number: "\n".join(lines) for number, lines in steps.items()}
+
+    def block_rows(self):
+        tables = markdown_table_rows(
+            SKILL_MD.read_text(encoding="utf-8"), self.BLOCK_TABLE_HEADER)
+        self.assertEqual(
+            len(tables), 1,
+            "the declaration's blocks are stated in no parseable table, so "
+            "which step fills each one is prose and drifts unobserved")
+        return tables[0]
+
+    def test_every_declaration_block_has_a_row(self):
+        self.assertEqual(
+            sorted(row[0].strip("`") for row in self.block_rows()),
+            sorted(self.declared_blocks()),
+            "a block the kit scaffolds is named in no row, or a row names a "
+            "block the kit does not scaffold")
+
+    def test_every_flow_a_cell_names_a_step_that_mentions_its_block(self):
+        """The clause that makes the table more than a list.
+
+        A cell saying `step 8` is worth nothing if step 8 was renumbered, or if
+        it never mentions the block the row is about. Reachable red by changing
+        one cell to a step that does not exist, and by deleting the mention.
+        """
+        steps = self.flow_steps()
+        broken = []
+        for row in self.block_rows():
+            block, filled_by = row[0].strip("`"), row[1]
+            match = re.search(r"Flow A step (\d+)", filled_by)
+            if not match:
+                continue
+            number = int(match.group(1))
+            if number not in steps:
+                broken.append((block, f"step {number} does not exist"))
+            elif block not in steps[number]:
+                broken.append((block, f"step {number} never mentions it"))
+        self.assertEqual(broken, [])
+
+    def test_flow_a_asks_for_the_revision_and_the_premises(self):
+        """The finding itself: three assertions and no step.
+
+        Scoped to the step behind the authorization gate, because that is where
+        the answers exist — the gate's own protocol draft has already produced a
+        prediction, a statistical unit, a metric and a direction — and because
+        `AGREEMENTS.md`'s rule is already "append at every gate, before writing
+        any code the gate authorized".
+        """
+        steps = self.flow_steps()
+        self.assertIn(8, steps, "Flow A has no step 8 to hold this to")
+        for field in ("revision", "premises"):
+            self.assertIn(
+                f"`{field}`", steps[8],
+                f"Flow A step 8 never asks for the declaration's `{field}`, "
+                "which the doctrine, `declare-first` and the kit all say it does")
+
+    def test_the_three_assertions_still_say_the_flow_asks(self):
+        """If any of the three stopped claiming it, this repair would be
+        answering a question nobody asks any more — so the claims are pinned
+        beside the step that now honours them."""
+        skill = SKILL_MD.read_text(encoding="utf-8")
+        self.assertIn(
+            "**`revision` and `premises` are asked by this flow, never invented.**",
+            skill)
+        self.assertIn("Flow A's ask for `revision` and `premises`", skill)
+        self.assertIn(
+            "asked for by the flow, never invented here",
+            self.KIT_DECLARATION.read_text(encoding="utf-8"))

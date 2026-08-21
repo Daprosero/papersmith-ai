@@ -496,7 +496,26 @@ date. Drift is Flow B's fourth step, not a reason to start over.
    then **[GATE]** confirm before writing anything with them.
 7. **[GATE] Ask for authorization to implement.** Nothing below writes code until
    this is given.
-8. Present the object → module map. Wait for approval. Only then write code.
+8. Present the object → module map, **and beside it the declaration's `revision`
+   and `premises`**. Wait for approval. Only then write code, and write those two
+   into `src/<Package>_Benchmark/__init__.py` first.
+
+   Both are asked here rather than invented, and both have their answer already.
+   `revision` is **proposed** as step 1's `latest` and confirmed inside this same
+   approval — proposed, because a value taken silently is a value nobody agreed
+   to, and a fabricated one binds the declaration to a revision that may not
+   exist. `premises` is not new work either: the protocol the gate above was
+   granted on already said what kind of prediction is assumed, over which
+   statistical unit, by which metric and in which direction it is judged. Those
+   four answers exist; what has never happened is anybody writing them down.
+   Use the field names the kit declares — `prediction`, `statisticalUnit`,
+   `metric`, `direction` — and carry the answers across unchanged.
+
+   This is the same rule `AGREEMENTS.md` already states one section down: append
+   at every gate, before writing any code the gate authorized. Recording what was
+   agreed is part of the gate, not a chore that follows it. The other four blocks
+   — `arms`, `search`, `report`, `distribution` — are **not** filled here: they
+   are read off the work as it happens, and step 9 onward is where that happens.
 9. Write one module per object with `__provenance__`, plus its invariant tests.
 
    | Written into | Written from |
@@ -917,6 +936,22 @@ names the managed revision this declaration is bound to — a filename under
 statistical unit, by which metric and in which direction it is judged; nothing
 downstream validates its content — it is written for a person reading a drift
 report beside changed sections, not for a check to parse.
+
+Which step fills which block, so that "somebody fills it in as the work happens"
+names a somebody:
+
+| Block | Filled by | When |
+| --- | --- | --- |
+| `revision` | Flow A step 8 | Proposed as step 1's `latest` and confirmed inside the authorization approval, before any code that approval authorized is written |
+| `premises` | Flow A step 8 | Carried across from the protocol the gate was granted on, field for field, in the same approval |
+| `arms` | Flow B's `wiring-first` rung | Once an arm is wired and the sections it exercises are known |
+| `search` | Flow B's `search-first` rung | Once a search is actually run and has a scale and a tie rule of its own |
+| `report` | Flow B's `report-first` rung | Once the renderers and conclusions exist to name |
+| `distribution` | Flow B's shard work | Once a run is actually split across machines |
+
+The first two rows are the ones that used to have no step at all. The other four
+are the same rule stated one level up: a block is written when the work it
+describes has happened, and never before.
 
 **`arms`, `search`, `report` and `distribution` are never invented.** Each is
 read off the work as it happens — an arm's sections once it is wired, a
