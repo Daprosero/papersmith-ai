@@ -706,7 +706,7 @@ def generate_job(
     service: str,
     job_name: str,
     product: str,
-    commit: str,
+    commit: str | None = None,
     repo_url: str,
     repo_ref: str,
     clone_paths: Sequence[str],
@@ -725,8 +725,20 @@ def generate_job(
     """Generate one job folder, atomically, refusing to overwrite an
     existing one unless `regenerate=True`.
 
+    `commit` may be omitted, and then defaults to the target's HEAD
+    through `_resolve_pin()` — one implementation shared with the CLI, so
+    the two cannot disagree about what HEAD means, and a purely local one
+    that reaches no remote. The default is not independent of the
+    conditions below: HEAD is the code that was validated precisely
+    because condition (1) proves the working tree holds the same bytes and
+    condition (2) proves the pin is that commit. Resolution happens BEFORE
+    them, and a defaulted pin then meets every condition exactly as an
+    explicit one does. An explicit `commit` is never substituted,
+    discovered or overridden.
+
     Order is fixed: resolve `target` (no other check runs against a raw,
-    unresolved path); derive and validate `destination`; put the pin
+    unresolved path); derive and validate `destination`; resolve the pin;
+    put it
     through every condition in `PIN_CONDITIONS`, in that order, via the
     single shared `verify_pin_preconditions()` — which is also the only
     thing `submit` calls, so the two decision points cannot drift in
@@ -756,6 +768,7 @@ def generate_job(
     resolved_target = resolve_target(target)
     destination = resolve_destination(resolved_target, service, job_name)
 
+    commit = _resolve_pin(resolved_target, commit)
     verify_pin_preconditions(
         target=resolved_target,
         commit=commit,
@@ -1279,6 +1292,43 @@ _PIN_CONDITION_CHECKS = {
 }
 
 
+def _resolve_pin(target: Path, commit: str | None) -> str:
+    """The pin, defaulted to the target's HEAD when the caller gave none.
+
+    One implementation, shared by the Python API and the CLI, so the two
+    cannot disagree about what HEAD means. It is deliberately LOCAL — `git
+    rev-parse HEAD` in the resolved target — and reaches no remote, ever.
+    Measured against the live remote this skill targets before this was
+    written: the remote's tip was OLDER than the entrypoint the operator
+    needed, which existed only in an unpushed commit. A helpful
+    remote-derived default would have pinned code older than the caller's,
+    passed every local check (generation validates against the working
+    tree), and died in the kernel after quota was spent — the exact
+    failure class this change exists to remove, reintroduced by
+    convenience.
+
+    This default is safe only because conditions (1) and (2) exist. HEAD
+    is the code that was validated precisely when the working tree is
+    clean over the clone paths and the pin is that commit. It must
+    therefore never be reachable around `verify_pin_preconditions()`: the
+    resolution happens before them, and every condition then runs against
+    the resolved value exactly as it would against an explicit one.
+
+    A target with no HEAD refuses here, with git's own words, rather than
+    defaulting to something. There is no commit to default to.
+    """
+    if commit is not None:
+        return commit
+    try:
+        head = _run_git(["rev-parse", "HEAD"], cwd=target).stdout.strip()
+    except JobFolderError as exc:
+        raise JobFolderError(
+            f"--commit was omitted and {target} has no HEAD to default to: "
+            f"{exc}"
+        ) from exc
+    return head
+
+
 def verify_pin_preconditions(
     *,
     target: str | Path,
@@ -1466,5 +1516,3 @@ def read(job_dir: str | Path) -> JobFolder:
         run_config=MappingProxyType(dict(run_config)),
         staleness=MappingProxyType(staleness),
     )
-
-    return destination

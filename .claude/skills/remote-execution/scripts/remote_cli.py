@@ -1383,7 +1383,15 @@ def _build_parser() -> argparse.ArgumentParser:
     generate_job.add_argument("--service", required=True)
     generate_job.add_argument("--job-name", required=True)
     generate_job.add_argument("--product", required=True)
-    generate_job.add_argument("--commit", required=True)
+    generate_job.add_argument(
+        "--commit", default=None,
+        help=(
+            "the pinned commit, lowercase 40- or 64-hex. Optional: omitted, "
+            "it defaults to the target's HEAD, which is a safe default only "
+            "because generation refuses a dirty tree and a pin that is not "
+            "HEAD. Never resolved from the remote"
+        ),
+    )
     generate_job.add_argument("--repo-url", required=True)
     generate_job.add_argument("--repo-ref", required=True)
     generate_job.add_argument(
@@ -1623,10 +1631,22 @@ def main(argv: list[str] | None = None) -> int:
         # Routes through the SAME single reader every other job-folder-
         # touching command uses (design #744 §4) — a job folder is never
         # even momentarily reported without its staleness alongside it.
-        staleness = dict(JOBFOLDER.read(destination).staleness)
+        job_folder = JOBFOLDER.read(destination)
+        staleness = dict(job_folder.staleness)
+        # `commitSource` is operator feedback and lives on stdout ONLY. It
+        # describes how the caller typed an argument, not a fact about the
+        # job, and `run-config.json` records facts about the job. The pin
+        # itself is read back out of the written config rather than out of
+        # `args`, so what is reported is what was actually recorded.
         print(
             json.dumps(
-                {"jobFolder": str(destination), "staleness": staleness}, sort_keys=True
+                {
+                    "jobFolder": str(destination),
+                    "staleness": staleness,
+                    "commit": job_folder.run_config["commit"],
+                    "commitSource": "explicit" if args.commit else "default-head",
+                },
+                sort_keys=True,
             )
         )
         return 0

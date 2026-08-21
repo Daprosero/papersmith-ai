@@ -212,7 +212,7 @@ executable — no test in this suite reaches the network or a real account).
   `<target>/tools/<service>/<job-name>/` — `run-config.json`,
   `runner.ipynb`, and one adapter-supplied metadata file — from
   target-supplied values (`--service`, `--job-name`, `--product`,
-  `--commit`, `--repo-url`/`--repo-ref`, `--clone-path` repeated,
+  an optional `--commit`, `--repo-url`/`--repo-ref`, `--clone-path` repeated,
   `--run-module`/`--run-function`/`--run-kwargs`, an optional
   `--smoke-module`/`--smoke-function`/`--smoke-kwargs`, and an optional
   repeatable `--smoke-required-evidence` — see "Smoke" below for what that
@@ -283,6 +283,21 @@ executable — no test in this suite reaches the network or a real account).
   happen. For a long time only the reporting half existed, and a job
   folder pinned to code that had already moved on was generated, submitted
   and run with the drift printed beside the submission id like weather.
+
+  **`--commit` is optional, and defaults to HEAD.** Omit it and the pin is
+  the target's HEAD; stdout reports the commit and `commitSource:
+  default-head`, so you can see what was pinned without opening the job
+  folder. That source is stdout only — it describes how you typed an
+  argument, not a fact about the job, and `run-config.json` records facts
+  about the job. The default is safe only because of conditions (1) and
+  (2): HEAD is the code that was validated precisely because the tree is
+  clean over the clone paths and the pin is that commit. It is resolved
+  locally, with `git rev-parse HEAD`, and never from the remote — the
+  remote's tip was measured to be older than the entrypoint the operator
+  needed, so a remote-derived default would pin code older than yours,
+  pass every local check and die in the kernel after quota is spent. An
+  explicit `--commit` is never substituted, discovered or overridden, and
+  meets the same three conditions.
 
   **No escape hatch.** There is deliberately no dirty-tree escape hatch:
   no flag accepts a dirty tree, a drifted pin or an unpublished commit,

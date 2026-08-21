@@ -5593,6 +5593,292 @@ class PinConditionDoctrineTests(unittest.TestCase):
         self.assertIn("only reports", text)
 
 
+class CommitDefaultTests(unittest.TestCase):
+    """`--commit` may be omitted, and then defaults to the target's HEAD.
+
+    This is the only requirement in this change that ADDS convenience, and
+    it is safe only because the three conditions landed first. HEAD is a
+    trustworthy pin exactly when condition (1) proves the working tree
+    holds the same bytes as the commit, and condition (2) proves the pin
+    is that commit. Ship the default without them and you ship the silent-
+    wrong-pin behaviour this whole change exists to remove, wearing a
+    friendlier interface.
+
+    An explicit `--commit` still means exactly what it says. It is never
+    substituted, never discovered, and above all never resolved from the
+    remote: the remote's tip was measured to be OLDER than the entrypoint
+    the operator needed, which existed only in an unpushed commit. Remote
+    resolution would pin code older than the caller's, pass every local
+    check because generation validates against the working tree, and die
+    in the kernel after quota is spent — the same failure class,
+    reintroduced by helpfulness.
+
+    The pin's SOURCE is reported on stdout and is deliberately absent from
+    `run-config.json`. How the caller typed an argument is feedback for the
+    person who typed it; it is not a fact about the job, and a job folder
+    records facts about the job.
+    """
+
+    FAKE_SERVICE = "commit-default-fake-service"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        ADAPTER.register_metadata(
+            cls.FAKE_SERVICE,
+            lambda run_config: ("fake-metadata.json", json.dumps({"ok": True})),
+        )
+
+    def setUp(self) -> None:
+        patcher = unittest.mock.patch.object(
+            JOBFOLDER, "_verify_commit_reachable", return_value=None
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _git(self, cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "commit-default-tests"
+        env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "commit-default-tests@example.invalid"
+        return subprocess.run(
+            ["git", *args], cwd=cwd, env=env, capture_output=True, text=True, check=check
+        )
+
+    def _init_repo(self, target: Path) -> str:
+        target.mkdir(parents=True, exist_ok=True)
+        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        harness.parent.mkdir(parents=True, exist_ok=True)
+        harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
+        self._git(target, "init", "-q")
+        self._git(target, "add", "-A")
+        self._git(target, "commit", "-q", "-m", "initial")
+        return self._git(target, "rev-parse", "HEAD").stdout.strip()
+
+    def _fixture_assets(self, tmp: str) -> tuple[Path, Path]:
+        bootstrap = Path(tmp) / "fixture_bootstrap.py"
+        invoke = Path(tmp) / "fixture_invoke.py"
+        bootstrap.write_text("# cell-0\n", encoding="utf-8")
+        invoke.write_text("# cell-1\n", encoding="utf-8")
+        return bootstrap, invoke
+
+    def _generate(self, tmp: str, target: Path, **overrides) -> Path:
+        bootstrap, invoke = self._fixture_assets(tmp)
+        kwargs = dict(
+            target=target,
+            service=self.FAKE_SERVICE,
+            job_name="search-a",
+            product="MIL-CREDA",
+            repo_url="https://example.invalid/repo.git",
+            repo_ref="main",
+            clone_paths=["src/MIL_CREDA_Benchmark"],
+            run_module="MIL_CREDA_Benchmark.harness",
+            run_function="campaign",
+            bootstrap_asset=bootstrap,
+            invoke_asset=invoke,
+        )
+        kwargs.update(overrides)
+        return JOBFOLDER.generate_job(**kwargs)
+
+    def _cli(self, tmp: str, target: Path, *extra: str) -> tuple[int, dict]:
+        bootstrap, invoke = self._fixture_assets(tmp)
+        stdout = io.StringIO()
+        with unittest.mock.patch.object(
+            JOBFOLDER, "DEFAULT_BOOTSTRAP_ASSET", bootstrap
+        ), unittest.mock.patch.object(
+            JOBFOLDER, "DEFAULT_INVOKE_ASSET", invoke
+        ), contextlib.redirect_stdout(stdout):
+            exit_code = REMOTE_CLI.main([
+                "generate-job",
+                "--target", str(target),
+                "--service", self.FAKE_SERVICE,
+                "--job-name", "cli-job",
+                "--product", "MIL-CREDA",
+                "--repo-url", "https://example.invalid/repo.git",
+                "--repo-ref", "main",
+                "--clone-path", "src/MIL_CREDA_Benchmark",
+                "--run-module", "MIL_CREDA_Benchmark.harness",
+                "--run-function", "campaign",
+                *extra,
+            ])
+        printed = stdout.getvalue().strip()
+        return exit_code, (json.loads(printed) if printed else {})
+
+    # -- the default ------------------------------------------------------
+
+    def test_omitting_the_commit_pins_head(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+
+            job_dir = self._generate(tmp, target)
+
+            written = json.loads((job_dir / "run-config.json").read_text(encoding="utf-8"))
+            self.assertEqual(written["commit"], head)
+
+    def test_the_python_api_and_the_cli_share_one_resolution(self) -> None:
+        """One implementation, not two that can disagree about what HEAD
+        means.
+        """
+        source = JOBFOLDER_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("rev-parse", source)
+        cli_source = REMOTE_CLI_SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn('"rev-parse"', cli_source)
+
+    def test_stdout_reports_the_pinned_commit_and_that_it_was_defaulted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+
+            exit_code, printed = self._cli(tmp, target)
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(printed["commit"], head)
+            self.assertEqual(printed["commitSource"], "default-head")
+
+    def test_stdout_reports_an_explicit_pin_as_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+
+            exit_code, printed = self._cli(tmp, target, "--commit", head)
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(printed["commit"], head)
+            self.assertEqual(printed["commitSource"], "explicit")
+
+    def test_commit_source_is_absent_from_run_config(self) -> None:
+        """It describes how the caller typed an argument, not a fact about
+        the job. A job folder records facts about the job.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            self._init_repo(target)
+
+            job_dir = self._generate(tmp, target)
+
+            written = json.loads((job_dir / "run-config.json").read_text(encoding="utf-8"))
+            self.assertNotIn("commitSource", written)
+            self.assertNotIn(
+                "commitSource", (job_dir / "run-config.json").read_text(encoding="utf-8")
+            )
+
+    # -- the default is not independent of the conditions ------------------
+
+    def test_omitting_the_commit_with_a_dirty_tree_refuses_and_writes_nothing(self) -> None:
+        """The default cannot exist independently of condition (1). HEAD is
+        a safe pin only because the tree is proven to hold the same bytes.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            self._init_repo(target)
+            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+                "def search():\n    pass\n", encoding="utf-8"
+            )
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                self._generate(tmp, target)
+
+            self.assertIn("run_search.py", str(caught.exception))
+            self.assertFalse((target / "tools").exists())
+
+    def test_a_defaulted_pin_goes_through_every_condition(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+            recorded = {}
+
+            with unittest.mock.patch.object(
+                JOBFOLDER, "verify_pin_preconditions",
+                side_effect=lambda **kwargs: recorded.update(kwargs),
+            ):
+                self._generate(tmp, target)
+
+            self.assertEqual(recorded["commit"], head)
+            self.assertEqual(recorded["decision"], "generation")
+
+    def test_defaulting_in_a_target_with_no_history_refuses_with_gits_words(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            (target / "src" / "MIL_CREDA_Benchmark").mkdir(parents=True)
+            (target / "src" / "MIL_CREDA_Benchmark" / "harness.py").write_text(
+                "def campaign():\n    pass\n", encoding="utf-8"
+            )
+            self._git(target, "init", "-q")
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                self._generate(tmp, target)
+
+            self.assertIn("HEAD", str(caught.exception))
+            self.assertFalse((target / "tools").exists())
+
+    # -- explicit still means explicit -------------------------------------
+
+    def test_an_explicit_commit_is_never_substituted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            first = self._init_repo(target)
+            (target / "README.md").write_text("docs\n", encoding="utf-8")
+            self._git(target, "add", "-A")
+            self._git(target, "commit", "-q", "-m", "docs only")
+            head = self._git(target, "rev-parse", "HEAD").stdout.strip()
+            self.assertNotEqual(first, head)
+
+            job_dir = self._generate(tmp, target, commit=first)
+
+            written = json.loads((job_dir / "run-config.json").read_text(encoding="utf-8"))
+            self.assertEqual(written["commit"], first)
+            self.assertNotEqual(written["commit"], head)
+
+    def test_no_remote_derived_commit_is_ever_substituted(self) -> None:
+        """Measured against the live remote before this was written: its
+        tip was OLDER than the entrypoint the operator needed. Resolving a
+        pin from the remote would silently ship code older than the
+        caller's and pass every local check, because generation validates
+        against the working tree.
+        """
+        source = JOBFOLDER_SCRIPT.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        generate = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_resolve_pin"
+        )
+        argv_strings = {
+            node.value for node in ast.walk(generate)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        }
+        for remote_shaped in ("ls-remote", "fetch", "origin", "FETCH_HEAD"):
+            self.assertNotIn(remote_shaped, argv_strings, remote_shaped)
+
+    def test_a_shape_invalid_explicit_commit_still_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            self._init_repo(target)
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                self._generate(tmp, target, commit="main")
+
+            self.assertIn("main", str(caught.exception))
+
+    def test_the_dead_return_after_read_is_gone(self) -> None:
+        """No behavioural delta; recorded in the spec so it is not read as
+        scope creep. `read()` ended with a second, unreachable `return
+        destination` — a name that does not even exist in that function's
+        scope. Unreachable code is prose that lies about what a function
+        does, and this one lied about what it returns.
+        """
+        tree = ast.parse(JOBFOLDER_SCRIPT.read_text(encoding="utf-8"))
+        read = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "read"
+        )
+        top_level_returns = [
+            node for node in read.body if isinstance(node, ast.Return)
+        ]
+        self.assertEqual(
+            len(top_level_returns), 1,
+            "read() has an unreachable statement after its return",
+        )
+
+
 class ResolveClonePathsTests(unittest.TestCase):
     """`jobfolder.resolve_clone_paths()` — the AST-based, transitive
     dependency check (design #744 section 3). Reuses
