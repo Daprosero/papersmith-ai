@@ -8992,3 +8992,189 @@ class WorkedInvocationRosterTests(unittest.TestCase):
         section = section[:section.index("\n## ", 1)]
         self.assertIn("implementation_cli.py probe", section)
         self.assertIn("`nextStep`", section)
+
+
+def subcommand_surface(source: Path, function: str) -> dict[str, tuple[str, ...]]:
+    """Every subcommand a parser-building function declares, with its flags.
+
+    Nested groups are followed, so a subcommand reached only through another
+    one is reported by the whole path a reader would have to type. Only the
+    leaves are returned: a group parser whose subcommands are `required=True`
+    names no invocation — typing it alone is refused — so documenting it as a
+    command would document something nobody can run.
+
+    Read from the parser rather than from a list beside it, for the reason
+    `returned_keys` is: a roster restated by hand is a roster that loses one.
+    """
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    definition = next(
+        (node for node in ast.walk(tree)
+         if isinstance(node, ast.FunctionDef) and node.name == function), None)
+    if definition is None:
+        raise AssertionError(f"{source.name} defines no {function}")
+
+    groups: dict[str, str] = {}
+    commands: dict[str, str] = {}
+    flags: dict[str, list[str]] = {}
+    owners: set[str] = set()
+
+    def only_target(node):
+        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            return None
+        return node.targets[0].id
+
+    for node in ast.walk(definition):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            call, name = node.value, only_target(node)
+            attribute = call.func.attr if isinstance(call.func, ast.Attribute) else ""
+            holder = (call.func.value.id
+                      if isinstance(call.func, ast.Attribute)
+                      and isinstance(call.func.value, ast.Name) else "")
+            if attribute == "add_subparsers":
+                if name is not None:
+                    groups[name] = commands.get(holder, "")
+                owners.add(commands.get(holder, ""))
+                continue
+            if attribute == "add_parser" and holder in groups and call.args:
+                literal = call.args[0]
+                if not isinstance(literal, ast.Constant):
+                    continue
+                path = f"{groups[holder]} {literal.value}".strip()
+                flags.setdefault(path, [])
+                if name is not None:
+                    commands[name] = path
+                continue
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr == "add_argument" \
+                and isinstance(node.func.value, ast.Name) \
+                and node.func.value.id in commands and node.args \
+                and isinstance(node.args[0], ast.Constant) \
+                and str(node.args[0].value).startswith("--"):
+            flags[commands[node.func.value.id]].append(node.args[0].value)
+
+    return {path: tuple(sorted(set(declared)))
+            for path, declared in flags.items() if path not in owners}
+
+
+class RemoteExecutionCommandRosterTests(unittest.TestCase):
+    """This flow depends on a CLI it never names.
+
+    `probe` reports a remote-execution state, the `poll-first` rung tells a
+    reader to wait for a submission's answer, the drift and unreliable states
+    told them to reconcile the ledger by hand, and the argument for a `tools/`
+    directory rests on a job folder somebody has to have produced. Not one of
+    the eight subcommands that do any of that appeared anywhere a reader of
+    this skill looks — not in `SKILL.md`, not in `references/usage.md`. The
+    remedy for a drifted ledger existed only inside a Python docstring.
+
+    Two rules, because the repair has two halves that fail differently:
+
+    - the roster derives the subcommands from the parser and holds them to a
+      table, so a subcommand added there forces a doctrine decision;
+    - the flag lists are deliberately *not* duplicated. `usage.md` shows the
+      shape of three invocations and points at the `remote-execution` skill
+      for the rest, and a test asserts that what it shows stays a proper
+      subset of what the parser declares. Two copies of a flag list is the
+      drift this whole change is about.
+
+    What the table cannot check is whether the state named in column two is
+    the state that really routes there. That is prose, and `probe`'s own
+    end-to-end tests are what carry it.
+    """
+
+    TABLE_HEADER = ("| Subcommand | The reported state that routes here "
+                    "| Where the flags are documented |")
+    GATES_TABLE_HEADER = "| Situation | Action |"
+
+    @classmethod
+    def remote_cli(cls):
+        return impl.REMOTE_EXECUTION_CLI_SCRIPT
+
+    def declared_subcommands(self):
+        surface = subcommand_surface(self.remote_cli(), "_build_parser")
+        self.assertTrue(surface, "the remote-execution parser was read as empty")
+        return surface
+
+    def table_rows(self):
+        tables = markdown_table_rows(
+            SKILL_MD.read_text(encoding="utf-8"), self.TABLE_HEADER)
+        self.assertEqual(
+            len(tables), 1,
+            "the remote-execution subcommands are stated in no parseable "
+            "table, so nothing holds this flow to the CLI it depends on")
+        return tables[0]
+
+    def test_every_subcommand_the_parser_declares_has_a_row(self):
+        declared = sorted(self.declared_subcommands())
+        documented = sorted(row[0].strip("`") for row in self.table_rows())
+        self.assertEqual(
+            sorted(set(declared) - set(documented)), [],
+            "the remote-execution CLI declares these and this skill names "
+            "them nowhere")
+        self.assertEqual(
+            sorted(set(documented) - set(declared)), [],
+            "the table names these and the parser declares no such subcommand")
+
+    def test_the_rung_that_says_to_wait_names_the_subcommand_that_waits(self):
+        """`poll-first` tells a reader a submission is out and the answer has
+        not come back. It never said what to run. The row exists so the rung
+        resolves to something typeable."""
+        rows = {row[0].strip("`"): row[1] for row in self.table_rows()}
+        self.assertIn("poll", rows)
+        self.assertIn("poll-first", rows["poll"])
+
+    def test_the_named_remedy_reaches_the_reader_at_both_ends(self):
+        """A remedy reachable only from a Python docstring is not a remedy.
+
+        `drift` and `unreliable` are the two states this flow reports and
+        explicitly refuses to treat as "wait for it", and the fix for both was
+        described as manual work. It is a subcommand, and it is named where
+        the state is reported and again in the table a reader consults about
+        what to do."""
+        text = SKILL_MD.read_text(encoding="utf-8")
+        section = text[text.index('### `nextStep: "poll-first"`'):]
+        section = section[:section.index("\n### ", 1)]
+        self.assertIn("`remote_cli reconcile`", section,
+                      "the drift paragraph still describes the fix as manual "
+                      "work and names no command")
+        gates = markdown_table_rows(text, self.GATES_TABLE_HEADER)
+        self.assertEqual(len(gates), 1, "the Decision Gates table moved")
+        actions = "\n".join(row[1] for row in gates[0])
+        self.assertIn("remote_cli reconcile", actions,
+                      "no Decision Gates row names the command that repairs a "
+                      "drifted ledger")
+
+    def test_the_tools_argument_names_what_writes_the_directory(self):
+        """The layout section argues at length that `tools/` has to exist and
+        never said what puts anything in it. One command does, and it writes
+        one exact shape."""
+        text = SKILL_MD.read_text(encoding="utf-8")
+        section = text[text.index("**And `tools/` exists for the same reason"):]
+        section = section[:section.index("\n## ", 1)]
+        self.assertIn("`remote_cli generate-job`", section)
+        self.assertIn("tools/<service>/<job-name>/", section)
+
+    def test_the_usage_reference_works_three_invocations_and_copies_no_flag_list(self):
+        """The other half of the repair, and the one that could rot.
+
+        A reference that reprints the flag list is a second copy of it, and
+        two copies of a flag list is exactly the drift this change exists to
+        remove. So what `usage.md` shows has to stay a proper subset of what
+        the parser declares, measured rather than promised.
+        """
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("## The remote-execution seam"):]
+        section = section[:section.index("\n## ", 1)]
+        self.assertIn("remote-execution", section,
+                      "the section points nowhere for the flags it withholds")
+        declared = self.declared_subcommands()
+        for command in ("poll", "reconcile", "generate-job"):
+            self.assertIn(f"remote_cli.py {command}", section)
+            shown = {flag for flag in re.findall(r"--[a-z][a-z-]*", section)
+                     if flag in declared[command]}
+            self.assertTrue(
+                shown, f"the {command} invocation shows no flag at all")
+            self.assertLess(
+                len(shown), len(declared[command]),
+                f"`usage.md` reprints every flag {command} declares, which is "
+                "a second copy of a list this skill does not own")

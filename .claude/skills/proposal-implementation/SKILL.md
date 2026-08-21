@@ -381,6 +381,14 @@ machinery itself — the part identical for every repository — has since moved
 to the forge's `remote-execution` skill; the revocation note further below
 records what moved and why.
 
+**What puts anything there is a command, not a template.** `remote_cli generate-job`
+writes a job folder at `tools/<service>/<job-name>/` — a `run-config.json` pinning
+the commit, the clone paths and the entry point, beside the runner the service
+executes. That is the exact shape the admission guard accepts, so nothing here
+scaffolds a `tools/` template and nothing here invents a second one: the directory
+exists because a generated job needs somewhere to live, and the generator is what
+decides its contents.
+
 It is a named place and not an amnesty. A `.py` loose at the top of the repository
 is still a stray module. And nothing under `tools/` is ever asked for a
 provenance, because the scan only ever recurses into `src/<Package>/` — which is
@@ -407,6 +415,8 @@ exactly what stops a launcher from being able to claim it implements anything.
 | `probe` reports `nextStep: "search-first"` | A declared search's record is absent from disk: the run has no chosen configuration yet, report before offering it |
 | `probe` reports a job with `smokeReady: false` | A job folder exists that no rehearsal has ever passed on its pinned commit: read it before offering a campaign, because a rehearsal finds cheaply what the long run would find expensively |
 | `probe` reports a job whose `staleness` is `drift` | The repository moved past the commit that job is pinned to: regenerate the job, or say plainly that the run measures the older code, before offering a campaign |
+| `probe` reports `remoteExecution: "drift"` | The ledger and the service no longer agree, or a stale result arrived: run `remote_cli reconcile` before reading anything else out of that ledger. Waiting fixes nothing |
+| `probe` reports `remoteExecution: "unreliable"` | A line of the ledger could not be read, so nothing about what is out there is trustworthy: run `remote_cli reconcile` and report what it finds before offering a run |
 | `priorWork` reports `modified` | Say what changed and that correcting prior work belongs to a session of its own |
 | `priorWork` reports `reaching` | The change moves what an arm computes: the record is stale, report before any run |
 | `search` reports `incomplete` | A value is chosen by outcome and the search does not say enough about itself to be an experiment: report before quoting anything it chose |
@@ -1072,13 +1082,39 @@ flight — the duplicate this rung exists to prevent. `poll-first` catches that 
 **`drift` and `unreliable` are deliberately not `poll-first`.** Both are real defects
 and neither is "wait for it." `drift` means a submission's source moved out from
 under it while it was in flight, or a result already arrived and was quarantined
-against a submission that was no longer current — the fix is reconciling the ledger
-by hand, not polling a value that waiting will not resolve. `unreliable` means a line
-of the log could not be read at all, so nothing about what is or is not out there can
-be trusted yet — polling would be asking a question of a record that cannot currently
-answer it. Both fall through this rung unresolved, exactly as they did before it
+against a submission that was no longer current — the fix is `remote_cli reconcile`,
+which compares the ledger against what the service says is running in both
+directions, not polling a value that waiting will not resolve. `unreliable` means a
+line of the log could not be read at all, so nothing about what is or is not out
+there can be trusted yet — polling would be asking a question of a record that cannot
+currently answer it, and the same reconciliation is what re-establishes one. Both fall through this rung unresolved, exactly as they did before it
 existed; folding either into "poll" would tell the reader to wait for something a
 wait cannot fix.
+
+### The remote-execution seam — which subcommand answers which reported state
+
+This flow reports remote-execution states and runs none of the commands that
+resolve them. That is the right division — `probe` and `verify` read and never
+send — but it left a reader told to wait, or told a ledger had drifted, with no
+name to type. The commands belong to the forge's `remote-execution` skill; what
+belongs here is which reported state routes to which one:
+
+| Subcommand | The reported state that routes here | Where the flags are documented |
+| --- | --- | --- |
+| `submit` | None. This flow offers a campaign to a human and never sends one itself | the `remote-execution` skill |
+| `status` | `remoteExecution` on any target: it folds the same ledger `probe` reports, for when you want it fresher than the last read | the `remote-execution` skill |
+| `poll` | `nextStep: "poll-first"` — a submission is out and its answer has not come back | the `remote-execution` skill |
+| `fetch` | A submission the ledger calls returned whose result is not on disk yet | the `remote-execution` skill |
+| `reconcile` | `remoteExecution` reporting `drift` or `unreliable`: the ledger and the service disagree, or a line of the log could not be read | the `remote-execution` skill |
+| `generate-job` | No job folder for the campaign about to be offered — `remoteExecution.jobs` empty, or naming none that matches | the `remote-execution` skill |
+| `smoke record` | `smokeReady: false` for a job that has rehearsed and whose verdict was never written down | the `remote-execution` skill |
+| `readiness` | `smokeReady` itself: it is the function `probe` calls to compute that fact, and asking it directly is how you see the reason | the `remote-execution` skill |
+
+Column one is read by the suite against that CLI's own parser, so a subcommand
+added there fails the tests until this table says which state sends a reader to
+it. The flags are deliberately not restated: two copies of a flag list is the
+drift this table exists to remove, and `references/usage.md` shows the shape of
+three invocations and points at the owning skill for the rest.
 
 ### `nextStep: "search-first"` — a declared search has not chosen anything yet
 

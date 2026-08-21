@@ -547,6 +547,42 @@ Never read past the answer for a reason to skip it. A rung fires because
 everything above it is already settled, so the next one down says nothing about
 whether the campaign is a good idea yet.
 
+## The remote-execution seam
+
+The commands that send work to a worker belong to the forge's
+`remote-execution` skill, not to this one: `probe` and `verify` read the ledger
+and the job folders, and never submit, poll or repair anything. But a reader
+told to wait, or told a ledger has drifted, needs a name to type. Three
+invocations, in the shape this flow reaches them:
+
+```bash
+# a submission is out and its answer has not come back — `nextStep: "poll-first"`
+python3 .claude/skills/remote-execution/scripts/remote_cli.py poll \
+  --submission-id <id> --backend <backend>
+
+# the ledger and the service disagree — `remoteExecution` reporting drift or unreliable
+python3 .claude/skills/remote-execution/scripts/remote_cli.py reconcile \
+  --target implementations/<repo> --entrypoint <Name>/Notebooks/<notebook>.ipynb \
+  --worker <worker> --backend <backend>
+
+# there is no job folder for the campaign about to be offered
+python3 .claude/skills/remote-execution/scripts/remote_cli.py generate-job \
+  --target implementations/<repo> --service <service> --job-name <job> \
+  --product <Name> --commit <sha> --repo-url <url> --repo-ref <ref> \
+  --clone-path src --run-module <module> --run-function <function>
+```
+
+`generate-job` is what places `tools/<service>/<job-name>/`; nothing in this
+skill scaffolds that directory, and there is no template for it here.
+
+**The flags above are the shape, not the list.** Every one of these subcommands
+takes more than is shown — overrides, rehearsal flags, resolution switches — and
+they are documented once, in the `remote-execution` skill that owns them. A
+second copy here would be a second thing to keep in step, which is the same
+defect the tables in `SKILL.md` exist to prevent. `SKILL.md`'s own subcommand
+table says which reported state routes to which command; this says how the three
+a reader of this flow actually reaches are typed.
+
 ## Reading `probe`
 
 `probe` looks and reports: it runs nothing, submits nothing, and never changes
