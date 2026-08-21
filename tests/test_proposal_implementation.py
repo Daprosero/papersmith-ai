@@ -8219,6 +8219,65 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
         (base / "references" / "usage.md").write_text("Generic.\n", encoding="utf-8")
         return base
 
+    def scratch_targets(self):
+        """A target root built for the purpose, owning words nothing else uses.
+
+        Rule B derives its denylist from `implementations/` on disk, so proving
+        the rule reachable means owning both ends of it. Borrowing the checkout's
+        real target would not do: its vocabulary is whatever somebody happens to
+        have cloned, and the forge is clean of it, which is the condition under
+        which rule B says nothing at all.
+
+        The names are invented. No repository is called `Nimbus_Benchmark` and no
+        forge file says `paddock`, so a hit read back from this tree is
+        attributable to the derivation and to nothing else.
+        """
+        base = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        package = base / "Nimbus_Benchmark" / "src" / "nimbus_benchmark"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        (package / "config.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (package / "paddock.py").write_text("VALUE = 2\n", encoding="utf-8")
+        return base
+
+    def test_rule_b_names_the_file_and_the_word_a_planted_leak_is_in(self):
+        """Rule B, proven the way rules A and C already are.
+
+        Against a clean checkout rule B is green because nothing is wrong, and a
+        rule that is green because nothing is wrong cannot be told apart from a
+        rule that is switched off: neuter the matcher in `leaks` so it can never
+        fire and the whole suite still passes. The rule was reachable the day it
+        was written and nothing kept that proof, which is the same objection this
+        file makes about everything else.
+
+        So this owns both ends — a target that owns `paddock` and a forge file
+        that borrows it — and reads back the exact pair the guard reports, not
+        merely that something failed. `paddock` is in neither `FORGE_LEXICON` nor
+        `FORGE_VOCABULARY_FLOOR`, so no fixed list could have caught it, and it
+        is derived from a module basename rather than the target's own directory
+        name, so a rule reading only the top level could not have either.
+        """
+        self.assertNotIn("paddock", FORGE_LEXICON)
+        self.assertNotIn("paddock", FORGE_VOCABULARY_FLOOR)
+
+        denylist = self.derived_denylist(self.scratch_targets())
+        self.assertEqual(
+            denylist, ["nimbus", "paddock"],
+            "the denylist is every word the target owns minus the lexicon, so "
+            "`benchmark`, `config` and `init` are subtracted and these are left")
+
+        forge = self.scratch_forge()
+        (forge / "scripts" / "leaky.py").write_text(
+            "# staged in the paddock before the run\nVALUE = 1\n",
+            encoding="utf-8")
+        (forge / "scripts" / "clean.py").write_text(
+            "VALUE = 2\n", encoding="utf-8")
+        self.assertEqual(
+            self.leaks(denylist, forge), {"scripts/leaky.py": ["paddock"]},
+            "rule B has to name the file and the word, because a guard that "
+            "reports only that something is wrong repairs nothing")
+
     def test_rule_a_names_the_file_a_planted_example_leak_is_in(self):
         base = self.scratch_forge()
         (base / "scripts" / "leaky.py").write_text(
