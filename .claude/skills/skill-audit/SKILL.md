@@ -48,7 +48,7 @@ move, in order; the numbering is the order.
 | Move | Ships as | Lock |
 | --- | --- | --- |
 | 0. Enumerate a closed surface from both sides, and never begin by reviewing a diff | `roster` | `tests/test_skill_audit.py` |
-| 1. Build the expected artifact from the documentation alone, then diff it against the producer's output | `roster` | `tests/test_skill_audit.py` |
+| 1. Build the expected artifact from the documentation alone, then diff it against the producer's output | `structure` | `tests/test_skill_audit.py` |
 | 2. Drive the subject as it exists on disk, never only a fixture built from the same document | `roster` | `tests/test_skill_audit.py` |
 | 3. Fake every external boundary and assert on what crossed it, never dial it | `doctrine` | `tests/test_skill_audit.py` |
 | 4. Read an installed dependency as text; importing a service client authenticates it | `doctrine` | `tests/test_skill_audit.py` |
@@ -196,6 +196,7 @@ a surface nobody looked at must never look the same.
 | --- | --- | --- |
 | `roster` | Code side by driving the subject as a process; documented side by parsing a table | `code`, `doctrine`, `unregistered`, `phantom`, `duplicated`, `numeralMismatch`, `notes` |
 | `check-report` | The report shape above, from a report file | `violations` |
+| `structure` | Declared side by parsing a structure table; on-disk side by walking `--subject`; from-zero side by walking a recipe-built scaffold inside an empty box | `sides`, `outcome`, `onlyIn`, `missingFrom`, `notes`, `containment` |
 
 `roster` exits `0` for **any** verdict, findings included, and `2` when the
 probe could not be driven or the extraction matched nothing. Inability to look
@@ -205,6 +206,29 @@ phantom finding, which is a broken probe wearing a result's clothes.
 
 `check-report` exits `0` for a valid report, `1` for an invalid one, and `2`
 when the report cannot be read.
+
+`structure` exits `0` for **any** verdict — agreement, a two-side outcome, or
+a three-way divergence — and `2` only when a side cannot be derived, when its
+from-zero box is not empty and so cannot be adopted, or when the from-zero
+build wrote outside its own box. None of those three is a finding; each is an
+inability to look.
+
+## The shipped files
+
+This skill's own `structure` recipe (`references/probes/skill-audit.structure.json`)
+points its declared side at this table. Rows exist because a file was added
+on disk, never the reverse: a file is deleted first, and its row follows in
+the same change.
+
+| Path | Holds |
+| --- | --- |
+| `SKILL.md` | this doctrine |
+| `scripts/audit_cli.py` | the CLI implementing every move that ships as code |
+| `references/usage.md` | one worked invocation per subcommand |
+| `references/example-report.md` | a report `check-report` accepts |
+| `references/probes/skill-audit.subcommands.json` | the self-probe recipe for `roster` |
+| `references/probes/skill-audit.structure.json` | the self-probe recipe for `structure` |
+| `references/probes/proposal-deliberation.accepted-operations.json` | the first subject's `roster` recipe |
 
 ## Decision Gates
 
@@ -225,6 +249,11 @@ when the report cannot be read.
 | A new name is needed | Search with `.gitignore` disabled and hidden files included, before writing it |
 | A lock passed on its first run | Invert it, watch it fire, restore by inverse patch, confirm by content comparison |
 | A throwaway directory is needed | Put it under `implementations/_<name>` and remove it; never the system temporary directory |
+| A from-zero box already holds files | Exit `2` naming the path; never adopt a non-empty box |
+| Any of `structure`'s three sides normalises to zero members | Exit `2`; never hand an empty set to the comparison |
+| A `structure` recipe step names an unknown `{token}` | Exit `2`; only `{repoRoot}`, `{subject}`, and `{box}` interpolate |
+| A from-zero build changes the subject | Exit `2` as `build-escaped-the-box`; never reported as a finding |
+| A declared cell's shape cannot be produced by a walk | Set it aside as `shape-not-walkable`; never expand it against the disk |
 
 ## Handoff
 

@@ -16,10 +16,13 @@ into a page of confident findings.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
+import shutil
 import subprocess
 import sys
+from fnmatch import fnmatch
 from pathlib import Path
 
 #: Cardinal words a document might use to state the size of a list. Digits are
@@ -364,6 +367,222 @@ def probe_code_side(recipe, subject, timeout=30):
     return members
 
 
+def tree_digest(root, exclude=()):
+    """A sorted `path -> sha256` map over every file under `root`.
+
+    The sole helper in this module allowed to walk a filesystem tree.
+    `structure`'s on-disk and from-zero sides are this function's output, and
+    so is every box's before/after proof of containment. `SingleWalkTests` in
+    `tests/test_skill_audit.py` reads this file's own syntax tree and asserts
+    that `rglob`, `walk`, `iterdir`, `scandir`, and `glob` occur nowhere else
+    in `audit_cli.py`, so a second walk added later -- by this module or by
+    the follow-up change's `manifest` -- turns that lock red rather than
+    quietly drifting from this one.
+
+    Paths are POSIX-relative to `root`, files only: a directory holds no
+    content of its own to hash, and comparing directory sets would let an
+    empty, newly created folder pass as agreement. `exclude` is a tuple of
+    `fnmatch` patterns matched against the relative path; there is no
+    built-in default, because a default would be a hidden narrowing of the
+    domain a recipe declares.
+    """
+    digest = {}
+    for path in sorted(Path(root).rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if any(fnmatch(relative, pattern) for pattern in exclude):
+            continue
+        digest[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return digest
+
+
+#: Only these three tokens interpolate inside a `structure` recipe's
+#: `fromZero.steps`, each resolved absolutely by the tool rather than taken
+#: from the recipe string. Any other `{...}` is refused rather than passed
+#: through as a literal brace, so a recipe cannot quietly widen what a step
+#: may reach.
+STRUCTURE_TOKENS = {"repoRoot", "subject", "box"}
+
+_TOKEN_RE = re.compile(r"\{([a-zA-Z]+)\}")
+
+
+def interpolate_token(text, repo, subject, box):
+    """Substitute `{repoRoot}`, `{subject}`, and `{box}` inside one argv part.
+
+    Every other `{token}` shape is a recipe naming something this tool never
+    declared, and is refused before a process is ever started.
+    """
+    def replace(match):
+        token = match.group(1)
+        if token not in STRUCTURE_TOKENS:
+            raise Unprobeable(
+                f"the recipe's step names an unknown token {{{token}}}; only "
+                f"{sorted(STRUCTURE_TOKENS)} interpolate")
+        return {"repoRoot": str(repo), "subject": str(subject),
+                "box": str(box)}[token]
+    return _TOKEN_RE.sub(replace, text)
+
+
+def run_box_step(step, repo, subject, box, timeout):
+    """One `fromZero` build step, run inside the box with no shell.
+
+    Mirrors `probe_code_side`'s discipline: argv as a list of strings,
+    `shell=False`, a hang becomes exit `2` rather than a wait forever, and a
+    nonzero exit from the build itself is an inability to build from-zero,
+    never an empty from-zero side.
+    """
+    if not step or not all(isinstance(part, str) for part in step):
+        raise Unprobeable("a fromZero step's argv must be a list of strings")
+    argv = [interpolate_token(part, repo, subject, box) for part in step]
+    try:
+        completed = subprocess.run(
+            argv, cwd=str(box), shell=False,
+            capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError as error:
+        raise Unprobeable(f"a fromZero step's argv[0] is not executable: {error}")
+    except subprocess.TimeoutExpired:
+        raise Unprobeable(
+            f"a fromZero step did not answer within {timeout}s; a build that "
+            "hangs is an inability to look, never an empty from-zero side")
+    if completed.returncode != 0:
+        raise Unprobeable(
+            f"a fromZero step exited {completed.returncode}: "
+            f"{completed.stderr.strip()[:400]}")
+
+
+def box_empty_or_absent(box, exclude=()):
+    """Whether a box holds no files, proven by content.
+
+    Never by `git status`: `git status --porcelain` over an ignored tree is
+    empty by construction, so it can only ever agree, and it would report a
+    box that still has files sitting inside it as clean.
+    """
+    return tree_digest(box, exclude) == {}
+
+
+def erase_box(box):
+    """Remove a box entirely.
+
+    `shutil.rmtree` rather than a hand-rolled walk, so `tree_digest` stays the
+    one place in this module allowed to walk a filesystem tree.
+    """
+    if box.exists():
+        shutil.rmtree(box)
+
+
+def resolve_under(raw, base, label):
+    """A recipe-declared root, resolved under `base` and refused if it climbs
+    out -- the same discipline `resolve_site` and `probe_code_side`'s `cwd`
+    both apply to every other recipe-declared path in this module.
+    """
+    raw = raw or "."
+    parts = Path(raw).parts
+    if Path(raw).is_absolute() or ".." in parts:
+        raise Unprobeable(f"the recipe's {label} must stay under its root: {raw!r}")
+    resolved = (base / raw).resolve()
+    if base != resolved and base not in resolved.parents:
+        raise Unprobeable(f"the recipe's {label} resolves outside its root: {raw!r}")
+    return resolved
+
+
+#: Shapes a declared cell can carry that the walk helper can never produce.
+#: Expanding one of these against the disk would let the declared side build
+#: the very set it is meant to be checked against; counting it as a
+#: divergence would blame the disk for a spelling. Neither happens here: the
+#: cell is set aside in `notes` instead.
+_GLOB_CHARS = set("*?[]")
+
+
+def normalize_declared_paths(raw_members):
+    """Declared path cells, normalised for comparison against a walk.
+
+    POSIX separators, a leading `./` stripped, no trailing slash, case
+    preserved, sets compared sorted. A cell whose shape the walk can never
+    produce -- a trailing slash, an absolute path, a `..` segment, a glob
+    character, or a backslash -- is set aside as `shape-not-walkable` rather
+    than normalised, and excluded from every side of the comparison.
+    """
+    normalised = set()
+    notes = []
+    for raw in raw_members:
+        reason = None
+        if raw.endswith("/"):
+            reason = "the cell ends with a trailing slash"
+        elif "\\" in raw:
+            reason = "the cell contains a backslash"
+        elif any(char in raw for char in _GLOB_CHARS):
+            reason = "the cell contains a glob character"
+        elif Path(raw).is_absolute():
+            reason = "the cell is an absolute path"
+        elif ".." in Path(raw).parts:
+            reason = "the cell contains a `..` segment"
+        if reason:
+            notes.append({
+                "detail": f"{reason}, so it is excluded from every side "
+                          "rather than expanded against the disk",
+                "kind": "shape-not-walkable", "path": raw})
+            continue
+        cleaned = raw[2:] if raw.startswith("./") else raw
+        normalised.add(cleaned)
+    return normalised, notes
+
+
+def case_only_divergences(label_a, set_a, label_b, set_b):
+    """Members that agree only case-insensitively, named but never folded.
+
+    Folding them would treat a spelling difference as agreement. Leaving them
+    unfolded means such a pair still surfaces as a divergence on the
+    arithmetic side, and this note explains why rather than leaving the
+    reader to guess.
+    """
+    lower_b = {}
+    for member in set_b:
+        lower_b.setdefault(member.lower(), []).append(member)
+    found = []
+    for member in set_a:
+        if member in set_b:
+            continue
+        for other in lower_b.get(member.lower(), []):
+            found.append({
+                "detail": f"{label_a} names {member!r}; {label_b} names "
+                          f"{other!r}, matching only case-insensitively",
+                "kind": "case-only-divergence", "path": member})
+    return found
+
+
+def structure_outcome(declared, disk, from_zero):
+    """The arithmetic adjudication: which side, if any, is the odd one out.
+
+    `ADJUDICATIONS` is untouched -- this is a different vocabulary, for a
+    different question. Mapping one of these outcomes to a `doctrine wrong` /
+    `artefact wrong` verdict is a doctrine decision the auditor makes when it
+    writes the report, not something this function does.
+    """
+    union = declared | disk | from_zero
+    only_in = {
+        "declared": sorted(declared - disk - from_zero),
+        "disk": sorted(disk - declared - from_zero),
+        "fromZero": sorted(from_zero - declared - disk),
+    }
+    missing_from = {
+        "declared": sorted(union - declared),
+        "disk": sorted(union - disk),
+        "fromZero": sorted(union - from_zero),
+    }
+    if declared == disk == from_zero:
+        outcome = "agree"
+    elif declared == from_zero:
+        outcome = "disk-stale"
+    elif declared == disk:
+        outcome = "builder-broken"
+    elif disk == from_zero:
+        outcome = "document-wrong"
+    else:
+        outcome = "three-way-divergence"
+    return outcome, only_in, missing_from
+
+
 def build_parser():
     """Every subcommand this tool declares.
 
@@ -395,6 +614,21 @@ def build_parser():
         help="override path to the doctrine file whose moves table the "
              "move-outcome roster is derived from (default: this skill's own "
              "SKILL.md, resolved relative to this script)")
+
+    structure = commands.add_parser(
+        "structure",
+        help="derive declared, on-disk, and from-zero structure and "
+             "adjudicate which side is wrong")
+    structure.add_argument("--subject", required=True,
+                           help="the subject's root directory")
+    structure.add_argument("--spec", required=True,
+                           help="the JSON recipe describing the declared, "
+                                "disk, and fromZero sides")
+    structure.add_argument("--repo-root", default=".",
+                           help="the root the box and {repoRoot} token "
+                                "resolve under")
+    structure.add_argument("--timeout", type=int, default=30,
+                           help="seconds before a hanging build step is exit 2")
 
     return parser
 
@@ -529,6 +763,119 @@ def finish(code, doctrine, notes, unregistered, phantom, comparison,
         "phantom": phantom,
         "surface": recipe.get("surface", ""),
         "unregistered": unregistered,
+    })
+    return 0
+
+
+def run_structure(args):
+    """Derive declared, on-disk, and from-zero, and adjudicate arithmetically.
+
+    Exit `0` for any verdict, including a three-way divergence. Exit `2` when
+    a side cannot be derived, when the box is not ours to adopt, or when the
+    build wrote outside the box -- none of those is a finding, each is an
+    inability to look.
+    """
+    spec_path = Path(args.spec)
+    if not spec_path.is_file():
+        raise Unprobeable(f"no structure recipe at {spec_path}")
+    try:
+        recipe = json.loads(spec_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise Unprobeable(f"the structure recipe is unreadable: {error}")
+
+    subject = Path(args.subject).resolve()
+    repo = Path(args.repo_root).resolve()
+    surface = recipe.get("surface", "")
+    if not surface:
+        raise Unprobeable("the recipe names no surface to box the build under")
+    exclude = tuple(recipe.get("exclude", ()))
+
+    declared_site = recipe.get("declared", {})
+    declared_path = resolve_site(declared_site, subject, repo)
+    declared_text = read_site(declared_path)
+    raw_members, _ = doctrine_side(declared_text, declared_site)
+    declared_set, notes = normalize_declared_paths(raw_members)
+    if not declared_set:
+        raise Unprobeable(
+            "the declared side normalises to zero members; an empty declared "
+            "side would report the entire disk as builder-broken")
+
+    disk_root = resolve_under(recipe.get("disk", {}).get("root"), subject,
+                              "disk.root")
+    if not disk_root.is_dir():
+        raise Unprobeable(f"the recipe's disk.root does not exist: {disk_root}")
+    disk_set = set(tree_digest(disk_root, exclude))
+    if not disk_set:
+        raise Unprobeable(
+            "the on-disk side normalises to zero members; an empty on-disk "
+            "side would report the entire declared side as disk-stale")
+
+    from_zero_spec = recipe.get("fromZero", {})
+    steps = from_zero_spec.get("steps", [])
+    if not steps:
+        raise Unprobeable("the recipe declares no fromZero.steps to build from")
+
+    box = repo / "implementations" / f"_structure_{surface}"
+    before_empty = box_empty_or_absent(box)
+    if not before_empty:
+        raise Unprobeable(
+            f"a non-empty box already occupies {box}; remove it by hand "
+            "before running structure again -- an occupied box is never "
+            "silently adopted")
+    box.mkdir(parents=True, exist_ok=True)
+
+    try:
+        subject_before = tree_digest(subject, exclude)
+        for step in steps:
+            run_box_step(step, repo, subject, box, args.timeout)
+
+        from_zero_root = resolve_under(
+            from_zero_spec.get("root"), box, "fromZero.root")
+
+        subject_after = tree_digest(subject, exclude)
+        if subject_before != subject_after:
+            changed = sorted(
+                p for p in set(subject_before) | set(subject_after)
+                if subject_before.get(p) != subject_after.get(p))
+            raise Unprobeable(
+                "kind=build-escaped-the-box: the fromZero build changed the "
+                f"subject at {changed}; a build writing outside its box is an "
+                "inability to look, never a finding, because the tool cannot "
+                "tell an intended write from an escape")
+
+        if not from_zero_root.is_dir():
+            raise Unprobeable(
+                "the recipe's fromZero.root does not exist after the build: "
+                f"{from_zero_root}")
+        from_zero_set = set(tree_digest(from_zero_root, exclude))
+        if not from_zero_set:
+            raise Unprobeable(
+                "the from-zero side normalises to zero members; an empty "
+                "from-zero side would report the entire disk as "
+                "builder-broken")
+    finally:
+        erase_box(box)
+
+    after_removed = box_empty_or_absent(box)
+
+    notes = notes + (
+        case_only_divergences("declared", declared_set, "disk", disk_set)
+        + case_only_divergences("declared", declared_set, "fromZero", from_zero_set)
+        + case_only_divergences("disk", disk_set, "fromZero", from_zero_set))
+
+    outcome, only_in, missing_from = structure_outcome(
+        declared_set, disk_set, from_zero_set)
+
+    emit({
+        "containment": {"afterRemoved": after_removed, "beforeEmpty": before_empty,
+                        "box": str(box)},
+        "missingFrom": missing_from,
+        "notes": notes,
+        "onlyIn": only_in,
+        "outcome": outcome,
+        "sides": {"declared": sorted(declared_set), "disk": sorted(disk_set),
+                 "fromZero": sorted(from_zero_set)},
+        "surface": surface,
     })
     return 0
 
@@ -835,6 +1182,7 @@ def run_check_report(args):
 DISPATCH = {
     "roster": run_roster,
     "check-report": run_check_report,
+    "structure": run_structure,
 }
 
 

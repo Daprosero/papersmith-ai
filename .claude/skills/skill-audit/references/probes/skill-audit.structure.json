@@ -1,0 +1,21 @@
+{
+  "surface": "shipped-files",
+  "declared": {
+    "path": "SKILL.md",
+    "table": "| Path | Holds |",
+    "column": 0
+  },
+  "disk": {
+    "root": "."
+  },
+  "fromZero": {
+    "root": "build",
+    "steps": [
+      ["mkdir", "-p", "{box}/build"],
+      ["git", "-C", "{repoRoot}", "archive", "--format=tar",
+       "-o", "{box}/subject.tar", "HEAD:.claude/skills/skill-audit"],
+      ["tar", "-xf", "{box}/subject.tar", "-C", "{box}/build"]
+    ]
+  },
+  "exclude": ["__pycache__/*", "*.pyc", ".DS_Store"]
+}

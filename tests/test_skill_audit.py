@@ -337,8 +337,15 @@ class SkillHouseShapeTests(unittest.TestCase):
         # declared set is a roster, which is this skill's own defect class — so
         # it is kept to the modules the file actually needs and any addition has
         # to be argued for here, in the open, rather than silently admitted.
-        permitted = {"__future__", "argparse", "json", "pathlib",
-                     "re", "subprocess", "sys"}
+        #
+        # `hashlib` and `fnmatch` arrived with `tree_digest`: a sha256 per file
+        # and a glob-pattern exclude, both stdlib and both load-bearing for the
+        # walk this skill is allowed exactly one of. `shutil` arrived with the
+        # box lifecycle: `shutil.rmtree` removes a box in one call, so the
+        # walk-restriction lock never has to carve out an exception for a
+        # hand-rolled recursive delete written beside `tree_digest`.
+        permitted = {"__future__", "argparse", "fnmatch", "hashlib", "json",
+                     "pathlib", "re", "shutil", "subprocess", "sys"}
         self.assertEqual(
             sorted(imported - permitted), [],
             "audit_cli.py must import nothing outside the standard library, and "
@@ -823,7 +830,8 @@ class SelfAuditSubcommandRosterTests(unittest.TestCase):
                 self.assertIn(key, payload)
         self.assertEqual(payload["unregistered"], [])
         self.assertEqual(payload["phantom"], [])
-        self.assertEqual(sorted(payload["code"]), ["check-report", "roster"])
+        self.assertEqual(sorted(payload["code"]),
+                         ["check-report", "roster", "structure"])
 
     def test_the_roster_comes_from_argparse_and_not_from_a_list(self):
         _, payload = roster_json(SELF_SPEC, SKILL_ROOT)
@@ -1695,19 +1703,11 @@ class UsageReferenceTests(unittest.TestCase):
 REPORT = (FORGE / "openspec" / "changes" / "the-skill-that-audits-the-others"
           / "audit-proposal-deliberation-operations.md")
 
-
-def tree_digest(root):
-    """A sorted `path -> sha256` mapping over every file under `root`.
-
-    Content, never version control. `git status --porcelain` over an ignored
-    tree is empty by construction, so it can only ever agree; this is the
-    interim stand-in for the `manifest` subcommand deferred to the follow-up
-    change, and it is named as such rather than passed off as equivalent.
-    """
-    import hashlib
-    return {
-        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(root.rglob("*")) if path.is_file()}
+#: Not a private copy. This slice deletes the one that used to live here and
+#: imports the shipped `tree_digest` instead -- the same function `structure`
+#: derives its on-disk and from-zero sides from, and `SingleWalkTests` locks
+#: it as the only place in `audit_cli.py` allowed to walk a filesystem tree.
+tree_digest = audit_cli_module().tree_digest
 
 
 class FirstDamageReportTests(unittest.TestCase):
@@ -1766,19 +1766,488 @@ class NothingWasRepairedTests(unittest.TestCase):
             "a file under the audited subject changed; the audit reports and "
             "repairs nothing, so any difference here is a defect in the audit")
 
+    def test_a_structure_run_leaves_the_subject_and_its_ground_untouched(self):
+        """The exemption in the lock below, held by bytes instead of by prose.
+
+        `structure` is the only subcommand that writes at all, so it is the
+        only one that could repair what it audits. The static lock below can
+        say which functions write; it cannot say where. This drives the real
+        subcommand against the real subject and answers that question the
+        only way it can be answered: by comparing the tree to itself.
+
+        The borrowed ground is checked too. A box that outlives its run is a
+        mutation with a delay on it.
+        """
+        ground = FORGE / "implementations"
+        occupants = lambda: sorted(e.name for e in ground.iterdir()) \
+            if ground.is_dir() else []
+        before, occupied_before = tree_digest(SKILL_ROOT), occupants()
+        self.assertIn(
+            "scripts/audit_cli.py", before,
+            "the walk did not see the subject's own script, so a tree that "
+            "compares equal afterwards would prove nothing")
+        structure_json(STRUCTURE_SPEC, SKILL_ROOT, repo=FORGE)
+        after = tree_digest(SKILL_ROOT)
+        self.assertEqual(
+            sorted(set(before) - set(after)), [], "a file was removed")
+        self.assertEqual(
+            sorted(set(after) - set(before)), [], "a file was added")
+        self.assertEqual(
+            [q for q in before if before[q] != after.get(q)], [],
+            "structure changed a file under the audited subject; the audit "
+            "reports and repairs nothing, so any difference here is a defect "
+            "in the audit")
+        self.assertEqual(
+            occupants(), occupied_before,
+            "structure left its box behind; the ground it borrows must look "
+            "the same afterwards")
+
     def test_the_auditor_names_no_write_into_the_audited_subject(self):
+        """`roster` and `check-report` write nothing, anywhere, and still don't.
+
+        The box lifecycle is the one exception, and it is named function by
+        function: `run_structure` creates the box and `erase_box` removes it.
+        Every other function in every `.py` file this skill ships writes
+        nothing at all.
+
+        What this lock cannot see is where an exempt function writes, and an
+        exemption whose limit lives only in a docstring is a claim with
+        nothing behind it. The limit is held one test above, by driving the
+        real `structure` and reading the subject's bytes off disk.
+        """
+        box_lifecycle_exemption = {"run_structure", "erase_box"}
         for path in sorted(SKILL_ROOT.rglob("*")):
             if not path.is_file() or path.suffix != ".py":
                 continue
             tree = ast.parse(path.read_text(encoding="utf-8"))
-            written = {node.func.attr for node in ast.walk(tree)
-                       if isinstance(node, ast.Call)
-                       and isinstance(node.func, ast.Attribute)}
-            for verb in ("write_text", "write_bytes", "mkdir", "unlink",
-                         "rmdir", "rename", "replace"):
-                with self.subTest(path=path.name, verb=verb):
-                    self.assertNotIn(
-                        verb, written,
-                        f"{path.name} calls {verb}; the auditor writes nothing "
-                        "anywhere, which is how `mutations: 0` stays true "
-                        "without depending on which path it was pointed at")
+            for definition in ast.walk(tree):
+                if not isinstance(definition, ast.FunctionDef) \
+                        or definition.name in box_lifecycle_exemption:
+                    continue
+                written = {node.func.attr for node in ast.walk(definition)
+                          if isinstance(node, ast.Call)
+                          and isinstance(node.func, ast.Attribute)}
+                for verb in ("write_text", "write_bytes", "mkdir", "unlink",
+                             "rmdir", "rename", "replace", "rmtree"):
+                    with self.subTest(path=path.name, function=definition.name,
+                                      verb=verb):
+                        self.assertNotIn(
+                            verb, written,
+                            f"{path.name}:{definition.name} calls {verb}; only "
+                            f"{sorted(box_lifecycle_exemption)} may write, and "
+                            "only inside its own box, never into the subject")
+
+
+# ==========================================================================
+# `the-audit-that-runs-what-it-claims`, Slice 2 -- `structure`: three
+# independently derived sides (declared, on-disk, from-zero) and one
+# arithmetic adjudication, built on the one walk helper this module is ever
+# allowed to have.
+# ==========================================================================
+
+STRUCTURE_SPEC = PROBES / "skill-audit.structure.json"
+
+#: Every sibling skill directory except this one and the excluded name below,
+#: discovered rather than listed by hand -- a hardcoded roster of skills is
+#: exactly the defect class this tool exists to find.
+#:
+#: One name is excluded: it holds roughly a gigabyte of binary assets, and
+#: hashing it twice per test would make this lock prohibitively slow without
+#: adding any assurance the other siblings don't already provide.
+_SELF_PROBE_EXCLUDED_SIBLING = "paper-ingestion"
+SIBLING_SKILLS_TO_CHECK = tuple(sorted(
+    entry.name for entry in SKILL_ROOT.parent.iterdir()
+    if entry.is_dir() and entry.name != SKILL_ROOT.name
+    and entry.name != _SELF_PROBE_EXCLUDED_SIBLING))
+
+
+def structure_json(spec, subject, repo=FORGE, extra=()):
+    """Drive `structure` as a process and parse what it wrote to stdout."""
+    result = run_cli("structure", "--subject", str(subject),
+                     "--spec", str(spec), "--repo-root", str(repo), *extra)
+    try:
+        return result, json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise AssertionError(
+            f"structure exited {result.returncode} without JSON on stdout.\n"
+            f"stdout={result.stdout!r}\nstderr={result.stderr!r}")
+
+
+class TreeDigestTests(BoxMixin, unittest.TestCase):
+    """The one path->sha256 walk, used by `structure`'s three sides and by
+    every box's cleanup proof.
+    """
+
+    def test_the_digest_is_sorted_path_to_sha256_over_files_only(self):
+        box = self.make_box("digest_basic")
+        self.write(box, "a.txt", "alpha\n")
+        self.write(box, "sub/b.txt", "beta\n")
+        (box / "emptydir").mkdir()
+        digest = audit_cli_module().tree_digest(box)
+        self.assertEqual(sorted(digest), ["a.txt", "sub/b.txt"],
+                         "a directory holds no content of its own to hash, "
+                         "so it is never a member of the digest")
+        self.assertEqual(len(digest["a.txt"]), 64,
+                         "sha256 hexdigests are 64 hex characters")
+
+    def test_one_changed_byte_changes_the_digest(self):
+        box = self.make_box("digest_change")
+        path = self.write(box, "a.txt", "alpha\n")
+        before = audit_cli_module().tree_digest(box)
+        path.write_text("Alpha\n", encoding="utf-8")
+        after = audit_cli_module().tree_digest(box)
+        self.assertNotEqual(before["a.txt"], after["a.txt"])
+
+    def test_an_excluded_pattern_is_never_a_member(self):
+        box = self.make_box("digest_exclude")
+        self.write(box, "keep.py", "print(1)\n")
+        self.write(box, "__pycache__/keep.cpython-39.pyc", "junk")
+        digest = audit_cli_module().tree_digest(box, exclude=("__pycache__/*",))
+        self.assertEqual(sorted(digest), ["keep.py"])
+
+    def test_a_missing_root_digests_as_empty_rather_than_raising(self):
+        digest = audit_cli_module().tree_digest(BOXES / "_skill_audit_never_made")
+        self.assertEqual(digest, {},
+                         "a box not yet created is content-empty, not an error")
+
+
+class SingleWalkTests(unittest.TestCase):
+    """The manifest contract's second clause, mechanised.
+
+    Scope: `audit_cli.py`, and only that one file. `rglob`, `os.walk`,
+    `iterdir`, `scandir`, and `glob` may appear inside `tree_digest` and
+    nowhere else in it -- not in `structure`'s box lifecycle, not in
+    `roster`, not anywhere. This is what turns a second walk added by the
+    follow-up change's `manifest` into a red rather than a silent duplicate.
+    It says nothing about `tests/test_skill_audit.py` or any other file in
+    this repository.
+    """
+
+    WALK_NAMES = ("rglob", "walk", "iterdir", "scandir", "glob")
+
+    def test_the_walk_names_appear_only_inside_tree_digest(self):
+        tree = ast.parse(CLI.read_text(encoding="utf-8"))
+        function_bodies = {
+            node.name: node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)}
+        self.assertIn(
+            "tree_digest", function_bodies,
+            "audit_cli.py defines no tree_digest to scope this lock to")
+        inside_tree_digest = set(ast.walk(function_bodies["tree_digest"]))
+        offenders = []
+        for node in ast.walk(tree):
+            if node in inside_tree_digest:
+                continue
+            name = node.attr if isinstance(node, ast.Attribute) else (
+                node.id if isinstance(node, ast.Name) else None)
+            if name in self.WALK_NAMES:
+                offenders.append(name)
+        self.assertEqual(
+            offenders, [],
+            "a walk name appears outside tree_digest in audit_cli.py: "
+            f"{offenders}")
+
+
+class TokenInterpolationTests(unittest.TestCase):
+    """Only `{repoRoot}`, `{subject}`, and `{box}` interpolate."""
+
+    def test_the_three_named_tokens_interpolate(self):
+        cli = audit_cli_module()
+        result = cli.interpolate_token(
+            "{repoRoot}-x-{subject}-y-{box}",
+            Path("/r"), Path("/s"), Path("/b"))
+        self.assertEqual(result, "/r-x-/s-y-/b")
+
+    def test_an_unknown_token_is_unprobeable(self):
+        cli = audit_cli_module()
+        with self.assertRaises(cli.Unprobeable):
+            cli.interpolate_token("{mystery}", Path("/r"), Path("/s"), Path("/b"))
+
+
+class StructureNormalisationTests(unittest.TestCase):
+    """One normalisation, applied to every declared cell before comparison."""
+
+    def test_posix_relative_dot_slash_stripped_case_preserved(self):
+        cli = audit_cli_module()
+        normalised, notes = cli.normalize_declared_paths(["./a/b.txt", "C.txt"])
+        self.assertEqual(normalised, {"a/b.txt", "C.txt"})
+        self.assertEqual(notes, [])
+
+    def test_shape_not_walkable_cells_are_set_aside_from_every_side(self):
+        cli = audit_cli_module()
+        raw = ["trailing/", "/absolute", "../up", "glob*.md", "back\\slash"]
+        normalised, notes = cli.normalize_declared_paths(raw)
+        self.assertEqual(normalised, set(),
+                         "none of these shapes may be expanded against the disk")
+        self.assertEqual(len(notes), len(raw))
+        self.assertTrue(all(note["kind"] == "shape-not-walkable" for note in notes))
+
+    def test_case_only_divergence_is_noted_and_never_folded(self):
+        cli = audit_cli_module()
+        found = cli.case_only_divergences(
+            "declared", {"README.md"}, "disk", {"readme.md"})
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["kind"], "case-only-divergence")
+
+    def test_an_exact_match_is_not_a_case_only_divergence(self):
+        cli = audit_cli_module()
+        self.assertEqual(
+            cli.case_only_divergences("declared", {"a.txt"}, "disk", {"a.txt"}), [])
+
+
+class StructureOutcomeArithmeticTests(unittest.TestCase):
+    """The arithmetic adjudication, and `ADJUDICATIONS` left untouched."""
+
+    def test_all_three_agree(self):
+        outcome, *_ = audit_cli_module().structure_outcome({"a"}, {"a"}, {"a"})
+        self.assertEqual(outcome, "agree")
+
+    def test_disk_stale_when_declared_and_from_zero_agree(self):
+        outcome, *_ = audit_cli_module().structure_outcome(
+            {"a", "b"}, {"a"}, {"a", "b"})
+        self.assertEqual(outcome, "disk-stale")
+
+    def test_builder_broken_when_declared_and_disk_agree(self):
+        outcome, *_ = audit_cli_module().structure_outcome(
+            {"a", "b"}, {"a", "b"}, {"a"})
+        self.assertEqual(outcome, "builder-broken")
+
+    def test_document_wrong_when_disk_and_from_zero_agree(self):
+        outcome, *_ = audit_cli_module().structure_outcome(
+            {"a"}, {"a", "b"}, {"a", "b"})
+        self.assertEqual(outcome, "document-wrong")
+
+    def test_three_way_divergence_when_all_three_differ(self):
+        outcome, *_ = audit_cli_module().structure_outcome({"a"}, {"b"}, {"c"})
+        self.assertEqual(outcome, "three-way-divergence")
+
+    def test_no_outcome_is_smuggled_into_adjudications(self):
+        cli = audit_cli_module()
+        for outcome in ("agree", "disk-stale", "builder-broken",
+                        "document-wrong", "three-way-divergence"):
+            with self.subTest(outcome=outcome):
+                self.assertNotIn(outcome, cli.ADJUDICATIONS)
+        self.assertEqual(len(cli.ADJUDICATIONS), 3,
+                         "structure adds no fourth ADJUDICATIONS value")
+
+    def test_only_in_and_missing_from_are_sets_never_booleans(self):
+        _, only_in, missing_from = audit_cli_module().structure_outcome(
+            {"a"}, {"b"}, {"c"})
+        for payload in (only_in, missing_from):
+            for side in ("declared", "disk", "fromZero"):
+                with self.subTest(side=side):
+                    self.assertIsInstance(payload[side], list)
+
+
+class StructureBoxMixin(BoxMixin):
+    """Fixtures for `structure`'s three sides: a subject the audit walks
+    directly, plus a box the audit builds fresh under `implementations/`.
+    """
+
+    def structure_box(self, surface):
+        box = BOXES / f"_structure_{surface}"
+        self.addCleanup(self._erase_structure_box, box)
+        return box
+
+    def _erase_structure_box(self, box):
+        if not box.exists():
+            return
+        for path in sorted(box.rglob("*"), reverse=True):
+            path.rmdir() if path.is_dir() else path.unlink()
+        box.rmdir()
+
+    def make_subject(self, name, declared, disk_files):
+        subject = self.make_box(name)
+        rows = "".join(f"| `{path}` | x |\n" for path in declared)
+        self.write(subject, "STRUCTURE.md",
+                  f"| Path | Holds |\n| --- | --- |\n{rows}")
+        for relative, content in disk_files.items():
+            self.write(subject, f"content/{relative}", content)
+        return subject
+
+    def build_script(self, subject, files):
+        """A build step's script: writes `files` byte-identically under
+        whatever root it is called with, so the arithmetic tests exercise
+        agreement or divergence deliberately rather than by accident.
+        """
+        lines = ["import pathlib, sys", "root = pathlib.Path(sys.argv[1])"]
+        for relative, content in files.items():
+            lines.append(
+                f"(root / {relative!r}).parent.mkdir(parents=True, exist_ok=True)")
+            lines.append(
+                f"(root / {relative!r}).write_text({content!r}, encoding='utf-8')")
+        return self.write(subject, "build.py", "\n".join(lines) + "\n")
+
+    def make_recipe(self, subject, surface, steps, exclude=()):
+        spec = subject / "structure.json"
+        spec.write_text(json.dumps({
+            "surface": surface,
+            "declared": {"path": "STRUCTURE.md", "table": "| Path | Holds |",
+                        "column": 0},
+            "disk": {"root": "content"},
+            "fromZero": {"root": "build", "steps": steps},
+            "exclude": list(exclude),
+        }, indent=2), encoding="utf-8")
+        return spec
+
+
+class StructureOutcomeIntegrationTests(StructureBoxMixin, unittest.TestCase):
+    """All three outcomes, over a real subprocess and a real box."""
+
+    def _run(self, name, declared, disk_files, from_zero_files):
+        surface = f"outcome_{name}"
+        self.structure_box(surface)
+        subject = self.make_subject(name, declared, disk_files)
+        script = self.build_script(subject, from_zero_files)
+        steps = [["python3", str(script), "{box}/build"]]
+        spec = self.make_recipe(subject, surface, steps)
+        return structure_json(spec, subject, repo=FORGE)
+
+    def test_disk_stale(self):
+        result, payload = self._run(
+            "disk_stale",
+            declared=["a.txt", "b.txt"],
+            disk_files={"a.txt": "one\n"},
+            from_zero_files={"a.txt": "one\n", "b.txt": "two\n"})
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["outcome"], "disk-stale")
+
+    def test_builder_broken(self):
+        result, payload = self._run(
+            "builder_broken",
+            declared=["a.txt", "b.txt"],
+            disk_files={"a.txt": "one\n", "b.txt": "two\n"},
+            from_zero_files={"a.txt": "one\n"})
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["outcome"], "builder-broken")
+
+    def test_document_wrong(self):
+        result, payload = self._run(
+            "document_wrong",
+            declared=["a.txt"],
+            disk_files={"a.txt": "one\n", "b.txt": "two\n"},
+            from_zero_files={"a.txt": "one\n", "b.txt": "two\n"})
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["outcome"], "document-wrong")
+
+    def test_three_way_divergence(self):
+        result, payload = self._run(
+            "three_way",
+            declared=["a.txt"],
+            disk_files={"b.txt": "two\n"},
+            from_zero_files={"c.txt": "three\n"})
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["outcome"], "three-way-divergence")
+
+    def test_all_three_agree(self):
+        result, payload = self._run(
+            "agree", declared=["a.txt"], disk_files={"a.txt": "one\n"},
+            from_zero_files={"a.txt": "one\n"})
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["outcome"], "agree")
+        self.assertTrue(payload["containment"]["afterRemoved"])
+        self.assertTrue(payload["containment"]["beforeEmpty"])
+
+
+class StructureBoxLifecycleTests(StructureBoxMixin, unittest.TestCase):
+    """The box: adopted only empty, escape is exit 2, cleanup by content."""
+
+    def test_a_non_empty_box_is_refused_and_left_untouched(self):
+        surface = "occupied"
+        box = self.structure_box(surface)
+        box.mkdir(parents=True, exist_ok=True)
+        (box / "stranger.txt").write_text("already here\n", encoding="utf-8")
+        subject = self.make_subject(
+            "occupied_subject", declared=["a.txt"], disk_files={"a.txt": "x\n"})
+        script = self.build_script(subject, {"a.txt": "x\n"})
+        spec = self.make_recipe(subject, surface,
+                                [["python3", str(script), "{box}/build"]])
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn(str(box), payload["error"])
+        self.assertTrue((box / "stranger.txt").exists(),
+                        "a box that was not ours to adopt must be left alone")
+
+    def test_a_build_that_writes_outside_the_box_is_exit_two(self):
+        surface = "escape"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            "escape_subject", declared=["a.txt"], disk_files={"a.txt": "x\n"})
+        escape_script = self.write(
+            subject, "escape.py",
+            "import pathlib, sys\n"
+            "pathlib.Path(sys.argv[1]).write_text('escaped', encoding='utf-8')\n")
+        steps = [["python3", str(escape_script), "{subject}/escaped.txt"]]
+        spec = self.make_recipe(subject, surface, steps)
+        escaped = subject / "escaped.txt"
+        self.addCleanup(lambda: escaped.unlink() if escaped.exists() else None)
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("build-escaped-the-box", payload["error"])
+        self.assertIn("escaped.txt", payload["error"])
+
+    def test_an_unknown_token_in_a_step_is_exit_two(self):
+        surface = "unknown_token"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            "token_subject", declared=["a.txt"], disk_files={"a.txt": "x\n"})
+        spec = self.make_recipe(subject, surface, [["echo", "{mystery}"]])
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("unknown token", payload["error"])
+
+    def test_an_empty_declared_side_is_unprobeable_never_a_finding(self):
+        surface = "empty_declared"
+        self.structure_box(surface)
+        subject = self.make_box("empty_declared_subject")
+        self.write(subject, "STRUCTURE.md", "| Path | Holds |\n| --- | --- |\n")
+        self.write(subject, "content/a.txt", "x\n")
+        script = self.build_script(subject, {"a.txt": "x\n"})
+        spec = self.make_recipe(subject, surface,
+                                [["python3", str(script), "{box}/build"]])
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("zero members", payload["error"])
+        self.assertNotIn("finding", payload["error"])
+
+    def test_cleanup_is_proven_by_content_never_by_git_status(self):
+        surface = "cleanup_proof"
+        box = self.structure_box(surface)
+        subject = self.make_subject(
+            "cleanup_subject", declared=["a.txt"], disk_files={"a.txt": "x\n"})
+        script = self.build_script(subject, {"a.txt": "x\n"})
+        spec = self.make_recipe(subject, surface,
+                                [["python3", str(script), "{box}/build"]])
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        after = audit_cli_module().tree_digest(BOXES)
+        self.assertEqual(
+            [p for p in after if p.startswith(f"_structure_{surface}/")], [],
+            "the box's paths must be absent from a fresh content walk of "
+            "implementations/ -- the same proof every other box's cleanup "
+            "uses in this file, never `git status`")
+        self.assertFalse(box.exists())
+
+
+class StructureSelfProbeTests(unittest.TestCase):
+    """The shipped recipe, pointed at the auditor's own layout.
+
+    Uncommitted work in this slice legitimately reads as `builder-broken`
+    against `HEAD`; that is documented as accurate, not papered over.
+    """
+
+    def test_the_shipped_recipe_runs_and_touches_no_sibling_skill(self):
+        cli = audit_cli_module()
+        before = {name: cli.tree_digest(SKILL_ROOT.parent / name)
+                 for name in SIBLING_SKILLS_TO_CHECK}
+        result, payload = structure_json(STRUCTURE_SPEC, SKILL_ROOT, repo=FORGE)
+        after = {name: cli.tree_digest(SKILL_ROOT.parent / name)
+                for name in SIBLING_SKILLS_TO_CHECK}
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            before, after,
+            "structure reads the subject and builds its own box; it must "
+            "never touch a sibling skill")
+        self.assertIn(payload["outcome"],
+                      ("agree", "disk-stale", "builder-broken",
+                       "document-wrong", "three-way-divergence"))

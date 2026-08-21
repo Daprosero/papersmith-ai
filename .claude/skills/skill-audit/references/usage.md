@@ -42,10 +42,26 @@ Exit `0` and an empty `violations` list. Exit `1` lists what is missing, each
 violation naming the item, why it matters, and where. Exit `2` means the report
 could not be read at all, which is not the same claim as reading an invalid one.
 
+## `structure` against the auditor's own layout
+
+Derives the declared side from `SKILL.md`'s own `## The shipped files` table,
+the on-disk side by walking `--subject` itself, and the from-zero side by
+running the recipe's own `git archive` + `tar` steps inside a fresh, empty box
+under `implementations/`, then removes the box and adjudicates arithmetically.
+
+```
+$ python3 .claude/skills/skill-audit/scripts/audit_cli.py structure --subject .claude/skills/skill-audit --spec .claude/skills/skill-audit/references/probes/skill-audit.structure.json --repo-root .
+```
+
+Exit `0` for any verdict, `outcome` included. Against an uncommitted change
+this reads `builder-broken` — the from-zero side is built from `HEAD`, so a
+file added on disk but not yet committed is genuinely absent from a fresh
+install, and that is documented as accurate rather than papered over.
+
 ## Exit codes, in one place
 
-| Exit | `roster` | `check-report` |
-| --- | --- | --- |
-| `0` | it looked, and this is the verdict | the report is valid |
-| `1` | not used | the report is invalid |
-| `2` | it could not look | the report could not be read |
+| Exit | `roster` | `check-report` | `structure` |
+| --- | --- | --- | --- |
+| `0` | it looked, and this is the verdict | the report is valid | it looked, and this is the outcome |
+| `1` | not used | the report is invalid | not used |
+| `2` | it could not look | the report could not be read | a side could not be derived, the box was not empty, or the build escaped it |

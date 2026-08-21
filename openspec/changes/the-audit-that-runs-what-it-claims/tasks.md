@@ -46,23 +46,23 @@ Baseline (measured): `python3 -m unittest discover -s tests` = 973 OK; `-p 'test
 
 ## Slice 2 — `structure` (order-free vs. Slice 3)
 
-- [ ] 2.1 RED: add `tree_digest(root, exclude)` tests — sorted path→sha256, files only, one changed byte changes the digest; add the `ast` lock asserting `rglob/walk/iterdir/scandir/glob` occur only inside `tree_digest`. Confirm fail.
-- [ ] 2.2 GREEN: implement `tree_digest` in the code-side section, below the `ast`-guarded divider.
-- [ ] 2.3 RED: add normalisation tests — POSIX separators, `./` stripped, no trailing slash, files-only, case preserved; `shape-not-walkable`/`case-only-divergence` notes; any zero-member side → `Unprobeable` exit 2. Confirm fail.
-- [ ] 2.4 GREEN: implement normalisation and `declared`/`disk`/`fromZero` side derivation.
-- [ ] 2.5 RED: add outcome tests — each two-side-agreement case names the differing side (`disk-stale`/`builder-broken`/`document-wrong`); `three-way-divergence` when all differ; no new `ADJUDICATIONS` value. Confirm fail.
-- [ ] 2.6 GREEN: implement outcome arithmetic and `onlyIn`/`missingFrom` sets.
-- [ ] 2.7 RED: add box tests — box at `<repoRoot>/implementations/_structure_<surface>`; non-empty pre-box → exit 2; subject digest change during build → exit 2 `build-escaped-the-box`; cleanup proven by `tree_digest`, never `git status`. Confirm fail.
-- [ ] 2.8 GREEN: implement box create/run-steps/before-after digest/`finally` cleanup; only `{repoRoot}/{subject}/{box}` interpolate, `shell=False`, unknown token → exit 2.
-- [ ] 2.9 Add `structure` to `build_parser` and `DISPATCH`.
-- [ ] 2.10 `SKILL.md`: correct moves row 1 → `Ships as: structure`; add `structure` subcommand row; add box/underivable-side Decision Gates; add `## The shipped files` declared-side table (no cardinal in heading).
-- [ ] 2.11 Create `references/probes/skill-audit.structure.json`: subject = the auditor, `fromZero.steps` = `git archive HEAD:.claude/skills/skill-audit` piped through `tar -x`.
-- [ ] 2.12 `references/usage.md`: one worked `structure` invocation; extend exit-code table.
-- [ ] 2.13 Co-edit `SelfAuditSubcommandRosterTests` literal to include `"structure"`.
-- [ ] 2.14 `tests/test_skill_audit.py:1527`: delete the private `tree_digest` copy; import the shipped one from `audit_cli`.
-- [ ] 2.15 Inversion: for each outcome, the escape case, and the underivable case — break the guarded fact, confirm the lock fires, restore by inverse patch, confirm by content comparison.
-- [ ] 2.16 Run `VocabularyTests` over every file this slice touches.
-- [ ] 2.17 Verify: both suite counts rise by exactly this slice's added-test count.
+- [x] 2.1 RED: add `tree_digest(root, exclude)` tests — sorted path→sha256, files only, one changed byte changes the digest; add the `ast` lock asserting `rglob/walk/iterdir/scandir/glob` occur only inside `tree_digest`. Confirm fail.
+- [x] 2.2 GREEN: implement `tree_digest` in the code-side section, below the `ast`-guarded divider.
+- [x] 2.3 RED: add normalisation tests — POSIX separators, `./` stripped, no trailing slash, files-only, case preserved; `shape-not-walkable`/`case-only-divergence` notes; any zero-member side → `Unprobeable` exit 2. Confirm fail.
+- [x] 2.4 GREEN: implement normalisation and `declared`/`disk`/`fromZero` side derivation.
+- [x] 2.5 RED: add outcome tests — each two-side-agreement case names the differing side (`disk-stale`/`builder-broken`/`document-wrong`); `three-way-divergence` when all differ; no new `ADJUDICATIONS` value. Confirm fail.
+- [x] 2.6 GREEN: implement outcome arithmetic and `onlyIn`/`missingFrom` sets.
+- [x] 2.7 RED: add box tests — box at `<repoRoot>/implementations/_structure_<surface>`; non-empty pre-box → exit 2; subject digest change during build → exit 2 `build-escaped-the-box`; cleanup proven by `tree_digest`, never `git status`. Confirm fail.
+- [x] 2.8 GREEN: implement box create/run-steps/before-after digest/`finally` cleanup; only `{repoRoot}/{subject}/{box}` interpolate, `shell=False`, unknown token → exit 2.
+- [x] 2.9 Add `structure` to `build_parser` and `DISPATCH`.
+- [x] 2.10 `SKILL.md`: correct moves row 1 → `Ships as: structure`; add `structure` subcommand row; add box/underivable-side Decision Gates; add `## The shipped files` declared-side table (no cardinal in heading).
+- [x] 2.11 Create `references/probes/skill-audit.structure.json`: subject = the auditor, `fromZero.steps` = `git archive HEAD:.claude/skills/skill-audit` piped through `tar -x`.
+- [x] 2.12 `references/usage.md`: one worked `structure` invocation; extend exit-code table.
+- [x] 2.13 Co-edit `SelfAuditSubcommandRosterTests` literal to include `"structure"`.
+- [x] 2.14 `tests/test_skill_audit.py:1527`: delete the private `tree_digest` copy; import the shipped one from `audit_cli`.
+- [x] 2.15 Inversion: for each outcome, the escape case, and the underivable case — break the guarded fact, confirm the lock fires, restore by inverse patch, confirm by content comparison.
+- [x] 2.16 Run `VocabularyTests` over every file this slice touches.
+- [x] 2.17 Verify: both suite counts rise by exactly this slice's added-test count.
 
 ## Slice 3 — `walkthrough` (order-free vs. Slice 2)
 
