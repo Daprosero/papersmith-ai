@@ -528,12 +528,154 @@ def finish(code, doctrine, notes, unregistered, phantom, comparison,
     return 0
 
 
+#: Every item a report must carry, with the heading or field that carries it.
+#: Held to the shape table in SKILL.md in both directions, so this cannot become
+#: a roster restated in two places -- which is the defect the whole tool exists
+#: to find, and which a report validator would be the most embarrassing place
+#: to ship.
+REPORT_SHAPE = {
+    "adjudication": "- Adjudication:",
+    "changed-line-forecast": "## Changed-line forecast",
+    "clean-section": "## Clean, stated as results",
+    "evidence-marker": "- Evidence:",
+    "falsifier": "## Falsifier",
+    "move-number": "- Move:",
+    "ranked-findings": "## Ranked findings",
+    "unchecked-section": "## Unchecked",
+}
+
+ADJUDICATIONS = ("doctrine wrong", "artefact wrong", "not adjudicable")
+
+NO_CONFIRMED_DECLARATION = "No finding in this report is CONFIRMED by execution"
+
+#: Supports a report may never lean on. Each one is a mistake made in this
+#: repository, not a hypothetical: a claim resting on any of them says something
+#: about the environment, the index, or the mood of a suite, and nothing about
+#: the subject.
+FORBIDDEN_SUPPORT = {
+    "green-suite": (
+        re.compile(r"suite (passed|is green)|tests all pass", re.IGNORECASE),
+        "greenness is never evidence; name the execution and the observation"),
+    "porcelain-containment": (
+        re.compile(r"git status", re.IGNORECASE),
+        "`git status --porcelain` over an ignored tree is empty by "
+        "construction, so it can only ever agree; a content manifest taken "
+        "before and after is the evidence that would actually decide this"),
+    "request-as-receipt": (
+        re.compile(r"live GET|GET returned|request succeeded", re.IGNORECASE),
+        "a successful request proves the environment answered, never a fact "
+        "about the subject's code"),
+    "single-harness-count": (
+        re.compile(r"repository[^.\n]*\b\d+\s+tests", re.IGNORECASE),
+        "the harnesses are disjoint and no single command runs both, so one "
+        "of them cannot report a repository-wide count"),
+}
+
+BOTH_HARNESSES = (re.compile(r"unittest", re.IGNORECASE),
+                  re.compile(r"npm test|node", re.IGNORECASE))
+
+CITATION = re.compile(r"`[^`\s]+:\d+`")
+
+
+def report_findings(lines):
+    """Every `### F<n>.` block, with the lines that belong to it."""
+    blocks = []
+    for index, line in enumerate(lines):
+        if re.match(r"^### F\d+\.", line.strip()):
+            blocks.append({"label": line.strip()[4:].split(".")[0],
+                           "line": index + 1, "start": index, "text": []})
+        elif blocks and line.startswith("## "):
+            blocks[-1]["end"] = index
+        elif blocks and "end" not in blocks[-1]:
+            blocks[-1]["text"].append(line)
+    return blocks
+
+
 def run_check_report(args):
-    """Not yet implemented; ships in the report slice of this change."""
-    del args
-    emit({"error": "check-report is declared but not yet implemented",
-          "status": "unimplemented"})
-    return 2
+    """Validate a damage report against the shape, as a process.
+
+    Exit `0` valid, `1` invalid, `2` unreadable. The third is separate for the
+    same reason `roster` keeps it separate: a report nobody could open has not
+    been judged, and recording it as invalid would be a verdict with nothing
+    behind it.
+    """
+    path = Path(args.report)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        emit({"error": f"the report could not be read: {error}",
+              "status": "unreadable"})
+        return 2
+
+    lines = text.splitlines()
+    violations = []
+
+    def fail(item, detail, where):
+        violations.append({"detail": detail, "item": item, "where": where})
+
+    for item, marker in REPORT_SHAPE.items():
+        if marker.startswith("## ") and marker not in lines:
+            fail(item, f"the report carries no {marker!r} section",
+                 f"{path}:1")
+
+    findings = report_findings(lines)
+    if not findings:
+        fail("ranked-findings", "the report names no finding at all",
+             f"{path}:1")
+
+    confirmed = False
+    for finding in findings:
+        where = f"{path}:{finding['line']} {finding['label']}"
+        body = "\n".join(finding["text"])
+
+        move = re.search(r"^- Move:\s*(\d+)\s*$", body, re.MULTILINE)
+        if not move:
+            fail("move-number",
+                 "every finding names the move that found it", where)
+
+        marker = re.search(r"^- Evidence:\s*(.+?)\s*$", body, re.MULTILINE)
+        value = marker.group(1) if marker else ""
+        if value == "CONFIRMED by execution":
+            confirmed = True
+        elif value != "read-only":
+            fail("evidence-marker",
+                 "every finding carries `CONFIRMED by execution` or "
+                 "`read-only`, and there is no default: a missing marker is "
+                 "never read as confirmed", where)
+
+        verdict = re.search(r"^- Adjudication:\s*(.+?)\s*$", body, re.MULTILINE)
+        if not verdict or verdict.group(1) not in ADJUDICATIONS:
+            fail("adjudication",
+                 "every finding carries exactly one adjudication from "
+                 + ", ".join(ADJUDICATIONS), where)
+
+        citations = {c for c in CITATION.findall(body)}
+        if len(citations) < 2:
+            fail("ranked-findings",
+                 "a finding names both halves at `file:line`; naming one half "
+                 f"makes it a candidate, not a finding (saw {sorted(citations)})",
+                 where)
+
+    if findings and not confirmed:
+        head = [line for line in lines[:6] if line.strip()]
+        if not any(NO_CONFIRMED_DECLARATION in line for line in head):
+            fail("evidence-marker",
+                 "no finding is CONFIRMED by execution, so the report must say "
+                 f"so in its first line: {NO_CONFIRMED_DECLARATION!r}",
+                 f"{path}:1")
+
+    for index, line in enumerate(lines, start=1):
+        for item, (pattern, detail) in FORBIDDEN_SUPPORT.items():
+            if not pattern.search(line):
+                continue
+            if item == "single-harness-count" and all(
+                    harness.search(line) for harness in BOTH_HARNESSES):
+                continue
+            fail(item, detail, f"{path}:{index}")
+
+    emit({"violations": sorted(
+        violations, key=lambda v: (v["item"], v["where"]))})
+    return 1 if violations else 0
 
 
 DISPATCH = {

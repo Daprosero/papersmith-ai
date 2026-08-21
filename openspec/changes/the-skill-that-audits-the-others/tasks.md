@@ -235,41 +235,41 @@ before 1.
 
 ## Phase 3 — Slice 4: `check-report` and `usage.md` (PR 4, ~280 lines) — after Phases 1–2
 
-- [ ] 3.1 RED — `check-report <file>` rejects a report omitting any of the eight items: ranked
+- [x] 3.1 RED — `check-report <file>` rejects a report omitting any of the eight items: ranked
       findings naming **both halves at `file:line`**; the move number; a per-finding
       `CONFIRMED by execution` **or** `read-only` marker with **no default**; a per-finding
       adjudication from the three values; `## Clean, stated as results`; `## Unchecked`; a
       falsifier; a changed-line forecast. Exit `0` valid, `1` invalid, `2` unreadable.
-- [ ] 3.2 RED — a finding citing a **single** `file:line` is rejected as a candidate, not a finding.
-- [ ] 3.3 RED — an entirely read-only report must state that fact in its **first line**; absence is
+- [x] 3.2 RED — a finding citing a **single** `file:line` is rejected as a candidate, not a finding.
+- [x] 3.3 RED — an entirely read-only report must state that fact in its **first line**; absence is
       a rejection.
-- [ ] 3.4 RED — a `## Clean` entry whose only support is that the suite passed is rejected. **A
+- [x] 3.4 RED — a `## Clean` entry whose only support is that the suite passed is rejected. **A
       green suite is never evidence.**
-- [ ] 3.5 RED — a containment claim citing `git status` is rejected and the **manifest** is named as
+- [x] 3.5 RED — a containment claim citing `git status` is rejected and the **manifest** is named as
       the required evidence. (`git status --porcelain` over `implementations/` is empty by
       construction.) `manifest` itself ships in the deferred slice; this rejection does not depend
       on it.
-- [ ] 3.6 RED — a finding whose evidence is a live request's success is rejected: a GET proves the
+- [x] 3.6 RED — a finding whose evidence is a live request's success is rejected: a GET proves the
       environment answered, never a fact about the subject's code.
-- [ ] 3.7 RED — a report claiming a repository-wide count from **one** harness is rejected; the two
+- [x] 3.7 RED — a report claiming a repository-wide count from **one** harness is rejected; the two
       harnesses are disjoint and no single command runs both.
-- [ ] 3.8 RED — planted-fixture test: a report fixture whose finding carries **no** marker **and
+- [x] 3.8 RED — planted-fixture test: a report fixture whose finding carries **no** marker **and
       whose filename does not contain the marker text** → rejected. The filename precondition is
       asserted first (Group 3).
-- [ ] 3.9 RED — report-schema self-description: **every** field `check-report` requires has a row in
+- [x] 3.9 RED — report-schema self-description: **every** field `check-report` requires has a row in
       `SKILL.md`'s report-shape table, derived by `markdown_table_rows`, three sets both ways.
-- [ ] 3.10 GREEN — implement `check-report` in `audit_cli.py`.
-- [ ] 3.11 GREEN — author `.claude/skills/skill-audit/references/usage.md` with worked invocations
+- [x] 3.10 GREEN — implement `check-report` in `audit_cli.py`.
+- [x] 3.11 GREEN — author `.claude/skills/skill-audit/references/usage.md` with worked invocations
       of every shipped subcommand. Every documented invocation must be one that actually runs.
-- [ ] 3.12 **Inversion — report-marker requirement.** Plant a finding with no
+- [x] 3.12 **Inversion — report-marker requirement.** Plant a finding with no
       `CONFIRMED`/`read-only` marker → `check-report` rejects. Restore by inverse patch; `cmp`.
-- [ ] 3.13 **Inversion — both-halves requirement.** Reduce a finding to one `file:line` → rejects.
+- [x] 3.13 **Inversion — both-halves requirement.** Reduce a finding to one `file:line` → rejects.
       Restore by inverse patch; `cmp`.
-- [ ] 3.14 **Inversion — schema self-description.** Delete one row from the report-shape table →
+- [x] 3.14 **Inversion — schema self-description.** Delete one row from the report-shape table →
       `phantom` fires; add a required field with no row → `unregistered` fires. Restore each by
       inverse patch; confirm with `cmp` and `shasum -c`.
-- [ ] 3.15 Run the full discover; confirm the count **rose** and record it.
-- [ ] 3.16 Commit: `feat(skill-audit): the report shape this skill demands of others was enforced by its own prose`
+- [x] 3.15 Run the full discover; confirm the count **rose** and record it.
+- [x] 3.16 Commit: `feat(skill-audit): the report shape this skill demands of others was enforced by its own prose`
 
 ## Phase 4 — Slice 5: the first damage report (PR 5, ~120 lines) — after Phases 2–3
 

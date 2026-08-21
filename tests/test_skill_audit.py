@@ -1277,3 +1277,239 @@ class CopiedHelperFidelityTests(unittest.TestCase):
                         f"{helper} has drifted between "
                         f"{ORIGINAL_HELPERS.name} and {path.name}; both "
                         "locations must be edited together")
+
+
+# ==========================================================================
+# Slice 4 — `check-report`: the report shape is enforced by a process, not by
+# the paragraph that describes it.
+# ==========================================================================
+
+VALID_REPORT = """# Audit: a subject, one surface
+
+## Ranked findings
+
+### F1. A set restated in more places than it is derived
+
+- Move: 0
+- Evidence: CONFIRMED by execution
+- Adjudication: doctrine wrong
+- Code side: `engine/host.mjs:320`
+- Doctrine side: `SKILL.md:243`
+- Detail: the running host names more members than the table does.
+
+## Not adjudicable
+
+### F2. A declared value with no consumer anywhere
+
+- Move: 0
+- Evidence: CONFIRMED by execution
+- Adjudication: not adjudicable
+- Code side: `engine/metrics.ts:3`
+- Doctrine side: `engine/host.mjs:319`
+- Detail: build-or-delete, and the choice costs something either way.
+
+## Clean, stated as results
+
+- The refusal path writes nothing - enumerated by driving the host from an
+  empty directory, observed that directory empty before and after.
+
+## Unchecked
+
+- The error-code surface - never enumerated, and not claimed clean.
+
+## Falsifier
+
+Rename the quoted heading and the scope claim stops being honoured.
+
+## Changed-line forecast
+
+| Remedy | Changed lines |
+| --- | --- |
+| One table, one derivation | 40 |
+"""
+
+
+class ReportShapeTests(BoxMixin, unittest.TestCase):
+    """A shape enforced only by prose is a hand-maintained roster.
+
+    Which is the class this skill exists to find, so the shape is enforced by a
+    process that exits non-zero.
+    """
+
+    def check(self, text, name="report.md"):
+        box = getattr(self, "_box", None) or self.make_box("report")
+        self._box = box
+        path = self.write(box, name, text)
+        result = run_cli("check-report", str(path))
+        return result, json.loads(result.stdout)
+
+    def test_a_complete_report_is_accepted(self):
+        result, payload = self.check(VALID_REPORT)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["violations"], [])
+
+    def test_an_unreadable_report_is_exit_two_and_not_exit_one(self):
+        result = run_cli("check-report", str(BOXES / "_absent" / "nope.md"))
+        payload = json.loads(result.stdout)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertNotEqual(
+            result.returncode, 1,
+            "being unable to read a report is not the same as reading an "
+            "invalid one, and the two must not share an exit code")
+
+    def test_every_required_item_is_rejected_when_absent(self):
+        removals = {
+            "ranked-findings": ("## Ranked findings", "## Nothing here"),
+            "clean-section": ("## Clean, stated as results", "## Tidy"),
+            "unchecked-section": ("## Unchecked", "## Unlooked"),
+            "falsifier": ("## Falsifier", "## Postscript"),
+            "changed-line-forecast": ("## Changed-line forecast", "## Notes"),
+            "move-number": ("- Move: 0\n- Evidence: CONFIRMED", "- Evidence: CONFIRMED"),
+            "adjudication": ("- Adjudication: doctrine wrong\n", ""),
+        }
+        for item, (needle, replacement) in removals.items():
+            with self.subTest(item=item):
+                result, payload = self.check(
+                    VALID_REPORT.replace(needle, replacement, 1),
+                    name=f"missing-{item}.md")
+                self.assertEqual(result.returncode, 1, payload)
+                self.assertIn(
+                    item, [v["item"] for v in payload["violations"]],
+                    f"removing {item} must name {item}: {payload['violations']}")
+
+    def test_a_finding_naming_one_half_is_a_candidate_not_a_finding(self):
+        broken = VALID_REPORT.replace("- Doctrine side: `SKILL.md:243`\n", "", 1)
+        result, payload = self.check(broken, name="one-half.md")
+        self.assertEqual(result.returncode, 1)
+        violation = next(v for v in payload["violations"]
+                         if v["item"] == "ranked-findings")
+        self.assertIn("candidate", violation["detail"])
+        self.assertIn("F1", violation["where"])
+
+    def test_a_marker_free_finding_is_rejected_against_a_planted_fixture(self):
+        needle = "CONFIRMED by execution"
+        name = "planted-no-marker.md"
+        self.assertNotIn(
+            needle, name,
+            "the fixture's own name carries the needle, so a match would prove "
+            "nothing about what the tool read")
+        broken = VALID_REPORT.replace("- Evidence: CONFIRMED by execution\n", "", 1)
+        result, payload = self.check(broken, name=name)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("evidence-marker",
+                      [v["item"] for v in payload["violations"]])
+
+    def test_an_entirely_read_only_report_must_say_so_first(self):
+        readonly = VALID_REPORT.replace("CONFIRMED by execution", "read-only")
+        result, payload = self.check(readonly, name="readonly.md")
+        self.assertEqual(result.returncode, 1, payload)
+        self.assertIn("evidence-marker",
+                      [v["item"] for v in payload["violations"]])
+        declared = readonly.replace(
+            "# Audit: a subject, one surface\n",
+            "# Audit: a subject, one surface\n\n"
+            "No finding in this report is CONFIRMED by execution.\n", 1)
+        result, payload = self.check(declared, name="readonly-declared.md")
+        self.assertEqual(result.returncode, 0, payload)
+
+
+class ForbiddenSupportTests(BoxMixin, unittest.TestCase):
+    """Four things a report may never lean on, each of which cost a phase here."""
+
+    def check(self, text, name):
+        box = getattr(self, "_box", None) or self.make_box("support")
+        self._box = box
+        result = run_cli("check-report", str(self.write(box, name, text)))
+        return result, json.loads(result.stdout)
+
+    def _reject(self, item, line, name):
+        text = VALID_REPORT.replace(
+            "## Falsifier", f"{line}\n\n## Falsifier", 1)
+        result, payload = self.check(text, name)
+        self.assertEqual(result.returncode, 1, payload)
+        violation = next(
+            (v for v in payload["violations"] if v["item"] == item), None)
+        self.assertIsNotNone(
+            violation, f"expected {item}: {payload['violations']}")
+        return violation
+
+    def test_a_green_suite_is_never_evidence(self):
+        self._reject("green-suite",
+                     "- The surface is sound - the suite passed.", "green.md")
+
+    def test_containment_by_porcelain_is_rejected_and_names_the_manifest(self):
+        violation = self._reject(
+            "porcelain-containment",
+            "- The target was untouched - `git status --porcelain` was empty.",
+            "porcelain.md")
+        self.assertIn(
+            "manifest", violation["detail"],
+            "the rejection must name the evidence that would work, because "
+            "porcelain over an ignored tree is empty by construction")
+
+    def test_a_live_request_is_not_a_receipt(self):
+        self._reject(
+            "request-as-receipt",
+            "- The adapter works - a live GET returned 200.", "get.md")
+
+    def test_one_harness_never_reports_a_repository_wide_count(self):
+        self._reject(
+            "single-harness-count",
+            "- The repository has 954 tests, from `unittest discover` alone.",
+            "harness.md")
+
+
+class ReportSchemaSelfDescriptionTests(unittest.TestCase):
+    """Every field the tool requires has a documented row, and the reverse.
+
+    Three sets, both directions. Without this the report shape would be a
+    roster restated in two places, which is what the tool is pointed at other
+    people's documents to find.
+    """
+
+    def _sides(self):
+        code = set(dict_literal_keys(CLI, "REPORT_SHAPE"))
+        tables = markdown_table_rows(doctrine_text(), REPORT_HEADER)
+        self.assertEqual(len(tables), 1, "one report-shape table, exactly")
+        return code, {row[0].strip("`") for row in tables[0]}
+
+    def test_no_required_field_is_undocumented(self):
+        code, documented = self._sides()
+        self.assertEqual(
+            sorted(code - documented), [],
+            "check-report requires a field with no row in the shape table")
+
+    def test_no_documented_row_lacks_a_required_field(self):
+        code, documented = self._sides()
+        self.assertEqual(
+            sorted(documented - code),
+            [],
+            "the shape table documents a field check-report never enforces")
+
+
+class UsageReferenceTests(unittest.TestCase):
+    """Every documented invocation is one that actually runs."""
+
+    def test_the_reference_exists_and_covers_every_shipped_subcommand(self):
+        self.assertTrue(USAGE_MD.is_file(), "references/usage.md does not exist")
+        text = USAGE_MD.read_text(encoding="utf-8")
+        for command in sorted(subcommand_surface(CLI, "build_parser")):
+            with self.subTest(command=command):
+                self.assertIn(f"audit_cli.py {command}", text,
+                              f"{command} ships with no worked invocation")
+
+    def test_every_documented_invocation_runs(self):
+        text = USAGE_MD.read_text(encoding="utf-8")
+        invocations = re.findall(r"^\$ python3 (\S+audit_cli\.py .+)$",
+                                 text, re.MULTILINE)
+        self.assertNotEqual(invocations, [],
+                            "a reference with no runnable invocation is prose")
+        for invocation in invocations:
+            with self.subTest(invocation=invocation):
+                result = subprocess.run(
+                    [sys.executable, *invocation.split()], cwd=str(FORGE),
+                    shell=False, capture_output=True, text=True, timeout=120)
+                self.assertIn(
+                    result.returncode, (0, 1),
+                    f"a documented invocation must run: {result.stderr[:300]}")
+                json.loads(result.stdout)
