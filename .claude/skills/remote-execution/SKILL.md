@@ -244,8 +244,57 @@ executable — no test in this suite reaches the network or a real account).
   staleness condition, out of bounds for this skill (see design #744
   section 2).
 
-  **The reachability probe.** Before any of that — before clone paths are
-  even resolved — `generate-job` refuses a `--commit` the declared
+  **The three pin conditions.** Before any of that — before clone paths are
+  even resolved, before a byte is written, before any quota is spent — the
+  pin goes through three conditions. They live in ONE function,
+  `jobfolder.verify_pin_preconditions()`, and both decision points call it
+  and nothing else: `generate-job`, which writes a job folder, and
+  `submit`, which spends remote quota. One word differs between the two
+  calls — the one that appears in the refusal. The order below is the
+  contract, and it is cheapest-first: two local, instant questions before
+  the one that reaches a network. The first failure refuses; nothing is
+  written, nothing is submitted, no ledger event is appended.
+
+| # | id | Condition | Enforced at | Refusal names |
+|---|---|---|---|---|
+| 1 | `clean-worktree` | The working tree is clean over the declared clone paths — `git status --porcelain`, so an untracked file counts and an ignored one does not. Not a repository, or no commits, refuses too. | `generate-job`, `submit` | Every offending path, and `git add`/`git commit`/`git restore` as the remedy |
+| 2 | `pin-is-head` | The pin is HEAD, or nothing changed between the pin and HEAD under the declared clone paths. `unknown` refuses as firmly as `drift`. | `generate-job`, `submit` | The changed clone paths, the pin and HEAD, and git's own message |
+| 3 | `pin-published` | The declared remote can serve the pin — `git fetch --dry-run --depth 1` from a scratch repository. | `generate-job`, `submit` | The commit, the remote URL, the missing push addressed to `--repo-ref`, and git's own message |
+
+  **Why condition (1) exists, and why it is `status` and not `diff`.**
+  `resolve_clone_paths()` walks the WORKING TREE. Without this condition
+  generation validated bytes the runner would never receive: a brand-new
+  `run_search.py` that was never `git add`ed satisfied the import walk
+  happily and was simply absent from the commit the runner clones, and the
+  job died in the kernel with `ModuleNotFoundError` after quota was spent.
+  `git diff` cannot catch that — it enumerates changes to *tracked*
+  content, so an untracked path is outside its domain by construction. The
+  pathspec is what keeps generation possible at all, since `generate-job`
+  writes its own untracked output under `<target>/tools/`.
+
+  **Why condition (2) refuses here and only reports at `read()`.** It is
+  the same verdict, from the same one computation
+  (`jobfolder._staleness_for()`), consumed two ways on purpose: it
+  **refuses at a decision point** and **only reports** at `read()`.
+  Reading is an observation — refusing there would make a drifted job
+  folder unreadable, which is the one state where reading it matters most,
+  and `status`, `fetch` and `reconcile` would lose the ability to say what
+  is wrong. Refusing belongs where something irreversible is about to
+  happen. For a long time only the reporting half existed, and a job
+  folder pinned to code that had already moved on was generated, submitted
+  and run with the drift printed beside the submission id like weather.
+
+  **No escape hatch.** There is deliberately no dirty-tree escape hatch:
+  no flag accepts a dirty tree, a drifted pin or an unpublished commit,
+  and none will be added.
+  Every refusal names the exact commands you can run and stops there: the
+  tool never commits or pushes on your behalf, and never stages, stashes,
+  resets or fetches into your repository either. A commit message is a
+  human artifact, and an automatic commit poisons the very history later
+  used to say which code produced which number.
+
+  **The reachability probe** — condition (3) in detail. `generate-job`
+  refuses a `--commit` the declared
   `--repo-url` cannot serve. `git cat-file -e` proves only that the pin
   exists in the checkout you are standing in, which is never in doubt and
   is not the question; the runner clones a *remote* and checks the pin out

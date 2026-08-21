@@ -38,6 +38,12 @@ from types import SimpleNamespace
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+# Doctrine, as a path the suite can read. `PinConditionDoctrineTests`
+# holds `SKILL.md`'s pin-condition table to `jobfolder.PIN_CONDITIONS`;
+# prose cannot be held to code, a table can.
+SKILL_MD = REPOSITORY_ROOT / ".claude/skills/remote-execution/SKILL.md"
+
 SCRIPT = REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/ledger.py"
 SPEC = importlib.util.spec_from_file_location("remote_execution_ledger", SCRIPT)
 assert SPEC and SPEC.loader
@@ -5190,6 +5196,360 @@ class CleanWorkingTreeTests(unittest.TestCase):
 
             self._generate(tmp, target, commit=head)
             self._verify(target, head)
+
+
+class PinIsHeadTests(unittest.TestCase):
+    """`jobfolder`'s second pin condition — the pin must be HEAD, or
+    nothing may have changed between them under the declared clone paths.
+
+    The verdict is not computed a second time here. `_staleness_for()`
+    already answers exactly this question, and has since the job folder
+    existed — it just never did anything but REPORT. Two non-gating layers
+    consumed it (a line in `submit`'s return payload, `fromStaleSubmission`
+    on the way back) and neither could refuse, so a job folder pinned to a
+    commit whose code had already moved on was generated, submitted and
+    run, with the drift printed alongside the submission id as though it
+    were weather.
+
+    The asymmetry that remains is deliberate and is documented in
+    `SKILL.md` and in `jobfolder.py`: the SAME verdict refuses at a
+    decision point and only reports at `read()`. `read()` is an
+    observation — refusing there would make a drifted job folder
+    unreadable, which is the one state where reading it is most useful.
+
+    `unknown` refuses too, and is never rendered as `fresh`. A pin absent
+    from local history cannot be shown to be HEAD or to be equivalent to
+    it, and this module has one settled answer for questions that cannot
+    be asked.
+    """
+
+    FAKE_SERVICE = "pin-is-head-fake-service"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        ADAPTER.register_metadata(
+            cls.FAKE_SERVICE,
+            lambda run_config: ("fake-metadata.json", json.dumps({"ok": True})),
+        )
+
+    def setUp(self) -> None:
+        patcher = unittest.mock.patch.object(
+            JOBFOLDER, "_verify_commit_reachable", return_value=None
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _git(self, cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "pin-is-head-tests"
+        env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "pin-is-head-tests@example.invalid"
+        return subprocess.run(
+            ["git", *args], cwd=cwd, env=env, capture_output=True, text=True, check=check
+        )
+
+    def _init_repo(self, target: Path) -> str:
+        target.mkdir(parents=True, exist_ok=True)
+        self._git(target, "init", "-q")
+        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        harness.parent.mkdir(parents=True, exist_ok=True)
+        harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
+        (target / "README.md").write_text("outside every clone path\n", encoding="utf-8")
+        self._git(target, "add", "-A")
+        self._git(target, "commit", "-q", "-m", "initial")
+        return self._git(target, "rev-parse", "HEAD").stdout.strip()
+
+    def _commit_all(self, target: Path, message: str) -> str:
+        self._git(target, "add", "-A")
+        self._git(target, "commit", "-q", "-m", message)
+        return self._git(target, "rev-parse", "HEAD").stdout.strip()
+
+    def _verify(self, target: Path, commit: str, *, decision: str = "generation") -> None:
+        JOBFOLDER.verify_pin_preconditions(
+            target=target,
+            commit=commit,
+            clone_paths=["src/MIL_CREDA_Benchmark"],
+            repo_url="https://example.invalid/repo.git",
+            repo_ref="main",
+            decision=decision,
+        )
+
+    def test_pin_is_head_sits_between_the_two_local_and_the_network_condition(self) -> None:
+        """Order is the contract, and it is cheapest-first: two local,
+        instant questions before the one that reaches a network.
+        """
+        self.assertEqual(
+            list(JOBFOLDER.PIN_CONDITIONS),
+            ["clean-worktree", "pin-is-head", "pin-published"],
+        )
+
+    def test_a_pin_behind_head_under_the_clone_paths_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            pinned = self._init_repo(target)
+            harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+            harness.write_text("def campaign():\n    return 2\n", encoding="utf-8")
+            head = self._commit_all(target, "move the harness on")
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                self._verify(target, pinned)
+
+            message = str(caught.exception)
+            self.assertIn("src/MIL_CREDA_Benchmark/harness.py", message)
+            self.assertIn(pinned, message)
+            self.assertIn(head, message)
+
+    def test_a_pin_behind_head_only_outside_the_clone_paths_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            pinned = self._init_repo(target)
+            (target / "README.md").write_text("docs moved on\n", encoding="utf-8")
+            self._commit_all(target, "docs only")
+
+            self._verify(target, pinned)
+
+    def test_a_pin_absent_from_local_history_is_unknown_and_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            self._init_repo(target)
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                self._verify(target, "d" * 40)
+
+            message = str(caught.exception)
+            self.assertIn("d" * 40, message)
+            self.assertIn("unknown", message.lower())
+
+    def test_the_unknown_refusal_carries_gits_own_words_forward(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            self._init_repo(target)
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                self._verify(target, "d" * 40)
+
+            self.assertIn("cat-file", str(caught.exception))
+
+    def test_the_pin_being_head_itself_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+
+            self._verify(target, head)
+
+    def test_the_refusal_does_not_commit_or_push_on_the_operators_behalf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            pinned = self._init_repo(target)
+            harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+            harness.write_text("def campaign():\n    return 2\n", encoding="utf-8")
+            self._commit_all(target, "move the harness on")
+            before = self._git(target, "rev-parse", "HEAD").stdout.strip()
+
+            with self.assertRaises(JOBFOLDER.JobFolderError):
+                self._verify(target, pinned)
+
+            self.assertEqual(
+                self._git(target, "rev-parse", "HEAD").stdout.strip(), before
+            )
+            self.assertEqual(
+                self._git(target, "status", "--porcelain").stdout.strip(), ""
+            )
+
+    def test_condition_two_runs_after_condition_one(self) -> None:
+        """A dirty tree AND a drifted pin: the dirty tree is what the
+        operator hears about, because it is the cheaper question and the
+        one whose remedy comes first.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            pinned = self._init_repo(target)
+            harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+            harness.write_text("def campaign():\n    return 2\n", encoding="utf-8")
+            self._commit_all(target, "move the harness on")
+            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+                "x = 1\n", encoding="utf-8"
+            )
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                self._verify(target, pinned)
+
+            self.assertIn("run_search.py", str(caught.exception))
+
+    def test_condition_two_uses_the_one_existing_staleness_computation(self) -> None:
+        """No second diff. The generation guard and the read-time report
+        cannot drift because there is only one of them.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            pinned = self._init_repo(target)
+            calls = []
+
+            real = JOBFOLDER._staleness_for
+
+            def recording(target_arg, pinned_commit, clone_paths):
+                calls.append((pinned_commit, list(clone_paths)))
+                return real(target_arg, pinned_commit, clone_paths)
+
+            with unittest.mock.patch.object(
+                JOBFOLDER, "_staleness_for", side_effect=recording
+            ):
+                self._verify(target, pinned)
+
+            self.assertEqual(calls, [(pinned, ["src/MIL_CREDA_Benchmark"])])
+
+    # -- the asymmetry: refuse at a decision point, report at read() ------
+
+    def _fixture_assets(self, tmp: str) -> tuple[Path, Path]:
+        bootstrap = Path(tmp) / "fixture_bootstrap.py"
+        invoke = Path(tmp) / "fixture_invoke.py"
+        bootstrap.write_text("# cell-0\n", encoding="utf-8")
+        invoke.write_text("# cell-1\n", encoding="utf-8")
+        return bootstrap, invoke
+
+    def _generate(self, tmp: str, target: Path, *, commit: str) -> Path:
+        bootstrap, invoke = self._fixture_assets(tmp)
+        return JOBFOLDER.generate_job(
+            target=target,
+            service=self.FAKE_SERVICE,
+            job_name="search-a",
+            product="MIL-CREDA",
+            commit=commit,
+            repo_url="https://example.invalid/repo.git",
+            repo_ref="main",
+            clone_paths=["src/MIL_CREDA_Benchmark"],
+            run_module="MIL_CREDA_Benchmark.harness",
+            run_function="campaign",
+            bootstrap_asset=bootstrap,
+            invoke_asset=invoke,
+        )
+
+    def test_reading_a_drifted_job_folder_still_only_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+            job_dir = self._generate(tmp, target, commit=head)
+
+            harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+            harness.write_text("def campaign():\n    return 2\n", encoding="utf-8")
+            self._commit_all(target, "move the harness on")
+
+            job_folder = JOBFOLDER.read(job_dir)
+
+            self.assertEqual(job_folder.staleness["status"], "drift")
+            self.assertIn(
+                "src/MIL_CREDA_Benchmark/harness.py",
+                job_folder.staleness["changedPaths"],
+            )
+
+    def test_generation_refuses_a_drifted_pin_and_writes_no_job_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            pinned = self._init_repo(target)
+            harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+            harness.write_text("def campaign():\n    return 2\n", encoding="utf-8")
+            self._commit_all(target, "move the harness on")
+
+            with self.assertRaises(JOBFOLDER.JobFolderError):
+                self._generate(tmp, target, commit=pinned)
+
+            self.assertFalse((target / "tools").exists())
+
+
+class PinConditionDoctrineTests(unittest.TestCase):
+    """`SKILL.md` must document every pin condition, and the suite holds
+    the doctrine to the code rather than to a reviewer's memory.
+
+    The lock is a parseable table, not prose, and that is the established
+    local idiom for a reason: prose cannot be held to code. A condition
+    added to `PIN_CONDITIONS` with no table row is a condition an operator
+    hits at a decision point and cannot look up — which is exactly the
+    state this whole change started from. `SKILL.md` documented the
+    reachability guard NOWHERE (zero hits for `reachab`, `dry-run`,
+    `ls-remote`), which is why the defect had no doctrine to contradict
+    it for as long as it did.
+
+    `tests/test_proposal_implementation.py` has a `markdown_table_rows`
+    helper, but it is local to that module and this suite does not import
+    across test modules; the parser below is deliberately small and local
+    for the same reason.
+    """
+
+    HEADER = "| # | id | Condition | Enforced at | Refusal names |"
+
+    def _table_rows(self, text: str, header: str) -> list:
+        """Every data row of the one table introduced by `header`, as a
+        list of stripped cell lists. Stops at the first line that is not a
+        table row, so a second table further down the file cannot be
+        silently absorbed into this one.
+        """
+        lines = text.split("\n")
+        try:
+            start = next(
+                i for i, line in enumerate(lines) if line.strip() == header
+            )
+        except StopIteration:
+            self.fail(
+                f"SKILL.md has no pin-condition table: the exact header "
+                f"{header!r} was not found"
+            )
+        rows = []
+        for line in lines[start + 1:]:
+            stripped = line.strip()
+            if not stripped.startswith("|"):
+                break
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            if all(set(cell) <= {"-", ":"} and cell for cell in cells):
+                continue  # the separator row
+            rows.append(cells)
+        return rows
+
+    def test_the_table_documents_every_condition_in_pin_conditions_order(self) -> None:
+        rows = self._table_rows(SKILL_MD.read_text(encoding="utf-8"), self.HEADER)
+        documented = [row[1].strip("`") for row in rows]
+        expected = list(JOBFOLDER.PIN_CONDITIONS)
+
+        undocumented = [c for c in expected if c not in documented]
+        self.assertEqual(
+            undocumented, [],
+            f"enforced at a decision point and absent from SKILL.md's table: "
+            f"{undocumented}",
+        )
+        invented = [c for c in documented if c not in expected]
+        self.assertEqual(
+            invented, [],
+            f"documented in SKILL.md's table and enforced nowhere: {invented}",
+        )
+        self.assertEqual(documented, expected, "the table's order is the contract")
+
+    def test_every_row_names_where_it_is_enforced_and_what_it_names(self) -> None:
+        rows = self._table_rows(SKILL_MD.read_text(encoding="utf-8"), self.HEADER)
+        for row in rows:
+            self.assertEqual(len(row), 5, row)
+            for cell in row:
+                self.assertTrue(cell, row)
+
+    def test_both_decision_points_are_named_in_every_row(self) -> None:
+        """One implementation, two callers. A row that named only
+        `generate-job` would describe the code before this change.
+        """
+        rows = self._table_rows(SKILL_MD.read_text(encoding="utf-8"), self.HEADER)
+        for row in rows:
+            enforced_at = row[3]
+            self.assertIn("generate-job", enforced_at, row)
+            self.assertIn("submit", enforced_at, row)
+
+    def test_doctrine_states_the_tool_never_commits_or_pushes(self) -> None:
+        text = SKILL_MD.read_text(encoding="utf-8")
+        self.assertIn("never commits or pushes on your behalf", text)
+
+    def test_doctrine_states_there_is_no_dirty_tree_escape_hatch(self) -> None:
+        text = SKILL_MD.read_text(encoding="utf-8")
+        self.assertIn("no dirty-tree escape hatch", text)
+
+    def test_doctrine_documents_the_refuse_versus_report_asymmetry(self) -> None:
+        text = SKILL_MD.read_text(encoding="utf-8").lower()
+        self.assertIn("refuses at a decision point", text)
+        self.assertIn("only reports", text)
 
 
 class ResolveClonePathsTests(unittest.TestCase):

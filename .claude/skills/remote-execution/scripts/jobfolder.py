@@ -1116,7 +1116,7 @@ def _verify_commit_reachable(
 # reaches a network. It is a module constant rather than a sequence of
 # statements so that `SKILL.md`'s doctrine table can be held to it by the
 # suite — prose cannot be held to code, a table can.
-PIN_CONDITIONS = ("clean-worktree", "pin-published")
+PIN_CONDITIONS = ("clean-worktree", "pin-is-head", "pin-published")
 
 
 def _refuse_dirty_worktree(
@@ -1186,6 +1186,72 @@ def _refuse_dirty_worktree(
     )
 
 
+def _refuse_stale_pin(
+    *,
+    target: Path,
+    commit: str,
+    clone_paths: Sequence[str],
+    decision: str,
+    **_unused: object,
+) -> None:
+    """Condition (2) — the pin must be HEAD, or nothing may have changed
+    between them under the declared clone paths.
+
+    The verdict comes from `_staleness_for()` and from nowhere else. That
+    function has answered exactly this question since the job folder
+    existed; it simply never did anything but REPORT. Two non-gating
+    layers consumed it — a line in `submit`'s return payload, and
+    `fromStaleSubmission` on the way back — and neither could refuse, so a
+    job folder pinned to a commit whose code had already moved on was
+    generated, submitted and run, with the drift printed beside the
+    submission id as though it were weather. This function is the missing
+    consumer, not a second computation: a second `git diff` here could
+    disagree with the read-time report, and then there would be two
+    answers to one question with nothing to say which was current.
+
+    `drift` and `unknown` both refuse, and `unknown` is never rendered as
+    `fresh`. A pin absent from local history cannot be shown to be HEAD or
+    equivalent to it, and this module has one settled answer for questions
+    it cannot ask. `_staleness_for()`'s `reason` already embeds the
+    wrapped git error, so carrying it forward is what keeps git's own
+    words — and the existing substring assertion on them — intact.
+
+    Condition (1) is what makes this one honest. `_staleness_for()`
+    compares two COMMITTED trees and is blind to uncommitted work by
+    construction; it would call a pin fresh while an untracked module sat
+    beside it. The two conditions are therefore separate and ordered, not
+    one refined into the other.
+    """
+    staleness = _staleness_for(target, commit, clone_paths)
+    status = staleness["status"]
+    if status == "fresh":
+        return
+
+    if status == "unknown":
+        raise JobFolderError(
+            f"{decision} refuses: the staleness of pin {commit!r} against "
+            f"{target}'s HEAD is unknown, and an unanswerable question is "
+            "never reported as a clean answer — a pin that cannot be shown "
+            "to be the code being validated is not a pin worth spending "
+            f"quota on: {staleness['reason']}"
+        )
+
+    try:
+        head = _run_git(["rev-parse", "HEAD"], cwd=target).stdout.strip()
+    except JobFolderError:  # pragma: no cover - condition (1) refuses first
+        head = "HEAD"
+    changed = "\n  ".join(staleness["changedPaths"])
+    raise JobFolderError(
+        f"{decision} refuses: pin {commit!r} is not the code in "
+        f"{target} — HEAD is {head!r} and these declared clone paths "
+        f"differ between the two:\n  {changed}\n"
+        f"A runner would clone {commit!r}, so the numbers it returns would "
+        "belong to code you have already moved on from. Pin HEAD instead, "
+        "or check out the pin. This tool never commits, pushes or resets on "
+        "your behalf."
+    )
+
+
 def _refuse_unpublished_pin(
     *,
     commit: str,
@@ -1208,6 +1274,7 @@ def _refuse_unpublished_pin(
 
 _PIN_CONDITION_CHECKS = {
     "clean-worktree": _refuse_dirty_worktree,
+    "pin-is-head": _refuse_stale_pin,
     "pin-published": _refuse_unpublished_pin,
 }
 
@@ -1278,8 +1345,33 @@ def _staleness_for(target: Path, pinned_commit: str, clone_paths: Sequence[str])
 
     Verdict is `drift` iff `changed` is non-empty. Never a refusal: this
     function always returns a verdict, it never raises for a stale or
-    unknown result — two non-gating layers already cover staleness
-    elsewhere (reported at submit, `fromStaleSubmission` on return).
+    unknown result.
+
+    The SAME verdict refuses at a decision point and only reports at
+    `read()`, and that asymmetry is deliberate rather than an accident of
+    where the code sits. `_refuse_stale_pin()` — condition (2) in
+    `PIN_CONDITIONS` — calls exactly this function and raises on `drift`
+    and `unknown`, so `generate-job` and `submit` both refuse. `read()`
+    calls it and attaches the verdict. Reading is an observation: refusing
+    there would make a drifted job folder unreadable, which is the one
+    state in which reading it is most useful, and every reporting command
+    (`status`, `fetch`, `reconcile`) would lose the ability to say what is
+    wrong. Refusing belongs where something irreversible is about to
+    happen; reporting belongs where someone is looking.
+
+    For a long time only the reporting half existed. Two non-gating layers
+    consumed the verdict — a line in `submit`'s return payload, and
+    `fromStaleSubmission` on the way back — and neither could refuse, so a
+    job folder pinned to code that had already moved on was generated,
+    submitted and run with the drift printed beside the submission id as
+    though it were weather. Condition (2) is the missing consumer. There
+    is still exactly one computation, which is what keeps the guard and
+    the report from ever disagreeing.
+
+    This function compares two COMMITTED trees and is blind to
+    uncommitted work by construction — which is why condition (1)
+    (`clean-worktree`) is a separate condition ordered before it, and not
+    a refinement of this one.
 
     `unknown`, with a reason, whenever the question cannot be answered at
     all: no git history, not a repository, or an absent pinned commit —
