@@ -11,6 +11,18 @@ repairing is deliberate: two of the four findings have remedies whose cost the
 owner of the subject has to weigh, and one of them cannot be decided at all
 without a product decision.
 
+## Move outcomes
+
+- Move: 0: ran
+- Move: 1: skipped: no from-zero build declared for this surface
+- Move: 2: skipped: not driven from disk in this pass
+- Move: 3: skipped: no external boundary crossed in this pass
+- Move: 4: skipped: no installed dependency read in this pass
+- Move: 5: skipped: no live probe attempted, no consent sought
+- Move: 6: skipped: no lock inverted in this pass
+- Move: 7: skipped: single-harness count only, not compared before/after
+- Move: textual: ran
+
 ## Ranked findings
 
 ### F1. The surface has no closed roster in any document, anywhere
@@ -178,6 +190,13 @@ For the fix that would follow. This audit makes none of it.
 | Correct the stale clause in the schema description at `engine/proposal-workspace.ts:5546` | 1 |
 | F4: no forecast — build-or-delete is a product decision, and its size depends on which | — |
 | Total, excluding F4 | 33 |
+
+## Repair units
+
+| Unit | Findings | Changed lines |
+| --- | --- | --- |
+| Ship the closed operations table and repoint its consumers | F1, F2, F3 | 33 |
+| Build or delete the unreachable route-metric stage | F4 | 0 |
 
 ## How this report was produced
 

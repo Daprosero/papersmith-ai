@@ -257,6 +257,19 @@ def moves_rows() -> list[list[str]]:
     return tables[0]
 
 
+def required_move_ids(rows=None) -> list[str]:
+    """The move-outcome roster a report must carry, read the same way
+    `check-report` reads it: one numbered row becomes its own number, the one
+    unnumbered row becomes the literal `textual`. Never a list held in this
+    file — that would restate the same roster `move_roster` derives.
+    """
+    ids = []
+    for row in rows if rows is not None else moves_rows():
+        match = re.match(r"^(\d+)\b", row[0])
+        ids.append(match.group(1) if match else "textual")
+    return ids
+
+
 def run_cli(*argv, cwd=None, timeout=60):
     """Drive `audit_cli.py` as a real process, never as an import.
 
@@ -1286,6 +1299,18 @@ class CopiedHelperFidelityTests(unittest.TestCase):
 
 VALID_REPORT = """# Audit: a subject, one surface
 
+## Move outcomes
+
+- Move: 0: ran
+- Move: 1: skipped: no from-zero build declared for this surface
+- Move: 2: skipped: not driven from disk in this pass
+- Move: 3: skipped: no external boundary crossed in this pass
+- Move: 4: skipped: no installed dependency read in this pass
+- Move: 5: skipped: no live probe attempted, no consent sought
+- Move: 6: skipped: no lock inverted in this pass
+- Move: 7: skipped: single-harness count only, not compared
+- Move: textual: ran
+
 ## Ranked findings
 
 ### F1. A set restated in more places than it is derived
@@ -1326,6 +1351,13 @@ Rename the quoted heading and the scope claim stops being honoured.
 | Remedy | Changed lines |
 | --- | --- |
 | One table, one derivation | 40 |
+
+## Repair units
+
+| Unit | Findings | Changed lines |
+| --- | --- | --- |
+| One table, one derivation | F1 | 40 |
+| Build or delete the unread declared value | F2 | 0 |
 """
 
 
@@ -1366,6 +1398,8 @@ class ReportShapeTests(BoxMixin, unittest.TestCase):
             "changed-line-forecast": ("## Changed-line forecast", "## Notes"),
             "move-number": ("- Move: 0\n- Evidence: CONFIRMED", "- Evidence: CONFIRMED"),
             "adjudication": ("- Adjudication: doctrine wrong\n", ""),
+            "move-outcomes": ("## Move outcomes", "## Move states"),
+            "repair-units": ("## Repair units", "## Units of nothing"),
         }
         for item, (needle, replacement) in removals.items():
             with self.subTest(item=item):
@@ -1457,6 +1491,144 @@ class ForbiddenSupportTests(BoxMixin, unittest.TestCase):
             "single-harness-count",
             "- The repository has 954 tests, from `unittest discover` alone.",
             "harness.md")
+
+
+#: A moves table carrying one move beyond what `SKILL.md` currently declares.
+#: Used only through `--moves`, never by editing the real file, to prove the
+#: roster `check-report` requires is read out of a table rather than out of a
+#: list held inside the tool: this fixture's ninth move exists nowhere in
+#: `audit_cli.py`, and the requirement still appears.
+MOVES_TABLE_PLUS_ONE = """| Move | Ships as | Lock |
+| --- | --- | --- |
+| 0. Enumerate a closed surface from both sides, and never begin by reviewing a diff | `roster` | `tests/test_skill_audit.py` |
+| 1. Build the expected artifact from the documentation alone, then diff it against the producer's output | `roster` | `tests/test_skill_audit.py` |
+| 2. Drive the subject as it exists on disk, never only a fixture built from the same document | `roster` | `tests/test_skill_audit.py` |
+| 3. Fake every external boundary and assert on what crossed it, never dial it | `doctrine` | `tests/test_skill_audit.py` |
+| 4. Read an installed dependency as text; importing a service client authenticates it | `doctrine` | `tests/test_skill_audit.py` |
+| 5. Probe live only with consent, read-only, and scope the result to the environment | `doctrine` | `tests/test_skill_audit.py` |
+| 6. Invert every lock the audit leans on, and watch it fire | `doctrine` | `tests/test_skill_audit.py` |
+| 7. Compare per-harness test counts before and after; a count that did not rise is a finding | `doctrine` | `tests/test_skill_audit.py` |
+| 8. A move that exists only in this fixture, to prove the roster is derived and never hardcoded | `doctrine` | `tests/test_skill_audit.py` |
+| Read every artifact's opening paragraphs against its own frontmatter and its own shipped files | `doctrine` | no lock — irreducibly textual, and carried anyway |
+"""
+
+
+class MoveOutcomesTests(BoxMixin, unittest.TestCase):
+    """`## Move outcomes` is enforced against a roster derived from
+    `SKILL.md`'s own moves table, never a literal list inside the tool.
+    """
+
+    def check(self, text, name="report.md", extra=()):
+        box = getattr(self, "_box", None) or self.make_box("move-outcomes")
+        self._box = box
+        path = self.write(box, name, text)
+        result = run_cli("check-report", str(path), *extra)
+        return result, json.loads(result.stdout)
+
+    def test_a_complete_roster_of_move_outcomes_is_accepted(self):
+        result, payload = self.check(VALID_REPORT)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["violations"], [])
+
+    def test_a_move_missing_its_row_is_named(self):
+        broken = VALID_REPORT.replace(
+            "- Move: 3: skipped: no external boundary crossed in this pass\n",
+            "", 1)
+        result, payload = self.check(broken, name="missing-move-3.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "move-outcomes"]
+        self.assertTrue(
+            any("3" in v["detail"] for v in violations),
+            f"removing move 3's row must name move 3: {violations}")
+
+    def test_a_skipped_row_with_an_empty_reason_is_rejected(self):
+        broken = VALID_REPORT.replace(
+            "- Move: 7: skipped: single-harness count only, not compared\n",
+            "- Move: 7: skipped:\n", 1)
+        result, payload = self.check(broken, name="empty-reason.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "move-outcomes"]
+        self.assertTrue(
+            any("7" in v["detail"] for v in violations),
+            f"an empty reason must still name move 7: {violations}")
+
+    def test_the_required_roster_is_derived_from_the_moves_table_not_a_list(self):
+        """A ninth move that exists only in a fixture file, never in
+        `audit_cli.py`, is still required — proof the roster comes from
+        parsing the table this run was pointed at, not from a literal held
+        inside the tool.
+        """
+        box = self.make_box("derived-roster")
+        self._box = box
+        moves_path = self.write(box, "moves.md", MOVES_TABLE_PLUS_ONE)
+        # VALID_REPORT's `## Move outcomes` carries moves 0-7 and `textual`
+        # only; it names nothing for the fixture's move 8.
+        result, payload = self.check(
+            VALID_REPORT, name="missing-move-8.md",
+            extra=("--moves", str(moves_path)))
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "move-outcomes"]
+        self.assertTrue(
+            any("8" in v["detail"] for v in violations),
+            f"a move present only in the fixture table must still be "
+            f"required: {violations}")
+
+
+class RepairUnitsTests(BoxMixin, unittest.TestCase):
+    """`## Repair units` groups findings into units a downstream change can
+    take whole; every finding belongs to exactly one, and every forecast is
+    an integer.
+    """
+
+    def check(self, text, name="report.md"):
+        box = getattr(self, "_box", None) or self.make_box("repair-units")
+        self._box = box
+        path = self.write(box, name, text)
+        result = run_cli("check-report", str(path))
+        return result, json.loads(result.stdout)
+
+    def test_a_complete_grouping_is_accepted(self):
+        result, payload = self.check(VALID_REPORT)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["violations"], [])
+
+    def test_a_finding_named_by_no_unit_is_rejected(self):
+        broken = VALID_REPORT.replace(
+            "| Build or delete the unread declared value | F2 | 0 |\n", "", 1)
+        result, payload = self.check(broken, name="uncovered-f2.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "repair-units"]
+        self.assertTrue(
+            any("F2" in v["detail"] for v in violations),
+            f"a finding covered by no unit must be named: {violations}")
+
+    def test_a_non_integer_forecast_is_rejected(self):
+        broken = VALID_REPORT.replace(
+            "| One table, one derivation | F1 | 40 |",
+            "| One table, one derivation | F1 | forty |", 1)
+        result, payload = self.check(broken, name="non-integer-forecast.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "repair-units"]
+        self.assertTrue(
+            any("forty" in v["detail"] for v in violations),
+            f"a non-integer forecast must be named: {violations}")
+
+    def test_a_unit_naming_an_unknown_finding_is_rejected(self):
+        broken = VALID_REPORT.replace(
+            "| One table, one derivation | F1 | 40 |",
+            "| One table, one derivation | F9 | 40 |", 1)
+        result, payload = self.check(broken, name="unknown-finding.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "repair-units"]
+        self.assertTrue(
+            any("F9" in v["detail"] for v in violations),
+            f"a unit naming an unknown finding must be rejected: {violations}")
 
 
 class ReportSchemaSelfDescriptionTests(unittest.TestCase):

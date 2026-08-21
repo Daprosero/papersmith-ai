@@ -390,6 +390,11 @@ def build_parser():
     report = commands.add_parser(
         "check-report", help="validate a damage report against the shape")
     report.add_argument("report", help="the report file to validate")
+    report.add_argument(
+        "--moves", default=None,
+        help="override path to the doctrine file whose moves table the "
+             "move-outcome roster is derived from (default: this skill's own "
+             "SKILL.md, resolved relative to this script)")
 
     return parser
 
@@ -540,9 +545,90 @@ REPORT_SHAPE = {
     "evidence-marker": "- Evidence:",
     "falsifier": "## Falsifier",
     "move-number": "- Move:",
+    "move-outcomes": "## Move outcomes",
     "ranked-findings": "## Ranked findings",
+    "repair-units": "## Repair units",
     "unchecked-section": "## Unchecked",
 }
+
+#: The header of the moves table this skill's own `SKILL.md` carries. Read
+#: with the same `markdown_table_rows` the documented side of every other
+#: comparison uses, so a report's required move-outcome roster comes from
+#: parsing that table rather than from a list held here -- a hand-written
+#: roster in the validator would ship the exact defect this skill exists to
+#: find.
+MOVES_TABLE_HEADER = "| Move | Ships as | Lock |"
+
+#: `## Move outcomes` rows: `- Move: <id>: ran` or `- Move: <id>: skipped:
+#: <reason>`. `<id>` is either a move's number or the literal `textual`, for
+#: the one row the moves table carries with no leading digit.
+MOVE_OUTCOME_ROW = re.compile(
+    r"^-\s*Move:\s*(\d+|textual)\s*:\s*(ran|skipped:\s*.*)$")
+
+#: `## Repair units` header. A table naming, per unit, the findings it groups
+#: and its own changed-line forecast -- distinct from grouping by move or by
+#: adjudication.
+REPAIR_UNITS_HEADER = "| Unit | Findings | Changed lines |"
+
+
+def move_roster(text):
+    """The move-outcome roster a report must carry, derived from one moves
+    table rather than listed by hand.
+
+    Every numbered row becomes its own number, as a string; the one row this
+    table carries with no leading digit becomes the literal `textual`. Raises
+    rather than returning an empty roster when the table cannot be found or
+    is not singular, because a roster silently empty would let every report
+    pass by accident.
+    """
+    tables = markdown_table_rows(text, MOVES_TABLE_HEADER)
+    if len(tables) != 1:
+        raise Unprobeable(
+            f"expected exactly one {MOVES_TABLE_HEADER!r} table to derive "
+            f"the required move-outcome roster from; found {len(tables)}")
+    roster = []
+    for row in tables[0]:
+        match = re.match(r"^(\d+)\b", row[0]) if row else None
+        roster.append(match.group(1) if match else "textual")
+    return roster
+
+
+def resolve_moves_doctrine(override):
+    """The path `check-report` reads the moves table from.
+
+    Defaults to this skill's own `SKILL.md`, resolved relative to this
+    script rather than to the caller's working directory, so the roster a
+    report is held to is always this skill's own doctrine unless the caller
+    names another file explicitly.
+    """
+    path = Path(override) if override else Path(__file__).resolve().parent.parent / "SKILL.md"
+    if not path.is_file():
+        raise Unprobeable(f"no moves-table doctrine file at {path}")
+    return path
+
+
+def move_outcome_rows(lines):
+    """Every `- Move: <id>: ran|skipped: <reason>` row under `## Move
+    outcomes`, as `{id: outcome}`. Reads only inside that section, so a
+    finding's own `- Move: <n>` marker elsewhere in the report is never
+    mistaken for an outcome row.
+    """
+    rows = {}
+    in_section = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "## Move outcomes":
+            in_section = True
+            continue
+        if in_section and stripped.startswith("## "):
+            break
+        if not in_section:
+            continue
+        match = MOVE_OUTCOME_ROW.match(stripped)
+        if match:
+            rows[match.group(1)] = match.group(2)
+    return rows
+
 
 ADJUDICATIONS = ("doctrine wrong", "artefact wrong", "not adjudicable")
 
@@ -589,6 +675,18 @@ def report_findings(lines):
         elif blocks and "end" not in blocks[-1]:
             blocks[-1]["text"].append(line)
     return blocks
+
+
+def repair_unit_rows(text):
+    """The `## Repair units` table's rows, or `None` if no such table exists.
+
+    Distinct from `## Changed-line forecast`, which sizes the fix by remedy,
+    never by the hand-off-able group a downstream change would take whole.
+    """
+    tables = markdown_table_rows(text, REPAIR_UNITS_HEADER)
+    if len(tables) != 1:
+        return None
+    return tables[0]
 
 
 def run_check_report(args):
@@ -663,6 +761,62 @@ def run_check_report(args):
                  "no finding is CONFIRMED by execution, so the report must say "
                  f"so in its first line: {NO_CONFIRMED_DECLARATION!r}",
                  f"{path}:1")
+
+    # Every move required by the moves table this run is pointed at -- this
+    # skill's own SKILL.md by default -- needs its own row in `## Move
+    # outcomes`, `ran` or `skipped` with a reason. Unprobeable propagates: a
+    # missing or unparseable moves table is an inability to look, not a pass.
+    moves_path = resolve_moves_doctrine(getattr(args, "moves", None))
+    required_moves = move_roster(moves_path.read_text(encoding="utf-8"))
+    outcomes = move_outcome_rows(lines)
+    for move in required_moves:
+        outcome = outcomes.get(move)
+        if outcome is None:
+            fail("move-outcomes",
+                 f"move {move} has no row in '## Move outcomes'; every move "
+                 "the moves table names must be `ran` or `skipped: <reason>`, "
+                 "never absent", f"{path}:1")
+        elif outcome.startswith("skipped:") and not outcome.split(":", 1)[1].strip():
+            fail("move-outcomes",
+                 f"move {move}'s row is `skipped` with an empty reason; a "
+                 "move attempted zero times must say why", f"{path}:1")
+
+    # `## Repair units`: every `### F<n>.` block belongs to exactly one unit,
+    # and each unit's own changed-line forecast is an integer.
+    finding_labels = {finding["label"] for finding in findings}
+    units = repair_unit_rows(text)
+    if units is not None:
+        coverage = {}
+        for row in units:
+            unit = row[0] if row else ""
+            findings_cell = row[1] if len(row) > 1 else ""
+            forecast_cell = row[2] if len(row) > 2 else ""
+            labels = [label.strip() for label in findings_cell.split(",")
+                     if label.strip()]
+            if not labels:
+                fail("repair-units",
+                     f"repair unit {unit!r} names no finding", f"{path}:1")
+            for label in labels:
+                if label not in finding_labels:
+                    fail("repair-units",
+                         f"repair unit {unit!r} names {label!r}, which "
+                         "matches no finding in this report", f"{path}:1")
+                    continue
+                coverage[label] = coverage.get(label, 0) + 1
+            if not re.fullmatch(r"-?\d+", forecast_cell.strip()):
+                fail("repair-units",
+                     f"repair unit {unit!r} carries a non-integer "
+                     f"changed-line forecast: {forecast_cell!r}", f"{path}:1")
+        for label in sorted(finding_labels):
+            count = coverage.get(label, 0)
+            if count != 1:
+                fail("repair-units",
+                     f"finding {label} is named by {count} repair units, not "
+                     "exactly one", f"{path}:1")
+    elif "## Repair units" in lines:
+        fail("repair-units",
+             f"the report carries '## Repair units' but no "
+             f"{REPAIR_UNITS_HEADER!r} table beneath it", f"{path}:1")
 
     for index, line in enumerate(lines, start=1):
         for item, (pattern, detail) in FORBIDDEN_SUPPORT.items():

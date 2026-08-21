@@ -3,6 +3,18 @@
 This report is shipped as a worked example, so `check-report` has something to
 accept in the reference beside the invocation that validates it.
 
+## Move outcomes
+
+- Move: 0: ran
+- Move: 1: skipped: no from-zero build declared for this surface
+- Move: 2: skipped: not driven from disk in this pass
+- Move: 3: skipped: no external boundary crossed in this pass
+- Move: 4: skipped: no installed dependency read in this pass
+- Move: 5: skipped: no live probe attempted, no consent sought
+- Move: 6: skipped: no lock inverted in this pass
+- Move: 7: skipped: single-harness count only, not compared
+- Move: textual: ran
+
 ## Ranked findings
 
 ### F1. The accepted set is restated by hand and derived nowhere
@@ -46,3 +58,10 @@ which would move this surface out of the complement case entirely.
 | Remedy | Changed lines |
 | --- | --- |
 | One table, one derivation, restatements deleted | 40 |
+
+## Repair units
+
+| Unit | Findings | Changed lines |
+| --- | --- | --- |
+| One table, one derivation, restatements deleted | F1 | 40 |
+| Build or delete the unread declared value | F2 | 0 |

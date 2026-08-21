@@ -176,12 +176,14 @@ hand-maintained roster, which is the class this skill exists to find.
 | --- | --- | --- |
 | `ranked-findings` | Findings, ordered, each naming **both halves** at `file:line` | A finding cites a single `file:line`; that is a candidate, not a finding |
 | `move-number` | The move that found each finding | A finding names no move |
+| `move-outcomes` | `## Move outcomes`, one row per move named in the moves table above, each `ran` or `skipped: <reason>` | A move has no row, or a `skipped` row carries no reason |
 | `evidence-marker` | Per finding, `CONFIRMED by execution` or `read-only` | A finding carries neither; there is no default, and a missing marker is never read as confirmed |
 | `adjudication` | Per finding, one of the adjudications above | A finding carries none, or carries a value outside the table |
 | `clean-section` | `## Clean, stated as results`, with the enumeration that supports each entry | An entry's only support is that a suite passed |
 | `unchecked-section` | `## Unchecked`, naming what was not enumerated | A surface that was never enumerated is absent, or is reported as clean |
 | `falsifier` | The observation that would overturn this report | Absent |
 | `changed-line-forecast` | The size of the fix that would follow, in changed lines | Absent |
+| `repair-units` | `## Repair units`, a table naming each unit's findings and its own changed-line forecast, a grouping distinct from move or adjudication | A finding belongs to no unit or to more than one, or a forecast cell is not an integer |
 
 A report in which **no** finding is marked `CONFIRMED by execution` must say so
 in its **first line**. A clean surface still gets the full report shape,
@@ -244,5 +246,5 @@ This skill cannot invoke a spec-driven-development phase. Every `sdd-*` skill is
 `disable-model-invocation: true`, `user-invocable: false`, and delegate-only, so
 there is nothing here to call. What this skill can do is **be** the exploration:
 it runs under a doctrine that requires a shell, and it lands its report where a
-proposal phase reads. Handing the report to the user, with the slicing and the
-changed-line forecast already in it, is the whole terminal state.
+proposal phase reads. Handing the report to the user, with the repair units and
+the changed-line forecast already in it, is the whole terminal state.
