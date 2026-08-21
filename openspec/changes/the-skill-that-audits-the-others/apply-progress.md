@@ -164,3 +164,166 @@ This is the change's own thesis arriving inside the change: a read-only enumerat
 execution decided. Per spec Group 5, the executed set decides and the discrepancy is reported as a
 defect in the enumeration rather than silently overwritten. `numeralMismatch` therefore reports
 `counted: 5` against `stated: 3`, and the design's "four" is recorded here as corrected.
+
+---
+
+## Slices, as delivered
+
+Chain 1 -> 2 -> 4 -> 5, fully sequential, slice 3 deferred. **Strict TDD: every
+slice opened with an observed RED and every lock that passed on first run was
+inverted, watched to fire, and restored by inverse patch — never
+`git checkout --` — with `cmp` exit 0 and a matching sha256 each time.**
+
+| Slice | Commit | RED observed | Python count | Rise |
+|---|---|---|---|---|
+| 1 doctrine core | `9d45d3b` | `Ran 16 tests` / `FAILED (failures=5, errors=10)` | 902 -> 919 | +17 |
+| 2 `roster` | `1a3406c` | `Ran 51 tests` / `FAILED (failures=24, errors=1)` | 919 -> 954 | +35 |
+| 4 `check-report` | `0ef9fa7` | `Ran 66 tests` / `FAILED (failures=18, errors=1)` | 954 -> 968 | +14 |
+| 5 first report | see below | `Ran 71 tests` / `FAILED (failures=1, errors=2)` | 968 -> 973 | +5 |
+
+Each rise equals the number of tests that slice added. The counts were read from
+`Ran N tests`, never inferred from a suite being green — a duplicate class name
+once silently disabled seven tests behind a green suite in this repository.
+
+`npm test`: **371 pass, 0 fail, Node v26.4.0**, unchanged. This change ships no
+`.mjs`, so a rise there would have been the surprising result. Reported
+separately because the harnesses are disjoint and no single command runs both.
+
+### Inversions run (17 budgeted, 17 run, all fired)
+
+| # | Inversion | Observed |
+|---|---|---|
+| 1.9 | delete move 5's row | `[0,1,2,3,4,6,7] != [0,1,2,3,4,5,6,7]`, naming move 5 |
+| 1.10 | `Ships as` names a non-subcommand | `'liveprobe' not found in {'check-report','roster','doctrine'}` |
+| 1.11a | a heading states a count | `['## The seven moves'] != []` |
+| 1.11b | the scanner, on a colon line above the table | `stated: 7, counted: 9, numeralLine: 48, enumerationLine: 50` |
+| 1.12 | admit a floor word to the lexicon | `['transfer'] != []` |
+| 1.13 | add a `license:` key | `line 3 must be the description, got 'license: MIT'` |
+| 2.20a | a subparser with no documented row | `unregistered = ['manifest']` |
+| 2.20b | a documented row with no subparser | `phantom = ['counts']` |
+| 2.21 | corrupt the recipe's `extract` | exit `2`, not an empty `code` set |
+| 2.22 | the quoted heading no longer matches disk | kind flips to `heading-not-found` |
+| 2.23a | `import subprocess` in the documented side | `doctrine_side names 'subprocess'` |
+| 2.23b | a borrowed producer reference | `restatement_of names 'probe_code_side'` |
+| 2.24 | edit one copied helper | byte-identity fails, naming both locations |
+| 2.25a | hedge an unhedged claim | the check goes quiet; the lock fires |
+| 2.25b | correct the numeral | the check stops firing; the lock fires |
+| 3.12 | drop the evidence-marker rule | the planted-fixture lock fires |
+| 3.13 | drop the both-halves rule | the one-half lock fires |
+| 3.14a | delete a documented row | `['falsifier'] != []` |
+| 3.14b | document a field nothing enforces | `['reviewer'] != []` |
+
+Nineteen ran, against seventeen budgeted: 1.11 and 2.25 each needed two, because
+one direction proves the rule fires and the other proves it can stop firing.
+
+**One inversion driver defect, found and fixed mid-flight.** The first run of
+1.9 restored a deleted line with `str.replace("", old, 1)`, which prepends
+rather than re-inserting, and corrupted `SKILL.md`'s first line. It was repaired
+by an offset-recorded inverse patch, confirmed against the pre-inversion copy by
+`cmp` (exit 0) and sha256, and the driver now records the byte offset before
+editing so a deletion's inverse is an insertion at a known place. Worth stating
+because it is the change's own subject: the restoration mechanism had a defect
+that only executing it could reveal.
+
+### Containment
+
+`implementations/Domain_Adaptation`: **46,626 files**, sorted `path -> sha256`
+listing taken before the first file of this change was written and again at the
+end. Both listings hash to
+`f9b566291f4194093993347a4325d110171bf0017c45618c9bbbc7720294b07f`; `cmp` exit
+`0`. Never `git status`, which is empty over that tree by construction.
+
+Fixture boxes lived at `implementations/_skill_audit_*` and never in the system
+temporary directory; `implementations/` holds only `Domain_Adaptation` at the
+end. `.claude/skills/proposal-deliberation/` and
+`.claude/skills/remote-execution/` are byte-identical to `HEAD`: `mutations: 0`,
+including the one-line `phantom` this audit found and did not repair.
+
+---
+
+## Findings this phase produced that the plan did not carry
+
+1. **The design's enumeration was wrong, and execution decided.**
+   `remote-execution/SKILL.md:19` says "Three" above a contiguous bullet run of
+   **five**, not four: `:143` sits inside the same list, since everything from
+   `:58` to `:142` is blank or indented continuation, and the run breaks at
+   `:176`. The plan's "four" came from a phase with no shell. Recorded per spec
+   Group 5: the executed set decides and the enumeration is the defect.
+
+2. **The numeral rule needed narrowing on grammar, not exemptions.** Its first
+   run on a real subject produced two false positives from a single line,
+   `proposal-deliberation/SKILL.md:133`, `### 2. Build one `EditAction` per
+   resolved locus` — an ordinal step marker and a distributive rate. The rule
+   now requires a size claim's actual grammar (a numeral ahead of a plural noun,
+   or postposed before a colon). That is a narrowing with a stated reason, not
+   a list of inconvenient cases, which is the difference the doctrine insists on.
+
+3. **A third finding nobody had enumerated**, now F3 in the report:
+   `engine/proposal-workspace.ts:5546` carries a seven-member `StringEnum` whose
+   own `description`, on the same physical line, promises an eighth operation
+   the host refuses by name.
+
+4. **The design's open question about `SCIENTIFIC_WORKFLOW` is closed by
+   execution.** `recordRouteMetric` does have a call site
+   (`engine/proposal-workspace.ts:5407`), so the design's "pending a consumer of
+   `routeStages`" condition is met — but no `selectedGlobalRoute` call in the
+   live source can produce that stage, and no engine `.ts` defines
+   `SCIENTIFIC_WORKFLOW_OPERATION` any more. The counter exists and nothing can
+   increment it. Still `not adjudicable`, for a sharper reason than the plan had.
+
+5. **Python here is 3.9.6**, where `X | None` is not valid at annotation time.
+   The house idiom survives only because `remote_cli.py:36` and
+   `implementation_cli.py:18` carry `from __future__ import annotations`.
+   `audit_cli.py` does the same.
+
+## Deferred, with reasons — not dropped
+
+- **Slice 3** (`manifest`, `counts`), spec Group 6, success criteria 6 and 8,
+  and the two slice-3 inversions -> `the-manifest-that-proves-containment`.
+  Reason: session budget. `manifest` had nothing to guard here because D1's
+  probe is refused before any project I/O, so no slice needed a throwaway box
+  for its own sake; `counts` had nothing to measure because this change ships
+  no fix. The rise from 902 is proven by running the harness instead.
+- **The route-metric-stage slice.** Now carries a concrete read-only candidate:
+  `GlobalRouteStage` (`proposal-workspace.ts:5313`) and `RouteMetricStage`
+  (`runtime-metrics.ts:3`) differ by one member each way, while
+  `selectedGlobalRoute` passes one straight into `recordRouteMetric`, and
+  nothing in this project typechecks those files.
+- **The four helpers are copied, not shared**, into `tests/test_skill_audit.py`,
+  and `markdown_table_rows` is copied a third time into `audit_cli.py`. A
+  deliberate cost: sharing means editing a 75-class suite from inside a change
+  about a different skill. Paid for by a byte-identity lock that names every
+  location, proven reachable-red by inversion 2.24.
+- **Named non-goals honoured**: `openspec/config.yaml:19,21,25` is untouched;
+  the proposal's and design's "seven-move table" prose is untouched (the heading
+  is corrected only inside `skill-audit`'s own doctrine);
+  `implementations/Domain_Adaptation` is untouched; `proposal-deliberation` is
+  untouched. Nothing was sent to any remote service; this change made no live
+  call of any kind.
+
+## The budget, measured rather than assumed
+
+Authored lines, excluding the five artifacts earlier phases wrote and this
+phase's own progress log:
+
+| Slice | Authored (additions + deletions) |
+|---|---|
+| 1 | 1,161 |
+| 2 | 1,014 |
+| 4 | 486 |
+| 5 | 273 |
+| **Total** | **~2,934 against a 1,200 session budget** |
+
+**This is a real overrun and it is reported rather than absorbed.** The plan
+forecast ~1,130; the delivered work is roughly 2.6x that, and slices 1 and 2
+each exceed the 400-line per-PR guard on their own. The cause is not scope
+creep — every task in the plan was implemented and no unplanned feature was
+added — but density: the plan costed the doctrine, the mechanism and the
+per-lock discipline (planted-fixture preconditions, reachability, byte-identity,
+the threat-matrix row, nineteen inversions) at roughly a third of what they take
+in this repository's house style, where every constant and every guard carries
+the argument for its own existence.
+
+The four commits are independent and revert in reverse order, so the work is
+re-sliceable for review without redoing it. Under `ask-on-risk` this is the
+decision worth surfacing before any review begins.

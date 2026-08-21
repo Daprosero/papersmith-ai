@@ -1513,3 +1513,100 @@ class UsageReferenceTests(unittest.TestCase):
                     result.returncode, (0, 1),
                     f"a documented invocation must run: {result.stderr[:300]}")
                 json.loads(result.stdout)
+
+
+# ==========================================================================
+# Slice 5 — the first damage report. Report only; the audited subject is not
+# touched, and the wall between reporting and repairing is the product.
+# ==========================================================================
+
+REPORT = (FORGE / "openspec" / "changes" / "the-skill-that-audits-the-others"
+          / "audit-proposal-deliberation-operations.md")
+
+
+def tree_digest(root):
+    """A sorted `path -> sha256` mapping over every file under `root`.
+
+    Content, never version control. `git status --porcelain` over an ignored
+    tree is empty by construction, so it can only ever agree; this is the
+    interim stand-in for the `manifest` subcommand deferred to the follow-up
+    change, and it is named as such rather than passed off as equivalent.
+    """
+    import hashlib
+    return {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*")) if path.is_file()}
+
+
+class FirstDamageReportTests(unittest.TestCase):
+    """The auditor ships an audit. Without one it is the orphan class it
+    exists to find."""
+
+    def test_the_shipped_report_validates(self):
+        result = run_cli("check-report", str(REPORT))
+        payload = json.loads(result.stdout)
+        self.assertEqual(result.returncode, 0,
+                         f"the shipped report does not validate: {payload}")
+        self.assertEqual(payload["violations"], [])
+
+    def test_the_report_carries_both_required_kinds_of_finding(self):
+        text = REPORT.read_text(encoding="utf-8")
+        self.assertIn("- Evidence: CONFIRMED by execution", text,
+                      "a report with nothing confirmed tells the reader "
+                      "nothing they could not have read for themselves")
+        self.assertIn("- Adjudication: not adjudicable", text,
+                      "the half-with-no-other-half outcome is a required "
+                      "result, not a softer verdict")
+
+    def test_the_report_names_every_hand_restated_location(self):
+        """The executed set is the deciding evidence, and the report has to
+        show where the hand-written copies live."""
+        _, payload = roster_json(PD_SPEC, PD)
+        text = REPORT.read_text(encoding="utf-8")
+        self.assertNotEqual(payload["duplicated"], [])
+        for site in payload["duplicated"]:
+            name = Path(site["path"]).name
+            with self.subTest(site=name):
+                self.assertIn(name, text,
+                              f"{name} restates the set and the report is "
+                              "silent about it")
+
+
+class NothingWasRepairedTests(unittest.TestCase):
+    """`mutations: 0`. The wall between reporting and repairing is the product.
+
+    Even a one-line `phantom` deletion is not made here: an audit that repairs
+    what it finds is an audit whose findings nobody reviewed.
+    """
+
+    def test_a_full_audit_leaves_the_subject_byte_identical(self):
+        before = tree_digest(PD)
+        self.assertGreater(len(before), 10, "the subject tree looks empty")
+        roster_json(PD_SPEC, PD)
+        run_cli("check-report", str(REPORT))
+        after = tree_digest(PD)
+        self.assertEqual(
+            sorted(set(before) - set(after)), [], "a file was removed")
+        self.assertEqual(
+            sorted(set(after) - set(before)), [], "a file was added")
+        self.assertEqual(
+            [p for p in before if before[p] != after.get(p)], [],
+            "a file under the audited subject changed; the audit reports and "
+            "repairs nothing, so any difference here is a defect in the audit")
+
+    def test_the_auditor_names_no_write_into_the_audited_subject(self):
+        for path in sorted(SKILL_ROOT.rglob("*")):
+            if not path.is_file() or path.suffix != ".py":
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            written = {node.func.attr for node in ast.walk(tree)
+                       if isinstance(node, ast.Call)
+                       and isinstance(node.func, ast.Attribute)}
+            for verb in ("write_text", "write_bytes", "mkdir", "unlink",
+                         "rmdir", "rename", "replace"):
+                with self.subTest(path=path.name, verb=verb):
+                    self.assertNotIn(
+                        verb, written,
+                        f"{path.name} calls {verb}; the auditor writes nothing "
+                        "anywhere, which is how `mutations: 0` stays true "
+                        "without depending on which path it was pointed at")

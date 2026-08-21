@@ -273,26 +273,26 @@ before 1.
 
 ## Phase 4 — Slice 5: the first damage report (PR 5, ~120 lines) — after Phases 2–3
 
-- [ ] 4.1 Run `roster` against `proposal-deliberation`'s accepted-operation surface using the real
+- [x] 4.1 Run `roster` against `proposal-deliberation`'s accepted-operation surface using the real
       descriptor and the real installed `cli.mjs`. Capture stdout verbatim. **Move 2: the live
       subject on disk, never only fixtures.**
-- [ ] 4.2 Author `openspec/changes/the-skill-that-audits-the-others/audit-proposal-deliberation-operations.md`.
+- [x] 4.2 Author `openspec/changes/the-skill-that-audits-the-others/audit-proposal-deliberation-operations.md`.
       Must carry: at least one **`CONFIRMED by execution`** finding; at least one
       **`not adjudicable`** finding (`SCIENTIFIC_WORKFLOW`, a `RouteMetricStage` at
       `engine/runtime-metrics.ts:3,14` refused as an operation at `cli.mjs:319-320` — **a stage is
       not an operation**, so pending a consumer of `routeStages` it is not a defect); the three
       hand-restated locations of the operation set with the **executed** set as deciding evidence;
       `## Clean, stated as results`; `## Unchecked`; a falsifier; a changed-line forecast.
-- [ ] 4.3 RED/GREEN — a lock asserting the shipped report passes `check-report` with exit `0`.
-- [ ] 4.4 **Report only. Fix nothing.** Assert `mutations: 0` against
+- [x] 4.3 RED/GREEN — a lock asserting the shipped report passes `check-report` with exit `0`.
+- [x] 4.4 **Report only. Fix nothing.** Assert `mutations: 0` against
       `.claude/skills/proposal-deliberation/`: no file under that tree differs. The wall between
       reporting and fixing **is the product** — even a one-line `phantom` deletion is not made here.
-- [ ] 4.5 Run **both** suites: full discover (record the final count and its rise from 902) and
+- [x] 4.5 Run **both** suites: full discover (record the final count and its rise from 902) and
       `npm test` (expect 371 unchanged — this change adds no `.mjs`). Report both **separately**.
-- [ ] 4.6 Confirm `implementations/Domain_Adaptation` was never edited. **Without a `manifest`
+- [x] 4.6 Confirm `implementations/Domain_Adaptation` was never edited. **Without a `manifest`
       subcommand** (deferred), use a hand-taken `shasum -r` listing before and after and record it
       as the interim evidence, explicitly marked as the gap slice 3 closes. Never `git status`.
-- [ ] 4.7 Commit: `docs(skill-audit): the auditor shipped with no audit to its name`
+- [x] 4.7 Commit: `docs(skill-audit): the auditor shipped with no audit to its name`
 
 ---
 
