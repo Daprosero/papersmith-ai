@@ -2396,8 +2396,16 @@ class KaggleAdapterTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             BrokenKaggleAdapter()
 
-    def test_requested_accelerator_is_declared_here_as_a_request_not_a_receipt(self) -> None:
-        self.assertEqual(KAGGLE.REQUESTED_ACCELERATOR, "NvidiaTeslaT4")
+    def test_the_accelerator_request_is_declared_here_as_a_request_not_a_receipt(
+        self,
+    ) -> None:
+        """A boolean, because that is the only accelerator vocabulary the
+        installed client can express — see `AcceleratorRequestDoctrineTests`
+        for the measurement behind that, and for why a named accelerator is
+        not requestable here at all.
+        """
+        self.assertIs(KAGGLE.REQUEST_GPU, True)
+        self.assertFalse(hasattr(KAGGLE, "REQUESTED_ACCELERATOR"))
 
     def test_kaggle_worker_capacity_is_two_documented_as_the_batch_session_figure(self) -> None:
         """`KAGGLE_WORKER_CAPACITY` states Kaggle's own concurrent-kernel
@@ -2605,14 +2613,14 @@ class KaggleAdapterTests(unittest.TestCase):
     def test_kaggle_registers_assemble_metadata_requesting_the_pinned_accelerator(
         self,
     ) -> None:
-        """The one and only place `"NvidiaTeslaT4"` exists: `adapters/kaggle.py`
-        registers `assemble_metadata` under the metadata registry, and
-        calling it produces `kernel-metadata.json` naming the pinned
-        accelerator under `machine_shape` — the field Kaggle's own client
-        (`kernels_push`) actually reads for a named accelerator; a bare
-        `"accelerator"` key is not part of that schema at all and is
-        silently ignored. The template also carries every field a push
-        needs at minimum: `enable_internet` (the runner clones over git
+        """`adapters/kaggle.py` registers `assemble_metadata` under the
+        metadata registry, and calling it produces `kernel-metadata.json`
+        carrying the accelerator request under `enable_gpu` — the key
+        `kernels_push` actually reads. `machine_shape`, which this template
+        used to carry instead, is read by nothing in the installed client
+        and never transmitted; `AcceleratorRequestDoctrineTests` holds that
+        against the installed source directly. The template also carries
+        every field a push needs at minimum: `enable_internet` (the runner clones over git
         inside the kernel, and Kaggle disables internet by default),
         `language`, `kernel_type`, and `is_private`. `id` and `code_file`
         are present but deliberately blank here — this call runs before a
@@ -2623,7 +2631,7 @@ class KaggleAdapterTests(unittest.TestCase):
         filename, text = assembler({"jobName": "domain-adaptation-2ep"})
         self.assertEqual(filename, "kernel-metadata.json")
         payload = json.loads(text)
-        self.assertEqual(payload["machine_shape"], "NvidiaTeslaT4")
+        self.assertIs(payload["enable_gpu"], True)
         self.assertEqual(payload["language"], "python")
         self.assertEqual(payload["kernel_type"], "notebook")
         self.assertIs(payload["is_private"], True)
@@ -2761,7 +2769,7 @@ class KaggleAdapterTests(unittest.TestCase):
                     "kernel_type": "notebook",
                     "is_private": True,
                     "enable_internet": True,
-                    "machine_shape": "NvidiaTeslaT4",
+                    "enable_gpu": True,
                 }
             )
             (job_dir / "kernel-metadata.json").write_text(
@@ -2803,7 +2811,7 @@ class KaggleAdapterTests(unittest.TestCase):
             pushed = json.loads(captured_metadata.read_text(encoding="utf-8"))
             self.assertEqual(pushed["id"], "w1/papersmith-domain-adaptation")
             self.assertEqual(pushed["code_file"], "runner.ipynb")
-            self.assertEqual(pushed["machine_shape"], "NvidiaTeslaT4")
+            self.assertIs(pushed["enable_gpu"], True)
 
             self.assertEqual(
                 (job_dir / "kernel-metadata.json").read_text(encoding="utf-8"),
@@ -2841,7 +2849,7 @@ class KaggleAdapterTests(unittest.TestCase):
                         "id": "", "title": f"papersmith-{job_name}", "code_file": "",
                         "language": "python", "kernel_type": "notebook",
                         "is_private": True, "enable_internet": True,
-                        "machine_shape": "NvidiaTeslaT4",
+                        "enable_gpu": True,
                     }),
                     encoding="utf-8",
                 )
@@ -3991,6 +3999,103 @@ class CredentialTransportDoctrineTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             for claim in retracted:
                 self.assertNotIn(claim, text, f"{claim!r} still stated in {path}")
+
+
+def _installed_kaggle_client_source() -> str | None:
+    """The installed `kaggle` client's own `kernels_push` module, read as
+    TEXT and never imported.
+
+    Importing `kaggle` runs `api.authenticate()` at package import time,
+    which raises without credentials on this machine and would reach the
+    filesystem looking for them — neither of which belongs in this suite.
+    `find_spec` locates the package without executing a line of it.
+    """
+    spec = importlib.util.find_spec("kaggle")
+    if spec is None or not spec.origin:
+        return None
+    source = Path(spec.origin).parent / "api" / "kaggle_api_extended.py"
+    if not source.is_file():
+        return None
+    return source.read_text(encoding="utf-8", errors="replace")
+
+
+class AcceleratorRequestDoctrineTests(unittest.TestCase):
+    """`assemble_metadata` must emit the accelerator key the installed
+    client actually reads.
+
+    Reachable red: it emitted `machine_shape: "NvidiaTeslaT4"` and
+    deliberately omitted `enable_gpu` as "documented DEPRECATED in favor of
+    it". The installed `kernels_push` reads `enable_gpu`/`enable_tpu` and
+    builds its request field by field; `machine_shape` appears nowhere in
+    that client at all, so the key was never even transmitted and every
+    submission this skill ever pushed ran on CPU.
+
+    Two of the tests below read the INSTALLED client's own source rather
+    than trusting a docstring about it. That is the whole lesson of this
+    change: every claim in this adapter that named a version was checked
+    against a version that is not installed, and no test could contradict
+    it. They skip, loudly, on a machine where the client is absent — a
+    pass here is never proof on a machine that has nothing to check.
+    """
+
+    def test_assemble_metadata_emits_the_key_the_installed_client_reads(self) -> None:
+        _, text = ADAPTER.resolve_metadata("kaggle")({"jobName": "domain-adaptation-2ep"})
+        payload = json.loads(text)
+
+        self.assertIs(payload["enable_gpu"], True)
+        self.assertNotIn(
+            "machine_shape",
+            payload,
+            "a key the installed client never reads and never transmits",
+        )
+
+    def test_the_installed_client_reads_enable_gpu_and_knows_no_machine_shape(
+        self,
+    ) -> None:
+        source = _installed_kaggle_client_source()
+        if source is None:
+            self.skipTest(
+                "the `kaggle` client is not installed here — nothing to hold "
+                "this adapter's accelerator claim to, which is not the same as "
+                "holding it and finding it true"
+            )
+        self.assertIn("'enable_gpu'", source)
+        self.assertNotIn("machine_shape", source)
+
+    def test_every_version_this_adapter_claims_is_the_version_installed(self) -> None:
+        """The root cause, as a lock. Five docstrings claimed confirmation
+        against `kaggle` 2.2.4 while `KaggleApi.__version__` is something
+        else entirely, so every claim resting on that reading was unchecked
+        against what actually runs here.
+        """
+        source = _installed_kaggle_client_source()
+        if source is None:
+            self.skipTest("the `kaggle` client is not installed here")
+        match = re.search(r"__version__ = '([^']+)'", source)
+        self.assertIsNotNone(match, "the installed client states no version")
+        installed = match.group(1)
+
+        claimed = set(
+            re.findall(r"\b\d+\.\d+\.\d+(?:\.\d+)*\b", KAGGLE_SCRIPT.read_text(encoding="utf-8"))
+        )
+        self.assertEqual(
+            claimed - {installed},
+            set(),
+            f"this adapter names a version it was not checked against; "
+            f"installed is {installed}",
+        )
+
+    def test_the_request_is_never_reported_as_a_receipt(self) -> None:
+        """Emitting the right key is a request. What a submission actually
+        ran on is a fact the service states, and this skill has exactly one
+        place for it.
+        """
+        for path in (KAGGLE_SCRIPT, SKILL_MD):
+            # Whitespace-normalized, so the claim can wrap across lines the
+            # way prose in both files already does.
+            text = " ".join(path.read_text(encoding="utf-8").lower().split())
+            self.assertIn("a request, not a receipt", text, str(path))
+            self.assertIn("detail", text, str(path))
 
 
 class JobFolderTests(unittest.TestCase):

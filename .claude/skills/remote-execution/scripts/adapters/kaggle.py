@@ -140,18 +140,24 @@ SUBPROCESS_TIMEOUT_SECONDS = 120.0
 # never asserted as a universal per-account or per-service ceiling.
 KAGGLE_WORKER_CAPACITY = 2
 
-# The accelerator this repository's submissions request. A REQUEST, not a
-# receipt: asking for one is not the same as receiving one. What a
+# The accelerator this repository's submissions request, in the only
+# vocabulary the installed client can express: a boolean. It is
+# a request, not a receipt: asking for one is not the same as
+# receiving one. What a
 # submission actually ran on is a fact the service states, at poll or fetch
-# time, in `Status.detail` — never assumed from this constant, and never
-# stamped anywhere by this module on its own initiative. Selecting an
-# accelerator for a real kernel submission is governed by that kernel's own
-# metadata, prepared by `assemble_metadata()` below, the one sanctioned
-# place, inside the one file allowed to name a service, that reads the
-# requested value from this constant. Kaggle's own kernel-metadata schema
-# names accelerators this way (not the short marketing name "T4"), so this
-# is also the exact string a real `kernel-metadata.json` needs.
-REQUESTED_ACCELERATOR = "NvidiaTeslaT4"
+# time, in `Status.detail`, never assumed from this constant and never
+# stamped anywhere by this module on its own initiative.
+#
+# A NAMED accelerator cannot be requested through this client at all, and
+# that is measured rather than assumed: `kernels_push()` in the installed
+# `kaggle` 1.7.4.5 builds its save-kernel request field by field and reads
+# exactly `enable_gpu` and `enable_tpu` from a kernel's metadata; the string
+# `machine_shape` appears nowhere in that package, so a `machine_shape` key
+# in `kernel-metadata.json` is not merely ignored by the client — it is
+# never transmitted, and no server-side reader could act on it either.
+# Which GPU a session receives is therefore the service's choice, reported
+# in `Status.detail` like every other fact this module refuses to guess at.
+REQUEST_GPU = True
 
 # The filename `kernels push -p <dir>` looks for beside a kernel's
 # entrypoint — Kaggle's own convention, not this module's invention. A
@@ -164,12 +170,14 @@ KERNEL_METADATA_FILENAME = "kernel-metadata.json"
 # dependency runs the other way — `jobfolder.py` reaches this module only
 # through the opaque `ADAPTER.resolve_metadata()` registry, never a direct
 # import), the same reason `KERNEL_METADATA_FILENAME` above is this
-# module's own constant rather than a shared one. Confirmed, by reading
-# `kernels_push()` in the installed `kaggle` 2.2.4 CLI, that `kernels push`
-# uploads `code_file` alone — no sibling file in the pushed directory ever
-# reaches the worker on its own. A generated job's `run-config.json` is
-# real and versioned beside its `runner.ipynb`, but the worker never sees
-# it unless something puts it there; see `_run_config_cell()` below.
+# module's own constant rather than a shared one. RE-VERIFIED against the
+# installed `kaggle` 1.7.4.5, the version claim here having named one that
+# was never installed on this machine: `kernels_push()` reads `code_file`,
+# sends its bytes as the request's `text`, and has no directory upload at
+# all, so no sibling file in the pushed directory ever reaches the worker
+# on its own. A generated job's `run-config.json` is real and versioned
+# beside its `runner.ipynb`, but the worker never sees it unless something
+# puts it there; see `_run_config_cell()` below.
 RUN_CONFIG_FILENAME = "run-config.json"
 
 # The seam's own five-value vocabulary a raw Kaggle status is translated
@@ -192,19 +200,23 @@ def _normalize_status_word(token: str) -> str:
     """Strip an enum class prefix, when the CLI quoted one, from an
     already-lowercased status token.
 
-    Kaggle CLI 2.2.4 was confirmed, against a real running kernel, to
-    print `has status "KernelWorkerStatus.RUNNING"` — the enum's own
-    `str()` repr, quoted whole — rather than the bare word `"running"`
-    earlier versions apparently used. The bare word is always the part
-    after the last `.` on every form observed; a genuine bare status word
-    never contains one itself, so this is a no-op for that case.
+    RE-VERIFIED against the installed `kaggle` 1.7.4.5, in its source
+    rather than from memory of a live run: `kernels_status_cli()` prints
+    `'%s has status "%s"' % (kernel, status)` where `status` is a
+    `KernelWorkerStatus` enum member, so the quoted text is the enum's own
+    `str()` repr — `KernelWorkerStatus.RUNNING` — and not the bare word
+    `"running"` earlier versions apparently used; the version claim here
+    named one that was never installed on this machine. The bare word is
+    always the part after the last `.` on every form observed; a genuine
+    bare status word never contains one itself, so this is a no-op for
+    that case.
     """
     return token.rsplit(".", 1)[-1] if "." in token else token
 
 
 def _extract_status_token(raw: str) -> str:
     """Pull a status word out of the CLI's own sentence, when it quotes
-    one (`... has status "complete"`, or CLI 2.2.4's own
+    one (`... has status "complete"`, or the installed client's own
     `... has status "KernelWorkerStatus.RUNNING"`); fall back to the
     whole trimmed, lowercased line otherwise. Either way this returns a
     CANDIDATE token for `_KAGGLE_STATUS_TO_SEAM` to translate — never a
@@ -246,20 +258,27 @@ def assemble_metadata(run_config: Mapping[str, object]) -> tuple[str, str]:
     opaque `(filename, text)` pair; nothing above this module ever learns
     what either one means, only that they exist and where to write them.
 
-    The field set below is not guessed: it is exactly the shape
-    `kaggle kernels init -p <dir>` itself writes as a template (verified
-    against the installed `kaggle` 2.2.4 CLI, authenticated, against a
-    real account), cross-checked against `kernels_push()` in
-    `kaggle/api/kaggle_api_extended.py`, the client's own validation of
-    that file:
+    The field set below is read off `kernels_push()` and `kernels_initialize()`
+    in the installed `kaggle` 1.7.4.5 (`kaggle/api/kaggle_api_extended.py`)
+    — the client's own template and its own validation of that file:
 
-    - `machine_shape` — NOT `accelerator`, which is not a key this schema
-      has at all and would be silently ignored by a real push. This is
-      the field `kernels_push()` reads a NAMED accelerator from
-      (`kagglesdk`'s own docstring lists `"NvidiaTeslaT4"` as one of
-      exactly three supported values); `enable_gpu`/`enable_tpu` are
-      documented DEPRECATED in favor of it and are deliberately omitted
-      here rather than carried as dead weight.
+    - `enable_gpu` — the key `kernels_push()` genuinely reads
+      (`request.enable_gpu = self.get_bool(meta_data, 'enable_gpu', False)`),
+      and the one the client's own `kernels init` template writes. This
+      adapter used to send `machine_shape: "NvidiaTeslaT4"` instead, on a
+      docstring's claim that `enable_gpu`/`enable_tpu` were "documented
+      DEPRECATED in favor of it". `machine_shape` occurs nowhere in the
+      installed client or its SDK, and the request is assembled field by
+      field, so that key never reached the service at all: every push this
+      skill has ever made silently ran on CPU. It is not carried alongside
+      `enable_gpu` here either — a key nothing transmits is a claim nothing
+      can verify, which is exactly the shape of the defect this replaced.
+
+      This is where the honesty about scope belongs: emitting the key the
+      client reads is a request, and a request is not a receipt. No offline
+      test can prove a submission actually received a GPU. The receipt
+      arrives with the first real run, in `Status.detail` — which is what
+      that field is for.
     - `enable_internet` — `True`. The generated runner does `git init` /
       `remote add` / `fetch` inside the kernel to reach the pinned commit,
       and Kaggle kernels have internet access disabled by default; without
@@ -296,7 +315,7 @@ def assemble_metadata(run_config: Mapping[str, object]) -> tuple[str, str]:
         "kernel_type": "notebook",
         "is_private": True,
         "enable_internet": True,
-        "machine_shape": REQUESTED_ACCELERATOR,
+        "enable_gpu": REQUEST_GPU,
     }
     return KERNEL_METADATA_FILENAME, json.dumps(payload)
 
@@ -583,7 +602,12 @@ class KaggleAdapter(ADAPTER.Adapter):
         present), the slug is derived from the metadata's own `title` —
         confirmed against a real Kaggle account that a newly-created
         kernel's actual slug is the one the service derives from `title`,
-        not from the `id` field this method sends it. `job.entrypoint`'s
+        not from the `id` field this method sends it. That one is a LIVE
+        observation and was not re-verified against the installed client,
+        because it cannot be: the client only warns when `id`'s slug and
+        `slugify(title)` disagree, and what the service does with the two
+        is not visible in its source. It is recorded here as observed, not
+        as read. `job.entrypoint`'s
         own filename is `runner.ipynb` for every generated job
         (`jobfolder.py`'s `RUNNER_FILENAME` constant), so deriving the
         slug from it instead — as this method used to — made every
@@ -621,8 +645,8 @@ class KaggleAdapter(ADAPTER.Adapter):
         is read, never opened for writing, and stays byte-for-byte
         unchanged: nothing here mutates a committed artifact per worker.
 
-        `kernels push` uploads `code_file` alone — confirmed by reading
-        `kernels_push()` in the installed `kaggle` 2.2.4 CLI, there is no
+        `kernels push` uploads `code_file` alone — re-verified by reading
+        `kernels_push()` in the installed `kaggle` 1.7.4.5, there is no
         directory upload, so a job folder's own sibling `run-config.json`
         never reaches the worker on its own. This same staging step also
         prepends a cell to the STAGED notebook copy that materializes that

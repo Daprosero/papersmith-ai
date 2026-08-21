@@ -183,15 +183,23 @@ Three modules exist so far, each service-blind and stdlib-only:
 | 6 | `per-process` | Two concurrent submissions for two workers carry two distinct, uncrossed credentials: one fresh env dict per `subprocess.run`, never a shared or process-wide one | `_env_for()`, `_run()` | `test_two_concurrent_submissions_carry_two_distinct_uncrossed_credentials` |
 | 7 | `really-concurrent` | The isolation above is proven under genuine overlap, not against two runs that merely happened in sequence | the falsifier's own fake `kaggle`, which records when it started and finished | `test_the_two_submissions_genuinely_overlapped_in_time` |
 
-  `REQUESTED_ACCELERATOR = "NvidiaTeslaT4"` is
+  `REQUEST_GPU = True` is
   declared here, and here alone in this whole skill — a request, not a
   receipt; what a submission actually ran on is a fact the service states
-  at poll/fetch time, never assumed from this constant. `assemble_metadata`
+  at poll/fetch time in `Status.detail`, never assumed from this constant.
+  **A named accelerator cannot be requested through this client at all.**
+  `assemble_metadata` used to emit `machine_shape: "NvidiaTeslaT4"` and omit
+  `enable_gpu` on a claim that the boolean keys were deprecated in favour of
+  it; `kernels_push()` in the installed `kaggle` reads `enable_gpu` and
+  `enable_tpu` and builds its request field by field, and the string
+  `machine_shape` occurs nowhere in that package, so that key was never
+  transmitted and every push this skill made ran on CPU. Which GPU a session
+  receives is the service's own choice, reported like every other fact this
+  skill refuses to guess at. `assemble_metadata`
   writes that request, and every other worker-independent field a push
-  needs, into a `kernel-metadata.json` template: `machine_shape` (NOT
-  `accelerator`, which is not a key this schema has at all — confirmed
-  against an authenticated `kaggle kernels init` template and against
-  `kernels_push()`'s own field reads in the installed `kaggle` package),
+  needs, into a `kernel-metadata.json` template: `enable_gpu: true` (the
+  key the installed client reads, and the one its own `kernels init`
+  template writes),
   `enable_internet: true` (the generated runner clones over git inside the
   kernel, and Kaggle disables internet by default), `language`,
   `kernel_type`, `is_private`, and a `title` derived from the job's own
