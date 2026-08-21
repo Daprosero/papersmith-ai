@@ -17,7 +17,29 @@ not a directory inside the resolved target, which is what stands between a
 crafted `--service`/`--job-name` (`../../etc`, say) and a write outside the
 target repository entirely.
 
-`_verify_commit_reachable()` runs next, before `resolve_clone_paths()` or
+`verify_pin_preconditions()` runs next, before `resolve_clone_paths()` or
+any write. It is the ONE home for every condition a pin must satisfy
+before anything irreversible happens, and the only thing either decision
+point calls — `generate-job` here, and `remote_cli.py`'s `submit` — with
+exactly one word different between them: the `decision` that appears in
+the refusal. Conditions run in `PIN_CONDITIONS` order, cheapest first,
+and the first failure raises. Two call sites and three conditions could
+otherwise drift in order, or omit one on one side, with nothing in the
+code to say so.
+
+Condition (1), `clean-worktree`, is `git status --porcelain` over the
+declared clone paths, and `git diff` would be the wrong instrument rather
+than a slower one: `diff` enumerates changes to TRACKED content, so an
+untracked path is outside its domain by construction. That is the exact
+case this condition exists to catch, because `resolve_clone_paths()`
+below walks the WORKING TREE: a brand-new module that was never `git
+add`ed passes the import walk and is simply absent from the commit the
+runner clones, and the job dies in the kernel with `ModuleNotFoundError`
+after quota is spent. Nothing here stages, commits, stashes or fetches on
+the operator's behalf, and there is deliberately no flag that accepts a
+dirty tree.
+
+Condition (3), `pin-published`, is `_verify_commit_reachable()`, before
 any write: `--commit` proving out with `git cat-file -e` only shows the pin
 exists in the LOCAL checkout that ran `generate-job` — it says nothing
 about whether the declared `--repo-url` can actually serve it, which is
@@ -472,6 +494,31 @@ def resolve_clone_paths(
     }
 
 
+def validate_commit_shape(commit: object, *, source: str = "the pinned commit") -> str:
+    """A pin is an object name, never a name that resolves to one.
+
+    The SAME validator both callers use — `validate_run_config()` on every
+    read and every generation, and `verify_pin_preconditions()` before it
+    asks any of the three conditions — never a second, parallel copy. The
+    precondition function checks it FIRST, ahead of every condition,
+    because a name-shaped pin makes each of them compare a value to
+    itself and answer yes: `main` really is a ref the remote can serve,
+    `main^{commit}` really does resolve locally, and the staleness diff
+    between `main` and `HEAD` really is empty. Three conditions passing
+    for a pin that means something different tomorrow.
+    """
+    if not isinstance(commit, str) or not COMMIT_PATTERN.match(commit):
+        raise JobFolderError(
+            f"{source} declares commit {commit!r}, which is not a "
+            "commit object name: a pin must be lowercase hex, 40 or 64 "
+            "characters. A branch or tag name is not a pin — it resolves to "
+            "a different commit tomorrow, and the runner would check out "
+            "whatever it points at then, not the code this job was "
+            "validated against. Pass the output of `git rev-parse HEAD`."
+        )
+    return commit
+
+
 def validate_run_config(run_config: Mapping[str, object]) -> None:
     """The schema check re-run on every read, not only at generation —
     `generate_job()` calls it on the very config it is about to write, so a
@@ -497,16 +544,7 @@ def validate_run_config(run_config: Mapping[str, object]) -> None:
             f"{run_config.get('schemaVersion')!r}; this generator writes and "
             f"reads only {RUN_CONFIG_SCHEMA_VERSION}"
         )
-    commit = run_config["commit"]
-    if not isinstance(commit, str) or not COMMIT_PATTERN.match(commit):
-        raise JobFolderError(
-            f"run-config.json declares commit {commit!r}, which is not a "
-            "commit object name: a pin must be lowercase hex, 40 or 64 "
-            "characters. A branch or tag name is not a pin — it resolves to "
-            "a different commit tomorrow, and the runner would check out "
-            "whatever it points at then, not the code this job was "
-            "validated against. Pass the output of `git rev-parse HEAD`."
-        )
+    validate_commit_shape(run_config["commit"], source="run-config.json")
     validate_clone_paths(run_config["clonePaths"])
     run_block = run_config["run"]
     if not isinstance(run_block, Mapping) or "module" not in run_block or "function" not in run_block:
@@ -688,10 +726,12 @@ def generate_job(
     existing one unless `regenerate=True`.
 
     Order is fixed: resolve `target` (no other check runs against a raw,
-    unresolved path); derive and validate `destination`; confirm `commit`
-    is actually reachable on the declared `repo_url`
-    (`_verify_commit_reachable()`), refusing before anything else runs if
-    it is not (or cannot be confirmed); resolve and cross-check
+    unresolved path); derive and validate `destination`; put the pin
+    through every condition in `PIN_CONDITIONS`, in that order, via the
+    single shared `verify_pin_preconditions()` — which is also the only
+    thing `submit` calls, so the two decision points cannot drift in
+    order or in which conditions they enforce — refusing before anything
+    else runs if any of them fails; resolve and cross-check
     `clone_paths` against what the declared entry modules actually import
     (`resolve_clone_paths()`), refusing before anything else is built if
     that check fails; build `run-config.json` and the
@@ -716,7 +756,14 @@ def generate_job(
     resolved_target = resolve_target(target)
     destination = resolve_destination(resolved_target, service, job_name)
 
-    _verify_commit_reachable(commit, repo_url, repo_ref)
+    verify_pin_preconditions(
+        target=resolved_target,
+        commit=commit,
+        clone_paths=clone_paths,
+        repo_url=repo_url,
+        repo_ref=repo_ref,
+        decision="generation",
+    )
 
     entry_modules = [run_module]
     if smoke_module and smoke_function:
@@ -937,7 +984,9 @@ def _looks_like_ssh_remote(repo_url: str) -> bool:
     return bool(separator) and "/" not in host
 
 
-def _verify_commit_reachable(commit: str, repo_url: str, repo_ref: str) -> None:
+def _verify_commit_reachable(
+    commit: str, repo_url: str, repo_ref: str, *, decision: str = "generation"
+) -> None:
     """Confirm `commit` is actually fetchable from the declared `repo_url`
     — the exact operation a runner performs when it clones that remote and
     checks out the pin inside the kernel — before `generate_job()` ever
@@ -1054,11 +1103,164 @@ def _verify_commit_reachable(commit: str, repo_url: str, repo_ref: str) -> None:
             else ""
         )
         raise JobFolderError(
-            f"generation refuses: commit {commit!r} could not be confirmed "
+            f"{decision} refuses: commit {commit!r} could not be confirmed "
             f"reachable on the declared remote {repo_url!r} — a runner "
             "would attempt and fail this same fetch inside the kernel, "
             f"after quota is already spent{unauthenticated}: {exc}{remedy}"
         ) from exc
+
+
+# The three conditions a pin has to satisfy before anything irreversible
+# happens, in the order they are checked. The order IS the contract, and
+# it is cheapest-first: two local, instant questions before the one that
+# reaches a network. It is a module constant rather than a sequence of
+# statements so that `SKILL.md`'s doctrine table can be held to it by the
+# suite — prose cannot be held to code, a table can.
+PIN_CONDITIONS = ("clean-worktree", "pin-published")
+
+
+def _refuse_dirty_worktree(
+    *, target: Path, clone_paths: Sequence[str], decision: str, **_unused: object
+) -> None:
+    """Condition (1) — the working tree must be clean over the declared
+    clone paths.
+
+    `git status --porcelain`, never `git diff`, and the two are not
+    interchangeable here. `diff` enumerates changes to TRACKED content; a
+    path git does not track at all is outside its domain by construction,
+    not by omission. That is the whole case this condition exists to
+    catch: `resolve_clone_paths()` walks the WORKING TREE, so a brand-new
+    `run_search.py` that was never `git add`ed passes the import walk
+    happily and is simply absent from the commit the runner clones. The
+    job then dies in the kernel with `ModuleNotFoundError`, after quota is
+    already spent. Measured in a scratch repository with one modified
+    tracked file and one never-added file: `diff --name-only` reports only
+    the modified one; `status --porcelain` reports both.
+
+    `git rev-parse HEAD` runs first so "not a repository" and "no commits
+    yet" refuse with git's own words, rather than surfacing as a wall of
+    `??` lines that names a symptom instead of the cause. Cleanliness that
+    cannot be proven is not cleanliness, so both refuse.
+
+    The `-- <clone_paths…>` pathspec is the same intersection idiom
+    `_staleness_for()` already uses — no second, prefix-matching
+    implementation that could drift from it — and it is also what keeps
+    generation possible at all: `generate_job()` writes untracked files
+    under `<target>/tools/`, so an unscoped check would forbid its own
+    output on the second run.
+
+    Nothing here stages, commits, stashes or fetches. The refusal names
+    the commands and stops. A commit message is a human artifact, and an
+    automatic commit poisons the exact history later used to say which
+    code produced which number. There is deliberately no flag that accepts
+    a dirty tree: it was rejected by name, and a refusal that advertises a
+    bypass is a refusal that will be bypassed.
+    """
+    try:
+        _run_git(["rev-parse", "HEAD"], cwd=target)
+    except JobFolderError as exc:
+        raise JobFolderError(
+            f"{decision} refuses: {target} has no commit to compare its "
+            "working tree against, so it cannot be shown to hold the same "
+            "bytes the runner would clone — and cleanliness that cannot be "
+            f"proven is not cleanliness: {exc}"
+        ) from exc
+
+    status = _run_git(
+        ["status", "--porcelain", "--", *clone_paths], cwd=target
+    )
+    dirty = [line for line in status.stdout.splitlines() if line.strip()]
+    if not dirty:
+        return
+    named = "\n  ".join(dirty)
+    raise JobFolderError(
+        f"{decision} refuses: the working tree is not clean over the "
+        f"declared clone paths {list(clone_paths)}, so the bytes validated "
+        "here are not the bytes a runner would clone — an untracked module "
+        "under a clone path passes the import walk and is then absent from "
+        "the commit the runner checks out, and the job dies in the kernel "
+        f"after quota is spent:\n  {named}\n"
+        "Commit or discard them yourself — `git add <path>` then `git "
+        "commit`, or `git restore <path>` — and re-run. This tool never "
+        "stages, commits, pushes or stashes on your behalf."
+    )
+
+
+def _refuse_unpublished_pin(
+    *,
+    commit: str,
+    repo_url: str,
+    repo_ref: str,
+    decision: str,
+    **_unused: object,
+) -> None:
+    """Condition (3) — the declared remote must be able to serve the pin.
+
+    A thin adapter onto `_verify_commit_reachable()`, which owns the whole
+    of this question and documents it at length. It exists so that every
+    condition reaches `verify_pin_preconditions()` through one uniform
+    keyword-only shape, and so that `PIN_CONDITIONS` maps to callables
+    rather than to a chain of `if` statements a later condition could be
+    inserted into out of order.
+    """
+    _verify_commit_reachable(commit, repo_url, repo_ref, decision=decision)
+
+
+_PIN_CONDITION_CHECKS = {
+    "clean-worktree": _refuse_dirty_worktree,
+    "pin-published": _refuse_unpublished_pin,
+}
+
+
+def verify_pin_preconditions(
+    *,
+    target: str | Path,
+    commit: str,
+    clone_paths: Sequence[str],
+    repo_url: str,
+    repo_ref: str,
+    decision: str,
+) -> None:
+    """The one home for every condition a pin must satisfy before anything
+    irreversible happens, and the ONLY thing either decision point calls.
+
+    A decision point is any command that writes a job folder or spends
+    remote quota: `generate-job` and `submit`. Both call exactly this
+    function, with exactly one word different between them — `decision`,
+    which is the word that appears in the refusal. That is the whole
+    reason this is a function rather than three calls at each site: six
+    call sites can drift in order, or omit one condition on one side, and
+    nothing in the code would say so. Here the order is a module constant
+    and the omission is impossible.
+
+    Conditions run in `PIN_CONDITIONS` order, cheapest first, and the
+    first failure raises `JobFolderError`. Every refusal carries git's own
+    message forward rather than replacing it with a second, coarser one —
+    git's text names the distinct underlying cause, and an existing test
+    asserts on a substring of it reaching the caller.
+
+    `clone_paths` goes through the SAME `validate_clone_paths()` every
+    other caller uses, with `target` supplied, before any of them is
+    handed to git as a pathspec. That is not defensive duplication: it is
+    what keeps the structural refusal for an absolute or `..`-bearing
+    clone path identical whether it is reached here or from
+    `resolve_clone_paths()` later.
+
+    This function never writes, stages, commits, pushes, stashes or
+    fetches into `target`. It asks questions and refuses.
+    """
+    validate_commit_shape(commit, source=f"{decision}")
+    resolved_target = resolve_target(target)
+    validated_clone_paths = validate_clone_paths(clone_paths, resolved_target)
+    for condition in PIN_CONDITIONS:
+        _PIN_CONDITION_CHECKS[condition](
+            target=resolved_target,
+            commit=commit,
+            clone_paths=validated_clone_paths,
+            repo_url=repo_url,
+            repo_ref=repo_ref,
+            decision=decision,
+        )
 
 
 def _staleness_for(target: Path, pinned_commit: str, clone_paths: Sequence[str]) -> dict:

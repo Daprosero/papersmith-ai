@@ -3565,13 +3565,18 @@ class JobFolderTests(unittest.TestCase):
         )
 
     def setUp(self) -> None:
-        # This class is not exercising commit-reachability itself (that is
-        # `CommitReachabilityTests`' own job below) — every `commit`/
+        # This class is not exercising the pin preconditions themselves
+        # (`CleanWorkingTreeTests`, `PinIsHeadTests` and
+        # `CommitReachabilityTests` below each own one) — every `commit`/
         # `repo_url` pair here is a syntactic fixture pointed at
-        # `example.invalid`, never something a real remote could confirm.
-        # Stubbed out here so this class stays offline and deterministic.
+        # `example.invalid`, and the fixtures are plain directories rather
+        # than git repositories at all. `verify_pin_preconditions()` is
+        # the WHOLE-precondition seam, so stubbing that one name is what
+        # keeps this class offline and deterministic; stubbing only the
+        # probe would leave the two local conditions refusing every
+        # generation here.
         patcher = unittest.mock.patch.object(
-            JOBFOLDER, "_verify_commit_reachable", return_value=None
+            JOBFOLDER, "verify_pin_preconditions", return_value=None
         )
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -4029,11 +4034,12 @@ class CommitShapeTests(unittest.TestCase):
         )
 
     def setUp(self) -> None:
-        # Shape validation is what this class exercises; reachability is
-        # `CommitReachabilityTests`' job. Stubbed so this class stays
-        # offline, and so a refusal here can only be the shape one.
+        # Shape validation is what this class exercises. The whole-
+        # precondition seam is stubbed so this class stays offline and so
+        # a refusal reaching a generation here can only be the shape one —
+        # these fixtures are plain directories, not git repositories.
         patcher = unittest.mock.patch.object(
-            JOBFOLDER, "_verify_commit_reachable", return_value=None
+            JOBFOLDER, "verify_pin_preconditions", return_value=None
         )
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -4537,12 +4543,43 @@ class CommitReachabilityTests(unittest.TestCase):
 
     # -- wired into `generate_job()`: refuses before any file is written --
 
-    def test_generate_job_refuses_when_pin_is_not_reachable_on_declared_remote(self) -> None:
+    @staticmethod
+    def _clean_tree_git(fetch_error: str | None):
+        """A `_run_git` double that answers the LOCAL questions exactly as
+        real git answers them for a clean tree, and fails only the fetch
+        (or succeeds everywhere, when `fetch_error` is `None`).
+
+        This is a fidelity repair, not a relaxation, and the distinction
+        matters enough to write down. These three tests each have one
+        subject: the reachability refusal, and that `generate_job()`
+        reaches it. Once generation asks git two further local questions
+        first, a double that raised for every argv made condition (1)
+        refuse first, and a bare `Mock(returncode=0)` made `result.stdout`
+        an auto-`Mock` whose `.splitlines()` is a truthy `Mock`, so a
+        clean tree read as dirty. Both outcomes are the double being
+        wrong about git, not the guard being wrong about the pin.
+        Answering `rev-parse HEAD` with a commit and `status --porcelain`
+        with the empty string is what real git does in the fixture these
+        tests were always describing. It stays silent about conditions (1)
+        and (2), which is exactly why those two are locked against real
+        git repositories in `CleanWorkingTreeTests` and `PinIsHeadTests`
+        and never through this double.
+        """
+
         def fake_run_git(args, *, cwd, timeout=None):
-            raise JOBFOLDER.JobFolderError(
-                f"git fetch --dry-run exited 128: fatal: remote error: "
-                f"upload-pack: not our ref {'e' * 40}"
-            )
+            if args and args[0] == "fetch" and fetch_error is not None:
+                raise JOBFOLDER.JobFolderError(fetch_error)
+            if args and args[0] == "rev-parse":
+                return unittest.mock.Mock(returncode=0, stdout="f" * 40 + "\n", stderr="")
+            return unittest.mock.Mock(returncode=0, stdout="", stderr="")
+
+        return fake_run_git
+
+    def test_generate_job_refuses_when_pin_is_not_reachable_on_declared_remote(self) -> None:
+        fake_run_git = self._clean_tree_git(
+            f"git fetch --dry-run exited 128: fatal: remote error: "
+            f"upload-pack: not our ref {'e' * 40}"
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
@@ -4565,7 +4602,7 @@ class CommitReachabilityTests(unittest.TestCase):
             target = Path(tmp) / "repo"
             target.mkdir()
             with unittest.mock.patch.object(
-                JOBFOLDER, "_run_git", return_value=unittest.mock.Mock(returncode=0)
+                JOBFOLDER, "_run_git", side_effect=self._clean_tree_git(None)
             ):
                 job_dir = self._generate(tmp, target)
 
@@ -4578,10 +4615,14 @@ class CommitReachabilityTests(unittest.TestCase):
         at all (which `resolve_clone_paths()` would itself refuse on, but
         with a different message) and confirming the REMOTE refusal is
         the one that actually surfaces.
-        """
 
-        def fake_run_git(args, *, cwd, timeout=None):
-            raise JOBFOLDER.JobFolderError("not our ref")
+        The double answers the two local questions as real git does for a
+        clean tree, so the refusal observed here really is condition (3)'s
+        and not condition (1)'s wearing the same words — every refusal in
+        this module carries git's own text forward, which would otherwise
+        make the two indistinguishable by substring.
+        """
+        fake_run_git = self._clean_tree_git("not our ref")
 
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
@@ -4790,6 +4831,365 @@ class ProbeAuthorityTests(unittest.TestCase):
 
         self.assertEqual(len(calls), 2, f"the fetch never ran: {calls}")
         self.assertEqual(calls[1][0], "fetch")
+
+
+class CleanWorkingTreeTests(unittest.TestCase):
+    """`jobfolder.verify_pin_preconditions()` and its first condition —
+    the working tree must be clean over the declared clone paths.
+
+    Nothing checked this before. `resolve_clone_paths()` walks the WORKING
+    TREE (`jobfolder.py`'s `_module_to_relpath` resolves against files on
+    disk), so generation validated bytes the runner would never receive:
+    a brand-new `run_search.py` that was never `git add`ed satisfied the
+    import walk happily and was simply absent from the commit the runner
+    clones. The job died in the kernel with `ModuleNotFoundError` after
+    quota was already spent.
+
+    The instrument is `git status --porcelain`, never `git diff`, and that
+    is not interchangeable. `diff` enumerates changes to TRACKED content;
+    an untracked path is outside its domain by construction. Measured in a
+    scratch repository with one modified tracked file and one file never
+    added: `diff --name-only` reports only the modified one, while
+    `status --porcelain` reports `M existente.py` AND `?? run_search.py`.
+    The untracked case is exactly the one this condition exists to catch,
+    so a `diff`-based version would be blind to its own purpose.
+
+    Real git fixtures throughout: an untracked file is not a state a mocked
+    `_run_git` can express without the mock simply asserting the answer.
+    """
+
+    FAKE_SERVICE = "clean-worktree-fake-service"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        ADAPTER.register_metadata(
+            cls.FAKE_SERVICE,
+            lambda run_config: ("fake-metadata.json", json.dumps({"ok": True})),
+        )
+
+    def setUp(self) -> None:
+        # Condition (3) reaches a network. Every `repo_url` here is
+        # `example.invalid`; stubbed so this class stays offline and so a
+        # refusal here can only be condition (1)'s.
+        patcher = unittest.mock.patch.object(
+            JOBFOLDER, "_verify_commit_reachable", return_value=None
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _git(self, cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "clean-worktree-tests"
+        env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "clean-worktree-tests@example.invalid"
+        return subprocess.run(
+            ["git", *args], cwd=cwd, env=env, capture_output=True, text=True, check=check
+        )
+
+    def _init_repo(self, target: Path) -> str:
+        target.mkdir(parents=True, exist_ok=True)
+        self._git(target, "init", "-q")
+        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        harness.parent.mkdir(parents=True, exist_ok=True)
+        harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
+        (target / "README.md").write_text("outside every clone path\n", encoding="utf-8")
+        self._git(target, "add", "-A")
+        self._git(target, "commit", "-q", "-m", "initial")
+        return self._git(target, "rev-parse", "HEAD").stdout.strip()
+
+    def _verify(self, target: Path, commit: str, *, decision: str = "generation") -> None:
+        JOBFOLDER.verify_pin_preconditions(
+            target=target,
+            commit=commit,
+            clone_paths=["src/MIL_CREDA_Benchmark"],
+            repo_url="https://example.invalid/repo.git",
+            repo_ref="main",
+            decision=decision,
+        )
+
+    def _tree_fingerprint(self, target: Path) -> list:
+        """Every path under `target` with its bytes, `.git` included — the
+        instrument for "the repository is byte-identical afterwards".
+        """
+        entries = []
+        for path in sorted(target.rglob("*")):
+            if path.is_file():
+                entries.append((str(path.relative_to(target)), path.read_bytes()))
+        return entries
+
+    # -- the shared seam ------------------------------------------------
+
+    def test_pin_conditions_is_an_ordered_tuple_of_condition_ids(self) -> None:
+        self.assertIsInstance(JOBFOLDER.PIN_CONDITIONS, tuple)
+        self.assertEqual(JOBFOLDER.PIN_CONDITIONS[0], "clean-worktree")
+        self.assertIn("pin-published", JOBFOLDER.PIN_CONDITIONS)
+
+    def test_generate_job_calls_the_shared_seam_and_not_the_probe_directly(self) -> None:
+        """The seam is the only thing either decision point calls. Proven
+        by stubbing `verify_pin_preconditions` alone and confirming the
+        probe never runs — if `generate_job()` still called
+        `_verify_commit_reachable()` beside the seam, the probe would fire.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            self._init_repo(target)
+            probe_calls = []
+
+            with unittest.mock.patch.object(
+                JOBFOLDER, "_verify_commit_reachable",
+                side_effect=lambda *a, **k: probe_calls.append((a, k)),
+            ), unittest.mock.patch.object(
+                JOBFOLDER, "verify_pin_preconditions", return_value=None
+            ):
+                self._generate(tmp, target, commit="a" * 40)
+
+            self.assertEqual(probe_calls, [], "the probe ran beside the seam")
+
+    def test_the_seam_receives_the_decision_word_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+            recorded = {}
+
+            with unittest.mock.patch.object(
+                JOBFOLDER, "verify_pin_preconditions",
+                side_effect=lambda **kwargs: recorded.update(kwargs),
+            ):
+                self._generate(tmp, target, commit=head)
+
+            self.assertEqual(recorded["decision"], "generation")
+            self.assertEqual(recorded["commit"], head)
+            self.assertEqual(list(recorded["clone_paths"]), ["src/MIL_CREDA_Benchmark"])
+            self.assertEqual(recorded["repo_url"], "https://example.invalid/repo.git")
+            self.assertEqual(recorded["repo_ref"], "main")
+
+    def _fixture_assets(self, tmp: str) -> tuple[Path, Path]:
+        bootstrap = Path(tmp) / "fixture_bootstrap.py"
+        invoke = Path(tmp) / "fixture_invoke.py"
+        bootstrap.write_text("# cell-0\n", encoding="utf-8")
+        invoke.write_text("# cell-1\n", encoding="utf-8")
+        return bootstrap, invoke
+
+    def _generate(self, tmp: str, target: Path, *, commit: str) -> Path:
+        bootstrap, invoke = self._fixture_assets(tmp)
+        return JOBFOLDER.generate_job(
+            target=target,
+            service=self.FAKE_SERVICE,
+            job_name="search-a",
+            product="MIL-CREDA",
+            commit=commit,
+            repo_url="https://example.invalid/repo.git",
+            repo_ref="main",
+            clone_paths=["src/MIL_CREDA_Benchmark"],
+            run_module="MIL_CREDA_Benchmark.harness",
+            run_function="campaign",
+            bootstrap_asset=bootstrap,
+            invoke_asset=invoke,
+        )
+
+    # -- condition (1) ---------------------------------------------------
+
+    def test_a_modified_tracked_file_under_a_clone_path_refuses_naming_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+            harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+            harness.write_text("def campaign():\n    return 'edited'\n", encoding="utf-8")
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                self._verify(target, head)
+
+            self.assertIn("src/MIL_CREDA_Benchmark/harness.py", str(caught.exception))
+
+    def test_an_untracked_non_ignored_file_under_a_clone_path_refuses_naming_it(self) -> None:
+        """The case `git diff` cannot see, and the reason this condition
+        exists at all: `resolve_clone_paths()` would validate this file's
+        imports happily and the runner would never receive it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+            new_module = target / "src" / "MIL_CREDA_Benchmark" / "run_search.py"
+            new_module.write_text("def search():\n    pass\n", encoding="utf-8")
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                self._verify(target, head)
+
+            self.assertIn("src/MIL_CREDA_Benchmark/run_search.py", str(caught.exception))
+
+    def test_git_diff_would_not_have_seen_the_untracked_file(self) -> None:
+        """Not a test of this module — a test of the instrument choice,
+        measured against real git so the docstring above is a fact and not
+        a recollection. If this ever goes green the wrong way, `status`
+        stopped being the stronger instrument and the choice needs
+        rethinking, not the assertion relaxing.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            self._init_repo(target)
+            harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+            harness.write_text("def campaign():\n    return 'edited'\n", encoding="utf-8")
+            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+                "def search():\n    pass\n", encoding="utf-8"
+            )
+
+            diffed = self._git(
+                target, "diff", "--name-only", "--", "src/MIL_CREDA_Benchmark"
+            ).stdout
+            statused = self._git(
+                target, "status", "--porcelain", "--", "src/MIL_CREDA_Benchmark"
+            ).stdout
+
+            self.assertIn("harness.py", diffed)
+            self.assertNotIn("run_search.py", diffed)
+            self.assertIn("harness.py", statused)
+            self.assertIn("run_search.py", statused)
+
+    def test_a_staged_but_uncommitted_file_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+            staged = target / "src" / "MIL_CREDA_Benchmark" / "staged.py"
+            staged.write_text("STAGED = 1\n", encoding="utf-8")
+            self._git(target, "add", "src/MIL_CREDA_Benchmark/staged.py")
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                self._verify(target, head)
+
+            self.assertIn("src/MIL_CREDA_Benchmark/staged.py", str(caught.exception))
+
+    def test_an_ignored_file_under_a_clone_path_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            (target).mkdir(parents=True, exist_ok=True)
+            head = self._init_repo(target)
+            (target / ".gitignore").write_text("*.pyc\n", encoding="utf-8")
+            self._git(target, "add", ".gitignore")
+            self._git(target, "commit", "-q", "-m", "ignore pyc")
+            head = self._git(target, "rev-parse", "HEAD").stdout.strip()
+            (target / "src" / "MIL_CREDA_Benchmark" / "harness.pyc").write_bytes(b"\x00")
+
+            self._verify(target, head)
+
+    def test_dirt_outside_every_clone_path_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+            (target / "README.md").write_text("edited outside the clone paths\n", encoding="utf-8")
+            (target / "scratch-note.txt").write_text("untracked, outside\n", encoding="utf-8")
+
+            self._verify(target, head)
+
+    def test_a_target_that_is_not_a_repository_refuses_carrying_gits_words(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "plain"
+            (target / "src" / "MIL_CREDA_Benchmark").mkdir(parents=True)
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                self._verify(target, "a" * 40)
+
+            self.assertIn("not a git repository", str(caught.exception))
+
+    def test_a_repository_with_no_commits_refuses_carrying_gits_words(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            (target / "src" / "MIL_CREDA_Benchmark").mkdir(parents=True)
+            self._git(target, "init", "-q")
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                self._verify(target, "a" * 40)
+
+            self.assertIn("HEAD", str(caught.exception))
+
+    def test_the_refusal_names_the_commands_the_operator_can_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+                "x = 1\n", encoding="utf-8"
+            )
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                self._verify(target, head)
+
+            message = str(caught.exception)
+            self.assertIn("git add", message)
+            self.assertIn("git commit", message)
+
+    def test_the_refusal_offers_no_dirty_tree_escape_hatch(self) -> None:
+        """Rejected by name by the operator this change was written for. A
+        refusal that advertises a bypass is a refusal that will be bypassed.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+                "x = 1\n", encoding="utf-8"
+            )
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                self._verify(target, head)
+
+            lowered = str(caught.exception).lower()
+            for hatch in ("--accept-dirty", "--force", "--allow-dirty", "--skip"):
+                self.assertNotIn(hatch, lowered, hatch)
+
+    def test_the_repository_is_byte_identical_after_every_refusal(self) -> None:
+        """The tool never stages, commits, stashes or fetches on the
+        operator's behalf. A commit message is a human artifact, and an
+        automatic commit poisons the very history later used to say which
+        code produced which number.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+                "x = 1\n", encoding="utf-8"
+            )
+            harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+            harness.write_text("def campaign():\n    return 'edited'\n", encoding="utf-8")
+            before = self._tree_fingerprint(target)
+
+            with self.assertRaises(JOBFOLDER.JobFolderError):
+                self._verify(target, head)
+
+            self.assertEqual(self._tree_fingerprint(target), before)
+
+    # -- through generation ----------------------------------------------
+
+    def test_generation_refuses_a_dirty_tree_and_writes_no_job_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+                "def search():\n    pass\n", encoding="utf-8"
+            )
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
+                self._generate(tmp, target, commit=head)
+
+            self.assertIn("run_search.py", str(caught.exception))
+            self.assertFalse((target / "tools").exists())
+
+    def test_generation_succeeds_on_a_clean_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+
+            job_dir = self._generate(tmp, target, commit=head)
+
+            self.assertTrue((job_dir / "run-config.json").is_file())
+
+    def test_generations_own_untracked_output_under_tools_does_not_refuse_it(self) -> None:
+        """`generate_job()` writes untracked files under `<target>/tools/`.
+        An unscoped cleanliness check would forbid its own output on the
+        second run; the `-- <clone_paths…>` pathspec is what prevents that.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            head = self._init_repo(target)
+
+            self._generate(tmp, target, commit=head)
+            self._verify(target, head)
 
 
 class ResolveClonePathsTests(unittest.TestCase):
@@ -5029,12 +5429,15 @@ class StalenessTests(unittest.TestCase):
         )
 
     def setUp(self) -> None:
-        # Staleness (this class's own subject) is orthogonal to commit
-        # reachability on a declared remote — every `repo_url` here is
-        # `example.invalid`, a fixture, never a real remote. Stubbed out so
-        # this class stays offline and deterministic.
+        # Staleness (this class's own subject) is orthogonal to the pin
+        # preconditions — every `repo_url` here is `example.invalid`, a
+        # fixture, never a real remote, and several tests here
+        # deliberately generate into a non-repository or against a pin
+        # absent from history, which are exactly the states conditions (1)
+        # and (2) forbid at a decision point and `read()` only reports.
+        # The whole-precondition seam is stubbed, not just the probe.
         patcher = unittest.mock.patch.object(
-            JOBFOLDER, "_verify_commit_reachable", return_value=None
+            JOBFOLDER, "verify_pin_preconditions", return_value=None
         )
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -5371,11 +5774,12 @@ class StalenessRoutingTests(unittest.TestCase):
         )
 
     def setUp(self) -> None:
-        # This class exercises staleness routing, not commit reachability —
-        # every `repo_url` here is `example.invalid`, a fixture. Stubbed
-        # out so this class stays offline and deterministic.
+        # This class exercises staleness routing, not the pin
+        # preconditions — every `repo_url` here is `example.invalid`, a
+        # fixture. The whole-precondition seam is stubbed so this class
+        # stays offline and deterministic.
         patcher = unittest.mock.patch.object(
-            JOBFOLDER, "_verify_commit_reachable", return_value=None
+            JOBFOLDER, "verify_pin_preconditions", return_value=None
         )
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -6259,11 +6663,12 @@ class SmokeTests(unittest.TestCase):
         )
 
     def setUp(self) -> None:
-        # This class exercises smoke recording, not commit reachability —
-        # every `repo_url` here is `example.invalid`, a fixture. Stubbed
-        # out so this class stays offline and deterministic.
+        # This class exercises smoke recording, not the pin preconditions
+        # — every `repo_url` here is `example.invalid`, a fixture. The
+        # whole-precondition seam is stubbed so this class stays offline
+        # and deterministic.
         patcher = unittest.mock.patch.object(
-            JOBFOLDER, "_verify_commit_reachable", return_value=None
+            JOBFOLDER, "verify_pin_preconditions", return_value=None
         )
         patcher.start()
         self.addCleanup(patcher.stop)
