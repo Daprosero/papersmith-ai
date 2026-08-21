@@ -6285,6 +6285,71 @@ class TargetVocabularyLeakTests(unittest.TestCase):
             self._assert_clean(script)
 
 
+class ServiceResolutionTests(unittest.TestCase):
+    """The defect `BackendResolutionTests` closed, surviving under a second
+    spelling of the same concept.
+
+    `_load_backend_module()` is called at four dispatch sites, every one of
+    them keyed on `args.backend`. `generate-job` does not take `--backend`; it
+    takes `--service`, and it is the only subcommand that does. So it reached
+    `ADAPTER.resolve_metadata(service)` with `adapters/<service>.py` never
+    exec'd, and refused a correct invocation with `"no metadata assembler
+    registered under 'kaggle'"` — for a service whose adapter sits on disk
+    registering exactly that.
+
+    Asserted in a fresh process on purpose: this suite imports the Kaggle
+    adapter at module scope, so an in-process check finds the registry already
+    populated and passes against the bug.
+    """
+
+    def test_generate_job_reaches_the_assembler_its_service_names(self) -> None:
+        """An absence, and that is the assertion this defect deserves: what the
+        fix restores is that resolution gets past the registry at all. The
+        command may still refuse for its own reasons — this fixture builds no
+        remote — but never because the adapter naming the service was never
+        loaded.
+        """
+        # Generation refuses in order — reachable commit, resolvable imports,
+        # declared clone paths — and only past all three does it ask the
+        # registry. A fixture tripping any earlier guard never reaches the
+        # defect, which is how the first draft of this test passed against it.
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            origin = root / "origin.git"
+            subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+            target = root / "target"
+            subprocess.run(["git", "init", "-q", str(target)], check=True)
+            package = target / "src" / "product"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("", encoding="utf-8")
+            (package / "harness.py").write_text(
+                "def run():\n    return {}\n", encoding="utf-8")
+            git = ["git", "-C", str(target),
+                   "-c", "user.email=t@t", "-c", "user.name=t"]
+            subprocess.run([*git, "add", "-A"], check=True)
+            subprocess.run([*git, "commit", "-q", "-m", "seed"], check=True)
+            subprocess.run([*git, "remote", "add", "origin", str(origin)], check=True)
+            subprocess.run([*git, "push", "-q", "origin", "HEAD:refs/heads/main"],
+                           check=True)
+            commit = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True,
+                                    text=True, check=True).stdout.strip()
+            completed = subprocess.run(
+                [sys.executable, str(REMOTE_CLI_SCRIPT), "generate-job",
+                 "--target", str(target), "--service", "kaggle",
+                 "--job-name", "probe-job", "--product", "Product",
+                 "--commit", commit,
+                 "--repo-url", str(origin),
+                 "--repo-ref", "main",
+                 "--clone-path", "src/product",
+                 "--run-module", "product.harness", "--run-function", "run"],
+                capture_output=True, text=True, cwd=str(target),
+            )
+        output = completed.stdout + completed.stderr
+        self.assertNotIn("no metadata assembler registered", output,
+                         "generate-job never side-loaded the adapter its own "
+                         "--service names: " + output.strip()[:300])
+
+
 class BackendResolutionTests(unittest.TestCase):
     """`--backend` used to name an adapter nothing ever registered, for any
     backend whose module `remote_cli.py` never imports — which, before this

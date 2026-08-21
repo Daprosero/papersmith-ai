@@ -1515,6 +1515,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "generate-job":
+        # `--service` is `--backend` under a second name: both select a module
+        # in `adapters/`, and generation resolves a metadata assembler out of
+        # the same registry the other four commands resolve an adapter from.
+        # The side-loader was wired to `args.backend` at all four of its call
+        # sites, so this one command — the first anybody runs to reach a
+        # service at all — asked an empty registry and refused a correct
+        # invocation.
+        _load_backend_module(args.service)
         try:
             destination = JOBFOLDER.generate_job(
                 target=args.target,
