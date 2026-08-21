@@ -2720,9 +2720,9 @@ BENCHMARK_DECLARATION = "__benchmark__"
 #: dimension wins; the checks below read only that.
 #:
 #:     "report": {
-#:         "renderers":   ["tables.render", "harness.render_panorama"],
-#:         "conclusions": ["tables.conclusion", "tables.conclusion_rungs"],
-#:         "figures":     ["figures.curves", "latent.grid"],
+#:         "renderers":   ["tables.render", "tables.render_summary"],
+#:         "conclusions": ["tables.conclusion", "tables.conclusion_scale"],
+#:         "figures":     ["figures.curves", "figures.grid"],
 #:         "dimensions":  {"accuracy": "higher", "seconds": "lower"},
 #:     }
 #:
@@ -3361,8 +3361,12 @@ def report_state(target: Path, name: str, package: str) -> dict:
     # literal to compare, and a conclusion that cannot come out different can only
     # be caught by making it try.
     fixed = dict(contract.get("selections") or {})
+    # No default: a report that declares no record has no record, and guessing a
+    # filename here would make the forge answer a question the target never
+    # asked. `""` rather than `None` because the membership test below reads the
+    # declared name as text, and `p.name in None` raises.
     record = next((p for p in sorted((target / name).rglob("*.json"))
-                   if p.name in (contract.get("record") or "latent.json")), None)
+                   if p.name in (contract.get("record") or "")), None)
     declared_records, undeclared_records = records_state(target, name, contract)
     live = introspect(target, package, record)
     written_selections = [
@@ -4036,7 +4040,10 @@ def notebook_coupling(path: Path, contract: dict) -> dict:
     vocabulary = (set(contract.get("renderers") or [])
                   | set(contract.get("conclusions") or [])
                   | set(contract.get("figures") or []))
-    record_name = contract.get("record") or "latent.json"
+    # No default, for the same reason: `_is_reporting_cell` is typed `str | None`
+    # and answers `False` for anything falsy, so an undeclared record classifies
+    # as "not a record cell" instead of as somebody else's filename.
+    record_name = contract.get("record")
 
     code_cells = [(index, cell) for index, cell in enumerate(_notebook_cells(path))
                   if isinstance(cell, dict) and cell.get("cell_type") == "code"]
@@ -5110,10 +5117,10 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     notebooks = notebooks_state(target, name, package_name(name))
     trivial = trivial_assertions(target / "tests")
 
-    # The shard contract, not the report: the report also renders
-    # latent-analysis quantities (e.g. `geometry.ratio`, `domainSeparability`)
-    # that never sit on a shard, and demanding a partition classification for
-    # those is a category error, not a missing declaration. `None` here means
+    # The shard contract, not the report: a report also renders quantities that
+    # never sit on a shard — derived readings computed once over everything a
+    # campaign produced — and demanding a partition classification for those is
+    # a category error, not a missing declaration. `None` here means
     # the universe itself could not be determined, and that is never read as
     # "declares zero dimensions" — see `declared_dimension_names`.
     dimension_names = declared_dimension_names(target, package_name(name))

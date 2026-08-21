@@ -1229,18 +1229,25 @@ metric is called in somebody's field.
 
 ```python
 "report": {
-    "renderers":       ["tables.render", "harness.render_panorama"],
-    "conclusions":     ["tables.conclusion", "tables.conclusion_geometry"],
+    "renderers":       ["tables.render", "tables.render_summary"],
+    "conclusions":     ["tables.conclusion", "tables.conclusion_scale"],
     "conclusionEntry": "tables.conclusions",
     "objectiveEntry":  "tables.objective",
-    "figures":         ["figures.curves", "latent.grid"],
+    "figures":         ["figures.curves", "figures.grid"],
     "dimensions":      {"accuracy": "higher", "seconds": "lower"},
     "components":      {"terms": ["fit", "penalty"], "share": "penaltyShare"},
     "selections":      {"SEEDS": "the pilot, a prefix of FULL_SEEDS"},
-    "record":          "latent.json",
+    "record":          "tables.json",
     "records":         ["Results/summary.json", "Results/Benchmark", "Results/figures"],
 }
 ```
+
+Every module name above is invented, and invented from exactly two: `tables` and
+`figures`, the two the kit's own declaration already uses. That is a rule and not
+a habit — a worked example is the one place a reader most readily mistakes an
+illustration for a practice, so an example that reached into somebody's
+repository for a module name would be teaching that repository's layout as
+everybody's. The suite holds this example to those two names.
 
 What that buys, and each one is a way a report goes wrong while every number
 behind it is right:

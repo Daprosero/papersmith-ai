@@ -53,6 +53,15 @@ CACHES = ("__pycache__", ".pytest_cache", ".ipynb_checkpoints")
 BINARY_SUFFIXES = (".pyc", ".pyo", ".png", ".jpg", ".jpeg", ".gif", ".pdf",
                    ".pth", ".npz", ".npy", ".zip", ".ico")
 
+#: Words a target owns that the forge is forbidden to borrow — the floor the
+#: derived guard stands on. Being a fixed list, it can only ever hold leaks
+#: somebody already found; that is why the derived rules exist beside it rather
+#: than instead of it, and why a word here may never be admitted to
+#: `FORGE_LEXICON`. Stated once, because two spellings of a floor is how a floor
+#: drifts.
+FORGE_VOCABULARY_FLOOR = ("kaggle", "t4", "ceiling", "ramp", "transfer",
+                          "creda", "milcreda", "latent")
+
 
 def kit_assets(root=None):
     """Every text file under `assets/**` the register has to account for.
@@ -4713,8 +4722,7 @@ class ReportFirstSectionProseTests(unittest.TestCase):
         for document in self.guarded_documents():
             with self.subTest(document=str(document.relative_to(self.SKILL_ROOT))):
                 text = self.scannable_text(document)
-                for leaked in ("kaggle", "t4", "ceiling", "ramp", "transfer",
-                               "creda", "milcreda"):
+                for leaked in FORGE_VOCABULARY_FLOOR:
                     self.assertIsNone(
                         re.search(rf"\b{leaked}\b", text),
                         f"{leaked!r} is some target's vocabulary, not the forge's")
@@ -4758,8 +4766,7 @@ class ReportFirstSectionProseTests(unittest.TestCase):
         caught = {}
         for document in self.guarded_documents(base):
             text = self.scannable_text(document)
-            hits = [word for word in ("kaggle", "t4", "ceiling", "ramp",
-                                      "transfer", "creda", "milcreda")
+            hits = [word for word in FORGE_VOCABULARY_FLOOR
                     if re.search(rf"\b{word}\b", text)]
             if hits:
                 caught[str(document.relative_to(base))] = hits
@@ -7914,3 +7921,414 @@ class MaterializeIsNotAProductionStepTests(unittest.TestCase):
             harness.stem, impl.COMMANDS,
             f"{harness.name} became a CLI command, which is the one thing the "
             "framing of this change says it must never be")
+
+
+#: The vocabulary the forge legitimately owns, word to the reason it was admitted.
+#:
+#: Rule B derives its denylist from whatever targets are on disk and subtracts
+#: this. A dict rather than a set because the reason column is the review
+#: artifact: admitting a word has to cost an argument, not a comma. A meta-test
+#: below asserts every reason is a sentence, and a second asserts this and
+#: `FORGE_VOCABULARY_FLOOR` are disjoint — so no leak already found can be
+#: silenced by adding it here.
+FORGE_LEXICON: dict[str, str] = {
+    "adaptation": "ordinary English in doctrine prose about an arm with its "
+                  "adaptation switched off, and the name of the forge's own "
+                  "worked example of an assertion that cannot fail",
+    "artifacts": "ordinary English for what a run leaves behind, and the "
+                 "invented module in the usage reference's worked walkthrough",
+    "attention": "ordinary English about what a report spends of its reader, "
+                 "used in three places that describe writing rather than code",
+    "bag": "the canonical illustration of two incomparable statistical units, "
+           "one predicting per instance and the other per bag, which the kit "
+           "needs in order to explain when a metric is not applicable",
+    "benchmark": "the central noun of this whole skill: the kit ships "
+                 "benchmark.py and every target declares a benchmark package",
+    "confidence": "ordinary English about how sure a reading is, used in the "
+                  "usage reference's prose and in no code path at all",
+    "config": "a universal name for the module that holds settings, shipped by "
+              "the kit itself and used by every scaffold this forge writes",
+    "digest": "the forge's own kit module report_digest.py, which reduces a "
+              "report to the numbers a verification can be run against",
+    "domain": "an ENVIRONMENT_HINTS entry beside dataset, task and corpus: "
+              "generic vocabulary for where data comes from, named by no target",
+    "figures": "one of the two module names rule A allows a worked example to "
+               "draw from, because the kit's own declaration already uses it",
+    "harness": "probe returns a harness key and the doctrine says the harness "
+               "refuses; the forge's own file for it is benchmark.py",
+    "init": "the __init__.py every Python package on earth is required to have, "
+            "including the declaration this skill writes",
+    "kernel": "generic compute vocabulary for the unit a device queues, needed "
+              "by the kit's note on why a timer stopped too early lies",
+    "kernels": "the plural of the same generic compute vocabulary, in the same "
+               "note in the kit's benchmark module",
+    "local": "ordinary English for a remedy or a path that stays on this "
+             "machine, used throughout the doctrine and the checker",
+    "models": "generic machine-learning vocabulary and the name of this "
+              "repository's own checkpoint directory, which no target owns",
+    "objective": "the forge's declared report vocabulary for what a run is "
+                 "trying to optimize, and ordinary English besides",
+    "pipeline": "ordinary English for a sequence of steps, used twice in "
+                "doctrine prose about how a construction arranges itself",
+    "report": "the central noun of the report contract this skill exists to "
+              "check, appearing in doctrine on nearly every page",
+    "shard": "the forge's own distribution vocabulary: a declaration says which "
+             "fields must be identical across shards and verify reads it",
+    "shards": "the plural of the same distribution vocabulary, in the same "
+              "declaration and the same checker",
+    "tables": "the other module name rule A allows a worked example to draw "
+              "from, because the kit's own declaration already uses it",
+    "term": "ordinary English for a word being defined, and for a component of "
+            "a sum the report contract already names generically",
+    "training": "ordinary English and generic machine-learning vocabulary: the "
+                "harness owns training and measuring and nothing else",
+    "verdict": "the forge's own kit module verdict.py and the noun the whole "
+               "flow ends on, named by the skill long before any target",
+    "wiring": "the forge's own vocabulary for how a benchmark reaches prior "
+              "work, checked by this skill and shipped in its kit",
+}
+
+#: Rule A's allowlist. A worked report example may draw its module names from
+#: these two and nothing else, because these two are what the kit's own
+#: declaration already uses (`assets/kit/src_benchmark/__init__.py:55-57`).
+EXAMPLE_MODULE_NAMES = frozenset({"tables", "figures"})
+
+
+class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
+    """A guard that scans a fixed word list can only catch a leak somebody has
+    already found. This derives the denylist from the targets on disk instead.
+
+    Two rules at two units, because neither one covers the other:
+
+    - **Rule A** reads a worked report example and demands every dotted name
+      draw its module from `EXAMPLE_MODULE_NAMES`. It needs no lexicon and it is
+      the only rule that can catch a leak spelled with a word the forge
+      legitimately owns — `harness` is in the lexicon by necessity, so no
+      word-level rule can ever object to `harness.render_panorama`.
+    - **Rule B** derives every target's vocabulary from directory, package and
+      module names, subtracts `FORGE_LEXICON`, and objects to what is left.
+
+    `FORGE_VOCABULARY_FLOOR` is rule C and lives on the class next door, which
+    already scans it over the same surface.
+    """
+
+    SKILL_ROOT = ReportFirstSectionProseTests.SKILL_ROOT
+    CACHES = ReportFirstSectionProseTests.CACHES
+    BINARY_SUFFIXES = ReportFirstSectionProseTests.BINARY_SUFFIXES
+
+    # One definition of the guarded surface, borrowed rather than restated: a
+    # second spelling of "what the forge ships" is how the two go out of step.
+    guarded_documents = ReportFirstSectionProseTests.guarded_documents
+    scannable_text = ReportFirstSectionProseTests.scannable_text
+
+    TARGETS = FORGE / "implementations"
+
+    #: Split on punctuation and on camel-case boundaries, so `MIL_CREDA_Benchmark`
+    #: and `reportDigest` both come apart into the words a reader would say.
+    WORD_SPLIT_RE = re.compile(r"[^A-Za-z0-9]+|(?<=[a-z])(?=[A-Z])")
+
+    #: Two-letter fragments match too much ordinary text to carry a verdict.
+    MINIMUM_WORD = 3
+
+    def split(self, name):
+        return [part.lower() for part in self.WORD_SPLIT_RE.split(name) if part]
+
+    def target_words(self, root=None):
+        """Every word the targets on disk own, and the targets they came from.
+
+        Names only: directory, package and module basenames. No file under
+        `implementations/` is opened, which is what keeps this read-only and
+        keeps the cost proportional.
+
+        Directories beginning with `_` are skipped because that is where this
+        suite builds its own throwaway targets; deriving the denylist from them
+        would make the guard depend on which tests happened to run first.
+        """
+        base = self.TARGETS if root is None else Path(root)
+        words: set[str] = set()
+        targets: list[str] = []
+        if not base.is_dir():
+            return words, targets
+        for target in sorted(base.iterdir()):
+            if not target.is_dir() or target.name.startswith((".", "_")):
+                continue
+            targets.append(target.name)
+            words.update(self.split(target.name))
+            source = target / "src"
+            if not source.is_dir():
+                continue
+            for package in sorted(source.iterdir()):
+                if not package.is_dir() or package.name in self.CACHES:
+                    continue
+                words.update(self.split(package.name))
+                for module in sorted(package.glob("*.py")):
+                    words.update(self.split(module.stem))
+        return {word for word in words if len(word) >= self.MINIMUM_WORD}, targets
+
+    def derived_denylist(self, root=None):
+        """Rule B's denylist, or a skip when nobody has a target.
+
+        Silence is the right answer for a clone with no `implementations/`
+        repository, but it has to be an announced silence: a guard that passes
+        because it had nothing to look at reads exactly like a guard that
+        looked and found nothing.
+        """
+        words, targets = self.target_words(root)
+        if not targets:
+            self.skipTest(
+                "no repository under implementations/, so rule B has no "
+                "vocabulary to derive and this is silence rather than a pass")
+        return sorted(words - set(FORGE_LEXICON))
+
+    def leaks(self, denylist, root=None):
+        found = {}
+        for document in self.guarded_documents(root):
+            text = self.scannable_text(document)
+            hits = [word for word in denylist
+                    if re.search(rf"\b{re.escape(word)}\b", text)]
+            if hits:
+                base = self.SKILL_ROOT if root is None else Path(root)
+                found[str(document.relative_to(base))] = hits
+        return found
+
+    def test_rule_b_finds_no_target_vocabulary_in_the_forge(self):
+        """The denylist is whatever the targets on disk own, minus what the
+        forge owns. Anything left that appears in a forge file is a leak, and
+        it is a leak whether or not anybody wrote it on a list first.
+        """
+        denylist = self.derived_denylist()
+        self.assertTrue(
+            denylist,
+            "every derived word is in the lexicon, so rule B is deriving "
+            "nothing and cannot object to anything")
+        self.assertEqual(
+            self.leaks(denylist), {},
+            "these words belong to a repository under implementations/ and "
+            "are neither in FORGE_LEXICON nor repaired")
+
+    #: The keys a worked report declaration is written with. A dotted name is
+    #: subject to rule A when it stands on a line that also carries one of these,
+    #: which is what separates `"figures.curves"` in an example from `"README.md"`
+    #: in a list of real filenames. Measured before it was written: scoped this
+    #: way the rule sees 23 dotted names across the whole forge and objects to
+    #: exactly the leaked ones; unscoped it sees sixty, nearly all of them real
+    #: files, and would have to grow an exemption list to say anything at all.
+    REPORT_KEY_RE = re.compile(
+        r"""['"](renderers|conclusions|conclusionEntry|objectiveEntry"""
+        r"""|figures|record)['"]""")
+
+    #: `module.attribute`, quoted, both halves identifiers. A path keeps its
+    #: slash and so never matches, which is why `"Results/summary.json"` is not
+    #: read as a module name.
+    DOTTED_RE = re.compile(
+        r"""(?P<quote>['"])"""
+        r"""(?P<name>[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)"""
+        r"""(?P=quote)""")
+
+    def example_names(self, root=None):
+        """Every dotted name a worked report example spells, with its place."""
+        base = self.SKILL_ROOT if root is None else Path(root)
+        found = []
+        for document in self.guarded_documents(root):
+            text = document.read_text(encoding="utf-8", errors="replace")
+            for number, line in enumerate(text.splitlines(), start=1):
+                if not self.REPORT_KEY_RE.search(line):
+                    continue
+                for match in self.DOTTED_RE.finditer(line):
+                    found.append((str(document.relative_to(base)), number,
+                                  match.group("name")))
+        return found
+
+    def example_violations(self, root=None):
+        return [place for place in self.example_names(root)
+                if place[2].split(".")[0] not in EXAMPLE_MODULE_NAMES]
+
+    def scratch_forge(self):
+        """The forge's shape, built for the purpose rather than borrowed.
+
+        A rule that passes because nothing is wrong today has not been shown to
+        do anything, so this is proven the way `test_a_leak_into_a_script_is_caught`
+        already proves the fixed list: build the surface, plant one leak in it,
+        and read back exactly what was named.
+        """
+        base = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        (base / "references").mkdir()
+        (base / "assets").mkdir()
+        (base / "scripts").mkdir()
+        (base / "SKILL.md").write_text("Generic doctrine.\n", encoding="utf-8")
+        (base / "references" / "usage.md").write_text("Generic.\n", encoding="utf-8")
+        return base
+
+    def test_rule_a_names_the_file_a_planted_example_leak_is_in(self):
+        base = self.scratch_forge()
+        (base / "scripts" / "leaky.py").write_text(
+            'CONTRACT = {"figures": ["figures.curves", "latent.grid"]}\n',
+            encoding="utf-8")
+        (base / "scripts" / "clean.py").write_text(
+            'CONTRACT = {"figures": ["figures.curves"]}\n', encoding="utf-8")
+        self.assertEqual(
+            self.example_violations(base),
+            [("scripts/leaky.py", 1, "latent.grid")])
+
+    def test_rule_a_objects_to_a_module_the_forge_legitimately_owns(self):
+        """The reason rule A exists at all.
+
+        `harness` is in `FORGE_LEXICON` by necessity — `probe` returns a
+        `harness` key and the doctrine says the harness refuses — so rule B can
+        never object to `harness.render_panorama`, which is one of the leaks the
+        derived guard was adopted to catch. An allowlist over invented example
+        names is the only rule that can, and this is that claim measured rather
+        than argued.
+        """
+        base = self.scratch_forge()
+        (base / "scripts" / "borrowed.py").write_text(
+            'CONTRACT = {"renderers": ["tables.render", "harness.render_panorama"]}\n',
+            encoding="utf-8")
+        self.assertIn("harness", FORGE_LEXICON)
+        self.assertEqual(self.leaks(self.derived_denylist(), base), {})
+        self.assertEqual(
+            self.example_violations(base),
+            [("scripts/borrowed.py", 1, "harness.render_panorama")])
+
+    def test_rule_a_lets_a_worked_example_draw_from_two_module_names(self):
+        """An allowlist, which is why it is precise where rule B is not.
+
+        A worked example is invented prose: nothing forces it to reach outside
+        the two module names the kit's own declaration already uses. So the rule
+        needs no list of forbidden words, and catches a leak nobody enumerated —
+        including one spelled with a word the forge legitimately owns, which no
+        word-level rule can ever object to.
+        """
+        names = self.example_names()
+        self.assertTrue(
+            names,
+            "no worked report example was found at all, so this rule is "
+            "reading nothing and proving nothing")
+        self.assertEqual(
+            self.example_violations(), [],
+            "a worked report example names a module outside "
+            f"{sorted(EXAMPLE_MODULE_NAMES)}, which means it was copied from "
+            "somebody's repository instead of invented")
+
+    def test_a_clone_with_no_target_skips_instead_of_passing(self):
+        """Rule B is the one rule in this file that reads outside the forge, and
+        the price is that it says nothing at all in a clone where nobody has
+        checked a repository out yet.
+
+        Saying nothing has to be visible. A skip with a reason tells a reader the
+        rule did not run; a green tick tells them it ran and found the forge
+        clean, which would be a claim nobody made.
+        """
+        empty = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, empty, ignore_errors=True)
+        with self.assertRaises(unittest.SkipTest) as raised:
+            self.derived_denylist(empty)
+        self.assertIn("implementations/", str(raised.exception))
+        self.assertIn("silence rather than a pass", str(raised.exception))
+
+    def test_every_lexicon_entry_costs_an_argument(self):
+        """The reason column is the review artifact.
+
+        A set would let the lexicon grow by one comma per inconvenient failure,
+        which is how a derived denylist quietly becomes an empty one. A sentence
+        is not proof that the word belongs to the forge, but it is a thing a
+        reviewer can disagree with, and that is the whole mechanism.
+        """
+        thin = {word: reason for word, reason in FORGE_LEXICON.items()
+                if len(reason.split()) < 4}
+        self.assertEqual(
+            thin, {},
+            "a lexicon entry has to say why the forge owns the word")
+
+    def test_the_lexicon_cannot_silence_a_leak_already_found(self):
+        """The floor and the lexicon are disjoint, structurally.
+
+        Without this, the cheapest way to make rule B green is to declare the
+        leaking word forge vocabulary — and the words most likely to be declared
+        that way are exactly the ones already proven to be somebody else's.
+        """
+        self.assertEqual(
+            sorted(set(FORGE_LEXICON) & set(FORGE_VOCABULARY_FLOOR)), [],
+            "a word on the floor is a leak somebody already found, so it can "
+            "never also be vocabulary the forge owns")
+
+
+class UndeclaredRecordEndToEndTests(unittest.TestCase):
+    """The other half of the vocabulary repair, which is not a vocabulary
+    question at all: what the checker does when a report declares no record.
+
+    It used to substitute a filename — one particular repository's filename —
+    so a target that declared nothing got somebody else's answer. Dropping the
+    default is the repair, but the two sites cannot drop it the same way:
+    `_is_reporting_cell` is typed `str | None` and answers `False` for anything
+    falsy, while `report_state` reads the declared name as text and `p.name in
+    None` raises. So one site takes `None` and the other takes `""`.
+
+    This runs the real command over a real target that declares no record,
+    because the difference between those two is invisible until something
+    actually asks.
+    """
+
+    DECLARATION = (
+        "__benchmark__ = {\n"
+        "    'revision': 'r01.md',\n"
+        "    'arms': {},\n"
+        "    'report': {\n"
+        "        'renderers': ['tables.render'],\n"
+        "        'conclusions': ['tables.conclusion'],\n"
+        "        'objectiveEntry': 'tables.objective',\n"
+        "        'figures': ['figures.curves'],\n"
+        "        'components': {'terms': ['fit'], 'share': None},\n"
+        "        'dimensions': {'accuracy': 'higher', 'fit': None},\n"
+        "    },\n"
+        "}\n"
+    )
+
+    def verify(self):
+        box = FORGE / "implementations" / f"_norecord_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src/Method_Benchmark").mkdir(parents=True)
+        (box / "Method/Notebooks").mkdir(parents=True)
+        (box / "Method/Results").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            self.DECLARATION, encoding="utf-8")
+        # At least one JSON under the product, or the membership test the repair
+        # touches is never reached and this proves nothing.
+        (box / "Method/Results/summary.json").write_text(
+            json.dumps({"runs": []}), encoding="utf-8")
+        cells = [_cell("markdown", "The figure shows the curves."),
+                 _cell("code", "figures.curves(path)",
+                       outputs=[_shown("image/png")])]
+        (box / "Method/Notebooks/Report.ipynb").write_text(
+            json.dumps({"cells": cells, "metadata": {}, "nbformat": 4,
+                        "nbformat_minor": 5}), encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box),
+             "--name", "Method", "--revision", "r01.md"],
+            capture_output=True, text=True, cwd=FORGE)
+
+    def test_a_target_that_declares_no_record_still_gets_an_answer(self):
+        """Reachable red by making either default `None`: the membership test at
+        the top of `report_state` runs before anything else in the report check,
+        so `p.name in None` takes down the whole command for every target that
+        declared no record — which is every target that has not got that far yet.
+        """
+        proc = self.verify()
+        self.assertEqual(proc.stderr, "", proc.stderr)
+        report = json.loads(proc.stdout or "{}")["report"]
+        self.assertIn(
+            report["status"], ("ok", "drift", "incomplete"),
+            "the report check has to reach a verdict on a target that declared "
+            "no record, rather than reaching for a filename it read in somebody "
+            "else's repository or falling over on the way")
+
+    def test_the_toy_target_left_nothing_behind(self):
+        self.verify()
+        # Run the registered cleanup now, so what is asserted is the state a
+        # later test would find rather than the state mid-test.
+        self.doCleanups()
+        leftover = list((FORGE / "implementations").glob("_norecord_*"))
+        self.assertEqual([str(path) for path in leftover], [])
