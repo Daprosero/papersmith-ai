@@ -26,14 +26,27 @@ pin inside the kernel. `git ls-remote <repo-url> <commit>` cannot answer
 this for a bare commit SHA (`ls-remote` matches ref *names*; a 40-hex pin
 that is not literally a branch/tag name comes back empty with exit 0
 either way), so this uses the accurate equivalent instead: `git fetch
---dry-run <repo-url> <commit>`, which the remote's own upload-pack either
-serves or refuses with "not our ref" — without ever writing a ref or
-`FETCH_HEAD` locally. Fails closed exactly like `computedNotDeclared`,
-never a warning, and closed on an unanswerable network failure too: an
-unresolved DNS lookup cannot confirm reachability any more than it can
-deny it, and generation is local and free to re-run, so "cannot
-determine" refuses exactly like "confirmed absent" rather than risking a
-silent pass on the one path this check exists to close.
+--dry-run --depth 1 <repo-url> <commit>`, which the remote's own
+upload-pack either serves or refuses with "not our ref".
+
+That fetch is issued from a scratch repository made for it and thrown
+away after — never from the target. Every sentence above was true of the
+first version of this check and it still could not fire, because it asked
+from inside the target: a repository holding the pin answers the `want`
+out of its own object store without the remote's upload-pack being
+consulted at all, and the repository the operator just committed in
+always holds the pin. The depth matches the runner's own fetch
+(`assets/runner_bootstrap.py:169`); `--dry-run` suppresses ref updates
+but NOT object transfer, so a probe run in the target would also deposit
+the remote's whole shallow tree there on every generation — 12.8 MiB of
+it, measured, for the repository this skill targets.
+
+Fails closed exactly like `computedNotDeclared`, never a warning, and
+closed on an unanswerable network failure too: an unresolved DNS lookup
+cannot confirm reachability any more than it can deny it, and generation
+is local and free to re-run, so "cannot determine" refuses exactly like
+"confirmed absent" rather than risking a silent pass on the one path this
+check exists to close.
 
 `resolve_clone_paths()` is the AST-based, transitive dependency check:
 declared `clonePaths` are cross-checked against what the declared entry
@@ -60,6 +73,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -664,7 +678,7 @@ def generate_job(
     resolved_target = resolve_target(target)
     destination = resolve_destination(resolved_target, service, job_name)
 
-    _verify_commit_reachable(resolved_target, commit, repo_url)
+    _verify_commit_reachable(commit, repo_url, repo_ref)
 
     entry_modules = [run_module]
     if smoke_module and smoke_function:
@@ -761,7 +775,39 @@ def generate_job(
 # environment. This is a SEPARATE composition point from that one: the two
 # live in different modules, with no import between them, so each has to
 # hold this discipline on its own rather than inherit it.
-GIT_ENV_ALLOWLIST = ("PATH",)
+#
+# `runner_bootstrap.py:70` holds exactly `("PATH",)`, and this list is
+# deliberately longer — but only along one axis. Everything past `PATH`
+# decides whether the probe can REACH a host: proxy configuration, and the
+# trust store a corporate CA is installed into. Nothing here decides WHO
+# the probe is. No `HOME` (which is the whole of git's user-configuration
+# story: `~/.gitconfig` carries `credential.helper`, `url.*.insteadOf` and
+# `http.*.extraHeader`), no `SSH_AUTH_SOCK`, no askpass, no token. That is
+# not caution, it is the point of the check: `runner_bootstrap.py:166-170`
+# clones with no credential step anywhere in it, so the runner is an
+# anonymous client by construction. A probe that authenticated would
+# answer a question about a remote THIS operator can read and report it as
+# a question about a remote the RUNNER can clone — which is the same
+# defect this probe exists to close, moved one layer up.
+#
+# Both cases of every proxy variable: curl reads the lowercase spelling,
+# and a corporate environment commonly sets only that one. Admitting one
+# case and not the other turns a local misconfiguration into a refusal
+# wearing the message of an unpublished commit.
+GIT_ENV_ALLOWLIST = (
+    "PATH",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "GIT_SSL_CAINFO",
+)
 GIT_TIMEOUT_SECONDS = 120.0
 
 
@@ -787,24 +833,42 @@ def _run_git(
     cwd: str | Path,
     timeout: float = GIT_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess:
-    """The single composition point for every git invocation `read()`
+    """The single composition point for every git invocation this module
     makes. `shell=False` with a list argv means a value carrying shell
     metacharacters (a pinned commit, in particular) reaches `argv` as one
     element and is never evaluated — no shell is ever invoked to interpret
     it. The environment is built from `GIT_ENV_ALLOWLIST` alone, never
     this process's own `os.environ` forwarded wholesale. `cwd` is always
-    the caller's already-resolved target — never `git -C` applied to a
+    a path the caller has already resolved — never `git -C` applied to a
     raw, unresolved argument. A non-zero exit or an expired timeout raises
     `JobFolderError` rather than being silently ignored.
+
+    `GIT_TERMINAL_PROMPT=0` and `stdin=DEVNULL` make "this never blocks
+    waiting for a human" true rather than hopeful, and they are set HERE
+    rather than at the one call site that needs them because a setting
+    that has to be remembered at each call site is a setting that will
+    eventually be forgotten at one. They are inert for the local
+    `rev-parse`/`cat-file`/`diff` calls, which read nothing from stdin
+    and ask nobody for a password. They are load-bearing for the
+    reachability probe: the two are separate channels, and closing only
+    one leaves the other open. `GIT_TERMINAL_PROMPT=0` closes git's own
+    credential prompt over HTTPS; it says nothing to `ssh`, which reads a
+    passphrase straight from the terminal. In an interactive session this
+    process's stdin IS that terminal, so an SSH remote would hold the
+    120-second timeout open waiting for a passphrase nobody is present to
+    type, instead of refusing at once with a message an operator can act
+    on.
     """
     argv = ["git", *args]
     env = {name: os.environ[name] for name in GIT_ENV_ALLOWLIST if name in os.environ}
+    env["GIT_TERMINAL_PROMPT"] = "0"
     try:
         result = subprocess.run(
             argv,
             shell=False,
             cwd=str(cwd),
             env=env,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -820,57 +884,142 @@ def _run_git(
     return result
 
 
-def _verify_commit_reachable(target: Path, commit: str, repo_url: str) -> None:
+def _looks_like_ssh_remote(repo_url: str) -> bool:
+    """`ssh://…`, or scp-shaped `git@host:owner/repo.git`.
+
+    Used for ONE thing: enriching a refusal that has already happened.
+    It never decides whether to probe. See `_verify_commit_reachable()`.
+    """
+    lowered = repo_url.lower()
+    if lowered.startswith("ssh://"):
+        return True
+    if "://" in repo_url:
+        return False
+    host, separator, _ = repo_url.partition(":")
+    return bool(separator) and "/" not in host
+
+
+def _verify_commit_reachable(commit: str, repo_url: str, repo_ref: str) -> None:
     """Confirm `commit` is actually fetchable from the declared `repo_url`
     — the exact operation a runner performs when it clones that remote and
     checks out the pin inside the kernel — before `generate_job()` ever
     writes a byte.
 
+    **The probe runs in a scratch repository, never in the target, and
+    that is the whole of this function's correctness.** A repository that
+    already holds the pin is the one place on earth that cannot ask this
+    question: git answers a `want` it can satisfy locally without the
+    remote's `upload-pack` ever being consulted. Since generation is run
+    from the repository the operator just committed in, the target always
+    holds the pin, so a probe run there returned clean for every pin
+    anyone could write — including one committed a second ago and never
+    pushed, which is precisely and only the case this check exists for.
+    So: `tempfile.TemporaryDirectory()` → `git init -q` → fetch, and the
+    directory is discarded on the way out.
+
+    Two consequences that are easy to get backwards, both measured
+    against the live remote this skill targets rather than reasoned about:
+
+    * `--dry-run` suppresses ref updates. It does NOT suppress object
+      transfer. One shallow probe wrote 12.8 MiB of objects into the
+      repository it ran in while writing no ref and no `FETCH_HEAD` at
+      all. Running it in the target would therefore grow the operator's
+      object store by the remote's whole shallow tree on every single
+      generation — a second, quieter reason the scratch directory is not
+      merely a way of getting the right answer.
+    * `--depth 1` is what `assets/runner_bootstrap.py:169` fetches at, so
+      matching it is what makes "the probe is the operation the runner
+      performs" true. It also happens to defeat the local-object-store
+      shortcut on its own, because a shallow fetch has to negotiate a
+      boundary with the remote — but that is a git implementation detail
+      two flags deep, and this function does not lean on it. The scratch
+      repository makes the question structurally unanswerable from local
+      state; the depth makes it the runner's question. Neither one
+      substitutes for the other.
+
     `git cat-file -e <pinned>^{commit}` (used by `_staleness_for()` below)
-    only proves the pin exists in `target`'s LOCAL history; it is silent
+    only proves the pin exists in the target's LOCAL history; it is silent
     on whether `repo_url` can serve it. `git ls-remote <repo_url>
     <commit>` cannot fill that gap either for a bare 40-hex commit SHA:
     `ls-remote` matches ref *names* against a pattern, and a commit hash
     is not a ref name unless it happens to collide with one, so it comes
     back empty with exit 0 whether or not the remote actually has the
-    commit — confirmed directly against a real GitHub repository while
-    building this check, not assumed. `git fetch --dry-run <repo_url>
-    <commit>` is the accurate equivalent: the remote's own upload-pack
-    either serves the object graph reaching `commit` (exit 0) or refuses
-    it with "not our ref" (non-zero) — the same failure a runner's own
-    clone would hit, just paid for here instead of inside a kernel after
-    quota is spent. `--dry-run` means no ref or `FETCH_HEAD` is ever
-    written into `target`, the same read-only discipline every other git
-    call in this module holds; it runs through `_run_git()`, the single
-    composition point, so it inherits that function's `shell=False`
-    list-argv and `GIT_ENV_ALLOWLIST` discipline rather than a second,
-    parallel one — `repo_url` reaches an outside host and is treated as
-    untrusted input the same way a pinned commit already is elsewhere in
-    this module.
+    commit — reconfirmed against the live remote while rewriting this,
+    not merely inherited from the note that first claimed it. `git fetch
+    --dry-run --depth 1 <repo_url> <commit>` is the accurate equivalent:
+    the remote's own upload-pack either serves the object graph reaching
+    `commit` (exit 0) or refuses it with "not our ref" (non-zero) — the
+    same failure a runner's own clone would hit, just paid for here
+    instead of inside a kernel after quota is spent. It runs through
+    `_run_git()`, the single composition point, so it inherits that
+    function's `shell=False` list-argv, `GIT_ENV_ALLOWLIST`,
+    `GIT_TERMINAL_PROMPT=0` and `stdin=DEVNULL` discipline rather than a
+    second, parallel one — `repo_url` reaches an outside host and is
+    treated as untrusted input the same way a pinned commit already is
+    elsewhere in this module.
+
+    The `git init` is inside the same `try` as the fetch, and so is the
+    `TemporaryDirectory()` that precedes it. A scratch repository that
+    cannot be created is an unanswerable question, and this module has
+    one settled answer for those. Leaving either outside would let the
+    failure surface as a bare `JobFolderError` — or, for the temporary
+    directory, an unhandled `OSError`, which is a crash rather than a
+    refusal — naming neither the commit nor the remote the operator has
+    to act on.
+
+    `repo_ref` is used for exactly one thing and never for a decision:
+    the remedy sentence. The pin is deliberately NOT validated as
+    contained in that ref — proving that needs either the ref's whole
+    history (the unbounded cost `--depth 1` exists to avoid) or the
+    remote's tip alone (false the moment anyone else pushes).
 
     Raises `JobFolderError` — refusing generation, exactly like the
     existing `computedNotDeclared` refusal, never a warning — both when
     the remote confirms it cannot serve `commit` AND when the question
     could not be asked at all (a DNS failure, a timeout, an unreachable
-    host). The two are indistinguishable in git's own exit code, and
-    deliberately not distinguished here either: a network failure cannot
-    confirm reachability any more than it can deny it, the same way
+    host, a scratch repository that could not be made). Those are
+    indistinguishable in git's own exit code, and deliberately not
+    distinguished here either: a network failure cannot confirm
+    reachability any more than it can deny it, the same way
     `_staleness_for()`'s own `unknown` verdict is never rendered as
     `fresh`. Generation is local and costs nothing to re-run once
-    connectivity is back; a wrong PASS here costs spent remote-execution quota and
-    a failure discovered only after the push — the exact expense this
-    check exists to avoid. Git's own message (which does name the
-    distinct underlying cause) is carried into the refusal rather than
-    replaced with a second, coarser one.
+    connectivity is back; a wrong PASS here costs spent remote-execution
+    quota and a failure discovered only after the push — the exact
+    expense this check exists to avoid. Git's own message (which does
+    name the distinct underlying cause) is carried into the refusal
+    rather than replaced with a second, coarser one.
+
+    An SSH-shaped `repo_url` gets a sentence added to that same refusal,
+    not a guard of its own. The probe is unauthenticated on purpose, and
+    so is the runner, so `Permission denied (publickey)` here is a real
+    finding about the job rather than a local accident — but it reads
+    like a local accident unless the message says so. Refusing SSH URLs
+    on sight instead would be deciding remote policy on the strength of a
+    colon in a string, and would refuse a working deploy-key setup.
     """
     try:
-        _run_git(["fetch", "--dry-run", repo_url, commit], cwd=target)
-    except JobFolderError as exc:
+        with tempfile.TemporaryDirectory(prefix="jobfolder-probe-") as scratch:
+            _run_git(["init", "-q"], cwd=scratch)
+            _run_git(
+                ["fetch", "--dry-run", "--depth", "1", repo_url, commit], cwd=scratch
+            )
+    except (JobFolderError, OSError) as exc:
+        remedy = (
+            f" — push it to {repo_ref!r} on {repo_url!r} and pin the "
+            "commit the remote actually received"
+        )
+        unauthenticated = (
+            " (the probe is unauthenticated on purpose, because a runner "
+            "clones unauthenticated too, so an SSH remote is one no runner "
+            "can clone either)"
+            if _looks_like_ssh_remote(repo_url)
+            else ""
+        )
         raise JobFolderError(
             f"generation refuses: commit {commit!r} could not be confirmed "
             f"reachable on the declared remote {repo_url!r} — a runner "
             "would attempt and fail this same fetch inside the kernel, "
-            f"after quota is already spent: {exc}"
+            f"after quota is already spent{unauthenticated}: {exc}{remedy}"
         ) from exc
 
 

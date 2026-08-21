@@ -4077,26 +4077,63 @@ class CommitReachabilityTests(unittest.TestCase):
     # -- `_verify_commit_reachable()` in isolation, `_run_git` mocked so no
     # real network call is ever made -------------------------------------
 
-    def test_reaches_git_fetch_dry_run_with_repo_url_commit_and_cwd(self) -> None:
-        recorded = {}
+    def test_probes_from_a_scratch_repository_and_never_from_the_target(self) -> None:
+        """The argv and the cwd, which are one fact and not two.
+
+        `--depth 1` is not decoration: it is the exact depth
+        `assets/runner_bootstrap.py:169` fetches at (`fetch --depth 1
+        origin <commit>`), which is what makes this class's own claim —
+        that the probe is the operation the runner performs — true rather
+        than approximately true. Asserting a full-depth argv while
+        claiming to emulate a shallow clone was the assertion describing
+        a different operation from the one it named.
+
+        The cwd assertion is the one this class previously got backwards.
+        It used to require `cwd == target`; a target that holds the pin
+        is the one repository that cannot ask the question, so that
+        assertion pinned the defect in place as a requirement. What
+        replaces it is the negative that actually matters: the probe's
+        cwd is a scratch directory, it is not the target, it is not
+        anywhere under the target, and it does not survive the call.
+        """
+        recorded = []
 
         def fake_run_git(args, *, cwd, timeout=None):
-            recorded["args"] = list(args)
-            recorded["cwd"] = cwd
+            recorded.append({"args": list(args), "cwd": Path(cwd)})
             return unittest.mock.Mock(returncode=0, stdout="", stderr="")
 
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
             with unittest.mock.patch.object(JOBFOLDER, "_run_git", side_effect=fake_run_git):
                 JOBFOLDER._verify_commit_reachable(
-                    target, "c" * 40, "https://example.invalid/repo.git"
+                    "c" * 40, "https://example.invalid/repo.git", "main"
                 )
 
             self.assertEqual(
-                recorded["args"],
-                ["fetch", "--dry-run", "https://example.invalid/repo.git", "c" * 40],
+                [entry["args"] for entry in recorded],
+                [
+                    ["init", "-q"],
+                    [
+                        "fetch",
+                        "--dry-run",
+                        "--depth",
+                        "1",
+                        "https://example.invalid/repo.git",
+                        "c" * 40,
+                    ],
+                ],
             )
-            self.assertEqual(recorded["cwd"], target)
+            # Both calls run in ONE directory: creating the scratch
+            # repository somewhere the fetch does not then run is the
+            # same defect wearing a different hat.
+            cwds = {entry["cwd"] for entry in recorded}
+            self.assertEqual(len(cwds), 1, f"probe used more than one cwd: {cwds}")
+            probe_cwd = cwds.pop()
+            self.assertNotEqual(probe_cwd, target)
+            self.assertNotIn(target, probe_cwd.parents)
+            self.assertFalse(
+                probe_cwd.exists(), "the scratch repository outlived the probe"
+            )
 
     def test_succeeds_silently_when_fetch_dry_run_succeeds(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4106,7 +4143,7 @@ class CommitReachabilityTests(unittest.TestCase):
             ):
                 self.assertIsNone(
                     JOBFOLDER._verify_commit_reachable(
-                        target, "c" * 40, "https://example.invalid/repo.git"
+                        "c" * 40, "https://example.invalid/repo.git", "main"
                     )
                 )
 
@@ -4127,7 +4164,7 @@ class CommitReachabilityTests(unittest.TestCase):
             with unittest.mock.patch.object(JOBFOLDER, "_run_git", side_effect=fake_run_git):
                 with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
                     JOBFOLDER._verify_commit_reachable(
-                        target, "d" * 40, "https://example.invalid/repo.git"
+                        "d" * 40, "https://example.invalid/repo.git", "main"
                     )
 
             self.assertIn("d" * 40, str(ctx.exception))
@@ -4156,10 +4193,186 @@ class CommitReachabilityTests(unittest.TestCase):
             with unittest.mock.patch.object(JOBFOLDER, "_run_git", side_effect=fake_run_git):
                 with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
                     JOBFOLDER._verify_commit_reachable(
-                        target, "c" * 40, "https://example.invalid/repo.git"
+                        "c" * 40, "https://example.invalid/repo.git", "main"
                     )
 
             self.assertIn("nodename nor servname", str(ctx.exception))
+
+    def test_refuses_when_the_scratch_repository_cannot_be_initialised(self) -> None:
+        """A scratch repository that cannot be created is an unanswerable
+        question, and this module already has a settled answer for those:
+        refuse, the same way a confirmed-absent commit refuses, because
+        `unknown` is never rendered as `fresh` anywhere in it. The
+        `git init` therefore lives inside the same `try` as the fetch —
+        not beside it, where its failure would surface as a bare
+        `JobFolderError` naming neither the commit nor the remote the
+        operator has to act on.
+        """
+
+        def fake_run_git(args, *, cwd, timeout=None):
+            if list(args)[:1] == ["init"]:
+                raise JOBFOLDER.JobFolderError(
+                    "git init -q exited 128: fatal: cannot mkdir .git: Read-only file system"
+                )
+            raise AssertionError("the fetch ran after the scratch repository failed")
+
+        with unittest.mock.patch.object(JOBFOLDER, "_run_git", side_effect=fake_run_git):
+            with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                JOBFOLDER._verify_commit_reachable(
+                    "c" * 40, "https://example.invalid/repo.git", "main"
+                )
+
+        self.assertIn("c" * 40, str(ctx.exception))
+        self.assertIn("https://example.invalid/repo.git", str(ctx.exception))
+        self.assertIn("Read-only file system", str(ctx.exception))
+
+    def test_refuses_when_the_scratch_directory_itself_cannot_be_made(self) -> None:
+        """The failure one level below `git init`: the temporary
+        directory. It arrives as `OSError`, not `JobFolderError`, so it
+        reaches the caller as an unhandled `OSError` unless the refusal
+        path is written to catch it — and an unhandled `OSError` out of
+        `generate_job()` is a crash rather than a refusal, which is the
+        one distinction this module's whole error discipline rests on.
+        """
+        with unittest.mock.patch.object(
+            JOBFOLDER.tempfile,
+            "TemporaryDirectory",
+            side_effect=OSError("[Errno 28] No space left on device"),
+        ):
+            with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                JOBFOLDER._verify_commit_reachable(
+                    "c" * 40, "https://example.invalid/repo.git", "main"
+                )
+
+        self.assertIn("c" * 40, str(ctx.exception))
+        self.assertIn("https://example.invalid/repo.git", str(ctx.exception))
+        self.assertIn("No space left on device", str(ctx.exception))
+
+    # -- against real git repositories: the two facts a mock cannot hold --
+
+    def _real_repositories(self, tmp: str) -> SimpleNamespace:
+        """One origin and one target, real git, arranged so that each
+        holds a commit the other does not.
+
+        `origin` is what a `--repo-url` points at. `target` is a clone of
+        it taken at `shared`, then advanced by a local commit that was
+        never pushed, while `origin` was advanced by a commit the clone
+        never fetched. That gives the two commits this class needs and a
+        mock cannot supply:
+
+          `unpushed`  — in `target`, absent from `origin`. The pin an
+                        operator writes after committing and before
+                        pushing. It is the case the guard exists for.
+          `origin_only` — in `origin`, absent from `target`. A pin the
+                        remote can serve and the local checkout has never
+                        seen, which is how the probe's own side effects
+                        on `target` become observable at all.
+
+        A local path is a real git remote: `fetch` runs `upload-pack`
+        against it and answers `not our ref` exactly as a GitHub HTTPS
+        remote does — verified directly while writing this class, against
+        both a local path and `github.com`, rather than assumed.
+        """
+        env = dict(os.environ)
+        env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "commit-reachability-tests"
+        env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "reachability@example.invalid"
+
+        def git(cwd: Path, *args: str) -> str:
+            return subprocess.run(
+                ["git", *args],
+                cwd=cwd,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+
+        origin = Path(tmp) / "origin"
+        origin.mkdir()
+        git(origin, "init", "-q")
+        (origin / "shared.py").write_text("SHARED = 1\n", encoding="utf-8")
+        git(origin, "add", "-A")
+        git(origin, "commit", "-q", "-m", "shared")
+        shared = git(origin, "rev-parse", "HEAD")
+
+        target = Path(tmp) / "target"
+        git(Path(tmp), "clone", "-q", str(origin), str(target))
+
+        (target / "local.py").write_text("LOCAL = 1\n", encoding="utf-8")
+        git(target, "add", "-A")
+        git(target, "commit", "-q", "-m", "committed but never pushed")
+        unpushed = git(target, "rev-parse", "HEAD")
+
+        (origin / "later.py").write_text("LATER = 1\n", encoding="utf-8")
+        git(origin, "add", "-A")
+        git(origin, "commit", "-q", "-m", "pushed by somebody else")
+        origin_only = git(origin, "rev-parse", "HEAD")
+
+        return SimpleNamespace(
+            origin=origin,
+            target=target,
+            shared=shared,
+            unpushed=unpushed,
+            origin_only=origin_only,
+        )
+
+    def test_refuses_a_commit_that_exists_locally_and_was_never_pushed(self) -> None:
+        """The whole defect, stated as one assertion against real git.
+
+        Committed, not pushed, then pinned: the local checkout holds the
+        object, the declared remote has never heard of it, and a runner
+        cloning that remote dies on the checkout after quota is spent.
+        The old probe asked this question from inside the very repository
+        that holds the object, so git answered it out of the local store
+        without ever contacting `upload-pack` and the guard returned
+        clean for every pin anyone could write.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repos = self._real_repositories(tmp)
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                JOBFOLDER._verify_commit_reachable(
+                    repos.unpushed, str(repos.origin), "main"
+                )
+
+        message = str(ctx.exception)
+        self.assertIn(repos.unpushed, message)
+        self.assertIn(str(repos.origin), message)
+        # Git's own words, not a second and coarser sentence written
+        # over them — `test_reachability_refusal_precedes_clone_path_resolution`
+        # below asserts on this same substring surviving the whole way out.
+        self.assertIn("not our ref", message)
+
+    def test_a_published_commit_passes_without_depositing_objects_in_the_target(self) -> None:
+        """`--dry-run` suppresses ref updates. It does not suppress
+        object transfer — measured against the live remote this skill
+        targets: one `fetch --dry-run --depth 1` wrote 12.8 MiB of
+        objects into the repository it ran in while writing no ref and no
+        `FETCH_HEAD` at all.
+
+        So "the probe must not run in the target" is not only about the
+        answer being wrong. A probe run there also silently grows the
+        operator's object store by the remote's whole shallow tree on
+        every single generation. This test pins a commit the target has
+        never seen, so a probe running in the target would leave its
+        objects behind and be caught here, even in the case where it
+        happens to return the right answer.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repos = self._real_repositories(tmp)
+            objects = repos.target / ".git" / "objects"
+            before = sorted(p.relative_to(objects) for p in objects.rglob("*") if p.is_file())
+            fetch_head = repos.target / ".git" / "FETCH_HEAD"
+
+            self.assertIsNone(
+                JOBFOLDER._verify_commit_reachable(
+                    repos.origin_only, str(repos.origin), "main"
+                )
+            )
+
+            after = sorted(p.relative_to(objects) for p in objects.rglob("*") if p.is_file())
+            self.assertEqual(before, after, "the probe deposited objects in the target")
+            self.assertFalse(fetch_head.exists())
 
     # -- wired into `generate_job()`: refuses before any file is written --
 
@@ -4232,6 +4445,190 @@ class CommitReachabilityTests(unittest.TestCase):
                     )
 
             self.assertIn("not our ref", str(ctx.exception))
+
+
+class ProbeAuthorityTests(unittest.TestCase):
+    """The probe must carry no more authority than the runner it stands in for.
+
+    `assets/runner_bootstrap.py:70` builds its git child's environment
+    from `("PATH",)` and nothing else, and `:166-170` clones with no
+    credential step anywhere in it. A runner is therefore an anonymous
+    client by construction. If this probe authenticates — a credential
+    helper, an agent socket, a `HOME` carrying `.gitconfig` and
+    `.git-credentials` — then it answers a question about a remote *this
+    operator* can read, and generation passes for jobs whose runner can
+    never clone the repository at all. That is this change's own defect
+    one layer up: a guard asking a question different from the one whose
+    answer it reports.
+
+    The widening this class does permit is asker-side transport only —
+    proxy configuration and the trust store. Those decide whether the
+    probe can reach the host; they decide nothing about who it is. The
+    runner inherits its own from the kernel it runs in.
+
+    Two further settings live at `_run_git()`, the single composition
+    point, rather than at the probe: `GIT_TERMINAL_PROMPT=0` and
+    `stdin=DEVNULL`. A credential-requiring remote must fail fast, and
+    "fail fast" is not the default — an interactive session's stdin is a
+    terminal, and `ssh` prompts on a channel `GIT_TERMINAL_PROMPT` does
+    not govern, so a probe that inherited both would sit holding the
+    120-second timeout open waiting for a passphrase nobody is there to
+    type. Both are inert for the local `rev-parse`/`cat-file`/`diff`
+    calls, which is why they belong at the shared point and not at one
+    call site.
+    """
+
+    # Names that would make the probe someone rather than anyone. `HOME`
+    # is here because it is the whole of git's user-configuration story:
+    # `~/.gitconfig` carries `credential.helper`, `url.*.insteadOf` and
+    # `http.*.extraHeader`, any one of which re-authenticates the child
+    # without an obviously credential-shaped variable ever appearing.
+    FORBIDDEN_ENV_NAMES = (
+        "HOME",
+        "SSH_AUTH_SOCK",
+        "SSH_ASKPASS",
+        "GIT_ASKPASS",
+        "GIT_CONFIG",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_COUNT",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "GIT_TOKEN",
+        "USERPROFILE",
+        "XDG_CONFIG_HOME",
+        "NETRC",
+    )
+
+    def test_the_allowlist_admits_no_name_that_confers_authorization(self) -> None:
+        admitted = set(JOBFOLDER.GIT_ENV_ALLOWLIST)
+        leaked = sorted(admitted.intersection(self.FORBIDDEN_ENV_NAMES))
+        self.assertEqual(
+            leaked,
+            [],
+            "the probe may reach a remote the runner cannot: "
+            f"{leaked} confer authorization and the runner has none",
+        )
+        # A name-by-name list cannot anticipate every future variable, so
+        # the shape is held too: nothing token-, password-, credential-
+        # or auth-shaped, whatever it ends up being called.
+        shaped = sorted(
+            name
+            for name in admitted
+            if re.search(r"TOKEN|PASSWORD|CREDENTIAL|SECRET|AUTH|NETRC", name, re.IGNORECASE)
+        )
+        self.assertEqual(shaped, [], f"authorization-shaped names in the allowlist: {shaped}")
+
+    def test_the_allowlist_widens_for_transport_and_keeps_the_runner_s_own_path(self) -> None:
+        admitted = set(JOBFOLDER.GIT_ENV_ALLOWLIST)
+        self.assertIn("PATH", admitted, "the runner's own allowlist is `('PATH',)`")
+        for name in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "GIT_SSL_CAINFO",
+        ):
+            with self.subTest(name=name):
+                self.assertIn(name, admitted)
+        # Both cases of every proxy variable, because curl reads the
+        # lowercase spelling and a corporate environment commonly sets
+        # only that one; admitting one case and not the other produces a
+        # refusal that is a local misconfiguration wearing the message of
+        # an unpublished commit.
+        self.assertEqual(
+            sorted(n for n in admitted if n.upper().endswith("_PROXY")),
+            sorted(
+                [
+                    "ALL_PROXY",
+                    "HTTPS_PROXY",
+                    "HTTP_PROXY",
+                    "NO_PROXY",
+                    "all_proxy",
+                    "http_proxy",
+                    "https_proxy",
+                    "no_proxy",
+                ]
+            ),
+        )
+
+    def _record_subprocess_call(self) -> dict:
+        recorded = {}
+
+        def fake_run(argv, **kwargs):
+            recorded["argv"] = list(argv)
+            recorded.update(kwargs)
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        with unittest.mock.patch.object(JOBFOLDER.subprocess, "run", side_effect=fake_run):
+            JOBFOLDER._run_git(["rev-parse", "HEAD"], cwd=Path(REPOSITORY_ROOT))
+        return recorded
+
+    def test_the_child_is_told_never_to_prompt_for_credentials(self) -> None:
+        recorded = self._record_subprocess_call()
+        self.assertEqual(recorded["env"].get("GIT_TERMINAL_PROMPT"), "0")
+
+    def test_the_child_never_inherits_this_process_s_terminal_on_stdin(self) -> None:
+        """`GIT_TERMINAL_PROMPT=0` closes git's own prompt. It does not
+        close `ssh`'s, which reads a passphrase from the terminal
+        directly. In an interactive session this process's stdin is that
+        terminal, so without this the probe against an SSH remote blocks
+        until the 120-second timeout instead of refusing at once.
+        """
+        recorded = self._record_subprocess_call()
+        self.assertIs(recorded.get("stdin"), subprocess.DEVNULL)
+
+    def test_an_ssh_remote_refuses_through_the_reachability_path_naming_the_probe(self) -> None:
+        def fake_run_git(args, *, cwd, timeout=None):
+            if list(args)[:1] == ["init"]:
+                return unittest.mock.Mock(returncode=0, stdout="", stderr="")
+            raise JOBFOLDER.JobFolderError(
+                "git fetch --dry-run --depth 1 exited 128: "
+                "git@host: Permission denied (publickey)."
+            )
+
+        with unittest.mock.patch.object(JOBFOLDER, "_run_git", side_effect=fake_run_git):
+            with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                JOBFOLDER._verify_commit_reachable(
+                    "a" * 40, "git@host:owner/repo.git", "main"
+                )
+
+        message = str(ctx.exception)
+        # The ordinary reachability refusal, enriched — not a second one.
+        self.assertIn("could not be confirmed reachable", message)
+        self.assertIn("git@host:owner/repo.git", message)
+        self.assertIn("Permission denied (publickey)", message)
+        self.assertIn("unauthenticated", message)
+
+    def test_an_ssh_remote_is_not_refused_by_a_separate_guard_before_the_fetch(self) -> None:
+        """"Enriched message, not a new guard" is a claim with an
+        observable consequence, and this is it: an SSH-shaped URL that
+        the probe can actually serve is accepted. A guard that rejected
+        SSH URLs on sight would be deciding remote policy the runner
+        never asked it to decide, and would refuse a working deploy-key
+        setup on the strength of a colon in a string.
+        """
+        calls = []
+
+        def fake_run_git(args, *, cwd, timeout=None):
+            calls.append(list(args))
+            return unittest.mock.Mock(returncode=0, stdout="", stderr="")
+
+        with unittest.mock.patch.object(JOBFOLDER, "_run_git", side_effect=fake_run_git):
+            self.assertIsNone(
+                JOBFOLDER._verify_commit_reachable(
+                    "a" * 40, "git@host:owner/repo.git", "main"
+                )
+            )
+
+        self.assertEqual(len(calls), 2, f"the fetch never ran: {calls}")
+        self.assertEqual(calls[1][0], "fetch")
 
 
 class ResolveClonePathsTests(unittest.TestCase):
@@ -4663,7 +5060,24 @@ class StalenessTests(unittest.TestCase):
 
     # -- security: git invocation -------------------------------------------
 
-    def test_run_git_env_is_a_path_only_allowlist(self) -> None:
+    def test_run_git_env_admits_nothing_beyond_the_declared_allowlist(self) -> None:
+        """This test used to read `assertEqual(set(recorded_env), {"PATH"})`,
+        and it was the only thing in the suite holding the allowlist at
+        all — a fact the plan for widening it had recorded as "no test
+        asserts the allowlist today", wrongly.
+
+        Spelling the expected set out literally was fine while the
+        allowlist had exactly one entry and became a maintenance
+        assertion the moment it did not: it fails whenever the list
+        changes, whether the change is a proxy variable or a credential
+        helper, and so distinguishes neither. What it was actually for is
+        kept and made explicit here — nothing reaches the child that the
+        allowlist did not name, and a variable that is merely present in
+        the parent's environment does not get in. Which names the
+        allowlist may contain is a separate question with a separate
+        answer, in `ProbeAuthorityTests`, where it is decided by what the
+        name confers rather than by how long the list is.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
             self._init_repo(target)
@@ -4674,12 +5088,30 @@ class StalenessTests(unittest.TestCase):
                 recorded_env.update(kwargs.get("env") or {})
                 return real_run(argv, **kwargs)
 
+            intruders = {
+                "SOME_OTHER_VAR": "leak-me-not",
+                # The shapes that would matter if they did leak: git's own
+                # user configuration, and an agent the probe must not have.
+                "HOME": str(target),
+                "SSH_AUTH_SOCK": "/tmp/leak-me-not.sock",
+                "GIT_CONFIG_GLOBAL": str(target / "leak-me-not.gitconfig"),
+            }
             with unittest.mock.patch.object(
                 JOBFOLDER.subprocess, "run", side_effect=recording_run
-            ), unittest.mock.patch.dict(os.environ, {"SOME_OTHER_VAR": "leak-me-not"}):
+            ), unittest.mock.patch.dict(os.environ, intruders):
                 JOBFOLDER._run_git(["rev-parse", "HEAD"], cwd=target)
 
-            self.assertEqual(set(recorded_env), {"PATH"})
+            self.assertIn("PATH", recorded_env)
+            for name in intruders:
+                with self.subTest(name=name):
+                    self.assertNotIn(name, recorded_env)
+            # `GIT_TERMINAL_PROMPT` is set by `_run_git` itself rather
+            # than forwarded from the parent, so it is the one key here
+            # that is not an allowlist entry.
+            self.assertEqual(
+                set(recorded_env) - {"GIT_TERMINAL_PROMPT"} - set(JOBFOLDER.GIT_ENV_ALLOWLIST),
+                set(),
+            )
 
     def test_run_git_non_zero_exit_is_a_refusal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

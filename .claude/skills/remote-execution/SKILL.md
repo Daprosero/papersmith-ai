@@ -244,6 +244,51 @@ executable — no test in this suite reaches the network or a real account).
   staleness condition, out of bounds for this skill (see design #744
   section 2).
 
+  **The reachability probe.** Before any of that — before clone paths are
+  even resolved — `generate-job` refuses a `--commit` the declared
+  `--repo-url` cannot serve. `git cat-file -e` proves only that the pin
+  exists in the checkout you are standing in, which is never in doubt and
+  is not the question; the runner clones a *remote* and checks the pin out
+  inside the kernel, so an unpushed pin fails there, after quota is spent.
+  `git ls-remote <url> <sha>` cannot answer it either — `ls-remote` matches
+  ref *names*, so a bare 40-hex pin comes back empty with exit 0 whether or
+  not the remote has it. What answers it is `git fetch --dry-run --depth 1
+  <url> <sha>`, whose exit code is the remote's own upload-pack either
+  serving the commit or refusing it with `not our ref`.
+
+  Three properties of that probe are load-bearing, and each was learned by
+  getting it wrong first:
+
+  1. **It runs in a scratch repository, thrown away afterwards — never in
+     your repository.** A repository that already holds the pin answers the
+     request from its own object store without contacting the remote at
+     all, and the repository you ran `generate-job` from always holds the
+     pin you just committed. The first version of this check asked from
+     there and therefore passed for every pin anyone could write.
+  2. **`--depth 1`, matching what `assets/runner_bootstrap.py` fetches.**
+     The probe is only meaningful if it is the runner's own operation.
+     `--dry-run` suppresses ref updates but not object transfer, so a
+     full-depth probe would pull unbounded history on every generation —
+     and running any depth inside your repository would leave those objects
+     there (12.8 MiB per generation, measured against this project's own
+     remote).
+  3. **It is unauthenticated, and stays that way.** The child's environment
+     is built from an allowlist that admits `PATH`, proxy configuration and
+     the trust store, and admits no credential helper, no agent socket and
+     no `HOME`. `runner_bootstrap.py` clones with no credential step at
+     all, so a probe that authenticated would pass jobs whose runner can
+     never clone the repository — the same defect one layer up. An SSH
+     `--repo-url` is not refused on sight; it is probed like any other and,
+     if it fails, the refusal says the probe was unauthenticated so the
+     failure is not misread as a local accident.
+
+  The refusal names the commit, the remote, the missing push addressed to
+  `--repo-ref`, and carries git's own message. Failure to create or
+  initialise the scratch repository refuses on that same path: a question
+  that cannot be asked is never reported as a clean answer. Nothing is
+  written into your repository by the probe — no ref, no `FETCH_HEAD`, no
+  object — and the tool never commits or pushes on your behalf.
+
 - `assets/runner_bootstrap.py` (cell 0) and `assets/runner_invoke.py`
   (cell 1) now hold their REAL content — copied byte-for-byte into every
   generated `runner.ipynb`, with zero interpolation, by `jobfolder.py`'s
