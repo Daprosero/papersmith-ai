@@ -2781,9 +2781,20 @@ class StructureSelfProbeTests(unittest.TestCase):
             before, after,
             "structure reads the subject and builds its own box; it must "
             "never touch a sibling skill")
-        self.assertIn(payload["outcome"],
-                      ("agree", "disk-stale", "builder-broken",
-                       "document-wrong", "three-way-divergence"))
+        self.assertIn(payload["outcome"], STRUCTURE_OUTCOMES,
+                      "the outcome must be one this tool can reach")
+        # Membership alone cannot fail -- every value it could hold is in the
+        # tuple -- so it says nothing about the shipped table. What can be
+        # asserted without pinning the commit state is the half that does not
+        # depend on it: the from-zero side reads HEAD and so differs whenever
+        # work is uncommitted, but the declared side is this skill's own
+        # shipped-files table, and it has no excuse to disagree with the disk
+        # it describes.
+        self.assertEqual(
+            (payload["onlyIn"]["declared"], payload["missingFrom"]["declared"]),
+            ([], []),
+            "the shipped-files table disagrees with the files on disk; it is "
+            "hand-written, and this is the only thing that notices")
 
 
 # ==========================================================================
@@ -2791,6 +2802,9 @@ class StructureSelfProbeTests(unittest.TestCase):
 # recipe run against one shared box, exiting `0` for any verdict including a
 # stall and `2` only when the flow itself could not be entered.
 # ==========================================================================
+
+STRUCTURE_OUTCOMES = ("agree", "disk-stale", "builder-broken",
+                      "document-wrong", "three-way-divergence")
 
 WALKTHROUGH_SPEC = PROBES / "skill-audit.first-run.json"
 
