@@ -95,27 +95,39 @@ commit in this list.
       Actual: 1026 → 1037 (+11: `FrozenDigestTests` ×3, `FrozenPayloadTests`
       ×3, `CheckReportSubjectTests` ×3, `SuiteIntegrityTests` ×2).
 
-## Commit 2 — Setup is not a gate (target: ~1034 → ~1040, +6)
+## Commit 2 — Setup is not a gate (target: ~1034 → ~1040, +6; actual: 1037 → 1043, +6)
 
-- [ ] 2.1 Add `kind: "setup" | "gate"` to the walkthrough step schema,
+- [x] 2.1 Add `kind: "setup" | "gate"` to the walkthrough step schema,
       default `"gate"` (precedent: `"reset": true`).
-- [ ] 2.2 [LOCK] `WalkthroughStepKindTests.test_passing_setup_step_not_counted_as_passed_gate`
+- [x] 2.2 [LOCK] `WalkthroughStepKindTests.test_passing_setup_step_not_counted_as_passed_gate`
       (spec scenario). Implement gate/setup split in `walkthrough`.
-- [ ] 2.3 [LOCK] `test_failing_setup_step_exits_2_as_setup_failed_never_stalled`
+- [x] 2.3 [LOCK] `test_failing_setup_step_exits_2_as_setup_failed_never_stalled`
       (spec scenario). Emit `{"status":"setup-failed","index","name","detail"}`,
       `stall: null`, `unreached: []`, exit `2`. Invert: make the setup step
       fail after implementation and confirm it reports `setup-failed`, not
       `stalled`; restore the fixture.
-- [ ] 2.4 [LOCK] `test_setup_step_declaring_expect_is_unprobeable` — a
+- [x] 2.4 [LOCK] `test_setup_step_declaring_expect_is_unprobeable` — a
       `kind: "setup"` step with an `expect` block raises `Unprobeable`.
-- [ ] 2.5 `test_recipe_of_only_setup_steps_is_unprobeable` — zero gate steps
+- [x] 2.5 `test_recipe_of_only_setup_steps_is_unprobeable` — zero gate steps
       asserts nothing about the subject.
-- [ ] 2.6 Add `"gates": {"declared": n, "passed": m}` to the walkthrough
+- [x] 2.6 Add `"gates": {"declared": n, "passed": m}` to the walkthrough
       payload, counting only `kind == "gate"` steps.
-- [ ] 2.7 `probes/skill-audit.first-run.json`: declare step 0
-      `"kind": "setup"` (no `expect` added — it needs none).
-- [ ] 2.8 `references/usage.md`: document `setup-failed` in the exit table.
-- [ ] 2.9 Verify count: ~1034 → target ~1040 (+6).
+- [x] 2.7 `probes/skill-audit.first-run.json`: confirmed zero edits needed —
+      all three shipped steps are real gates (each carries `expect`); no
+      `kind: "setup"` step exists in this recipe, so this touch stays at
+      zero for Commit 2 as designed. (Superseding an earlier tasks.md draft
+      that assumed an edit here; the design decisions supplied for this
+      commit are authoritative and explicitly required confirming zero
+      edits instead.)
+- [x] 2.8 `references/usage.md`: document `setup-failed` in the exit table
+      and in the `walkthrough` worked-invocation prose.
+- [x] 2.9 Verify count: 1037 → 1043 (+6:
+      `WalkthroughStepKindTests` × 6 — `test_passing_setup_step_not_counted_as_passed_gate`,
+      `test_failing_setup_step_exits_2_as_setup_failed_never_stalled`,
+      `test_setup_step_declaring_expect_is_unprobeable`,
+      `test_recipe_of_only_setup_steps_is_unprobeable`,
+      `test_kind_defaults_to_gate_when_omitted`,
+      `test_gates_counts_only_gate_kind_across_a_mixed_stall`).
 
 ## Commit 3 — Escalatable partition, totality lock, routing (target: ~1040 → ~1053, +13)
 

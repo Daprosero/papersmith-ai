@@ -72,7 +72,11 @@ $ python3 .claude/skills/skill-audit/scripts/audit_cli.py walkthrough --subject 
 
 Exit `0` for any verdict, `stall` included. A `null` `stall` means every step
 matched its own expectation; a non-`null` `stall` names the step's index and
-kind, and `unreached` lists every gate at or after it.
+kind, and `unreached` lists every gate at or after it. A step may declare
+`"kind": "setup"` to stand up a fixture without asserting anything about the
+subject; a setup step is never counted among `gates.passed`, and its failure
+is reported directly as `"setup-failed"` at exit `2` -- never `"stalled"` --
+because a void run has no unchecked gates, it has no run.
 
 ## Exit codes, in one place
 
@@ -80,4 +84,4 @@ kind, and `unreached` lists every gate at or after it.
 | --- | --- | --- | --- | --- |
 | `0` | it looked, and this is the verdict | the report is valid | it looked, and this is the outcome | it looked, `stall` included |
 | `1` | not used | the report is invalid | not used | not used |
-| `2` | it could not look | the report could not be read | a side could not be derived, the box was not empty, or the build escaped it | a step declared no expectation, the box was not empty, or the flow was never entered |
+| `2` | it could not look | the report could not be read | a side could not be derived, the box was not empty, or the build escaped it | a step declared no expectation, the box was not empty, the flow was never entered, a `kind: "setup"` step failed (`"setup-failed"`), or the recipe declared no `"gate"` step at all |

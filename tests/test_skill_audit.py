@@ -2887,3 +2887,126 @@ class WalkthroughSelfProbeTests(unittest.TestCase):
             payload["stall"],
             f"the shipped worked invocation is documented as a clean run: "
             f"{payload}")
+
+
+class WalkthroughStepKindTests(WalkthroughBoxMixin, unittest.TestCase):
+    """A step's `kind` defaults to `"gate"`; a `"setup"` step asserts nothing
+    about the subject and must never be counted among gates that passed. A
+    failing setup step names itself, not the subject, and exits `2` as
+    `setup-failed` -- a void run has no unchecked gates, it has no run.
+    """
+
+    def test_passing_setup_step_not_counted_as_passed_gate(self):
+        surface = "setup_passes"
+        self.walkthrough_box(surface)
+        subject = self.make_box("setup_passes_subject")
+        steps = [
+            {"argv": ["python3", "-c", "pass"], "kind": "setup",
+             "name": "stand up a fixture"},
+            {"argv": ["python3", "-c", "import sys; sys.exit(0)"],
+             "expect": {"exit": 0}, "name": "a real gate"},
+        ]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertIsNone(payload["stall"], payload)
+        self.assertEqual(payload["steps"][0]["outcome"], "setup-ok")
+        self.assertEqual(payload["steps"][0]["kind"], "setup")
+        self.assertEqual(payload["steps"][1]["outcome"], "passed")
+        self.assertEqual(payload["steps"][1]["kind"], "gate")
+        self.assertEqual(
+            payload["gates"], {"declared": 1, "passed": 1},
+            "the setup step must never be counted as a declared or passed "
+            "gate")
+
+    def test_failing_setup_step_exits_2_as_setup_failed_never_stalled(self):
+        surface = "setup_fails"
+        self.walkthrough_box(surface)
+        subject = self.make_box("setup_fails_subject")
+        steps = [
+            {"argv": ["python3", "-c", "import sys; sys.exit(1)"],
+             "kind": "setup", "name": "a fixture that never stands up"},
+            {"argv": ["python3", "-c", "import sys; sys.exit(0)"],
+             "expect": {"exit": 0}, "name": "never reached"},
+        ]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertEqual(payload["status"], "setup-failed")
+        self.assertEqual(payload["index"], 0)
+        self.assertEqual(payload["name"], "a fixture that never stands up")
+        self.assertIn("setup", payload["detail"])
+        self.assertIsNone(
+            payload["stall"],
+            "a void run has no unchecked gates, it has no run")
+        self.assertEqual(payload["unreached"], [])
+
+    def test_setup_step_declaring_expect_is_unprobeable(self):
+        """A real gate step keeps the recipe out of the separate
+        no-bare-setup guard, so a failure here can only come from the
+        expect-on-setup check itself, not from an unrelated overlapping one.
+        """
+        surface = "setup_with_expect"
+        self.walkthrough_box(surface)
+        subject = self.make_box("setup_with_expect_subject")
+        steps = [
+            {"argv": ["python3", "-c", "pass"], "expect": {"exit": 0},
+             "kind": "setup", "name": "asserts something anyway"},
+            {"argv": ["python3", "-c", "import sys; sys.exit(0)"],
+             "expect": {"exit": 0}, "name": "a real gate, unreachable"},
+        ]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("wrong label", payload["error"])
+
+    def test_recipe_of_only_setup_steps_is_unprobeable(self):
+        surface = "only_setup"
+        self.walkthrough_box(surface)
+        subject = self.make_box("only_setup_subject")
+        steps = [
+            {"argv": ["python3", "-c", "pass"], "kind": "setup",
+             "name": "stand up a fixture"},
+        ]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("no gates", payload["error"])
+
+    def test_kind_defaults_to_gate_when_omitted(self):
+        """Backward compatibility: a step with no `kind` behaves exactly as
+        today -- it is a gate, counted in `gates.declared` and
+        `gates.passed`.
+        """
+        surface = "kind_omitted"
+        self.walkthrough_box(surface)
+        subject = self.make_box("kind_omitted_subject")
+        steps = [
+            {"argv": ["python3", "-c", "import sys; sys.exit(0)"],
+             "expect": {"exit": 0}, "name": "no kind declared"},
+        ]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["steps"][0]["kind"], "gate")
+        self.assertEqual(payload["gates"], {"declared": 1, "passed": 1})
+
+    def test_gates_counts_only_gate_kind_across_a_mixed_stall(self):
+        """A failing gate after a passing setup step still reports the
+        correct `declared`/`passed` split -- the setup step never inflates
+        either count.
+        """
+        surface = "mixed_stall"
+        self.walkthrough_box(surface)
+        subject = self.make_box("mixed_stall_subject")
+        steps = [
+            {"argv": ["python3", "-c", "pass"], "kind": "setup",
+             "name": "stand up a fixture"},
+            {"argv": ["python3", "-c", "import sys; sys.exit(1)"],
+             "expect": {"exit": 0}, "name": "a real gate that stalls"},
+        ]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertIsNotNone(payload["stall"], payload)
+        self.assertEqual(payload["gates"], {"declared": 1, "passed": 0})

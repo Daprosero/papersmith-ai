@@ -978,8 +978,18 @@ def run_walkthrough(args):
 
     Exit `0` for any verdict, including a stall: a stall is a finding on its
     own, never an inability to look. Exit `2` only when the flow itself could
-    not be entered -- a step declaring no expectation, or the very first
-    step's own command missing, both mean there is nothing to report on yet.
+    not be entered -- a step declaring no expectation, the very first step's
+    own command missing, or a `kind: "setup"` step failing, all mean there is
+    nothing to report on yet.
+
+    Each step declares `kind: "setup" | "gate"`, defaulting to `"gate"`
+    (precedent: `"reset": true`). A setup step stands up a fixture and
+    asserts nothing about the subject -- it must declare no `expect`, is
+    never counted among gates that passed, and its failure is reported
+    directly as `"setup-failed"` (never `"stalled"`, never routed through
+    `Unprobeable`, whose fixed shape cannot name an index): a void run has no
+    unchecked gates, it has no run. A recipe with no `"gate"` step at all
+    asserts nothing about the subject either, and is refused before it runs.
 
     One box for the whole sequence, state accumulating as a user's would; a
     step may declare `"reset": true` to demand a fresh, empty box from that
@@ -1003,6 +1013,10 @@ def run_walkthrough(args):
     steps_spec = recipe.get("steps", [])
     if not steps_spec:
         raise Unprobeable("the recipe declares no steps to walk through")
+    if not any(step.get("kind", "gate") == "gate" for step in steps_spec):
+        raise Unprobeable(
+            "the recipe declares no gates to walk through; a walkthrough of "
+            "only setup steps asserts nothing about the subject")
     exclude = tuple(recipe.get("exclude", ()))
 
     box = repo / "implementations" / f"_walkthrough_{surface}"
@@ -1016,18 +1030,28 @@ def run_walkthrough(args):
 
     steps_report = []
     stall = None
+    setup_failure = None
     try:
         for index, step in enumerate(steps_spec):
             name = step.get("name", f"step {index}")
+            kind = step.get("kind", "gate")
 
             if stall is not None:
                 steps_report.append({
                     "expected": step.get("expect"), "index": index,
-                    "name": name, "observed": None, "outcome": "unreached"})
+                    "kind": kind, "name": name, "observed": None,
+                    "outcome": "unreached"})
                 continue
 
             expect = step.get("expect")
-            if not declares_expectation(expect):
+            if kind == "setup":
+                if declares_expectation(expect):
+                    raise Unprobeable(
+                        f"step {index} ({name!r}) is kind 'setup' but "
+                        "declares an expectation; a setup step asserting "
+                        "something about the subject is a gate wearing the "
+                        "wrong label")
+            elif not declares_expectation(expect):
                 raise Unprobeable(
                     f"step {index} ({name!r}) declares no expectation; a "
                     "gate that asserts nothing is not a gate")
@@ -1052,6 +1076,12 @@ def run_walkthrough(args):
                     argv, cwd=str(step_cwd), shell=False,
                     capture_output=True, text=True, timeout=args.timeout)
             except FileNotFoundError as error:
+                if kind == "setup":
+                    setup_failure = {
+                        "detail": f"setup step {index} ({name!r})'s argv[0] "
+                                  f"is not executable: {error}",
+                        "index": index, "name": name}
+                    break
                 if index == 0:
                     raise Unprobeable(
                         f"step 0's argv[0] is not executable: {error}; the "
@@ -1061,46 +1091,87 @@ def run_walkthrough(args):
                               f"executable: {error}",
                     "index": index, "kind": "missing-executable"}
                 steps_report.append({
-                    "expected": expect, "index": index, "name": name,
-                    "observed": None, "outcome": "stalled"})
+                    "expected": expect, "index": index, "kind": kind,
+                    "name": name, "observed": None, "outcome": "stalled"})
                 continue
             except subprocess.TimeoutExpired:
+                if kind == "setup":
+                    setup_failure = {
+                        "detail": f"setup step {index} ({name!r}) did not "
+                                  f"answer within {args.timeout}s",
+                        "index": index, "name": name}
+                    break
                 stall = {
                     "detail": f"step {index} ({name!r}) did not answer "
                               f"within {args.timeout}s",
                     "index": index, "kind": "timeout"}
                 steps_report.append({
-                    "expected": expect, "index": index, "name": name,
-                    "observed": None, "outcome": "stalled"})
+                    "expected": expect, "index": index, "kind": kind,
+                    "name": name, "observed": None, "outcome": "stalled"})
                 continue
 
             observed = {"exit": completed.returncode,
                        "stderr": completed.stderr, "stdout": completed.stdout}
+
+            if kind == "setup":
+                if completed.returncode != 0:
+                    setup_failure = {
+                        "detail": f"setup step {index} ({name!r}) exited "
+                                  f"{completed.returncode}",
+                        "index": index, "name": name}
+                    break
+                steps_report.append({
+                    "expected": expect, "index": index, "kind": kind,
+                    "name": name, "observed": observed,
+                    "outcome": "setup-ok"})
+                continue
+
             if step_matches_expect(expect, completed.returncode,
                                    completed.stdout, completed.stderr):
                 steps_report.append({
-                    "expected": expect, "index": index, "name": name,
-                    "observed": observed, "outcome": "passed"})
+                    "expected": expect, "index": index, "kind": kind,
+                    "name": name, "observed": observed, "outcome": "passed"})
             else:
                 stall = {
                     "detail": f"step {index} ({name!r})'s observation "
                               "contradicted its own expect",
                     "index": index, "kind": "contradiction"}
                 steps_report.append({
-                    "expected": expect, "index": index, "name": name,
-                    "observed": observed, "outcome": "stalled"})
+                    "expected": expect, "index": index, "kind": kind,
+                    "name": name, "observed": observed, "outcome": "stalled"})
     finally:
         erase_box(box)
+
+    if setup_failure is not None:
+        # A void run has no unchecked gates, it has no run: `stall` and
+        # `unreached` stay at their never-ran values rather than the
+        # partial `steps_report` built so far. Emitted directly, not
+        # through `Unprobeable`, whose fixed `{"error", "status"}` shape
+        # cannot name which step failed.
+        emit({
+            "detail": setup_failure["detail"],
+            "index": setup_failure["index"],
+            "name": setup_failure["name"],
+            "stall": None,
+            "status": "setup-failed",
+            "unreached": [],
+        })
+        return 2
 
     after_removed = box_empty_or_absent(box)
     unreached = [entry["index"] for entry in steps_report
                 if entry["outcome"] == "unreached"]
+    gates_declared = sum(1 for step in steps_spec
+                         if step.get("kind", "gate") == "gate")
+    gates_passed = sum(1 for entry in steps_report
+                       if entry["kind"] == "gate" and entry["outcome"] == "passed")
 
     emit({
         "containment": {"afterRemoved": after_removed, "beforeEmpty": before_empty,
                         "box": str(box)},
         "frozen": {"digest": frozen_digest(subject, exclude),
                    "exclude": list(exclude), "subject": str(subject)},
+        "gates": {"declared": gates_declared, "passed": gates_passed},
         "stall": stall,
         "steps": steps_report,
         "surface": surface,
