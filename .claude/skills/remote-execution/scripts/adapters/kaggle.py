@@ -483,14 +483,14 @@ class KaggleAdapter(ADAPTER.Adapter):
 
         `KAGGLE_API_TOKEN` carries the token's VALUE, and this is the one
         expression in this skill that ever reads one. Measured, not
-        assumed: `kagglesdk`'s `_try_fill_auth()` reads that variable and
-        hands it straight to `BearerAuth(api_token)` — by value, with no
-        path check of any kind — so a path here becomes the literal text of
-        an `Authorization: Bearer` header and authenticates nothing. The
-        legacy `KAGGLE_CONFIG_DIR`/`kaggle.json` shape is not an escape
-        from that: it routes an access token through a Basic-auth path it
-        was never meant for and answers 401 for every account regardless of
-        validity.
+        assumed: the installed client's own `_try_fill_auth()` reads that
+        variable and hands it straight to `BearerAuth(api_token)` — by
+        value, with no path check of any kind — so a path here becomes
+        the literal text of an `Authorization: Bearer` header and
+        authenticates nothing. The legacy `KAGGLE_CONFIG_DIR`/`kaggle.json`
+        shape is not an escape from that: it routes an access token
+        through a Basic-auth path it was never meant for and answers 401
+        for every account regardless of validity.
 
         So the by-path-only contract this adapter used to hold is SPENT,
         not preserved, and saying so is the point: what still holds is

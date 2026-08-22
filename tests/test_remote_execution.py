@@ -27,6 +27,7 @@ import json
 import multiprocessing
 import os
 import re
+import requests
 import shutil
 import subprocess
 import sys
@@ -98,6 +99,17 @@ assert KAGGLE_SPEC and KAGGLE_SPEC.loader
 KAGGLE = importlib.util.module_from_spec(KAGGLE_SPEC)
 sys.modules[KAGGLE_SPEC.name] = KAGGLE
 KAGGLE_SPEC.loader.exec_module(KAGGLE)
+
+# Deliberately NOT loaded here, unlike every module above: this one imports
+# `kagglesdk`, so eagerly exec'ing it at collection time would make the
+# whole suite uncollectable on an interpreter that lacks it — exactly the
+# defect class `DriverInterceptionTests` exists to guard against elsewhere,
+# not to reintroduce here. Kept as a bare path; `DriverInterceptionTests`
+# loads the module itself, lazily, only from the tests that need to call
+# into it.
+KAGGLE_DRIVER_SCRIPT = (
+    REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/adapters/kaggle_driver.py"
+)
 
 # Loaded AFTER remote_cli.py above, which already path-imports this exact
 # module under this exact name via its own `_load_sibling` — reused here
@@ -3999,6 +4011,398 @@ class CredentialTransportDoctrineTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             for claim in retracted:
                 self.assertNotIn(claim, text, f"{claim!r} still stated in {path}")
+
+
+def _load_kaggle_driver_module():
+    """Load `kaggle_driver.py` lazily, from within a test method only —
+    never at collection time. Every other sibling script this file loads
+    is stdlib-only and safe to exec unconditionally at import time; this
+    one imports `kagglesdk`, so exec'ing it eagerly here would make the
+    WHOLE suite uncollectable on an interpreter that lacks it — precisely
+    the failure mode this change's own driver-selftest lock exists to
+    surface loudly instead of silently. `sys.modules`-reuse, exactly like
+    every other sibling loader in this suite, so two calls in the same
+    process see the same `DriverError` class.
+    """
+    module_name = "remote_execution_kaggle_driver"
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+    spec = importlib.util.spec_from_file_location(module_name, KAGGLE_DRIVER_SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class _RecordingTransport(requests.adapters.BaseAdapter):
+    """Decision 2's INNER interception point: mounted directly on a real
+    `KaggleHttpClient`'s own `requests.Session`, below `BearerAuth`'s own
+    header injection and above any socket. `requests.Session.mount()` is
+    a documented extension point of the `requests` library itself, not a
+    private seam this suite invented — the same reason design rejected
+    route A (a controlled HTTP endpoint, which `kaggle_env`'s closed
+    five-host enum makes unreachable by configuration) in favor of this
+    one.
+
+    Records every PREPARED request `KaggleHttpClient.call()` hands to
+    `Session.send()` — headers, method, url and body already assembled,
+    `Authorization` included — and answers with a synthetic
+    `application/json` response `KaggleObject.prepare_from()` can
+    deserialize, all without ever opening a socket. `send()` records
+    unconditionally, even before this class knows whether the caller will
+    go on to assert anything about content: a call this class never saw
+    is a failure this suite's own `test_inner_interception_reached_count`
+    exists to catch, not something to paper over with a response nobody
+    asked for.
+    """
+
+    def __init__(self, response_json: dict) -> None:
+        super().__init__()
+        self.calls: list = []
+        self._response_json = response_json
+
+    def send(self, request, **kwargs):  # noqa: D401 - requests' own signature
+        self.calls.append(request)
+        response = requests.Response()
+        response.status_code = 200
+        response.headers["Content-Type"] = "application/json"
+        response._content = json.dumps(self._response_json).encode("utf-8")
+        response.request = request
+        return response
+
+    def close(self) -> None:
+        pass
+
+
+def _kaggle_http_client_with_recorder(credential_value: str, response_json: dict | None = None):
+    """Build a REAL `KaggleHttpClient`, force `_init_session()` to run
+    while the credential VALUE is on the process environment — exactly
+    what `_env_for()` in `adapters/kaggle.py` puts on this driver's own
+    child environment, never a path — so `_try_fill_auth()` genuinely
+    fills `_session.auth` with a `BearerAuth` built from that value. Only
+    THEN is the recording transport mounted, matching the driver's own
+    single locked construction site: this helper never touches
+    `kaggle_driver`'s own `_build_client()`, it builds its own client
+    exactly the way that function's one call does, so the object under
+    test is the client `KernelsApiClient` would actually be handed, not a
+    stand-in for it.
+    """
+    driver = _load_kaggle_driver_module()
+    payload = response_json or {
+        "ref": "w1/papersmith-job",
+        "url": "https://www.kaggle.com/code/w1/papersmith-job",
+        "versionNumber": 1,
+    }
+    with unittest.mock.patch.dict(os.environ, {"KAGGLE_API_TOKEN": credential_value}):
+        client = driver.KaggleHttpClient()
+        client._init_session()
+    recorder = _RecordingTransport(payload)
+    client._session.mount("https://", recorder)
+    client._session.mount("http://", recorder)
+    return client, recorder
+
+
+def _write_driver_staging_dir(
+    tmp_path: Path,
+    *,
+    owner_slug: str = "w1/papersmith-job",
+    title: str = "papersmith-job",
+    code_file: str = "runner.ipynb",
+    code_text: str = "print('hello')",
+    enable_gpu: bool = True,
+    enable_internet: bool = True,
+) -> Path:
+    """A staged job folder exactly as `adapters/kaggle.py`'s own
+    `submit()` leaves one for the driver to read: `assemble_metadata()`'s
+    own template, completed with `id` (`<owner>/<slug>`) and `code_file`
+    the same way `submit()`'s staging step completes it, plus the
+    entrypoint file itself.
+    """
+    staging = tmp_path / "staging"
+    staging.mkdir(parents=True, exist_ok=True)
+    (staging / code_file).write_text(code_text, encoding="utf-8")
+    metadata = {
+        "id": owner_slug,
+        "title": title,
+        "code_file": code_file,
+        "language": "python",
+        "kernel_type": "notebook",
+        "is_private": True,
+        "enable_internet": enable_internet,
+        "enable_gpu": enable_gpu,
+    }
+    (staging / KAGGLE.KERNEL_METADATA_FILENAME).write_text(
+        json.dumps(metadata), encoding="utf-8"
+    )
+    return staging
+
+
+class DriverInterceptionTests(unittest.TestCase):
+    """Commit 1: `adapters/kaggle_driver.py` — the one file in this skill
+    permitted to import `kagglesdk` — and its own request-observing
+    interception point (Decision 2's INNER boundary). This is the first
+    point in the whole change that proves, entirely offline, that this
+    skill's stored Bearer token actually authenticates: no fake `kaggle`
+    binary, no network, no live account — a recording transport mounted
+    on a REAL `requests.Session` a REAL `KaggleHttpClient` built, and a
+    synthetic response that same client's own deserialization code reads
+    back.
+
+    Every test in this class is reachable-red: `adapters/kaggle_driver.py`
+    did not exist before this task, so every test that loads it fails to
+    collect, and the two static-scan locks (`ClassDef` uniqueness,
+    `kagglesdk` absent from `adapters/kaggle.py`) are proven red by
+    inversion during apply, restored by inverse patch and confirmed by
+    sha256 — see the apply report for that evidence; this file only
+    carries the locks themselves.
+    """
+
+    def test_the_driver_never_reads_the_environment_at_all(self):
+        """The credential has one reader, and it is not this file.
+
+        The token reaches the child as `KAGGLE_API_TOKEN` and is read by
+        `kagglesdk`'s own `_try_fill_auth`. The driver's part of that
+        guarantee is to stay out of it: a file that never reads the
+        environment cannot leak a credential nor quietly become a second
+        reader of one.
+
+        A text search cannot hold this — the driver names the variable in
+        its own prose to explain the mechanism, and a lock that forbade the
+        string would forbid the explanation. So this reads the syntax tree
+        and asserts the absence of the access itself, which prose cannot
+        trip and code cannot hide.
+        """
+        tree = ast.parse(
+            KAGGLE_DRIVER_SCRIPT.read_text(encoding="utf-8"))
+        reads = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and isinstance(
+                    node.value, ast.Name) and node.value.id == "os":
+                reads.append((node.lineno, f"os.{node.attr}"))
+            if isinstance(node, ast.Name) and node.id == "environ":
+                reads.append((node.lineno, "environ"))
+        self.assertEqual(
+            reads, [],
+            "the driver reaches for the environment; the credential's one "
+            "reader is kagglesdk's own auth, and a second reader here is "
+            f"the guarantee coming apart: {reads}")
+
+    def test_driver_client_constructed_at_one_locked_expression(self) -> None:
+        """Decision 2's third bypass detection: the driver builds its one
+        `KaggleHttpClient` at exactly one expression
+        (`_build_client()`), the same AST-locked idiom
+        `CredentialSecurityTests` already holds `.token_path` to in
+        `adapters/kaggle.py`. An operation function that built a second
+        one would reach for a real socket instead of the transport a
+        caller mounted on the shared session — parsed as an AST, not
+        scanned as text, so a docstring quoting the class name in prose
+        (this module's own module docstring does, to document the lock)
+        is never mistaken for a second real construction.
+        """
+        tree = ast.parse(KAGGLE_DRIVER_SCRIPT.read_text(encoding="utf-8"))
+        constructions = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and (
+                (isinstance(node.func, ast.Name) and node.func.id == "KaggleHttpClient")
+                or (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "KaggleHttpClient"
+                )
+            )
+        ]
+        self.assertEqual(len(constructions), 1, constructions)
+
+    def test_driver_names_kagglesdk_nowhere_in_adapter(self) -> None:
+        """Decision 2's second bypass detection: an edit that inlines the
+        SDK straight into `adapters/kaggle.py` must fail HERE instead of
+        silently emptying the outer recorder Phase 2 wires up around this
+        adapter's own subprocess call. Checked as TEXT — a docstring
+        naming the package is the same leak this suite's own
+        `*_module_names_no_service` family already treats a prose mention
+        of a service as — and as AST, so a live `import kagglesdk` or
+        `from kagglesdk import ...` statement cannot slip through either.
+        """
+        source = KAGGLE_SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn("kagglesdk", source)
+
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    self.assertNotIn("kagglesdk", alias.name)
+            if isinstance(node, ast.ImportFrom) and node.module:
+                self.assertNotIn("kagglesdk", node.module)
+
+    def test_unique_class_def_names_in_test_file(self) -> None:
+        """A general lock, not specific to this change: a duplicate
+        top-level `class` name in THIS file once silently disabled seven
+        tests here while the suite still reported `OK`, because Python
+        keeps only the LAST definition of two same-named classes and
+        `unittest`'s own discovery walks module attributes, never source
+        order. Forward-looking rather than a fix: every class name in
+        this file is unique today, so this test's job is to keep it that
+        way as new classes (this one included) are added.
+
+        Scoped to `tree.body` — this MODULE's own direct top-level
+        statements — rather than `ast.walk`, deliberately: a couple of
+        tests (`test_registry_refuses_a_class_that_does_not_subclass_adapter`,
+        `test_plan_refuses_an_object_that_is_not_a_real_adapter`) each
+        define their own throwaway `class NotAnAdapter` INSIDE a test
+        method, and two such locally-scoped classes sharing a name is not
+        the failure this lock guards against: neither is ever bound at
+        module scope, so neither can silently overwrite the other in
+        `unittest`'s own discovery. Only a top-level redefinition can do
+        that, and `ast.walk` would have flagged both of these as a false
+        positive.
+        """
+        tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+        names = [node.name for node in tree.body if isinstance(node, ast.ClassDef)]
+        seen: dict[str, int] = {}
+        for name in names:
+            seen[name] = seen.get(name, 0) + 1
+        duplicates = sorted(name for name, count in seen.items() if count > 1)
+        self.assertEqual(duplicates, [], f"duplicate top-level class name(s): {duplicates}")
+
+    def test_inner_interception_reached_count(self) -> None:
+        """Every double this change introduces must positively assert it
+        was reached, checked BEFORE any assertion about content — a
+        recorder silently bypassed and a recorder genuinely never wired
+        up look identical unless the call count itself is asserted.
+        """
+        driver = _load_kaggle_driver_module()
+        client, recorder = _kaggle_http_client_with_recorder(FIXTURE_TOKEN)
+        kernels_client = driver.KernelsApiClient(client)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            staging = _write_driver_staging_dir(Path(tmp))
+            result = driver.cmd_submit(kernels_client, staging)
+
+        self.assertGreater(
+            len(recorder.calls), 0, "the inner interception point was never reached"
+        )
+        self.assertEqual(result["ref"], "w1/papersmith-job")
+
+    def test_driver_selftest_imports_kagglesdk(self) -> None:
+        """`driver selftest` must be the first thing run against a real
+        interpreter, per the design's own open question: the `kaggle`
+        distribution this machine has is installed under a Python 3.9
+        user site, so whether a given interpreter can even reach
+        `kagglesdk` is a per-interpreter fact, not an assumption.
+
+        GREEN half: the interpreter this very test process runs under
+        (the same one every other test in this class already imported
+        `kagglesdk` through, to load the driver module at all) reports
+        success and names itself.
+
+        RED half: a genuinely different interpreter with no `kaggle`
+        distribution — `python3.11`/`python3.12`, measured present on
+        this machine and confirmed to lack `kagglesdk` — reports a
+        refusal naming ITS OWN resolved interpreter path and the exact
+        install command for it, never a bare traceback with nothing an
+        operator could act on. Skipped, not failed, on a machine with no
+        such second interpreter: this is a fact about the CI/dev
+        environment, not about the driver's own behavior.
+        """
+        own = subprocess.run(
+            [sys.executable, str(KAGGLE_DRIVER_SCRIPT), "selftest"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(own.returncode, 0, own.stdout + own.stderr)
+        own_payload = json.loads(own.stdout)
+        self.assertTrue(own_payload["ok"], own_payload)
+        self.assertEqual(own_payload["interpreter"], sys.executable)
+
+        foreign = shutil.which("python3.11") or shutil.which("python3.12")
+        if foreign is None:
+            self.skipTest("no interpreter lacking kagglesdk found on this machine")
+
+        resolved = subprocess.run(
+            [foreign, "-c", "import sys; print(sys.executable)"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(resolved.returncode, 0, resolved.stdout + resolved.stderr)
+        foreign_executable = resolved.stdout.strip()
+
+        confirm_missing = subprocess.run(
+            [foreign, "-c", "import kagglesdk"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if confirm_missing.returncode == 0:
+            self.skipTest(f"{foreign} unexpectedly has kagglesdk installed")
+
+        refused = subprocess.run(
+            [foreign, str(KAGGLE_DRIVER_SCRIPT), "selftest"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertNotEqual(refused.returncode, 0, refused.stdout + refused.stderr)
+        refused_payload = json.loads(refused.stdout)
+        self.assertFalse(refused_payload["ok"], refused_payload)
+        self.assertIn(foreign_executable, refused_payload["error"])
+        self.assertIn("pip install", refused_payload["error"])
+        self.assertIn("kaggle", refused_payload["error"])
+
+    def test_wire_bearer_header_carries_token_value(self) -> None:
+        """The request that first proves this skill's stored credential
+        actually authenticates, entirely offline: the PREPARED request
+        the recording transport receives must carry
+        `Authorization: Bearer <the token's own value>`, and no Basic
+        auth header may be constructed anywhere on this path — the
+        installed CLI's own Basic path is exactly what this whole change
+        replaces, because the service answers it 401 for every account.
+        """
+        driver = _load_kaggle_driver_module()
+        client, recorder = _kaggle_http_client_with_recorder(FIXTURE_TOKEN)
+        kernels_client = driver.KernelsApiClient(client)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            staging = _write_driver_staging_dir(Path(tmp))
+            driver.cmd_submit(kernels_client, staging)
+
+        self.assertGreater(len(recorder.calls), 0)
+        header = recorder.calls[0].headers.get("Authorization")
+        self.assertEqual(header, f"Bearer {FIXTURE_TOKEN}")
+        self.assertNotIn("Basic", header or "")
+
+    def test_enable_gpu_and_enable_internet_on_wire(self) -> None:
+        """The `machine_shape` defect class, closed by OBSERVING the
+        request rather than by reading the client's source: the prior
+        adapter emitted a metadata key (`machine_shape`) nothing on the
+        installed client's request shape ever read, so it silently
+        reached nobody for the life of this skill. Here the wire itself
+        is inspected instead, and `enable_gpu`/`enable_internet` must be
+        present and true.
+        """
+        driver = _load_kaggle_driver_module()
+        client, recorder = _kaggle_http_client_with_recorder(FIXTURE_TOKEN)
+        kernels_client = driver.KernelsApiClient(client)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            staging = _write_driver_staging_dir(
+                Path(tmp), enable_gpu=True, enable_internet=True
+            )
+            driver.cmd_submit(kernels_client, staging)
+
+        self.assertGreater(len(recorder.calls), 0)
+        body = json.loads(recorder.calls[0].body)
+        # Measured, not assumed: the installed client's own `clean_data()`
+        # renders a Python bool as the JSON STRING "true"/"false", never a
+        # JSON boolean — asserting `is True` here would fail against a
+        # genuinely correct request, for a reason that has nothing to do
+        # with this driver's own correctness.
+        self.assertEqual(body["enableGpu"], "true")
+        self.assertEqual(body["enableInternet"], "true")
+        self.assertNotIn("machineShape", body)
 
 
 def _installed_kaggle_client_source() -> str | None:
