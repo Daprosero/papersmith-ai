@@ -73,7 +73,7 @@ $ python3 .claude/skills/skill-audit/scripts/audit_cli.py walkthrough --subject 
 Exit `0` for any verdict, `stall` included. A `null` `stall` means every step
 matched its own expectation; a non-`null` `stall` names the step's index and
 kind, and `unreached` lists every gate at or after it. A step may declare
-`"kind": "setup"` to stand up a fixture without asserting anything about the
+`"role": "setup"` to stand up a fixture without asserting anything about the
 subject; a setup step is never counted among `gates.passed`, and its failure
 is reported directly as `"setup-failed"` at exit `2` -- never `"stalled"` --
 because a void run has no unchecked gates, it has no run.

@@ -444,6 +444,29 @@ def interpolate_token(text, repo, subject, box):
     return _TOKEN_RE.sub(replace, text)
 
 
+#: `{candidate}` is a fourth token, valid only inside `candidateGates.argv`.
+#: `STRUCTURE_TOKENS` is untouched, so a plain `walkthrough` step's own argv
+#: still resolves through `interpolate_token` alone and cannot reach for a
+#: candidate it never declared.
+GATE_TOKENS = STRUCTURE_TOKENS | {"candidate"}
+
+
+def interpolate_gate_token(text, repo, subject, box, candidate):
+    """Substitute `{repoRoot}`, `{subject}`, `{box}`, and `{candidate}`
+    inside one `candidateGates.argv` part. Mirrors `interpolate_token`,
+    scoped to the one recipe block where a fourth token is legal.
+    """
+    def replace(match):
+        token = match.group(1)
+        if token not in GATE_TOKENS:
+            raise Unprobeable(
+                f"the recipe's candidateGates.argv names an unknown token "
+                f"{{{token}}}; only {sorted(GATE_TOKENS)} interpolate")
+        return {"repoRoot": str(repo), "subject": str(subject),
+                "box": str(box), "candidate": candidate}[token]
+    return _TOKEN_RE.sub(replace, text)
+
+
 def run_box_step(step, repo, subject, box, timeout):
     """One `fromZero` build step, run inside the box with no shell.
 
@@ -506,6 +529,83 @@ def resolve_under(raw, base, label):
     return resolved
 
 
+#: The only place a `doctrine_side` status becomes a note's `kind`. Hoisted
+#: out of `run_roster`'s own inline dict so `note()` can be the single
+#: producer of every entry in `notes[]`: a status this map does not name
+#: cannot reach `notes[]` at all, which is what lets `ESCALATION_BUCKETS` be
+#: checked against `note()`'s own call sites instead of against a second,
+#: hand-maintained roster.
+DOCTRINE_SIDE_NOTES = {
+    "complement": (
+        "no-closed-roster",
+        "this table is a deliberate subset, so it supports the phantom "
+        "direction and never the unregistered one"),
+    "no-closed-roster": (
+        "no-closed-roster",
+        "the set is stated in prose or in another language here, and "
+        "prose is what the documented side may not be read out of"),
+    "heading-not-found": (
+        "heading-not-found",
+        "the recipe claims a scope for this table but its quoted heading "
+        "is not on disk, so the claim is refused rather than trusted"),
+    "scope-claimed-without-heading": (
+        "scope-claimed-without-heading",
+        "a scope claim with no quoted heading is unfalsifiable"),
+}
+
+
+def note(kind, detail, path, searched):
+    """The only way an entry enters `notes[]`.
+
+    A literal scan for `"kind":` strings cannot classify what this module
+    emits: `run_roster` writes `"kind": kind` from a variable, which hides
+    three of the four escalatable kinds from any such scan. Routing every
+    entry through this one constructor instead means the totality lock in
+    `EscalationPartitionTests` can scan `note()`'s own call sites for the
+    kinds it actually passes, and can refuse -- as a structural fact, not a
+    convention -- any dict literal elsewhere that carries a `"kind"` key at
+    all.
+    """
+    return {"detail": detail, "kind": kind, "path": path, "searched": searched}
+
+
+#: Every kind `note()` can emit, or that `DOCTRINE_SIDE_NOTES` names,
+#: partitioned into exactly one bucket. Escalatable: prose exists but could
+#: not be derived, and a zero-model probe may still decide it. Consequence:
+#: produced only because an escalatable note already fired on the same
+#: surface, and never escalated a second time on its own. Deterministic
+#: exclusion: a shape or a spelling with no prose behind it to re-read, so
+#: escalating it would send a reader after a surface that has nothing to
+#: read. `EscalationPartitionTests` holds this constant to the emission
+#: sites the same way `FORBIDDEN_SUPPORT` and `ADJUDICATIONS` are held to
+#: theirs -- never a second hand-maintained roster.
+ESCALATION_BUCKETS = {
+    "escalatable": (
+        "no-closed-roster", "heading-not-found",
+        "scope-claimed-without-heading",
+        "no derivation available for this surface"),
+    "consequence": ("comparison-not-run",),
+    "deterministic-exclusion": ("shape-not-walkable", "case-only-divergence"),
+}
+
+
+def escalation_hint(recipe):
+    """The zero-model-probe hint attached to every escalatable note.
+
+    Rung one -- `"probe"` -- is selected only when the emitting recipe
+    already declares `probe: "refusal"`: the tool already holds, at
+    `recipe["extract"]`, the exact pattern a `candidateGates` control gate
+    needs. Move 8 (`walkthrough`) is the mechanism a `probe` rung's
+    candidates are driven through. Every other recipe gets rung
+    `"readers"`: a two-reader comparison is required before any candidate
+    may be proposed at all.
+    """
+    if recipe.get("probe") == "refusal":
+        return {"needs": "candidates", "probe": "8",
+                "refusal": recipe.get("extract"), "rung": "probe"}
+    return {"needs": None, "probe": None, "refusal": None, "rung": "readers"}
+
+
 #: Shapes a declared cell can carry that the walk helper can never produce.
 #: Expanding one of these against the disk would let the declared side build
 #: the very set it is meant to be checked against; counting it as a
@@ -538,10 +638,11 @@ def normalize_declared_paths(raw_members):
         elif ".." in Path(raw).parts:
             reason = "the cell contains a `..` segment"
         if reason:
-            notes.append({
-                "detail": f"{reason}, so it is excluded from every side "
-                          "rather than expanded against the disk",
-                "kind": "shape-not-walkable", "path": raw})
+            notes.append(note(
+                "shape-not-walkable",
+                f"{reason}, so it is excluded from every side rather than "
+                "expanded against the disk",
+                raw, None))
             continue
         cleaned = raw[2:] if raw.startswith("./") else raw
         normalised.add(cleaned)
@@ -564,10 +665,11 @@ def case_only_divergences(label_a, set_a, label_b, set_b):
         if member in set_b:
             continue
         for other in lower_b.get(member.lower(), []):
-            found.append({
-                "detail": f"{label_a} names {member!r}; {label_b} names "
-                          f"{other!r}, matching only case-insensitively",
-                "kind": "case-only-divergence", "path": member})
+            found.append(note(
+                "case-only-divergence",
+                f"{label_a} names {member!r}; {label_b} names "
+                f"{other!r}, matching only case-insensitively",
+                member, None))
     return found
 
 
@@ -722,13 +824,11 @@ def run_roster(args):
     notes = []
 
     if recipe.get("probe") != "refusal":
-        notes.append({
-            "detail": "the subject exposes neither a refusal message nor a "
-                      "parser, so neither language-independent probe applies",
-            "kind": "no derivation available for this surface",
-            "path": str(spec_path),
-            "searched": f"{spec_path}:1-1",
-        })
+        notes.append(note(
+            "no derivation available for this surface",
+            "the subject exposes neither a refusal message nor a parser, "
+            "so neither language-independent probe applies",
+            str(spec_path), f"{spec_path}:1-1"))
         return finish([], [], notes, [], [], "not-run", recipe, subject, repo)
 
     code = sorted(set(probe_code_side(recipe, subject, timeout=args.timeout)))
@@ -744,21 +844,8 @@ def run_roster(args):
         if status == "closed":
             closed_seen = True
             continue
-        kind = status if status != "complement" else "no-closed-roster"
-        detail = {
-            "complement": "this table is a deliberate subset, so it supports "
-                          "the phantom direction and never the unregistered one",
-            "no-closed-roster": "the set is stated in prose or in another "
-                                "language here, and prose is what the "
-                                "documented side may not be read out of",
-            "heading-not-found": "the recipe claims a scope for this table but "
-                                 "its quoted heading is not on disk, so the "
-                                 "claim is refused rather than trusted",
-            "scope-claimed-without-heading": "a scope claim with no quoted "
-                                             "heading is unfalsifiable",
-        }[status]
-        notes.append({"detail": detail, "kind": kind, "path": str(path),
-                      "searched": span})
+        kind, detail = DOCTRINE_SIDE_NOTES[status]
+        notes.append(note(kind, detail, str(path), span))
 
     search = recipe.get("restatementSearch", {})
     duplicated = []
@@ -774,15 +861,13 @@ def run_roster(args):
 
     comparison = "run" if closed_seen else "not-run"
     if comparison == "not-run":
-        notes.append({
-            "detail": "no site yielded a closed roster, so the unregistered "
-                      "direction is not computed; reporting every accepted "
-                      "member as undocumented would invent one finding per "
-                      "member and none of them would be about this subject",
-            "kind": "comparison-not-run",
-            "path": str(subject),
-            "searched": f"{subject}:1-1",
-        })
+        notes.append(note(
+            "comparison-not-run",
+            "no site yielded a closed roster, so the unregistered direction "
+            "is not computed; reporting every accepted member as "
+            "undocumented would invent one finding per member and none of "
+            "them would be about this subject",
+            str(subject), f"{subject}:1-1"))
     unregistered = sorted(set(code) - doctrine) if closed_seen else []
     phantom = sorted(doctrine - set(code))
     return finish(code, sorted(doctrine), notes, unregistered, phantom,
@@ -795,11 +880,15 @@ def finish(code, doctrine, notes, unregistered, phantom, comparison,
     for site in recipe.get("numeralPaths", []):
         mismatches.extend(numeral_mismatches(resolve_site(site, subject, repo)))
     exclude = tuple(recipe.get("exclude", ()))
+    escalatable = [dict(entry, escalation=escalation_hint(recipe))
+                  for entry in notes
+                  if entry["kind"] in ESCALATION_BUCKETS["escalatable"]]
     emit({
         "code": code,
         "comparison": comparison,
         "doctrine": doctrine,
         "duplicated": duplicated or [],
+        "escalatable": escalatable,
         "frozen": {"digest": frozen_digest(subject, exclude),
                    "exclude": list(exclude), "subject": str(subject)},
         "notes": notes,
@@ -913,6 +1002,9 @@ def run_structure(args):
     emit({
         "containment": {"afterRemoved": after_removed, "beforeEmpty": before_empty,
                         "box": str(box)},
+        "escalatable": [dict(entry, escalation=escalation_hint(recipe))
+                       for entry in notes
+                       if entry["kind"] in ESCALATION_BUCKETS["escalatable"]],
         "frozen": {"digest": frozen_digest(subject, exclude),
                    "exclude": list(exclude), "subject": str(subject)},
         "missingFrom": missing_from,
@@ -972,6 +1064,64 @@ def step_matches_expect(expect, returncode, stdout, stderr):
     return True
 
 
+def stalled(kind, index, detail):
+    """A walkthrough verdict's own `stall` dict.
+
+    `kind` here is a verdict about *how* a step failed to match its own
+    `expect` -- `"missing-executable"`, `"timeout"`, `"contradiction"` --
+    never an undecidability. Kept apart from `note()` so a totality lock
+    over `notes[]`'s kinds never has to tell a verdict from an unread
+    surface by guessing; it simply never looks inside `stalled()` at all.
+    """
+    return {"detail": detail, "index": index, "kind": kind}
+
+
+#: The one absurd nonce the `candidateGates` control gate is driven with --
+#: a value no real flag or subcommand could ever collide with, so what the
+#: subject does with it is a fact about the refusal channel itself, never
+#: about a real candidate.
+CANDIDATE_GATE_CONTROL_NONCE = "__AUDIT_CONTROL_NONCE__"
+
+
+def candidate_gate_steps(spec, repo, subject, box):
+    """Expand one `candidateGates` block into concrete walkthrough steps:
+    one inverted control gate, first, then one gate per candidate.
+
+    One declared `refusal` derives both expectations, so nothing about the
+    refusal pattern is restated. The control's own expectation is
+    deliberately inverted -- it demands the refusal be *present* -- so a
+    channel that never refuses stalls at the control's own index and
+    leaves every candidate `unreached` through the walkthrough machinery
+    that already exists, no special case and no new branch. No candidate is
+    ever reported accepted against a channel not proven capable of
+    refusing.
+    """
+    if not spec:
+        return []
+    refusal = spec["refusal"]
+    raw_argv = spec["argv"]
+    candidates = spec["candidates"]
+
+    def gate_argv(candidate):
+        return [interpolate_gate_token(part, repo, subject, box, candidate)
+               for part in raw_argv]
+
+    steps = [{
+        "argv": gate_argv(CANDIDATE_GATE_CONTROL_NONCE),
+        "expect": {"exit": "any", "stderr": refusal},
+        "role": "gate",
+        "name": "candidateGates control: the refusal channel is live",
+    }]
+    for candidate in candidates:
+        steps.append({
+            "argv": gate_argv(candidate),
+            "expect": {"exit": "any", "absent": refusal},
+            "role": "gate",
+            "name": f"candidateGates candidate {candidate!r} must not be refused",
+        })
+    return steps
+
+
 def run_walkthrough(args):
     """Drive a recipe's ordered sequence against one shared box, and name the
     index where it stalls.
@@ -979,10 +1129,10 @@ def run_walkthrough(args):
     Exit `0` for any verdict, including a stall: a stall is a finding on its
     own, never an inability to look. Exit `2` only when the flow itself could
     not be entered -- a step declaring no expectation, the very first step's
-    own command missing, or a `kind: "setup"` step failing, all mean there is
+    own command missing, or a `role: "setup"` step failing, all mean there is
     nothing to report on yet.
 
-    Each step declares `kind: "setup" | "gate"`, defaulting to `"gate"`
+    Each step declares `role: "setup" | "gate"`, defaulting to `"gate"`
     (precedent: `"reset": true`). A setup step stands up a fixture and
     asserts nothing about the subject -- it must declare no `expect`, is
     never counted among gates that passed, and its failure is reported
@@ -1010,16 +1160,17 @@ def run_walkthrough(args):
     surface = recipe.get("surface", "")
     if not surface:
         raise Unprobeable("the recipe names no surface to box the sequence under")
-    steps_spec = recipe.get("steps", [])
+    box = repo / "implementations" / f"_walkthrough_{surface}"
+    steps_spec = list(recipe.get("steps", [])) + candidate_gate_steps(
+        recipe.get("candidateGates"), repo, subject, box)
     if not steps_spec:
         raise Unprobeable("the recipe declares no steps to walk through")
-    if not any(step.get("kind", "gate") == "gate" for step in steps_spec):
+    if not any(step.get("role", "gate") == "gate" for step in steps_spec):
         raise Unprobeable(
             "the recipe declares no gates to walk through; a walkthrough of "
             "only setup steps asserts nothing about the subject")
     exclude = tuple(recipe.get("exclude", ()))
 
-    box = repo / "implementations" / f"_walkthrough_{surface}"
     before_empty = box_empty_or_absent(box)
     if not before_empty:
         raise Unprobeable(
@@ -1034,20 +1185,20 @@ def run_walkthrough(args):
     try:
         for index, step in enumerate(steps_spec):
             name = step.get("name", f"step {index}")
-            kind = step.get("kind", "gate")
+            role = step.get("role", "gate")
 
             if stall is not None:
                 steps_report.append({
                     "expected": step.get("expect"), "index": index,
-                    "kind": kind, "name": name, "observed": None,
+                    "role": role, "name": name, "observed": None,
                     "outcome": "unreached"})
                 continue
 
             expect = step.get("expect")
-            if kind == "setup":
+            if role == "setup":
                 if declares_expectation(expect):
                     raise Unprobeable(
-                        f"step {index} ({name!r}) is kind 'setup' but "
+                        f"step {index} ({name!r}) is role 'setup' but "
                         "declares an expectation; a setup step asserting "
                         "something about the subject is a gate wearing the "
                         "wrong label")
@@ -1076,7 +1227,7 @@ def run_walkthrough(args):
                     argv, cwd=str(step_cwd), shell=False,
                     capture_output=True, text=True, timeout=args.timeout)
             except FileNotFoundError as error:
-                if kind == "setup":
+                if role == "setup":
                     setup_failure = {
                         "detail": f"setup step {index} ({name!r})'s argv[0] "
                                   f"is not executable: {error}",
@@ -1086,34 +1237,34 @@ def run_walkthrough(args):
                     raise Unprobeable(
                         f"step 0's argv[0] is not executable: {error}; the "
                         "flow was never entered")
-                stall = {
-                    "detail": f"step {index} ({name!r})'s argv[0] is not "
-                              f"executable: {error}",
-                    "index": index, "kind": "missing-executable"}
+                stall = stalled(
+                    "missing-executable", index,
+                    f"step {index} ({name!r})'s argv[0] is not executable: "
+                    f"{error}")
                 steps_report.append({
-                    "expected": expect, "index": index, "kind": kind,
+                    "expected": expect, "index": index, "role": role,
                     "name": name, "observed": None, "outcome": "stalled"})
                 continue
             except subprocess.TimeoutExpired:
-                if kind == "setup":
+                if role == "setup":
                     setup_failure = {
                         "detail": f"setup step {index} ({name!r}) did not "
                                   f"answer within {args.timeout}s",
                         "index": index, "name": name}
                     break
-                stall = {
-                    "detail": f"step {index} ({name!r}) did not answer "
-                              f"within {args.timeout}s",
-                    "index": index, "kind": "timeout"}
+                stall = stalled(
+                    "timeout", index,
+                    f"step {index} ({name!r}) did not answer within "
+                    f"{args.timeout}s")
                 steps_report.append({
-                    "expected": expect, "index": index, "kind": kind,
+                    "expected": expect, "index": index, "role": role,
                     "name": name, "observed": None, "outcome": "stalled"})
                 continue
 
             observed = {"exit": completed.returncode,
                        "stderr": completed.stderr, "stdout": completed.stdout}
 
-            if kind == "setup":
+            if role == "setup":
                 if completed.returncode != 0:
                     setup_failure = {
                         "detail": f"setup step {index} ({name!r}) exited "
@@ -1121,7 +1272,7 @@ def run_walkthrough(args):
                         "index": index, "name": name}
                     break
                 steps_report.append({
-                    "expected": expect, "index": index, "kind": kind,
+                    "expected": expect, "index": index, "role": role,
                     "name": name, "observed": observed,
                     "outcome": "setup-ok"})
                 continue
@@ -1129,15 +1280,15 @@ def run_walkthrough(args):
             if step_matches_expect(expect, completed.returncode,
                                    completed.stdout, completed.stderr):
                 steps_report.append({
-                    "expected": expect, "index": index, "kind": kind,
+                    "expected": expect, "index": index, "role": role,
                     "name": name, "observed": observed, "outcome": "passed"})
             else:
-                stall = {
-                    "detail": f"step {index} ({name!r})'s observation "
-                              "contradicted its own expect",
-                    "index": index, "kind": "contradiction"}
+                stall = stalled(
+                    "contradiction", index,
+                    f"step {index} ({name!r})'s observation contradicted "
+                    "its own expect")
                 steps_report.append({
-                    "expected": expect, "index": index, "kind": kind,
+                    "expected": expect, "index": index, "role": role,
                     "name": name, "observed": observed, "outcome": "stalled"})
     finally:
         erase_box(box)
@@ -1162,9 +1313,9 @@ def run_walkthrough(args):
     unreached = [entry["index"] for entry in steps_report
                 if entry["outcome"] == "unreached"]
     gates_declared = sum(1 for step in steps_spec
-                         if step.get("kind", "gate") == "gate")
+                         if step.get("role", "gate") == "gate")
     gates_passed = sum(1 for entry in steps_report
-                       if entry["kind"] == "gate" and entry["outcome"] == "passed")
+                       if entry["role"] == "gate" and entry["outcome"] == "passed")
 
     emit({
         "containment": {"afterRemoved": after_removed, "beforeEmpty": before_empty,

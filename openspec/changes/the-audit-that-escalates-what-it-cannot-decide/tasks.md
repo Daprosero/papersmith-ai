@@ -129,57 +129,85 @@ commit in this list.
       `test_kind_defaults_to_gate_when_omitted`,
       `test_gates_counts_only_gate_kind_across_a_mixed_stall`).
 
-## Commit 3 — Escalatable partition, totality lock, routing (target: ~1040 → ~1053, +13)
+## Commit 3 — Escalatable partition, totality lock, routing (target: ~1040 → ~1053, +13; actual: 1043 → 1056, +13)
 
-- [ ] 3.1 Refactor all eight `"kind"`-carrying dict literals into a
+- [x] 3.1 Refactor all eight `"kind"`-carrying dict literals into a
       `note(kind, detail, path, searched)` constructor — the only way an
-      entry enters `notes[]`. Sites: `run_roster` (`:700`, `:735`, `:752`),
-      `normalize_declared_paths` (`:521`), `case_only_divergences` (`:547`),
-      `run_walkthrough` (`:1028`, `:1037`, `:1054`).
-- [ ] 3.2 Add `stalled(kind, index, detail)` as `note()`'s sibling for
+      entry enters `notes[]`. Sites (re-located post commits 1-2, not the
+      stale numbers above): `run_roster`'s no-derivation note, its
+      doctrine-status loop, and its `comparison-not-run` note;
+      `normalize_declared_paths`'s `shape-not-walkable` note;
+      `case_only_divergences`'s `case-only-divergence` note.
+- [x] 3.2 Add `stalled(kind, index, detail)` as `note()`'s sibling for
       walkthrough verdicts, so its `"kind"` (a verdict) never collides with
-      an undecidability kind.
-- [ ] 3.3 Hoist `:723-734`'s inline dict into
+      an undecidability kind. Applied at all three `run_walkthrough` stall
+      sites: `missing-executable`, `timeout`, `contradiction`.
+- [x] 3.3 Hoist the doctrine-status inline dict into
       `DOCTRINE_SIDE_NOTES: {status: (kind, detail)}`.
-- [ ] 3.4 Add `ESCALATION_BUCKETS = {"escalatable": (...), "consequence":
+- [x] 3.4 Add `ESCALATION_BUCKETS = {"escalatable": (...), "consequence":
       (...), "deterministic-exclusion": (...)}` per the spec's four
       escalatable kinds, one consequence kind, two exclusion kinds.
-- [ ] 3.5 [LOCK — strongest of this commit] `EscalationPartitionTests`: AST
+- [x] 3.5 [LOCK — strongest of this commit] `EscalationPartitionTests`: AST
       scan asserting (a) every constant string in a `note()` `kind` position
       plus every `DOCTRINE_SIDE_NOTES` value kind appears in exactly one
-      bucket, (b) buckets are pairwise disjoint, (c) **no dict literal
-      outside `stalled()` carries a `"kind"` key at all**. Invert by adding
-      one new unclassified `"kind":` literal directly (bypassing `note()`);
-      confirm the totality lock fires; restore by inverse patch; confirm
-      whole-file `sha256` match.
-- [ ] 3.6 `test_consequence_kind_not_independently_escalated` (spec scenario:
+      bucket, (b) buckets are pairwise disjoint, (c) **no note-shaped dict
+      literal (carrying both `"kind"` and `"detail"` — `note()`'s and
+      `stalled()`'s own shape) exists outside those two constructors**.
+      This is a deliberate refinement of a literal "no dict literal
+      anywhere carries a kind key" reading: that literal reading would
+      also flag `run_walkthrough`'s own step-report entries and
+      `candidateGates`' generated step specs, which carry `"kind"` from an
+      entirely different, already-tested vocabulary (`"setup"`/`"gate"`)
+      and never `"detail"` — scoping to the co-occurring `"detail"` key
+      catches exactly a note-shaped bypass without those false positives.
+      Inverted by adding one new unclassified `"kind"`+`"detail"` dict
+      literal directly in `run_roster`, bypassing `note()`; confirmed the
+      totality lock fires RED (`AssertionError: Lists differ: [862] !=
+      []`); restored by inverse patch; confirmed whole-file `sha256`
+      match (`45d5b266...cce8990`, before and after).
+- [x] 3.6 `test_consequence_kind_not_independently_escalated` (spec scenario:
       `comparison-not-run` never appears as a second entry in the
-      escalatable list).
-- [ ] 3.7 Add `"escalation": {"rung","probe","needs","refusal"}` to each
+      escalatable list). Inverted by moving `comparison-not-run` into the
+      `escalatable` bucket (and emptying `consequence`); confirmed RED
+      (`AssertionError: 'comparison-not-run' unexpectedly found in [...]`);
+      restored by inverse patch; confirmed whole-file `sha256` match.
+- [x] 3.7 Add `"escalation": {"rung","probe","needs","refusal"}` to each
       escalatable note; rung is `"probe"` only when the recipe declares
-      `probe: "refusal"`.
-- [ ] 3.8 Add `candidateGates` recipe block (`refusal`, `argv`, `candidates`);
+      `probe: "refusal"`. Covered by the new `EscalationHintTests`.
+- [x] 3.8 Add `candidateGates` recipe block (`refusal`, `argv`, `candidates`);
       `{candidate}` valid only inside `candidateGates.argv`;
-      `GATE_TOKENS = STRUCTURE_TOKENS | {"candidate"}`.
-- [ ] 3.9 [LOCK] `ControlGateTests.test_live_refusal_channel_control_passes`
+      `GATE_TOKENS = STRUCTURE_TOKENS | {"candidate"}`. Covered by the new
+      `GateTokenTests`.
+- [x] 3.9 [LOCK] `ControlGateTests.test_live_refusal_channel_control_passes`
       and `test_dead_refusal_channel_stalls_at_control_candidates_unreached`
       (threat-matrix RED: silent subject → control stalls, no candidate
-      reported accepted). Invert the live case by pointing the recipe at a
-      subject that silently accepts unknown flags; confirm the stall;
-      restore the fixture.
-- [ ] 3.10 `test_candidategates_unknown_token_exits_2` and
+      reported accepted). Performed the strongest named inversion instead
+      of the fixture-only one: killed the control gate itself by flipping
+      its generated `expect` from `{"stderr": refusal}` (present) to
+      `{"absent": refusal}`; confirmed this makes the *dead*-channel test
+      error out with `payload["stall"]` `None` — every candidate falsely
+      "passed" against a channel never proven to refuse, the exact false
+      clean the control exists to prevent — while the *live*-channel test
+      now falsely stalls; restored by inverse patch; confirmed whole-file
+      `sha256` match.
+- [x] 3.10 `test_candidategates_unknown_token_exits_2` and
       `test_candidate_with_shell_metacharacter_reaches_argv_literally`
       (subprocess-execution threat-matrix RED tests; `shell=False` unaffected).
-- [ ] 3.11 [MOTIVATING CASE] `test_documented_flag_surface_rerouted_not_read`
+- [x] 3.11 [MOTIVATING CASE] `test_documented_flag_surface_rerouted_not_read`
       — a `no-closed-roster` note over a prose-stated flag list drives each
       flag as a `walkthrough` gate before any reader is invoked; proves the
       half-caught case from the proposal now closes end to end.
-- [ ] 3.12 `probes/skill-audit.first-run.json`: add the `candidateGates`
+- [x] 3.12 `probes/skill-audit.first-run.json`: add the `candidateGates`
       block (second edit to this file, after Commit 2's step-kind edit).
-- [ ] 3.13 `SKILL.md`: escalation/routing Decision Gates, no `REPORT_SHAPE`
+      Candidates are the tool's own four documented subcommand names,
+      proven not refused by `argparse`'s own "invalid choice" channel.
+- [x] 3.13 `SKILL.md`: escalation/routing Decision Gates, no `REPORT_SHAPE`
       row yet — `## Undecidable` enforcement is wired in Commit 6.
-- [ ] 3.14 Verify count: ~1040 → target ~1053 (+13). No report co-edit this
-      commit (confirms the 4-touch count above).
+- [x] 3.14 Verify count: 1043 → 1056 (+13, matching target exactly:
+      `EscalationPartitionTests` ×3, `EscalationHintTests` ×2,
+      `GateTokenTests` ×3, `ControlGateTests` ×5). No report co-edit this
+      commit (confirms the 4-touch count above); neither shipped report
+      was touched.
 
 ## Commit 4 — `reading-diff`, move 9 (target: ~1053 → ~1062, +9)
 

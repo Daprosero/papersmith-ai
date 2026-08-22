@@ -281,6 +281,13 @@ the same change.
 | A `walkthrough` step matches its own `expect` | Report it `passed`, whatever its exit code |
 | A gate is reached after a `walkthrough` stall | Report it `unreached`, under `## Unchecked`, never as clean |
 | A `walkthrough` step declares `"reset": true` | Empty the shared box before running that step |
+| A note's kind is absent from `ESCALATION_BUCKETS` | Fail the totality lock; every kind must classify into exactly one bucket |
+| An escalatable note's recipe declares `probe: "refusal"` | Rung `probe`; propose the noted candidates as `walkthrough` gates before any reader is invoked |
+| An escalatable note has no such recipe, and no readers are available | Rung `readers`; the surface stays in `## Undecidable`, honestly, never silently |
+| A recipe declares `candidateGates` | Generate an inverted control gate first, then one gate per candidate; never restate the refusal pattern by hand |
+| The control gate does not observe its own declared refusal | Every candidate becomes `unreached`; no candidate may be reported accepted against a channel not proven capable of refusing |
+| A `candidateGates.argv` names an unknown `{token}` | Exit `2`; only `{repoRoot}`, `{subject}`, `{box}`, and `{candidate}` interpolate, and `{candidate}` only inside this block |
+| A consequence kind is produced by an already-escalatable surface | Never escalate it a second time as an independent entry |
 
 ## Handoff
 

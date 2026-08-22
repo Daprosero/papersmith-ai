@@ -21,5 +21,10 @@
                 "--repo-root", "{repoRoot}"],
       "expect": {"exit": 0, "stdout": "\"unregistered\": \\[\\]"}
     }
-  ]
+  ],
+  "candidateGates": {
+    "refusal": "invalid choice",
+    "argv": ["python3", "{subject}/scripts/audit_cli.py", "{candidate}"],
+    "candidates": ["roster", "structure", "walkthrough", "check-report"]
+  }
 }

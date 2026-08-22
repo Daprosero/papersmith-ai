@@ -2889,7 +2889,7 @@ class WalkthroughSelfProbeTests(unittest.TestCase):
             f"{payload}")
 
 
-class WalkthroughStepKindTests(WalkthroughBoxMixin, unittest.TestCase):
+class WalkthroughStepRoleTests(WalkthroughBoxMixin, unittest.TestCase):
     """A step's `kind` defaults to `"gate"`; a `"setup"` step asserts nothing
     about the subject and must never be counted among gates that passed. A
     failing setup step names itself, not the subject, and exits `2` as
@@ -2901,7 +2901,7 @@ class WalkthroughStepKindTests(WalkthroughBoxMixin, unittest.TestCase):
         self.walkthrough_box(surface)
         subject = self.make_box("setup_passes_subject")
         steps = [
-            {"argv": ["python3", "-c", "pass"], "kind": "setup",
+            {"argv": ["python3", "-c", "pass"], "role": "setup",
              "name": "stand up a fixture"},
             {"argv": ["python3", "-c", "import sys; sys.exit(0)"],
              "expect": {"exit": 0}, "name": "a real gate"},
@@ -2911,9 +2911,9 @@ class WalkthroughStepKindTests(WalkthroughBoxMixin, unittest.TestCase):
         self.assertEqual(result.returncode, 0, payload)
         self.assertIsNone(payload["stall"], payload)
         self.assertEqual(payload["steps"][0]["outcome"], "setup-ok")
-        self.assertEqual(payload["steps"][0]["kind"], "setup")
+        self.assertEqual(payload["steps"][0]["role"], "setup")
         self.assertEqual(payload["steps"][1]["outcome"], "passed")
-        self.assertEqual(payload["steps"][1]["kind"], "gate")
+        self.assertEqual(payload["steps"][1]["role"], "gate")
         self.assertEqual(
             payload["gates"], {"declared": 1, "passed": 1},
             "the setup step must never be counted as a declared or passed "
@@ -2925,7 +2925,7 @@ class WalkthroughStepKindTests(WalkthroughBoxMixin, unittest.TestCase):
         subject = self.make_box("setup_fails_subject")
         steps = [
             {"argv": ["python3", "-c", "import sys; sys.exit(1)"],
-             "kind": "setup", "name": "a fixture that never stands up"},
+             "role": "setup", "name": "a fixture that never stands up"},
             {"argv": ["python3", "-c", "import sys; sys.exit(0)"],
              "expect": {"exit": 0}, "name": "never reached"},
         ]
@@ -2951,7 +2951,7 @@ class WalkthroughStepKindTests(WalkthroughBoxMixin, unittest.TestCase):
         subject = self.make_box("setup_with_expect_subject")
         steps = [
             {"argv": ["python3", "-c", "pass"], "expect": {"exit": 0},
-             "kind": "setup", "name": "asserts something anyway"},
+             "role": "setup", "name": "asserts something anyway"},
             {"argv": ["python3", "-c", "import sys; sys.exit(0)"],
              "expect": {"exit": 0}, "name": "a real gate, unreachable"},
         ]
@@ -2965,7 +2965,7 @@ class WalkthroughStepKindTests(WalkthroughBoxMixin, unittest.TestCase):
         self.walkthrough_box(surface)
         subject = self.make_box("only_setup_subject")
         steps = [
-            {"argv": ["python3", "-c", "pass"], "kind": "setup",
+            {"argv": ["python3", "-c", "pass"], "role": "setup",
              "name": "stand up a fixture"},
         ]
         spec = self.make_recipe(subject, surface, steps)
@@ -2973,7 +2973,7 @@ class WalkthroughStepKindTests(WalkthroughBoxMixin, unittest.TestCase):
         self.assertEqual(result.returncode, 2, payload)
         self.assertIn("no gates", payload["error"])
 
-    def test_kind_defaults_to_gate_when_omitted(self):
+    def test_role_defaults_to_gate_when_omitted(self):
         """Backward compatibility: a step with no `kind` behaves exactly as
         today -- it is a gate, counted in `gates.declared` and
         `gates.passed`.
@@ -2988,7 +2988,7 @@ class WalkthroughStepKindTests(WalkthroughBoxMixin, unittest.TestCase):
         spec = self.make_recipe(subject, surface, steps)
         result, payload = walkthrough_json(spec, subject, repo=FORGE)
         self.assertEqual(result.returncode, 0, payload)
-        self.assertEqual(payload["steps"][0]["kind"], "gate")
+        self.assertEqual(payload["steps"][0]["role"], "gate")
         self.assertEqual(payload["gates"], {"declared": 1, "passed": 1})
 
     def test_gates_counts_only_gate_kind_across_a_mixed_stall(self):
@@ -3000,7 +3000,7 @@ class WalkthroughStepKindTests(WalkthroughBoxMixin, unittest.TestCase):
         self.walkthrough_box(surface)
         subject = self.make_box("mixed_stall_subject")
         steps = [
-            {"argv": ["python3", "-c", "pass"], "kind": "setup",
+            {"argv": ["python3", "-c", "pass"], "role": "setup",
              "name": "stand up a fixture"},
             {"argv": ["python3", "-c", "import sys; sys.exit(1)"],
              "expect": {"exit": 0}, "name": "a real gate that stalls"},
@@ -3010,3 +3010,375 @@ class WalkthroughStepKindTests(WalkthroughBoxMixin, unittest.TestCase):
         self.assertEqual(result.returncode, 0, payload)
         self.assertIsNotNone(payload["stall"], payload)
         self.assertEqual(payload["gates"], {"declared": 1, "passed": 0})
+
+
+# ==========================================================================
+# `the-audit-that-escalates-what-it-cannot-decide`, Slice 3 -- every note
+# kind classified by a totality-checked partition, and an escalatable kind
+# routed to a zero-model `candidateGates` probe before any reader is
+# reached. `note()`/`stalled()` are the only ways an entry enters `notes[]`
+# or a walkthrough `stall`, so the totality lock can scan their own call
+# sites instead of trusting a second, hand-maintained roster.
+# ==========================================================================
+
+class EscalationPartitionTests(unittest.TestCase):
+    """`ESCALATION_BUCKETS` classifies every `"kind":` a note can carry into
+    exactly one of three buckets. A scan of literal `"kind":` strings would
+    miss `run_roster`'s own `note(kind, ...)` call at its doctrine-status
+    site, which passes a variable, not a constant -- and it would wrongly
+    catch `stalled()`'s dicts, whose `kind` is a verdict, never an
+    undecidability. So the totality lock (a) reads every kind `note()` can
+    actually emit -- constant strings passed to `note()`, plus every kind
+    named in `DOCTRINE_SIDE_NOTES` -- and holds each to exactly one bucket,
+    and (c) refuses any note-shaped dict literal -- one carrying both a
+    a `"kind"` key at all, since one word means one thing here --
+    anywhere outside those two constructors. That last clause is what makes
+    the totality total: a kind emitted by hand-building a note-shaped dict
+    cannot be classified, and the lock fires on the bypass itself rather
+    than trusting a second roster to have been updated.
+    """
+
+    def _module_tree(self):
+        return ast.parse(CLI.read_text(encoding="utf-8"))
+
+    def _function_def(self, tree, name):
+        return next(
+            (n for n in ast.walk(tree)
+             if isinstance(n, ast.FunctionDef) and n.name == name), None)
+
+    def _emitted_kinds(self, tree):
+        kinds = set()
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "note"):
+                arg = node.args[0] if node.args else None
+                for keyword in node.keywords:
+                    if keyword.arg == "kind":
+                        arg = keyword.value
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    kinds.add(arg.value)
+            if (isinstance(node, ast.Assign)
+                    and any(isinstance(t, ast.Name)
+                            and t.id == "DOCTRINE_SIDE_NOTES"
+                            for t in node.targets)
+                    and isinstance(node.value, ast.Dict)):
+                for value in node.value.values:
+                    if not isinstance(value, ast.Tuple) or not value.elts:
+                        continue
+                    first = value.elts[0]
+                    if isinstance(first, ast.Constant) and isinstance(
+                            first.value, str):
+                        kinds.add(first.value)
+        return kinds
+
+    def test_every_emitted_kind_is_classified_in_exactly_one_bucket(self):
+        cli = audit_cli_module()
+        tree = self._module_tree()
+        emitted = self._emitted_kinds(tree)
+        self.assertTrue(
+            emitted, "no kind was recovered from note() call sites at all; "
+            "this test would pass on an empty partition by accident")
+        buckets = cli.ESCALATION_BUCKETS
+        classified = {}
+        for bucket, kinds in buckets.items():
+            for kind in kinds:
+                classified.setdefault(kind, []).append(bucket)
+        unclassified = sorted(kind for kind in emitted
+                              if kind not in classified)
+        self.assertEqual(
+            unclassified, [],
+            f"ESCALATION_BUCKETS classifies no bucket for: {unclassified}")
+        multiply_classified = {kind: buckets for kind, buckets in
+                               classified.items() if len(buckets) > 1}
+        self.assertEqual(
+            multiply_classified, {},
+            f"a kind appears in more than one bucket: {multiply_classified}")
+
+    def test_no_dict_literal_carries_a_kind_outside_note_and_stalled(self):
+        tree = self._module_tree()
+        note_def = self._function_def(tree, "note")
+        stalled_def = self._function_def(tree, "stalled")
+        self.assertIsNotNone(note_def, "audit_cli.py defines no note()")
+        self.assertIsNotNone(stalled_def, "audit_cli.py defines no stalled()")
+        exempt = set(ast.walk(note_def)) | set(ast.walk(stalled_def))
+        offenders = []
+        for node in ast.walk(tree):
+            if node in exempt or not isinstance(node, ast.Dict):
+                continue
+            keys = {key.value for key in node.keys
+                   if isinstance(key, ast.Constant)
+                   and isinstance(key.value, str)}
+            if "kind" in keys:
+                offenders.append(node.lineno)
+        self.assertEqual(
+            offenders, [],
+            f"a dict literal carrying a 'kind' key exists outside "
+            f"note()/stalled() at line(s) {offenders}; one word means "
+            f"one thing here, and every note enters through note()")
+
+    def test_consequence_kind_not_independently_escalated(self):
+        """Spec scenario: a `comparison-not-run` note produced solely
+        because its originating surface was already escalatable must never
+        appear in the escalatable list as a second, independent entry.
+        """
+        _, payload = roster_json(PD_SPEC, PD)
+        self.assertIn(
+            "comparison-not-run", [n["kind"] for n in payload["notes"]],
+            "the fixture must actually produce a comparison-not-run note "
+            "for this test to say anything")
+        escalatable_kinds = [n["kind"] for n in payload["escalatable"]]
+        self.assertNotIn(
+            "comparison-not-run", escalatable_kinds,
+            "comparison-not-run is a consequence, never independently "
+            f"escalated: {escalatable_kinds}")
+        self.assertTrue(
+            escalatable_kinds,
+            "the same fixture's no-closed-roster notes must still be "
+            "escalatable, or this test cannot distinguish 'excluded "
+            "correctly' from 'the list is just empty'")
+
+
+class EscalationHintTests(unittest.TestCase):
+    """Every escalatable note gains an `escalation` hint naming the
+    zero-model probe able to decide it -- `rung: "probe"` only when the
+    emitting recipe already declares `probe: "refusal"`, `"readers"`
+    otherwise.
+    """
+
+    def test_probe_rung_selected_when_recipe_declares_refusal_probe(self):
+        _, payload = roster_json(PD_SPEC, PD)
+        self.assertTrue(payload["escalatable"], payload)
+        for entry in payload["escalatable"]:
+            with self.subTest(kind=entry["kind"]):
+                self.assertEqual(entry["escalation"]["rung"], "probe")
+                self.assertEqual(entry["escalation"]["needs"], "candidates")
+                self.assertIsNotNone(entry["escalation"]["refusal"])
+
+    def test_readers_rung_selected_when_recipe_declares_no_refusal_probe(self):
+        cli = audit_cli_module()
+        box = BOXES / "_skill_audit_escalation_readers"
+        try:
+            box.mkdir(parents=True, exist_ok=True)
+            (box / "PROSE.md").write_text(
+                "The set is ALPHA and BETA, stated in prose.\n",
+                encoding="utf-8")
+            spec = box / "recipe.json"
+            spec.write_text(json.dumps({
+                "surface": "s", "probe": "none",
+                "doctrineSites": [{"path": "PROSE.md"}]}), encoding="utf-8")
+            _, payload = roster_json(spec, box)
+            self.assertTrue(payload["escalatable"], payload)
+            for entry in payload["escalatable"]:
+                with self.subTest(kind=entry["kind"]):
+                    self.assertEqual(entry["escalation"]["rung"], "readers")
+                    self.assertIsNone(entry["escalation"]["needs"])
+                    self.assertIsNone(entry["escalation"]["refusal"])
+        finally:
+            for path in sorted(box.rglob("*"), reverse=True):
+                path.unlink()
+            box.rmdir()
+
+
+class GateTokenTests(unittest.TestCase):
+    """`{candidate}` is a fourth token, valid only inside
+    `candidateGates.argv`; `STRUCTURE_TOKENS` is untouched.
+    """
+
+    def test_gate_tokens_is_structure_tokens_plus_candidate(self):
+        cli = audit_cli_module()
+        self.assertEqual(
+            cli.GATE_TOKENS, cli.STRUCTURE_TOKENS | {"candidate"})
+
+    def test_the_four_gate_tokens_interpolate(self):
+        cli = audit_cli_module()
+        result = cli.interpolate_gate_token(
+            "{repoRoot}-{subject}-{box}-{candidate}",
+            Path("/r"), Path("/s"), Path("/b"), "--alpha")
+        self.assertEqual(result, "/r-/s-/b---alpha")
+
+    def test_an_unknown_gate_token_is_unprobeable(self):
+        cli = audit_cli_module()
+        with self.assertRaises(cli.Unprobeable):
+            cli.interpolate_gate_token(
+                "{mystery}", Path("/r"), Path("/s"), Path("/b"), "--alpha")
+
+
+class ControlGateTests(WalkthroughBoxMixin, unittest.TestCase):
+    """`candidateGates` expands one declared `refusal` into an inverted
+    control gate, first, then one gate per candidate. A live channel proves
+    every candidate; a dead channel stalls at the control's own index and
+    leaves every candidate `unreached` -- no candidate is ever reported
+    accepted against a channel not proven capable of refusing.
+    """
+
+    def _flag_cli(self, box, name, refuses):
+        """A subject that writes a refusal to stderr for an unknown flag,
+        or never refuses at all, per `refuses`.
+        """
+        body = (
+            "import sys\n"
+            "known = {'--alpha', '--beta'}\n"
+            "flag = sys.argv[1]\n")
+        if refuses:
+            body += (
+                "if flag not in known:\n"
+                "    sys.stderr.write('unrecognized arguments: ' + flag + "
+                "'\\n')\n"
+                "    sys.exit(2)\n")
+        body += "print('accepted ' + flag)\n"
+        self.write(box, name, body)
+
+    def test_live_refusal_channel_control_passes(self):
+        surface = "control_live"
+        self.walkthrough_box(surface)
+        subject = self.make_box("control_live_subject")
+        self._flag_cli(subject, "flagcli.py", refuses=True)
+        spec = subject / "walkthrough.json"
+        spec.write_text(json.dumps({
+            "surface": surface,
+            "candidateGates": {
+                "refusal": "unrecognized arguments",
+                "argv": ["python3", "{subject}/flagcli.py", "{candidate}"],
+                "candidates": ["--alpha", "--beta"],
+            },
+        }, indent=2), encoding="utf-8")
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertIsNone(payload["stall"], payload)
+        outcomes = [step["outcome"] for step in payload["steps"]]
+        self.assertEqual(
+            outcomes, ["passed", "passed", "passed"],
+            "the control and both candidates must all pass on a live "
+            "refusal channel")
+
+    def test_dead_refusal_channel_stalls_at_control_candidates_unreached(self):
+        surface = "control_dead"
+        self.walkthrough_box(surface)
+        subject = self.make_box("control_dead_subject")
+        self._flag_cli(subject, "silentcli.py", refuses=False)
+        spec = subject / "walkthrough.json"
+        spec.write_text(json.dumps({
+            "surface": surface,
+            "candidateGates": {
+                "refusal": "unrecognized arguments",
+                "argv": ["python3", "{subject}/silentcli.py", "{candidate}"],
+                "candidates": ["--alpha", "--beta"],
+            },
+        }, indent=2), encoding="utf-8")
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            payload["stall"]["index"], 0,
+            "a program that never refuses stalls at the control's own "
+            "index, not at a candidate")
+        self.assertEqual(
+            payload["unreached"], [1, 2],
+            "every candidate must go unreached once the control itself "
+            "could not be proven live")
+        accepted = [step for step in payload["steps"][1:]
+                   if step["outcome"] == "passed"]
+        self.assertEqual(
+            accepted, [],
+            "a program that silently ignores unknown flags must never "
+            "have a candidate reported as accepted")
+
+    def test_candidategates_unknown_token_exits_2(self):
+        surface = "unknown_token"
+        self.walkthrough_box(surface)
+        subject = self.make_box("unknown_token_subject")
+        spec = subject / "walkthrough.json"
+        spec.write_text(json.dumps({
+            "surface": surface,
+            "candidateGates": {
+                "refusal": "unrecognized arguments",
+                "argv": ["python3", "{mystery}/x.py", "{candidate}"],
+                "candidates": ["--alpha"],
+            },
+        }, indent=2), encoding="utf-8")
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("unknown token", payload["error"])
+
+    def test_candidate_with_shell_metacharacter_reaches_argv_literally(self):
+        surface = "candidate_metachar"
+        self.walkthrough_box(surface)
+        subject = self.make_box("candidate_metachar_subject")
+        self.write(subject, "echo_argv.py",
+                  "import sys\n"
+                  "arg = sys.argv[1]\n"
+                  "if arg == '__AUDIT_CONTROL_NONCE__':\n"
+                  "    sys.stderr.write('REFUSED: nonce not recognized\\n')\n"
+                  "print('ARGV:' + arg)\n")
+        marker = subject / "INJECTED"
+        spec = subject / "walkthrough.json"
+        spec.write_text(json.dumps({
+            "surface": surface,
+            "candidateGates": {
+                "refusal": "REFUSED: nonce not recognized",
+                "argv": ["python3", "{subject}/echo_argv.py", "{candidate}"],
+                "candidates": ["; touch INJECTED #"],
+            },
+        }, indent=2), encoding="utf-8")
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["steps"][0]["outcome"], "passed",
+                         "the control must pass so the candidate actually "
+                         f"runs: {payload}")
+        self.assertFalse(
+            marker.exists(),
+            "a shell metacharacter in a candidate must never reach a "
+            "shell; it must arrive as one literal argv element")
+
+    def test_documented_flag_surface_rerouted_not_read(self):
+        """MOTIVATING CASE: a `no-closed-roster` note over a prose-stated
+        flag list does not become a reading task. Each flag it names is
+        driven as a real `walkthrough` gate instead, before any reader is
+        ever invoked -- the half-caught case from the proposal, closed end
+        to end.
+        """
+        box = self.make_box("documented_flags")
+        self._flag_cli(box, "flagcli.py", refuses=True)
+        self.write(box, "PROSE.md",
+                  "The flags this tool accepts are `--alpha` and `--beta`, "
+                  "stated here in prose rather than in a table.\n")
+        roster_spec = self.recipe(
+            box, surface="flags", probe="refusal",
+            argv=["python3", "flagcli.py", "__AUDIT_NONCE__"], cwd=".",
+            stream="stderr", exit=2,
+            extract=r"unrecognized arguments: (?P<roster>.+)$", split=", ",
+            doctrineSites=[{"path": "PROSE.md"}])
+        result, payload = roster_json(roster_spec, box)
+        self.assertEqual(result.returncode, 0, payload)
+        no_closed = [n for n in payload["notes"]
+                    if n["kind"] == "no-closed-roster"]
+        self.assertTrue(no_closed, "the prose site must report no-closed-roster")
+        escalatable = [n for n in payload["escalatable"]
+                      if n["kind"] == "no-closed-roster"]
+        self.assertTrue(escalatable, payload["escalatable"])
+        self.assertEqual(escalatable[0]["escalation"]["rung"], "probe")
+
+        # The model never reads PROSE.md for a verdict; it proposes the two
+        # flags it names as candidates, and the tool decides by driving
+        # them as real walkthrough gates -- no reader is ever invoked.
+        proposed_candidates = ["--alpha", "--beta"]
+        surface = "documented_flags_walk"
+        self.walkthrough_box(surface)
+        spec = box / "walkthrough.json"
+        spec.write_text(json.dumps({
+            "surface": surface,
+            "candidateGates": {
+                "refusal": "unrecognized arguments",
+                "argv": ["python3", "{subject}/flagcli.py", "{candidate}"],
+                "candidates": proposed_candidates,
+            },
+        }, indent=2), encoding="utf-8")
+        walk_result, walk_payload = walkthrough_json(spec, box, repo=FORGE)
+        self.assertEqual(walk_result.returncode, 0, walk_payload)
+        self.assertIsNone(walk_payload["stall"], walk_payload)
+        self.assertEqual(
+            len(walk_payload["steps"]), 3,
+            "the control gate plus one gate per documented flag")
+        self.assertTrue(
+            all(step["outcome"] == "passed" for step in walk_payload["steps"]),
+            f"every documented flag must be driven as a real gate: "
+            f"{walk_payload['steps']}")
