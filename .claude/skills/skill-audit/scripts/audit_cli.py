@@ -1444,6 +1444,7 @@ REPORT_SHAPE = {
     "changed-line-forecast": "## Changed-line forecast",
     "clean-section": "## Clean, stated as results",
     "disputed-severity": "## Disputed severity",
+    "drives": "## Drives",
     "evidence-marker": "- Evidence:",
     "falsifier": "## Falsifier",
     "found-by": "- Found by:",
@@ -1451,9 +1452,21 @@ REPORT_SHAPE = {
     "move-number": "- Move:",
     "move-outcomes": "## Move outcomes",
     "ranked-findings": "## Ranked findings",
+    "reading-diff": "## Reading diff",
     "repair-units": "## Repair units",
+    "stage-outcomes": "## Stage outcomes",
     "unchecked-section": "## Unchecked",
+    "undecidable": "## Undecidable",
 }
+
+#: Every stage's own not-run value for the `REPORT_SHAPE` field it demands,
+#: keyed by the same `REPORT_SHAPE` key the stages table names in its
+#: `Demands` cell. Stage 4's row names `found-by`; while that stage is
+#: `skipped`, `- Found by: not-compared` is the honest default every other
+#: finding already carries, and only a `ran` stage-4 row tightens what is
+#: accepted, per the marker's own shape rather than a second hand-written
+#: rule.
+FIELD_NOT_RUN = {"found-by": "not-compared"}
 
 #: The header of the moves table this skill's own `SKILL.md` carries. Read
 #: with the same `markdown_table_rows` the documented side of every other
@@ -1532,6 +1545,134 @@ def move_outcome_rows(lines):
         if match:
             rows[match.group(1)] = match.group(2)
     return rows
+
+
+#: The header of the stages table this skill's own `SKILL.md` carries. Read
+#: the same way `MOVES_TABLE_HEADER` is, so `## Stage outcomes`'s required
+#: roster -- and which items are conditional on it -- comes from parsing
+#: that table rather than from a list held here. Unlike the moves table
+#: there is no `textual` escape valve: every row must carry a leading digit
+#: and a `REPORT_SHAPE` key, or the table is `Unprobeable`.
+STAGES_TABLE_HEADER = "| Stage | Models | Demands |"
+
+#: `## Stage outcomes` rows: `- Stage: <id>: ran` or
+#: `- Stage: <id>: skipped: <reason>`. Mirrors `MOVE_OUTCOME_ROW` exactly.
+STAGE_OUTCOME_ROW = re.compile(
+    r"^-\s*Stage:\s*(\d+)\s*:\s*(ran|skipped:\s*.*)$")
+
+
+def stage_roster(text):
+    """The `(stage id, REPORT_SHAPE key)` roster a report's stage table
+    demands, derived from one stages table rather than listed by hand --
+    mirrors `move_roster`, except every row must carry a leading digit and
+    a known `REPORT_SHAPE` key: there is no `textual` escape valve here,
+    and an unknown key would let a stages table quietly invent an
+    enforcement the tool never checks.
+    """
+    tables = markdown_table_rows(text, STAGES_TABLE_HEADER)
+    if len(tables) != 1:
+        raise Unprobeable(
+            f"expected exactly one {STAGES_TABLE_HEADER!r} table to derive "
+            f"the required stage-outcome roster from; found {len(tables)}")
+    roster = []
+    for row in tables[0]:
+        match = re.match(r"^(\d+)\b", row[0]) if row else None
+        if not match:
+            raise Unprobeable(
+                f"a stages-table row carries no leading digit: {row!r}")
+        if len(row) < 3:
+            raise Unprobeable(
+                f"a stages-table row is not three cells: {row!r}")
+        key = row[2].strip("`")
+        if key not in REPORT_SHAPE:
+            raise Unprobeable(
+                f"stage {match.group(1)} names {key!r} in its Demands "
+                "cell, which is not a REPORT_SHAPE key")
+        roster.append((match.group(1), key))
+    return roster
+
+
+def resolve_stages_doctrine():
+    """The path the stages table is always read from.
+
+    Unlike `resolve_moves_doctrine`, there is no override flag: every
+    fixture that exercises `--moves` to prove the move-outcome roster is
+    derived rather than hardcoded carries no stages table of its own, and
+    coupling stage derivation to that same override would make those
+    fixtures `Unprobeable` for a reason unrelated to what they test. The
+    stages table always comes from this skill's own `SKILL.md`.
+    """
+    return resolve_moves_doctrine(None)
+
+
+def stage_outcome_rows(lines):
+    """Every `- Stage: <id>: ran|skipped: <reason>` row under
+    `## Stage outcomes`, as `{id: outcome}` -- mirrors `move_outcome_rows`
+    exactly, reading only inside that section.
+    """
+    rows = {}
+    in_section = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "## Stage outcomes":
+            in_section = True
+            continue
+        if in_section and stripped.startswith("## "):
+            break
+        if not in_section:
+            continue
+        match = STAGE_OUTCOME_ROW.match(stripped)
+        if match:
+            rows[match.group(1)] = match.group(2)
+    return rows
+
+
+#: `## Undecidable` entry field lines. Each entry starts with `- Kind:`;
+#: `- Rung:` and, only when the rung is `probe`, `- Probe: <move>` follow
+#: it, up to the next `- Kind:` or the end of the section.
+UNDECIDABLE_KIND_LINE = re.compile(r"^-\s*Kind:\s*(.+?)\s*$")
+UNDECIDABLE_RUNG_LINE = re.compile(r"^-\s*Rung:\s*(probe|readers)\s*$")
+UNDECIDABLE_PROBE_LINE = re.compile(r"^-\s*Probe:\s*(\d+)\s*$")
+
+
+def undecidable_entries(lines):
+    """Every `## Undecidable` entry, each `{surfaceKind, rung, probe}` -- `probe`
+    is `None` unless the entry's own rung is `probe`. Read only inside
+    that section, exactly like `frozen_section_fields` and
+    `move_outcome_rows`, so prose elsewhere in the report is never
+    mistaken for a recorded entry.
+    """
+    entries = []
+    in_section = False
+    current = None
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "## Undecidable":
+            in_section = True
+            continue
+        if in_section and stripped.startswith("## "):
+            break
+        if not in_section:
+            continue
+        kind_match = UNDECIDABLE_KIND_LINE.match(stripped)
+        if kind_match:
+            # Not `"kind"`: that key is reserved to `note()`'s reason and
+            # `stalled()`'s verdict, and `EscalationPartitionTests` refuses
+            # any other dict literal that carries it.
+            current = {"surfaceKind": kind_match.group(1),
+                      "rung": None, "probe": None}
+            entries.append(current)
+            continue
+        if current is None:
+            continue
+        rung_match = UNDECIDABLE_RUNG_LINE.match(stripped)
+        if rung_match:
+            current["rung"] = rung_match.group(1)
+            continue
+        probe_match = UNDECIDABLE_PROBE_LINE.match(stripped)
+        if probe_match:
+            current["probe"] = probe_match.group(1)
+    return entries
 
 
 ADJUDICATIONS = ("doctrine wrong", "artefact wrong", "not adjudicable")
@@ -1694,7 +1835,26 @@ def run_check_report(args):
     def fail(item, detail, where):
         violations.append({"detail": detail, "item": item, "where": where})
 
+    # Both doctrine tables are resolved up front: the moves table for
+    # `## Move outcomes` below, and the stages table for which
+    # `REPORT_SHAPE` items are conditional at all. Unprobeable propagates
+    # from either: a missing or unparseable table is an inability to look,
+    # not a pass.
+    moves_path = resolve_moves_doctrine(getattr(args, "moves", None))
+    required_moves = move_roster(moves_path.read_text(encoding="utf-8"))
+    required_stages = stage_roster(
+        resolve_stages_doctrine().read_text(encoding="utf-8"))
+
+    # An item is conditional exactly when the stages table names it in a
+    # `Demands` cell -- derived from `required_stages` rather than a second
+    # hand-written set, so a stage added to the table without its own
+    # `REPORT_SHAPE` key changes nothing here and a stage naming an
+    # existing key is exempted from the unconditional sweep automatically.
+    conditional_items = {key for _, key in required_stages}
+
     for item, marker in REPORT_SHAPE.items():
+        if item in conditional_items:
+            continue
         if marker.startswith("## ") and marker not in lines:
             fail(item, f"the report carries no {marker!r} section",
                  f"{path}:1")
@@ -1767,6 +1927,22 @@ def run_check_report(args):
                  f"disagrees with '## Frozen''s declared digest "
                  f"{frozen['digest']}", where)
 
+        # Stage 3's asymmetry, enforced structurally: the skill-less drive
+        # never ran the skill's own machinery, so a finding attributed to
+        # it can never make a claim with the subject itself as its target
+        # -- that pairing is a category error regardless of whether stage
+        # 3 is declared ran or skipped in this report.
+        drive = re.search(r"^- Drive:\s*(.+?)\s*$", body, re.MULTILINE)
+        target = re.search(r"^- Target:\s*(.+?)\s*$", body, re.MULTILINE)
+        if (drive and target and drive.group(1) == "skill-less"
+                and target.group(1) == "subject"):
+            fail("drives",
+                 f"finding {finding['label']} attributes itself to the "
+                 "skill-less drive while naming the subject as its "
+                 "target; that drive never ran the skill's own machinery "
+                 "and cannot make a claim with the subject as its target",
+                 where)
+
     if findings and not confirmed:
         head = [line for line in lines[:6] if line.strip()]
         if not any(NO_CONFIRMED_DECLARATION in line for line in head):
@@ -1795,10 +1971,7 @@ def run_check_report(args):
 
     # Every move required by the moves table this run is pointed at -- this
     # skill's own SKILL.md by default -- needs its own row in `## Move
-    # outcomes`, `ran` or `skipped` with a reason. Unprobeable propagates: a
-    # missing or unparseable moves table is an inability to look, not a pass.
-    moves_path = resolve_moves_doctrine(getattr(args, "moves", None))
-    required_moves = move_roster(moves_path.read_text(encoding="utf-8"))
+    # outcomes`, `ran` or `skipped` with a reason.
     outcomes = move_outcome_rows(lines)
     for move in required_moves:
         outcome = outcomes.get(move)
@@ -1811,6 +1984,76 @@ def run_check_report(args):
             fail("move-outcomes",
                  f"move {move}'s row is `skipped` with an empty reason; a "
                  "move attempted zero times must say why", f"{path}:1")
+
+    # Every stage the stages table names needs its own row in `## Stage
+    # outcomes`, `ran` or `skipped` with a reason -- mirrors the move-
+    # outcomes check exactly. Only a `ran` row then demands the artifact
+    # its own `Demands` cell names: a `## ` marker means a required
+    # section, a `- ` marker means the field's declared not-run value is
+    # no longer accepted anywhere in the report.
+    stage_outcomes = stage_outcome_rows(lines)
+    for stage_id, key in required_stages:
+        outcome = stage_outcomes.get(stage_id)
+        if outcome is None:
+            fail("stage-outcomes",
+                 f"stage {stage_id} has no row in '## Stage outcomes'; "
+                 "every stage the stages table names must be `ran` or "
+                 "`skipped: <reason>`, never absent", f"{path}:1")
+            continue
+        if outcome.startswith("skipped:") and not outcome.split(":", 1)[1].strip():
+            fail("stage-outcomes",
+                 f"stage {stage_id}'s row is `skipped` with an empty "
+                 "reason; a stage attempted zero times must say why",
+                 f"{path}:1")
+            continue
+        if outcome != "ran":
+            continue
+        marker = REPORT_SHAPE[key]
+        if marker.startswith("## "):
+            if marker not in lines:
+                fail(key,
+                     f"stage {stage_id} is declared ran, so the report "
+                     f"must carry {marker!r}", f"{path}:1")
+        else:
+            not_run_value = FIELD_NOT_RUN.get(key)
+            if not_run_value:
+                for finding in findings:
+                    body = "\n".join(finding["text"])
+                    field = re.search(r"^- Found by:\s*(.+?)\s*$", body,
+                                      re.MULTILINE)
+                    if field and field.group(1) == not_run_value:
+                        fail(key,
+                             f"stage {stage_id} is declared ran, so "
+                             f"finding {finding['label']}'s "
+                             f"'- Found by: {not_run_value}' is no longer "
+                             "accepted",
+                             f"{path}:{finding['line']} {finding['label']}")
+
+    # The one cross-section rule: an `## Undecidable` entry claiming
+    # `- Rung: probe` must name a move whose own `## Move outcomes` row is
+    # `ran`. Declaring a probe was the answer and then skipping the move it
+    # names is refused, structurally.
+    for entry in undecidable_entries(lines):
+        # The partition is total over what this tool emits, held by
+        # `EscalationPartitionTests`. A report is written by hand, so the same
+        # closed set has to be enforced on the way in as well; otherwise a
+        # surface can be declared undecidable under a reason that exists
+        # nowhere, and `## Undecidable` stops meaning what the tool means.
+        if entry["surfaceKind"] not in ESCALATION_BUCKETS["escalatable"]:
+            fail("undecidable",
+                 f"an '## Undecidable' entry names kind "
+                 f"{entry['surfaceKind']!r}, which is not one this tool can "
+                 "emit as escalatable; only a surface the tool could not "
+                 "decide belongs here", f"{path}:1")
+        if entry["rung"] != "probe":
+            continue
+        probe_move = entry["probe"]
+        if not probe_move or outcomes.get(probe_move) != "ran":
+            fail("undecidable",
+                 "an '## Undecidable' entry claims rung `probe` naming "
+                 f"move {probe_move!r}, but that move's '## Move outcomes' "
+                 "row is not `ran`; a probe cannot be the answer for a "
+                 "move that never ran", f"{path}:1")
 
     # `## Repair units`: every `### F<n>.` block belongs to exactly one unit,
     # and each unit's own changed-line forecast is an integer.

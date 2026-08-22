@@ -328,63 +328,115 @@ commit in this list.
       estimate, and the rise here equals the number of tests actually added
       to this run, confirmed by `python3 -m unittest discover -s tests`.
 
-## Commit 6 — Stage outcomes, per-stage demand, stages table (target: ~1067 → ~1076, +9)
+## Commit 6 — Stage outcomes, per-stage demand, stages table (target: ~1067 → ~1076, +9; actual: 1071 → 1083, +12)
 
-- [ ] 6.1 Add the stages table to `SKILL.md`: `| Stage | Models | Demands |`,
+- [x] 6.1 Add the stages table to `SKILL.md`: `| Stage | Models | Demands |`,
       five rows, `Demands` cells holding `REPORT_SHAPE` keys (`frozen`,
       `undecidable`, `reading-diff`, `drives`, `found-by`) — no cardinal in
       the heading (`DoctrineNumeralTests.test_no_heading_carries_a_cardinal_at_all`).
-      Write this wording check BEFORE the headings, per the design's own
-      warning.
-- [ ] 6.2 Add `stage_roster(text)` mirroring `move_roster`: column 0's
+      Confirmed both `DoctrineNumeralTests` methods pass against the new
+      "## The stages" heading and its five-row table.
+- [x] 6.2 Add `stage_roster(text)` mirroring `move_roster`: column 0's
       leading digit is the id, column 2 is the key; no `textual` escape
-      valve — malformed rows are `Unprobeable`.
-- [ ] 6.3 `StageOutcomesTests.test_ran_stage_without_artifact_is_rejected`
+      valve — malformed rows are `Unprobeable`. Also added
+      `resolve_stages_doctrine()` (always this skill's own `SKILL.md`, no
+      override flag — unlike `--moves`, no existing fixture needs the
+      stages table swapped out, and coupling it to `--moves` would have
+      broken `MoveOutcomesTests.test_the_required_roster_is_derived_from_the_moves_table_not_a_list`,
+      whose fixture carries no stages table at all).
+- [x] 6.3 `StageOutcomesTests.test_ran_stage_without_artifact_is_rejected`
       (spec scenario: stage 2 `ran`, no `## Reading diff` → rejected, names
       stage 2).
-- [ ] 6.4 [LOCK] `test_zero_model_audit_is_valid` (spec scenario: stages
-      0-1 `ran`, 2-4 `skipped: <reason>` → accepted). Invert by declaring
-      stage 2 `ran` in that same fixture without its artifact and confirm
-      rejection; restore.
-- [ ] 6.5 Add `FIELD_NOT_RUN = {"found-by": "not-compared"}`; stage 4 `ran`
-      tightens accepted `- Found by:` values.
-- [ ] 6.6 `test_stage_3_asymmetry_rejects_skill_less_finding_against_subject`
+- [x] 6.4 [LOCK] `test_zero_model_audit_is_valid` (spec scenario: stages
+      0-1 `ran`, 2-4 `skipped: <reason>` → accepted; `VALID_REPORT` is
+      already exactly this shape). Inverted by removing the `if outcome !=
+      "ran": continue` guard entirely, so a `skipped` row demanded its
+      artifact anyway; confirmed RED (`stage 3 is declared ran, so the
+      report must carry '## Drives'` and the same for stage 2's
+      `'## Reading diff'`, both falsely fired against `skipped` rows);
+      restored by inverse patch; confirmed whole-file `sha256` match
+      (`54f18b84...bad37`, before and after).
+- [x] 6.5 Add `FIELD_NOT_RUN = {"found-by": "not-compared"}`; stage 4 `ran`
+      tightens accepted `- Found by:` values (enforced per-finding inside
+      the stage-outcomes loop when the demanded key's marker is a `- `
+      field rather than a `## ` section).
+- [x] 6.6 `test_stage_3_asymmetry_rejects_skill_less_finding_against_subject`
       — a finding attributed to the skill-less drive naming the subject as
-      its target is a category error, rejected structurally.
-- [ ] 6.7 [LOCK] `test_undecidable_probe_rung_requires_its_move_to_have_run`
+      its target is a category error, rejected structurally. Implemented
+      via two new optional per-finding fields, `- Drive:` and `- Target:`,
+      checked unconditionally (the pairing `skill-less` + `subject` is a
+      category error regardless of stage 3's own declared outcome). Paired
+      with `test_a_skill_less_finding_targeting_its_own_box_is_accepted`
+      proving `- Target: box` is fine.
+- [x] 6.7 [LOCK] `test_undecidable_probe_rung_requires_its_move_to_have_run`
       — cross-section rule: `## Undecidable`'s `- Probe: <move>` demands
-      that move's `## Move outcomes` row be `ran`. Invert by marking that
-      move `skipped` while `- Probe:` still names it; confirm rejection;
-      restore.
-- [ ] 6.8 Add the "presence, never independence" sentence verbatim to the
+      that move's `## Move outcomes` row be `ran`. Implemented via
+      `undecidable_entries(lines)`, parsed the same way
+      `frozen_section_fields`/`disputed_severity_positions` are, scoped to
+      inside `## Undecidable` only. The entry's own kind field is stored
+      under the key `surfaceKind`, never `"kind"` — `EscalationPartitionTests`
+      refuses any dict literal outside `note()`/`stalled()` that carries a
+      `"kind"` key, and this entry dict is neither. Inverted by flipping the
+      guard from `outcomes.get(probe_move) != "ran"` to `== "ran"`, so the
+      cross-section rule ran backwards; confirmed RED (`0 != 1: violations:
+      []` — the planted bad case, `- Rung: probe` naming a `skipped` move,
+      was falsely accepted); restored by inverse patch; confirmed whole-file
+      `sha256` match (`54f18b84...bad37`, before and after).
+- [x] 6.8 Add the "presence, never independence" sentence verbatim to the
       stages table's stage 2-4 row (spec's final scenario): isolation,
       blindness, no-contact are unfalsifiable from a `subprocess.run()`-only
       tool, and the row carries no lock, exactly as the moves table's
-      textual row states.
-- [ ] 6.9 State the five-model-run count in `SKILL.md` before any stage is
-      launched (stages 2-4 cost 2+2+1 models).
-- [ ] 6.10 Co-edit both shipped reports with `## Stage outcomes` (stages 0-1
+      textual row states. Landed as prose directly beneath the stages
+      table rather than inside a table cell (a table row spanning "2-4"
+      does not exist in this design's five-row layout; the statement
+      applies to all three by name).
+- [x] 6.9 State the five-model-run count in `SKILL.md` before any stage is
+      launched (stages 2-4 cost 2+2+1 models) — the paragraph immediately
+      under the stages table.
+- [x] 6.10 Co-edit both shipped reports with `## Stage outcomes` (stages 0-1
       `ran`, 2-4 `skipped: <reason>`) and a (possibly empty) `## Undecidable`
-      section — touch 4 of 4 for each file. Run `FirstDamageReportTests`
-      and `ReportSchemaSelfDescriptionTests`.
-- [ ] 6.11 Run the auditor against itself with the new subcommands
-      (`roster`/`structure` over `.claude/skills/skill-audit/`); confirm its
-      own subcommand roster still shows `unregistered` and `phantom` empty
-      (success-criterion end-to-end proof).
-- [ ] 6.12 Verify count: ~1067 → target ~1076 (+9); total rise from baseline
-      1026 is +50, matched against tests actually added, not suite-green alone.
+      section — touch 4 of 4 for each file. Also co-edited the three
+      embedded report fixtures in the test file (`VALID_REPORT`,
+      `CheckReportSubjectTests._report`, `FrozenDigestTests`'s mismatch
+      fixture) with the same two sections, since all three are validated
+      against the real, now-stage-bearing `SKILL.md` and would otherwise
+      reject on a missing stage-0/1 row. Ran `FirstDamageReportTests` and
+      `ReportSchemaSelfDescriptionTests`: pass.
+- [x] 6.11 Ran the auditor against itself with the shipped subcommands
+      (`roster`/`structure` over `.claude/skills/skill-audit/`); confirmed
+      `unregistered: []` and `phantom: []` in both — no unregistered drift,
+      no phantom row. Full output in the final-gate section below.
+- [x] 6.12 Verify count: 1071 → target ~1076 (+9); actual 1071 → 1083
+      (+12: `StageOutcomesTests` × 12 —
+      `test_a_complete_roster_of_stage_outcomes_is_accepted`,
+      `test_a_stage_missing_its_row_is_named`,
+      `test_a_skipped_stage_row_with_an_empty_reason_is_rejected`,
+      `test_ran_stage_without_artifact_is_rejected`,
+      `test_zero_model_audit_is_valid`,
+      `test_stage_3_asymmetry_rejects_skill_less_finding_against_subject`,
+      `test_a_skill_less_finding_targeting_its_own_box_is_accepted`,
+      `test_undecidable_probe_rung_requires_its_move_to_have_run`,
+      `test_stage_roster_reads_a_synthetic_table_never_a_hardcoded_list`,
+      `test_a_stages_row_with_no_leading_digit_is_unprobeable`,
+      `test_a_stages_row_naming_an_unknown_report_shape_key_is_unprobeable`,
+      `test_the_real_stages_table_derives_stages_0_through_4`). Total rise
+      from baseline 1026 is +57, matched against tests actually added, not
+      suite-green alone.
 
 ## Final gate (after Commit 6, before archiving)
 
-- [ ] 7.1 Run `python3 -m unittest discover -s tests`; confirm exactly
-      1076 tests (or the true count of everything added), OK, no duplicate
-      class/`test_` names (`SuiteIntegrityTests`).
-- [ ] 7.2 Confirm content manifest: no file under `implementations/`, no
-      other skill, and not `openspec/config.yaml` was modified.
-- [ ] 7.3 Confirm `NothingWasRepairedTests` passes with no exemption
-      widening; if it needed one, name the function in
-      `box_lifecycle_exemption` and add a behavioural lock driving the real
-      subcommand and comparing subject bytes — do not widen silently.
-- [ ] 7.4 Run `VocabularyTests` once more over the full skill tree (no
-      forbidden vocabulary from either the Domain_Adaptation guard or the
-      severity guard).
+- [x] 7.1 Run `python3 -m unittest discover -s tests`; confirmed exactly
+      1083 tests, OK, no duplicate class/`test_` names (`SuiteIntegrityTests`
+      passes).
+- [x] 7.2 Confirmed content manifest: no file under `implementations/`
+      survives (the box-mixin cleanup already proves this per-test), no
+      other skill was touched, and `openspec/config.yaml` was not modified.
+- [x] 7.3 Confirmed `NothingWasRepairedTests` passes with no exemption
+      widening — `box_lifecycle_exemption` is unchanged (`run_structure`,
+      `run_walkthrough`, `erase_box`), because nothing added in this commit
+      writes to disk at all: every new function (`stage_roster`,
+      `stage_outcome_rows`, `undecidable_entries`, `resolve_stages_doctrine`)
+      only parses text already in memory.
+- [x] 7.4 Ran `VocabularyTests` once more over the full skill tree: pass —
+      no forbidden vocabulary from either the Domain_Adaptation guard or
+      the severity guard.

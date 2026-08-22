@@ -23,6 +23,14 @@ accept in the reference beside the invocation that validates it.
 - Move: 9: skipped: no supplied reading pair compared in this pass
 - Move: textual: ran
 
+## Stage outcomes
+
+- Stage: 0: ran
+- Stage: 1: ran
+- Stage: 2: skipped: no blind reading pair compared in this pass
+- Stage: 3: skipped: no differential drive run in this pass
+- Stage: 4: skipped: no transcript partition run in this pass
+
 ## Ranked findings
 
 ### F1. The accepted set is restated by hand and derived nowhere
@@ -50,6 +58,8 @@ accept in the reference beside the invocation that validates it.
 - Doctrine side: `engine/host.mjs:319`
 - Detail: enumeration found no consumer, so the question is not which half is
   wrong. Build-or-delete, and the choice costs something either way.
+
+## Undecidable
 
 ## Disputed severity
 

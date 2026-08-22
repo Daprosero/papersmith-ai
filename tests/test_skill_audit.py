@@ -1379,6 +1379,14 @@ VALID_REPORT = f"""# Audit: a subject, one surface
 - Move: 9: skipped: no supplied reading pair compared in this pass
 - Move: textual: ran
 
+## Stage outcomes
+
+- Stage: 0: ran
+- Stage: 1: ran
+- Stage: 2: skipped: no blind reading pair compared in this pass
+- Stage: 3: skipped: no differential drive run in this pass
+- Stage: 4: skipped: no transcript partition run in this pass
+
 ## Ranked findings
 
 ### F1. A set restated in more places than it is derived
@@ -1404,6 +1412,8 @@ VALID_REPORT = f"""# Audit: a subject, one surface
 - Code side: `engine/metrics.ts:3`
 - Doctrine side: `engine/host.mjs:319`
 - Detail: build-or-delete, and the choice costs something either way.
+
+## Undecidable
 
 ## Disputed severity
 
@@ -1475,6 +1485,8 @@ class ReportShapeTests(BoxMixin, unittest.TestCase):
             "move-outcomes": ("## Move outcomes", "## Move states"),
             "repair-units": ("## Repair units", "## Units of nothing"),
             "frozen": ("## Frozen", "## Solidified"),
+            "stage-outcomes": ("## Stage outcomes", "## Stage progress"),
+            "undecidable": ("## Undecidable", "## Undecided"),
         }
         for item, (needle, replacement) in removals.items():
             with self.subTest(item=item):
@@ -1879,6 +1891,14 @@ class CheckReportSubjectTests(BoxMixin, unittest.TestCase):
 - Move: 9: skipped: no supplied reading pair compared in this pass
 - Move: textual: ran
 
+## Stage outcomes
+
+- Stage: 0: ran
+- Stage: 1: ran
+- Stage: 2: skipped: no blind reading pair compared in this pass
+- Stage: 3: skipped: no differential drive run in this pass
+- Stage: 4: skipped: no transcript partition run in this pass
+
 ## Ranked findings
 
 ### F1. A finding for the re-derivation fixture
@@ -1891,6 +1911,8 @@ class CheckReportSubjectTests(BoxMixin, unittest.TestCase):
 - Code side: `a.py:1`
 - Doctrine side: `SKILL.md:1`
 - Detail: only the subject-level digest is under test here.
+
+## Undecidable
 
 ## Disputed severity
 
@@ -2371,6 +2393,14 @@ class FrozenDigestTests(BoxMixin, unittest.TestCase):
 - Move: 9: skipped: no supplied reading pair compared in this pass
 - Move: textual: ran
 
+## Stage outcomes
+
+- Stage: 0: ran
+- Stage: 1: ran
+- Stage: 2: skipped: no blind reading pair compared in this pass
+- Stage: 3: skipped: no differential drive run in this pass
+- Stage: 4: skipped: no transcript partition run in this pass
+
 ## Ranked findings
 
 ### F1. A finding whose own digest disagrees with the frozen one
@@ -2383,6 +2413,8 @@ class FrozenDigestTests(BoxMixin, unittest.TestCase):
 - Code side: `a.py:1`
 - Doctrine side: `SKILL.md:1`
 - Detail: planted for this test -- the two digests are deliberately unequal.
+
+## Undecidable
 
 ## Disputed severity
 
@@ -3758,3 +3790,208 @@ class ReadingDiffTests(BoxMixin, unittest.TestCase):
             "unregistered", payload,
             "reading-diff must never carry an unregistered key at all -- a "
             "supplied reading is a hypothesis, never a closed verdict")
+
+
+class StageOutcomesTests(BoxMixin, unittest.TestCase):
+    """`## Stage outcomes` mirrors `## Move outcomes` exactly, derived from a
+    stages table in `SKILL.md` rather than a list hand-written inside the
+    tool. Only a `ran` row demands the artifact its own `Demands` cell
+    names; a `skipped` row demands nothing, which is what lets a
+    zero-model audit stay valid.
+    """
+
+    def check(self, text, name="report.md"):
+        box = getattr(self, "_box", None) or self.make_box("stage-outcomes")
+        self._box = box
+        path = self.write(box, name, text)
+        result = run_cli("check-report", str(path))
+        return result, json.loads(result.stdout)
+
+    def test_a_complete_roster_of_stage_outcomes_is_accepted(self):
+        result, payload = self.check(VALID_REPORT)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["violations"], [])
+
+    def test_a_stage_missing_its_row_is_named(self):
+        broken = VALID_REPORT.replace(
+            "- Stage: 3: skipped: no differential drive run in this pass\n",
+            "", 1)
+        result, payload = self.check(broken, name="missing-stage-3.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "stage-outcomes"]
+        self.assertTrue(
+            any("3" in v["detail"] for v in violations),
+            f"removing stage 3's row must name stage 3: {violations}")
+
+    def test_a_skipped_stage_row_with_an_empty_reason_is_rejected(self):
+        broken = VALID_REPORT.replace(
+            "- Stage: 4: skipped: no transcript partition run in this pass\n",
+            "- Stage: 4: skipped:\n", 1)
+        result, payload = self.check(broken, name="empty-stage-reason.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "stage-outcomes"]
+        self.assertTrue(
+            any("4" in v["detail"] for v in violations),
+            f"an empty reason must still name stage 4: {violations}")
+
+    def test_ran_stage_without_artifact_is_rejected(self):
+        """Spec scenario: stage 2 declared `ran` with no `## Reading diff`
+        section is rejected, naming stage 2.
+        """
+        broken = VALID_REPORT.replace(
+            "- Stage: 2: skipped: no blind reading pair compared in this "
+            "pass\n",
+            "- Stage: 2: ran\n", 1)
+        result, payload = self.check(broken, name="stage2-ran-no-artifact.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "reading-diff"]
+        self.assertTrue(
+            any("2" in v["detail"] for v in violations),
+            f"stage 2 declared ran with no '## Reading diff' must be "
+            f"rejected and must name stage 2: {violations}")
+
+    def test_zero_model_audit_is_valid(self):
+        """[LOCK] Spec scenario: stages 0-1 `ran`, stages 2-4 all
+        `skipped: <reason>` -- accepted. `VALID_REPORT` is already exactly
+        this shape. Inverted immediately below by declaring stage 2 `ran`
+        in the same fixture without its artifact, and confirmed rejected --
+        the inversion is `test_ran_stage_without_artifact_is_rejected`
+        above, run against a `.replace()` of this same baseline text, and
+        restoration is implicit: `VALID_REPORT` itself is never mutated,
+        only a derived string is.
+        """
+        result, payload = self.check(VALID_REPORT, name="zero-model.md")
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["violations"], [])
+
+    def test_stage_3_asymmetry_rejects_skill_less_finding_against_subject(self):
+        broken = VALID_REPORT.replace(
+            "- Detail: the running host names more members than the table "
+            "does.\n",
+            "- Detail: the running host names more members than the table "
+            "does.\n"
+            "- Drive: skill-less\n"
+            "- Target: subject\n", 1)
+        result, payload = self.check(broken, name="drives-asymmetry.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "drives"]
+        self.assertTrue(
+            any("F1" in v["where"] for v in violations),
+            f"a finding attributed to the skill-less drive naming the "
+            f"subject as its target must be rejected: {violations}")
+
+    def test_a_skill_less_finding_targeting_its_own_box_is_accepted(self):
+        text = VALID_REPORT.replace(
+            "- Detail: the running host names more members than the table "
+            "does.\n",
+            "- Detail: the running host names more members than the table "
+            "does.\n"
+            "- Drive: skill-less\n"
+            "- Target: box\n", 1)
+        result, payload = self.check(text, name="skill-less-own-box.md")
+        self.assertEqual(result.returncode, 0, payload)
+
+    def test_undecidable_kind_must_be_one_the_tool_can_emit(self):
+        """The partition is enforced on the way in, not only on the way out.
+
+        `EscalationPartitionTests` makes the partition total over what this
+        tool emits. A report is written by hand, so a surface can be declared
+        undecidable under a reason the tool has no way to produce, and a
+        closed set with teeth on one side only is the shape this skill
+        exists to find. A kind that is real but sits in a different bucket
+        is refused for the same reason a made-up one is: a consequence is
+        not a cause, and it has no prose left to re-read.
+        """
+        for invented in ("a-reason-nobody-emits", "comparison-not-run"):
+            with self.subTest(kind=invented):
+                text = VALID_REPORT.replace(
+                    "## Undecidable\n\n## Disputed severity",
+                    "## Undecidable\n\n"
+                    f"- Kind: {invented}\n"
+                    "- Rung: readers\n\n"
+                    "## Disputed severity", 1)
+                self.assertNotEqual(text, VALID_REPORT, "the graft must land")
+                result, payload = self.check(
+                    text, name=f"undecidable-{invented}.md")
+                self.assertEqual(result.returncode, 1, payload)
+                self.assertIn(
+                    "undecidable",
+                    [v["item"] for v in payload["violations"]],
+                    "a kind this tool cannot emit as escalatable must be "
+                    "refused where the report claims it")
+
+    def test_undecidable_probe_rung_requires_its_move_to_have_run(self):
+        """Cross-section rule: an `## Undecidable` entry claiming
+        `- Rung: probe` must name a move whose own `## Move outcomes` row
+        is `ran`. `VALID_REPORT`'s move 9 is `skipped`, so naming it here
+        is rejected; declaring move 9 `ran` in the same fixture is accepted.
+        """
+        with_entry = VALID_REPORT.replace(
+            "## Undecidable\n\n## Disputed severity",
+            "## Undecidable\n\n"
+            "- Kind: no-closed-roster\n"
+            "- Rung: probe\n"
+            "- Probe: 9\n\n"
+            "## Disputed severity", 1)
+        self.assertNotEqual(with_entry, VALID_REPORT, "the graft must land")
+
+        result, payload = self.check(
+            with_entry, name="undecidable-probe-move-skipped.md")
+        self.assertEqual(result.returncode, 1, payload)
+        self.assertIn("undecidable", [v["item"] for v in payload["violations"]])
+
+        move_ran = with_entry.replace(
+            "- Move: 9: skipped: no supplied reading pair compared in this "
+            "pass\n",
+            "- Move: 9: ran\n", 1)
+        result, payload = self.check(
+            move_ran, name="undecidable-probe-move-ran.md")
+        self.assertEqual(result.returncode, 0, payload)
+
+    def test_stage_roster_reads_a_synthetic_table_never_a_hardcoded_list(self):
+        """The roster comes from parsing whatever table it is given, not
+        from a list held inside the tool -- proven with a synthetic stage
+        no real `SKILL.md` will ever carry. Numbered far past any real
+        stage, per the same renumbering lesson the moves fixture already
+        paid for: this fixture's assertion matches `'stage 97'`, never a
+        bare numeral as a substring.
+        """
+        cli = audit_cli_module()
+        synthetic = ("| Stage | Models | Demands |\n"
+                    "| --- | --- | --- |\n"
+                    "| 97. A stage that exists only in this fixture | 0 | "
+                    "`frozen` |\n")
+        roster = cli.stage_roster(synthetic)
+        self.assertEqual(roster, [("97", "frozen")])
+
+    def test_a_stages_row_with_no_leading_digit_is_unprobeable(self):
+        """No `textual` escape valve here, unlike the moves table: every
+        stage row must carry a leading digit or the table is unprobeable.
+        """
+        cli = audit_cli_module()
+        bad = ("| Stage | Models | Demands |\n"
+              "| --- | --- | --- |\n"
+              "| Textual stage, no digit | 0 | `frozen` |\n")
+        with self.assertRaises(cli.Unprobeable):
+            cli.stage_roster(bad)
+
+    def test_a_stages_row_naming_an_unknown_report_shape_key_is_unprobeable(self):
+        cli = audit_cli_module()
+        bad = ("| Stage | Models | Demands |\n"
+              "| --- | --- | --- |\n"
+              "| 0. Freeze the subject | 0 | `not-a-real-key` |\n")
+        with self.assertRaises(cli.Unprobeable):
+            cli.stage_roster(bad)
+
+    def test_the_real_stages_table_derives_stages_0_through_4(self):
+        cli = audit_cli_module()
+        roster = cli.stage_roster(doctrine_text())
+        self.assertEqual(
+            [stage_id for stage_id, _ in roster], ["0", "1", "2", "3", "4"])
+        self.assertEqual(
+            dict(roster),
+            {"0": "frozen", "1": "undecidable", "2": "reading-diff",
+             "3": "drives", "4": "found-by"})

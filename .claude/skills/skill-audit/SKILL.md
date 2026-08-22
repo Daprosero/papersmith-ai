@@ -113,6 +113,50 @@ reading naming more than a real code side never yields an `unregistered`
 key at all. A supplied reading may propose a candidate for a later gate; it
 may never itself close a comparison.
 
+## The stages
+
+A differential audit against a second subject runs in five stages, cheapest
+first. Each is a row in a table, never a numbered heading -- the same reason
+move numbering lives in the moves table rather than in headings of its own.
+
+| Stage | Models | Demands |
+| --- | --- | --- |
+| 0. Freeze the subject | 0 | `frozen` |
+| 1. Decide by tool | 0 | `undecidable` |
+| 2. Two blind readings, over that list only | 2 | `reading-diff` |
+| 3. Differential drive, one box with the skill and one without | 2 | `drives` |
+| 4. Partition the two transcripts | 1 | `found-by` |
+
+Five model runs, total, and only if every stage after the first two actually
+runs -- two for stage 2's blind readings, two for stage 3's differential
+drive, one for stage 4's partition -- stated here, before any of them is
+launched.
+
+Each `Demands` cell holds a `REPORT_SHAPE` key, not prose, held to "The shape
+of a report" table below in both directions by
+`ReportSchemaSelfDescriptionTests`. A stage is conditional exactly because
+this table names it: `## Stage outcomes` records it `ran` or
+`skipped: <reason>`, mirroring `## Move outcomes` exactly, and only a `ran`
+row demands the artifact its own `Demands` cell names -- a `skipped` row
+demands nothing. A zero-model audit, stages 0 and 1 `ran` and stages 2
+through 4 all `skipped`, is a valid report on its own terms, never a partial
+one.
+
+One cross-section rule ties `## Undecidable` back to `## Move outcomes`: an
+entry claiming `- Rung: probe` must name a move whose own row there reads
+`ran`. Declaring a probe was the answer and then skipping the move it names
+is refused, structurally.
+
+Stages 2 through 4 carry no lock over the one fact that would matter most:
+whether the two readers, or the two drives, were actually blind, isolated,
+and out of contact with each other. `check-report` can enforce that an
+artifact exists and has the shape this table names. It cannot enforce that
+the process which produced it never let the two sides talk, because this
+tool only ever calls `subprocess.run()` and holds no authority over what
+happens on either side of that call. A stage row in this table, like the
+moves table's own textual row, is an operator's declaration -- never a
+proof.
+
 ## The from-zero comparison and its soundness conditions
 
 A from-zero comparison that quietly consults the producer proves nothing, and
@@ -218,6 +262,10 @@ hand-maintained roster, which is the class this skill exists to find.
 | `frozen` | `## Frozen`, naming the digest every finding's own `- Digest:` must agree with | A report carries no `## Frozen`, or a finding's digest disagrees with it |
 | `repair-units` | `## Repair units`, a table naming each unit's findings and its own changed-line forecast, a grouping distinct from move or adjudication | A finding belongs to no unit or to more than one, or a forecast cell is not an integer |
 | `disputed-severity` | `## Disputed severity`, bare heading; when non-empty, exactly two `- Position:` lines per dispute, each citing `file:line`, recorded verbatim, with no ranking | The heading is absent, or a dispute's positions are unpaired, or a position carries no citation |
+| `stage-outcomes` | `## Stage outcomes`, one row per stage named in the stages table above, each `ran` or `skipped: <reason>` | A stage has no row, or a `skipped` row carries no reason |
+| `undecidable` | `## Undecidable`, bare heading, demanded when stage 1 is `ran`; when non-empty, each entry names `- Kind:`, `- Rung:` (`probe` or `readers`), and, when the rung is `probe`, `- Probe: <move>` | The heading is absent while stage 1's row reads `ran`, or a `probe` rung names a move whose own `## Move outcomes` row is not `ran` |
+| `reading-diff` | `## Reading diff`, demanded when stage 2 is `ran` | Absent while stage 2's row reads `ran` |
+| `drives` | `## Drives`, demanded when stage 3 is `ran`; no finding may attribute itself to the skill-less drive while naming the subject as its own target | Absent while stage 3's row reads `ran`, or a finding commits that category error |
 
 A report in which **no** finding is marked `CONFIRMED by execution` must say so
 in its **first line**. A clean surface still gets the full report shape,
@@ -323,6 +371,10 @@ the same change.
 | A consequence kind is produced by an already-escalatable surface | Never escalate it a second time as an independent entry |
 | `reading-diff` is invoked with other than exactly two `--reading` flags | Exit `2`; the comparison needs exactly two supplied readings |
 | Two supplied readings agree | Report `agreement: "single-reading"`; `comparison` stays `not-run`, never `closed` |
+| A stage's `## Stage outcomes` row is `ran` | Demand the artifact its own `Demands` cell in the stages table names |
+| A stage's `## Stage outcomes` row is `skipped` | Demand nothing that stage's `Demands` cell names |
+| An `## Undecidable` entry claims `- Rung: probe` | Its `- Probe: <move>` must name a move whose own `## Move outcomes` row is `ran` |
+| A finding attributes itself to the skill-less drive and names the subject as its target | Reject it; that drive never ran the skill's own machinery and cannot make a claim with the subject as its target |
 
 ## Handoff
 

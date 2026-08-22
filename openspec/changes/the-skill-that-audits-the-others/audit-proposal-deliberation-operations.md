@@ -31,6 +31,14 @@ without a product decision.
 - Move: 9: skipped: no supplied reading pair compared in this pass
 - Move: textual: ran
 
+## Stage outcomes
+
+- Stage: 0: ran
+- Stage: 1: ran
+- Stage: 2: skipped: no blind reading pair compared in this pass
+- Stage: 3: skipped: no differential drive run in this pass
+- Stage: 4: skipped: no transcript partition run in this pass
+
 ## Ranked findings
 
 ### F1. The surface has no closed roster in any document, anywhere
@@ -130,6 +138,8 @@ without a product decision.
   product decision about whether persistent scientific workflow ships. The
   audit does not choose, and this is the structural reason report-then-fix is
   the correct ordering rather than a matter of taste.
+
+## Undecidable
 
 ## Disputed severity
 
