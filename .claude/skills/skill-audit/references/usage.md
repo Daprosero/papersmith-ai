@@ -78,10 +78,29 @@ subject; a setup step is never counted among `gates.passed`, and its failure
 is reported directly as `"setup-failed"` at exit `2` -- never `"stalled"` --
 because a void run has no unchecked gates, it has no run.
 
+## `reading-diff` against the shipped reading pair
+
+Two supplied readings of the same prose surface -- this skill's own
+subcommand table -- compared by mechanical diff. Neither reading calls
+`doctrine_side` or `probe_code_side`; a subcommand, not a flag, is what
+keeps `comparison` at `not-run` for this surface permanently, whatever the
+two readers agree on.
+
+```
+$ python3 .claude/skills/skill-audit/scripts/audit_cli.py reading-diff --surface subcommands --reading .claude/skills/skill-audit/references/probes/skill-audit.reading-a.json --reading .claude/skills/skill-audit/references/probes/skill-audit.reading-b.json
+```
+
+Exit `0`, `agreement: "single-reading"` -- both readers name the same five
+subcommands, so `onlyIn` is empty on both sides. `comparison` stays
+`"not-run"` regardless: two readers agreeing proves the prose has one
+reading, never that it is closed. `candidates` carries the shared set, for
+a caller to drive as `walkthrough` gates next; `reading-diff` itself never
+runs a process.
+
 ## Exit codes, in one place
 
-| Exit | `roster` | `check-report` | `structure` | `walkthrough` |
-| --- | --- | --- | --- | --- |
-| `0` | it looked, and this is the verdict | the report is valid | it looked, and this is the outcome | it looked, `stall` included |
-| `1` | not used | the report is invalid | not used | not used |
-| `2` | it could not look | the report could not be read | a side could not be derived, the box was not empty, or the build escaped it | a step declared no expectation, the box was not empty, the flow was never entered, a `kind: "setup"` step failed (`"setup-failed"`), or the recipe declared no `"gate"` step at all |
+| Exit | `roster` | `check-report` | `structure` | `walkthrough` | `reading-diff` |
+| --- | --- | --- | --- | --- | --- |
+| `0` | it looked, and this is the verdict | the report is valid | it looked, and this is the outcome | it looked, `stall` included | it compared, agreement or divergence |
+| `1` | not used | the report is invalid | not used | not used | not used |
+| `2` | it could not look | the report could not be read | a side could not be derived, the box was not empty, or the build escaped it | a step declared no expectation, the box was not empty, the flow was never entered, a `kind: "setup"` step failed (`"setup-failed"`), or the recipe declared no `"gate"` step at all | not exactly two `--reading` flags, or a reading file could not be read or named an empty `members` list |

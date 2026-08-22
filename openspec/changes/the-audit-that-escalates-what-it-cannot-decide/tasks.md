@@ -209,49 +209,79 @@ commit in this list.
       commit (confirms the 4-touch count above); neither shipped report
       was touched.
 
-## Commit 4 — `reading-diff`, move 9 (target: ~1053 → ~1062, +9)
+## Commit 4 — `reading-diff`, move 9 (target: ~1053 → ~1062, +9; actual: 1056 → 1064, +8)
 
-- [ ] 4.1 Add `run_reading_diff`: `--surface --reading --reading` (exactly
+- [x] 4.1 Add `run_reading_diff`: `--surface --reading --reading` (exactly
       two; any other count → `Unprobeable`). Emit `{surface, agreement,
       shared, onlyIn, comparison:"not-run", candidates, limit, frozen}`.
-- [ ] 4.2 `ReadingDiffTests.test_two_readers_agree_reports_single_reading`
+- [x] 4.2 `ReadingDiffTests.test_two_readers_agree_reports_single_reading`
       and `test_divergent_readings_report_shared_and_only_in` (spec scenarios).
-- [ ] 4.3 [LOCK — B3] `test_comparison_field_is_literal_not_run` — assert the
-      constant, not a computed value.
-- [ ] 4.4 [LOCK — B1, closed_seen barrier's strongest inversion, do this one
+- [x] 4.3 [LOCK — B3] `test_comparison_field_is_literal_not_run` — assert the
+      constant, not a computed value. Inverted by replacing the literal with
+      a `computed_comparison` variable; confirmed RED
+      (`AssertionError: <ast.Name ...> is not an instance of <class
+      'ast.Constant'>`); restored by inverse patch; confirmed whole-file
+      `sha256` match (`ac99e445...4d06c9`, before and after).
+- [x] 4.4 [LOCK — B1, closed_seen barrier's strongest inversion, do this one
       with the full ritual] `test_run_reading_diff_never_calls_doctrine_side_probe_code_side_or_finish`
       — AST subtree scan. **Invert by planting a call from
       `run_reading_diff` into `doctrine_side`**, per the spec's own
-      scenario. Confirm the AST lock fires RED. Restore by inverse patch;
-      confirm whole-file `sha256` match against the pre-plant value.
-- [ ] 4.5 [LOCK — B2, single-writer barrier] `test_closed_seen_assigned_at_exactly_one_site_fed_only_by_doctrine_side` —
+      scenario. Confirmed the AST lock fires RED (`AssertionError: Items in
+      the first set but not the second: 'doctrine_side'`). Restored by
+      inverse patch; confirmed whole-file `sha256` match (`ac99e445...4d06c9`,
+      before and after).
+- [x] 4.5 [LOCK — B2, single-writer barrier] `test_closed_seen_assigned_at_exactly_one_site_fed_only_by_doctrine_side` —
       confirm `closed_seen = True` still occurs at exactly one site
-      (`audit_cli.py:720`, inside `run_roster`, fed only by a
+      (inside `run_roster`, fed only by a
       `doctrine_side` status) after every edit in this commit. This is a
       structural confirmation, not a new mechanism — task it explicitly so
       the barrier is proven to hold, not assumed.
-- [ ] 4.6 [LOCK — B4] `test_reading_superset_of_code_side_yields_no_unregistered_key`
+- [x] 4.6 [LOCK — B4] `test_reading_superset_of_code_side_yields_no_unregistered_key`
       — behavioural, drives the real subcommand; asserts no `unregistered`
-      key at all in the payload (not an empty one).
-- [ ] 4.7 Add move 9 to `SKILL.md`'s moves table: `reading-diff`, comparing
-      two supplied readings by mechanical diff.
-- [ ] 4.8 Edit `MovesTableTests.test_one_row_per_move_and_one_for_the_textual_move`:
-      `range(0, 9)` → `range(0, 10)` (`tests/test_skill_audit.py:417`), in
-      the same commit as 4.7.
-- [ ] 4.9 Confirm `test_every_row_ships_as_a_real_subcommand_or_as_doctrine`
+      key at all in the payload (not an empty one). Inverted by adding a
+      planted `"unregistered": []` entry to the emitted payload; confirmed
+      RED (`AssertionError: 'unregistered' unexpectedly found in {...}`);
+      restored by inverse patch; confirmed whole-file `sha256` match
+      (`ac99e445...4d06c9`, before and after).
+- [x] 4.7 Add move 9 to `SKILL.md`'s moves table: `reading-diff`, comparing
+      two supplied readings by mechanical diff. Also added a "Move 9, in
+      detail" subsection naming all four barriers, a subcommand-table row,
+      an exit-code paragraph, two Decision Gates rows, and two shipped-files
+      rows for the new reading-pair probes.
+- [x] 4.8 Edit `MovesTableTests.test_one_row_per_move_and_one_for_the_textual_move`:
+      `range(0, 9)` → `range(0, 10)`, in the same commit as 4.7.
+- [x] 4.9 Confirm `test_every_row_ships_as_a_real_subcommand_or_as_doctrine`
       and `test_every_numbered_move_names_a_lock_that_is_on_disk` pass for
       the new row.
-- [ ] 4.10 Extend `SelfAuditSubcommandRosterTests`
-      (`tests/test_skill_audit.py:804-813`) to include `reading-diff`;
-      confirm `test_the_roster_comes_from_argparse_and_not_from_a_list`
+- [x] 4.10 Extend `SelfAuditSubcommandRosterTests` to include `reading-diff`;
+      confirmed `test_the_roster_comes_from_argparse_and_not_from_a_list`
       still derives it rather than reading the extended literal.
-- [ ] 4.11 Create `probes/skill-audit.reading-a.json` and
+- [x] 4.11 Created `probes/skill-audit.reading-a.json` and
       `probes/skill-audit.reading-b.json` (the shipped reading pair);
-      document a worked `reading-diff` invocation in `references/usage.md`.
-- [ ] 4.12 Co-edit both shipped reports with the move-9 `## Move outcomes`
-      row (touch 2 of 4 for each file); run `MoveOutcomesTests` and
-      `FirstDamageReportTests`.
-- [ ] 4.13 Verify count: ~1053 → target ~1062 (+9).
+      documented a worked `reading-diff` invocation in `references/usage.md`,
+      confirmed it runs by `UsageReferenceTests`.
+- [x] 4.12 Co-edited both shipped reports with the move-9 `## Move outcomes`
+      row (touch 2 of 4 for each file); also co-edited three embedded report
+      fixtures inside `tests/test_skill_audit.py` (`VALID_REPORT`,
+      `CheckReportSubjectTests._report`, `FrozenDigestTests`'s mismatch
+      fixture) that are validated against the real, now-10-move `SKILL.md`
+      and would otherwise reject on a missing move 9 row. Renumbered
+      `MOVES_TABLE_PLUS_ONE`'s synthetic proof-of-derivation move from 9 to
+      10, since 9 is now a real move, and updated
+      `test_the_required_roster_is_derived_from_the_moves_table_not_a_list`
+      to match. Ran `MoveOutcomesTests` and `FirstDamageReportTests`: pass.
+- [x] 4.13 Verify count: 1056 → 1064 (+8: `ReadingDiffTests` × 8 —
+      `test_two_readers_agree_reports_single_reading`,
+      `test_divergent_readings_report_shared_and_only_in`,
+      `test_a_count_of_readings_other_than_two_is_unprobeable`,
+      `test_payload_carries_a_frozen_digest_of_the_two_readings`,
+      `test_comparison_field_is_literal_not_run`,
+      `test_run_reading_diff_never_calls_doctrine_side_probe_code_side_or_finish`,
+      `test_closed_seen_assigned_at_exactly_one_site_fed_only_by_doctrine_side`,
+      `test_reading_superset_of_code_side_yields_no_unregistered_key`). Target
+      was ~1062 (+9); actual +8 because the forecast in tasks.md was an
+      estimate, and the rise here equals the number of tests actually added
+      to this run, confirmed by `python3 -m unittest discover -s tests`.
 
 ## Commit 5 — `Found by` and `Disputed severity` (target: ~1062 → ~1067, +5)
 

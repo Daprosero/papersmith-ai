@@ -414,8 +414,8 @@ class MovesTableTests(unittest.TestCase):
             (numbered if match else textual).append(
                 int(match.group(1)) if match else row)
         self.assertEqual(
-            sorted(numbered), list(range(0, 9)),
-            "the table must carry exactly one row per move 0 through 8, with no "
+            sorted(numbered), list(range(0, 10)),
+            "the table must carry exactly one row per move 0 through 9, with no "
             f"gap and no repeat; found {sorted(numbered)}")
         self.assertEqual(
             len(textual), 1,
@@ -876,7 +876,8 @@ class SelfAuditSubcommandRosterTests(unittest.TestCase):
         self.assertEqual(payload["unregistered"], [])
         self.assertEqual(payload["phantom"], [])
         self.assertEqual(sorted(payload["code"]),
-                         ["check-report", "roster", "structure", "walkthrough"])
+                         ["check-report", "reading-diff", "roster",
+                          "structure", "walkthrough"])
 
     def test_the_roster_comes_from_argparse_and_not_from_a_list(self):
         _, payload = roster_json(SELF_SPEC, SKILL_ROOT)
@@ -1375,6 +1376,7 @@ VALID_REPORT = f"""# Audit: a subject, one surface
 - Move: 6: skipped: no lock inverted in this pass
 - Move: 7: skipped: single-harness count only, not compared
 - Move: 8: skipped: no ordered user-mode flow driven in this pass
+- Move: 9: skipped: no supplied reading pair compared in this pass
 - Move: textual: ran
 
 ## Ranked findings
@@ -1565,8 +1567,12 @@ class ForbiddenSupportTests(BoxMixin, unittest.TestCase):
 #: A moves table carrying one move beyond what `SKILL.md` currently declares.
 #: Used only through `--moves`, never by editing the real file, to prove the
 #: roster `check-report` requires is read out of a table rather than out of a
-#: list held inside the tool: this fixture's tenth move exists nowhere in
-#: `audit_cli.py`, and the requirement still appears.
+#: list held inside the tool: this fixture's synthetic move exists nowhere in
+#: `audit_cli.py`, and the requirement still appears. Numbered far past any
+#: move this skill will ever ship rather than one past the last real one: a
+#: fixture numbered `last + 1` collides the next time a move is added, and it
+#: has already had to be renumbered twice, each time silently proving less
+#: than it claimed until someone noticed.
 MOVES_TABLE_PLUS_ONE = """| Move | Ships as | Lock |
 | --- | --- | --- |
 | 0. Enumerate a closed surface from both sides, and never begin by reviewing a diff | `roster` | `tests/test_skill_audit.py` |
@@ -1578,7 +1584,8 @@ MOVES_TABLE_PLUS_ONE = """| Move | Ships as | Lock |
 | 6. Invert every lock the audit leans on, and watch it fire | `doctrine` | `tests/test_skill_audit.py` |
 | 7. Compare per-harness test counts before and after; a count that did not rise is a finding | `doctrine` | `tests/test_skill_audit.py` |
 | 8. Drive the whole documented flow in order, against one real shared box, and name the first step that breaks its own declared expectation | `walkthrough` | `tests/test_skill_audit.py` |
-| 9. A move that exists only in this fixture, to prove the roster is derived and never hardcoded | `doctrine` | `tests/test_skill_audit.py` |
+| 9. Compare two supplied readings of one prose surface by mechanical diff, and never let the comparison close | `reading-diff` | `tests/test_skill_audit.py` |
+| 97. A move that exists only in this fixture, to prove the roster is derived and never hardcoded | `doctrine` | `tests/test_skill_audit.py` |
 | Read every artifact's opening paragraphs against its own frontmatter and its own shipped files | `doctrine` | no lock — irreducibly textual, and carried anyway |
 """
 
@@ -1625,7 +1632,7 @@ class MoveOutcomesTests(BoxMixin, unittest.TestCase):
             f"an empty reason must still name move 7: {violations}")
 
     def test_the_required_roster_is_derived_from_the_moves_table_not_a_list(self):
-        """A tenth move that exists only in a fixture file, never in
+        """A move that exists only in a fixture file, never in
         `audit_cli.py`, is still required — proof the roster comes from
         parsing the table this run was pointed at, not from a literal held
         inside the tool.
@@ -1633,16 +1640,16 @@ class MoveOutcomesTests(BoxMixin, unittest.TestCase):
         box = self.make_box("derived-roster")
         self._box = box
         moves_path = self.write(box, "moves.md", MOVES_TABLE_PLUS_ONE)
-        # VALID_REPORT's `## Move outcomes` carries moves 0-8 and `textual`
-        # only; it names nothing for the fixture's move 9.
+        # VALID_REPORT's `## Move outcomes` carries moves 0-9 and `textual`
+        # only; it names nothing for the fixture's move 97.
         result, payload = self.check(
-            VALID_REPORT, name="missing-move-9.md",
+            VALID_REPORT, name="missing-move-97.md",
             extra=("--moves", str(moves_path)))
         self.assertEqual(result.returncode, 1, payload)
         violations = [v for v in payload["violations"]
                      if v["item"] == "move-outcomes"]
         self.assertTrue(
-            any("9" in v["detail"] for v in violations),
+            any("move 97" in v["detail"] for v in violations),
             f"a move present only in the fixture table must still be "
             f"required: {violations}")
 
@@ -1731,6 +1738,7 @@ class CheckReportSubjectTests(BoxMixin, unittest.TestCase):
 - Move: 6: skipped: no lock inverted in this pass
 - Move: 7: skipped: single-harness count only, not compared
 - Move: 8: skipped: no ordered user-mode flow driven in this pass
+- Move: 9: skipped: no supplied reading pair compared in this pass
 - Move: textual: ran
 
 ## Ranked findings
@@ -2219,6 +2227,7 @@ class FrozenDigestTests(BoxMixin, unittest.TestCase):
 - Move: 6: skipped: no lock inverted in this pass
 - Move: 7: skipped: single-harness count only, not compared
 - Move: 8: skipped: no ordered user-mode flow driven in this pass
+- Move: 9: skipped: no supplied reading pair compared in this pass
 - Move: textual: ran
 
 ## Ranked findings
@@ -3382,3 +3391,226 @@ class ControlGateTests(WalkthroughBoxMixin, unittest.TestCase):
             all(step["outcome"] == "passed" for step in walk_payload["steps"]),
             f"every documented flag must be driven as a real gate: "
             f"{walk_payload['steps']}")
+
+
+# ==========================================================================
+# Slice 6 (commit 4) -- `reading-diff`: a subcommand, not a flag and not a
+# recipe field, comparing exactly two supplied readings of one prose surface
+# by mechanical diff. Four independent barriers keep it away from
+# `closed_seen`, the one boolean `run_roster` ever assigns `True` -- a
+# supplied reading may propose a candidate; it may never close a comparison.
+# ==========================================================================
+
+class ReadingDiffTests(BoxMixin, unittest.TestCase):
+    """`reading-diff` never sets `closed_seen`. Two readers agreeing proves
+    the prose has one reading, never that it is closed, and `comparison`
+    stays the literal `"not-run"` for a surface compared this way,
+    permanently.
+    """
+
+    def _reading(self, box, name, surface, members, reader):
+        return self.write(box, name, json.dumps({
+            "surface": surface, "site": name, "members": members,
+            "reader": reader}))
+
+    def _run(self, surface, path_a, path_b):
+        result = run_cli("reading-diff", "--surface", surface,
+                         "--reading", str(path_a), "--reading", str(path_b))
+        try:
+            return result, json.loads(result.stdout)
+        except json.JSONDecodeError:
+            raise AssertionError(
+                f"reading-diff exited {result.returncode} without JSON on "
+                f"stdout.\nstdout={result.stdout!r}\nstderr={result.stderr!r}")
+
+    def test_two_readers_agree_reports_single_reading(self):
+        """Spec scenario: two readers agree."""
+        box = self.make_box("reading_diff_agree")
+        a = self._reading(box, "a.json", "flags",
+                          ["--alpha", "--beta"], "reader-a")
+        b = self._reading(box, "b.json", "flags",
+                          ["--beta", "--alpha"], "reader-b")
+        result, payload = self._run("flags", a, b)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["agreement"], "single-reading")
+        self.assertEqual(payload["shared"], ["--alpha", "--beta"])
+        self.assertEqual(payload["onlyIn"], {"a": [], "b": []})
+        self.assertEqual(payload["comparison"], "not-run")
+        self.assertEqual(payload["surface"], "flags")
+
+    def test_divergent_readings_report_shared_and_only_in(self):
+        box = self.make_box("reading_diff_divergent")
+        a = self._reading(box, "a.json", "flags",
+                          ["--alpha", "--beta"], "reader-a")
+        b = self._reading(box, "b.json", "flags",
+                          ["--beta", "--gamma"], "reader-b")
+        result, payload = self._run("flags", a, b)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["agreement"], "divergent")
+        self.assertEqual(payload["shared"], ["--beta"])
+        self.assertEqual(payload["onlyIn"], {"a": ["--alpha"], "b": ["--gamma"]})
+        self.assertEqual(payload["comparison"], "not-run")
+
+    def test_a_count_of_readings_other_than_two_is_unprobeable(self):
+        box = self.make_box("reading_diff_arity")
+        a = self._reading(box, "a.json", "flags", ["--alpha"], "reader-a")
+        result = run_cli("reading-diff", "--surface", "flags",
+                         "--reading", str(a))
+        self.assertEqual(result.returncode, 2)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "unprobeable")
+        self.assertIn("exactly two", payload["error"])
+
+    def test_payload_carries_a_frozen_digest_of_the_two_readings(self):
+        box = self.make_box("reading_diff_frozen")
+        a = self._reading(box, "a.json", "flags", ["--alpha"], "reader-a")
+        b = self._reading(box, "b.json", "flags", ["--alpha"], "reader-b")
+        _, payload = self._run("flags", a, b)
+        self.assertIn("frozen", payload, f"payload carries no frozen: {payload}")
+        frozen = payload["frozen"]
+        self.assertEqual(set(frozen), {"digest", "exclude", "subject"})
+        self.assertTrue(frozen["digest"].startswith("sha256:"), frozen)
+
+    def test_comparison_field_is_literal_not_run(self):
+        """B3, asserted as a constant, not a computed value: a scan for the
+        string `"not-run"` anywhere in the function would also match a
+        variable holding a computed verdict. Reading the emitted dict
+        literal's own AST node distinguishes a constant from an expression.
+        """
+        tree = ast.parse(CLI.read_text(encoding="utf-8"))
+        definition = next(
+            (n for n in ast.walk(tree)
+             if isinstance(n, ast.FunctionDef) and n.name == "run_reading_diff"),
+            None)
+        self.assertIsNotNone(definition, "audit_cli.py defines no run_reading_diff")
+        emit_calls = [node for node in ast.walk(definition)
+                     if isinstance(node, ast.Call)
+                     and isinstance(node.func, ast.Name)
+                     and node.func.id == "emit"]
+        self.assertEqual(len(emit_calls), 1,
+                         "run_reading_diff must emit exactly once")
+        dict_arg = emit_calls[0].args[0]
+        self.assertIsInstance(dict_arg, ast.Dict)
+        value = None
+        for key, val in zip(dict_arg.keys, dict_arg.values):
+            if isinstance(key, ast.Constant) and key.value == "comparison":
+                value = val
+        self.assertIsInstance(
+            value, ast.Constant,
+            "comparison must be a literal constant, never a computed "
+            "expression -- a supplied reading may never make this field "
+            "say anything but not-run")
+        self.assertEqual(value.value, "not-run")
+
+    def test_run_reading_diff_never_calls_doctrine_side_probe_code_side_or_finish(self):
+        """B1, the AST lock: `run_reading_diff`'s own syntax subtree may
+        never reference `doctrine_side`, `probe_code_side`, or `finish` --
+        not a call, not an attribute, not a name -- because any of those
+        would be the one path a supplied reading could reach `closed_seen`
+        through.
+        """
+        tree = ast.parse(CLI.read_text(encoding="utf-8"))
+        definition = next(
+            (n for n in ast.walk(tree)
+             if isinstance(n, ast.FunctionDef) and n.name == "run_reading_diff"),
+            None)
+        self.assertIsNotNone(definition, "audit_cli.py defines no run_reading_diff")
+        forbidden = {"doctrine_side", "probe_code_side", "finish"}
+        found = set()
+        for node in ast.walk(definition):
+            if isinstance(node, ast.Name):
+                found.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                found.add(node.attr)
+        offenders = forbidden & found
+        self.assertEqual(
+            offenders, set(),
+            f"run_reading_diff reaches for {sorted(offenders)}; a supplied "
+            "reading must never reach the one function that writes "
+            "closed_seen")
+
+    def test_closed_seen_assigned_at_exactly_one_site_fed_only_by_doctrine_side(self):
+        """B2, the load-bearing barrier, held as a structural confirmation
+        rather than assumed: `closed_seen = True` must occur at exactly one
+        site in the whole module, that site must live inside `run_roster`,
+        and the `if` that gates it must compare a name fed by `doctrine_side`'s
+        own return value -- never a name a supplied reading could set.
+        """
+        tree = ast.parse(CLI.read_text(encoding="utf-8"))
+        sites = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "closed_seen"
+                    for t in node.targets)
+            and isinstance(node.value, ast.Constant)
+            and node.value.value is True]
+        self.assertEqual(
+            len(sites), 1,
+            f"closed_seen = True must be assigned at exactly one site; "
+            f"found {len(sites)}")
+
+        run_roster_def = next(
+            (n for n in ast.walk(tree)
+             if isinstance(n, ast.FunctionDef) and n.name == "run_roster"), None)
+        self.assertIsNotNone(run_roster_def, "audit_cli.py defines no run_roster")
+        self.assertIn(
+            sites[0], list(ast.walk(run_roster_def)),
+            "the sole closed_seen = True site must live inside run_roster")
+
+        parents = {}
+        for parent in ast.walk(tree):
+            for child in ast.iter_child_nodes(parent):
+                parents[child] = parent
+
+        def ancestors(node):
+            while node in parents:
+                node = parents[node]
+                yield node
+
+        enclosing_if = next(
+            (a for a in ancestors(sites[0]) if isinstance(a, ast.If)), None)
+        self.assertIsNotNone(
+            enclosing_if, "closed_seen = True must be gated by an if")
+        self.assertIsInstance(enclosing_if.test, ast.Compare)
+        self.assertIsInstance(enclosing_if.test.ops[0], ast.Eq)
+        compared = enclosing_if.test.left
+        self.assertIsInstance(
+            compared, ast.Name,
+            "the gate must compare a plain name, not an expression")
+        status_name = compared.id
+
+        fed_by_doctrine_side = any(
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "doctrine_side"
+            and any(isinstance(t, ast.Tuple)
+                    and any(isinstance(elt, ast.Name) and elt.id == status_name
+                            for elt in t.elts)
+                    for t in node.targets)
+            for node in ast.walk(run_roster_def))
+        self.assertTrue(
+            fed_by_doctrine_side,
+            f"{status_name!r}, compared by closed_seen's own guard, must "
+            "itself be assigned from doctrine_side's own return value -- "
+            "never from anything a supplied reading could set")
+
+    def test_reading_superset_of_code_side_yields_no_unregistered_key(self):
+        """B4, behavioural: a reading naming a strict superset of a real
+        code side must never make `reading-diff` claim an `unregistered`
+        verdict -- not even an empty one, which would read as "checked and
+        found none" rather than "never checked at all". Driven as the real
+        subcommand, never through a fixture standing in for it.
+        """
+        box = self.make_box("reading_diff_superset")
+        real_code_side = ["roster", "check-report", "structure",
+                          "walkthrough", "reading-diff"]
+        superset = real_code_side + ["not-a-real-subcommand"]
+        a = self._reading(box, "a.json", "subcommands", superset, "reader-a")
+        b = self._reading(box, "b.json", "subcommands", superset, "reader-b")
+        result, payload = self._run("subcommands", a, b)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertNotIn(
+            "unregistered", payload,
+            "reading-diff must never carry an unregistered key at all -- a "
+            "supplied reading is a hypothesis, never a closed verdict")

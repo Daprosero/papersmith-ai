@@ -56,6 +56,7 @@ move, in order; the numbering is the order.
 | 6. Invert every lock the audit leans on, and watch it fire | `doctrine` | `tests/test_skill_audit.py` |
 | 7. Compare per-harness test counts before and after; a count that did not rise is a finding | `doctrine` | `tests/test_skill_audit.py` |
 | 8. Drive the whole documented flow in order, against one real shared box, and name the first step that breaks its own declared expectation | `walkthrough` | `tests/test_skill_audit.py` |
+| 9. Compare two supplied readings of one prose surface by mechanical diff, and never let the comparison close | `reading-diff` | `tests/test_skill_audit.py` |
 | Read every artifact's opening paragraphs against its own frontmatter and its own shipped files | `doctrine` | no lock — irreducibly textual, and carried anyway |
 
 The last row has no code and no lock, and says so. Prose contradicting prose
@@ -94,6 +95,23 @@ contradicts what it declared is the stall, named by its index; every gate at
 or after that index is `unreached`, and the report carries it under
 `## Unchecked`, never under clean. A step declaring no expectation at all is
 refused before it runs: a gate that asserts nothing is not a gate.
+
+### Move 9, in detail
+
+Every earlier move derives at least one side of a comparison from a real
+process or a real table. This one takes both sides as given -- two supplied
+readings of one prose surface -- and asks only whether they agree, never
+whether either is right. Two readers agreeing proves the prose has **one
+reading**, never that it is closed, and `comparison` stays the literal
+`not-run` for a surface compared this way, permanently. Four independent
+barriers hold this: an AST lock proving the subcommand never calls
+`doctrine_side`, `probe_code_side`, or `finish`; a structural lock proving
+`closed_seen` is assigned `True` at exactly one site, inside `run_roster`,
+fed only by a `doctrine_side` status; the literal `not-run` comparison, held
+as a constant rather than a computed value; and a behavioural lock proving a
+reading naming more than a real code side never yields an `unregistered`
+key at all. A supplied reading may propose a candidate for a later gate; it
+may never itself close a comparison.
 
 ## The from-zero comparison and its soundness conditions
 
@@ -212,6 +230,7 @@ a surface nobody looked at must never look the same.
 | `check-report` | The report shape above, from a report file | `violations` |
 | `structure` | Declared side by parsing a structure table; on-disk side by walking `--subject`; from-zero side by walking a recipe-built scaffold inside an empty box | `sides`, `outcome`, `onlyIn`, `missingFrom`, `notes`, `containment` |
 | `walkthrough` | An ordered recipe of steps, each run for real against one shared box, each held to its own declared expectation | `steps`, `stall`, `unreached`, `containment` |
+| `reading-diff` | Two supplied readings of one prose surface, given directly rather than derived | `agreement`, `shared`, `onlyIn`, `comparison`, `candidates`, `limit`, `frozen` |
 
 `roster` exits `0` for **any** verdict, findings included, and `2` when the
 probe could not be driven or the extraction matched nothing. Inability to look
@@ -233,6 +252,13 @@ finding on its own, never an inability to look. It exits `2` only when the
 flow itself could not be entered: a step declaring no expectation at all, its
 shared box already occupied, or the very first step's own command missing.
 
+`reading-diff` exits `0` for **either** verdict — agreement or divergence —
+and `2` only when it could not look: something other than exactly two
+`--reading` flags, a reading file that cannot be read, or a reading whose
+`members` list is missing or empty. It never calls `doctrine_side`,
+`probe_code_side`, or `finish`, and `comparison` is always `not-run` for the
+surface it names.
+
 ## The shipped files
 
 This skill's own `structure` recipe (`references/probes/skill-audit.structure.json`)
@@ -250,6 +276,8 @@ the same change.
 | `references/probes/skill-audit.structure.json` | the self-probe recipe for `structure` |
 | `references/probes/skill-audit.first-run.json` | the self-probe recipe for `walkthrough` |
 | `references/probes/proposal-deliberation.accepted-operations.json` | the first subject's `roster` recipe |
+| `references/probes/skill-audit.reading-a.json` | the first supplied reading of the worked `reading-diff` invocation |
+| `references/probes/skill-audit.reading-b.json` | the second supplied reading of the worked `reading-diff` invocation |
 
 ## Decision Gates
 
@@ -288,6 +316,8 @@ the same change.
 | The control gate does not observe its own declared refusal | Every candidate becomes `unreached`; no candidate may be reported accepted against a channel not proven capable of refusing |
 | A `candidateGates.argv` names an unknown `{token}` | Exit `2`; only `{repoRoot}`, `{subject}`, `{box}`, and `{candidate}` interpolate, and `{candidate}` only inside this block |
 | A consequence kind is produced by an already-escalatable surface | Never escalate it a second time as an independent entry |
+| `reading-diff` is invoked with other than exactly two `--reading` flags | Exit `2`; the comparison needs exactly two supplied readings |
+| Two supplied readings agree | Report `agreement: "single-reading"`; `comparison` stays `not-run`, never `closed` |
 
 ## Handoff
 

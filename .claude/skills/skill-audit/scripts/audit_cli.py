@@ -773,6 +773,16 @@ def build_parser():
                              help="seconds before a hanging step is a stall "
                                   "of kind timeout")
 
+    reading_diff = commands.add_parser(
+        "reading-diff",
+        help="compare two supplied readings of one prose surface by "
+             "mechanical diff; never sets closed_seen")
+    reading_diff.add_argument("--surface", required=True,
+                              help="the surface name recorded in the payload")
+    reading_diff.add_argument(
+        "--reading", action="append", default=[],
+        help="a reading file; declare this flag exactly twice")
+
     return parser
 
 
@@ -1331,6 +1341,99 @@ def run_walkthrough(args):
     return 0
 
 
+#: `reading-diff`'s own stated epistemic limit, carried in every payload it
+#: emits regardless of verdict. Two readers agreeing proves the prose has
+#: **one reading**, never that it is closed -- a weaker and different claim,
+#: and this string is what stops a report from quietly upgrading one into
+#: the other by copying the output without its limit.
+READING_DIFF_LIMIT = (
+    "agreement between two readers proves the prose has one reading, "
+    "never that it is closed; comparison stays not-run for this surface, "
+    "permanently")
+
+
+def reading_pair_digest(paths):
+    """One stable `sha256` summary over the exact bytes of the two supplied
+    reading files -- the same per-path idiom `frozen_digest` uses, scoped to
+    these two files rather than to a directory tree.
+
+    `reading-diff` has no subject directory to walk: the two reading files
+    are the bytes the comparison is about. So this reads each file directly
+    rather than calling `tree_digest`, which stays the only walker in this
+    module per `SingleWalkTests`.
+    """
+    ordered = sorted(paths, key=str)
+    lines = "\n".join(
+        f"{path} {hashlib.sha256(path.read_bytes()).hexdigest()}"
+        for path in ordered)
+    return "sha256:" + hashlib.sha256(lines.encode("utf-8")).hexdigest()
+
+
+def run_reading_diff(args):
+    """Compare exactly two supplied readings of one prose surface by
+    mechanical diff, and report agreement or divergence.
+
+    A subcommand, never a flag or a recipe field: either of those would
+    route a supplied reading back through `run_roster`, the one function
+    that ever assigns `closed_seen = True`. This function never calls
+    `doctrine_side`, `probe_code_side`, or `finish` -- asserted over its own
+    syntax tree by `ReadingDiffTests` -- so a reading of prose can propose
+    candidates, and can never itself close a comparison.
+
+    `comparison` is emitted as the literal `"not-run"`, always: two readers
+    agreeing proves the prose has one reading, never that it is closed.
+    And when a supplied reading names a strict superset of some real code
+    side, the payload still carries no `"unregistered"` key at all -- not an
+    empty one, which would read as "checked and found none" rather than
+    "never checked".
+
+    Exit `0` for either verdict -- agreement or divergence. Exit `2` only
+    when the tool could not look: not exactly two `--reading` flags, a
+    reading file that cannot be read, or a reading with no non-empty
+    `members` list.
+    """
+    readings = args.reading or []
+    if len(readings) != 2:
+        raise Unprobeable(
+            f"reading-diff takes exactly two --reading flags; got "
+            f"{len(readings)}")
+
+    paths = [Path(raw) for raw in readings]
+    member_sets = []
+    for path in paths:
+        if not path.is_file():
+            raise Unprobeable(f"no reading file at {path}")
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise Unprobeable(f"the reading file is unreadable: {error}")
+        members = data.get("members")
+        if not isinstance(members, list) or not members:
+            raise Unprobeable(
+                f"the reading file at {path} declares no non-empty "
+                "members list")
+        member_sets.append({str(member) for member in members})
+
+    set_a, set_b = member_sets
+    shared = sorted(set_a & set_b)
+    only_a = sorted(set_a - set_b)
+    only_b = sorted(set_b - set_a)
+    agreement = "single-reading" if not only_a and not only_b else "divergent"
+
+    emit({
+        "agreement": agreement,
+        "candidates": shared,
+        "comparison": "not-run",
+        "frozen": {"digest": reading_pair_digest(paths), "exclude": [],
+                   "subject": "|".join(str(path) for path in paths)},
+        "limit": READING_DIFF_LIMIT,
+        "onlyIn": {"a": only_a, "b": only_b},
+        "shared": shared,
+        "surface": args.surface,
+    })
+    return 0
+
+
 #: Every item a report must carry, with the heading or field that carries it.
 #: Held to the shape table in SKILL.md in both directions, so this cannot become
 #: a roster restated in two places -- which is the defect the whole tool exists
@@ -1699,6 +1802,7 @@ DISPATCH = {
     "check-report": run_check_report,
     "structure": run_structure,
     "walkthrough": run_walkthrough,
+    "reading-diff": run_reading_diff,
 }
 
 
