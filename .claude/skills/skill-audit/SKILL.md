@@ -209,6 +209,7 @@ hand-maintained roster, which is the class this skill exists to find.
 | `move-number` | The move that found each finding | A finding names no move |
 | `move-outcomes` | `## Move outcomes`, one row per move named in the moves table above, each `ran` or `skipped: <reason>` | A move has no row, or a `skipped` row carries no reason |
 | `evidence-marker` | Per finding, `CONFIRMED by execution` or `read-only` | A finding carries neither; there is no default, and a missing marker is never read as confirmed |
+| `found-by` | Per finding, `both`, `one`, or `not-compared` | A finding carries none of the three; there is no default, and a missing marker is never read as `one` |
 | `adjudication` | Per finding, one of the adjudications above | A finding carries none, or carries a value outside the table |
 | `clean-section` | `## Clean, stated as results`, with the enumeration that supports each entry | An entry's only support is that a suite passed |
 | `unchecked-section` | `## Unchecked`, naming what was not enumerated | A surface that was never enumerated is absent, or is reported as clean |
@@ -216,11 +217,15 @@ hand-maintained roster, which is the class this skill exists to find.
 | `changed-line-forecast` | The size of the fix that would follow, in changed lines | Absent |
 | `frozen` | `## Frozen`, naming the digest every finding's own `- Digest:` must agree with | A report carries no `## Frozen`, or a finding's digest disagrees with it |
 | `repair-units` | `## Repair units`, a table naming each unit's findings and its own changed-line forecast, a grouping distinct from move or adjudication | A finding belongs to no unit or to more than one, or a forecast cell is not an integer |
+| `disputed-severity` | `## Disputed severity`, bare heading; when non-empty, exactly two `- Position:` lines per dispute, each citing `file:line`, recorded verbatim, with no ranking | The heading is absent, or a dispute's positions are unpaired, or a position carries no citation |
 
 A report in which **no** finding is marked `CONFIRMED by execution` must say so
 in its **first line**. A clean surface still gets the full report shape,
 including a populated `## Clean, stated as results`: an empty clean section and
-a surface nobody looked at must never look the same.
+a surface nobody looked at must never look the same. `- Found by:` is the
+independence axis and travels alongside `- Evidence:`'s obtained axis on every
+finding; `## Disputed severity` demands nothing of an undisputed report, and
+carries no vocabulary of its own beyond that one heading.
 
 ## The subcommands
 

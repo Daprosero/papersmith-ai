@@ -1385,6 +1385,7 @@ VALID_REPORT = f"""# Audit: a subject, one surface
 
 - Move: 0
 - Evidence: CONFIRMED by execution
+- Found by: one
 - Adjudication: doctrine wrong
 - Digest: {VALID_REPORT_DIGEST}
 - Code side: `engine/host.mjs:320`
@@ -1397,11 +1398,14 @@ VALID_REPORT = f"""# Audit: a subject, one surface
 
 - Move: 0
 - Evidence: CONFIRMED by execution
+- Found by: one
 - Adjudication: not adjudicable
 - Digest: {VALID_REPORT_DIGEST}
 - Code side: `engine/metrics.ts:3`
 - Doctrine side: `engine/host.mjs:319`
 - Detail: build-or-delete, and the choice costs something either way.
+
+## Disputed severity
 
 ## Clean, stated as results
 
@@ -1515,6 +1519,140 @@ class ReportShapeTests(BoxMixin, unittest.TestCase):
             "# Audit: a subject, one surface\n\n"
             "No finding in this report is CONFIRMED by execution.\n", 1)
         result, payload = self.check(declared, name="readonly-declared.md")
+        self.assertEqual(result.returncode, 0, payload)
+
+
+class FoundByTests(BoxMixin, unittest.TestCase):
+    """`- Found by:` is the independence axis, held to no default exactly
+    the way `- Evidence:` is: a missing marker is never read as `one`, the
+    one value that would make an uncorroborated finding read as
+    corroborated without anybody having said so.
+    """
+
+    def check(self, text, name="report.md"):
+        box = getattr(self, "_box", None) or self.make_box("found_by")
+        self._box = box
+        path = self.write(box, name, text)
+        result = run_cli("check-report", str(path))
+        return result, json.loads(result.stdout)
+
+    def test_finding_without_found_by_is_rejected(self):
+        result, payload = self.check(VALID_REPORT, name="baseline.md")
+        self.assertEqual(
+            result.returncode, 0,
+            "the baseline fixture must itself be valid before this test "
+            f"removes anything from it: {payload}")
+        broken = VALID_REPORT.replace("- Found by: one\n", "", 1)
+        result, payload = self.check(broken, name="missing-found-by.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "found-by"]
+        self.assertTrue(
+            any("F1" in v["where"] for v in violations),
+            f"a finding with no '- Found by:' line must be rejected and "
+            f"must name the finding: {violations}")
+
+    def test_found_by_accepts_both_one_not_compared(self):
+        for value in ("both", "one", "not-compared"):
+            with self.subTest(value=value):
+                text = VALID_REPORT.replace(
+                    "- Found by: one\n", f"- Found by: {value}\n", 1)
+                result, payload = self.check(text, name=f"found-by-{value}.md")
+                self.assertEqual(result.returncode, 0, payload)
+
+    def test_found_by_rejects_unknown_value(self):
+        text = VALID_REPORT.replace(
+            "- Found by: one\n", "- Found by: mostly\n", 1)
+        result, payload = self.check(text, name="found-by-unknown.md")
+        self.assertEqual(result.returncode, 1, payload)
+        self.assertIn("found-by", [v["item"] for v in payload["violations"]])
+
+
+class SeverityVocabularyTests(unittest.TestCase):
+    """No severity ladder anywhere in the skill directory.
+
+    A closed vocabulary stated by hand inside the validator -- `CRITICAL`,
+    `WARNING`, `SUGGESTION` -- is the exact defect class this skill exists
+    to find. `## Disputed severity` records both positions verbatim instead,
+    with no ranking of its own.
+    """
+
+    LADDER = re.compile(r"CRITICAL|WARNING|SUGGESTION", re.IGNORECASE)
+    BARE_WORD = re.compile(r"severity", re.IGNORECASE)
+    ALLOWED_PHRASE = re.compile(r"disputed[ _-]severity", re.IGNORECASE)
+
+    def _offenders(self):
+        offenders = []
+        shipped = sorted(
+            path for path in SKILL_ROOT.rglob("*")
+            if path.is_file() and path.suffix in (".md", ".py", ".json"))
+        self.assertNotEqual(shipped, [], "no shipped files found to check")
+        for path in shipped:
+            for lineno, line in enumerate(
+                    path.read_text(encoding="utf-8").splitlines(), start=1):
+                if self.LADDER.search(line):
+                    offenders.append((path.name, lineno, line.strip()))
+                    continue
+                remainder = self.ALLOWED_PHRASE.sub("", line)
+                if self.BARE_WORD.search(remainder):
+                    offenders.append((path.name, lineno, line.strip()))
+        return offenders
+
+    def test_only_the_disputed_severity_axis_carries_the_word(self):
+        self.assertEqual(
+            self._offenders(), [],
+            "the only occurrences of severity vocabulary in the skill "
+            "directory may be the 'Disputed severity' heading and its "
+            "REPORT_SHAPE marker; a standalone ladder word is the exact "
+            "defect class this skill exists to find")
+
+
+class DisputedSeverityTests(BoxMixin, unittest.TestCase):
+    """`## Disputed severity` demands nothing when empty -- `VALID_REPORT`
+    already proves an empty section is accepted. Non-empty means exactly
+    two `- Position:` lines per dispute, each carrying a `file:line`
+    citation, verbatim, with no ranking.
+    """
+
+    def check(self, text, name="report.md"):
+        box = getattr(self, "_box", None) or self.make_box("disputed")
+        self._box = box
+        path = self.write(box, name, text)
+        result = run_cli("check-report", str(path))
+        return result, json.loads(result.stdout)
+
+    def _insert(self, block):
+        needle = "## Disputed severity\n\n## Clean, stated as results"
+        self.assertIn(needle, VALID_REPORT,
+                     "the fixture's own shape must carry an empty "
+                     "'## Disputed severity' section to graft onto")
+        return VALID_REPORT.replace(
+            needle, f"## Disputed severity\n\n{block}\n"
+                    "## Clean, stated as results", 1)
+
+    def test_an_unpaired_position_is_rejected(self):
+        text = self._insert(
+            "- Position: Drive A calls this blocking, per "
+            "`engine/host.mjs:320`.\n")
+        result, payload = self.check(text, name="unpaired.md")
+        self.assertEqual(result.returncode, 1, payload)
+        self.assertIn("disputed-severity",
+                      [v["item"] for v in payload["violations"]])
+
+    def test_a_position_with_no_citation_is_rejected(self):
+        text = self._insert(
+            "- Position: Drive A calls this blocking.\n"
+            "- Position: Drive B calls this cosmetic, per `SKILL.md:243`.\n")
+        result, payload = self.check(text, name="no-citation.md")
+        self.assertEqual(result.returncode, 1, payload)
+        self.assertIn("disputed-severity",
+                      [v["item"] for v in payload["violations"]])
+
+    def test_two_positions_each_with_a_citation_is_accepted(self):
+        text = self._insert(
+            "- Position: Drive A calls this blocking, per "
+            "`engine/host.mjs:320`.\n"
+            "- Position: Drive B calls this cosmetic, per `SKILL.md:243`.\n")
+        result, payload = self.check(text, name="paired.md")
         self.assertEqual(result.returncode, 0, payload)
 
 
@@ -1747,11 +1885,14 @@ class CheckReportSubjectTests(BoxMixin, unittest.TestCase):
 
 - Move: 0
 - Evidence: CONFIRMED by execution
+- Found by: not-compared
 - Adjudication: doctrine wrong
 - Digest: {digest}
 - Code side: `a.py:1`
 - Doctrine side: `SKILL.md:1`
 - Detail: only the subject-level digest is under test here.
+
+## Disputed severity
 
 ## Clean, stated as results
 
@@ -2236,11 +2377,14 @@ class FrozenDigestTests(BoxMixin, unittest.TestCase):
 
 - Move: 0
 - Evidence: CONFIRMED by execution
+- Found by: not-compared
 - Adjudication: doctrine wrong
 - Digest: {digest_b}
 - Code side: `a.py:1`
 - Doctrine side: `SKILL.md:1`
 - Detail: planted for this test -- the two digests are deliberately unequal.
+
+## Disputed severity
 
 ## Clean, stated as results
 

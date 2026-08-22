@@ -1443,8 +1443,10 @@ REPORT_SHAPE = {
     "adjudication": "- Adjudication:",
     "changed-line-forecast": "## Changed-line forecast",
     "clean-section": "## Clean, stated as results",
+    "disputed-severity": "## Disputed severity",
     "evidence-marker": "- Evidence:",
     "falsifier": "## Falsifier",
+    "found-by": "- Found by:",
     "frozen": "## Frozen",
     "move-number": "- Move:",
     "move-outcomes": "## Move outcomes",
@@ -1534,6 +1536,12 @@ def move_outcome_rows(lines):
 
 ADJUDICATIONS = ("doctrine wrong", "artefact wrong", "not adjudicable")
 
+#: `- Found by:`'s closed set -- the independence axis, distinct from
+#: `- Evidence:`'s obtained axis. Enforced with no default, exactly like
+#: `- Evidence:`: a missing marker is never read as `one`, any more than a
+#: missing evidence marker is read as confirmed.
+FOUND_BY_VALUES = ("both", "one", "not-compared")
+
 NO_CONFIRMED_DECLARATION = "No finding in this report is CONFIRMED by execution"
 
 #: Supports a report may never lean on. Each one is a mistake made in this
@@ -1620,6 +1628,39 @@ def frozen_section_fields(lines):
     return fields
 
 
+#: A `- Position:` line under `## Disputed severity`. The section is a bare
+#: heading -- an empty one demands nothing, because a surface nobody looked
+#: at and a surface both drives agreed on must not read the same way (R6).
+POSITION_LINE = re.compile(r"^-\s*Position:\s*.+$")
+
+
+def disputed_severity_positions(lines):
+    """`- Position:` lines under `## Disputed severity`, and whether the
+    section carries any content at all beyond the bare heading.
+
+    Read only inside the section, exactly like `frozen_section_fields` and
+    `move_outcome_rows`, so a finding's own prose elsewhere in the report is
+    never mistaken for a recorded position.
+    """
+    positions = []
+    in_section = False
+    has_content = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "## Disputed severity":
+            in_section = True
+            continue
+        if in_section and stripped.startswith("## "):
+            break
+        if not in_section:
+            continue
+        if stripped:
+            has_content = True
+        if POSITION_LINE.match(stripped):
+            positions.append(stripped)
+    return has_content, positions
+
+
 def parse_exclude_field(value):
     """`- Exclude:`'s rendered value, back into the tuple `frozen_digest`
     accepts. `(none)` -- the shape `## Frozen` renders when the list is
@@ -1699,6 +1740,13 @@ def run_check_report(args):
                  "`read-only`, and there is no default: a missing marker is "
                  "never read as confirmed", where)
 
+        found_by = re.search(r"^- Found by:\s*(.+?)\s*$", body, re.MULTILINE)
+        if not found_by or found_by.group(1) not in FOUND_BY_VALUES:
+            fail("found-by",
+                 "every finding carries `- Found by: both | one | "
+                 "not-compared`, and there is no default: a missing marker "
+                 "is never read as `one`", where)
+
         verdict = re.search(r"^- Adjudication:\s*(.+?)\s*$", body, re.MULTILINE)
         if not verdict or verdict.group(1) not in ADJUDICATIONS:
             fail("adjudication",
@@ -1726,6 +1774,24 @@ def run_check_report(args):
                  "no finding is CONFIRMED by execution, so the report must say "
                  f"so in its first line: {NO_CONFIRMED_DECLARATION!r}",
                  f"{path}:1")
+
+    # `## Disputed severity` is a bare heading: an empty section demands
+    # nothing, because a surface nobody looked at and a surface both drives
+    # agreed on must not read the same way. Non-empty means each dispute is
+    # recorded as exactly two `- Position:` lines, each citing `file:line`,
+    # verbatim -- no ranking, no ladder of any kind.
+    has_disputes, dispute_positions = disputed_severity_positions(lines)
+    if has_disputes:
+        if not dispute_positions or len(dispute_positions) % 2 != 0:
+            fail("disputed-severity",
+                 "'## Disputed severity' records each dispute as exactly "
+                 "two '- Position:' lines; found an unpaired count "
+                 f"({len(dispute_positions)})", f"{path}:1")
+        for position in dispute_positions:
+            if not CITATION.search(position):
+                fail("disputed-severity",
+                     f"a '- Position:' line carries no `file:line` "
+                     f"citation, verbatim: {position!r}", f"{path}:1")
 
     # Every move required by the moves table this run is pointed at -- this
     # skill's own SKILL.md by default -- needs its own row in `## Move

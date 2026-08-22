@@ -283,27 +283,50 @@ commit in this list.
       estimate, and the rise here equals the number of tests actually added
       to this run, confirmed by `python3 -m unittest discover -s tests`.
 
-## Commit 5 — `Found by` and `Disputed severity` (target: ~1062 → ~1067, +5)
+## Commit 5 — `Found by` and `Disputed severity` (target: ~1062 → ~1067, +5; actual: 1064 → 1071, +7)
 
-- [ ] 5.1 Add `- Found by:` (no default) alongside the existing evidence
+- [x] 5.1 Add `- Found by:` (no default) alongside the existing evidence
       marker on every finding.
-- [ ] 5.2 [LOCK] `FoundByTests.test_finding_without_found_by_is_rejected`
+- [x] 5.2 [LOCK] `FoundByTests.test_finding_without_found_by_is_rejected`
       (spec scenario). Invert by removing the field from one finding after
-      implementation, confirm rejection; restore.
-- [ ] 5.3 Add `## Disputed severity` (bare-heading; non-empty requires two
+      implementation, confirm rejection; restore. Additional strongest
+      inversion performed per design instruction: made a missing
+      `- Found by:` default to `one` instead of failing, confirmed the
+      planted report (field omitted entirely) falsely validated as
+      independently corroborated (`returncode 0`, `violations: []`) --
+      exactly the dangerous false-clean case the axis exists to prevent;
+      restored by inverse patch; confirmed whole-file `sha256` match
+      (`8281c3d7...aff2413cad0`, before and after both inversions).
+- [x] 5.3 Add `## Disputed severity` (bare-heading; non-empty requires two
       `- Position:` lines per dispute, each with a `` `file:line` ``
-      citation, verbatim, no ranking).
-- [ ] 5.4 [LOCK] `SeverityVocabularyTests` — the only occurrences of
+      citation, verbatim, no ranking). Covered by the new
+      `DisputedSeverityTests` (unpaired position rejected, position with
+      no citation rejected, two cited positions accepted).
+- [x] 5.4 [LOCK] `SeverityVocabularyTests` — the only occurrences of
       `severity|CRITICAL|WARNING|SUGGESTION` in the whole skill directory
       are the `## Disputed severity` heading and its `REPORT_SHAPE` marker.
-      Invert by adding one `- Severity:` field to a finding, confirm the
-      guard fires; restore.
-- [ ] 5.5 `SKILL.md`: `found-by` and `disputed-severity` `REPORT_SHAPE` rows
+      Invert by adding one `- Severity: CRITICAL` field to a finding in
+      `references/example-report.md`, confirmed the guard fires RED
+      (`AssertionError: Lists differ: [('example-report.md', 33, '- Severity:
+      CRITICAL')] != []`); restored by inverse patch; confirmed whole-file
+      `sha256` match (`27ff3ebf...9822017f`, before and after).
+- [x] 5.5 `SKILL.md`: `found-by` and `disputed-severity` `REPORT_SHAPE` rows
       in the same commit (`ReportSchemaSelfDescriptionTests`).
-- [ ] 5.6 Co-edit both shipped reports with `- Found by:` on every finding
+- [x] 5.6 Co-edit both shipped reports with `- Found by:` on every finding
       and a `## Disputed severity` heading (touch 3 of 4 for each file);
-      run `FirstDamageReportTests`.
-- [ ] 5.7 Verify count: ~1062 → target ~1067 (+5).
+      ran `FirstDamageReportTests` and a real `check-report` process run
+      over both shipped reports directly (exit `0`, no violations, on each).
+- [x] 5.7 Verify count: 1064 → 1071 (+7: `FoundByTests` ×3 --
+      `test_finding_without_found_by_is_rejected`,
+      `test_found_by_accepts_both_one_not_compared`,
+      `test_found_by_rejects_unknown_value`; `SeverityVocabularyTests` ×1 --
+      `test_only_the_disputed_severity_axis_carries_the_word`;
+      `DisputedSeverityTests` ×3 -- `test_an_unpaired_position_is_rejected`,
+      `test_a_position_with_no_citation_is_rejected`,
+      `test_two_positions_each_with_a_citation_is_accepted`). Target was
+      ~1067 (+5); actual +7 because the forecast in tasks.md was an
+      estimate, and the rise here equals the number of tests actually added
+      to this run, confirmed by `python3 -m unittest discover -s tests`.
 
 ## Commit 6 — Stage outcomes, per-stage demand, stages table (target: ~1067 → ~1076, +9)
 

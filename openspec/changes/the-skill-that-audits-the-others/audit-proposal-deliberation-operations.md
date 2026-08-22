@@ -37,6 +37,7 @@ without a product decision.
 
 - Move: 0
 - Evidence: CONFIRMED by execution
+- Found by: not-compared
 - Adjudication: doctrine wrong
 - Digest: sha256:4e19d048a6276c2ec3d95ff5cb2a09dd7736bf71bf39e051a0b8e661e1e03b60
 - Code side: `engine/cli.mjs:320`
@@ -64,6 +65,7 @@ without a product decision.
 
 - Move: 0
 - Evidence: CONFIRMED by execution
+- Found by: not-compared
 - Adjudication: doctrine wrong
 - Digest: sha256:4e19d048a6276c2ec3d95ff5cb2a09dd7736bf71bf39e051a0b8e661e1e03b60
 - Code side: `engine/cli.mjs:298-306`
@@ -83,6 +85,7 @@ without a product decision.
 
 - Move: 0
 - Evidence: CONFIRMED by execution
+- Found by: not-compared
 - Adjudication: doctrine wrong
 - Digest: sha256:4e19d048a6276c2ec3d95ff5cb2a09dd7736bf71bf39e051a0b8e661e1e03b60
 - Code side: `engine/proposal-workspace.ts:5546`
@@ -103,6 +106,7 @@ without a product decision.
 
 - Move: 0
 - Evidence: CONFIRMED by execution
+- Found by: not-compared
 - Adjudication: not adjudicable
 - Digest: sha256:4e19d048a6276c2ec3d95ff5cb2a09dd7736bf71bf39e051a0b8e661e1e03b60
 - Code side: `engine/runtime-metrics.ts:3`
@@ -126,6 +130,8 @@ without a product decision.
   product decision about whether persistent scientific workflow ships. The
   audit does not choose, and this is the structural reason report-then-fix is
   the correct ordering rather than a matter of taste.
+
+## Disputed severity
 
 ## Clean, stated as results
 

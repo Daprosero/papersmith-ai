@@ -29,6 +29,7 @@ accept in the reference beside the invocation that validates it.
 
 - Move: 0
 - Evidence: CONFIRMED by execution
+- Found by: not-compared
 - Adjudication: doctrine wrong
 - Digest: sha256:f9f163e09a5078c732f596f31c660b4229a97eec1e4fa5de3b6b09eef93ad6e3
 - Code side: `engine/host.mjs:320`
@@ -42,12 +43,15 @@ accept in the reference beside the invocation that validates it.
 
 - Move: 0
 - Evidence: CONFIRMED by execution
+- Found by: not-compared
 - Adjudication: not adjudicable
 - Digest: sha256:f9f163e09a5078c732f596f31c660b4229a97eec1e4fa5de3b6b09eef93ad6e3
 - Code side: `engine/metrics.ts:3`
 - Doctrine side: `engine/host.mjs:319`
 - Detail: enumeration found no consumer, so the question is not which half is
   wrong. Build-or-delete, and the choice costs something either way.
+
+## Disputed severity
 
 ## Clean, stated as results
 
