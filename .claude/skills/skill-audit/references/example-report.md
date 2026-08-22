@@ -3,6 +3,12 @@
 This report is shipped as a worked example, so `check-report` has something to
 accept in the reference beside the invocation that validates it.
 
+## Frozen
+
+- Digest: sha256:f9f163e09a5078c732f596f31c660b4229a97eec1e4fa5de3b6b09eef93ad6e3
+- Subject: an example subject, not a real path in this repository
+- Exclude: (none)
+
 ## Move outcomes
 
 - Move: 0: ran
@@ -23,6 +29,7 @@ accept in the reference beside the invocation that validates it.
 - Move: 0
 - Evidence: CONFIRMED by execution
 - Adjudication: doctrine wrong
+- Digest: sha256:f9f163e09a5078c732f596f31c660b4229a97eec1e4fa5de3b6b09eef93ad6e3
 - Code side: `engine/host.mjs:320`
 - Doctrine side: `SKILL.md:243`
 - Detail: the running host names its own accepted set in its refusal; the
@@ -35,6 +42,7 @@ accept in the reference beside the invocation that validates it.
 - Move: 0
 - Evidence: CONFIRMED by execution
 - Adjudication: not adjudicable
+- Digest: sha256:f9f163e09a5078c732f596f31c660b4229a97eec1e4fa5de3b6b09eef93ad6e3
 - Code side: `engine/metrics.ts:3`
 - Doctrine side: `engine/host.mjs:319`
 - Detail: enumeration found no consumer, so the question is not which half is

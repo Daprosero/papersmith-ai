@@ -196,6 +196,7 @@ hand-maintained roster, which is the class this skill exists to find.
 | `unchecked-section` | `## Unchecked`, naming what was not enumerated | A surface that was never enumerated is absent, or is reported as clean |
 | `falsifier` | The observation that would overturn this report | Absent |
 | `changed-line-forecast` | The size of the fix that would follow, in changed lines | Absent |
+| `frozen` | `## Frozen`, naming the digest every finding's own `- Digest:` must agree with | A report carries no `## Frozen`, or a finding's digest disagrees with it |
 | `repair-units` | `## Repair units`, a table naming each unit's findings and its own changed-line forecast, a grouping distinct from move or adjudication | A finding belongs to no unit or to more than one, or a forecast cell is not an integer |
 
 A report in which **no** finding is marked `CONFIRMED by execution` must say so

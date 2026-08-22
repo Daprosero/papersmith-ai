@@ -551,6 +551,51 @@ class VocabularyTests(unittest.TestCase):
                         f"{path.name} borrows {word!r}, a word a target owns")
 
 
+class SuiteIntegrityTests(unittest.TestCase):
+    """This one file cannot silently disable its own tests.
+
+    A duplicate top-level class name makes Python bind the name to whichever
+    definition runs last; every earlier class's tests vanish with no error
+    from `unittest`'s own discovery, which only ever sees the surviving name.
+    A duplicate `test_` method name inside one class has the same silent
+    effect, one method at a time. Scope: this file, `tests/test_skill_audit.py`,
+    and only this file -- it says nothing about any other test module in this
+    repository.
+    """
+
+    def _module_tree(self):
+        return ast.parse(Path(__file__).read_text(encoding="utf-8"))
+
+    def test_no_duplicate_top_level_class_name(self):
+        names = [node.name for node in self._module_tree().body
+                if isinstance(node, ast.ClassDef)]
+        seen = set()
+        duplicates = sorted({name for name in names
+                             if name in seen or seen.add(name)})
+        self.assertEqual(
+            duplicates, [],
+            f"a top-level class name repeats in {Path(__file__).name}, "
+            f"silently discarding an earlier class's tests: {duplicates}")
+
+    def test_no_duplicate_test_method_name_within_a_class(self):
+        offenders = []
+        for node in self._module_tree().body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            method_names = [item.name for item in node.body
+                            if isinstance(item, ast.FunctionDef)
+                            and item.name.startswith("test_")]
+            seen = set()
+            for name in method_names:
+                if name in seen:
+                    offenders.append(f"{node.name}.{name}")
+                seen.add(name)
+        self.assertEqual(
+            offenders, [],
+            f"a test_ method name repeats within one class, and the later "
+            f"definition silently wins over the earlier: {sorted(offenders)}")
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -1305,7 +1350,19 @@ class CopiedHelperFidelityTests(unittest.TestCase):
 # the paragraph that describes it.
 # ==========================================================================
 
-VALID_REPORT = """# Audit: a subject, one surface
+#: The digest `VALID_REPORT`'s `## Frozen` names, and the one every finding
+#: below cites. Not re-derived from any real subject -- this fixture is never
+#: driven with `--subject`, so only finding-vs-`## Frozen` consistency is
+#: exercised, and any two agreeing 64-hex strings would do.
+VALID_REPORT_DIGEST = "sha256:0a9752e7848b79dee5a2b48d478a7b7bad19d7db119a54d7bb034f4a4e3191be"
+
+VALID_REPORT = f"""# Audit: a subject, one surface
+
+## Frozen
+
+- Digest: {VALID_REPORT_DIGEST}
+- Subject: a subject, one surface
+- Exclude: (none)
 
 ## Move outcomes
 
@@ -1327,6 +1384,7 @@ VALID_REPORT = """# Audit: a subject, one surface
 - Move: 0
 - Evidence: CONFIRMED by execution
 - Adjudication: doctrine wrong
+- Digest: {VALID_REPORT_DIGEST}
 - Code side: `engine/host.mjs:320`
 - Doctrine side: `SKILL.md:243`
 - Detail: the running host names more members than the table does.
@@ -1338,6 +1396,7 @@ VALID_REPORT = """# Audit: a subject, one surface
 - Move: 0
 - Evidence: CONFIRMED by execution
 - Adjudication: not adjudicable
+- Digest: {VALID_REPORT_DIGEST}
 - Code side: `engine/metrics.ts:3`
 - Doctrine side: `engine/host.mjs:319`
 - Detail: build-or-delete, and the choice costs something either way.
@@ -1409,6 +1468,7 @@ class ReportShapeTests(BoxMixin, unittest.TestCase):
             "adjudication": ("- Adjudication: doctrine wrong\n", ""),
             "move-outcomes": ("## Move outcomes", "## Move states"),
             "repair-units": ("## Repair units", "## Units of nothing"),
+            "frozen": ("## Frozen", "## Solidified"),
         }
         for item, (needle, replacement) in removals.items():
             with self.subTest(item=item):
@@ -1639,6 +1699,121 @@ class RepairUnitsTests(BoxMixin, unittest.TestCase):
         self.assertTrue(
             any("F9" in v["detail"] for v in violations),
             f"a unit naming an unknown finding must be rejected: {violations}")
+
+
+class CheckReportSubjectTests(BoxMixin, unittest.TestCase):
+    """`check-report --subject` re-derives `## Frozen`'s digest from disk.
+
+    Without the flag, `rederived` stays `false`, borrowing `comparison:
+    not-run`'s own idiom rather than silently weakening the check -- the
+    omission is reported, never hidden. The report file itself is written
+    beside the subject directory, never inside it, so re-deriving the
+    subject's digest never hashes the report that cites it.
+    """
+
+    def _report(self, digest, subject):
+        return f"""# Audit: a subject, re-derived
+
+## Frozen
+
+- Digest: {digest}
+- Subject: {subject}
+- Exclude: (none)
+
+## Move outcomes
+
+- Move: 0: ran
+- Move: 1: skipped: no from-zero build declared for this surface
+- Move: 2: skipped: not driven from disk in this pass
+- Move: 3: skipped: no external boundary crossed in this pass
+- Move: 4: skipped: no installed dependency read in this pass
+- Move: 5: skipped: no live probe attempted, no consent sought
+- Move: 6: skipped: no lock inverted in this pass
+- Move: 7: skipped: single-harness count only, not compared
+- Move: 8: skipped: no ordered user-mode flow driven in this pass
+- Move: textual: ran
+
+## Ranked findings
+
+### F1. A finding for the re-derivation fixture
+
+- Move: 0
+- Evidence: CONFIRMED by execution
+- Adjudication: doctrine wrong
+- Digest: {digest}
+- Code side: `a.py:1`
+- Doctrine side: `SKILL.md:1`
+- Detail: only the subject-level digest is under test here.
+
+## Clean, stated as results
+
+- Nothing else was checked in this fixture.
+
+## Unchecked
+
+- Everything outside this one finding.
+
+## Falsifier
+
+A changed subject byte would change the re-derived digest.
+
+## Changed-line forecast
+
+| Remedy | Changed lines |
+| --- | --- |
+| N/A | 0 |
+
+## Repair units
+
+| Unit | Findings | Changed lines |
+| --- | --- | --- |
+| N/A | F1 | 0 |
+"""
+
+    def test_subject_flag_omitted_reports_rederived_false(self):
+        box = self.make_box("subject_omitted")
+        subject = box / "subject"
+        self.write(subject, "a.txt", "alpha\n")
+        digest = audit_cli_module().frozen_digest(subject)
+        path = self.write(box, "report.md", self._report(digest, str(subject)))
+        result = run_cli("check-report", str(path))
+        payload = json.loads(result.stdout)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertIs(
+            payload["rederived"], False,
+            "omitting --subject must report rederived: false, never "
+            "silently pass as though the disk had been checked")
+
+    def test_matching_subject_is_accepted_and_rederived_true(self):
+        box = self.make_box("subject_match")
+        subject = box / "subject"
+        self.write(subject, "a.txt", "alpha\n")
+        digest = audit_cli_module().frozen_digest(subject)
+        path = self.write(box, "report.md", self._report(digest, str(subject)))
+        result = run_cli("check-report", str(path), "--subject", str(subject))
+        payload = json.loads(result.stdout)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertIs(payload["rederived"], True)
+        self.assertEqual(payload["violations"], [])
+
+    def test_mismatched_subject_is_rejected(self):
+        box = self.make_box("subject_mismatch")
+        subject = box / "subject"
+        self.write(subject, "a.txt", "alpha\n")
+        stale_digest = audit_cli_module().frozen_digest(subject)
+        # The subject changes after the digest was taken, so `## Frozen`'s
+        # value is now stale relative to the disk `--subject` re-derives from.
+        (subject / "a.txt").write_text("mutated\n", encoding="utf-8")
+        path = self.write(box, "report.md", self._report(stale_digest, str(subject)))
+        result = run_cli("check-report", str(path), "--subject", str(subject))
+        payload = json.loads(result.stdout)
+        self.assertEqual(result.returncode, 1, payload)
+        self.assertIs(payload["rederived"], True)
+        violations = [v for v in payload["violations"] if v["item"] == "frozen"]
+        self.assertNotEqual(
+            violations, [],
+            f"a subject changed since '## Frozen' was written must be "
+            f"rejected: {payload['violations']}")
 
 
 class ReportSchemaSelfDescriptionTests(unittest.TestCase):
@@ -1986,6 +2161,139 @@ class SingleWalkTests(unittest.TestCase):
             offenders, [],
             "a walk name appears outside tree_digest in audit_cli.py: "
             f"{offenders}")
+
+
+class FrozenDigestTests(BoxMixin, unittest.TestCase):
+    """One stable summary hash over `tree_digest`'s own map -- never a second
+    walk, and never a per-file map a report could not stay reviewable while
+    embedding.
+    """
+
+    def test_stable_digest_for_same_tree(self):
+        box = self.make_box("frozen_stable")
+        self.write(box, "a.txt", "alpha\n")
+        self.write(box, "sub/b.txt", "beta\n")
+        cli = audit_cli_module()
+        first = cli.frozen_digest(box)
+        second = cli.frozen_digest(box)
+        self.assertEqual(first, second,
+                         "two runs over an unchanged tree must agree")
+        self.assertTrue(first.startswith("sha256:"),
+                        f"the digest names its own algorithm: {first!r}")
+
+    def test_digest_changes_with_exclusion(self):
+        box = self.make_box("frozen_exclude")
+        self.write(box, "keep.py", "print(1)\n")
+        self.write(box, "__pycache__/keep.cpython-39.pyc", "junk")
+        cli = audit_cli_module()
+        with_junk = cli.frozen_digest(box)
+        without_junk = cli.frozen_digest(box, exclude=("__pycache__/*",))
+        self.assertNotEqual(
+            with_junk, without_junk,
+            "excluding a member must change the digest -- two runs that "
+            "disagree only about a stray excluded file must not agree by "
+            "accident")
+
+    def test_finding_digest_mismatch_rejected(self):
+        cli = audit_cli_module()
+        box = self.make_box("frozen_mismatch")
+        digest_a = cli.frozen_digest(box)
+        digest_b = "sha256:" + "0" * 64
+        self.assertNotEqual(digest_a, digest_b)
+        report = f"""# Audit: a mismatch fixture
+
+## Frozen
+
+- Digest: {digest_a}
+- Subject: {box}
+- Exclude: (none)
+
+## Move outcomes
+
+- Move: 0: ran
+- Move: 1: skipped: no from-zero build declared for this surface
+- Move: 2: skipped: not driven from disk in this pass
+- Move: 3: skipped: no external boundary crossed in this pass
+- Move: 4: skipped: no installed dependency read in this pass
+- Move: 5: skipped: no live probe attempted, no consent sought
+- Move: 6: skipped: no lock inverted in this pass
+- Move: 7: skipped: single-harness count only, not compared
+- Move: 8: skipped: no ordered user-mode flow driven in this pass
+- Move: textual: ran
+
+## Ranked findings
+
+### F1. A finding whose own digest disagrees with the frozen one
+
+- Move: 0
+- Evidence: CONFIRMED by execution
+- Adjudication: doctrine wrong
+- Digest: {digest_b}
+- Code side: `a.py:1`
+- Doctrine side: `SKILL.md:1`
+- Detail: planted for this test -- the two digests are deliberately unequal.
+
+## Clean, stated as results
+
+- Nothing else was checked in this fixture.
+
+## Unchecked
+
+- Everything outside this one planted finding.
+
+## Falsifier
+
+Making the finding's digest agree with '## Frozen' would remove the rejection.
+
+## Changed-line forecast
+
+| Remedy | Changed lines |
+| --- | --- |
+| N/A | 0 |
+
+## Repair units
+
+| Unit | Findings | Changed lines |
+| --- | --- | --- |
+| N/A | F1 | 0 |
+"""
+        path = self.write(box, "mismatch.md", report)
+        result = run_cli("check-report", str(path))
+        payload = json.loads(result.stdout)
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "frozen"]
+        self.assertTrue(
+            any("F1" in v["where"] for v in violations),
+            f"a finding's digest disagreeing with '## Frozen' must be "
+            f"rejected and must name the finding: {violations}")
+
+
+class FrozenPayloadTests(unittest.TestCase):
+    """`frozen` travels in every subcommand's own payload, not only
+    `roster`'s. Driven for real, against this skill's own shipped recipes,
+    never through a fixture built only for this assertion.
+    """
+
+    def test_roster_payload_carries_frozen(self):
+        _, payload = roster_json(SELF_SPEC, SKILL_ROOT)
+        self._assert_frozen_shape(payload)
+
+    def test_structure_payload_carries_frozen(self):
+        _, payload = structure_json(STRUCTURE_SPEC, SKILL_ROOT, repo=FORGE)
+        self._assert_frozen_shape(payload)
+
+    def test_walkthrough_payload_carries_frozen(self):
+        _, payload = walkthrough_json(WALKTHROUGH_SPEC, SKILL_ROOT, repo=FORGE)
+        self._assert_frozen_shape(payload)
+
+    def _assert_frozen_shape(self, payload):
+        self.assertIn("frozen", payload, f"payload carries no frozen: {payload}")
+        frozen = payload["frozen"]
+        self.assertEqual(set(frozen), {"digest", "exclude", "subject"})
+        self.assertTrue(
+            frozen["digest"].startswith("sha256:"),
+            f"the digest names its own algorithm: {frozen}")
+        self.assertEqual(Path(frozen["subject"]), SKILL_ROOT.resolve())
 
 
 class TokenInterpolationTests(unittest.TestCase):

@@ -397,6 +397,26 @@ def tree_digest(root, exclude=()):
     return digest
 
 
+def frozen_digest(root, exclude=()):
+    """One stable `sha256` summary over `tree_digest`'s own sorted map.
+
+    Calls `tree_digest` rather than walking a second time -- `SingleWalkTests`
+    holds every walk name to inside `tree_digest` alone, so a second walk
+    here would turn that lock red rather than quietly drift beside it. The
+    digest embeds one `path sha256` line per file, sorted by path, so two
+    runs over the same tree with the same `exclude` always agree, and a
+    file added, removed, or changed always disagrees.
+
+    A summary hash, not the per-file map itself: a report cannot embed
+    hundreds of lines of per-file hashes and stay reviewable, so the report
+    carries this one digest plus the `exclude` list needed to re-derive it --
+    the recipe for the hash, not the hash's own working.
+    """
+    files = tree_digest(root, exclude)
+    lines = "\n".join(f"{path} {files[path]}" for path in sorted(files))
+    return "sha256:" + hashlib.sha256(lines.encode("utf-8")).hexdigest()
+
+
 #: Only these three tokens interpolate inside a `structure` recipe's
 #: `fromZero.steps`, each resolved absolutely by the tool rather than taken
 #: from the recipe string. Any other `{...}` is refused rather than passed
@@ -614,6 +634,11 @@ def build_parser():
         help="override path to the doctrine file whose moves table the "
              "move-outcome roster is derived from (default: this skill's own "
              "SKILL.md, resolved relative to this script)")
+    report.add_argument(
+        "--subject", default=None,
+        help="re-derive the '## Frozen' digest from this path and compare "
+             "it; without it the payload carries rederived: false and only "
+             "finding-vs-'## Frozen' consistency is checked")
 
     structure = commands.add_parser(
         "structure",
@@ -769,11 +794,14 @@ def finish(code, doctrine, notes, unregistered, phantom, comparison,
     mismatches = []
     for site in recipe.get("numeralPaths", []):
         mismatches.extend(numeral_mismatches(resolve_site(site, subject, repo)))
+    exclude = tuple(recipe.get("exclude", ()))
     emit({
         "code": code,
         "comparison": comparison,
         "doctrine": doctrine,
         "duplicated": duplicated or [],
+        "frozen": {"digest": frozen_digest(subject, exclude),
+                   "exclude": list(exclude), "subject": str(subject)},
         "notes": notes,
         "numeralMismatch": mismatches,
         "phantom": phantom,
@@ -885,6 +913,8 @@ def run_structure(args):
     emit({
         "containment": {"afterRemoved": after_removed, "beforeEmpty": before_empty,
                         "box": str(box)},
+        "frozen": {"digest": frozen_digest(subject, exclude),
+                   "exclude": list(exclude), "subject": str(subject)},
         "missingFrom": missing_from,
         "notes": notes,
         "onlyIn": only_in,
@@ -973,6 +1003,7 @@ def run_walkthrough(args):
     steps_spec = recipe.get("steps", [])
     if not steps_spec:
         raise Unprobeable("the recipe declares no steps to walk through")
+    exclude = tuple(recipe.get("exclude", ()))
 
     box = repo / "implementations" / f"_walkthrough_{surface}"
     before_empty = box_empty_or_absent(box)
@@ -1068,6 +1099,8 @@ def run_walkthrough(args):
     emit({
         "containment": {"afterRemoved": after_removed, "beforeEmpty": before_empty,
                         "box": str(box)},
+        "frozen": {"digest": frozen_digest(subject, exclude),
+                   "exclude": list(exclude), "subject": str(subject)},
         "stall": stall,
         "steps": steps_report,
         "surface": surface,
@@ -1087,6 +1120,7 @@ REPORT_SHAPE = {
     "clean-section": "## Clean, stated as results",
     "evidence-marker": "- Evidence:",
     "falsifier": "## Falsifier",
+    "frozen": "## Frozen",
     "move-number": "- Move:",
     "move-outcomes": "## Move outcomes",
     "ranked-findings": "## Ranked findings",
@@ -1232,6 +1266,46 @@ def repair_unit_rows(text):
     return tables[0]
 
 
+#: `## Frozen`'s own three fields: `- Digest:`, `- Subject:`, `- Exclude:`.
+#: Self-describing, so re-deriving the digest needs no out-of-band argument
+#: beyond `--subject` -- the exclude list travels with the report itself.
+FROZEN_FIELD_ROW = re.compile(r"^-\s*(Digest|Subject|Exclude):\s*(.*)$")
+
+
+def frozen_section_fields(lines):
+    """The `- Digest:`, `- Subject:`, and `- Exclude:` lines under
+    `## Frozen`, read only inside that section -- exactly like
+    `move_outcome_rows` -- so a finding's own citation of a digest elsewhere
+    in the report is never mistaken for the run's own frozen fields.
+    """
+    fields = {}
+    in_section = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "## Frozen":
+            in_section = True
+            continue
+        if in_section and stripped.startswith("## "):
+            break
+        if not in_section:
+            continue
+        match = FROZEN_FIELD_ROW.match(stripped)
+        if match:
+            fields[match.group(1).lower()] = match.group(2).strip()
+    return fields
+
+
+def parse_exclude_field(value):
+    """`- Exclude:`'s rendered value, back into the tuple `frozen_digest`
+    accepts. `(none)` -- the shape `## Frozen` renders when the list is
+    empty -- becomes the empty tuple; anything else is a comma-separated
+    list of `fnmatch` patterns.
+    """
+    if not value or value == "(none)":
+        return ()
+    return tuple(part.strip() for part in value.split(",") if part.strip())
+
+
 def run_check_report(args):
     """Validate a damage report against the shape, as a process.
 
@@ -1258,6 +1332,22 @@ def run_check_report(args):
         if marker.startswith("## ") and marker not in lines:
             fail(item, f"the report carries no {marker!r} section",
                  f"{path}:1")
+
+    # `--subject` is optional: without it, `rederived` stays `false`, borrowing
+    # `comparison: not-run`'s idiom rather than silently weakening the check,
+    # and only a finding's own digest is held to `## Frozen`'s declared one.
+    frozen = frozen_section_fields(lines)
+    rederived = False
+    if getattr(args, "subject", None) and frozen.get("digest"):
+        actual = frozen_digest(
+            Path(args.subject).resolve(),
+            parse_exclude_field(frozen.get("exclude", "(none)")))
+        rederived = True
+        if actual != frozen["digest"]:
+            fail("frozen",
+                 f"the subject at {args.subject!r} re-derives to {actual}, "
+                 f"which disagrees with '## Frozen''s declared digest "
+                 f"{frozen['digest']}", f"{path}:1")
 
     findings = report_findings(lines)
     if not findings:
@@ -1296,6 +1386,13 @@ def run_check_report(args):
                  "a finding names both halves at `file:line`; naming one half "
                  f"makes it a candidate, not a finding (saw {sorted(citations)})",
                  where)
+
+        digest = re.search(r"^- Digest:\s*(\S+)\s*$", body, re.MULTILINE)
+        if digest and frozen.get("digest") and digest.group(1) != frozen["digest"]:
+            fail("frozen",
+                 f"finding {finding['label']}'s digest {digest.group(1)} "
+                 f"disagrees with '## Frozen''s declared digest "
+                 f"{frozen['digest']}", where)
 
     if findings and not confirmed:
         head = [line for line in lines[:6] if line.strip()]
@@ -1370,7 +1467,7 @@ def run_check_report(args):
                 continue
             fail(item, detail, f"{path}:{index}")
 
-    emit({"violations": sorted(
+    emit({"rederived": rederived, "violations": sorted(
         violations, key=lambda v: (v["item"], v["where"]))})
     return 1 if violations else 0
 

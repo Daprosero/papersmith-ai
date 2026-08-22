@@ -11,6 +11,12 @@ repairing is deliberate: two of the four findings have remedies whose cost the
 owner of the subject has to weigh, and one of them cannot be decided at all
 without a product decision.
 
+## Frozen
+
+- Digest: sha256:4e19d048a6276c2ec3d95ff5cb2a09dd7736bf71bf39e051a0b8e661e1e03b60
+- Subject: `.claude/skills/proposal-deliberation`
+- Exclude: (none)
+
 ## Move outcomes
 
 - Move: 0: ran
@@ -31,6 +37,7 @@ without a product decision.
 - Move: 0
 - Evidence: CONFIRMED by execution
 - Adjudication: doctrine wrong
+- Digest: sha256:4e19d048a6276c2ec3d95ff5cb2a09dd7736bf71bf39e051a0b8e661e1e03b60
 - Code side: `engine/cli.mjs:320`
 - Doctrine side: `SKILL.md:243`
 - Detail: the running host enumerates its complete accepted set inside its own
@@ -57,6 +64,7 @@ without a product decision.
 - Move: 0
 - Evidence: CONFIRMED by execution
 - Adjudication: doctrine wrong
+- Digest: sha256:4e19d048a6276c2ec3d95ff5cb2a09dd7736bf71bf39e051a0b8e661e1e03b60
 - Code side: `engine/cli.mjs:298-306`
 - Doctrine side: `references/usage.md:264`
 - Detail: `roster` reports three restatement sites, each carrying members of
@@ -75,6 +83,7 @@ without a product decision.
 - Move: 0
 - Evidence: CONFIRMED by execution
 - Adjudication: doctrine wrong
+- Digest: sha256:4e19d048a6276c2ec3d95ff5cb2a09dd7736bf71bf39e051a0b8e661e1e03b60
 - Code side: `engine/proposal-workspace.ts:5546`
 - Doctrine side: `engine/cli.mjs:298`
 - Detail: the `StringEnum` on that line accepts seven operation names. Its
@@ -94,6 +103,7 @@ without a product decision.
 - Move: 0
 - Evidence: CONFIRMED by execution
 - Adjudication: not adjudicable
+- Digest: sha256:4e19d048a6276c2ec3d95ff5cb2a09dd7736bf71bf39e051a0b8e661e1e03b60
 - Code side: `engine/runtime-metrics.ts:3`
 - Doctrine side: `engine/cli.mjs:320`
 - Detail: `SCIENTIFIC_WORKFLOW` is a member of `RouteMetricStage`
