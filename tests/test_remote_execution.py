@@ -2367,6 +2367,102 @@ def _write_fake_kaggle(
     return script
 
 
+def _write_fake_driver(
+    directory: Path,
+    *,
+    capture_metadata_to: Path | None = None,
+    capture_entrypoint_to: tuple[str, Path] | None = None,
+    exit_code: int = 0,
+) -> Path:
+    """A minimal stand-in for `kaggle_driver.py`'s own `submit` operation —
+    never imports `kagglesdk`, never reaches a socket. Reads only the
+    staging directory path `KaggleAdapter._push()` hands it on argv
+    (`sys.argv[2]`, since `sys.argv[1]` is always `"submit"` here) and,
+    optionally, copies one named file out of that staging copy for a test
+    to inspect afterward — the same role the old fake `kaggle kernels
+    push` scripts played on `KAGGLE_EXECUTABLE`'s own boundary before this
+    driver replaced the CLI as the child `_push()` shells out to.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    script = directory / "fake_kaggle_driver.py"
+    lines = [
+        "import json, shutil, sys",
+        "from pathlib import Path",
+        f"EXIT_CODE = {exit_code!r}",
+        "if EXIT_CODE != 0:",
+        "    print(json.dumps({'ok': False, 'error': 'simulated failure'}))",
+        "    sys.exit(EXIT_CODE)",
+        "staging_dir = Path(sys.argv[2])",
+    ]
+    if capture_metadata_to is not None:
+        lines.append(
+            f"shutil.copyfile(staging_dir / 'kernel-metadata.json', "
+            f"{str(capture_metadata_to)!r})"
+        )
+    if capture_entrypoint_to is not None:
+        filename, destination = capture_entrypoint_to
+        lines.append(
+            f"shutil.copyfile(staging_dir / {filename!r}, {str(destination)!r})"
+        )
+    lines.extend(
+        [
+            "metadata = json.loads((staging_dir / 'kernel-metadata.json')"
+            ".read_text(encoding='utf-8'))",
+            "print(json.dumps({'ok': True, 'ref': metadata.get('id'), "
+            "'url': 'https://example.invalid/', 'versionNumber': 1}))",
+        ]
+    )
+    script.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return script
+
+
+def _write_recording_driver(
+    driver_dir: Path, record_dir: Path, *, sleep_seconds: float = 0.0
+) -> Path:
+    """A fake `kaggle_driver.py` stand-in for Decision 2's OUTER
+    interception point: `KaggleAdapter._push()`'s own subprocess boundary
+    — the layer above the driver's own INNER one `DriverInterceptionTests`
+    mounts inside its `requests` session. Records every invocation's argv,
+    the credential it actually received on its own child environment, and
+    the staged `id` it read, then answers success — never imports
+    `kagglesdk`, never reaches a socket.
+
+    Each call writes its own uniquely-named record file, so two genuinely
+    concurrent invocations cannot overwrite one another's evidence — the
+    same reason `_write_recording_kaggle` (this fixture's own CLI-shaped
+    predecessor) did.
+    """
+    driver_dir.mkdir(parents=True, exist_ok=True)
+    record_dir.mkdir(parents=True, exist_ok=True)
+    script = driver_dir / "fake_kaggle_driver.py"
+    script.write_text(
+        "import json, os, sys, time, uuid\n"
+        "from pathlib import Path\n"
+        f"RECORD_DIR = Path({str(record_dir)!r})\n"
+        f"SLEEP = {sleep_seconds!r}\n"
+        "started = time.time()\n"
+        "if SLEEP:\n"
+        "    time.sleep(SLEEP)\n"
+        "staging_dir = Path(sys.argv[2])\n"
+        "metadata = json.loads((staging_dir / 'kernel-metadata.json')"
+        ".read_text(encoding='utf-8'))\n"
+        "record = {\n"
+        "    'argv': sys.argv[1:],\n"
+        "    'env_keys': sorted(os.environ.keys()),\n"
+        "    'credential': os.environ.get('KAGGLE_API_TOKEN'),\n"
+        "    'id': metadata.get('id'),\n"
+        "    'started': started,\n"
+        "    'finished': time.time(),\n"
+        "}\n"
+        "(RECORD_DIR / (uuid.uuid4().hex + '.json')).write_text(\n"
+        "    json.dumps(record), encoding='utf-8')\n"
+        "print(json.dumps({'ok': True, 'ref': metadata.get('id'), "
+        "'url': 'https://example.invalid/', 'versionNumber': 1}))\n",
+        encoding="utf-8",
+    )
+    return script
+
+
 class KaggleAdapterTests(unittest.TestCase):
     """`adapters/kaggle.py` — the one file in this skill allowed to name a
     service. No test in this class reaches the network or a real Kaggle
@@ -2695,19 +2791,15 @@ class KaggleAdapterTests(unittest.TestCase):
             entrypoint.write_text("{}", encoding="utf-8")
             (job_dir / "kernel-metadata.json").write_text("{}", encoding="utf-8")
 
-            bin_dir = tmp_path / "bin"
-            _write_fake_kaggle(bin_dir)
+            driver = _write_fake_driver(tmp_path / "driver")
             token_path = _write_fake_token(tmp_path / "creds")
             handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
 
-            with unittest.mock.patch.dict(
-                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
-            ):
-                adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle})
-                job = ADAPTER.Job(
-                    entrypoint=entrypoint, run_config={"mode": "full"}, worker="w1"
-                )
-                submission = adapter.submit(job)
+            adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle}, driver_script=driver)
+            job = ADAPTER.Job(
+                entrypoint=entrypoint, run_config={"mode": "full"}, worker="w1"
+            )
+            submission = adapter.submit(job)
 
             self.assertEqual(submission.worker, "w1")
 
@@ -2716,7 +2808,10 @@ class KaggleAdapterTests(unittest.TestCase):
     ) -> None:
         """Empty `run_config` is the legacy shape: submit proceeds even
         with no metadata file present, which is what keeps the credential
-        sentinel test (a legacy-shaped `cmd_submit` call) green.
+        sentinel test (a legacy-shaped `cmd_submit` call) green. The job
+        folder itself still carries no metadata file — `submit()` now
+        synthesizes a minimal one into the staged copy the driver reads,
+        never writing it back here.
         """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -2725,17 +2820,13 @@ class KaggleAdapterTests(unittest.TestCase):
             entrypoint.write_text("{}", encoding="utf-8")
             # No metadata file beside it, and none is required.
 
-            bin_dir = tmp_path / "bin"
-            _write_fake_kaggle(bin_dir)
+            driver = _write_fake_driver(tmp_path / "driver")
             token_path = _write_fake_token(tmp_path / "creds")
             handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
 
-            with unittest.mock.patch.dict(
-                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
-            ):
-                adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle})
-                job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
-                submission = adapter.submit(job)
+            adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle}, driver_script=driver)
+            job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
+            submission = adapter.submit(job)
 
             self.assertEqual(submission.worker, "w1")
 
@@ -2788,35 +2879,17 @@ class KaggleAdapterTests(unittest.TestCase):
                 original_metadata, encoding="utf-8"
             )
 
-            bin_dir = tmp_path / "bin"
-            bin_dir.mkdir()
             captured_metadata = tmp_path / "captured-kernel-metadata.json"
-            fake_kaggle = bin_dir / "kaggle"
-            fake_kaggle.write_text(
-                "#!/usr/bin/env python3\n"
-                "import shutil, sys\n"
-                "from pathlib import Path\n"
-                "args = sys.argv[1:]\n"
-                "if args[:2] == ['kernels', 'push']:\n"
-                "    idx = args.index('-p')\n"
-                "    src = Path(args[idx + 1]) / 'kernel-metadata.json'\n"
-                f"    shutil.copyfile(src, {str(captured_metadata)!r})\n"
-                "    print('kernel version 1 successfully pushed')\n"
-                "    sys.exit(0)\n"
-                "sys.exit(1)\n",
-                encoding="utf-8",
+            driver = _write_fake_driver(
+                tmp_path / "driver", capture_metadata_to=captured_metadata
             )
-            fake_kaggle.chmod(0o755)
 
             token_path = _write_fake_token(tmp_path / "creds")
             handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
 
-            with unittest.mock.patch.dict(
-                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
-            ):
-                adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle})
-                job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
-                submission = adapter.submit(job)
+            adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle}, driver_script=driver)
+            job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
+            submission = adapter.submit(job)
 
             self.assertEqual(submission.id, "w1/papersmith-domain-adaptation")
             self.assertTrue(captured_metadata.is_file())
@@ -2845,8 +2918,7 @@ class KaggleAdapterTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            bin_dir = tmp_path / "bin"
-            _write_fake_kaggle(bin_dir)
+            driver = _write_fake_driver(tmp_path / "driver")
             token_path = _write_fake_token(tmp_path / "creds")
             handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
 
@@ -2865,13 +2937,11 @@ class KaggleAdapterTests(unittest.TestCase):
                     }),
                     encoding="utf-8",
                 )
-                with unittest.mock.patch.dict(
-                    os.environ,
-                    {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"},
-                ):
-                    adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle})
-                    job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
-                    refs[job_name] = adapter.submit(job).id
+                adapter = KAGGLE.KaggleAdapter(
+                    credentials={"w1": handle}, driver_script=driver
+                )
+                job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
+                refs[job_name] = adapter.submit(job).id
 
             assert refs["phase1-run-e2e"] != refs["phase2-run-e2e"], (
                 f"both jobs collided on the same ref: {refs}"
@@ -2895,17 +2965,13 @@ class KaggleAdapterTests(unittest.TestCase):
             entrypoint.write_text("{}", encoding="utf-8")
             (job_dir / "kernel-metadata.json").write_text("{}", encoding="utf-8")
 
-            bin_dir = tmp_path / "bin"
-            _write_fake_kaggle(bin_dir)
+            driver = _write_fake_driver(tmp_path / "driver")
             token_path = _write_fake_token(tmp_path / "creds")
             handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
 
-            with unittest.mock.patch.dict(
-                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
-            ):
-                adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle})
-                job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
-                submission = adapter.submit(job)
+            adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle}, driver_script=driver)
+            job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
+            submission = adapter.submit(job)
 
             self.assertEqual(submission.id, "w1/runner")
 
@@ -2970,35 +3036,18 @@ class KaggleAdapterTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            bin_dir = tmp_path / "bin"
-            bin_dir.mkdir()
             captured_notebook = tmp_path / "captured-runner.ipynb"
-            fake_kaggle = bin_dir / "kaggle"
-            fake_kaggle.write_text(
-                "#!/usr/bin/env python3\n"
-                "import shutil, sys\n"
-                "from pathlib import Path\n"
-                "args = sys.argv[1:]\n"
-                "if args[:2] == ['kernels', 'push']:\n"
-                "    idx = args.index('-p')\n"
-                "    src = Path(args[idx + 1]) / 'runner.ipynb'\n"
-                f"    shutil.copyfile(src, {str(captured_notebook)!r})\n"
-                "    print('kernel version 1 successfully pushed')\n"
-                "    sys.exit(0)\n"
-                "sys.exit(1)\n",
-                encoding="utf-8",
+            driver = _write_fake_driver(
+                tmp_path / "driver",
+                capture_entrypoint_to=("runner.ipynb", captured_notebook),
             )
-            fake_kaggle.chmod(0o755)
 
             token_path = _write_fake_token(tmp_path / "creds")
             handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
 
-            with unittest.mock.patch.dict(
-                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
-            ):
-                adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle})
-                job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
-                adapter.submit(job)
+            adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle}, driver_script=driver)
+            job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
+            adapter.submit(job)
 
             self.assertTrue(captured_notebook.is_file())
             pushed = json.loads(captured_notebook.read_text(encoding="utf-8"))
@@ -3064,35 +3113,18 @@ class KaggleAdapterTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            bin_dir = tmp_path / "bin"
-            bin_dir.mkdir()
             captured_notebook = tmp_path / "captured-runner.ipynb"
-            fake_kaggle = bin_dir / "kaggle"
-            fake_kaggle.write_text(
-                "#!/usr/bin/env python3\n"
-                "import shutil, sys\n"
-                "from pathlib import Path\n"
-                "args = sys.argv[1:]\n"
-                "if args[:2] == ['kernels', 'push']:\n"
-                "    idx = args.index('-p')\n"
-                "    src = Path(args[idx + 1]) / 'runner.ipynb'\n"
-                f"    shutil.copyfile(src, {str(captured_notebook)!r})\n"
-                "    print('kernel version 1 successfully pushed')\n"
-                "    sys.exit(0)\n"
-                "sys.exit(1)\n",
-                encoding="utf-8",
+            driver = _write_fake_driver(
+                tmp_path / "driver",
+                capture_entrypoint_to=("runner.ipynb", captured_notebook),
             )
-            fake_kaggle.chmod(0o755)
 
             token_path = _write_fake_token(tmp_path / "creds")
             handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
 
-            with unittest.mock.patch.dict(
-                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
-            ):
-                adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle})
-                job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
-                adapter.submit(job)
+            adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle}, driver_script=driver)
+            job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
+            adapter.submit(job)
 
             pushed = json.loads(captured_notebook.read_text(encoding="utf-8"))
             injected_source = "".join(pushed["cells"][0]["source"])
@@ -3178,40 +3210,23 @@ class KaggleAdapterTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            bin_dir = tmp_path / "bin"
-            bin_dir.mkdir()
             captured_notebook = tmp_path / "captured-runner.ipynb"
-            fake_kaggle = bin_dir / "kaggle"
-            fake_kaggle.write_text(
-                "#!/usr/bin/env python3\n"
-                "import shutil, sys\n"
-                "from pathlib import Path\n"
-                "args = sys.argv[1:]\n"
-                "if args[:2] == ['kernels', 'push']:\n"
-                "    idx = args.index('-p')\n"
-                "    src = Path(args[idx + 1]) / 'runner.ipynb'\n"
-                f"    shutil.copyfile(src, {str(captured_notebook)!r})\n"
-                "    print('kernel version 1 successfully pushed')\n"
-                "    sys.exit(0)\n"
-                "sys.exit(1)\n",
-                encoding="utf-8",
+            driver = _write_fake_driver(
+                tmp_path / "driver",
+                capture_entrypoint_to=("runner.ipynb", captured_notebook),
             )
-            fake_kaggle.chmod(0o755)
 
             token_path = _write_fake_token(tmp_path / "creds")
             handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
 
-            with unittest.mock.patch.dict(
-                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
-            ):
-                adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle})
-                # Exactly what `cmd_submit --smoke` hands the adapter.
-                job = ADAPTER.Job(
-                    entrypoint=entrypoint,
-                    run_config={"mode": "smoke"},
-                    worker="w1",
-                )
-                adapter.submit(job)
+            adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle}, driver_script=driver)
+            # Exactly what `cmd_submit --smoke` hands the adapter.
+            job = ADAPTER.Job(
+                entrypoint=entrypoint,
+                run_config={"mode": "smoke"},
+                worker="w1",
+            )
+            adapter.submit(job)
 
             pushed = json.loads(captured_notebook.read_text(encoding="utf-8"))
             injected_source = "".join(pushed["cells"][0]["source"])
@@ -3268,6 +3283,7 @@ class KaggleAdapterTests(unittest.TestCase):
 
             bin_dir = tmp_path / "bin"
             _write_fake_kaggle(bin_dir)
+            driver = _write_fake_driver(tmp_path / "driver")
 
             fake_accounts_cli = tmp_path / "fake_accounts_cli.py"
             fake_accounts_cli.write_text(
@@ -3292,7 +3308,9 @@ class KaggleAdapterTests(unittest.TestCase):
                 os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
             ), unittest.mock.patch.object(KAGGLE.subprocess, "run", side_effect=recording_run):
                 adapter = KAGGLE.KaggleAdapter(
-                    credentials={"w1": handle}, accounts_cli=fake_accounts_cli
+                    credentials={"w1": handle},
+                    accounts_cli=fake_accounts_cli,
+                    driver_script=driver,
                 )
 
                 submit_result = REMOTE_CLI.cmd_submit(
@@ -3338,6 +3356,228 @@ class KaggleAdapterTests(unittest.TestCase):
                     self.assertNotIn(
                         sentinel, artifact.read_text(encoding="utf-8", errors="ignore")
                     )
+
+
+class SubmitDriverWiringTests(unittest.TestCase):
+    """Commit 2: `KaggleAdapter.submit()`/`_push()` retargeted onto
+    `kaggle_driver.py` — Decision 2's OUTER interception point, on
+    `_push()`'s own subprocess boundary, one layer above the driver's own
+    INNER one `DriverInterceptionTests` (Commit 1) mounts inside its
+    `requests` session.
+
+    Every test in this class either drives `_push()` through a fake driver
+    stand-in on an injected `driver_script` path (never the real one, and
+    never PATH-resolved: `_push()`'s own argv names an absolute path), or
+    calls the real driver's own metadata-mapping function directly, with
+    no process and no socket. Nothing here ever reaches the real service.
+    """
+
+    def test_outer_interception_reached_count(self) -> None:
+        """The OUTER analogue of `test_inner_interception_reached_count`:
+        asserted BEFORE any assertion about content, because a recorder
+        silently bypassed (`submit()` still shelling out to a `kaggle` CLI
+        binary, say) and one genuinely never wired up look identical
+        unless the call count itself is checked first.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            record_dir = tmp_path / "records"
+            driver = _write_recording_driver(tmp_path / "driver", record_dir)
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
+            adapter = KAGGLE.KaggleAdapter(
+                credentials={"w1": handle}, driver_script=driver
+            )
+
+            job_dir = tmp_path / "job"
+            job_dir.mkdir()
+            entrypoint = job_dir / "runner.ipynb"
+            entrypoint.write_text("{}", encoding="utf-8")
+            job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
+
+            submission = adapter.submit(job)
+
+            records = list(record_dir.iterdir())
+            self.assertGreater(
+                len(records), 0, "the outer interception point was never reached"
+            )
+            self.assertEqual(submission.worker, "w1")
+
+    def test_metadata_id_maps_to_slug_never_int_id(self) -> None:
+        """Decision 4's trap, held directly against the driver's own
+        mapping function: `ApiSaveKernelRequest.id` is the service-
+        assigned numeric kernel id (measured: `int`, default `0`) while
+        the staged metadata's `id` carries the STRING `<owner>/<slug>`
+        this adapter writes — that string belongs on `slug`, never on
+        `id`, whose type would reject it outright.
+        """
+        driver = _load_kaggle_driver_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            staging = _write_driver_staging_dir(
+                Path(tmp), owner_slug="w1/papersmith-job"
+            )
+            request = driver._save_kernel_request_from_staging(staging)
+
+        self.assertEqual(request.slug, "w1/papersmith-job")
+        self.assertEqual(request.id, 0)
+
+    def test_unmapped_metadata_key_refuses(self) -> None:
+        """Decision 4's closed table: a metadata key that is neither
+        consumed (`id`, `code_file`) nor passed straight through
+        (`_METADATA_PASSTHROUGH_KEYS`) is a refusal naming the key — never
+        a silent drop, the exact `machine_shape` defect class this driver
+        exists to close structurally.
+        """
+        driver = _load_kaggle_driver_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            staging = _write_driver_staging_dir(Path(tmp))
+            metadata_path = staging / driver._KERNEL_METADATA_FILENAME
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["machine_shape"] = "NvidiaTeslaT4"
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+            with self.assertRaises(driver.DriverError) as caught:
+                driver._save_kernel_request_from_staging(staging)
+
+        self.assertIn("machine_shape", str(caught.exception))
+
+    def test_sentinel_absent_from_argv(self) -> None:
+        """The credential VALUE never becomes part of the child's own
+        argv: it crosses only through `env`, and a fake driver on the
+        outer boundary that records both is what proves that structurally
+        rather than by inspection of the adapter's own source.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            record_dir = tmp_path / "records"
+            driver = _write_recording_driver(tmp_path / "driver", record_dir)
+            sentinel = "SENTINEL-" + uuid.uuid4().hex
+            token_path = _write_fake_token(tmp_path / "creds", sentinel)
+            handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
+            adapter = KAGGLE.KaggleAdapter(
+                credentials={"w1": handle}, driver_script=driver
+            )
+
+            job_dir = tmp_path / "job"
+            job_dir.mkdir()
+            entrypoint = job_dir / "runner.ipynb"
+            entrypoint.write_text("{}", encoding="utf-8")
+            job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
+
+            adapter.submit(job)
+
+            records = [
+                json.loads(path.read_text(encoding="utf-8"))
+                for path in record_dir.iterdir()
+            ]
+            self.assertGreater(len(records), 0)
+            for record in records:
+                self.assertNotIn(sentinel, json.dumps(record["argv"]))
+
+    def test_exact_env_allowlist_submit(self) -> None:
+        """C6, held again on the OUTER boundary specifically for the
+        driver-shaped child: `_env_for()`'s own CONSTRUCTED env — what
+        this adapter explicitly builds and hands to `subprocess.run` —
+        must carry exactly `{PATH, KAGGLE_API_TOKEN}`.
+
+        Measured here by capturing the `env=` kwarg `_push()` actually
+        passes, never by having the fake driver introspect its own
+        `os.environ`: macOS injects `__CF_USER_TEXT_ENCODING`/`LC_CTYPE`
+        into a spawned child's live environment regardless of an explicit
+        `env=` dict, which would make an in-child `os.environ` read a
+        claim about this platform's own subprocess machinery, not about
+        `_env_for()`'s own allowlist.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            driver = _write_fake_driver(tmp_path / "driver")
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
+            adapter = KAGGLE.KaggleAdapter(
+                credentials={"w1": handle}, driver_script=driver
+            )
+
+            job_dir = tmp_path / "job"
+            job_dir.mkdir()
+            entrypoint = job_dir / "runner.ipynb"
+            entrypoint.write_text("{}", encoding="utf-8")
+            job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
+
+            captured_envs: list[dict] = []
+            real_run = subprocess.run
+
+            def recording_run(argv, **kwargs):
+                captured_envs.append(dict(kwargs.get("env") or {}))
+                return real_run(argv, **kwargs)
+
+            with unittest.mock.patch.object(
+                KAGGLE.subprocess, "run", side_effect=recording_run
+            ):
+                adapter.submit(job)
+
+            self.assertGreater(len(captured_envs), 0)
+            self.assertEqual(sorted(captured_envs[0]), ["KAGGLE_API_TOKEN", "PATH"])
+
+    def test_two_concurrent_submissions_uncrossed_credentials(self) -> None:
+        """The claim Decision 1's whole topology exists to serve, proven
+        again for the OUTER boundary specifically with genuine time
+        overlap between two driver processes —
+        `ParallelCredentialIsolationTests` proves the same claim inline
+        against its own longer-lived fixture; this is the Phase 2 work
+        unit's own version of it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            record_dir = tmp_path / "records"
+            driver = _write_recording_driver(
+                tmp_path / "driver", record_dir, sleep_seconds=0.5
+            )
+
+            tokens = {
+                "worker-x": "KGAT_" + "1" * 32,
+                "worker-y": "KGAT_" + "2" * 32,
+            }
+            credentials = {}
+            jobs = {}
+            for worker, value in tokens.items():
+                token_path = _write_fake_token(tmp_path / "creds" / worker, value)
+                credentials[worker] = KAGGLE.CredentialHandle(
+                    worker_id=worker, token_path=token_path
+                )
+                job_dir = tmp_path / f"job-{worker}"
+                job_dir.mkdir()
+                entrypoint = job_dir / "runner.ipynb"
+                entrypoint.write_text("{}", encoding="utf-8")
+                jobs[worker] = ADAPTER.Job(
+                    entrypoint=entrypoint, run_config={}, worker=worker
+                )
+
+            adapter = KAGGLE.KaggleAdapter(credentials=credentials, driver_script=driver)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                futures = {
+                    worker: pool.submit(adapter.submit, job)
+                    for worker, job in jobs.items()
+                }
+                {worker: future.result() for worker, future in futures.items()}
+
+            records = [
+                json.loads(path.read_text(encoding="utf-8"))
+                for path in record_dir.iterdir()
+            ]
+            self.assertEqual(len(records), 2)
+            received = {
+                record["id"].split("/", 1)[0]: record["credential"]
+                for record in records
+            }
+            self.assertEqual(received, tokens)
+
+            first, second = sorted(records, key=lambda record: record["started"])
+            self.assertLess(
+                second["started"],
+                first["finished"],
+                "the two pushes never overlapped: this run proves nothing "
+                "about credential isolation under concurrency",
+            )
 
 
 def _write_fake_materialize_cli(
@@ -3459,6 +3699,7 @@ class CredentialSecurityTests(unittest.TestCase):
         )
         bin_dir = tmp_path / "bin"
         _write_fake_kaggle(bin_dir)
+        driver = _write_fake_driver(tmp_path / "driver")
 
         target = tmp_path / "repo"
         notebooks = _make_product(target, "MIL-CREDA")
@@ -3482,7 +3723,7 @@ class CredentialSecurityTests(unittest.TestCase):
         ), _interposition_guard(materialized_root) as hits:
             provider = REMOTE_CLI.CREDENTIALS.provider(accounts_cli=fake_accounts_cli)
             adapter = KAGGLE.KaggleAdapter(
-                credentials=provider, accounts_cli=fake_accounts_cli
+                credentials=provider, accounts_cli=fake_accounts_cli, driver_script=driver
             )
 
             submit_result = REMOTE_CLI.cmd_submit(
@@ -3643,49 +3884,6 @@ class CredentialSecurityTests(unittest.TestCase):
             self.assertEqual(sorted(env_without_handle), ["PATH"])
 
 
-def _write_recording_kaggle(
-    bin_dir: Path, record_dir: Path, *, sleep_seconds: float
-) -> Path:
-    """A fake `kaggle` that records the credential IT ACTUALLY RECEIVED,
-    plus when it started and finished, and nothing else.
-
-    The record directory is baked into the script's own source rather than
-    passed through the environment, because the environment is exactly what
-    this fixture exists to observe: `_env_for` builds the child's whole env
-    from an allowlist (`PATH` plus `KAGGLE_API_TOKEN`), so a second variable
-    naming the record directory could not reach this process anyway.
-
-    Never touches a network and never reads any file: it answers
-    `kernels push` well enough to drive `submit()` and writes one JSON
-    record per invocation, under a unique name, so two concurrent
-    invocations cannot overwrite each other's record.
-    """
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    record_dir.mkdir(parents=True, exist_ok=True)
-    script = bin_dir / "kaggle"
-    script.write_text(
-        "#!/usr/bin/env python3\n"
-        "import json, os, sys, time, uuid\n"
-        "from pathlib import Path\n"
-        f"RECORD_DIR = Path({str(record_dir)!r})\n"
-        f"SLEEP = {sleep_seconds!r}\n"
-        "started = time.time()\n"
-        "time.sleep(SLEEP)\n"
-        "record = {\n"
-        "    'argv': sys.argv[1:],\n"
-        "    'credential': os.environ.get('KAGGLE_API_TOKEN'),\n"
-        "    'started': started,\n"
-        "    'finished': time.time(),\n"
-        "}\n"
-        "(RECORD_DIR / (uuid.uuid4().hex + '.json')).write_text(\n"
-        "    json.dumps(record), encoding='utf-8')\n"
-        "print('kernel version 1 successfully pushed')\n",
-        encoding="utf-8",
-    )
-    script.chmod(0o755)
-    return script
-
-
 class CredentialValueDeliveryTests(unittest.TestCase):
     """`_env_for` hands the service client the token's VALUE, because the
     client this adapter shells out to reads `KAGGLE_API_TOKEN` as a value
@@ -3808,12 +4006,12 @@ class ParallelCredentialIsolationTests(unittest.TestCase):
     it to one `subprocess.run`), which is exactly why it needs a falsifier:
     a shared credential, a crossed one, or one written into a place a
     second call could read back would all still look like working code.
-    The fake `kaggle` on `PATH` records the credential it was actually
-    handed, so the claim dies if the two recorded values are equal, crossed,
-    or path-shaped.
+    The fake `kaggle_driver.py` stand-in `_write_recording_driver` builds
+    records the credential it was actually handed, so the claim dies if
+    the two recorded values are equal, crossed, or path-shaped.
 
-    No network: the fake executable is the only thing either submission
-    ever reaches.
+    No network: the fake driver process is the only thing either
+    submission ever reaches.
     """
 
     SLEEP_SECONDS = 0.5
@@ -3824,8 +4022,9 @@ class ParallelCredentialIsolationTests(unittest.TestCase):
             "worker-beta": "KGAT_" + "b" * 32,
         }
         record_dir = tmp_path / "records"
-        bin_dir = tmp_path / "bin"
-        _write_recording_kaggle(bin_dir, record_dir, sleep_seconds=self.SLEEP_SECONDS)
+        driver = _write_recording_driver(
+            tmp_path / "driver", record_dir, sleep_seconds=self.SLEEP_SECONDS
+        )
 
         credentials = {}
         jobs = {}
@@ -3842,19 +4041,15 @@ class ParallelCredentialIsolationTests(unittest.TestCase):
                 entrypoint=entrypoint, run_config={}, worker=worker
             )
 
-        adapter = KAGGLE.KaggleAdapter(credentials=credentials)
-        with unittest.mock.patch.dict(
-            os.environ,
-            {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"},
-        ):
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-                futures = {
-                    worker: pool.submit(adapter.submit, job)
-                    for worker, job in jobs.items()
-                }
-                submissions = {
-                    worker: future.result() for worker, future in futures.items()
-                }
+        adapter = KAGGLE.KaggleAdapter(credentials=credentials, driver_script=driver)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            futures = {
+                worker: pool.submit(adapter.submit, job)
+                for worker, job in jobs.items()
+            }
+            submissions = {
+                worker: future.result() for worker, future in futures.items()
+            }
 
         records = [
             json.loads(path.read_text(encoding="utf-8"))
@@ -3864,9 +4059,12 @@ class ParallelCredentialIsolationTests(unittest.TestCase):
 
     @staticmethod
     def _worker_of(record: dict) -> str:
-        argv = record["argv"]
-        push_dir = Path(argv[argv.index("-p") + 1])
-        return push_dir.name.replace("job-for-", "")
+        # `id` is `<worker>/<slug>`, the same staged `kernel-metadata.json`
+        # field the real driver's own `_save_kernel_request_from_staging`
+        # reads — the outer recorder reads it back the same way, since the
+        # push directory is now a randomly-named temp staging copy rather
+        # than the caller's own `job-for-<worker>` directory.
+        return record["id"].split("/", 1)[0]
 
     def test_two_concurrent_submissions_carry_two_distinct_uncrossed_credentials(
         self,

@@ -45,16 +45,16 @@ Chain strategy: stacked-to-main
 
 ## Phase 2: `submit` wired through the driver (Commit 2)
 
-- [ ] 2.1 RED: `test_outer_interception_reached_count` — fake driver on injected `PATH`, argv+env recorded, count>0 first.
-- [ ] 2.2 RED: `test_metadata_id_maps_to_slug_never_int_id` (the `id`-is-`int` trap).
-- [ ] 2.3 RED: `test_unmapped_metadata_key_refuses` (closed-table refusal).
-- [ ] 2.4 RED: `test_sentinel_absent_from_argv`, `test_exact_env_allowlist_submit` (threat-matrix subprocess/argv addendum).
-- [ ] 2.5 GREEN: retarget `submit()`/`_push()` in `adapters/kaggle.py` to invoke `kaggle_driver.py` via `sys.executable`; staging dir on argv; map metadata → `ApiSaveKernelRequest` per Decision 4's table; refuse on unmapped key.
-- [ ] 2.6 GREEN: rewrite `_run`'s remedy sentence (was `pip install kaggle`) to name the SDK-path install command for the interpreter in play.
-- [ ] 2.7 Run 2.1-2.4 green; confirm suite count rises.
-- [ ] 2.8 INVERT 2.1: call driver inline instead of via subprocess; confirm fail; restore by inverse patch; sha256.
-- [ ] 2.9 INVERT 2.2: revert mapping to `id=owner/slug`; confirm fail; restore; sha256.
-- [ ] 2.10 RED→GREEN: `test_two_concurrent_submissions_uncrossed_credentials` — genuine time overlap, two driver processes.
+- [x] 2.1 RED: `test_outer_interception_reached_count` — fake driver on injected `PATH`, argv+env recorded, count>0 first.
+- [x] 2.2 RED: `test_metadata_id_maps_to_slug_never_int_id` (the `id`-is-`int` trap).
+- [x] 2.3 RED: `test_unmapped_metadata_key_refuses` (closed-table refusal).
+- [x] 2.4 RED: `test_sentinel_absent_from_argv`, `test_exact_env_allowlist_submit` (threat-matrix subprocess/argv addendum).
+- [x] 2.5 GREEN: retarget `submit()`/`_push()` in `adapters/kaggle.py` to invoke `kaggle_driver.py` via `sys.executable`; staging dir on argv; map metadata → `ApiSaveKernelRequest` per Decision 4's table; refuse on unmapped key.
+- [x] 2.6 GREEN: rewrite `_run`'s remedy sentence (was `pip install kaggle`) to name the SDK-path install command for the interpreter in play.
+- [x] 2.7 Run 2.1-2.4 green; confirm suite count rises.
+- [x] 2.8 INVERT 2.1: call driver inline instead of via subprocess; confirm fail; restore by inverse patch; sha256.
+- [x] 2.9 INVERT 2.2: revert mapping to `id=owner/slug`; confirm fail; restore; sha256.
+- [x] 2.10 RED→GREEN: `test_two_concurrent_submissions_uncrossed_credentials` — genuine time overlap, two driver processes.
 
 ## Phase 3: `poll`/`fetch` wired through the driver (Commit 3)
 

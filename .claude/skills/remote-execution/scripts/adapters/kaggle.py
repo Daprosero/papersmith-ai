@@ -122,6 +122,17 @@ DEFAULT_ACCOUNTS_CLI = (
     Path(__file__).resolve().parents[3] / "kaggle-accounts" / "scripts" / "accounts_cli.py"
 )
 
+# `adapters/kaggle_driver.py`, this module's own sibling — the one file in
+# this skill permitted to import the Kaggle SDK package. `submit()`/
+# `_push()` shell out to it exactly the way this module used to shell out
+# to the `kaggle` command-line tool: same `_run()`/`_env_for()` boundary,
+# same `shell=False`/list-argv/allowlisted-env discipline, only the
+# child's own identity changed. Overridable at construction
+# (`driver_script=`) so a test can substitute a fake stand-in never
+# running under a real interpreter that has the SDK installed nor within
+# reach of the real service.
+DEFAULT_KAGGLE_DRIVER = Path(__file__).resolve().parent / "kaggle_driver.py"
+
 KAGGLE_EXECUTABLE = "kaggle"
 SUBPROCESS_TIMEOUT_SECONDS = 120.0
 
@@ -424,11 +435,13 @@ class KaggleAdapter(ADAPTER.Adapter):
         accounts_cli: Path | str | None = None,
         kaggle_executable: str = KAGGLE_EXECUTABLE,
         timeout: float = SUBPROCESS_TIMEOUT_SECONDS,
+        driver_script: Path | str | None = None,
     ) -> None:
         self._credential_provider = self._normalize_credentials(credentials)
         self._accounts_cli = Path(accounts_cli) if accounts_cli else DEFAULT_ACCOUNTS_CLI
         self._kaggle_executable = kaggle_executable
         self._timeout = timeout
+        self._driver_script = Path(driver_script) if driver_script else DEFAULT_KAGGLE_DRIVER
 
     @staticmethod
     def _normalize_credentials(
@@ -554,6 +567,25 @@ class KaggleAdapter(ADAPTER.Adapter):
                     f" — this adapter shells out to the {argv[0]!r} command line, "
                     "which arrives with `pip install kaggle`; install it and make "
                     "sure the directory pip reports putting it in is on PATH"
+                )
+            elif len(argv) > 1 and argv[0] == sys.executable and argv[1] == str(
+                self._driver_script
+            ):
+                # The SDK driver's own remedy, distinct from the CLI's: a
+                # missing `kaggle_driver.py` (moved or deleted) is not the
+                # same failure as a missing SDK import (that one is the
+                # driver's own `selftest` refusal, printed as JSON on its
+                # stdout, never an `OSError` this branch would ever see)
+                # — this is "the interpreter could not even launch the
+                # script", so the remedy names the interpreter and the
+                # SDK-path install command for it, never the retired
+                # `pip install kaggle` sentence a CLI-shaped failure used
+                # to get.
+                remedy = (
+                    f" — this adapter shells out to the SDK driver at "
+                    f"{argv[1]!r} under {sys.executable!r}; install the SDK "
+                    f"for that interpreter with `{sys.executable} -m pip "
+                    "install --user kaggle==1.7.4.5`"
                 )
             raise KaggleAdapterError(
                 f"could not run {argv[0]}: {exc}{remedy}") from exc
@@ -690,6 +722,17 @@ class KaggleAdapter(ADAPTER.Adapter):
         value, since a top-level key present in `job.run_config` replaces
         the file's value for that key entirely rather than merging into
         it.
+
+        Both branches now stage into the SAME temporary copy and always
+        complete a `kernel-metadata.json` there, even for the LEGACY
+        shape: `_push()` shells out to `kaggle_driver.py` unconditionally
+        now, and that driver's own request-mapping step
+        (`_save_kernel_request_from_staging`) always reads one from the
+        staging directory — Decision 4's table has nothing else to build
+        an `ApiSaveKernelRequest` from. A legacy job folder that genuinely
+        carries none gets a minimal template synthesized here, in the
+        staged copy only; the job folder itself still never needs to
+        carry one, exactly as before.
         """
         metadata_path = job.entrypoint.parent / KERNEL_METADATA_FILENAME
         if job.run_config and not metadata_path.is_file():
@@ -701,50 +744,89 @@ class KaggleAdapter(ADAPTER.Adapter):
 
         handle = self._credential_for(job.worker)
 
-        if metadata_path.is_file():
-            with tempfile.TemporaryDirectory(prefix="kaggle-push-") as staging_dir:
-                staging_path = Path(staging_dir)
-                shutil.copytree(job.entrypoint.parent, staging_path, dirs_exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="kaggle-push-") as staging_dir:
+            staging_path = Path(staging_dir)
+            shutil.copytree(job.entrypoint.parent, staging_path, dirs_exist_ok=True)
+
+            if metadata_path.is_file():
                 template = json.loads(metadata_path.read_text(encoding="utf-8"))
-                title = template.get("title")
-                slug = _slugify(title) if title else _kernel_slug(job.entrypoint)
-                ref = f"{job.worker}/{slug}"
-                template["id"] = ref
-                template["code_file"] = job.entrypoint.name
-                (staging_path / KERNEL_METADATA_FILENAME).write_text(
-                    json.dumps(template), encoding="utf-8"
+            else:
+                # LEGACY shape, synthesized rather than read: the same
+                # minimal template `assemble_metadata()` would have
+                # written, built here in the staged copy only — never
+                # written back to the job folder itself.
+                template = {
+                    "language": "python",
+                    "kernel_type": "notebook",
+                    "is_private": True,
+                    "enable_internet": True,
+                    "enable_gpu": REQUEST_GPU,
+                }
+
+            title = template.get("title")
+            slug = _slugify(title) if title else _kernel_slug(job.entrypoint)
+            ref = f"{job.worker}/{slug}"
+            template["id"] = ref
+            template["code_file"] = job.entrypoint.name
+            (staging_path / KERNEL_METADATA_FILENAME).write_text(
+                json.dumps(template), encoding="utf-8"
+            )
+
+            run_config_path = job.entrypoint.parent / RUN_CONFIG_FILENAME
+            if run_config_path.is_file():
+                run_config_text = run_config_path.read_text(encoding="utf-8")
+                if job.run_config:
+                    merged = json.loads(run_config_text)
+                    merged.update(dict(job.run_config))
+                    run_config_text = json.dumps(merged)
+                _stage_run_config_cell(
+                    staging_path / job.entrypoint.name,
+                    run_config_text,
                 )
-                run_config_path = job.entrypoint.parent / RUN_CONFIG_FILENAME
-                if run_config_path.is_file():
-                    run_config_text = run_config_path.read_text(encoding="utf-8")
-                    if job.run_config:
-                        merged = json.loads(run_config_text)
-                        merged.update(dict(job.run_config))
-                        run_config_text = json.dumps(merged)
-                    _stage_run_config_cell(
-                        staging_path / job.entrypoint.name,
-                        run_config_text,
-                    )
-                self._push(staging_path, handle)
-        else:
-            ref = f"{job.worker}/{_kernel_slug(job.entrypoint)}"
-            self._push(job.entrypoint.parent, handle)
+
+            self._push(staging_path, handle)
 
         return ADAPTER.Submission(id=ref, worker=job.worker)
 
-    def _push(self, push_dir: Path, handle: CredentialHandle) -> None:
-        """Shell out to `kernels push -p <push_dir>`, the one composition
-        point `submit()`'s two branches (legacy, direct; generated,
-        staged) both funnel through — so neither can drift from the
-        other's error handling.
+    def _push(self, push_dir: Path, handle: CredentialHandle) -> dict:
+        """Invoke `kaggle_driver.py submit <push_dir>` as a child process —
+        `kernels push -p <push_dir>` retargeted onto the SDK driver, the
+        one composition point `submit()`'s staging step funnels through so
+        nothing here can drift from the caller's own error handling.
+
+        Argv carries only a path (`push_dir`; small, credential-free); the
+        credential still crosses only through `env`, unchanged. `push_dir`
+        is `sys.argv[2]` from the driver's own perspective (`argv[0]` is
+        this script's own path, `argv[1]` is `"submit"`) — see
+        `kaggle_driver.py`'s `main()`.
         """
-        argv = [self._kaggle_executable, "kernels", "push", "-p", str(push_dir)]
+        argv = [sys.executable, str(self._driver_script), "submit", str(push_dir)]
         result = self._run(argv, env=self._env_for(handle))
-        if result.returncode != 0:
+        return self._parse_driver_result(result, action=f"submit for {push_dir}")
+
+    @staticmethod
+    def _parse_driver_result(
+        result: subprocess.CompletedProcess, *, action: str
+    ) -> dict:
+        """Read the one JSON object `kaggle_driver.py` always prints on
+        stdout, and decide whether to raise from its own `ok` field —
+        never from the exit code alone, since the driver's own contract
+        is to print a typed refusal object rather than a bare non-zero
+        exit whenever it can (`main()`'s own `except` clauses all do
+        this).
+        """
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
             raise KaggleAdapterError(
-                f"kernels push for {push_dir} exited {result.returncode}: "
+                f"{action} did not print JSON: {exc}; stderr: "
                 f"{result.stderr.strip()}"
+            ) from exc
+        if result.returncode != 0 or not payload.get("ok", False):
+            raise KaggleAdapterError(
+                f"{action} refused: {payload.get('error', result.stderr.strip())}"
             )
+        return payload
 
     def poll(self, submission_id: str) -> "ADAPTER.Status":
         """Ask Kaggle for one kernel's status and translate it into the
