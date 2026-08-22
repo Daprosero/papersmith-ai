@@ -58,10 +58,26 @@ this reads `builder-broken` — the from-zero side is built from `HEAD`, so a
 file added on disk but not yet committed is genuinely absent from a fresh
 install, and that is documented as accurate rather than papered over.
 
+## `walkthrough` against the auditor's own first-run flow
+
+Drives an ordered sequence of real invocations against one shared box under
+`implementations/`: `check-report` refusing to read a report that does not
+exist yet, `check-report` accepting the shipped example, and `roster` against
+the auditor's own subcommand surface. Each step is held to its own declared
+`expect`; the first step whose observation contradicts it is the stall.
+
+```
+$ python3 .claude/skills/skill-audit/scripts/audit_cli.py walkthrough --subject .claude/skills/skill-audit --spec .claude/skills/skill-audit/references/probes/skill-audit.first-run.json --repo-root .
+```
+
+Exit `0` for any verdict, `stall` included. A `null` `stall` means every step
+matched its own expectation; a non-`null` `stall` names the step's index and
+kind, and `unreached` lists every gate at or after it.
+
 ## Exit codes, in one place
 
-| Exit | `roster` | `check-report` | `structure` |
-| --- | --- | --- | --- |
-| `0` | it looked, and this is the verdict | the report is valid | it looked, and this is the outcome |
-| `1` | not used | the report is invalid | not used |
-| `2` | it could not look | the report could not be read | a side could not be derived, the box was not empty, or the build escaped it |
+| Exit | `roster` | `check-report` | `structure` | `walkthrough` |
+| --- | --- | --- | --- | --- |
+| `0` | it looked, and this is the verdict | the report is valid | it looked, and this is the outcome | it looked, `stall` included |
+| `1` | not used | the report is invalid | not used | not used |
+| `2` | it could not look | the report could not be read | a side could not be derived, the box was not empty, or the build escaped it | a step declared no expectation, the box was not empty, or the flow was never entered |

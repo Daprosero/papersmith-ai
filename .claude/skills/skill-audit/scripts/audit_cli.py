@@ -630,6 +630,22 @@ def build_parser():
     structure.add_argument("--timeout", type=int, default=30,
                            help="seconds before a hanging build step is exit 2")
 
+    walkthrough = commands.add_parser(
+        "walkthrough",
+        help="drive a recipe's ordered sequence against a real, shared box "
+             "and name the index where it stalls")
+    walkthrough.add_argument("--subject", required=True,
+                             help="the subject's root directory")
+    walkthrough.add_argument("--spec", required=True,
+                             help="the JSON recipe describing the ordered "
+                                  "sequence of steps")
+    walkthrough.add_argument("--repo-root", default=".",
+                             help="the root the box and {repoRoot} token "
+                                  "resolve under")
+    walkthrough.add_argument("--timeout", type=int, default=30,
+                             help="seconds before a hanging step is a stall "
+                                  "of kind timeout")
+
     return parser
 
 
@@ -876,6 +892,186 @@ def run_structure(args):
         "sides": {"declared": sorted(declared_set), "disk": sorted(disk_set),
                  "fromZero": sorted(from_zero_set)},
         "surface": surface,
+    })
+    return 0
+
+
+#: The `expect` keys a walkthrough step may declare. `exit` defaults to
+#: `"any"`, which asserts nothing on its own -- `declares_expectation` treats
+#: an `expect` naming only `exit: any` the same as no `expect` at all, because
+#: functionally the two are identical: a gate that always matches whatever it
+#: sees is not a gate.
+STEP_EXPECT_KEYS = ("exit", "stdout", "stderr", "absent")
+
+
+def declares_expectation(expect):
+    """Whether a walkthrough step's `expect` asserts anything at all.
+
+    A step whose `expect` is missing, empty, or names only `exit: "any"`
+    with nothing else declares no expectation, and `run_walkthrough` refuses
+    it as `Unprobeable` before ever running the step's command.
+    """
+    if not expect:
+        return False
+    if expect.get("exit", "any") != "any":
+        return True
+    return any(key in expect for key in STEP_EXPECT_KEYS[1:])
+
+
+def step_matches_expect(expect, returncode, stdout, stderr):
+    """Whether one step's real observation matches its own declared `expect`.
+
+    Every declared part of `expect` must hold for the step to be `passed`,
+    whatever its exit code -- a step matching its own documented refusal is a
+    pass, not a stall. Called only once `declares_expectation` has confirmed
+    `expect` asserts something; an `expect` asserting nothing never reaches
+    here.
+    """
+    exit_expect = expect.get("exit", "any")
+    if exit_expect == "nonzero":
+        if returncode == 0:
+            return False
+    elif exit_expect != "any" and returncode != exit_expect:
+        return False
+    if "stdout" in expect and not re.search(expect["stdout"], stdout):
+        return False
+    if "stderr" in expect and not re.search(expect["stderr"], stderr):
+        return False
+    if "absent" in expect and re.search(expect["absent"], stdout + stderr):
+        return False
+    return True
+
+
+def run_walkthrough(args):
+    """Drive a recipe's ordered sequence against one shared box, and name the
+    index where it stalls.
+
+    Exit `0` for any verdict, including a stall: a stall is a finding on its
+    own, never an inability to look. Exit `2` only when the flow itself could
+    not be entered -- a step declaring no expectation, or the very first
+    step's own command missing, both mean there is nothing to report on yet.
+
+    One box for the whole sequence, state accumulating as a user's would; a
+    step may declare `"reset": true` to demand a fresh, empty box from that
+    point on. The box lives at `{repoRoot}/implementations/_walkthrough_
+    {surface}`, created only if empty or absent, and removed in a `finally`
+    whose absence is proven by `tree_digest`, exactly like `structure`'s box.
+    """
+    spec_path = Path(args.spec)
+    if not spec_path.is_file():
+        raise Unprobeable(f"no walkthrough recipe at {spec_path}")
+    try:
+        recipe = json.loads(spec_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise Unprobeable(f"the walkthrough recipe is unreadable: {error}")
+
+    subject = Path(args.subject).resolve()
+    repo = Path(args.repo_root).resolve()
+    surface = recipe.get("surface", "")
+    if not surface:
+        raise Unprobeable("the recipe names no surface to box the sequence under")
+    steps_spec = recipe.get("steps", [])
+    if not steps_spec:
+        raise Unprobeable("the recipe declares no steps to walk through")
+
+    box = repo / "implementations" / f"_walkthrough_{surface}"
+    before_empty = box_empty_or_absent(box)
+    if not before_empty:
+        raise Unprobeable(
+            f"a non-empty box already occupies {box}; remove it by hand "
+            "before running walkthrough again -- an occupied box is never "
+            "silently adopted")
+    box.mkdir(parents=True, exist_ok=True)
+
+    steps_report = []
+    stall = None
+    try:
+        for index, step in enumerate(steps_spec):
+            name = step.get("name", f"step {index}")
+
+            if stall is not None:
+                steps_report.append({
+                    "expected": step.get("expect"), "index": index,
+                    "name": name, "observed": None, "outcome": "unreached"})
+                continue
+
+            expect = step.get("expect")
+            if not declares_expectation(expect):
+                raise Unprobeable(
+                    f"step {index} ({name!r}) declares no expectation; a "
+                    "gate that asserts nothing is not a gate")
+
+            if step.get("reset"):
+                erase_box(box)
+                box.mkdir(parents=True, exist_ok=True)
+
+            raw_argv = step.get("argv") or []
+            if not raw_argv or not all(isinstance(part, str) for part in raw_argv):
+                raise Unprobeable(
+                    f"step {index} ({name!r})'s argv must be a non-empty "
+                    "list of strings")
+            argv = [interpolate_token(part, repo, subject, box) for part in raw_argv]
+
+            step_cwd = box
+            if step.get("cwd"):
+                step_cwd = resolve_under(step["cwd"], box, "step.cwd")
+
+            try:
+                completed = subprocess.run(
+                    argv, cwd=str(step_cwd), shell=False,
+                    capture_output=True, text=True, timeout=args.timeout)
+            except FileNotFoundError as error:
+                if index == 0:
+                    raise Unprobeable(
+                        f"step 0's argv[0] is not executable: {error}; the "
+                        "flow was never entered")
+                stall = {
+                    "detail": f"step {index} ({name!r})'s argv[0] is not "
+                              f"executable: {error}",
+                    "index": index, "kind": "missing-executable"}
+                steps_report.append({
+                    "expected": expect, "index": index, "name": name,
+                    "observed": None, "outcome": "stalled"})
+                continue
+            except subprocess.TimeoutExpired:
+                stall = {
+                    "detail": f"step {index} ({name!r}) did not answer "
+                              f"within {args.timeout}s",
+                    "index": index, "kind": "timeout"}
+                steps_report.append({
+                    "expected": expect, "index": index, "name": name,
+                    "observed": None, "outcome": "stalled"})
+                continue
+
+            observed = {"exit": completed.returncode,
+                       "stderr": completed.stderr, "stdout": completed.stdout}
+            if step_matches_expect(expect, completed.returncode,
+                                   completed.stdout, completed.stderr):
+                steps_report.append({
+                    "expected": expect, "index": index, "name": name,
+                    "observed": observed, "outcome": "passed"})
+            else:
+                stall = {
+                    "detail": f"step {index} ({name!r})'s observation "
+                              "contradicted its own expect",
+                    "index": index, "kind": "contradiction"}
+                steps_report.append({
+                    "expected": expect, "index": index, "name": name,
+                    "observed": observed, "outcome": "stalled"})
+    finally:
+        erase_box(box)
+
+    after_removed = box_empty_or_absent(box)
+    unreached = [entry["index"] for entry in steps_report
+                if entry["outcome"] == "unreached"]
+
+    emit({
+        "containment": {"afterRemoved": after_removed, "beforeEmpty": before_empty,
+                        "box": str(box)},
+        "stall": stall,
+        "steps": steps_report,
+        "surface": surface,
+        "unreached": unreached,
     })
     return 0
 
@@ -1183,6 +1379,7 @@ DISPATCH = {
     "roster": run_roster,
     "check-report": run_check_report,
     "structure": run_structure,
+    "walkthrough": run_walkthrough,
 }
 
 

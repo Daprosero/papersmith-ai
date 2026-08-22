@@ -55,6 +55,7 @@ move, in order; the numbering is the order.
 | 5. Probe live only with consent, read-only, and scope the result to the environment | `doctrine` | `tests/test_skill_audit.py` |
 | 6. Invert every lock the audit leans on, and watch it fire | `doctrine` | `tests/test_skill_audit.py` |
 | 7. Compare per-harness test counts before and after; a count that did not rise is a finding | `doctrine` | `tests/test_skill_audit.py` |
+| 8. Drive the whole documented flow in order, against one real shared box, and name the first step that breaks its own declared expectation | `walkthrough` | `tests/test_skill_audit.py` |
 | Read every artifact's opening paragraphs against its own frontmatter and its own shipped files | `doctrine` | no lock — irreducibly textual, and carried anyway |
 
 The last row has no code and no lock, and says so. Prose contradicting prose
@@ -81,6 +82,18 @@ Construct what the documentation says the producer should emit, from the
 documentation alone, and diff it against what the producer actually emits. This
 is the only move that catches the document and the producer drifting apart while
 each stays internally consistent. It is only sound under the conditions below.
+
+### Move 8, in detail
+
+Every earlier move probes one closed surface in isolation. This one drives the
+documented flow itself, step by step, against a real shared box, and asks
+whether each step's own declared expectation still holds once it actually
+runs. A step matching its own expectation is `passed`, whatever its exit code
+— a documented refusal is a pass. The first step whose observation
+contradicts what it declared is the stall, named by its index; every gate at
+or after that index is `unreached`, and the report carries it under
+`## Unchecked`, never under clean. A step declaring no expectation at all is
+refused before it runs: a gate that asserts nothing is not a gate.
 
 ## The from-zero comparison and its soundness conditions
 
@@ -197,6 +210,7 @@ a surface nobody looked at must never look the same.
 | `roster` | Code side by driving the subject as a process; documented side by parsing a table | `code`, `doctrine`, `unregistered`, `phantom`, `duplicated`, `numeralMismatch`, `notes` |
 | `check-report` | The report shape above, from a report file | `violations` |
 | `structure` | Declared side by parsing a structure table; on-disk side by walking `--subject`; from-zero side by walking a recipe-built scaffold inside an empty box | `sides`, `outcome`, `onlyIn`, `missingFrom`, `notes`, `containment` |
+| `walkthrough` | An ordered recipe of steps, each run for real against one shared box, each held to its own declared expectation | `steps`, `stall`, `unreached`, `containment` |
 
 `roster` exits `0` for **any** verdict, findings included, and `2` when the
 probe could not be driven or the extraction matched nothing. Inability to look
@@ -213,6 +227,11 @@ from-zero box is not empty and so cannot be adopted, or when the from-zero
 build wrote outside its own box. None of those three is a finding; each is an
 inability to look.
 
+`walkthrough` exits `0` for **any** verdict, a stall included — a stall is a
+finding on its own, never an inability to look. It exits `2` only when the
+flow itself could not be entered: a step declaring no expectation at all, its
+shared box already occupied, or the very first step's own command missing.
+
 ## The shipped files
 
 This skill's own `structure` recipe (`references/probes/skill-audit.structure.json`)
@@ -228,6 +247,7 @@ the same change.
 | `references/example-report.md` | a report `check-report` accepts |
 | `references/probes/skill-audit.subcommands.json` | the self-probe recipe for `roster` |
 | `references/probes/skill-audit.structure.json` | the self-probe recipe for `structure` |
+| `references/probes/skill-audit.first-run.json` | the self-probe recipe for `walkthrough` |
 | `references/probes/proposal-deliberation.accepted-operations.json` | the first subject's `roster` recipe |
 
 ## Decision Gates
@@ -254,6 +274,12 @@ the same change.
 | A `structure` recipe step names an unknown `{token}` | Exit `2`; only `{repoRoot}`, `{subject}`, and `{box}` interpolate |
 | A from-zero build changes the subject | Exit `2` as `build-escaped-the-box`; never reported as a finding |
 | A declared cell's shape cannot be produced by a walk | Set it aside as `shape-not-walkable`; never expand it against the disk |
+| A `walkthrough` step declares no expectation | Exit `2`; a gate that asserts nothing is not a gate |
+| A `walkthrough` step's argv[0] is missing at index 0 | Exit `2`; the flow was never entered |
+| A `walkthrough` step's argv[0] is missing after index 0 | Report it as the stall; a documented command that is not there is a fact about the flow |
+| A `walkthrough` step matches its own `expect` | Report it `passed`, whatever its exit code |
+| A gate is reached after a `walkthrough` stall | Report it `unreached`, under `## Unchecked`, never as clean |
+| A `walkthrough` step declares `"reset": true` | Empty the shared box before running that step |
 
 ## Handoff
 

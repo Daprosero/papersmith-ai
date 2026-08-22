@@ -66,23 +66,23 @@ Baseline (measured): `python3 -m unittest discover -s tests` = 973 OK; `-p 'test
 
 ## Slice 3 — `walkthrough` (order-free vs. Slice 2)
 
-- [ ] 3.1 RED: add step-shape tests — no `expect` → `Unprobeable`; missing `argv[0]` at index 0 → `Unprobeable`; missing `argv[0]` at index >0 → stall. Confirm fail.
-- [ ] 3.2 GREEN: implement step-shape validation.
-- [ ] 3.3 RED: add stall tests — plant a stall mid-sequence; one finding names that index; later gates land in `## Unchecked`, never clean; exit `0` for any verdict, `2` only for inability. Confirm fail.
-- [ ] 3.4 GREEN: implement the ordered runner; stall = first observation contradicting its `expect`; timeout → stall kind `timeout`.
-- [ ] 3.5 RED: add box-sharing tests — one box for the whole sequence; a step declaring `"reset": true` gets a fresh empty box; same box helper/cleanup proof as `structure`. Confirm fail.
-- [ ] 3.6 GREEN: implement box reuse/reset.
-- [ ] 3.7 Add `walkthrough` to `build_parser` and `DISPATCH`.
-- [ ] 3.8 `SKILL.md`: append move 8 (`Ships as: walkthrough`) — appended, not inserted; add `walkthrough` subcommand row.
-- [ ] 3.9 Create `references/probes/skill-audit.first-run.json`: ordered recipe over the auditor's own first-run flow.
-- [ ] 3.10 `references/usage.md`: one worked `walkthrough` invocation; extend exit-code table.
-- [ ] 3.11 Co-edit `SelfAuditSubcommandRosterTests` literal to its final set: `["check-report", "roster", "structure", "walkthrough"]`.
-- [ ] 3.12 Inversion: plant/clear the stall, confirm the lock fires; restore by inverse patch, confirm by content comparison.
-- [ ] 3.13 Run `VocabularyTests` over every file this slice touches.
-- [ ] 3.14 Verify: both suite counts rise by exactly this slice's added-test count.
+- [x] 3.1 RED: add step-shape tests — no `expect` → `Unprobeable`; missing `argv[0]` at index 0 → `Unprobeable`; missing `argv[0]` at index >0 → stall. Confirm fail.
+- [x] 3.2 GREEN: implement step-shape validation.
+- [x] 3.3 RED: add stall tests — plant a stall mid-sequence; one finding names that index; later gates land in `## Unchecked`, never clean; exit `0` for any verdict, `2` only for inability. Confirm fail.
+- [x] 3.4 GREEN: implement the ordered runner; stall = first observation contradicting its `expect`; timeout → stall kind `timeout`.
+- [x] 3.5 RED: add box-sharing tests — one box for the whole sequence; a step declaring `"reset": true` gets a fresh empty box; same box helper/cleanup proof as `structure`. Confirm fail.
+- [x] 3.6 GREEN: implement box reuse/reset.
+- [x] 3.7 Add `walkthrough` to `build_parser` and `DISPATCH`.
+- [x] 3.8 `SKILL.md`: append move 8 (`Ships as: walkthrough`) — appended, not inserted; add `walkthrough` subcommand row.
+- [x] 3.9 Create `references/probes/skill-audit.first-run.json`: ordered recipe over the auditor's own first-run flow.
+- [x] 3.10 `references/usage.md`: one worked `walkthrough` invocation; extend exit-code table.
+- [x] 3.11 Co-edit `SelfAuditSubcommandRosterTests` literal to its final set: `["check-report", "roster", "structure", "walkthrough"]`.
+- [x] 3.12 Inversion: plant/clear the stall, confirm the lock fires; restore by inverse patch, confirm by content comparison.
+- [x] 3.13 Run `VocabularyTests` over every file this slice touches.
+- [x] 3.14 Verify: both suite counts rise by exactly this slice's added-test count.
 
 ## Phase 4: Final cross-slice check (after all three land)
 
-- [ ] 4.1 Run the auditor against itself: `unregistered: []`, `phantom: []` for the final subcommand set.
-- [ ] 4.2 Confirm no file under `implementations/` and no other skill changed, by `tree_digest` before/after comparison.
-- [ ] 4.3 Confirm final counts: `python3 -m unittest discover -s tests` = 973 + total added; `-p 'test_skill_audit.py'` = 71 + total added; no duplicate class/test name anywhere in the file.
+- [x] 4.1 Run the auditor against itself: `unregistered: []`, `phantom: []` for the final subcommand set.
+- [x] 4.2 Confirm no file under `implementations/` and no other skill changed, by `tree_digest` before/after comparison.
+- [x] 4.3 Confirm final counts: `python3 -m unittest discover -s tests` = 973 + total added; `-p 'test_skill_audit.py'` = 71 + total added; no duplicate class/test name anywhere in the file.

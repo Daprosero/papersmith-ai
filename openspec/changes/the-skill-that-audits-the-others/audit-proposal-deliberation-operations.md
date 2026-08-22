@@ -21,6 +21,7 @@ without a product decision.
 - Move: 5: skipped: no live probe attempted, no consent sought
 - Move: 6: skipped: no lock inverted in this pass
 - Move: 7: skipped: single-harness count only, not compared before/after
+- Move: 8: skipped: no ordered user-mode flow driven in this pass
 - Move: textual: ran
 
 ## Ranked findings

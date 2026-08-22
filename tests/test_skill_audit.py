@@ -414,8 +414,8 @@ class MovesTableTests(unittest.TestCase):
             (numbered if match else textual).append(
                 int(match.group(1)) if match else row)
         self.assertEqual(
-            sorted(numbered), list(range(0, 8)),
-            "the table must carry exactly one row per move 0 through 7, with no "
+            sorted(numbered), list(range(0, 9)),
+            "the table must carry exactly one row per move 0 through 8, with no "
             f"gap and no repeat; found {sorted(numbered)}")
         self.assertEqual(
             len(textual), 1,
@@ -831,7 +831,7 @@ class SelfAuditSubcommandRosterTests(unittest.TestCase):
         self.assertEqual(payload["unregistered"], [])
         self.assertEqual(payload["phantom"], [])
         self.assertEqual(sorted(payload["code"]),
-                         ["check-report", "roster", "structure"])
+                         ["check-report", "roster", "structure", "walkthrough"])
 
     def test_the_roster_comes_from_argparse_and_not_from_a_list(self):
         _, payload = roster_json(SELF_SPEC, SKILL_ROOT)
@@ -1317,6 +1317,7 @@ VALID_REPORT = """# Audit: a subject, one surface
 - Move: 5: skipped: no live probe attempted, no consent sought
 - Move: 6: skipped: no lock inverted in this pass
 - Move: 7: skipped: single-harness count only, not compared
+- Move: 8: skipped: no ordered user-mode flow driven in this pass
 - Move: textual: ran
 
 ## Ranked findings
@@ -1504,7 +1505,7 @@ class ForbiddenSupportTests(BoxMixin, unittest.TestCase):
 #: A moves table carrying one move beyond what `SKILL.md` currently declares.
 #: Used only through `--moves`, never by editing the real file, to prove the
 #: roster `check-report` requires is read out of a table rather than out of a
-#: list held inside the tool: this fixture's ninth move exists nowhere in
+#: list held inside the tool: this fixture's tenth move exists nowhere in
 #: `audit_cli.py`, and the requirement still appears.
 MOVES_TABLE_PLUS_ONE = """| Move | Ships as | Lock |
 | --- | --- | --- |
@@ -1516,7 +1517,8 @@ MOVES_TABLE_PLUS_ONE = """| Move | Ships as | Lock |
 | 5. Probe live only with consent, read-only, and scope the result to the environment | `doctrine` | `tests/test_skill_audit.py` |
 | 6. Invert every lock the audit leans on, and watch it fire | `doctrine` | `tests/test_skill_audit.py` |
 | 7. Compare per-harness test counts before and after; a count that did not rise is a finding | `doctrine` | `tests/test_skill_audit.py` |
-| 8. A move that exists only in this fixture, to prove the roster is derived and never hardcoded | `doctrine` | `tests/test_skill_audit.py` |
+| 8. Drive the whole documented flow in order, against one real shared box, and name the first step that breaks its own declared expectation | `walkthrough` | `tests/test_skill_audit.py` |
+| 9. A move that exists only in this fixture, to prove the roster is derived and never hardcoded | `doctrine` | `tests/test_skill_audit.py` |
 | Read every artifact's opening paragraphs against its own frontmatter and its own shipped files | `doctrine` | no lock — irreducibly textual, and carried anyway |
 """
 
@@ -1563,7 +1565,7 @@ class MoveOutcomesTests(BoxMixin, unittest.TestCase):
             f"an empty reason must still name move 7: {violations}")
 
     def test_the_required_roster_is_derived_from_the_moves_table_not_a_list(self):
-        """A ninth move that exists only in a fixture file, never in
+        """A tenth move that exists only in a fixture file, never in
         `audit_cli.py`, is still required — proof the roster comes from
         parsing the table this run was pointed at, not from a literal held
         inside the tool.
@@ -1571,16 +1573,16 @@ class MoveOutcomesTests(BoxMixin, unittest.TestCase):
         box = self.make_box("derived-roster")
         self._box = box
         moves_path = self.write(box, "moves.md", MOVES_TABLE_PLUS_ONE)
-        # VALID_REPORT's `## Move outcomes` carries moves 0-7 and `textual`
-        # only; it names nothing for the fixture's move 8.
+        # VALID_REPORT's `## Move outcomes` carries moves 0-8 and `textual`
+        # only; it names nothing for the fixture's move 9.
         result, payload = self.check(
-            VALID_REPORT, name="missing-move-8.md",
+            VALID_REPORT, name="missing-move-9.md",
             extra=("--moves", str(moves_path)))
         self.assertEqual(result.returncode, 1, payload)
         violations = [v for v in payload["violations"]
                      if v["item"] == "move-outcomes"]
         self.assertTrue(
-            any("8" in v["detail"] for v in violations),
+            any("9" in v["detail"] for v in violations),
             f"a move present only in the fixture table must still be "
             f"required: {violations}")
 
@@ -1802,20 +1804,58 @@ class NothingWasRepairedTests(unittest.TestCase):
             "structure left its box behind; the ground it borrows must look "
             "the same afterwards")
 
+    def test_a_walkthrough_run_leaves_the_subject_and_its_ground_untouched(self):
+        """The exemption in the lock below, held by bytes instead of by prose.
+
+        `walkthrough` is the other subcommand that writes at all, alongside
+        `structure`, so it is the other one that could repair what it audits.
+        The static lock below can say which functions write; it cannot say
+        where. This drives the real subcommand, with the real shipped
+        first-run recipe, against the real subject, and answers that
+        question the only way it can be answered: by comparing the tree to
+        itself.
+
+        The borrowed ground is checked too. A box that outlives its run is a
+        mutation with a delay on it.
+        """
+        ground = FORGE / "implementations"
+        occupants = lambda: sorted(e.name for e in ground.iterdir()) \
+            if ground.is_dir() else []
+        before, occupied_before = tree_digest(SKILL_ROOT), occupants()
+        self.assertIn(
+            "scripts/audit_cli.py", before,
+            "the walk did not see the subject's own script, so a tree that "
+            "compares equal afterwards would prove nothing")
+        walkthrough_json(WALKTHROUGH_SPEC, SKILL_ROOT, repo=FORGE)
+        after = tree_digest(SKILL_ROOT)
+        self.assertEqual(
+            sorted(set(before) - set(after)), [], "a file was removed")
+        self.assertEqual(
+            sorted(set(after) - set(before)), [], "a file was added")
+        self.assertEqual(
+            [q for q in before if before[q] != after.get(q)], [],
+            "walkthrough changed a file under the audited subject; the audit "
+            "reports and repairs nothing, so any difference here is a defect "
+            "in the audit")
+        self.assertEqual(
+            occupants(), occupied_before,
+            "walkthrough left its box behind; the ground it borrows must "
+            "look the same afterwards")
+
     def test_the_auditor_names_no_write_into_the_audited_subject(self):
         """`roster` and `check-report` write nothing, anywhere, and still don't.
 
-        The box lifecycle is the one exception, and it is named function by
-        function: `run_structure` creates the box and `erase_box` removes it.
-        Every other function in every `.py` file this skill ships writes
-        nothing at all.
+        The box lifecycle is the exception, and it is named function by
+        function: `run_structure` and `run_walkthrough` each create their
+        own box and `erase_box` removes either. Every other function in
+        every `.py` file this skill ships writes nothing at all.
 
         What this lock cannot see is where an exempt function writes, and an
         exemption whose limit lives only in a docstring is a claim with
-        nothing behind it. The limit is held one test above, by driving the
-        real `structure` and reading the subject's bytes off disk.
+        nothing behind it. The limit is held by the two tests above, each
+        driving the real subcommand and reading the subject's bytes off disk.
         """
-        box_lifecycle_exemption = {"run_structure", "erase_box"}
+        box_lifecycle_exemption = {"run_structure", "run_walkthrough", "erase_box"}
         for path in sorted(SKILL_ROOT.rglob("*")):
             if not path.is_file() or path.suffix != ".py":
                 continue
@@ -2251,3 +2291,291 @@ class StructureSelfProbeTests(unittest.TestCase):
         self.assertIn(payload["outcome"],
                       ("agree", "disk-stale", "builder-broken",
                        "document-wrong", "three-way-divergence"))
+
+
+# ==========================================================================
+# `the-audit-that-runs-what-it-claims`, Slice 3 -- `walkthrough`: an ordered
+# recipe run against one shared box, exiting `0` for any verdict including a
+# stall and `2` only when the flow itself could not be entered.
+# ==========================================================================
+
+WALKTHROUGH_SPEC = PROBES / "skill-audit.first-run.json"
+
+
+def walkthrough_json(spec, subject, repo=FORGE, extra=()):
+    """Drive `walkthrough` as a process and parse what it wrote to stdout."""
+    result = run_cli("walkthrough", "--subject", str(subject),
+                     "--spec", str(spec), "--repo-root", str(repo), *extra)
+    try:
+        return result, json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise AssertionError(
+            f"walkthrough exited {result.returncode} without JSON on stdout.\n"
+            f"stdout={result.stdout!r}\nstderr={result.stderr!r}")
+
+
+class WalkthroughBoxMixin(BoxMixin):
+    """Fixtures for `walkthrough`: one shared box for an ordered sequence,
+    under `implementations/`, never the system temporary directory.
+    """
+
+    def walkthrough_box(self, surface):
+        box = BOXES / f"_walkthrough_{surface}"
+        self.addCleanup(self._erase_walkthrough_box, box)
+        return box
+
+    def _erase_walkthrough_box(self, box):
+        if not box.exists():
+            return
+        for path in sorted(box.rglob("*"), reverse=True):
+            path.rmdir() if path.is_dir() else path.unlink()
+        box.rmdir()
+
+    def make_recipe(self, subject, surface, steps):
+        spec = subject / "walkthrough.json"
+        spec.write_text(
+            json.dumps({"surface": surface, "steps": steps}, indent=2),
+            encoding="utf-8")
+        return spec
+
+
+class WalkthroughStepShapeTests(WalkthroughBoxMixin, unittest.TestCase):
+    """A step declaring no expectation is not a gate. A missing command at
+    index 0 means the flow was never entered; after index 0, a documented
+    command that is not there is a fact about the flow, not an inability.
+    """
+
+    def test_a_step_with_no_expectation_is_unprobeable(self):
+        surface = "no_expect"
+        self.walkthrough_box(surface)
+        subject = self.make_box("no_expect_subject")
+        spec = self.make_recipe(subject, surface, [
+            {"argv": ["python3", "-c", "print(1)"], "name": "silent step"}])
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("no expectation", payload["error"])
+
+    def test_an_expect_with_only_exit_any_is_still_no_expectation(self):
+        """`exit: any` alone asserts nothing; declaring it changes nothing."""
+        surface = "exit_any_only"
+        self.walkthrough_box(surface)
+        subject = self.make_box("exit_any_only_subject")
+        spec = self.make_recipe(subject, surface, [
+            {"argv": ["python3", "-c", "print(1)"], "expect": {"exit": "any"},
+             "name": "asserts nothing"}])
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("no expectation", payload["error"])
+
+    def test_a_missing_command_at_index_zero_is_unprobeable(self):
+        surface = "missing_zero"
+        self.walkthrough_box(surface)
+        subject = self.make_box("missing_zero_subject")
+        spec = self.make_recipe(subject, surface, [
+            {"argv": ["definitely-not-a-real-binary-xyz"],
+             "expect": {"exit": 0}, "name": "ghost"}])
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("not executable", payload["error"])
+
+    def test_a_missing_command_after_index_zero_is_a_stall(self):
+        surface = "missing_later"
+        self.walkthrough_box(surface)
+        subject = self.make_box("missing_later_subject")
+        spec = self.make_recipe(subject, surface, [
+            {"argv": ["python3", "-c", "import sys; sys.exit(0)"],
+             "expect": {"exit": 0}, "name": "first"},
+            {"argv": ["definitely-not-a-real-binary-xyz"],
+             "expect": {"exit": 0}, "name": "ghost"}])
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertIsNotNone(payload["stall"], payload)
+        self.assertEqual(payload["stall"]["index"], 1)
+        self.assertEqual(payload["stall"]["kind"], "missing-executable")
+
+
+class WalkthroughStallTests(WalkthroughBoxMixin, unittest.TestCase):
+    """The stall is the first observation contradicting its own `expect`,
+    never the first non-zero exit. Every later gate lands in `## Unchecked`.
+    """
+
+    def test_a_stall_mid_sequence_names_its_index_and_leaves_later_gates_unreached(self):
+        surface = "stall_mid"
+        self.walkthrough_box(surface)
+        subject = self.make_box("stall_mid_subject")
+        steps = [
+            {"argv": ["python3", "-c", "import sys; sys.exit(0)"],
+             "expect": {"exit": 0}, "name": "step0"},
+            {"argv": ["python3", "-c", "import sys; sys.exit(0)"],
+             "expect": {"exit": 0}, "name": "step1"},
+            {"argv": ["python3", "-c", "import sys; sys.exit(1)"],
+             "expect": {"exit": 0}, "name": "step2 stalls"},
+            {"argv": ["python3", "-c", "import sys; sys.exit(0)"],
+             "expect": {"exit": 0}, "name": "step3"},
+            {"argv": ["python3", "-c", "import sys; sys.exit(0)"],
+             "expect": {"exit": 0}, "name": "step4"},
+        ]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["stall"]["index"], 2)
+        self.assertEqual(payload["unreached"], [3, 4],
+                         "every gate at or after the stall is unreached")
+        outcomes = {step["index"]: step["outcome"] for step in payload["steps"]}
+        self.assertEqual(outcomes[0], "passed")
+        self.assertEqual(outcomes[1], "passed")
+        self.assertEqual(outcomes[2], "stalled")
+        self.assertEqual(outcomes[3], "unreached")
+        self.assertEqual(outcomes[4], "unreached")
+
+    def test_a_step_matching_its_own_expect_passes_whatever_its_exit_code(self):
+        """A documented refusal is a pass, not a stall."""
+        surface = "documented_refusal"
+        self.walkthrough_box(surface)
+        subject = self.make_box("documented_refusal_subject")
+        steps = [{"argv": ["python3", "-c", "import sys; sys.exit(3)"],
+                  "expect": {"exit": 3}, "name": "expected refusal"}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertIsNone(payload["stall"], payload)
+        self.assertEqual(payload["steps"][0]["outcome"], "passed")
+
+    def test_a_step_whose_stdout_does_not_match_its_expectation_stalls(self):
+        surface = "stdout_mismatch"
+        self.walkthrough_box(surface)
+        subject = self.make_box("stdout_mismatch_subject")
+        steps = [{"argv": ["python3", "-c", "print('nope')"],
+                  "expect": {"exit": 0, "stdout": "yes"},
+                  "name": "prints something else"}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["stall"]["index"], 0)
+        self.assertEqual(payload["stall"]["kind"], "contradiction")
+
+    def test_a_hanging_step_is_a_stall_of_kind_timeout(self):
+        surface = "timeout"
+        self.walkthrough_box(surface)
+        subject = self.make_box("timeout_subject")
+        steps = [{"argv": ["python3", "-c", "import time; time.sleep(5)"],
+                  "expect": {"exit": 0}, "name": "hangs"}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(
+            spec, subject, repo=FORGE, extra=("--timeout", "1"))
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["stall"]["kind"], "timeout")
+        self.assertEqual(payload["stall"]["index"], 0)
+
+    def test_exit_is_zero_for_any_verdict_never_two_for_a_stall(self):
+        surface = "exit_zero_verdict"
+        self.walkthrough_box(surface)
+        subject = self.make_box("exit_zero_verdict_subject")
+        steps = [{"argv": ["python3", "-c", "import sys; sys.exit(9)"],
+                  "expect": {"exit": 0}, "name": "stalls"}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(
+            result.returncode, 0,
+            "a stall is a finding on its own, never an inability to look")
+        self.assertIsNotNone(payload["stall"])
+
+
+class WalkthroughBoxSharingTests(WalkthroughBoxMixin, unittest.TestCase):
+    """One box for the whole sequence, state accumulating; `reset: true`
+    demands a fresh, empty box for that one step onward.
+    """
+
+    def test_one_box_is_shared_across_the_whole_sequence(self):
+        surface = "shared_state"
+        self.walkthrough_box(surface)
+        subject = self.make_box("shared_state_subject")
+        steps = [
+            {"argv": ["python3", "-c",
+                     "open('marker.txt', 'w').write('hello')"],
+             "expect": {"exit": 0}, "name": "write a marker"},
+            {"argv": ["python3", "-c",
+                     "import sys\n"
+                     "content = open('marker.txt').read()\n"
+                     "sys.exit(0 if content == 'hello' else 1)"],
+             "expect": {"exit": 0},
+             "name": "read the marker the previous step wrote"},
+        ]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertIsNone(payload["stall"], payload)
+        self.assertEqual(payload["steps"][1]["outcome"], "passed")
+
+    def test_reset_true_gets_a_fresh_empty_box(self):
+        surface = "reset_step"
+        self.walkthrough_box(surface)
+        subject = self.make_box("reset_step_subject")
+        steps = [
+            {"argv": ["python3", "-c",
+                     "open('marker.txt', 'w').write('hello')"],
+             "expect": {"exit": 0}, "name": "write a marker"},
+            {"argv": ["python3", "-c",
+                     "import os, sys\n"
+                     "sys.exit(0 if not os.path.exists('marker.txt') else 1)"],
+             "expect": {"exit": 0}, "name": "the marker is gone after reset",
+             "reset": True},
+        ]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertIsNone(payload["stall"], payload)
+        self.assertEqual(payload["steps"][1]["outcome"], "passed")
+
+    def test_a_non_empty_box_is_refused_and_left_untouched(self):
+        surface = "occupied"
+        box = self.walkthrough_box(surface)
+        box.mkdir(parents=True, exist_ok=True)
+        (box / "stranger.txt").write_text("already here\n", encoding="utf-8")
+        subject = self.make_box("occupied_subject")
+        steps = [{"argv": ["python3", "-c", "pass"], "expect": {"exit": 0},
+                  "name": "no-op"}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn(str(box), payload["error"])
+        self.assertTrue((box / "stranger.txt").exists(),
+                        "a box that was not ours to adopt must be left alone")
+
+    def test_cleanup_is_proven_by_content_never_by_git_status(self):
+        surface = "cleanup_proof"
+        box = self.walkthrough_box(surface)
+        subject = self.make_box("cleanup_proof_subject")
+        steps = [{"argv": ["python3", "-c", "pass"], "expect": {"exit": 0},
+                  "name": "no-op"}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        after = audit_cli_module().tree_digest(BOXES)
+        self.assertEqual(
+            [p for p in after if p.startswith(f"_walkthrough_{surface}/")], [],
+            "the box's paths must be absent from a fresh content walk of "
+            "implementations/ -- the same proof every other box's cleanup "
+            "uses in this file, never `git status`")
+        self.assertFalse(box.exists())
+
+
+class WalkthroughSelfProbeTests(unittest.TestCase):
+    """The shipped first-run recipe, pointed at the auditor's own layout."""
+
+    def test_the_shipped_recipe_runs_and_touches_no_sibling_skill(self):
+        cli = audit_cli_module()
+        before = {name: cli.tree_digest(SKILL_ROOT.parent / name)
+                 for name in SIBLING_SKILLS_TO_CHECK}
+        result, payload = walkthrough_json(WALKTHROUGH_SPEC, SKILL_ROOT, repo=FORGE)
+        after = {name: cli.tree_digest(SKILL_ROOT.parent / name)
+                for name in SIBLING_SKILLS_TO_CHECK}
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            before, after,
+            "walkthrough reads the subject and builds its own box; it must "
+            "never touch a sibling skill")
+        self.assertIsNone(
+            payload["stall"],
+            f"the shipped worked invocation is documented as a clean run: "
+            f"{payload}")
