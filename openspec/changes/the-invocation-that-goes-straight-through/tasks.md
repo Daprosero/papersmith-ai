@@ -81,20 +81,20 @@ Chain strategy: stacked-to-main
 
 ## Phase 5: Doctrine, `## Environment`, pin + drift (Commit 5)
 
-- [ ] 5.1 `requirements.txt:4`: `kaggle>=1.7` → `kaggle==1.7.4.5`; comment quotes the mid-migration source note.
-- [ ] 5.2 RED→GREEN: `test_pin_matches_installed_kaggle_version`.
-- [ ] 5.3 RED→GREEN: `test_drifted_installation_fails_naming_both_versions`; invert by monkeypatching the installed version; confirm fail; restore; sha256.
-- [ ] 5.4 Rewrite `SKILL.md`'s credential-transport table: keep the seven prior rows verbatim (sink renamed); add `reached`, `no-sdk-above-the-driver`, `wire-bearer`; every row cites its test name.
-- [ ] 5.5 RED→GREEN: `test_every_transport_table_row_maps_to_a_passing_test`.
-- [ ] 5.6 Retire `## Environment`'s stdlib-only sentence outright; restate "stdlib-only except one named driver script"; correct the false "Requires Python 3.10+" line to measured reality (no enforced minimum; the selftest, not a version check, is what gates).
-- [ ] 5.7 RED→GREEN: `test_the_retired_stdlib_only_claim_survives_nowhere` (precedent idiom) scanning `SKILL.md`, adapter, seam, `credentials.py`, driver.
-- [ ] 5.8 RED→GREEN: confirm the generality guard runs clean against every file this change touches.
-- [ ] 5.9 Run `python3 -m unittest discover -s tests`; confirm total = 1084 + N, reported as a rise.
+- [x] 5.1 `requirements.txt:4`: `kaggle>=1.7` → `kaggle==1.7.4.5`; comment quotes the mid-migration source note.
+- [x] 5.2 RED→GREEN: `test_pin_matches_installed_kaggle_version`.
+- [x] 5.3 RED→GREEN: `test_drifted_installation_fails_naming_both_versions`; invert by monkeypatching the installed version; confirm fail; restore; sha256.
+- [x] 5.4 Rewrite `SKILL.md`'s credential-transport table: keep the seven prior rows verbatim (sink renamed); add `reached`, `no-sdk-above-the-driver`, `wire-bearer`; every row cites its test name.
+- [x] 5.5 RED→GREEN: `test_every_transport_table_row_maps_to_a_passing_test` (satisfied by the pre-existing generic `test_every_row_names_a_test_this_suite_actually_runs`, which went RED against the new rows before their cited tests were confirmed real, then GREEN).
+- [x] 5.6 Retire `## Environment`'s stdlib-only sentence outright; restate "stdlib-only except one named driver script"; correct the false "Requires Python 3.10+" line to measured reality (no enforced minimum; the selftest, not a version check, is what gates).
+- [x] 5.7 RED→GREEN: `test_the_retired_stdlib_only_claim_survives_nowhere` (precedent idiom) scanning `SKILL.md`, adapter, seam, `credentials.py`, driver.
+- [x] 5.8 RED→GREEN: confirm the generality guard runs clean against every file this change touches (extended `TargetVocabularyLeakTests.MODULE_SCRIPTS` to include `kaggle_driver.py`, a real pre-existing gap; locked by `test_target_vocabulary_guard_covers_kaggle_driver`).
+- [x] 5.9 Run `python3 -m unittest discover -s tests`; confirm total = 1115 + 10 = 1125, reported as a rise (baseline measured at apply time was 1115, not the design-time estimate of 1084).
 
 ## Phase 6: Closing verification (cross-cutting, no new files)
 
-- [ ] 6.1 Confirm nothing was launched to Kaggle; the fetch rehearsal (3.2) stays unscheduled pending explicit user permission.
-- [ ] 6.2 Confirm `implementations/Domain_Adaptation` and `openspec/config.yaml` remain untouched.
-- [ ] 6.3 Report the final count-rise (baseline 1084 → new total) exactly, not as a bare "OK".
+- [x] 6.1 Confirm nothing was launched to Kaggle; the fetch rehearsal (3.2) stays unscheduled pending explicit user permission.
+- [x] 6.2 Confirm `implementations/Domain_Adaptation` and `openspec/config.yaml` remain untouched.
+- [x] 6.3 Report the final count-rise (baseline 1115 → 1125, +10) exactly, not as a bare "OK".
 
 *Size note: this artifact exceeds the 530-word budget because the change brief mandates five independently-revertible commits, three bypass-detection locks each requiring its own RED/GREEN/invert/restore cycle, a distinct decision for four `--worker`-required call sites, and two explicitly-named open questions — compressing further would produce the vague tasks the writing rules forbid.*

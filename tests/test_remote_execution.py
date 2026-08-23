@@ -9,7 +9,13 @@ implementation, the frozen data shapes, the name-to-class registry, and that
 a fake adapter's output plugs into the ledger's own event builders with zero
 translation.
 
-Run with any Python 3.10+ (the modules are stdlib-only):
+Run with the interpreter that has `kagglesdk` installed (measured on this
+machine: the system `/usr/bin/python3`, currently 3.9 -- Homebrew's 3.11/3.12
+do not have it installed). Every module here except `adapters/kaggle_driver.py`
+is stdlib-only; nothing in this suite enforces a Python version floor, because
+nothing in the skill it tests does either -- `kaggle_driver.py selftest`
+(`DriverInterceptionTests.test_driver_selftest_imports_kagglesdk`) is what
+actually gates, against whichever interpreter is really in play:
     python3 -m unittest tests.test_remote_execution
 """
 from __future__ import annotations
@@ -20,6 +26,7 @@ import concurrent.futures
 import contextlib
 import dataclasses
 import hashlib
+import importlib.metadata
 import importlib.util
 import io
 import inspect
@@ -45,6 +52,11 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 # holds `SKILL.md`'s pin-condition table to `jobfolder.PIN_CONDITIONS`;
 # prose cannot be held to code, a table can.
 SKILL_MD = REPOSITORY_ROOT / ".claude/skills/remote-execution/SKILL.md"
+
+# The one file outside the skill this change touches. `DoctrinePinTests`
+# parses its `kaggle==` pin and compares it against what is actually
+# installed -- a pin nothing checks is prose, not a guarantee.
+REQUIREMENTS_TXT = REPOSITORY_ROOT / "requirements.txt"
 
 SCRIPT = REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/ledger.py"
 SPEC = importlib.util.spec_from_file_location("remote_execution_ledger", SCRIPT)
@@ -10313,37 +10325,48 @@ class TargetVocabularyLeakTests(unittest.TestCase):
 
     TARGET_LITERALS = ("creda", "mnist", "usps", "svhn")
 
+    # Exposed as a class attribute, not inlined in the test method below,
+    # so `DoctrinePinTests.test_target_vocabulary_guard_covers_kaggle_driver`
+    # can assert membership directly rather than re-deriving its own copy of
+    # this list that could silently drift from the one actually scanned.
+    MODULE_SCRIPTS = (
+        SCRIPT,
+        ADAPTER_SCRIPT,
+        PACKER_SCRIPT,
+        REMOTE_CLI_SCRIPT,
+        REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/credentials.py",
+        JOBFOLDER_SCRIPT,
+        KAGGLE_SCRIPT,
+        KAGGLE_DRIVER_SCRIPT,
+        RUNNER_BOOTSTRAP_SCRIPT,
+        RUNNER_INVOKE_SCRIPT,
+        SHARD_IO_SCRIPT,
+    )
+
     def _assert_clean(self, script: Path) -> None:
         source = script.read_text(encoding="utf-8").lower()
         for leaked in self.TARGET_LITERALS:
             self.assertNotIn(leaked, source, f"{leaked!r} in {script}")
 
     def test_no_module_in_the_skill_names_the_target(self) -> None:
-        for script in (
-            SCRIPT,
-            ADAPTER_SCRIPT,
-            PACKER_SCRIPT,
-            REMOTE_CLI_SCRIPT,
-            REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/credentials.py",
-            JOBFOLDER_SCRIPT,
-            KAGGLE_SCRIPT,
-            RUNNER_BOOTSTRAP_SCRIPT,
-            RUNNER_INVOKE_SCRIPT,
-            SHARD_IO_SCRIPT,
-        ):
+        for script in self.MODULE_SCRIPTS:
             self._assert_clean(script)
 
 
 class AdapterEnvironmentTests(unittest.TestCase):
-    """This skill's `## Environment` section says `None. Stdlib-only`, and that
-    is true of its Python and false of the one backend it ships: the adapter
-    shells out to a service CLI that arrives through `pip install kaggle` and
-    that nothing in the skill, the README, or any requirements file names.
+    """This skill's `## Environment` section used to say `None. Stdlib-only`
+    of the whole skill and separately admit its shipped backend needed the
+    bare `kaggle` CLI, arriving through an unpinned `pip install kaggle`.
+    Both halves are retired now (Decision 7): `adapters/kaggle_driver.py`
+    imports `kagglesdk` directly, `## Environment` names that script and
+    that package by name, and `requirements.txt` pins the exact version
+    (see `DoctrinePinTests`).
 
-    So the first person to reach the service on a machine without it meets a
-    bare `FileNotFoundError` from `subprocess`, with no sentence saying what is
-    missing — a dependency whose instruction half was never written, which is
-    exactly the shape this repository has spent the session closing.
+    `_kaggle_executable`/`KAGGLE_EXECUTABLE` — exercised by the first test
+    below — are a documented constructor override never reached by
+    `submit`/`poll`/`fetch`/`list_active` today, all of which shell out to
+    `self._driver_script` instead; kept for the override itself, not as
+    evidence of a live CLI-shellout path.
     """
 
     def test_a_missing_service_cli_says_what_to_install_not_just_what_failed(self) -> None:
@@ -10371,19 +10394,182 @@ class AdapterEnvironmentTests(unittest.TestCase):
         self.assertIn("install", message.lower(),
                       "the refusal names what failed and never what to install")
 
-    def test_the_environment_section_states_the_cli_this_adapter_shells_out_to(self) -> None:
-        """Doctrine held to the code that contradicts it. `Environment` claiming
-        `None` is what let the dependency stay unwritten; a reader who follows
-        it installs nothing and cannot submit.
+    def test_the_environment_section_names_the_driver_script_and_kagglesdk(self) -> None:
+        """Doctrine held to the code that actually runs. `Environment`
+        claiming `None. Stdlib-only` with no exception is what let this
+        dependency stay unwritten; the replacement must name the one file
+        that imports a packaged client and the package it imports, not the
+        retired bare-CLI framing this section used to carry instead.
         """
-        text = (REPOSITORY_ROOT / ".claude" / "skills" / "remote-execution"
-                / "SKILL.md").read_text(encoding="utf-8")
+        text = SKILL_MD.read_text(encoding="utf-8")
         section = text.split("## Environment", 1)
         self.assertEqual(len(section), 2, "no Environment section to hold")
         body = section[1].split("\n## ", 1)[0]
-        self.assertIn(KAGGLE.KAGGLE_EXECUTABLE, body,
-                      "the Environment section never names the service CLI the "
-                      "shipped adapter shells out to")
+        self.assertIn(
+            "kaggle_driver.py", body,
+            "the Environment section never names the one driver script "
+            "that imports a packaged client",
+        )
+        self.assertIn(
+            "kagglesdk", body,
+            "the Environment section never names the package that one "
+            "driver script imports",
+        )
+
+
+class DoctrinePinTests(unittest.TestCase):
+    """Commit 5: the frontmatter `description:`, `## Environment`, the
+    credential-transport table, and the dependency pin, all re-derived from
+    what the child-driver topology actually does rather than what an
+    earlier CLI-shellout topology used to.
+
+    Three claims the frontmatter `description:` made are false as of this
+    change and are locked here rather than left to a reader's memory:
+    (1) "never imports the `kaggle` package" -- `kaggle_driver.py` does,
+    deliberately, and is the one file in this skill permitted to;
+    (2) "the installed client authenticates that variable by value and
+    checks no path" -- true of `kagglesdk`'s own `_try_fill_auth()`, false
+    of the `kaggle` CLI this skill used to shell out to, and the old
+    sentence did not distinguish the two; (3) "Stdlib-only, no venv" --
+    false once one driver script imports a packaged client. Rewording any
+    of the three into softer prose would leave the same claim in different
+    words, so each is locked to its own absence, not its rewording.
+    """
+
+    # -- frontmatter description -------------------------------------------
+
+    def _description(self) -> str:
+        text = SKILL_MD.read_text(encoding="utf-8")
+        match = re.search(r'^description:\s*"(.*)"\s*$', text, re.MULTILINE)
+        self.assertIsNotNone(
+            match, "SKILL.md's frontmatter has no single-line description: field"
+        )
+        return match.group(1)
+
+    def test_description_no_longer_claims_the_adapter_never_imports_kaggle(self) -> None:
+        description = self._description().lower()
+        self.assertNotIn("never imports the `kaggle` package", description)
+        self.assertNotIn("never imports the kaggle package", description)
+
+    def test_description_no_longer_attributes_by_value_no_path_auth_to_the_installed_client_at_large(
+        self,
+    ) -> None:
+        description = self._description()
+        self.assertNotIn("checks no path", description)
+
+    def test_description_no_longer_claims_stdlib_only_no_venv(self) -> None:
+        description = self._description().lower()
+        self.assertNotIn("stdlib-only, no venv", description)
+
+    def test_description_names_the_driver_and_the_pinned_sdk(self) -> None:
+        description = self._description()
+        self.assertIn("kaggle_driver.py", description)
+        self.assertIn("kagglesdk", description)
+
+    # -- ## Environment retirement (Decision 7) ----------------------------
+
+    RETIRED_ENVIRONMENT_CLAIMS = (
+        "no import of any packaged client",
+        "requires python 3.10+",
+    )
+
+    def test_the_retired_stdlib_only_claim_survives_nowhere(self) -> None:
+        """The precedent's exact idiom
+        (`test_the_retracted_by_path_claim_survives_nowhere`): rewording a
+        retired claim would leave the same claim in softer words, so this
+        asserts its absence outright, whitespace-normalized so wrapped
+        prose cannot dodge it, across the skill's own surface, the adapter,
+        the seam, `credentials.py` and the driver.
+        """
+        for path in (
+            SKILL_MD,
+            KAGGLE_SCRIPT,
+            ADAPTER_SCRIPT,
+            REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/credentials.py",
+            KAGGLE_DRIVER_SCRIPT,
+        ):
+            text = " ".join(path.read_text(encoding="utf-8").lower().split())
+            for claim in self.RETIRED_ENVIRONMENT_CLAIMS:
+                self.assertNotIn(claim, text, f"{claim!r} still stated in {path}")
+
+    def test_environment_names_the_driver_script_and_kagglesdk_as_the_exception(
+        self,
+    ) -> None:
+        text = SKILL_MD.read_text(encoding="utf-8")
+        section = text.split("## Environment", 1)
+        self.assertEqual(len(section), 2, "no Environment section to hold")
+        body = section[1].split("\n## ", 1)[0]
+        self.assertIn("kaggle_driver.py", body)
+        self.assertIn("kagglesdk", body)
+        self.assertIn("stdlib-only", body.lower())
+
+    # -- pin + drift lock (Decision 8) -------------------------------------
+
+    PIN_PATTERN = re.compile(r"^kaggle==([0-9][0-9A-Za-z.\-]*)\s*(#.*)?$")
+
+    def _pinned_version(self) -> str:
+        text = REQUIREMENTS_TXT.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            match = self.PIN_PATTERN.match(line.strip())
+            if match:
+                return match.group(1)
+        self.fail(f"{REQUIREMENTS_TXT} pins no exact kaggle==<version> requirement")
+
+    @staticmethod
+    def _assert_pin_matches_installed(testcase: unittest.TestCase, pinned: str, installed: str) -> None:
+        testcase.assertEqual(
+            pinned,
+            installed,
+            f"requirements.txt pins kaggle=={pinned} but the installed kaggle "
+            f"is {installed} -- kagglesdk ships inside the kaggle distribution "
+            "with no distribution of its own, so a version bump that moves "
+            "its auth surface must fail loudly here rather than pass silently",
+        )
+
+    def test_pin_matches_installed_kaggle_version(self) -> None:
+        pinned = self._pinned_version()
+        installed = importlib.metadata.version("kaggle")
+        self._assert_pin_matches_installed(self, pinned, installed)
+
+    def test_drifted_installation_fails_naming_both_versions(self) -> None:
+        """`kagglesdk` ships inside the `kaggle` distribution with no
+        distribution of its own, so drift is measured against `kaggle`'s
+        own installed version. This exercises the SAME comparison
+        `test_pin_matches_installed_kaggle_version` runs, against a
+        fabricated "installed" value, and requires the failure to name
+        both versions -- never a bare `AssertionError` a reader has to
+        cross-reference `requirements.txt` to make sense of.
+        """
+        pinned = self._pinned_version()
+        drifted = "9.9.9-drifted"
+        self.assertNotEqual(pinned, drifted, "fixture drift value collided with the real pin")
+        with self.assertRaises(AssertionError) as ctx:
+            self._assert_pin_matches_installed(self, pinned, drifted)
+        message = str(ctx.exception)
+        self.assertIn(pinned, message)
+        self.assertIn(drifted, message)
+
+    def test_requirements_pin_quotes_the_migration_comment_as_its_reason(self) -> None:
+        """A prose pin with no reason is a version number nobody can judge
+        later. Kaggle's own developers document `kagglesdk`'s auth surface
+        as mid-migration (`kagglesdk/kaggle_http_client.py:14-17`); the pin
+        quotes that comment rather than asserting a reason of this skill's
+        own invention.
+        """
+        text = REQUIREMENTS_TXT.read_text(encoding="utf-8")
+        self.assertIn("kaggle==1.7.4.5", text)
+        self.assertIn("not currently usable by the CLI", text)
+
+    # -- generality guard completeness (task 5.8) --------------------------
+
+    def test_target_vocabulary_guard_covers_kaggle_driver(self) -> None:
+        """`kaggle_driver.py` is production code this change added, and the
+        no-target-vocabulary guard must scan it exactly like every other
+        module in the skill -- omission here is precisely how
+        `MIL_CREDA_Benchmark` once reached `jobfolder.py` unnoticed, per
+        `TargetVocabularyLeakTests`'s own docstring.
+        """
+        self.assertIn(KAGGLE_DRIVER_SCRIPT, TargetVocabularyLeakTests.MODULE_SCRIPTS)
 
 
 class ClonePathExistenceTests(unittest.TestCase):

@@ -1,6 +1,6 @@
 ---
 name: remote-execution
-description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry), the packer's capacity clamp, the full `remote_cli` front door (`submit` with its path guard and `--smoke`, `status`, `poll`, `fetch` with quarantine, `reconcile`, `generate-job`, `smoke record`, `readiness`), and one concrete backend: `adapters/kaggle.py` — the ONLY file in this entire skill allowed to name a service. It shells out to the `kaggle` CLI (never imports the `kaggle` package), derives worker identity solely from kaggle-accounts' own sanctioned `list --json` command, and accepts credentials only as a `CredentialHandle(worker_id, token_path)` — read at exactly one expression, in that one file, and put on `KAGGLE_API_TOKEN` for one child process, because the installed client authenticates that variable by value and checks no path. A rehearsal run (`smoke.jsonl`, a distinct file from the main ledger) proves readiness from evidence-completeness, never a human assertion, and never a clock. Stdlib-only, no venv."
+description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry), the packer's capacity clamp and worker auto-selection, the full `remote_cli` front door (`submit` with its path guard, optional `--worker` and `--smoke`, `status`, `poll`, `fetch` with quarantine, `reconcile`, `generate-job`, `smoke record`, `readiness`), and one concrete backend: `adapters/kaggle.py` — the ONLY file in this entire skill allowed to name a service. It shells out to `adapters/kaggle_driver.py`, the ONLY file in this skill permitted to import the packaged `kagglesdk` client (pinned `kaggle==1.7.4.5`, since `kagglesdk` ships inside that distribution) rather than the `kaggle` CLI's own Basic-auth path, which the stored token shape cannot authenticate against at all; derives worker identity solely from kaggle-accounts' own sanctioned `list --json` command, and accepts credentials only as a `CredentialHandle(worker_id, token_path)` — read at exactly one expression, in that one file, and put on `KAGGLE_API_TOKEN` for one child process, because `kagglesdk`'s own `_try_fill_auth()` reads that variable by value with no path check at all — the CLI itself authenticates neither a path nor that variable. A rehearsal run (`smoke.jsonl`, a distinct file from the main ledger) proves readiness from evidence-completeness, never a human assertion, and never a clock. Stdlib-only except that one named driver script."
 ---
 
 # Remote Execution
@@ -166,18 +166,21 @@ Three modules exist so far, each service-blind and stdlib-only:
   opens kaggle-accounts' own credential file itself, directly or otherwise),
   each stamped with this service's own documented per-worker allowance
   (`KAGGLE_WORKER_CAPACITY`, a module constant, explicitly not a universal
-  one). `submit`/`poll`/`fetch`/`cancel`/`list_active` shell out to the
-  `kaggle` CLI — `shell=False`, list argv, an env built from an allowlist
-  (`PATH` plus, when a credential is involved, `KAGGLE_API_TOKEN`), and an
-  explicit timeout on every call; a non-zero exit or an expired timeout is a
-  refusal (`KaggleAdapterError`), never a fabricated `Status`, `Submission`
-  or `Fetched`. `poll()` translates Kaggle's own raw status text into the
-  seam's five-value vocabulary and never passes it through; the raw text
-  goes in `Status.detail` only. `CredentialHandle(worker_id, token_path)` is
+  one). `submit`/`poll`/`fetch`/`cancel`/`list_active` shell out to
+  `adapters/kaggle_driver.py` — the ONLY file in this skill permitted to
+  import `kagglesdk`, invoked as a child process the same way this adapter
+  used to invoke the `kaggle` CLI directly: `shell=False`, list argv, an
+  env built from an allowlist (`PATH` plus, when a credential is involved,
+  `KAGGLE_API_TOKEN`), and an explicit timeout on every call; a non-zero
+  exit or an expired timeout is a refusal (`KaggleAdapterError`), never a
+  fabricated `Status`, `Submission` or `Fetched`. `poll()` translates the
+  driver's own reported `KernelWorkerStatus` member name into the seam's
+  five-value vocabulary and never passes it through; the raw name goes in
+  `Status.detail` only. `CredentialHandle(worker_id, token_path)` is
   the only credential type this adapter accepts, exposes no read method, and
   is consumed at exactly one expression in the whole skill: `_env_for()`
   reads the file that path names and puts its stripped CONTENT on
-  `KAGGLE_API_TOKEN` for one child process.
+  `KAGGLE_API_TOKEN` for one child process — the driver's own.
 
   **The credential travels by value, and that is a trade, not a wording
   change.** The installed client's `_try_fill_auth()` reads
@@ -202,6 +205,21 @@ Three modules exist so far, each service-blind and stdlib-only:
 | 5 | `no-empty-bearer` | A credential file holding nothing once stripped is a refusal naming the worker — never an empty bearer header | `_env_for()` | `test_an_empty_credential_file_is_refused_rather_than_sent_as_a_bare_bearer` |
 | 6 | `per-process` | Two concurrent submissions for two workers carry two distinct, uncrossed credentials: one fresh env dict per `subprocess.run`, never a shared or process-wide one | `_env_for()`, `_run()` | `test_two_concurrent_submissions_carry_two_distinct_uncrossed_credentials` |
 | 7 | `really-concurrent` | The isolation above is proven under genuine overlap, not against two runs that merely happened in sequence | the falsifier's own fake `kaggle`, which records when it started and finished | `test_the_two_submissions_genuinely_overlapped_in_time` |
+| 8 | `reached` | Every interception point this driver topology adds — the OUTER double (`kaggle_driver.py` faked on `PATH`) and the INNER double (a recording `requests` transport mounted on the driver's own client session) — asserts a non-zero recorded-call count before any assertion about content; a bypassed double fails rather than passing silently | `_run()`'s subprocess boundary (outer); the driver's own mounted transport in its test fixtures (inner) | `test_outer_interception_reached_count` |
+| 9 | `no-sdk-above-the-driver` | `adapters/kaggle.py` names `kagglesdk` nowhere at all — text AND AST, so a live `import` and a docstring mention are both caught, not a reader's promise | `adapters/kaggle.py`'s own source (the absence of the name) | `test_driver_names_kagglesdk_nowhere_in_adapter` |
+| 10 | `wire-bearer` | The prepared outbound request carries `Authorization: Bearer <the token's stripped value>`, observed below `BearerAuth.__call__` and above the socket — never a Basic header, anywhere on this path | `kaggle_driver.py`'s `_build_client()` plus the recording `requests` transport mounted on it in its own tests | `test_wire_bearer_header_carries_token_value` |
+
+  Rows 8-10 are new to the child-driver topology; rows 1-7 hold verbatim
+  under it — the sink is still `_env_for()`, only what reads the value on
+  the other end changed (the `kaggle` CLI's `authenticate()` before this
+  change, `kagglesdk`'s own `_try_fill_auth()` now). `fetch`'s per-file
+  download URLs (`list_kernel_session_output`) are a known open question,
+  not a row: whether they need this session's own Bearer credential or
+  answer to an anonymous GET is settled only by a live rehearsal, not run
+  by this change. `cmd_fetch` attaches the defensive choice (the same
+  already-authenticated session `poll`/`submit` use) rather than guessing,
+  and that choice stays **`unverified-by-rehearsal`** until a rehearsal,
+  run only on the user's explicit permission, settles it either way.
 
   `REQUEST_GPU = True` is
   declared here, and here alone in this whole skill — a request, not a
@@ -678,23 +696,43 @@ by `latest[entrypoint]`. `smoke.jsonl` is a physically separate file (see
 
 ## Environment
 
-**This skill's own Python: none.** Stdlib-only — no `.venv`, no `setup.sh`, no
-import of any packaged client. Requires Python 3.10+.
+**This skill's own Python is stdlib-only except one named driver script.**
+The prior sentence here claimed a floor this section no longer defends and a
+packaged-client absence this driver script disproves; both are retired
+outright, not softened into a paraphrase that would leave the same claim in
+different words. Every module here — the ledger, the adapter seam, the packer, `remote_cli.py`,
+`jobfolder.py`, the runner assets — imports nothing beyond the standard
+library. The one exception is `adapters/kaggle_driver.py`: it imports
+`kagglesdk`, vendored inside the `kaggle` distribution this repository's own
+`requirements.txt` pins at `kaggle==1.7.4.5` (see the credential-transport
+table above), and it is the ONLY file in this skill permitted to. Nothing
+else in this skill needs it: the ledger, the packer, the seam and every
+command that only reads them run with no packaged client installed at all.
+But `submit`, `poll`, `fetch` and `smoke` all end at that one driver script,
+so on an interpreter that cannot import `kagglesdk` they cannot start.
 
-**Its shipped backend is a different question, and saying "none" here hid it.**
-`adapters/kaggle.py` reaches the service by shelling out to the `kaggle`
-command line — deliberately, so no credential ever passes through this
-process — and that command arrives with `pip install kaggle`, listed in the
-repository's own `requirements.txt`. Nothing else in this skill needs it: the
-ledger, the packer, the seam and every command that only reads them run with
-no backend installed at all. But `submit`, `poll`, `fetch` and `smoke` all
-end at that executable, so on a machine without it they cannot start.
+**No enforced minimum Python version — the driver's own selftest gates,
+never a version number.** This skill declares no `python_requires` and holds
+no version floor anywhere in its code; what actually gates is
+`kaggle_driver.py selftest`, run against the exact interpreter that will
+invoke it (`sys.executable`, inherited from the calling adapter process). It
+reports whether `kagglesdk` imports under that interpreter and, if it does
+not, refuses by name — the interpreter path and the exact install command —
+rather than asserting a version nothing checks
+(`test_driver_selftest_imports_kagglesdk`). Measured on this machine:
+`kagglesdk` is installed and importable under the system `/usr/bin/python3`
+(3.9); it is not installed under the Homebrew 3.11/3.12 interpreters also
+present here. Whichever interpreter a given machine actually resolves
+`sys.executable` to is the one the selftest must pass under, and that is an
+empirical fact about that machine, never a version this skill promises in
+advance.
 
-Check pip's own note about where it put the script: if that directory is not
-on `PATH`, the executable exists and is still unreachable, which reads exactly
-like not having installed it. A backend that cannot be found refuses by name
-and says this — see `KaggleAdapter._run` — rather than surfacing the operating
-system's own error and leaving a reader to guess.
+Check pip's own note about where it put the driver's dependency: if that
+directory is not on the resolving interpreter's import path, the package is
+installed and still unreachable, which reads exactly like not having
+installed it. A backend that cannot be found refuses by name and says this —
+see `KaggleAdapter._run` and `kaggle_driver.py`'s own import-time refusal —
+rather than surfacing a raw traceback and leaving a reader to guess.
 
 A second backend brings its own answer to this section: nothing above the
 adapter seam knows a service exists, so nothing above it knows what a service

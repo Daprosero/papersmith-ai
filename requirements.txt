@@ -1,4 +1,9 @@
 PyMuPDF>=1.23
 PyYAML>=6.0
 jsonschema>=4.0
-kaggle>=1.7
+kaggle==1.7.4.5  # kagglesdk ships inside this distribution, with no distribution
+# of its own; kagglesdk/kaggle_http_client.py:14-17 documents its Bearer-auth
+# path as mid-migration ("This was created from kaggle_api_client.py, prior to
+# recent changes to auth handling. The new client requires KAGGLE_API_TOKEN, so
+# it is not currently usable by the CLI.") -- pinned at the version this was
+# measured against; a drift is locked by DoctrinePinTests in tests/test_remote_execution.py.
