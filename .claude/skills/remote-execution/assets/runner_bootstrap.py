@@ -4,30 +4,42 @@
 `jobfolder.build_notebook()` copies this file's bytes into the notebook's
 first cell with ZERO interpolation. The same bytes serve every job because
 every fact this cell needs comes from `run-config.json`, read at runtime,
-never baked in at generation time. Nine responsibilities, in order:
+never baked in at generation time. Ten responsibilities, in order:
 
 1. read `run-config.json`; validate schema/version
 2. sparse-clone the pinned commit: `git init`, `remote add`,
    `sparse-checkout set <clonePaths>`, `fetch --depth 1 origin <commit>`,
    `checkout FETCH_HEAD`
 3. `sys.path.insert(0, <clone>/src)`
-4. import each declared module and assert its `__file__` resolves under
+4. install the declared build: `sys.executable -m pip install`, list
+   argv, against `run-config.json`'s additive `environment.install`
+   (Decision 3). This runs BEFORE responsibility 5, never after —
+   responsibility 5 imports the declared modules, and those modules
+   import the tensor library this step installs; installing after that
+   point would be too late. An older, undeclared config carries no
+   `environment.install` block and this step is a no-op. Honest cost:
+   this installs on every kernel that runs a job, adding minutes to each
+   one — a campaign of thirty shards pays that cost thirty times.
+   Determinism (the arriving capability verified against what was
+   actually installed, never assumed) was chosen over the cheaper
+   deferral of trusting a pre-baked image
+5. import each declared module and assert its `__file__` resolves under
    the clone's own `src` — the "pip-installed copy" refusal: a module
    importable from somewhere ELSE already on `sys.path` would silently
    run against code this job never pinned a commit for
-5. detect hardware — `torch` not importable IS "hardware missing"; no
+6. detect hardware — `torch` not importable IS "hardware missing"; no
    silent CPU fallback, or this refusal could never actually fire
-6. write `bootstrap.json`: commit, config, detected environment
-7. any of config / code / hardware missing raises `SystemExit` on the
+7. write `bootstrap.json`: commit, config, detected environment
+8. any of config / code / hardware missing raises `SystemExit` on the
    spot, so cell 1 never runs against a half-prepared runtime
-8. the accelerator gate: the arriving capability must appear in the
+9. the accelerator gate: the arriving capability must appear in the
    installed arch list, and any declared `accelerator.architectures`
    must be covered by that same installed list. This runs AFTER
-   responsibility 6, never before — a refusal whose evidence was never
+   responsibility 7, never before — a refusal whose evidence was never
    written is unreadable no matter how early it fires, so `bootstrap.json`
    already carries the arriving device, the torch build and the arch
    list the verdict was computed from by the time this refuses
-9. no service name anywhere, ever
+10. no service name anywhere, ever
 
 Importable and independently testable: every responsibility above is a
 plain function, and `bootstrap()` composes them. Nothing runs at import
@@ -195,6 +207,117 @@ def add_clone_to_path(clone_dir: str | Path) -> Path:
     return src_dir
 
 
+# The whole allowlist a pip subprocess's environment is built from —
+# never `os.environ` forwarded wholesale, the same restraint
+# `GIT_ENV_ALLOWLIST` above already applies to its own child environment.
+# A separate constant, deliberately: this cell's pip invocation and its
+# git invocations are different subprocess families, and each holds this
+# discipline on its own rather than sharing one name that could drift for
+# the wrong reason.
+PIP_ENV_ALLOWLIST = ("PATH",)
+PIP_INSTALL_TIMEOUT_SECONDS = 600.0
+
+
+def _validate_requirement_specifier(spec: str) -> str:
+    """A requirement specifier is data, never a flag. `pip install` reads
+    each positional argv element as either a package specifier or, when
+    it begins with `-`, an option of its own — a declared specifier
+    shaped like `--index-url https://evil.invalid` would occupy the same
+    argv position as a real package name and silently redirect the whole
+    install to an attacker-controlled index. Refusing any specifier
+    beginning with `-` is what keeps a declared `requirements` list
+    unable to smuggle a flag this way. Nothing else about the string is
+    inspected: shell metacharacters elsewhere in a specifier reach pip's
+    argv as inert data, the same `shell=False`, list-argv guarantee
+    `_run_git()` already gives every value this cell passes to git.
+    """
+    if not isinstance(spec, str) or not spec or spec.startswith("-"):
+        raise BootstrapError(
+            f"environment.install refuses requirement specifier {spec!r}: "
+            "a specifier beginning with '-' would be read by pip as an "
+            "option, not a package to install"
+        )
+    return spec
+
+
+def _run_pip(args: Sequence[str], *, timeout: float = PIP_INSTALL_TIMEOUT_SECONDS) -> None:
+    """The single composition point for the one pip invocation this cell
+    makes — the same discipline `_run_git()` already holds: `shell=False`
+    with a list argv, so a value carrying shell metacharacters reaches
+    argv as one element and is never evaluated by a shell; the
+    environment built from `PIP_ENV_ALLOWLIST` alone, never this
+    process's own `os.environ` forwarded wholesale; an explicit timeout;
+    a non-zero exit is a refusal, never silently ignored.
+    """
+    argv = [sys.executable, "-m", "pip", *args]
+    env = {name: os.environ[name] for name in PIP_ENV_ALLOWLIST if name in os.environ}
+    try:
+        result = subprocess.run(
+            argv,
+            shell=False,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise BootstrapError(
+            f"environment install timed out after {timeout}s running pip "
+            f"{' '.join(args)}"
+        ) from exc
+    except OSError as exc:
+        raise BootstrapError(f"could not run pip: {exc}") from exc
+    if result.returncode != 0:
+        raise BootstrapError(
+            f"pip {' '.join(args)} exited {result.returncode}: "
+            f"{result.stderr.strip()}"
+        )
+
+
+def install_environment(run_config: Mapping[str, Any]) -> None:
+    """Responsibility 4: install the dual-architecture torch build (or
+    whatever else the target declares) BEFORE responsibility 5 imports
+    the target's own modules — those imports pull in the tensor library
+    this step installs, so installing after that point would be too
+    late.
+
+    Reads `run-config.json`'s additive `environment.install:
+    {requirements[], indexUrl}` (Decision 3). Additive: an older config
+    with no `environment` block, or no `install` block within it,
+    installs nothing at all — this is a no-op, exactly as this cell
+    behaved before the field existed. This module names only those two
+    fields and never a package: it does not know which tensor-library
+    build a target needs, only that the target declared one.
+
+    Every requirement specifier is validated by
+    `_validate_requirement_specifier()` before any argv is built, and the
+    whole install runs through `_run_pip()`, the single composition point
+    matching `_run_git()`'s own discipline: `sys.executable -m pip
+    install`, with `--index-url <indexUrl>` first when declared, then
+    each requirement its own argv element — never one opaque command
+    string.
+    """
+    environment = run_config.get("environment")
+    install = environment.get("install") if isinstance(environment, Mapping) else None
+    if not isinstance(install, Mapping):
+        return
+    requirements = [
+        _validate_requirement_specifier(spec)
+        for spec in (install.get("requirements") or [])
+    ]
+    if not requirements:
+        raise BootstrapError(
+            "config missing: environment.install declares no requirements "
+            "to install"
+        )
+    index_url = install.get("indexUrl")
+    args = ["install"]
+    if index_url:
+        args += ["--index-url", str(index_url)]
+    args += requirements
+    _run_pip(args)
+
+
 def declared_modules(run_config: Mapping[str, Any]) -> list[str]:
     """Every module `run-config.json` names as an entry point: the normal
     `run.module`, plus `run.smoke.module` when present — both get the
@@ -216,7 +339,7 @@ def verify_imports_under_clone(
     import_module: Callable[[str], Any] = importlib.import_module,
 ) -> dict[str, str]:
     """Import each declared module and assert its `__file__` resolves
-    under the clone's own `src` — responsibility 4, the "pip-installed
+    under the clone's own `src` — responsibility 5, the "pip-installed
     copy" refusal. `.resolve()` on both sides: a temp path traversing a
     `/var` -> `/private/var`-style symlink must compare equal either way.
     """
@@ -261,7 +384,7 @@ def _capability_to_arch(capability: tuple[int, int]) -> str:
 def detect_hardware(
     *, import_module: Callable[[str], Any] = importlib.import_module
 ) -> dict[str, Any]:
-    """Hardware detection — responsibility 5. `torch` not importable IS
+    """Hardware detection — responsibility 6. `torch` not importable IS
     the refusal mapping for "hardware missing": no silent CPU fallback,
     because a silent fallback would mean this refusal branch could never
     actually fire.
@@ -270,7 +393,7 @@ def detect_hardware(
     architectures THIS INSTALLED torch build actually ships kernels for
     (`torch.cuda.get_arch_list()`) — and `capability`, the arriving
     device's own capability formatted the same way. Both are what
-    responsibility 8's accelerator gate compares; neither requires the
+    responsibility 9's accelerator gate compares; neither requires the
     declared `accelerator` block to exist, since the arch list a build
     installs is a fact about that build, not about what any job declared.
     A runtime with no CUDA device carries nothing to compare: `archList`
@@ -309,7 +432,7 @@ def write_bootstrap_output(
     environment: Mapping[str, Any],
     imports: Mapping[str, str],
 ) -> Path:
-    """`bootstrap.json` — responsibility 6: the commit, the config, the
+    """`bootstrap.json` — responsibility 7: the commit, the config, the
     detected environment, and the resolved import locations responsibility
     4 just proved.
     """
@@ -326,7 +449,7 @@ def write_bootstrap_output(
 
 
 def check_accelerator(run_config: Mapping[str, Any], environment: Mapping[str, Any]) -> None:
-    """The accelerator gate — responsibility 8, run only AFTER
+    """The accelerator gate — responsibility 9, run only AFTER
     `write_bootstrap_output()` (see `bootstrap()` below). Two assertions:
 
     1. the arriving `capability` must appear in the INSTALLED `archList`
@@ -367,11 +490,11 @@ def bootstrap(
     hardware_import: Callable[[str], Any] = importlib.import_module,
 ) -> dict[str, Any]:
     """The whole of cell 0, in the fixed order the design pins:
-    config -> clone -> `sys.path` -> imports -> hardware -> `bootstrap.json`
-    -> the accelerator gate.
+    config -> clone -> `sys.path` -> install -> imports -> hardware ->
+    `bootstrap.json` -> the accelerator gate.
 
     Any of config / code / hardware missing raises `SystemExit` on the
-    spot — responsibility 7 — so cell 1 never runs against a
+    spot — responsibility 8 — so cell 1 never runs against a
     half-prepared runtime. `hardware_import` exists only so a test can
     drive `detect_hardware()`'s success path without a real GPU or a real
     `torch` install; the default is the real `importlib.import_module`.
@@ -389,6 +512,7 @@ def bootstrap(
         run_config = load_run_config(base)
         clone_dir = clone_repo(run_config, base / CLONE_DIRNAME)
         src_dir = add_clone_to_path(clone_dir)
+        install_environment(run_config)
         modules = declared_modules(run_config)
         imports = verify_imports_under_clone(modules, src_dir)
         environment = detect_hardware(import_module=hardware_import)

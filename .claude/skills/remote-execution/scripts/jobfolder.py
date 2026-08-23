@@ -583,6 +583,8 @@ def build_run_config(
     smoke_required_evidence: Sequence[str] | None = None,
     accelerator_kind: str | None = None,
     accelerator_architectures: Sequence[str] | None = None,
+    environment_requirements: Sequence[str] | None = None,
+    environment_index_url: str | None = None,
 ) -> dict:
     """Assemble `run-config.json`'s exact shape from target-supplied values.
 
@@ -619,6 +621,22 @@ def build_run_config(
     `schemaVersion` stays 1). Given partially — a kind with no
     architecture list, or the reverse — is refused: neither half alone is
     a value this schema can express.
+
+    `environment_requirements`/`environment_index_url`, when given, are
+    recorded verbatim as `environment: {install: {requirements[],
+    indexUrl}}` (Decision 3). This module names only those two fields
+    and never a package: it does not know which tensor-library build a
+    target needs, only that the target declared one. `indexUrl` is
+    optional within a declared install — a caller relying on pip's own
+    default index declares `requirements` alone — but declaring
+    `indexUrl` with no `requirements` is refused: an index with nothing
+    to install is not a value this schema can express. Omitted entirely,
+    no `environment` block is written and the generated job behaves
+    exactly as it did before this field existed (additive, `schemaVersion`
+    stays 1). Specifier-shape validation (a requirement beginning with
+    `-` is refused) happens where the install actually runs —
+    `runner_bootstrap.py`'s `install_environment()` — not here: this
+    module only carries the target's own declared list.
     """
     validated_clone_paths = validate_clone_paths(clone_paths)
     has_smoke_block = bool(smoke_module and smoke_function)
@@ -634,6 +652,13 @@ def build_run_config(
             "accelerator_kind and accelerator_architectures must both be "
             "given (and non-empty), or both omitted; a kind with no "
             "architecture list, or the reverse, is not a value "
+            "run-config.json can express"
+        )
+    has_environment_install = bool(environment_requirements)
+    if environment_index_url and not has_environment_install:
+        raise JobFolderError(
+            "environment_index_url was given but no environment_requirements; "
+            "an index URL with nothing to install is not a value "
             "run-config.json can express"
         )
     run_block: dict = {
@@ -672,6 +697,11 @@ def build_run_config(
             "kind": accelerator_kind,
             "architectures": list(accelerator_architectures),
         }
+    if has_environment_install:
+        install_block: dict = {"requirements": list(environment_requirements)}
+        if environment_index_url:
+            install_block["indexUrl"] = environment_index_url
+        run_config["environment"] = {"install": install_block}
     validate_run_config(run_config)
     return run_config
 

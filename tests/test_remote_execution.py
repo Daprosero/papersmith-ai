@@ -10037,6 +10037,272 @@ class RunnerBootstrapTests(unittest.TestCase):
                 sys.path[:] = saved_path
                 sys.modules.pop(module_name, None)
 
+    # -- install_environment(): the dual-architecture torch build ---------
+    # (Decision 3) — placed BEFORE responsibility 5 (import verification),
+    # because that responsibility imports the declared modules, and those
+    # modules import the tensor library this step installs. Installing
+    # after that point would be too late.
+
+    def _recording_pip(self, recorded_argv: list):
+        """Patches `RUNNER_BOOTSTRAP.subprocess.run` to record the argv it
+        was called with and return a successful, empty `CompletedProcess`
+        — never a real pip invocation, the same in-process-double
+        discipline every `_run_git` test above already uses.
+        """
+        def _fake_run(argv, **kwargs):
+            recorded_argv.append((list(argv), kwargs))
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return unittest.mock.patch.object(
+            RUNNER_BOOTSTRAP.subprocess, "run", side_effect=_fake_run
+        )
+
+    def test_install_environment_is_a_no_op_when_no_environment_block_is_declared(
+        self,
+    ) -> None:
+        """Additive: an older config with no `environment.install` block
+        installs nothing at all — no pip invocation whatsoever."""
+        recorded_argv: list = []
+        with self._recording_pip(recorded_argv):
+            RUNNER_BOOTSTRAP.install_environment(self._fake_run_config())
+        self.assertEqual(recorded_argv, [])
+
+    def test_install_environment_runs_sys_executable_dash_m_pip_install_with_list_argv(
+        self,
+    ) -> None:
+        """Decision 3: `sys.executable -m pip install`, with each
+        requirement its own argv element — never a single opaque command
+        string."""
+        run_config = self._fake_run_config(
+            environment={
+                "install": {
+                    "requirements": ["torch==9.9.9+cu999"],
+                    "indexUrl": "https://example.invalid/whl",
+                }
+            }
+        )
+        recorded_argv: list = []
+        with self._recording_pip(recorded_argv):
+            RUNNER_BOOTSTRAP.install_environment(run_config)
+        self.assertEqual(len(recorded_argv), 1)
+        argv, kwargs = recorded_argv[0]
+        self.assertEqual(
+            argv,
+            [
+                sys.executable, "-m", "pip", "install",
+                "--index-url", "https://example.invalid/whl",
+                "torch==9.9.9+cu999",
+            ],
+        )
+        self.assertFalse(kwargs.get("shell"))
+
+    def test_install_environment_omits_index_url_when_not_declared(self) -> None:
+        run_config = self._fake_run_config(
+            environment={"install": {"requirements": ["some-requirement"]}}
+        )
+        recorded_argv: list = []
+        with self._recording_pip(recorded_argv):
+            RUNNER_BOOTSTRAP.install_environment(run_config)
+        argv, _ = recorded_argv[0]
+        self.assertNotIn("--index-url", argv)
+        self.assertIn("some-requirement", argv)
+
+    def test_install_environment_env_is_a_path_only_allowlist(self) -> None:
+        run_config = self._fake_run_config(
+            environment={"install": {"requirements": ["some-requirement"]}}
+        )
+        recorded_env: dict = {}
+
+        def _fake_run(argv, **kwargs):
+            recorded_env.update(kwargs.get("env") or {})
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        with unittest.mock.patch.object(
+            RUNNER_BOOTSTRAP.subprocess, "run", side_effect=_fake_run
+        ), unittest.mock.patch.dict(os.environ, {"SOME_OTHER_VAR": "leak-me-not"}):
+            RUNNER_BOOTSTRAP.install_environment(run_config)
+
+        self.assertEqual(set(recorded_env) - {"PATH"}, set())
+
+    def test_install_environment_refuses_a_requirement_specifier_beginning_with_a_dash(
+        self,
+    ) -> None:
+        """A specifier shaped like a flag (`--index-url evil`) must never
+        reach pip's argv in a position where pip would read it as an
+        option instead of a package."""
+        run_config = self._fake_run_config(
+            environment={
+                "install": {"requirements": ["--index-url", "https://evil.invalid"]}
+            }
+        )
+        recorded_argv: list = []
+        with self._recording_pip(recorded_argv):
+            with self.assertRaises(RUNNER_BOOTSTRAP.BootstrapError) as ctx:
+                RUNNER_BOOTSTRAP.install_environment(run_config)
+        self.assertIn("--index-url", str(ctx.exception))
+        self.assertEqual(recorded_argv, [], "pip must never be invoked at all")
+
+    def test_install_environment_shell_shaped_requirement_installs_only_as_inert_data(
+        self,
+    ) -> None:
+        """A requirement string carrying shell metacharacters reaches
+        pip's argv as one inert element and executes nothing — the same
+        `shell=False`, list-argv guarantee `_run_git` already holds."""
+        marker_name = "pwned-marker-pip-install"
+        marker_path = Path.cwd() / marker_name
+        malicious = f"harmless-pkg;touch {marker_name}"
+        run_config = self._fake_run_config(
+            environment={"install": {"requirements": [malicious]}}
+        )
+        recorded_argv: list = []
+        try:
+            with self._recording_pip(recorded_argv):
+                RUNNER_BOOTSTRAP.install_environment(run_config)
+            self.assertFalse(marker_path.exists())
+            self.assertIn(malicious, recorded_argv[0][0])
+        finally:
+            if marker_path.exists():
+                marker_path.unlink()
+
+    def test_install_environment_non_zero_exit_is_a_refusal(self) -> None:
+        run_config = self._fake_run_config(
+            environment={"install": {"requirements": ["some-requirement"]}}
+        )
+        with unittest.mock.patch.object(
+            RUNNER_BOOTSTRAP.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                ["pip"], 1, stdout="", stderr="no matching distribution"
+            ),
+        ):
+            with self.assertRaises(RUNNER_BOOTSTRAP.BootstrapError) as ctx:
+                RUNNER_BOOTSTRAP.install_environment(run_config)
+        self.assertIn("no matching distribution", str(ctx.exception))
+
+    def test_install_environment_timeout_is_a_refusal(self) -> None:
+        run_config = self._fake_run_config(
+            environment={"install": {"requirements": ["some-requirement"]}}
+        )
+        with unittest.mock.patch.object(
+            RUNNER_BOOTSTRAP.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(cmd=["pip", "install"], timeout=1.0),
+        ):
+            with self.assertRaises(RUNNER_BOOTSTRAP.BootstrapError):
+                RUNNER_BOOTSTRAP.install_environment(run_config)
+
+    def test_bootstrap_runs_install_environment_before_verifying_imports(self) -> None:
+        """The mandated ordering RED: `install_environment()` must run
+        before responsibility 5 (`verify_imports_under_clone`), because
+        that import pulls in the tensor library this step installs.
+        Proven by recording call order against a fake `run_config`
+        declaring both an install block and an importable fixture
+        module."""
+        with tempfile.TemporaryDirectory() as tmp:
+            origin, commit = _make_origin_repo(tmp, {"src/fixturepkg/__init__.py": "VALUE = 1\n"})
+            run_config = self._fake_run_config(
+                commit=commit,
+                repo={"url": str(origin), "ref": "main"},
+                clonePaths=["src/fixturepkg"],
+                run={"module": "fixturepkg", "function": "run"},
+                environment={"install": {"requirements": ["some-requirement"]}},
+            )
+            (Path(tmp) / RUNNER_BOOTSTRAP.CONFIG_FILENAME).write_text(
+                json.dumps(run_config), encoding="utf-8"
+            )
+            saved_path = list(sys.path)
+            fake_torch = SimpleNamespace(
+                __version__="1.2.3",
+                cuda=SimpleNamespace(is_available=lambda: False, get_device_name=lambda i: "n/a"),
+            )
+            call_order: list = []
+            real_import_module = RUNNER_BOOTSTRAP.verify_imports_under_clone
+            real_run = subprocess.run
+
+            def _recording_verify(modules, src_dir, **kwargs):
+                call_order.append("verify_imports")
+                return real_import_module(modules, src_dir, **kwargs)
+
+            def _recording_run(argv, **kwargs):
+                # Only the pip invocation (`sys.executable -m pip ...`) is
+                # faked; every git call `clone_repo()` makes ahead of it
+                # runs for real, so cloning still actually happens.
+                if list(argv)[:2] == [sys.executable, "-m"]:
+                    call_order.append("install")
+                    return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+                return real_run(argv, **kwargs)
+
+            try:
+                with unittest.mock.patch.object(
+                    RUNNER_BOOTSTRAP.subprocess, "run", side_effect=_recording_run
+                ), unittest.mock.patch.object(
+                    RUNNER_BOOTSTRAP, "verify_imports_under_clone", side_effect=_recording_verify
+                ):
+                    RUNNER_BOOTSTRAP.bootstrap(tmp, hardware_import=lambda name: fake_torch)
+            finally:
+                sys.path[:] = saved_path
+                sys.modules.pop("fixturepkg", None)
+
+            self.assertEqual(call_order, ["install", "verify_imports"])
+
+    def test_bootstrap_end_to_end_records_torch_and_arch_list_after_a_faked_dual_arch_install(
+        self,
+    ) -> None:
+        """Integration (task 2.9): a declared `environment.install` runs
+        (faked here, never real pip/network), and a fake torch double
+        reporting BOTH `sm_60` and `sm_75` in its own `archList` proves
+        `bootstrap.json` records `environment.torch` and `environment.archList`
+        for the build that was actually installed — the dual-architecture
+        build verified rather than assumed (Decisions 1-3 working
+        together)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            origin, commit = _make_origin_repo(tmp, {"src/fixturepkg/__init__.py": "VALUE = 1\n"})
+            run_config = self._fake_run_config(
+                commit=commit,
+                repo={"url": str(origin), "ref": "main"},
+                clonePaths=["src/fixturepkg"],
+                run={"module": "fixturepkg", "function": "run"},
+                accelerator={"kind": "cuda", "architectures": ["sm_60", "sm_75"]},
+                environment={
+                    "install": {
+                        "requirements": ["torch==9.9.9+dualarch"],
+                        "indexUrl": "https://example.invalid/whl",
+                    }
+                },
+            )
+            (Path(tmp) / RUNNER_BOOTSTRAP.CONFIG_FILENAME).write_text(
+                json.dumps(run_config), encoding="utf-8"
+            )
+            saved_path = list(sys.path)
+            fake_torch = self._fake_cuda_torch(
+                version="9.9.9+dualarch",
+                capability=(7, 5),
+                arch_list=("sm_60", "sm_75"),
+            )
+            real_run = subprocess.run
+
+            def _fake_pip_install(argv, **kwargs):
+                if list(argv)[:2] == [sys.executable, "-m"]:
+                    return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+                return real_run(argv, **kwargs)
+
+            try:
+                with unittest.mock.patch.object(
+                    RUNNER_BOOTSTRAP.subprocess, "run", side_effect=_fake_pip_install
+                ):
+                    result = RUNNER_BOOTSTRAP.bootstrap(
+                        tmp, hardware_import=lambda name: fake_torch
+                    )
+            finally:
+                sys.path[:] = saved_path
+                sys.modules.pop("fixturepkg", None)
+
+            self.assertEqual(result["environment"]["torch"], "9.9.9+dualarch")
+            self.assertEqual(result["environment"]["archList"], ["sm_60", "sm_75"])
+            output_path = Path(tmp) / RUNNER_BOOTSTRAP.BOOTSTRAP_OUTPUT_FILENAME
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["environment"]["torch"], "9.9.9+dualarch")
+            self.assertEqual(payload["environment"]["archList"], ["sm_60", "sm_75"])
+
     def test_detect_hardware_refuses_when_torch_is_not_importable(self) -> None:
         def _no_torch(name: str):
             raise ImportError(f"no module named {name!r}")
@@ -11081,6 +11347,90 @@ class SmokeTests(unittest.TestCase):
                     run_kwargs=None, smoke_module=None, smoke_function=None,
                     smoke_kwargs=None, bootstrap_asset=bootstrap, invoke_asset=invoke,
                     accelerator_kind=None, accelerator_architectures=["sm_60"],
+                )
+
+    # -- environment.install: the dual-architecture torch build (Decision 3) --
+
+    def test_build_run_config_writes_declared_environment_install_requirements_and_index_url(
+        self,
+    ) -> None:
+        """Decision 3: `environment.install` names only two fields —
+        `requirements` and `indexUrl` — and never a package. The values
+        below are exactly what a caller (a `generate-job` flag, in
+        production) supplies; this module never learns what either one
+        means.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap, invoke = self._fixture_assets(tmp)
+            run_config = JOBFOLDER.build_run_config(
+                product="P", service="svc", job_name="job", commit="a" * 40,
+                repo_url="https://example.invalid/r.git", repo_ref="main",
+                clone_paths=["src/A"], run_module="A.mod", run_function="f",
+                run_kwargs=None, smoke_module=None, smoke_function=None,
+                smoke_kwargs=None, bootstrap_asset=bootstrap, invoke_asset=invoke,
+                environment_requirements=["torch==9.9.9+cu999"],
+                environment_index_url="https://example.invalid/whl",
+            )
+            self.assertEqual(
+                run_config["environment"],
+                {
+                    "install": {
+                        "requirements": ["torch==9.9.9+cu999"],
+                        "indexUrl": "https://example.invalid/whl",
+                    }
+                },
+            )
+
+    def test_build_run_config_writes_environment_install_with_no_index_url(self) -> None:
+        """`indexUrl` is optional within a declared install block — a
+        caller relying on pip's own default index declares requirements
+        alone."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap, invoke = self._fixture_assets(tmp)
+            run_config = JOBFOLDER.build_run_config(
+                product="P", service="svc", job_name="job", commit="a" * 40,
+                repo_url="https://example.invalid/r.git", repo_ref="main",
+                clone_paths=["src/A"], run_module="A.mod", run_function="f",
+                run_kwargs=None, smoke_module=None, smoke_function=None,
+                smoke_kwargs=None, bootstrap_asset=bootstrap, invoke_asset=invoke,
+                environment_requirements=["some-requirement"],
+            )
+            self.assertEqual(
+                run_config["environment"],
+                {"install": {"requirements": ["some-requirement"]}},
+            )
+
+    def test_build_run_config_omits_environment_block_when_not_declared(self) -> None:
+        """Additive: a caller that never declares an install gets the
+        exact shape written before this change — no `environment` block
+        at all."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap, invoke = self._fixture_assets(tmp)
+            run_config = JOBFOLDER.build_run_config(
+                product="P", service="svc", job_name="job", commit="a" * 40,
+                repo_url="https://example.invalid/r.git", repo_ref="main",
+                clone_paths=["src/A"], run_module="A.mod", run_function="f",
+                run_kwargs=None, smoke_module=None, smoke_function=None,
+                smoke_kwargs=None, bootstrap_asset=bootstrap, invoke_asset=invoke,
+            )
+            self.assertNotIn("environment", run_config)
+
+    def test_build_run_config_refuses_an_index_url_declared_without_requirements(
+        self,
+    ) -> None:
+        """An `indexUrl` with nothing to install is not a value
+        `run-config.json` can express — the same both-or-neither
+        discipline the accelerator block already holds."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap, invoke = self._fixture_assets(tmp)
+            with self.assertRaises(JOBFOLDER.JobFolderError):
+                JOBFOLDER.build_run_config(
+                    product="P", service="svc", job_name="job", commit="a" * 40,
+                    repo_url="https://example.invalid/r.git", repo_ref="main",
+                    clone_paths=["src/A"], run_module="A.mod", run_function="f",
+                    run_kwargs=None, smoke_module=None, smoke_function=None,
+                    smoke_kwargs=None, bootstrap_asset=bootstrap, invoke_asset=invoke,
+                    environment_index_url="https://example.invalid/whl",
                 )
 
     # -- (d) readiness binds result + commit + worker; no clock -----------
