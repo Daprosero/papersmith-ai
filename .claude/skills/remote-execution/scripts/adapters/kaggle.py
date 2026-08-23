@@ -5,8 +5,8 @@ to name a service.
 Every module above `adapter.py` (`ledger.py`, `packer.py`, `remote_cli.py`)
 stays deliberately blind to what backend, if any, is behind a given worker.
 This module is where that blindness ends: it is the one place permitted to
-say "Kaggle", to shell out to the `kaggle` command-line tool, and to know
-that tool's own vocabulary well enough to translate it into the seam's.
+say "Kaggle", to spawn the one child that speaks to it, and to know that
+service's own vocabulary well enough to translate it into the seam's.
 
 Two structural guarantees hold everywhere below, not by convention but by
 what this file's own dependency graph can even reach:
@@ -57,8 +57,13 @@ refusal: this module raises `KaggleAdapterError` rather than fabricate a
 `Status`, a `Submission` or a `Fetched` result the service never actually
 confirmed.
 
-Run with any Python 3.10+ (stdlib-only, no `kaggle` package import — this
-module shells out to the CLI, it never imports it):
+This module imports no packaged client and names none — a lock refuses even
+the mention, so an edit that inlined one would fail rather than quietly
+empty a recorder. The one file permitted that import is
+`kaggle_driver.py`, which this module spawns as a child through
+`sys.executable`, so the child runs whatever interpreter runs the skill.
+Whether that interpreter can import the client is answered by the driver's
+own `selftest`, not by a version stated here and enforced nowhere:
     python3 -m unittest tests.test_remote_execution
 """
 from __future__ import annotations
@@ -215,23 +220,6 @@ _KAGGLE_STATUS_TO_SEAM = {
 }
 
 _SLUG_DISALLOWED = re.compile(r"[^a-z0-9-]+")
-
-
-def _normalize_status_word(token: str) -> str:
-    """Strip an enum class prefix, when one is present, from an
-    already-lowercased status token.
-
-    `poll()` no longer needs this at all: `kaggle_driver.py`'s own
-    `cmd_poll` prints `response.status.name` — the bare `KernelWorkerStatus`
-    member name (`"RUNNING"`), never a class-qualified repr — so there is
-    no prefix left to strip on that path. `list_active()` below still
-    shells out to the `kaggle` CLI directly (Decision 6's capacity-metering
-    rebuild is a later commit) and still reads `kernels list`'s own
-    `status` column, which CAN carry the qualified repr
-    (`KernelWorkerStatus.RUNNING`) on the installed client — this function
-    stays for that one remaining caller.
-    """
-    return token.rsplit(".", 1)[-1] if "." in token else token
 
 
 def _slugify(text: str) -> str:
