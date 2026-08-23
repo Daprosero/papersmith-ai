@@ -10959,6 +10959,55 @@ class SmokeTests(unittest.TestCase):
             self.assertNotIn(leaked, source, leaked)
 
 
+class FrontDoorRosterTests(unittest.TestCase):
+    """The frontmatter claims a FULL front door, so it must name every command.
+
+    That line is what a model reads to decide whether to load this skill, and
+    it has drifted before: one change ago it still said this adapter shells out
+    to a command line tool it had stopped invoking. Prose describing a closed
+    set with nothing deriving it goes stale the next time the set grows, and
+    the growth is exactly when nobody rereads the sentence.
+
+    The parser is the authority. This does not ask the description to match it
+    word for word -- the sentence carries flags and asides a roster never would
+    -- only that no command the parser accepts is missing from a line that
+    calls itself full.
+    """
+
+    def test_the_description_names_every_subcommand_the_parser_declares(self):
+        parser = REMOTE_CLI._build_parser()
+        declared = set()
+        for action in parser._actions:
+            # Duck-typed rather than isinstance against a private argparse
+            # class: the module is not imported here and importing it to name
+            # a private symbol would couple this lock to argparse's internals
+            # for no gain. A subparsers action is the one that carries choices.
+            choices = getattr(action, "choices", None)
+            if isinstance(choices, dict):
+                declared.update(choices)
+        self.assertTrue(
+            declared, "no subcommand was recovered from the parser at all; "
+            "this test would pass on an empty roster by accident")
+        text = (REPOSITORY_ROOT
+                / ".claude/skills/remote-execution/SKILL.md").read_text(
+                    encoding="utf-8")
+        description = text.split("---", 2)[1]
+        # A command that owns a nested one is written the way a person types
+        # it -- `smoke record`, not `smoke` -- so the name is matched at a
+        # backtick boundary followed by either the closing tick or a space.
+        # Anchoring both ends keeps the match from passing on a longer name
+        # that merely starts the same way.
+        missing = sorted(
+            name for name in declared
+            if f"`{name}`" not in description
+            and f"`{name} " not in description)
+        self.assertEqual(
+            missing, [],
+            "the frontmatter calls itself the full front door and does not "
+            f"name: {missing}. A closed set stated by hand goes stale the "
+            "next time it grows")
+
+
 class TargetVocabularyLeakTests(unittest.TestCase):
     """The `*_module_names_no_service` family above (eight tests) forbids
     naming a SERVICE outside `adapters/kaggle.py`. Nothing forbade naming a

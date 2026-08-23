@@ -1,6 +1,6 @@
 ---
 name: remote-execution
-description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry), the packer's capacity clamp and worker auto-selection, the full `remote_cli` front door (`submit` with its path guard, optional `--worker` and `--smoke`, `status`, `poll`, `fetch` with quarantine, `reconcile`, `generate-job`, `smoke record`, `readiness`), and one concrete backend: `adapters/kaggle.py` — the ONLY file in this entire skill allowed to name a service. It shells out to `adapters/kaggle_driver.py`, the ONLY file in this skill permitted to import the packaged `kagglesdk` client (pinned `kaggle==1.7.4.5`, since `kagglesdk` ships inside that distribution) rather than the `kaggle` CLI's own Basic-auth path, which the stored token shape cannot authenticate against at all; derives worker identity solely from kaggle-accounts' own sanctioned `list --json` command, and accepts credentials only as a `CredentialHandle(worker_id, token_path)` — read at exactly one expression, in that one file, and put on `KAGGLE_API_TOKEN` for one child process, because `kagglesdk`'s own `_try_fill_auth()` reads that variable by value with no path check at all — the CLI itself authenticates neither a path nor that variable. A rehearsal run (`smoke.jsonl`, a distinct file from the main ledger) proves readiness from evidence-completeness, never a human assertion, and never a clock. Stdlib-only except that one named driver script."
+description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry), the packer's capacity clamp and worker auto-selection, the full `remote_cli` front door (`submit` with its path guard, optional `--worker` and `--smoke`, `status`, `poll`, `fetch` with quarantine, `reconcile`, `distribute`, `generate-job`, `smoke record`, `readiness`), and one concrete backend: `adapters/kaggle.py` — the ONLY file in this entire skill allowed to name a service. It shells out to `adapters/kaggle_driver.py`, the ONLY file in this skill permitted to import the packaged `kagglesdk` client (pinned `kaggle==1.7.4.5`, since `kagglesdk` ships inside that distribution) rather than the `kaggle` CLI's own Basic-auth path, which the stored token shape cannot authenticate against at all; derives worker identity solely from kaggle-accounts' own sanctioned `list --json` command, and accepts credentials only as a `CredentialHandle(worker_id, token_path)` — read at exactly one expression, in that one file, and put on `KAGGLE_API_TOKEN` for one child process, because `kagglesdk`'s own `_try_fill_auth()` reads that variable by value with no path check at all — the CLI itself authenticates neither a path nor that variable. A rehearsal run (`smoke.jsonl`, a distinct file from the main ledger) proves readiness from evidence-completeness, never a human assertion, and never a clock. Stdlib-only except that one named driver script."
 ---
 
 # Remote Execution
@@ -77,9 +77,10 @@ Three modules exist so far, each service-blind and stdlib-only:
   never imposes a separator on one either — `--unit` is repeatable
   precisely so a unit containing its own comma, slash, or space still
   survives untouched from the command line through to `assignments`.
-- `scripts/remote_cli.py` — the CLI front door, five submission/status
-  commands (`submit`, `status`, `poll`, `fetch`, `reconcile`) plus
-  `generate-job`, `smoke record` and `readiness` (see "Smoke" below).
+- `scripts/remote_cli.py` — the CLI front door: the submission and status
+  commands (`submit`, `status`, `poll`, `fetch`, `reconcile`), the
+  read-only `distribute`, and `generate-job`, `smoke record` and
+  `readiness` (see "Smoke" below).
   - `submit`'s `--worker` is OPTIONAL: naming one keeps today's behavior
     exactly (an unhealthy named account refuses, never silently reroutes
     — switching accounts on a caller's behalf would spend a different
