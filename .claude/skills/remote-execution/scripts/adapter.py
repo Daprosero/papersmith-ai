@@ -188,6 +188,29 @@ class AdapterError(Exception):
     """
 
 
+class WorkerUnauthorized(AdapterError):
+    """A backend refused a worker's credential specifically — not a generic
+    failure, a timeout, or an unreachable service, but the backend's own
+    distinct signal that THIS credential is no longer valid (a revoked or
+    expired token, most concretely).
+
+    Backend-blind by design, the same way every other name in this seam is:
+    nothing here says "401", "403", or any other backend's own wire-level
+    detail. A concrete adapter recognizes its own backend's unauthorized
+    signal and raises this in its place, so code above the seam — the
+    packer's automatic worker selection, chiefly — can tell "this worker is
+    unhealthy, try another" apart from "the service is merely unreachable
+    right now, fall back to what the ledger already knows" without ever
+    importing a concrete adapter to catch its backend-specific exception.
+
+    This is the fact that keeps automatic selection honest: swallowing this
+    exception the same way an unreachable-service failure is swallowed would
+    let a revoked account look exactly like a healthy one that merely could
+    not be reached — the one failure mode this class exists to make
+    impossible to confuse.
+    """
+
+
 class Adapter(ABC):
     """The seam every backend-specific adapter must satisfy in full.
 

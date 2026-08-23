@@ -63,7 +63,12 @@ try:
     from kagglesdk.kernels.types.kernels_api_service import (
         ApiGetKernelSessionStatusRequest,
         ApiListKernelSessionOutputRequest,
+        ApiListKernelsRequest,
         ApiSaveKernelRequest,
+    )
+    from kagglesdk.kernels.types.kernels_enums import (
+        KernelsListSortType,
+        KernelsListViewType,
     )
     import requests  # a `kagglesdk` dependency in its own right; imported
     # after it, so an interpreter missing only this one still reports the
@@ -203,6 +208,44 @@ def cmd_poll(client: "KernelsApiClient", submission_id: str) -> dict:
     }
 
 
+def cmd_capacity(client: "KernelsApiClient") -> dict:
+    """Rebuild the in-flight-kernel count `list_active`/`plan()` needs, with
+    no `list_active`-shaped RPC anywhere on this SDK to answer it directly.
+
+    MEASURED, not assumed: `list_kernels(group=PROFILE)` answers with
+    `ApiKernelMetadata` entries carrying `ref`/`slug` and no `status` field
+    at all — enumeration, not state. `get_kernel_session_status`, one call
+    per ref, is what answers the state question `list_active()` actually
+    needs. Cost is `1 + N` requests, and this function makes only the
+    FIRST page's worth of that cost — `request.page = 1`, sorted
+    `DATE_RUN` (most-recently-run first, the only ordering under which
+    "first page" can still stand in for "every kernel that could possibly
+    still be active"). That is a stated BOUND, not a claim of
+    completeness: a kernel outside the first page is, by definition, one
+    this call does not report on, and `adapters/kaggle.py`'s own
+    `list_active()` never claims otherwise either.
+
+    Prints one flat `{"kernels": [{"ref": ..., "status": ...}, ...]}`
+    object — `status` is the bare `KernelWorkerStatus` member name, the
+    exact same shape `cmd_poll` already prints, so `adapters/kaggle.py`
+    translates both through the one table it already owns rather than a
+    second one invented for this call.
+    """
+    request = ApiListKernelsRequest()
+    request.group = KernelsListViewType.PROFILE
+    request.sort_by = KernelsListSortType.DATE_RUN
+    request.page = 1
+    response = client.list_kernels(request)
+
+    kernels = []
+    for kernel in response.kernels or []:
+        status_request = ApiGetKernelSessionStatusRequest()
+        status_request.user_name, status_request.kernel_slug = kernel.ref.split("/", 1)
+        status_response = client.get_kernel_session_status(status_request)
+        kernels.append({"ref": kernel.ref, "status": status_response.status.name})
+    return {"kernels": kernels}
+
+
 def cmd_fetch(client: "KernelsApiClient", submission_id: str, into: Path) -> dict:
     """Materialize one kernel session's output under `into`, file by file.
 
@@ -304,7 +347,8 @@ def main(argv: list[str]) -> int:
         _print_result(
             {
                 "ok": False,
-                "error": "no operation named; expected one of: submit, poll, fetch, selftest",
+                "error": "no operation named; expected one of: submit, poll, fetch, "
+                "capacity, selftest",
             }
         )
         return EXIT_REFUSED
@@ -324,6 +368,8 @@ def main(argv: list[str]) -> int:
             result = cmd_poll(client, rest[0])
         elif op == "fetch":
             result = cmd_fetch(client, rest[0], Path(rest[1]))
+        elif op == "capacity":
+            result = cmd_capacity(client)
         else:
             _print_result({"ok": False, "error": f"unknown operation {op!r}"})
             return EXIT_REFUSED

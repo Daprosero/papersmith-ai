@@ -4272,6 +4272,51 @@ def _kaggle_http_client_with_routing_recorder(
     return client, recorder
 
 
+class _SequentialResponseTransport(requests.adapters.BaseAdapter):
+    """Like `_RecordingTransport`, but answers each PREPARED request with
+    the NEXT body off a fixed list, in call order -- what `cmd_capacity`'s
+    own `1 + N` shape needs (one `list_kernels` RPC, then one
+    `get_kernel_session_status` RPC per ref) where `_RecordingTransport`'s
+    single fixed payload cannot distinguish the first call from the rest.
+    Reached-count discipline is unchanged: every call is recorded before
+    this class even looks at which response it owes.
+    """
+
+    def __init__(self, responses: list[dict]) -> None:
+        super().__init__()
+        self.calls: list = []
+        self._responses = list(responses)
+
+    def send(self, request, **kwargs):  # noqa: D401 - requests' own signature
+        self.calls.append(request)
+        payload = self._responses[len(self.calls) - 1]
+        response = requests.Response()
+        response.status_code = 200
+        response.headers["Content-Type"] = "application/json"
+        response._content = json.dumps(payload).encode("utf-8")
+        response.request = request
+        return response
+
+    def close(self) -> None:
+        pass
+
+
+def _kaggle_http_client_with_sequential_recorder(credential_value: str, responses: list[dict]):
+    """`_kaggle_http_client_with_recorder`'s own construction, mounting a
+    `_SequentialResponseTransport` instead -- see that class for why
+    `cmd_capacity`'s own inner interception needs ordered, per-call
+    answers where `cmd_submit`'s single-response recorder does not.
+    """
+    driver = _load_kaggle_driver_module()
+    with unittest.mock.patch.dict(os.environ, {"KAGGLE_API_TOKEN": credential_value}):
+        client = driver.KaggleHttpClient()
+        client._init_session()
+    recorder = _SequentialResponseTransport(responses)
+    client._session.mount("https://", recorder)
+    client._session.mount("http://", recorder)
+    return client, recorder
+
+
 def _write_driver_staging_dir(
     tmp_path: Path,
     *,
@@ -4984,6 +5029,391 @@ class PollFetchDriverTests(unittest.TestCase):
             self.assertEqual(sorted(result["files"]), ["log.txt", "result.csv"])
             self.assertEqual((into / "result.csv").read_bytes(), b"a,b\n1,2\n")
             self.assertEqual((into / "log.txt").read_text(encoding="utf-8"), "kernel log\n")
+
+
+class MultiWorkerFakeAdapter(ADAPTER.Adapter):
+    """A multi-worker stand-in for `packer.select()`'s own order/skip/refuse
+    logic, driven with no subprocess and no real backend at all.
+
+    `workers()` reports several accounts, in the DECLARED order this
+    constructor was given -- `select()` must never reorder them on its
+    own. Each worker's `list_active()` is scripted independently: healthy
+    (answers `[]`), `unauthorized` (raises `ADAPTER.WorkerUnauthorized`,
+    the revoked-token case), or `unreachable` (raises a generic
+    `ConnectionError`, the "Unknown" case Decision 5 says must never be
+    counted healthy either, even though `plan()` itself still falls back
+    to the ledger for it).
+
+    `forbid_submit=True` makes `submit()` raise instead of recording a
+    call -- the assertion that proves a refused selection spent no quota,
+    since calling `submit()` at all is exactly the failure this option
+    exists to catch.
+    """
+
+    def __init__(
+        self,
+        *,
+        workers: list[tuple[str, int]],
+        unauthorized: frozenset = frozenset(),
+        unreachable: frozenset = frozenset(),
+        forbid_submit: bool = False,
+    ) -> None:
+        self._workers = [
+            ADAPTER.Worker(id=worker_id, capacity=capacity) for worker_id, capacity in workers
+        ]
+        self._unauthorized = unauthorized
+        self._unreachable = unreachable
+        self._forbid_submit = forbid_submit
+        self.submit_calls: list[str] = []
+
+    def workers(self) -> list:
+        return list(self._workers)
+
+    def submit(self, job) -> "ADAPTER.Submission":
+        if self._forbid_submit:
+            raise AssertionError(
+                "submit() must never be called for a refused selection -- "
+                "reaching this line means quota was spent that should not "
+                "have been"
+            )
+        self.submit_calls.append(job.worker)
+        return ADAPTER.Submission(id=f"{job.worker}/kernel-1", worker=job.worker)
+
+    def poll(self, submission_id: str) -> "ADAPTER.Status":
+        return ADAPTER.Status(state="complete", detail="fake backend")
+
+    def fetch(self, submission_id: str, into: Path) -> "ADAPTER.Fetched":
+        into.mkdir(parents=True, exist_ok=True)
+        return ADAPTER.Fetched(path=into, complete=True, files=())
+
+    def cancel(self, submission_id: str) -> None:
+        pass
+
+    def list_active(self, worker: str) -> list:
+        if worker in self._unauthorized:
+            raise ADAPTER.WorkerUnauthorized(
+                f"worker {worker!r}'s token was revoked; re-materialize its "
+                "credential through the accounts skill's own command"
+            )
+        if worker in self._unreachable:
+            raise ConnectionError(f"service unreachable for {worker} (test double)")
+        return []
+
+
+def _write_fake_capacity_driver(
+    directory: Path, *, kernels: list[dict] | None = None, exit_code: int = 0
+) -> Path:
+    """A minimal stand-in for `kaggle_driver.py`'s own `capacity` op alone
+    -- every other op this fixture is never asked to answer. Dispatches
+    on nothing (there is exactly one op this fixture answers), matching
+    `KaggleAdapter.list_active()`'s own single `capacity` argv.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    script = directory / "fake_kaggle_driver.py"
+    payload = {"ok": True, "kernels": kernels if kernels is not None else []}
+    lines = [
+        "import json, sys",
+        f"EXIT_CODE = {exit_code!r}",
+        "if EXIT_CODE != 0:",
+        "    print(json.dumps({'ok': False, 'error': "
+        "'list_kernels failed structurally (test double)'}))",
+        "    sys.exit(EXIT_CODE)",
+        f"print(json.dumps({payload!r}))",
+    ]
+    script.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return script
+
+
+def _write_capacity_and_submit_recording_driver(driver_dir: Path, record_dir: Path) -> Path:
+    """`_write_recording_driver`'s own sibling, extended with a `capacity`
+    branch that answers healthy-and-empty (no active kernels) -- what
+    automatic selection's own health check calls before `submit()`'s own
+    call reaches this same fake driver. EVERY invocation, capacity checks
+    included, writes its own record: this fixture alone is what proves a
+    no-`--worker` submission reaches an observed request at all, not
+    merely that the final `submit` op does.
+    """
+    driver_dir.mkdir(parents=True, exist_ok=True)
+    record_dir.mkdir(parents=True, exist_ok=True)
+    script = driver_dir / "fake_kaggle_driver.py"
+    script.write_text(
+        "import json, os, sys, uuid\n"
+        "from pathlib import Path\n"
+        f"RECORD_DIR = Path({str(record_dir)!r})\n"
+        "op = sys.argv[1]\n"
+        "record = {\n"
+        "    'op': op,\n"
+        "    'env_keys': sorted(os.environ.keys()),\n"
+        "    'credential': os.environ.get('KAGGLE_API_TOKEN'),\n"
+        "}\n"
+        "(RECORD_DIR / (uuid.uuid4().hex + '.json')).write_text(\n"
+        "    json.dumps(record), encoding='utf-8')\n"
+        "if op == 'capacity':\n"
+        "    print(json.dumps({'ok': True, 'kernels': []}))\n"
+        "    sys.exit(0)\n"
+        "staging_dir = Path(sys.argv[2])\n"
+        "metadata = json.loads((staging_dir / 'kernel-metadata.json')"
+        ".read_text(encoding='utf-8'))\n"
+        "print(json.dumps({'ok': True, 'ref': metadata.get('id'), "
+        "'url': 'https://example.invalid/', 'versionNumber': 1}))\n",
+        encoding="utf-8",
+    )
+    return script
+
+
+class WorkerSelectionAndMeteringTests(unittest.TestCase):
+    """Commit 4: `--worker` becomes optional on `submit`, with automatic
+    selection among healthy accounts (`packer.select()`), and capacity
+    metering is rebuilt on `kaggle_driver.py`'s new `capacity` op since
+    this SDK has no `list_active`-shaped RPC to answer that question
+    directly. Three layers, same discipline as every other Commit in this
+    change:
+
+    - PACKER-level tests drive `packer.plan()`/`packer.select()` against
+      `MultiWorkerFakeAdapter`, no subprocess and no real backend at all
+      -- the selection LOGIC (order, skip, refuse) is backend-blind by
+      construction and is proven that way here.
+    - ADAPTER-level tests drive `KaggleAdapter.list_active()` against a
+      fake `capacity` driver double on a real subprocess boundary (the
+      OUTER interception point), and one end-to-end test drives
+      `remote_cli.cmd_submit()` with NO `--worker` all the way through a
+      fake driver that answers both `capacity` and `submit`.
+    - The DRIVER-level test drives `kaggle_driver.cmd_capacity` directly
+      against a REAL `KaggleHttpClient` with a recording transport mounted
+      on its session (the INNER interception point), proving the `1 + N`
+      request shape (`list_kernels` then one `get_kernel_session_status`
+      per ref) against the real SDK's own (de)serialization.
+    """
+
+    # ---- packer-level: plan() propagates WorkerUnauthorized ----
+
+    def test_plan_propagates_worker_unauthorized_not_ledger_fallback(self) -> None:
+        """The defect automatic selection would otherwise introduce: a
+        `plan()` that swallowed `WorkerUnauthorized` the same way it
+        swallows every other `list_active()` failure would make a revoked
+        account fall back to the ledger count and look exactly as healthy
+        as one that merely could not be reached.
+        """
+        adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)], unauthorized=frozenset({"w1"}))
+        with self.assertRaises(ADAPTER.WorkerUnauthorized):
+            PACKER.plan(
+                adapter=adapter, worker_id="w1", requested=1, ledger_lines=[], live_digest="d",
+            )
+
+    # ---- packer-level: select() ----
+
+    def test_select_skips_revoked_account_among_five(self) -> None:
+        adapter = MultiWorkerFakeAdapter(
+            workers=[("w1", 2), ("w2", 2), ("w3", 2), ("w4", 2), ("w5", 2)],
+            unauthorized=frozenset({"w1"}),
+        )
+        plan = PACKER.select(adapter=adapter, requested=1, ledger_lines=[], live_digest="d")
+        self.assertNotEqual(plan.worker, "w1")
+        self.assertEqual(plan.worker, "w2")  # first HEALTHY one in declared order
+        self.assertGreaterEqual(plan.granted, 1)
+        self.assertEqual(plan.in_flight_source, "list_active")
+
+    def test_select_skips_an_unreachable_account_same_as_a_revoked_one(self) -> None:
+        """Decision 5's "Unknown" case: a worker whose live capacity read
+        could not be confirmed is never counted healthy either, even
+        though `plan()` itself still degrades that same failure to the
+        ledger count for an explicitly-named worker.
+        """
+        adapter = MultiWorkerFakeAdapter(
+            workers=[("w1", 2), ("w2", 2)],
+            unreachable=frozenset({"w1"}),
+        )
+        plan = PACKER.select(adapter=adapter, requested=1, ledger_lines=[], live_digest="d")
+        self.assertEqual(plan.worker, "w2")
+
+    def test_select_refuses_when_all_five_unhealthy_naming_reason(self) -> None:
+        worker_ids = ["w1", "w2", "w3", "w4", "w5"]
+        adapter = MultiWorkerFakeAdapter(
+            workers=[(w, 2) for w in worker_ids],
+            unauthorized=frozenset(worker_ids),
+        )
+        with self.assertRaises(PACKER.PackerError) as caught:
+            PACKER.select(adapter=adapter, requested=1, ledger_lines=[], live_digest="d")
+        message = str(caught.exception)
+        self.assertIn("no healthy worker", message)
+        for worker_id in worker_ids:
+            self.assertIn(worker_id, message)
+
+    # ---- cmd_submit-level: explicit vs. automatic ----
+
+    def test_explicit_worker_naming_revoked_account_refuses_with_remedy_no_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "Alpha")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            adapter = MultiWorkerFakeAdapter(
+                workers=[("w1", 2), ("w2", 2)],
+                unauthorized=frozenset({"w2"}),
+                forbid_submit=True,
+            )
+            with self.assertRaises(ADAPTER.WorkerUnauthorized) as caught:
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, worker="w2", requested=1,
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                )
+            self.assertIn("w2", str(caught.exception))
+            self.assertEqual(adapter.submit_calls, [])  # no quota spent
+
+    def test_submit_with_no_worker_all_healthy_completes_end_to_end(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "Alpha")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 2)])
+            result = REMOTE_CLI.cmd_submit(
+                target=target, entrypoint=notebook, requested=1,
+                adapter=adapter, source_digest=lambda t, n: "d" * 64,
+            )  # no `worker=` at all -- the argument that used to be mandatory
+
+            self.assertEqual(result["submission"].worker, "w1")
+            self.assertEqual(adapter.submit_calls, ["w1"])
+
+    def test_previously_dying_invocation_now_reaches_observed_request(self) -> None:
+        """Group 1's own acceptance scenario: the same command line that
+        used to be refused for lacking `--worker` now reaches an observed
+        request -- through the REAL `KaggleAdapter`, a fake multi-account
+        `accounts_cli`, and a fake driver that answers both the health
+        check (`capacity`) and the submission (`submit`) it takes.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            target = tmp_path / "repo"
+            notebooks = _make_product(target, "Alpha")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            record_dir = tmp_path / "records"
+            driver = _write_capacity_and_submit_recording_driver(
+                tmp_path / "driver", record_dir
+            )
+
+            fake_accounts_cli = tmp_path / "fake_accounts_cli.py"
+            fake_accounts_cli.write_text(
+                "import json\n"
+                "print(json.dumps({'accounts': [{'username': 'acct-1'}, "
+                "{'username': 'acct-2'}]}))\n",
+                encoding="utf-8",
+            )
+
+            creds = {}
+            for worker_id in ("acct-1", "acct-2"):
+                token_path = _write_fake_token(tmp_path / f"creds-{worker_id}")
+                creds[worker_id] = KAGGLE.CredentialHandle(
+                    worker_id=worker_id, token_path=token_path
+                )
+
+            adapter = KAGGLE.KaggleAdapter(
+                credentials=creds, accounts_cli=fake_accounts_cli, driver_script=driver,
+            )
+
+            with unittest.mock.patch.object(
+                JOBFOLDER, "verify_pin_preconditions", return_value=None
+            ):
+                result = REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, requested=1, adapter=adapter,
+                    source_digest=lambda t, n: "d" * 64,
+                )
+
+            records = [
+                json.loads(p.read_text(encoding="utf-8"))
+                for p in sorted(record_dir.glob("*.json"))
+            ]
+            self.assertGreater(
+                len(records), 0,
+                "the driver's own subprocess boundary was never reached for a "
+                "--worker-less submission",
+            )
+            self.assertIn(result["submission"].worker, ("acct-1", "acct-2"))
+
+    # ---- adapter-level: capacity metering rebuilt on the driver ----
+
+    def test_metering_derives_in_flight_via_rebuilt_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            driver = _write_fake_capacity_driver(
+                tmp_path / "driver",
+                kernels=[
+                    {"ref": "acct-1/a", "status": "QUEUED"},
+                    {"ref": "acct-1/b", "status": "COMPLETE"},
+                    {"ref": "acct-1/c", "status": "RUNNING"},
+                ],
+            )
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
+            adapter = KAGGLE.KaggleAdapter(credentials={"acct-1": handle}, driver_script=driver)
+
+            active = adapter.list_active("acct-1")
+
+            self.assertEqual(sorted(active), ["acct-1/a", "acct-1/c"])
+
+    def test_metering_refuses_naming_remedy_when_list_kernels_fails_structurally(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            driver = _write_fake_capacity_driver(tmp_path / "driver", exit_code=1)
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
+            adapter = KAGGLE.KaggleAdapter(credentials={"acct-1": handle}, driver_script=driver)
+
+            with self.assertRaises(KAGGLE.KaggleAdapterError) as caught:
+                adapter.list_active("acct-1")
+            message = str(caught.exception).lower()
+            self.assertIn("retry", message)
+            self.assertIn("ledger", message)
+
+    def test_list_active_maps_the_unauthorized_exit_code_to_worker_unauthorized(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            driver = _write_fake_capacity_driver(tmp_path / "driver", exit_code=3)
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
+            adapter = KAGGLE.KaggleAdapter(credentials={"acct-1": handle}, driver_script=driver)
+
+            with self.assertRaises(ADAPTER.WorkerUnauthorized) as caught:
+                adapter.list_active("acct-1")
+            self.assertIn("acct-1", str(caught.exception))
+
+    # ---- driver-level (INNER interception): the 1+N request shape ----
+
+    def test_driver_capacity_derives_status_via_list_then_get_session_status(self) -> None:
+        """MEASURED, not assumed: `ApiListKernelsResponse.prepare_from` is a
+        CUSTOM override (unlike every other response shape this suite's
+        own recorders answer) -- the real `kernels.list` endpoint's wire
+        body is a bare JSON ARRAY, not an object wrapping a `kernels` key,
+        and this class's own `prepare_from` wraps that array into
+        `{"kernels": [...]}` itself before deserializing. The first
+        fixture response below is that bare array for exactly that
+        reason.
+        """
+        driver = _load_kaggle_driver_module()
+        responses = [
+            [{"ref": "acct-1/a", "slug": "a"}, {"ref": "acct-1/b", "slug": "b"}],
+            {"status": "QUEUED", "failureMessage": None},
+            {"status": "COMPLETE", "failureMessage": None},
+        ]
+        client, recorder = _kaggle_http_client_with_sequential_recorder(FIXTURE_TOKEN, responses)
+        kernels_client = driver.KernelsApiClient(client)
+
+        result = driver.cmd_capacity(kernels_client)
+
+        self.assertEqual(
+            len(recorder.calls), 3, "capacity's own 1+N request shape was never reached"
+        )
+        self.assertEqual(
+            result["kernels"],
+            [
+                {"ref": "acct-1/a", "status": "QUEUED"},
+                {"ref": "acct-1/b", "status": "COMPLETE"},
+            ],
+        )
 
 
 def _installed_kaggle_client_source() -> str | None:

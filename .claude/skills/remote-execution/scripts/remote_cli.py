@@ -492,7 +492,7 @@ def cmd_submit(
     *,
     target: str | Path,
     entrypoint: str | Path,
-    worker: str,
+    worker: str | None = None,
     requested: int,
     adapter: "ADAPTER.Adapter",
     source_digest: Callable[[Path, str], str] | None = None,
@@ -558,6 +558,20 @@ def cmd_submit(
     unchanged to `product_for()` as its `explicit` argument — step 1 of
     that function's four-step resolution order, and the one step no
     earlier version of this function ever exposed a way to reach.
+
+    `worker` is now OPTIONAL. `None` (no `--worker` on the CLI) hands the
+    choice to `packer.select()`, which walks `adapter.workers()` in
+    declared order and returns the first healthy one with capacity —
+    naming an account is a decision this call no longer forces on a
+    caller with no reason to make it. A caller that DOES name one keeps
+    today's non-selecting behavior exactly: `packer.plan()` is called for
+    that exact worker, and an unhealthy NAMED worker refuses outright
+    (via `ADAPTER.WorkerUnauthorized`, propagated, never caught here)
+    rather than silently falling back to a different account — silently
+    switching accounts changes whose quota is spent, which is a decision
+    only a caller who named the account in the first place gets to make.
+    Either way, `plan()`/`select()` runs BEFORE `adapter.submit()`, so a
+    refusal on either path costs no quota.
     """
     target = Path(target).resolve()
     if not target.is_dir():
@@ -582,13 +596,22 @@ def cmd_submit(
     )
     ledger_lines = _read_ledger_lines(ledger_path)
 
-    plan = PACKER.plan(
-        adapter=adapter,
-        worker_id=worker,
-        requested=requested,
-        ledger_lines=ledger_lines,
-        live_digest=digest,
-    )
+    if worker is None:
+        plan = PACKER.select(
+            adapter=adapter,
+            requested=requested,
+            ledger_lines=ledger_lines,
+            live_digest=digest,
+        )
+        worker = plan.worker
+    else:
+        plan = PACKER.plan(
+            adapter=adapter,
+            worker_id=worker,
+            requested=requested,
+            ledger_lines=ledger_lines,
+            live_digest=digest,
+        )
 
     run_config = {"mode": "smoke"} if smoke else {}
     job = ADAPTER.Job(entrypoint=resolved_entrypoint, run_config=run_config, worker=worker)
@@ -1293,7 +1316,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     submit.add_argument("--target", required=True, type=Path)
     submit.add_argument("--entrypoint", required=True, type=Path)
-    submit.add_argument("--worker", required=True)
+    submit.add_argument(
+        "--worker", required=False, default=None,
+        help="optional: the account to submit under. Omitted, `packer.select()` "
+        "picks the first healthy account with capacity, in the accounts CLI's "
+        "own declared order — naming one an existing decision, never a "
+        "requirement this command asks the caller to make. Naming a specific "
+        "account is still a legitimate override and is never gated by "
+        "capacity the way automatic selection is: an unhealthy NAMED account "
+        "refuses outright rather than silently falling back to another one.",
+    )
     submit.add_argument(
         "--backend",
         required=True,
@@ -1359,6 +1391,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     reconcile.add_argument("--target", required=True, type=Path)
     reconcile.add_argument("--entrypoint", required=True, type=Path)
+    # Stays required, deliberately not widened to `submit`'s optional
+    # selection: `reconcile` compares ONE already-known account's own
+    # local ledger against that SAME account's remote state — it names no
+    # new submission decision at all, so there is no "which account"
+    # fork here for automatic selection to remove in the first place.
     reconcile.add_argument("--worker", required=True)
     reconcile.add_argument(
         "--backend",
@@ -1438,6 +1475,10 @@ def _build_parser() -> argparse.ArgumentParser:
     smoke_record.add_argument(
         "--from-artifact", required=True, type=Path, dest="from_artifact"
     )
+    # Stays required: a smoke record files evidence for a rehearsal that
+    # already RAN under one specific, already-known account — it reports
+    # on a submission decision already made elsewhere, never makes one of
+    # its own for automatic selection to take over.
     smoke_record.add_argument("--worker", required=True)
 
     readiness = subparsers.add_parser(
@@ -1446,6 +1487,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "reports only, issues no submission",
     )
     readiness.add_argument("--job-dir", required=True, type=Path)
+    # Stays required: readiness reports whether a job is fit to submit ON
+    # a named account (its capacity, its own pending state) — it answers
+    # "is THIS account ready", not "which account should this go to", so
+    # there is nothing here for automatic selection to stand in for.
     readiness.add_argument("--worker", required=True)
 
     return parser

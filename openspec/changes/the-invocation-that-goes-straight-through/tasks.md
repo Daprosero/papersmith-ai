@@ -65,19 +65,19 @@ Chain strategy: stacked-to-main
 
 ## Phase 4: Auto-selection + rebuilt capacity metering (Commit 4)
 
-- [ ] 4.1 Add `WorkerUnauthorized(AdapterError)` to `adapter.py`; narrow `packer.plan()`'s `except Exception` (packer.py:159) so it propagates instead of degrading to ledger silently.
-- [ ] 4.2 RED→GREEN: `test_plan_propagates_worker_unauthorized_not_ledger_fallback`.
-- [ ] 4.3 Add `packer.select()`: walk `adapter.workers()` in declared order, first `granted >= 1`; skip unhealthy; never gates an explicit `--worker`.
-- [ ] 4.4 RED→GREEN: `test_select_skips_revoked_account_among_five`.
-- [ ] 4.5 RED→GREEN: `test_select_refuses_when_all_five_unhealthy_naming_reason`.
-- [ ] 4.6 RED→GREEN: `test_explicit_worker_naming_revoked_account_refuses_with_remedy_no_fallback` — no quota spent.
-- [ ] 4.7 `remote_cli.py:1296`: make `submit`'s `--worker` optional; call `packer.select()` when absent.
-- [ ] 4.8 RED→GREEN: `test_submit_with_no_worker_all_healthy_completes_end_to_end`, `test_previously_dying_invocation_now_reaches_observed_request`.
-- [ ] 4.9 Decide+document the other three `required=True` sites — `reconcile` (`remote_cli.py:1362`), `smoke record` (`:1441`), `readiness` (`:1449`): each keeps `required=True`; add one code comment per site + one `SKILL.md` selection-policy line stating why (each targets one already-known account's local state, not a new submission decision — Group 1's "no fork" scope does not extend to them). Flip to optional+select instead if this reasoning is rejected at apply time — never leave unaddressed.
-- [ ] 4.10 Rebuild capacity metering in `adapters/kaggle.py`: `list_kernels(group=PROFILE, sort_by=DATE_RUN)` + `get_kernel_session_status` per ref, first page only; wire into health/`list_active()`.
-- [ ] 4.11 RED→GREEN: `test_metering_derives_in_flight_via_rebuilt_path`.
-- [ ] 4.12 RED→GREEN: `test_metering_refuses_naming_remedy_when_list_kernels_fails_structurally`.
-- [ ] 4.13 INVERT 4.2: force `list_kernels` to raise generically; confirm fail; restore by inverse patch; sha256.
+- [x] 4.1 Add `WorkerUnauthorized(AdapterError)` to `adapter.py`; narrow `packer.plan()`'s `except Exception` (packer.py:159) so it propagates instead of degrading to ledger silently.
+- [x] 4.2 RED→GREEN: `test_plan_propagates_worker_unauthorized_not_ledger_fallback`.
+- [x] 4.3 Add `packer.select()`: walk `adapter.workers()` in declared order, first `granted >= 1`; skip unhealthy; never gates an explicit `--worker`.
+- [x] 4.4 RED→GREEN: `test_select_skips_revoked_account_among_five`.
+- [x] 4.5 RED→GREEN: `test_select_refuses_when_all_five_unhealthy_naming_reason`.
+- [x] 4.6 RED→GREEN: `test_explicit_worker_naming_revoked_account_refuses_with_remedy_no_fallback` — no quota spent.
+- [x] 4.7 `remote_cli.py:1296`: make `submit`'s `--worker` optional; call `packer.select()` when absent.
+- [x] 4.8 RED→GREEN: `test_submit_with_no_worker_all_healthy_completes_end_to_end`, `test_previously_dying_invocation_now_reaches_observed_request`.
+- [x] 4.9 Decide+document the other three `required=True` sites — `reconcile` (`remote_cli.py:1362`), `smoke record` (`:1441`), `readiness` (`:1449`): each keeps `required=True`; add one code comment per site + one `SKILL.md` selection-policy line stating why (each targets one already-known account's local state, not a new submission decision — Group 1's "no fork" scope does not extend to them). Flip to optional+select instead if this reasoning is rejected at apply time — never leave unaddressed.
+- [x] 4.10 Rebuild capacity metering in `adapters/kaggle.py`: `list_kernels(group=PROFILE, sort_by=DATE_RUN)` + `get_kernel_session_status` per ref, first page only; wire into health/`list_active()`.
+- [x] 4.11 RED→GREEN: `test_metering_derives_in_flight_via_rebuilt_path`.
+- [x] 4.12 RED→GREEN: `test_metering_refuses_naming_remedy_when_list_kernels_fails_structurally`.
+- [x] 4.13 INVERT 4.2: force `list_kernels` to raise generically; confirm fail; restore by inverse patch; sha256.
 
 ## Phase 5: Doctrine, `## Environment`, pin + drift (Commit 5)
 

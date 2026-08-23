@@ -136,6 +136,17 @@ DEFAULT_KAGGLE_DRIVER = Path(__file__).resolve().parent / "kaggle_driver.py"
 KAGGLE_EXECUTABLE = "kaggle"
 SUBPROCESS_TIMEOUT_SECONDS = 120.0
 
+# `kaggle_driver.py`'s own `EXIT_UNAUTHORIZED`, duplicated here rather than
+# imported — this module never imports the driver, the same reason
+# `RUN_CONFIG_FILENAME` above is this module's own constant rather than a
+# shared one. The driver maps a 401/403 `requests.exceptions.HTTPError` to
+# exactly this exit code; a `capacity` call that exits with it is this
+# adapter's own signal to raise `ADAPTER.WorkerUnauthorized` rather than a
+# generic refusal, so `packer.select()` can tell "this worker's credential
+# is refused" apart from every other failure shape without importing this
+# module's own exception type.
+_DRIVER_EXIT_UNAUTHORIZED = 3
+
 # This service's documented per-worker concurrent-kernel allowance, stated
 # here and nowhere else in this skill — NOT a universal constant, and not
 # something a second backend's adapter should read off this module. A
@@ -890,29 +901,74 @@ class KaggleAdapter(ADAPTER.Adapter):
 
     def list_active(self, worker: str) -> list[str]:
         """Refs this worker's account currently reports `queued` or
-        `running`, read from `kernels list`'s own CSV output — never a
-        table this module parses by column position, so a reordered
-        column in a future CLI version fails loudly (`KeyError` from
-        `csv.DictReader`) instead of silently reading the wrong field.
+        `running`, rebuilt from `kaggle_driver.py`'s own `capacity` op
+        (Decision 6) — `kernels list --mine --csv`, the `kaggle` CLI's own
+        Basic-auth path, is retired here the same way `poll()`/`fetch()`
+        already retired their own CLI calls; there is no `list_active`
+        RPC on the installed SDK to call directly instead.
+
+        A driver refusal that is specifically the distinct unauthorized
+        exit becomes `ADAPTER.WorkerUnauthorized` here — never a generic
+        `KaggleAdapterError` a caller would have to inspect a message to
+        tell apart from any other failure. Every OTHER driver refusal
+        (a structurally failed `list_kernels`, a timeout, an unreachable
+        service) stays a generic `KaggleAdapterError` naming the remedy:
+        retry, or let `packer.plan()`'s own ledger fallback answer instead.
         """
         handle = self._credential_for(worker)
-        argv = [self._kaggle_executable, "kernels", "list", "--mine", "--csv"]
+        argv = [sys.executable, str(self._driver_script), "capacity"]
         result = self._run(argv, env=self._env_for(handle))
-        if result.returncode != 0:
-            raise KaggleAdapterError(
-                f"kernels list --mine for {worker} exited {result.returncode}: "
-                f"{result.stderr.strip()}"
-            )
+        payload = self._parse_capacity_result(result, worker=worker)
+
         active: list[str] = []
-        for row in csv.DictReader(io.StringIO(result.stdout)):
-            ref = row.get("ref")
+        for kernel in payload.get("kernels", []):
+            ref = kernel.get("ref")
             if not ref:
                 continue
-            token = _normalize_status_word((row.get("status") or "").strip().lower())
-            state = _KAGGLE_STATUS_TO_SEAM.get(token, "unknown")
+            raw_status = str(kernel.get("status") or "")
+            state = _KAGGLE_STATUS_TO_SEAM.get(raw_status.strip().lower(), "unknown")
             if state in ("queued", "running"):
                 active.append(ref)
         return active
+
+    @staticmethod
+    def _parse_capacity_result(
+        result: subprocess.CompletedProcess, *, worker: str
+    ) -> dict:
+        """`_parse_driver_result`'s own sibling, for the `capacity` op
+        alone: the one driver call whose refusal must distinguish
+        "credential refused" (`ADAPTER.WorkerUnauthorized`, the fact
+        `packer.select()` needs to skip an unhealthy worker rather than
+        count it healthy) from every other failure shape. `submit()`,
+        `poll()` and `fetch()` keep `_parse_driver_result`'s own generic
+        refusal unchanged — widening THEIR contract the same way is no
+        part of this task, and would change already-passing behavior no
+        design decision here asks for.
+        """
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise KaggleAdapterError(
+                f"capacity check for {worker!r} did not print JSON: {exc}; "
+                f"stderr: {result.stderr.strip()}"
+            ) from exc
+
+        if result.returncode == _DRIVER_EXIT_UNAUTHORIZED:
+            raise ADAPTER.WorkerUnauthorized(
+                f"worker {worker!r}'s credential was refused while checking "
+                "capacity; the remedy is re-materializing that account's "
+                "token through the accounts skill's own command"
+            )
+
+        if result.returncode != 0 or not payload.get("ok", False):
+            raise KaggleAdapterError(
+                f"capacity check for {worker!r} could not obtain live "
+                "capacity evidence (list_kernels failed structurally): "
+                f"{payload.get('error', result.stderr.strip())}; retry, or "
+                "let packer.plan()'s own ledger fold answer instead"
+            )
+
+        return payload
 
 
 ADAPTER.register("kaggle", KaggleAdapter)

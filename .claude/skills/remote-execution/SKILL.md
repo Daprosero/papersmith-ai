@@ -53,15 +53,35 @@ Three modules exist so far, each service-blind and stdlib-only:
   `list_active()` when the adapter answers). The clamp is never a silent
   minimum: `plan()` returns `requested`, `cap`, `inFlight` and `granted` as
   four separate numbers, plus `inFlightSource` recording whether `inFlight`
-  came from the live service or fell back to the ledger.
+  came from the live service or fell back to the ledger. `plan()` never
+  swallows `ADAPTER.WorkerUnauthorized` — every OTHER `list_active()`
+  failure still degrades to the ledger count, but a refused credential is
+  a decision-bearing fact, not a mere unreachable one, and propagates.
+  `select(...)` picks a worker for a caller who names none: it walks
+  `adapter.workers()` in declared order and returns the first one whose
+  `plan()` both answered from the live service (`inFlightSource ==
+  "list_active"`, never a ledger fallback — a worker this call could not
+  actually confirm is never counted healthy) and still has capacity
+  granted; naming no healthy worker at all is a refusal listing every
+  account tried and the remedy, never a silent pass or an arbitrary pick.
 - `scripts/remote_cli.py` — the CLI front door, five submission/status
   commands (`submit`, `status`, `poll`, `fetch`, `reconcile`) plus
   `generate-job`, `smoke record` and `readiness` (see "Smoke" below).
+  - `submit`'s `--worker` is OPTIONAL: naming one keeps today's behavior
+    exactly (an unhealthy named account refuses, never silently reroutes
+    — switching accounts on a caller's behalf would spend a different
+    account's quota than the one asked for); omitting it hands the choice
+    to `packer.select()` above. `reconcile`, `smoke record` and
+    `readiness` keep `--worker` REQUIRED — each already names one
+    account's own local state (its ledger, its evidence, its capacity),
+    never a fresh submission decision, so there is no fork for automatic
+    selection to remove there.
   - `submit` guards the entrypoint, resolves the product via
     `product_for()` (the SAME function `status`, `fetch` and `reconcile`
     call — never an inline `parts[0]` derivation of its own), computes a
-    fresh `source_digest()`, calls `packer.plan()`, hands the job to a
-    registered adapter's `submit()`, and appends the resulting `submitted`
+    fresh `source_digest()`, calls `packer.plan()` (a named worker) or
+    `packer.select()` (none named), hands the job to a registered
+    adapter's `submit()`, and appends the resulting `submitted`
     event to the ledger — in that order. A job-folder submission whose
     product cannot be resolved (no `--product`, no `product` declared in
     its own `run-config.json`) is refused right there, before the digest,

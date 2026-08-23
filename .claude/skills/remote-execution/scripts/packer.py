@@ -156,6 +156,15 @@ def plan(
     try:
         in_flight = len(adapter.list_active(worker_id))
         in_flight_source = "list_active"
+    except ADAPTER.WorkerUnauthorized:
+        # NOT swallowed: a revoked or otherwise unauthorized credential is
+        # a decision-bearing fact, never a mere "service unreachable" one.
+        # Folding it into the ledger fallback below would make a revoked
+        # account report exactly like a healthy one whose live count
+        # merely could not be confirmed — the one confusion this
+        # exception exists to make structurally impossible. Every OTHER
+        # exception below still degrades to the ledger, unchanged.
+        raise
     except Exception:
         # Unreachable, refusing, or timed out: the ledger-derived count
         # computed above is already in `in_flight` and stays there. This is
@@ -172,4 +181,98 @@ def plan(
         in_flight=in_flight,
         granted=granted,
         in_flight_source=in_flight_source,
+    )
+
+
+def select(
+    *,
+    adapter: "ADAPTER.Adapter",
+    requested: int,
+    ledger_lines: Iterable[str],
+    live_digest: str | Callable[[], str],
+) -> Plan:
+    """Choose a worker with no caller-supplied name, walking
+    `adapter.workers()` in the DECLARED order (the accounts CLI's own
+    stable order — this module invents no ordering of its own) and
+    returning the first one whose health can be established and that has
+    at least one slot to grant.
+
+    A worker counts as HEALTHY for this purpose only when BOTH of these
+    hold, distinguished by the exact two fields `plan()` already reports
+    rather than by a second, separate health probe this function would
+    otherwise have to invent:
+
+    - `plan()` did not raise `ADAPTER.WorkerUnauthorized` — the backend's
+      own distinct signal that this worker's credential is refused, never
+      swallowed here or in `plan()` itself.
+    - `plan().in_flight_source == "list_active"` — the adapter's live
+      capacity read genuinely succeeded for this worker. A `plan()` that
+      fell back to `"ledger"` answers a real question for a caller who
+      already committed to one named worker, but it answers a WEAKER one
+      than automatic selection is allowed to accept: `plan()` cannot tell
+      "unreachable right now" apart from "revoked" on its own, and
+      counting an unconfirmed worker healthy here would let a merely
+      slow or flaky service look exactly like a genuinely healthy one —
+      the same confusion `WorkerUnauthorized` exists to prevent, on the
+      other side of the same fact.
+
+    A healthy worker with `granted < 1` (every slot already spent) is
+    skipped too, but for a different, unremarkable reason: it has nothing
+    to grant right now, not that it is unwell.
+
+    No worker healthy and grantable is an honest terminal state, never a
+    silent pass and never an arbitrary pick: the refusal names every
+    worker this call actually tried and the reason each one was skipped,
+    plus the remedy — restore at least one account's credential, or wait
+    for the service to become reachable, before retrying with no
+    `--worker` named at all.
+    """
+    if not isinstance(adapter, ADAPTER.Adapter):
+        raise PackerError(
+            f"{adapter!r} is not an Adapter instance; capacity is discovered "
+            "through the adapter seam only, never accepted some other way"
+        )
+
+    workers = adapter.workers()
+    if not workers:
+        raise PackerError(
+            "adapter reports no workers at all; automatic selection has "
+            "nothing to choose among"
+        )
+
+    reasons: list[str] = []
+    for worker in workers:
+        try:
+            candidate = plan(
+                adapter=adapter,
+                worker_id=worker.id,
+                requested=requested,
+                ledger_lines=ledger_lines,
+                live_digest=live_digest,
+            )
+        except ADAPTER.WorkerUnauthorized as exc:
+            reasons.append(f"{worker.id}: unauthorized ({exc})")
+            continue
+
+        if candidate.in_flight_source != "list_active":
+            reasons.append(
+                f"{worker.id}: live capacity evidence unavailable (service "
+                "unreachable or refusing) — not counted healthy"
+            )
+            continue
+
+        if candidate.granted < 1:
+            reasons.append(
+                f"{worker.id}: no capacity granted right now "
+                f"(cap={candidate.cap}, in_flight={candidate.in_flight})"
+            )
+            continue
+
+        return candidate
+
+    raise PackerError(
+        "automatic selection found no healthy worker with capacity among "
+        f"{[worker.id for worker in workers]}; restore at least one "
+        "account's credential, or wait for the service to become "
+        f"reachable, before retrying with no --worker named: {'; '.join(reasons)}"
     )
