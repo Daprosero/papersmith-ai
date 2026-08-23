@@ -4,7 +4,7 @@
 `jobfolder.build_notebook()` copies this file's bytes into the notebook's
 first cell with ZERO interpolation. The same bytes serve every job because
 every fact this cell needs comes from `run-config.json`, read at runtime,
-never baked in at generation time. Eight responsibilities, in order:
+never baked in at generation time. Nine responsibilities, in order:
 
 1. read `run-config.json`; validate schema/version
 2. sparse-clone the pinned commit: `git init`, `remote add`,
@@ -20,7 +20,14 @@ never baked in at generation time. Eight responsibilities, in order:
 6. write `bootstrap.json`: commit, config, detected environment
 7. any of config / code / hardware missing raises `SystemExit` on the
    spot, so cell 1 never runs against a half-prepared runtime
-8. no service name anywhere, ever
+8. the accelerator gate: the arriving capability must appear in the
+   installed arch list, and any declared `accelerator.architectures`
+   must be covered by that same installed list. This runs AFTER
+   responsibility 6, never before — a refusal whose evidence was never
+   written is unreadable no matter how early it fires, so `bootstrap.json`
+   already carries the arriving device, the torch build and the arch
+   list the verdict was computed from by the time this refuses
+9. no service name anywhere, ever
 
 Importable and independently testable: every responsibility above is a
 plain function, and `bootstrap()` composes them. Nothing runs at import
@@ -54,6 +61,16 @@ class BootstrapError(Exception):
     """A refusal: the run configuration, the declared code, or this
     runtime's hardware is missing or invalid. `bootstrap()` is the only
     place that turns one of these into `SystemExit`.
+    """
+
+
+class AcceleratorError(BootstrapError):
+    """Responsibility 8's refusal: the arriving accelerator cannot run
+    this build's kernels, or the declared architectures are not covered
+    by the torch build actually installed. A subclass of
+    `BootstrapError` so `bootstrap()`'s existing `except BootstrapError`
+    converts it to `SystemExit` the same way as every other refusal —
+    no second exception-handling path to keep in step.
     """
 
 
@@ -231,6 +248,16 @@ def verify_imports_under_clone(
     return verified
 
 
+def _capability_to_arch(capability: tuple[int, int]) -> str:
+    """`torch.cuda.get_device_capability()`'s `(major, minor)` pair,
+    formatted the same way `torch.cuda.get_arch_list()` names its own
+    entries (`sm_60`, `sm_75`, ...) — the one shared vocabulary the
+    accelerator gate compares against.
+    """
+    major, minor = capability
+    return f"sm_{major}{minor}"
+
+
 def detect_hardware(
     *, import_module: Callable[[str], Any] = importlib.import_module
 ) -> dict[str, Any]:
@@ -238,6 +265,16 @@ def detect_hardware(
     the refusal mapping for "hardware missing": no silent CPU fallback,
     because a silent fallback would mean this refusal branch could never
     actually fire.
+
+    Beside `device` and `torch`, this also captures `archList` — the
+    architectures THIS INSTALLED torch build actually ships kernels for
+    (`torch.cuda.get_arch_list()`) — and `capability`, the arriving
+    device's own capability formatted the same way. Both are what
+    responsibility 8's accelerator gate compares; neither requires the
+    declared `accelerator` block to exist, since the arch list a build
+    installs is a fact about that build, not about what any job declared.
+    A runtime with no CUDA device carries nothing to compare: `archList`
+    is `[]` and `capability` is `None`.
     """
     try:
         torch = import_module("torch")
@@ -250,7 +287,18 @@ def detect_hardware(
         "kind": "cuda" if cuda_available else "cpu",
         "name": torch.cuda.get_device_name(0) if cuda_available else "cpu",
     }
-    return {"device": device, "torch": str(torch.__version__)}
+    if cuda_available:
+        arch_list = list(torch.cuda.get_arch_list())
+        capability = _capability_to_arch(torch.cuda.get_device_capability(0))
+    else:
+        arch_list = []
+        capability = None
+    return {
+        "device": device,
+        "torch": str(torch.__version__),
+        "archList": arch_list,
+        "capability": capability,
+    }
 
 
 def write_bootstrap_output(
@@ -277,19 +325,64 @@ def write_bootstrap_output(
     return path
 
 
+def check_accelerator(run_config: Mapping[str, Any], environment: Mapping[str, Any]) -> None:
+    """The accelerator gate — responsibility 8, run only AFTER
+    `write_bootstrap_output()` (see `bootstrap()` below). Two assertions:
+
+    1. the arriving `capability` must appear in the INSTALLED `archList`
+       — the physics check: can this build run on this card at all. It
+       needs no declaration and runs whenever a capability was detected
+       (a CPU-only runtime has none, and nothing to refuse here).
+    2. the declared `accelerator.architectures`, when `run-config.json`
+       declares an `accelerator` block, must be covered by that same
+       installed `archList` — this is how the dual-architecture torch
+       build gets VERIFIED rather than assumed. An older, undeclared
+       config carries no `accelerator` block and this assertion is
+       skipped entirely: additive, `schemaVersion` stays 1.
+    """
+    capability = environment.get("capability")
+    arch_list = list(environment.get("archList") or [])
+    if capability is not None and capability not in arch_list:
+        raise AcceleratorError(
+            f"accelerator mismatch: this runtime's capability {capability!r} "
+            f"is not in the installed torch build's arch list {arch_list!r}; "
+            "training would fail with no kernel image for this device"
+        )
+    accelerator = run_config.get("accelerator")
+    if isinstance(accelerator, Mapping):
+        declared = list(accelerator.get("architectures") or [])
+        uncovered = [arch for arch in declared if arch not in arch_list]
+        if uncovered:
+            raise AcceleratorError(
+                f"accelerator mismatch: declared architectures {uncovered} "
+                f"are not covered by the installed torch build's arch list "
+                f"{arch_list!r}; the dual-architecture build was assumed, "
+                "never verified"
+            )
+
+
 def bootstrap(
     base_dir: str | Path | None = None,
     *,
     hardware_import: Callable[[str], Any] = importlib.import_module,
 ) -> dict[str, Any]:
     """The whole of cell 0, in the fixed order the design pins:
-    config -> clone -> `sys.path` -> imports -> hardware -> `bootstrap.json`.
+    config -> clone -> `sys.path` -> imports -> hardware -> `bootstrap.json`
+    -> the accelerator gate.
 
     Any of config / code / hardware missing raises `SystemExit` on the
     spot — responsibility 7 — so cell 1 never runs against a
     half-prepared runtime. `hardware_import` exists only so a test can
     drive `detect_hardware()`'s success path without a real GPU or a real
     `torch` install; the default is the real `importlib.import_module`.
+
+    `check_accelerator()` runs LAST inside this `try`, strictly after
+    `write_bootstrap_output()` — never before. Cell 1 already cannot run
+    after this cell's own `SystemExit`, so "before training" is
+    structural regardless of ordering; what ordering decides is whether
+    the refusal's own evidence (the arriving device, the torch build, the
+    installed arch list the verdict was computed from) is still readable
+    on disk once it fires. It always is, because it was written first.
     """
     base = Path(base_dir) if base_dir is not None else Path.cwd()
     try:
@@ -306,6 +399,7 @@ def bootstrap(
             environment=environment,
             imports=imports,
         )
+        check_accelerator(run_config, environment)
     except BootstrapError as exc:
         raise SystemExit(f"bootstrap refused: {exc}") from exc
     return {"commit": run_config["commit"], "environment": environment, "imports": imports}

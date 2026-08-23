@@ -10045,10 +10045,33 @@ class RunnerBootstrapTests(unittest.TestCase):
             RUNNER_BOOTSTRAP.detect_hardware(import_module=_no_torch)
         self.assertIn("hardware missing", str(ctx.exception))
 
+    def _fake_cuda_torch(
+        self,
+        *,
+        version: str = "9.9.9",
+        device_name: str = "FakeGPU",
+        capability: tuple[int, int] = (7, 5),
+        arch_list: tuple[str, ...] = ("sm_60", "sm_75"),
+    ) -> SimpleNamespace:
+        """A `torch` double whose `cuda` namespace carries exactly what
+        `detect_hardware()` reads: availability, the device name, the
+        arriving device's capability, and the INSTALLED build's own arch
+        list — never a real GPU, never a real torch install.
+        """
+        return SimpleNamespace(
+            __version__=version,
+            cuda=SimpleNamespace(
+                is_available=lambda: True,
+                get_device_name=lambda i: device_name,
+                get_device_capability=lambda i=0: capability,
+                get_arch_list=lambda: list(arch_list),
+            ),
+        )
+
     def test_detect_hardware_succeeds_with_an_injected_torch(self) -> None:
-        fake_torch = SimpleNamespace(
-            __version__="9.9.9",
-            cuda=SimpleNamespace(is_available=lambda: True, get_device_name=lambda i: "FakeGPU"),
+        fake_torch = self._fake_cuda_torch(
+            version="9.9.9", device_name="FakeGPU",
+            capability=(7, 5), arch_list=("sm_60", "sm_75"),
         )
 
         def _fake_import(name: str):
@@ -10058,6 +10081,22 @@ class RunnerBootstrapTests(unittest.TestCase):
         environment = RUNNER_BOOTSTRAP.detect_hardware(import_module=_fake_import)
         self.assertEqual(environment["device"], {"kind": "cuda", "name": "FakeGPU"})
         self.assertEqual(environment["torch"], "9.9.9")
+        self.assertEqual(environment["archList"], ["sm_60", "sm_75"])
+        self.assertEqual(environment["capability"], "sm_75")
+
+    def test_detect_hardware_reports_no_capability_and_an_empty_arch_list_on_cpu(
+        self,
+    ) -> None:
+        """The gate needs no declaration to run its physics check, but it
+        has nothing to compare on a runtime with no CUDA device at all."""
+        fake_torch = SimpleNamespace(
+            __version__="1.2.3",
+            cuda=SimpleNamespace(is_available=lambda: False, get_device_name=lambda i: "n/a"),
+        )
+
+        environment = RUNNER_BOOTSTRAP.detect_hardware(import_module=lambda name: fake_torch)
+        self.assertEqual(environment["archList"], [])
+        self.assertIsNone(environment["capability"])
 
     def test_bootstrap_exits_before_cell_one_when_config_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -10144,6 +10183,153 @@ class RunnerBootstrapTests(unittest.TestCase):
             self.assertTrue(output_path.is_file())
             payload = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["commit"], commit)
+
+    def test_bootstrap_writes_bootstrap_json_before_an_accelerator_refusal(
+        self,
+    ) -> None:
+        """Decision 2: the refusal is written AFTER `bootstrap.json`, never
+        before. A refusal whose evidence was never written is unreadable
+        no matter how early it fires, so `bootstrap.json` must already
+        carry the arriving device, the torch build and the installed arch
+        list the verdict was computed from by the time `SystemExit` fires.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            origin, commit = _make_origin_repo(tmp, {"src/fixturepkg/__init__.py": "VALUE = 1\n"})
+            run_config = self._fake_run_config(
+                commit=commit,
+                repo={"url": str(origin), "ref": "main"},
+                clonePaths=["src/fixturepkg"],
+                run={"module": "fixturepkg", "function": "run"},
+                accelerator={"kind": "cuda", "architectures": ["sm_60"]},
+            )
+            (Path(tmp) / RUNNER_BOOTSTRAP.CONFIG_FILENAME).write_text(
+                json.dumps(run_config), encoding="utf-8"
+            )
+            saved_path = list(sys.path)
+            # The arriving card's capability (sm_60) is nowhere in the
+            # installed build's own arch list (sm_75 only) — exactly the
+            # 42-second CUDA death this gate exists to catch.
+            fake_torch = self._fake_cuda_torch(capability=(6, 0), arch_list=("sm_75",))
+            try:
+                with self.assertRaises(SystemExit):
+                    RUNNER_BOOTSTRAP.bootstrap(tmp, hardware_import=lambda name: fake_torch)
+            finally:
+                sys.path[:] = saved_path
+                sys.modules.pop("fixturepkg", None)
+
+            output_path = Path(tmp) / RUNNER_BOOTSTRAP.BOOTSTRAP_OUTPUT_FILENAME
+            self.assertTrue(
+                output_path.is_file(),
+                "bootstrap.json must exist on disk even when the "
+                "accelerator gate refuses — the refusal's own evidence",
+            )
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["environment"]["capability"], "sm_60")
+            self.assertEqual(payload["environment"]["archList"], ["sm_75"])
+
+    def test_bootstrap_refuses_when_arriving_capability_is_outside_installed_arch_list(
+        self,
+    ) -> None:
+        """Assertion 1 — the physics check, needing no declaration at
+        all: the arriving capability must appear in the INSTALLED arch
+        list, or training would die inside the kernel with no kernel
+        image for this device.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            origin, commit = _make_origin_repo(tmp, {"src/fixturepkg/__init__.py": "VALUE = 1\n"})
+            run_config = self._fake_run_config(
+                commit=commit,
+                repo={"url": str(origin), "ref": "main"},
+                clonePaths=["src/fixturepkg"],
+                run={"module": "fixturepkg", "function": "run"},
+            )
+            (Path(tmp) / RUNNER_BOOTSTRAP.CONFIG_FILENAME).write_text(
+                json.dumps(run_config), encoding="utf-8"
+            )
+            saved_path = list(sys.path)
+            fake_torch = self._fake_cuda_torch(capability=(6, 0), arch_list=("sm_75",))
+            try:
+                with self.assertRaises(SystemExit) as ctx:
+                    RUNNER_BOOTSTRAP.bootstrap(tmp, hardware_import=lambda name: fake_torch)
+            finally:
+                sys.path[:] = saved_path
+                sys.modules.pop("fixturepkg", None)
+            self.assertIsInstance(ctx.exception.__cause__, RUNNER_BOOTSTRAP.AcceleratorError)
+            self.assertIn("sm_60", str(ctx.exception))
+            self.assertIn("sm_75", str(ctx.exception))
+
+    def test_bootstrap_proceeds_when_arriving_capability_is_installed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            origin, commit = _make_origin_repo(tmp, {"src/fixturepkg/__init__.py": "VALUE = 1\n"})
+            run_config = self._fake_run_config(
+                commit=commit,
+                repo={"url": str(origin), "ref": "main"},
+                clonePaths=["src/fixturepkg"],
+                run={"module": "fixturepkg", "function": "run"},
+            )
+            (Path(tmp) / RUNNER_BOOTSTRAP.CONFIG_FILENAME).write_text(
+                json.dumps(run_config), encoding="utf-8"
+            )
+            saved_path = list(sys.path)
+            fake_torch = self._fake_cuda_torch(capability=(7, 5), arch_list=("sm_60", "sm_75"))
+            try:
+                result = RUNNER_BOOTSTRAP.bootstrap(tmp, hardware_import=lambda name: fake_torch)
+            finally:
+                sys.path[:] = saved_path
+                sys.modules.pop("fixturepkg", None)
+            self.assertEqual(result["environment"]["capability"], "sm_75")
+
+    def test_check_accelerator_refuses_when_capability_is_outside_installed_arch_list(
+        self,
+    ) -> None:
+        with self.assertRaises(RUNNER_BOOTSTRAP.AcceleratorError):
+            RUNNER_BOOTSTRAP.check_accelerator(
+                self._fake_run_config(),
+                {"capability": "sm_60", "archList": ["sm_75"]},
+            )
+
+    def test_check_accelerator_passes_when_capability_is_installed_and_no_accelerator_declared(
+        self,
+    ) -> None:
+        RUNNER_BOOTSTRAP.check_accelerator(
+            self._fake_run_config(),
+            {"capability": "sm_75", "archList": ["sm_75"]},
+        )
+
+    def test_check_accelerator_passes_on_a_cpu_only_environment_with_no_accelerator_declared(
+        self,
+    ) -> None:
+        """No CUDA device, no declaration: nothing to compare, nothing
+        to refuse — an older, undeclared config behaves exactly as
+        before this change."""
+        RUNNER_BOOTSTRAP.check_accelerator(
+            self._fake_run_config(), {"capability": None, "archList": []}
+        )
+
+    def test_check_accelerator_refuses_when_declared_architectures_are_not_covered(
+        self,
+    ) -> None:
+        """Assertion 2 — the declared `architectures` must be covered by
+        the INSTALLED arch list, which is how the dual-architecture torch
+        build gets verified rather than assumed."""
+        run_config = self._fake_run_config(
+            accelerator={"kind": "cuda", "architectures": ["sm_60", "sm_75"]}
+        )
+        with self.assertRaises(RUNNER_BOOTSTRAP.AcceleratorError) as ctx:
+            RUNNER_BOOTSTRAP.check_accelerator(
+                run_config, {"capability": "sm_75", "archList": ["sm_75"]}
+            )
+        self.assertIn("sm_60", str(ctx.exception))
+
+    def test_check_accelerator_passes_when_declared_architectures_are_covered(
+        self,
+    ) -> None:
+        run_config = self._fake_run_config(
+            accelerator={"kind": "cuda", "architectures": ["sm_60", "sm_75"]}
+        )
+        RUNNER_BOOTSTRAP.check_accelerator(
+            run_config, {"capability": "sm_75", "archList": ["sm_60", "sm_75"]}
+        )
 
     def test_runner_bootstrap_module_names_no_service(self) -> None:
         """This asset's own no-service guard — in the same family as
@@ -10825,6 +11011,76 @@ class SmokeTests(unittest.TestCase):
                     run_kwargs=None, smoke_module=None, smoke_function=None,
                     smoke_kwargs=None, bootstrap_asset=bootstrap, invoke_asset=invoke,
                     smoke_required_evidence=["evidence.commit"],
+                )
+
+    # -- accelerator: architecture-list declaration, never a device name --
+
+    def test_build_run_config_writes_declared_accelerator_kind_and_architectures(
+        self,
+    ) -> None:
+        """Decision 1: the declared shape is `{kind, architectures[]}` —
+        an architecture list, never a device name. This module names only
+        the two fields; the values below are exactly what a caller (a
+        `generate-job` flag, in production) supplies.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap, invoke = self._fixture_assets(tmp)
+            run_config = JOBFOLDER.build_run_config(
+                product="P", service="svc", job_name="job", commit="a" * 40,
+                repo_url="https://example.invalid/r.git", repo_ref="main",
+                clone_paths=["src/A"], run_module="A.mod", run_function="f",
+                run_kwargs=None, smoke_module=None, smoke_function=None,
+                smoke_kwargs=None, bootstrap_asset=bootstrap, invoke_asset=invoke,
+                accelerator_kind="cuda",
+                accelerator_architectures=["sm_60", "sm_75"],
+            )
+            self.assertEqual(
+                run_config["accelerator"],
+                {"kind": "cuda", "architectures": ["sm_60", "sm_75"]},
+            )
+
+    def test_build_run_config_omits_accelerator_block_when_not_declared(self) -> None:
+        """Additive: a caller that never declares an accelerator gets the
+        exact shape written before this change — no gate, no block."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap, invoke = self._fixture_assets(tmp)
+            run_config = JOBFOLDER.build_run_config(
+                product="P", service="svc", job_name="job", commit="a" * 40,
+                repo_url="https://example.invalid/r.git", repo_ref="main",
+                clone_paths=["src/A"], run_module="A.mod", run_function="f",
+                run_kwargs=None, smoke_module=None, smoke_function=None,
+                smoke_kwargs=None, bootstrap_asset=bootstrap, invoke_asset=invoke,
+            )
+            self.assertNotIn("accelerator", run_config)
+
+    def test_build_run_config_refuses_a_kind_declared_without_architectures(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap, invoke = self._fixture_assets(tmp)
+            with self.assertRaises(JOBFOLDER.JobFolderError):
+                JOBFOLDER.build_run_config(
+                    product="P", service="svc", job_name="job", commit="a" * 40,
+                    repo_url="https://example.invalid/r.git", repo_ref="main",
+                    clone_paths=["src/A"], run_module="A.mod", run_function="f",
+                    run_kwargs=None, smoke_module=None, smoke_function=None,
+                    smoke_kwargs=None, bootstrap_asset=bootstrap, invoke_asset=invoke,
+                    accelerator_kind="cuda", accelerator_architectures=None,
+                )
+
+    def test_build_run_config_refuses_architectures_declared_without_a_kind(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap, invoke = self._fixture_assets(tmp)
+            with self.assertRaises(JOBFOLDER.JobFolderError):
+                JOBFOLDER.build_run_config(
+                    product="P", service="svc", job_name="job", commit="a" * 40,
+                    repo_url="https://example.invalid/r.git", repo_ref="main",
+                    clone_paths=["src/A"], run_module="A.mod", run_function="f",
+                    run_kwargs=None, smoke_module=None, smoke_function=None,
+                    smoke_kwargs=None, bootstrap_asset=bootstrap, invoke_asset=invoke,
+                    accelerator_kind=None, accelerator_architectures=["sm_60"],
                 )
 
     # -- (d) readiness binds result + commit + worker; no clock -----------

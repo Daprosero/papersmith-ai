@@ -457,9 +457,56 @@ executable — no test in this suite reaches the network or a real account).
     assert each one's `__file__` resolves under that same clone
     (`verify_imports_under_clone` — the "pip-installed copy" refusal);
     detect hardware (`detect_hardware` — `torch` not importable IS
-    "hardware missing", with no silent CPU fallback); write
-    `bootstrap.json`. Any refusal along that path raises `SystemExit`
-    on the spot, before cell 1 ever gets a chance to run.
+    "hardware missing", with no silent CPU fallback; it also captures
+    `archList` and `capability`, described below); write
+    `bootstrap.json`; then run the accelerator gate (`check_accelerator`).
+    Any refusal along that path raises `SystemExit` on the spot, before
+    cell 1 ever gets a chance to run.
+
+  **Accelerator contract: declare an architecture list, compare against
+  what is installed, refuse only after the evidence is on disk.** A real
+  rehearsal died inside the kernel with no kernel image available for its
+  device: the torch build installed in the runner's image simply did not
+  ship kernels for the architecture the assigned card carried, and that
+  failure was invisible for days because no earlier check ever asked
+  whether the build and the card actually agreed. Two decisions close
+  that gap:
+
+  - **Declare architecture, not a device name.** `run-config.json` may
+    carry an additive `accelerator: {kind, architectures[]}`, written by
+    `jobfolder.build_run_config()` only when a caller supplies both
+    `accelerator_kind` and `accelerator_architectures` — this module
+    names those two fields and never a value; the values are whatever
+    the caller declares. A device name answers *is this the card I
+    named* and breaks in both directions on a card whose name varies
+    (a single unit versus a paired one, say); an architecture list
+    answers *can this build run here*, which is the question a mismatch
+    actually turns on. Omitted entirely, no `accelerator` block is
+    written and a job behaves exactly as it did before this field
+    existed — additive, `schemaVersion` stays 1.
+  - **Compare against the INSTALLED build, and refuse only after
+    `bootstrap.json` is written.** `detect_hardware()` now also captures
+    `environment.archList` (`torch.cuda.get_arch_list()` — the
+    architectures the installed torch build actually ships kernels for)
+    and `environment.capability` (the arriving device's own capability,
+    from `torch.cuda.get_device_capability()`, formatted the same way
+    `archList` names its own entries). `check_accelerator()` then makes
+    two assertions, in this order: (1) the arriving `capability` must
+    appear in the installed `archList` — the physics check, which needs
+    no declaration at all and runs whenever a capability was detected;
+    (2) any declared `accelerator.architectures` must be covered by that
+    same installed `archList` — this is how a dual-architecture build
+    gets VERIFIED rather than assumed. Either failing raises
+    `AcceleratorError` (a `BootstrapError` subclass, converted to
+    `SystemExit` the same way as every other refusal). Cell 1 already
+    cannot run after cell 0's own `SystemExit`, so "before training" is
+    structural regardless of ordering; what the ordering decides is
+    whether the refusal is READABLE. `check_accelerator()` runs strictly
+    after `write_bootstrap_output()`, never before, so `bootstrap.json`
+    already carries the arriving device, the torch build, and the
+    installed arch list the verdict was computed from by the time the
+    refusal fires — a refusal whose evidence was never written is
+    unreadable no matter how early it fires.
   - `runner_invoke.py`'s `invoke()` selects the normal `run` block or its
     `smoke` variant (when `run_config["mode"] == "smoke"`, the mode a
     later slice's `submit --smoke` sets) via `select_block()`, resolves

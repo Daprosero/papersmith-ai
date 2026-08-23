@@ -581,6 +581,8 @@ def build_run_config(
     invoke_asset: Path,
     unresolved_imports: Sequence[str] | None = None,
     smoke_required_evidence: Sequence[str] | None = None,
+    accelerator_kind: str | None = None,
+    accelerator_architectures: Sequence[str] | None = None,
 ) -> dict:
     """Assemble `run-config.json`'s exact shape from target-supplied values.
 
@@ -603,6 +605,20 @@ def build_run_config(
     `shard_io.py`. Given without also declaring a smoke block, it is
     refused: a required-evidence list with no smoke run to judge is not a
     value this schema can express.
+
+    `accelerator_kind`/`accelerator_architectures`, when given, are
+    recorded verbatim as `accelerator: {kind, architectures[]}`. This
+    module names only those two fields and never a value: an architecture
+    list, never a device name, because a name answers *is this the card I
+    named* (a device's own name string is not even stable across how many
+    units share it) while an architecture list answers *can this build
+    run here* — the question `runner_bootstrap.py`'s accelerator gate
+    actually asks, against the torch build installed at run time. Omitted
+    entirely, no `accelerator` block is written and the generated job
+    behaves exactly as it did before this field existed (additive,
+    `schemaVersion` stays 1). Given partially — a kind with no
+    architecture list, or the reverse — is refused: neither half alone is
+    a value this schema can express.
     """
     validated_clone_paths = validate_clone_paths(clone_paths)
     has_smoke_block = bool(smoke_module and smoke_function)
@@ -611,6 +627,14 @@ def build_run_config(
             "smoke_required_evidence was given but no smoke module/function "
             "was declared; a required-evidence list with no smoke run to "
             "judge is not a value run-config.json can express"
+        )
+    has_accelerator = accelerator_kind is not None or accelerator_architectures is not None
+    if has_accelerator and not (accelerator_kind and accelerator_architectures):
+        raise JobFolderError(
+            "accelerator_kind and accelerator_architectures must both be "
+            "given (and non-empty), or both omitted; a kind with no "
+            "architecture list, or the reverse, is not a value "
+            "run-config.json can express"
         )
     run_block: dict = {
         "module": run_module,
@@ -643,6 +667,11 @@ def build_run_config(
     }
     if unresolved_imports:
         run_config["unresolvedImports"] = list(unresolved_imports)
+    if has_accelerator:
+        run_config["accelerator"] = {
+            "kind": accelerator_kind,
+            "architectures": list(accelerator_architectures),
+        }
     validate_run_config(run_config)
     return run_config
 
