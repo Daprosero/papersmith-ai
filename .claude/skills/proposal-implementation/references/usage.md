@@ -84,11 +84,21 @@ Check `pythonVersion` in the response: the templates declare `requires-python
   "pythonVersion": "Python 3.12.4",
   "interpreter": "…/implementations/<repo>/.venv/bin/python",
   "pip": "…/implementations/<repo>/.venv/bin/pip",
-  "nextCommand": "…/pip install -r …/assets/requirements-dev.txt"
+  "nextCommand": "…/pip install -r …/assets/requirements-dev.txt -r …/requirements.txt",
+  "manifests": {
+    "rows": [{"name": "requirements.txt", "status": "honoured"}],
+    "args": ["-r", "…/requirements.txt"]
+  }
 }
 ```
 
-Run `nextCommand` as printed. From here on, every command that touches target
+`nextCommand` is one invocation: the forge's own dev requirements first, then
+every manifest the target declares and this flow can honour — `-r
+requirements.txt`, `-r requirements-dev.txt`, `-e .` when a build descriptor
+exists — last. A conda `environment.yml` is named in `manifests.rows` with
+`"status": "unhonoured"` and a reason, never silently skipped; a target that
+declares nothing gets `"rows": []` and an `absentNote` saying so. Run
+`nextCommand` as printed. From here on, every command that touches target
 code goes through the returned `interpreter`.
 
 ## 3. Plan the migration (read-only)

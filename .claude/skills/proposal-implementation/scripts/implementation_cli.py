@@ -2103,6 +2103,14 @@ def cmd_probe(args) -> dict:
     if next_step in ("benchmark", "piloted") and resolved["status"] in (
             "absent", "undeclared"):
         next_step = "declare-first"
+    # Immediately after `declare-first` (Decision 12): introspection is
+    # meaningless before something is declared, so declaration keeps the top
+    # of the ladder. Read only when `live` was actually attempted — `None`
+    # means `report_state` never got there (report itself undeclared), and
+    # that state already has its own, more specific rung below.
+    elif next_step in ("benchmark", "piloted") and report.get("live") not in (
+            None, "ok"):
+        next_step = "env-first"
     elif next_step in ("benchmark", "piloted") and unfaithful:
         next_step = "wiring-first"
     # `drift` and `unreliable` are deliberately excluded: neither is fixed by
@@ -2911,6 +2919,15 @@ import importlib, json, random, sys
 
 package = sys.argv[1]
 record = sys.argv[2]
+entry_module = sys.argv[3] if len(sys.argv) > 3 else ""
+# Executed first, and uncaught on purpose: `config` is pure Python and imports
+# fine with nothing installed, which is exactly what answered `ok` on an empty
+# venv. The declared entry module is what actually pulls the runtime in, so
+# its own `ModuleNotFoundError` is the truthful liveness verdict — letting it
+# raise here surfaces through this process's own non-zero exit and stderr,
+# read verbatim by the caller, rather than being paraphrased.
+if entry_module:
+    importlib.import_module(entry_module)
 config = importlib.import_module(f"{package}_Benchmark.config")
 declaration = importlib.import_module(f"{package}_Benchmark")
 contract = getattr(declaration, "__benchmark__", {}).get("report", {})
@@ -2988,11 +3005,37 @@ print(json.dumps({"subsets": subsets, "inertConclusions": inert}))
 '''
 
 
-def introspect(target: Path, package: str, record: Path | None) -> dict:
+def resolve_entry_module(target: Path, name: str, package: str) -> str:
+    """The dotted module whose import actually pulls the target's runtime in.
+
+    Read from the benchmark's own declaration's `entry.module` when a later
+    phase has landed that block; until then it is reachable only as this
+    scaffold default — the harness filename convention (`BENCHMARK_MODULE`)
+    already used to locate the file on disk, a forge convention and never a
+    target's own package, dataset or device name.
+    """
+    contract = resolve_benchmark_declaration(target, name)["contract"]
+    declared = (contract.get("entry") or {}).get("module")
+    if declared:
+        return declared
+    return f"{package}_Benchmark.{Path(BENCHMARK_MODULE).stem}"
+
+
+def introspect(target: Path, package: str, record: Path | None,
+               entry_module: str = "") -> dict:
     """Run the two live checks inside the target's interpreter, or say why not.
 
     Never the forge's: the whole isolation rule of this skill, and here it is also
     the only interpreter where the target's own package imports at all.
+
+    `entry_module` is executed FIRST, inside the subprocess, before the two
+    checks below ever run. Reporting `live` from `config` importing cleanly
+    was the exact defect measured: `config` is pure Python and imports fine on
+    an empty venv, so an environment where nothing had been installed still
+    answered `ok`. The entry module is what actually pulls the target's
+    runtime in, so its own `ModuleNotFoundError` — surfaced through this
+    subprocess's non-zero exit and quoted verbatim from its last stderr line,
+    never paraphrased — is the truthful verdict.
     """
     bin_dir = "Scripts" if os.name == "nt" else "bin"
     interpreter = target / ".venv" / bin_dir / ("python.exe" if os.name == "nt"
@@ -3002,7 +3045,7 @@ def introspect(target: Path, package: str, record: Path | None) -> dict:
                 "detail": f"no hay intérprete en {interpreter}: corré `env` primero"}
     proc = subprocess.run(
         [str(interpreter), "-c", INTROSPECT, package,
-         str(record) if record and record.exists() else ""],
+         str(record) if record and record.exists() else "", entry_module],
         capture_output=True, text=True, cwd=str(target),
         env={**os.environ, "PYTHONPATH": str(target / "src")},
     )
@@ -3381,7 +3424,7 @@ def report_state(target: Path, name: str, package: str) -> dict:
     record = next((p for p in sorted((target / name).rglob("*.json"))
                    if p.name in (contract.get("record") or "")), None)
     declared_records, undeclared_records = records_state(target, name, contract)
-    live = introspect(target, package, record)
+    live = introspect(target, package, record, resolve_entry_module(target, name, package))
     written_selections = [
         {**row, "rule": None} for row in live.get("subsets", [])
         if row["constant"] not in fixed
@@ -4213,6 +4256,45 @@ def unparsable_tests(tests_dir: Path) -> list[str]:
 # commands
 # --------------------------------------------------------------------------
 
+def manifest_provisioning(target: Path) -> dict:
+    """Which of the target's own declared manifests `env` will hand to pip.
+
+    Every filename checked here is one `ROOT_KEEP` already enumerates — the
+    forge names the manifest, never a package inside it. Two are honoured as
+    `-r` requirement files, an editable install is added when a build
+    descriptor exists, and `environment.yml` — a conda manifest a venv cannot
+    read — is named `unhonoured` with its reason rather than passed over in
+    silence. An empty `rows` still carries `absentNote`, so "checked and found
+    nothing" cannot be mistaken for "never checked".
+    """
+    rows: list[dict] = []
+    args: list[str] = []
+    for candidate in ("requirements.txt", "requirements-dev.txt"):
+        path = target / candidate
+        if path.exists():
+            rows.append({"name": candidate, "status": "honoured"})
+            args += ["-r", str(path)]
+    if any((target / marker).exists()
+           for marker in ("pyproject.toml", "setup.py", "setup.cfg")):
+        found = next(marker for marker in ("pyproject.toml", "setup.py", "setup.cfg")
+                     if (target / marker).exists())
+        rows.append({"name": found, "status": "honoured"})
+        args += ["-e", str(target)]
+    if (target / "environment.yml").exists():
+        rows.append({
+            "name": "environment.yml", "status": "unhonoured",
+            "reason": "a conda manifest; the venv this flow provisions installs "
+                      "with pip and cannot read it",
+        })
+    result = {"rows": rows, "args": args}
+    if not rows:
+        result["absentNote"] = (
+            f"{target} declares no manifest among {sorted(ROOT_KEEP & {'requirements.txt', 'requirements-dev.txt', 'pyproject.toml', 'setup.py', 'setup.cfg', 'environment.yml'})}"
+            "; nextCommand installs only the forge's own dev requirements"
+        )
+    return result
+
+
 def cmd_env(args: argparse.Namespace) -> dict:
     require_non_forge_interpreter()
     target = resolve_target(args.target)
@@ -4234,6 +4316,13 @@ def cmd_env(args: argparse.Namespace) -> dict:
     version = subprocess.run(
         [str(interpreter), "--version"], capture_output=True, text=True,
     ).stdout.strip()
+    # One invocation, forge dev-reqs first and every honoured target manifest
+    # last (Decision 8): joint resolution surfaces a real conflict as pip's own
+    # error instead of a later, silently shadowed pin, and target-last means the
+    # target's own pins are what that conflict is reported against.
+    manifests = manifest_provisioning(target)
+    next_command = [str(pip), "install", "-r",
+                    str(SKILL_ROOT / "assets" / "requirements-dev.txt"), *manifests["args"]]
     return {
         "command": "env",
         "target": str(target),
@@ -4241,7 +4330,8 @@ def cmd_env(args: argparse.Namespace) -> dict:
         "pythonVersion": version,
         "interpreter": str(interpreter),
         "pip": str(pip),
-        "nextCommand": f"{pip} install -r {SKILL_ROOT / 'assets' / 'requirements-dev.txt'}",
+        "nextCommand": " ".join(next_command),
+        "manifests": manifests,
         # Reported here because this is the command that runs first after a clone,
         # which is exactly when a repository full of placeholders looks complete.
         "lfs": lfs_state(target),

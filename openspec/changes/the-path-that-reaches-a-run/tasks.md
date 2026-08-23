@@ -51,15 +51,15 @@ Chain strategy: stacked-to-main
 
 ## Phase 2 — Dual-architecture torch build (Finding 1; Decision 3)
 
-- [ ] 2.1 RED: `build_run_config` writes additive `environment.install: {requirements[], indexUrl}`.
-- [ ] 2.2 GREEN `jobfolder.py`: construct the block (fields only, no hardcoded package).
-- [ ] 2.3 RED: `runner_bootstrap.py` runs `sys.executable -m pip install` with list argv, **before** responsibility 4 (declared-module import).
-- [ ] 2.4 GREEN: implement install step — `PATH`-only env, explicit timeout, non-zero exit refuses (threat-matrix subprocess row).
-- [ ] 2.5 RED: a requirement specifier beginning with `-` (e.g. `--index-url evil`) refuses; a shell-shaped manifest entry installs only as inert data.
-- [ ] 2.6 GREEN: validate specifiers before invoking pip.
-- [ ] 2.7 Invert (disable the specifier-prefix guard) → confirm the malicious spec passes → restore by inverse patch + `sha256`.
-- [ ] 2.8 RED: pip timeout refuses; non-zero exit refuses; no shell is ever invoked.
-- [ ] 2.9 GREEN: implement. Integration: fake `torch` double covering both `sm_60`/`sm_75` confirms `environment.torch`+`archList` recorded post-install.
+- [x] 2.1 RED: `build_run_config` writes additive `environment.install: {requirements[], indexUrl}`.
+- [x] 2.2 GREEN `jobfolder.py`: construct the block (fields only, no hardcoded package).
+- [x] 2.3 RED: `runner_bootstrap.py` runs `sys.executable -m pip install` with list argv, **before** responsibility 4 (declared-module import).
+- [x] 2.4 GREEN: implement install step — `PATH`-only env, explicit timeout, non-zero exit refuses (threat-matrix subprocess row).
+- [x] 2.5 RED: a requirement specifier beginning with `-` (e.g. `--index-url evil`) refuses; a shell-shaped manifest entry installs only as inert data.
+- [x] 2.6 GREEN: validate specifiers before invoking pip.
+- [x] 2.7 Invert (disable the specifier-prefix guard) → confirm the malicious spec passes → restore by inverse patch + `sha256`.
+- [x] 2.8 RED: pip timeout refuses; non-zero exit refuses; no shell is ever invoked.
+- [x] 2.9 GREEN: implement. Integration: fake `torch` double covering both `sm_60`/`sm_75` confirms `environment.torch`+`archList` recorded post-install.
 
 ## Phase 3 — Full healthy-account spread consumption (Finding 2; Decisions 6, 7)
 
@@ -89,15 +89,15 @@ Chain strategy: stacked-to-main
 
 ## Phase 5 — env provisioning + executed-evidence liveness (Findings 5, 6; Decisions 8, 9, 12)
 
-- [ ] 5.1 RED `tests/test_proposal_implementation.py`: `cmd_env`'s `nextCommand` lists forge dev-reqs first, then honoured target manifests last (`requirements.txt`, target's `requirements-dev.txt`, `-e .` when `pyproject.toml`/`setup.py`/`setup.cfg` exists) — names only from `ROOT_KEEP` (`:103`).
-- [ ] 5.2 GREEN `implementation_cli.py::cmd_env` (`:4216`): build the single pip-install invocation per Decision 8 ordering; `environment.yml` present → reported `unhonoured` with reason; none present → `manifests: []`, stated absence.
-- [ ] 5.3 RED (forge-vocabulary guard): no hardcoded package name appears in `cmd_env`'s construction — manifest filenames only.
-- [ ] 5.4 RED: `introspect()` (`:2991`) reports live only after **executing** an import of the declared entry module inside `<target>/.venv`; an empty venv whose pure-Python config imports fine → `live: unavailable`, real last line quoted verbatim.
-- [ ] 5.5 GREEN: execute the entry-module import via the prescribed interpreter subprocess; on failure return `unavailable` + verbatim last stderr line.
-- [ ] 5.6 RED: `nextStep` does not advance past `env-first` (Decision 12: new rung right after `declare-first`) while `live ≠ ok`.
-- [ ] 5.7 GREEN: insert the `env-first` rung.
-- [ ] 5.8 Invert strongest case: stub `introspect` to report `ok` without executing anything → confirm `probe` reports live on a venv that cannot import the entry module → restore by inverse patch + `sha256`.
-- [ ] 5.9 Integration: built target-tree fixture — prescribed interpreter runs the target's own manifest-declared deps with no `ModuleNotFoundError`, and the repo's own interpreter refusal (`harness.py:76-81`, out of scope to edit) is not triggered.
+- [x] 5.1 RED `tests/test_proposal_implementation.py`: `cmd_env`'s `nextCommand` lists forge dev-reqs first, then honoured target manifests last (`requirements.txt`, target's `requirements-dev.txt`, `-e .` when `pyproject.toml`/`setup.py`/`setup.cfg` exists) — names only from `ROOT_KEEP` (`:103`).
+- [x] 5.2 GREEN `implementation_cli.py::cmd_env` (`:4216`): build the single pip-install invocation per Decision 8 ordering; `environment.yml` present → reported `unhonoured` with reason; none present → `manifests: []`, stated absence.
+- [x] 5.3 RED (forge-vocabulary guard): no hardcoded package name appears in `cmd_env`'s construction — manifest filenames only.
+- [x] 5.4 RED: `introspect()` (`:2991`) reports live only after **executing** an import of the declared entry module inside `<target>/.venv`; an empty venv whose pure-Python config imports fine → `live: unavailable`, real last line quoted verbatim.
+- [x] 5.5 GREEN: execute the entry-module import via the prescribed interpreter subprocess; on failure return `unavailable` + verbatim last stderr line.
+- [x] 5.6 RED: `nextStep` does not advance past `env-first` (Decision 12: new rung right after `declare-first`) while `live ≠ ok`.
+- [x] 5.7 GREEN: insert the `env-first` rung.
+- [x] 5.8 Invert strongest case: stub `introspect` to report `ok` without executing anything → confirm `probe` reports live on a venv that cannot import the entry module → restore by inverse patch + `sha256`.
+- [x] 5.9 Integration: built target-tree fixture — prescribed interpreter runs the target's own manifest-declared deps with no `ModuleNotFoundError`, and the repo's own interpreter refusal (`harness.py:76-81`, out of scope to edit) is not triggered.
 
 ## Phase 6 — Harness resolution + gate agreement (Findings 7, 8; Decisions 10, 11)
 

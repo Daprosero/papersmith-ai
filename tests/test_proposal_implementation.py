@@ -4645,8 +4645,8 @@ class NextStepSectionCoverageTests(unittest.TestCase):
         self.assertEqual(
             self.all_next_steps(),
             {"nothing-to-compare", "convert", "piloted", "already-benchmarked",
-             "benchmark", "declare-first", "wiring-first", "poll-first",
-             "search-first", "report-first"})
+             "benchmark", "declare-first", "env-first", "wiring-first",
+             "poll-first", "search-first", "report-first"})
 
     def test_every_prescriptive_next_step_has_its_own_section(self):
         prescriptive = self.all_next_steps() - self.NO_SECTION
@@ -8917,6 +8917,13 @@ class ProbeReportedFactsRosterTests(unittest.TestCase):
             "SCALES = [1, 2, 3]\n", encoding="utf-8")
         (box / "src/Method_Benchmark/tables.py").write_text(
             self.TABLES, encoding="utf-8")
+        # The declared entry module `introspect` now executes as its liveness
+        # check (Decision 9) — undeclared here, so it falls back to the
+        # scaffold's own harness-file convention (`BENCHMARK_MODULE`). Present
+        # and importable, exactly as a repository that has actually run one
+        # would have it.
+        (box / f"src/Method_Benchmark/{impl.BENCHMARK_MODULE}").write_text(
+            "import torch\n", encoding="utf-8")
         (box / "Method/Results/summary.json").write_text(
             json.dumps({"cells": [{"value": 1.0, "first": 0.5}]}),
             encoding="utf-8")
@@ -9528,3 +9535,316 @@ class ShardRefusalCrossJoinTests(unittest.TestCase):
         self.assertIn("--shards", section)
         self.assertIn("`shardsDisagree`", section)
         self.assertIn("`shardsArrived`", section)
+
+
+class ManifestProvisioningTests(unittest.TestCase):
+    """`env`'s `nextCommand` must install the target's own declared manifests,
+    beside the forge's `requirements-dev.txt` — never instead of them, and
+    never before them, per Decision 8.
+    """
+
+    def box(self, suffix, files=()):
+        path = FORGE / "implementations" / f"_manifest_{suffix}_{os.getpid()}"
+        path.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, path, ignore_errors=True)
+        for name, text in files:
+            (path / name).write_text(text, encoding="utf-8")
+        return path
+
+    def test_no_manifest_reports_an_empty_list_and_a_stated_absence(self):
+        target = self.box("bare")
+        found = impl.manifest_provisioning(target)
+        self.assertEqual(found["rows"], [])
+        self.assertTrue(found["absentNote"],
+                         "an empty list alone cannot be told apart from a check "
+                         "that never ran; the absence has to be stated")
+
+    def test_requirements_and_dev_requirements_are_honoured_in_order(self):
+        target = self.box("reqs", [("requirements.txt", "numpy\n"),
+                                    ("requirements-dev.txt", "pytest\n")])
+        found = impl.manifest_provisioning(target)
+        names = [row["name"] for row in found["rows"]]
+        self.assertEqual(names, ["requirements.txt", "requirements-dev.txt"])
+        self.assertTrue(all(row["status"] == "honoured" for row in found["rows"]))
+        self.assertEqual(found["args"],
+                          ["-r", str(target / "requirements.txt"),
+                           "-r", str(target / "requirements-dev.txt")])
+
+    def test_a_buildable_project_is_installed_editable_last(self):
+        target = self.box("editable", [("requirements.txt", "numpy\n"),
+                                        ("pyproject.toml", "[project]\nname='x'\n")])
+        found = impl.manifest_provisioning(target)
+        names = [row["name"] for row in found["rows"]]
+        self.assertEqual(names, ["requirements.txt", "pyproject.toml"])
+        self.assertEqual(found["args"][-2:], ["-e", str(target)])
+
+    def test_setup_py_alone_is_also_installed_editable(self):
+        target = self.box("setuppy", [("setup.py", "from setuptools import setup\n")])
+        found = impl.manifest_provisioning(target)
+        self.assertEqual([row["name"] for row in found["rows"]], ["setup.py"])
+        self.assertEqual(found["args"], ["-e", str(target)])
+
+    def test_environment_yml_is_named_unhonoured_with_a_reason_never_ignored(self):
+        target = self.box("conda", [("environment.yml", "name: x\n")])
+        found = impl.manifest_provisioning(target)
+        self.assertEqual(len(found["rows"]), 1)
+        row = found["rows"][0]
+        self.assertEqual(row["name"], "environment.yml")
+        self.assertEqual(row["status"], "unhonoured")
+        self.assertTrue(row["reason"])
+        # An unhonoured manifest names nothing pip is asked to install.
+        self.assertEqual(found["args"], [])
+
+    def test_cmd_env_lists_the_forge_dev_reqs_first_then_target_manifests_last(self):
+        target = self.box("order", [("requirements.txt", "numpy\n"),
+                                     ("environment.yml", "name: x\n")])
+        subprocess.run(["git", "init", "-q", str(target)], check=True, capture_output=True)
+        result = impl.cmd_env(argparse.Namespace(target=str(target), python=sys.executable))
+        forge_reqs = str(impl.SKILL_ROOT / "assets" / "requirements-dev.txt")
+        self.assertLess(
+            result["nextCommand"].index(forge_reqs),
+            result["nextCommand"].index(str(target / "requirements.txt")),
+            "the forge's own dev requirements must be listed before any target "
+            "manifest, per Decision 8")
+        self.assertEqual([row["name"] for row in result["manifests"]["rows"]],
+                          ["requirements.txt", "environment.yml"])
+        self.assertEqual(result["manifests"]["rows"][1]["status"], "unhonoured")
+
+    def test_cmd_env_construction_names_no_target_package(self):
+        """The forge-vocabulary guard: `cmd_env`'s own construction and its
+        `manifest_provisioning` helper must name only manifest filenames the
+        forge already enumerates in `ROOT_KEEP`, never a target's package,
+        device or repository name.
+        """
+        source = inspect.getsource(impl.cmd_env) + inspect.getsource(impl.manifest_provisioning)
+        for word in FORGE_VOCABULARY_FLOOR:
+            self.assertNotIn(word, source.lower())
+
+
+class EntryModuleLivenessTests(unittest.TestCase):
+    """`live` must come from an EXECUTED import of the target's own entry
+    module, never from `config` alone — a pure-Python module imports fine on
+    an empty venv and answered `ok` on a repository that could not run.
+    """
+
+    def box(self, suffix):
+        path = FORGE / "implementations" / f"_liveness_{suffix}_{os.getpid()}"
+        (path / "src" / "Method_Benchmark").mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, path, ignore_errors=True)
+        (path / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            "__benchmark__ = {'revision': 'r01.md'}\n", encoding="utf-8")
+        # Pure Python: imports fine with nothing installed. This is the exact
+        # module whose successful import used to answer `live: ok` alone.
+        (path / "src" / "Method_Benchmark" / "config.py").write_text(
+            "SCALES = [1, 2, 3]\n", encoding="utf-8")
+        bin_dir = path / ".venv" / ("Scripts" if os.name == "nt" else "bin")
+        bin_dir.mkdir(parents=True)
+        os.symlink(sys.executable, bin_dir / ("python.exe" if os.name == "nt" else "python"))
+        return path
+
+    def test_a_pure_python_config_import_alone_is_not_enough_evidence(self):
+        """The exact defect measured: `introspect` must not report `ok` from
+        `config` importing cleanly while the declared entry module cannot be
+        imported at all."""
+        target = self.box("bare_entry")
+        # No `benchmark.py` on disk at all: the declared entry module cannot
+        # be found, let alone executed.
+        result = impl.introspect(target, "Method", None,
+                                  entry_module="Method_Benchmark.benchmark")
+        self.assertEqual(result["status"], "unavailable")
+        self.assertIn("benchmark", result["detail"])
+
+    def test_an_entry_module_importing_an_absent_dependency_is_unavailable(self):
+        target = self.box("missing_dep")
+        (target / "src" / "Method_Benchmark" / "benchmark.py").write_text(
+            "import _pp_entry_liveness_absent_dependency\n", encoding="utf-8")
+        result = impl.introspect(target, "Method", None,
+                                  entry_module="Method_Benchmark.benchmark")
+        self.assertEqual(result["status"], "unavailable")
+        self.assertIn("_pp_entry_liveness_absent_dependency", result["detail"])
+
+    def test_a_present_and_importable_entry_module_reports_ok(self):
+        target = self.box("present")
+        (target / "src" / "Method_Benchmark" / "benchmark.py").write_text(
+            "VALUE = 1\n", encoding="utf-8")
+        result = impl.introspect(target, "Method", None,
+                                  entry_module="Method_Benchmark.benchmark")
+        self.assertEqual(result["status"], "ok")
+
+
+class EntryModuleResolutionTests(unittest.TestCase):
+    """Where `introspect` gets the entry module's dotted name from — the
+    target's own declaration when it names one, reachable only as the
+    scaffold's own harness-file convention (`BENCHMARK_MODULE`) otherwise.
+    A later phase adds the declared `entry` block; until it lands, this is
+    the narrowest path that names no target package of its own.
+    """
+
+    def box(self, suffix, declaration):
+        path = FORGE / "implementations" / f"_entrymod_{suffix}_{os.getpid()}"
+        (path / "src" / "Method_Benchmark").mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, path, ignore_errors=True)
+        (path / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            declaration, encoding="utf-8")
+        return path
+
+    def test_falls_back_to_the_scaffold_harness_convention_when_undeclared(self):
+        target = self.box("fallback", "__benchmark__ = {'revision': 'r01.md'}\n")
+        self.assertEqual(
+            impl.resolve_entry_module(target, "Method", "Method"),
+            f"Method_Benchmark.{Path(impl.BENCHMARK_MODULE).stem}")
+
+    def test_an_explicitly_declared_entry_module_wins(self):
+        target = self.box(
+            "declared",
+            "__benchmark__ = {'revision': 'r01.md', "
+            "'entry': {'module': 'Method_Benchmark.custom_entry', 'function': 'run'}}\n")
+        self.assertEqual(impl.resolve_entry_module(target, "Method", "Method"),
+                          "Method_Benchmark.custom_entry")
+
+
+class EnvFirstGateTests(unittest.TestCase):
+    """`nextStep` must not advance past `env-first` while the target's own
+    declared entry module cannot be imported — Decision 12's new rung,
+    inserted immediately after `declare-first`. Reuses
+    `ProbeReportedFactsRosterTests`'s fixture builder by composition, never by
+    subclassing, so its own test methods are not rediscovered under this
+    class name too.
+    """
+
+    DECLARATION = ProbeReportedFactsRosterTests.DECLARATION
+    WIRING = ProbeReportedFactsRosterTests.WIRING
+    TABLES = ProbeReportedFactsRosterTests.TABLES
+
+    def build_target(self, suffix):
+        return ProbeReportedFactsRosterTests.build_target(self, suffix)
+
+    def probe(self, box):
+        return ProbeReportedFactsRosterTests.probe(self, box)
+
+    def test_an_unimportable_entry_module_reports_env_first_not_benchmark(self):
+        """The exact defect this rung exists to close: an empty venv whose
+        pure-Python `config` still imports fine used to clear the way to a run
+        the environment could not perform."""
+        box, _ = self.build_target("envfirst_broken")
+        (box / "src/Method_Benchmark/benchmark.py").write_text(
+            "import _pp_env_first_absent_dependency\n", encoding="utf-8")
+        probe = self.probe(box)
+        self.assertEqual(probe["report"]["live"], "unavailable")
+        self.assertEqual(probe["nextStep"], "env-first")
+        self.assertNotEqual(probe["nextStep"], "benchmark")
+
+    def test_the_same_target_reaches_benchmark_once_the_entry_module_imports(self):
+        box, _ = self.build_target("envfirst_ok")
+        probe = self.probe(box)
+        self.assertEqual(probe["report"]["live"], "ok")
+        self.assertEqual(probe["nextStep"], "benchmark")
+
+
+class ProvisionedEntryLivenessIntegrationTests(unittest.TestCase):
+    """A real, freshly-built `.venv` — never a symlink to the interpreter
+    running this suite — proving the whole chain end to end: `env`'s
+    `nextCommand` names the target's own manifest, installing it makes the
+    declared entry module importable with no `ModuleNotFoundError`, and doing
+    so through the venv's own prescribed interpreter never trips the same
+    "foreign interpreter" refusal every target harness under this doctrine
+    carries (`sys.prefix` scoped to the repository's own virtualenv).
+
+    Nothing is launched anywhere; this only builds a venv, installs one local,
+    offline package, and imports a module — the shape Unit 5's own tasks call
+    for: "no launch".
+    """
+
+    VENDOR_SETUP = (
+        "from setuptools import setup\n"
+        "setup(name='pptinypkg', version='0.0.1', packages=['pptinypkg'])\n"
+    )
+    VENDOR_INIT = "VALUE = 42\n"
+
+    #: The identical mechanism every target harness under this doctrine
+    #: carries: refuse an interpreter whose `sys.prefix` sits outside the
+    #: repository, once the repository has a virtualenv of its own. Proven
+    #: inline rather than by invoking a real target's own harness — that
+    #: repository is a separate one, out of scope here — but the check is the
+    #: forge's own generic kit convention (`environment()` in
+    #: `assets/kit/nb/benchmark.py`), reproduced at the one line that matters.
+    ENTRY_MODULE = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "import pptinypkg\n"
+        "repository = Path(__file__).resolve().parents[2]\n"
+        "prefix = Path(sys.prefix).resolve()\n"
+        "if not prefix.is_relative_to(repository):\n"
+        "    raise SystemExit(f'refusing to run under {prefix}')\n"
+        "VALUE = pptinypkg.VALUE\n"
+    )
+
+    def build_target(self):
+        target = FORGE / "implementations" / f"_env_live_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, target, ignore_errors=True)
+        (target / "vendor" / "pptinypkg" / "pptinypkg").mkdir(parents=True)
+        (target / "vendor" / "pptinypkg" / "setup.py").write_text(
+            self.VENDOR_SETUP, encoding="utf-8")
+        (target / "vendor" / "pptinypkg" / "pptinypkg" / "__init__.py").write_text(
+            self.VENDOR_INIT, encoding="utf-8")
+        (target / "requirements.txt").write_text(
+            "-e ./vendor/pptinypkg\n", encoding="utf-8")
+        (target / "src" / "Method_Benchmark").mkdir(parents=True)
+        (target / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            "__benchmark__ = {'revision': 'r01.md'}\n", encoding="utf-8")
+        (target / "src" / "Method_Benchmark" / "config.py").write_text(
+            "SCALES = [1, 2, 3]\n", encoding="utf-8")
+        (target / "src" / "Method_Benchmark" / "benchmark.py").write_text(
+            self.ENTRY_MODULE, encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(target)], check=True, capture_output=True)
+        return target
+
+    def test_the_prescribed_interpreter_runs_the_declared_manifest_with_no_launch(self):
+        target = self.build_target()
+
+        # 1. `env`: a real venv, never symlinked, created fresh with nothing installed.
+        env_result = impl.cmd_env(
+            argparse.Namespace(target=str(target), python=sys.executable))
+        self.assertEqual(env_result["status"], "created")
+        interpreter = Path(env_result["interpreter"])
+        self.assertTrue(interpreter.is_relative_to(target),
+                         "the prescribed interpreter must live inside the target")
+
+        # 2. Before install: the entry module cannot be imported at all — the
+        #    empty-venv state `env-first` exists to catch. `config.py` is not
+        #    even present here, so there is nothing pure-Python to hide behind.
+        before = impl.introspect(target, "Method", None,
+                                  entry_module="Method_Benchmark.benchmark")
+        self.assertEqual(before["status"], "unavailable")
+        self.assertIn("pptinypkg", before["detail"])
+
+        # 3. Install exactly the target's own honoured manifest — the part of
+        #    `nextCommand` this test can run offline. `--no-build-isolation`
+        #    is this test's own concession to a sandbox with no network; it
+        #    changes nothing about what `manifest_provisioning` reports.
+        manifests = impl.manifest_provisioning(target)
+        self.assertEqual([row["name"] for row in manifests["rows"]],
+                          ["requirements.txt"])
+        proc = subprocess.run(
+            [str(env_result["pip"]), "install", "--no-build-isolation",
+             "--disable-pip-version-check", "-q", *manifests["args"]],
+            capture_output=True, text=True, cwd=str(target))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        # 4. After install: the prescribed interpreter imports the declared
+        #    entry module with no `ModuleNotFoundError`, and the same
+        #    "foreign interpreter" refusal every target harness under this
+        #    doctrine carries is not triggered — `sys.prefix` is genuinely
+        #    inside the target now, not a symlink borrowing another one's.
+        after = impl.introspect(target, "Method", None,
+                                 entry_module="Method_Benchmark.benchmark")
+        self.assertEqual(after["status"], "ok", after.get("detail"))
+
+        direct = subprocess.run(
+            [str(interpreter), "-c",
+             "import Method_Benchmark.benchmark as m; print(m.VALUE)"],
+            capture_output=True, text=True, cwd=str(target),
+            env={**os.environ, "PYTHONPATH": str(target / "src")})
+        self.assertEqual(direct.returncode, 0, direct.stderr)
+        self.assertNotIn("refusing to run under", direct.stdout + direct.stderr)
+        self.assertIn("42", direct.stdout)
