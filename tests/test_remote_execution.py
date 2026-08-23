@@ -5060,6 +5060,14 @@ class MultiWorkerFakeAdapter(ADAPTER.Adapter):
     call -- the assertion that proves a refused selection spent no quota,
     since calling `submit()` at all is exactly the failure this option
     exists to catch.
+
+    `active` scripts a healthy worker's `list_active()` to answer a
+    specific, non-empty list rather than the unconditional `[]` every
+    healthy worker used to be stuck with -- the extension that makes RAGGED
+    open places (some workers more spent than others) producible at all,
+    needed to exercise `distribute()`'s round-robin over uneven `granted`
+    counts. Defaults to `{}`, so every caller written before this extension
+    keeps its exact prior behavior unchanged.
     """
 
     def __init__(
@@ -5069,6 +5077,7 @@ class MultiWorkerFakeAdapter(ADAPTER.Adapter):
         unauthorized: frozenset = frozenset(),
         unreachable: frozenset = frozenset(),
         forbid_submit: bool = False,
+        active: dict[str, list[str]] = {},
     ) -> None:
         self._workers = [
             ADAPTER.Worker(id=worker_id, capacity=capacity) for worker_id, capacity in workers
@@ -5076,6 +5085,7 @@ class MultiWorkerFakeAdapter(ADAPTER.Adapter):
         self._unauthorized = unauthorized
         self._unreachable = unreachable
         self._forbid_submit = forbid_submit
+        self._active = active
         self.submit_calls: list[str] = []
 
     def workers(self) -> list:
@@ -5109,7 +5119,7 @@ class MultiWorkerFakeAdapter(ADAPTER.Adapter):
             )
         if worker in self._unreachable:
             raise ConnectionError(f"service unreachable for {worker} (test double)")
-        return []
+        return self._active.get(worker, [])
 
 
 def _write_fake_capacity_driver(
@@ -5393,6 +5403,71 @@ class WorkerSelectionAndMeteringTests(unittest.TestCase):
                 adapter.list_active("acct-1")
             self.assertIn("acct-1", str(caught.exception))
 
+    # ---- fixture extension: ragged in-flight, for distribute()'s own tests ----
+
+    def test_active_kwarg_produces_ragged_granted_capacity(self) -> None:
+        """`MultiWorkerFakeAdapter` before this test could only produce a
+        healthy worker with its WHOLE capacity free -- `list_active()`
+        answered `[]` unconditionally for anything neither unauthorized nor
+        unreachable. No existing fixture could produce RAGGED open places
+        (some workers more spent than others), so the ragged round-robin
+        rule distribute() will need could not be exercised at all. This
+        proves the extension: two workers with different `active` lists
+        yield different `granted` via plan() alone, no `distribute()` call
+        involved yet.
+        """
+        adapter = MultiWorkerFakeAdapter(
+            workers=[("w1", 3), ("w2", 3)],
+            active={"w1": ["w1/kernel-a"], "w2": []},
+        )
+        plan_w1 = PACKER.plan(
+            adapter=adapter, worker_id="w1", requested=3, ledger_lines=[], live_digest="d",
+        )
+        plan_w2 = PACKER.plan(
+            adapter=adapter, worker_id="w2", requested=3, ledger_lines=[], live_digest="d",
+        )
+        self.assertEqual(plan_w1.granted, 2)  # cap 3, one already active
+        self.assertEqual(plan_w2.granted, 3)  # cap 3, none active
+        self.assertNotEqual(plan_w1.granted, plan_w2.granted)
+        self.assertEqual(plan_w1.in_flight_source, "list_active")
+        self.assertEqual(plan_w2.in_flight_source, "list_active")
+
+    def test_select_reason_strings_are_pinned(self) -> None:
+        """Neither exact skip-reason string `select()` emits is pinned by
+        any EXISTING test -- both appear only in `packer.py` itself. This
+        locks them against TODAY's `select()`, before any `_triage()`
+        extraction moves this branch, so the extraction is proven not to
+        have silently changed the wording a caller might be matching on.
+        """
+        # Fixture A: a worker whose live capacity read could not be
+        # confirmed (Decision 5's "Unknown" case) -- "unreachable" here.
+        unconfirmed_adapter = MultiWorkerFakeAdapter(
+            workers=[("w1", 2)], unreachable=frozenset({"w1"}),
+        )
+        with self.assertRaises(PACKER.PackerError) as caught:
+            PACKER.select(
+                adapter=unconfirmed_adapter, requested=1, ledger_lines=[], live_digest="d",
+            )
+        self.assertIn("live capacity evidence unavailable", str(caught.exception))
+
+        # Fixture B: a healthy, confirmed worker with nothing left to grant.
+        no_capacity_adapter = MultiWorkerFakeAdapter(
+            workers=[("w1", 1)], active={"w1": ["w1/kernel-a"]},
+        )
+        with self.assertRaises(PACKER.PackerError) as caught:
+            PACKER.select(
+                adapter=no_capacity_adapter, requested=1, ledger_lines=[], live_digest="d",
+            )
+        self.assertIn("no capacity granted right now", str(caught.exception))
+
+        # Fixture C: a healthy worker WITH capacity -- select() returns
+        # normally and neither reason string appears anywhere.
+        healthy_adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+        plan = PACKER.select(
+            adapter=healthy_adapter, requested=1, ledger_lines=[], live_digest="d",
+        )
+        self.assertEqual(plan.worker, "w1")
+
     # ---- driver-level (INNER interception): the 1+N request shape ----
 
     def test_driver_capacity_derives_status_via_list_then_get_session_status(self) -> None:
@@ -5444,6 +5519,395 @@ def _installed_kaggle_client_source() -> str | None:
     if not source.is_file():
         return None
     return source.read_text(encoding="utf-8", errors="replace")
+
+
+class DistributionTests(unittest.TestCase):
+    """`packer.distribute()` -- the one function that aggregates capacity
+    across every worker an adapter reports, instead of `plan()`/`select()`'s
+    own single-worker view. Same discipline as `WorkerSelectionAndMeteringTests`
+    above: `MultiWorkerFakeAdapter`, no subprocess and no real backend.
+
+    The forge must never learn what a unit means -- every fixture here uses
+    opaque `str` identifiers, and the opacity lock below proves the module
+    could not learn more even if it tried.
+    """
+
+    # ---- opacity lock: fixtures proven nonvacuous BEFORE the bijection ----
+
+    def test_opacity_lock_fixtures_are_nonvacuous(self) -> None:
+        """The anti-vacuity device this lock needs: prove the two alphabets
+        below are NOT already trivially interchangeable, so a later
+        "simplification" of either one cannot make the bijection test
+        trivially true. Four properties, each asserted directly against the
+        fixtures themselves, no `distribute()` call involved.
+        """
+        alphabet_a = ("item-03", "item-01", "item-04", "item-00", "item-02")
+        alphabet_b = ("9f2a1c", "0b3d7e", "e14f20", "3a9c88", "77bb01")
+
+        self.assertEqual(len(alphabet_a), len(alphabet_b))
+        for left, right in zip(alphabet_a, alphabet_b):
+            self.assertNotEqual(left, right)  # A != B elementwise
+        self.assertEqual(set(alphabet_a) & set(alphabet_b), set())  # disjoint
+        self.assertNotEqual(list(alphabet_a), sorted(alphabet_a))
+        self.assertNotEqual(list(alphabet_b), sorted(alphabet_b))
+
+        def _sort_permutation(alphabet: tuple) -> tuple:
+            rank_by_value = {value: rank for rank, value in enumerate(sorted(alphabet))}
+            return tuple(rank_by_value[value] for value in alphabet)
+
+        self.assertNotEqual(_sort_permutation(alphabet_a), _sort_permutation(alphabet_b))
+
+    def test_opacity_lock_bijection_holds_between_alphabets(self) -> None:
+        """Distribute the SAME fixture worker state twice, once under each
+        alphabet from the fixtures test above, and assert the bijection
+        `A[i] -> B[i]` carries result A onto result B exactly -- per-worker
+        assignment order and `unplaced`, in order. A `distribute()` that
+        parsed, sorted, or shape-checked a unit's contents would break this
+        bijection; one that treats units as opaque cannot.
+        """
+        alphabet_a = ("item-03", "item-01", "item-04", "item-00", "item-02")
+        alphabet_b = ("9f2a1c", "0b3d7e", "e14f20", "3a9c88", "77bb01")
+        bijection = dict(zip(alphabet_a, alphabet_b))
+
+        adapter_a = MultiWorkerFakeAdapter(workers=[("w1", 3), ("w2", 2)])
+        result_a = PACKER.distribute(
+            adapter=adapter_a, units=alphabet_a, ledger_lines=[], live_digest="d",
+        )
+
+        adapter_b = MultiWorkerFakeAdapter(workers=[("w1", 3), ("w2", 2)])
+        result_b = PACKER.distribute(
+            adapter=adapter_b, units=alphabet_b, ledger_lines=[], live_digest="d",
+        )
+
+        self.assertEqual(len(result_a.assignments), len(result_b.assignments))
+        for assignment_a, assignment_b in zip(result_a.assignments, result_b.assignments):
+            mapped = tuple(bijection[unit] for unit in assignment_a.units)
+            self.assertEqual(mapped, assignment_b.units)
+        mapped_unplaced = tuple(bijection[unit] for unit in result_a.unplaced)
+        self.assertEqual(mapped_unplaced, result_b.unplaced)
+
+    # ---- aggregation ----
+
+    def test_five_workers_at_capacity_two_report_ten_places(self) -> None:
+        """The exact counterexample this change exists to fix: five healthy
+        accounts each running two concurrent jobs add up to TEN places, not
+        one worker's own two.
+        """
+        adapter = MultiWorkerFakeAdapter(
+            workers=[("w1", 2), ("w2", 2), ("w3", 2), ("w4", 2), ("w5", 2)],
+        )
+        units = tuple(f"u{i}" for i in range(10))
+        result = PACKER.distribute(
+            adapter=adapter, units=units, ledger_lines=[], live_digest="d",
+        )
+        self.assertEqual(result.places, 10)
+        self.assertEqual(len(result.assignments), 5)
+
+    # ---- round-robin assignment ----
+
+    def test_round_robin_worked_example_pins_explicit_tuple(self) -> None:
+        """Design's own worked example: ragged rows `w1(2), w2(1), w3(2)`
+        over six units. Pins the LITERAL expected tuple, not merely
+        repeat-equality -- a stable-but-wrong order would repeat exactly as
+        faithfully as a right one.
+        """
+        adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 1), ("w3", 2)])
+        units = ("u_a", "u_b", "u_c", "u_d", "u_e", "u_f")
+        result = PACKER.distribute(
+            adapter=adapter, units=units, ledger_lines=[], live_digest="d",
+        )
+
+        by_worker = {a.plan.worker: a.units for a in result.assignments}
+        self.assertEqual(by_worker["w1"], ("u_a", "u_d"))
+        self.assertEqual(by_worker["w2"], ("u_b",))
+        self.assertEqual(by_worker["w3"], ("u_c", "u_e"))
+        self.assertEqual(result.unplaced, ("u_f",))
+        self.assertEqual(result.places, 5)
+
+    def test_round_robin_is_deterministic_across_repeated_calls(self) -> None:
+        """Same explicit expected tuple as the worked example above,
+        asserted twice against TWO SEPARATE `distribute()` calls -- not
+        `result1 == result2`, which a stable-but-wrong order would also
+        satisfy.
+        """
+        units = ("u_a", "u_b", "u_c", "u_d", "u_e", "u_f")
+        expected = {"w1": ("u_a", "u_d"), "w2": ("u_b",), "w3": ("u_c", "u_e")}
+
+        for _ in range(2):
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 1), ("w3", 2)])
+            result = PACKER.distribute(
+                adapter=adapter, units=units, ledger_lines=[], live_digest="d",
+            )
+            by_worker = {a.plan.worker: a.units for a in result.assignments}
+            self.assertEqual(by_worker, expected)
+            self.assertEqual(result.unplaced, ("u_f",))
+
+    def test_small_campaign_spreads_instead_of_piling_on_one_account(self) -> None:
+        """Doubles as the counterexample against pre-slicing
+        `len(units) // len(workers)`: three units over five workers would
+        floor to zero at every worker and distribute NOTHING. Asking each
+        worker for the full `requested=len(units)` and letting `plan()`
+        clamp is what lets three units still spread across three distinct
+        accounts, one each.
+        """
+        adapter = MultiWorkerFakeAdapter(
+            workers=[("w1", 1), ("w2", 1), ("w3", 1), ("w4", 1), ("w5", 1)],
+        )
+        units = ("u1", "u2", "u3")
+        result = PACKER.distribute(
+            adapter=adapter, units=units, ledger_lines=[], live_digest="d",
+        )
+        occupied = [a.plan.worker for a in result.assignments if a.units]
+        self.assertEqual(len(occupied), 3)
+        self.assertEqual(len(set(occupied)), 3)  # three DISTINCT workers
+        self.assertEqual(result.unplaced, ())
+
+    # ---- remainder and invariants ----
+
+    def test_twelve_units_against_ten_places_reports_two_unplaced_by_identity(self) -> None:
+        """An over-subscribed campaign: five workers at capacity two (ten
+        places) against twelve units. Ten are assigned; `unplaced` names
+        the exact two remaining identities, not merely a count of two.
+        """
+        adapter = MultiWorkerFakeAdapter(
+            workers=[("w1", 2), ("w2", 2), ("w3", 2), ("w4", 2), ("w5", 2)],
+        )
+        units = tuple(f"u{i}" for i in range(12))
+        result = PACKER.distribute(
+            adapter=adapter, units=units, ledger_lines=[], live_digest="d",
+        )
+        assigned_units = {unit for a in result.assignments for unit in a.units}
+        self.assertEqual(len(assigned_units), 10)
+        self.assertEqual(result.unplaced, ("u10", "u11"))
+
+    def test_conservation_every_unit_appears_exactly_once(self) -> None:
+        """`assignments` (unioned across workers) plus `unplaced` must
+        cover every input unit EXACTLY once -- neither a duplicate nor a
+        vanished identity.
+        """
+        adapter = MultiWorkerFakeAdapter(
+            workers=[("w1", 2), ("w2", 2), ("w3", 2), ("w4", 2), ("w5", 2)],
+        )
+        units = tuple(f"u{i}" for i in range(12))
+        result = PACKER.distribute(
+            adapter=adapter, units=units, ledger_lines=[], live_digest="d",
+        )
+        assigned_units = [unit for a in result.assignments for unit in a.units]
+        covered = assigned_units + list(result.unplaced)
+        self.assertEqual(sorted(covered), sorted(units))
+        self.assertEqual(len(covered), len(units))  # no duplicate coverage
+
+    def test_worker_accounting_assignments_and_skipped_cover_all_workers(self) -> None:
+        """The union of workers named in `assignments` and `skipped` must
+        equal `adapter.workers()` exactly -- no account silently vanishes.
+        """
+        adapter = MultiWorkerFakeAdapter(
+            workers=[("w1", 2), ("w2", 2)], unauthorized=frozenset({"w2"}),
+        )
+        result = PACKER.distribute(
+            adapter=adapter, units=("u1",), ledger_lines=[], live_digest="d",
+        )
+        assigned_ids = {a.plan.worker for a in result.assignments}
+        skipped_ids = {s.worker for s in result.skipped}
+        self.assertEqual(assigned_ids | skipped_ids, {"w1", "w2"})
+        self.assertEqual(assigned_ids & skipped_ids, set())
+
+    # ---- health guards (mutation-proofed) ----
+
+    def test_unconfirmed_worker_contributes_zero_places(self) -> None:
+        """A worker whose `plan()` call fell back to the ledger
+        (`in_flight_source != "list_active"`) contributes ZERO places, not
+        a guessed one, and is named in `skipped` with its own reason.
+        """
+        adapter = MultiWorkerFakeAdapter(
+            workers=[("w1", 2), ("w2", 2)], unreachable=frozenset({"w1"}),
+        )
+        result = PACKER.distribute(
+            adapter=adapter, units=("u1", "u2"), ledger_lines=[], live_digest="d",
+        )
+        assigned_ids = {a.plan.worker for a in result.assignments}
+        self.assertNotIn("w1", assigned_ids)
+        self.assertIn("w1", {s.worker for s in result.skipped})
+        skip = next(s for s in result.skipped if s.worker == "w1")
+        self.assertIn("live capacity evidence unavailable", skip.reason)
+        self.assertEqual(result.places, 2)  # only w2's cap, not w1's too
+
+    def test_revoked_worker_skipped_not_swallowed(self) -> None:
+        """`WorkerUnauthorized` is recorded in `skipped`, naming it, and
+        never propagates out of `distribute()` itself -- unlike `plan()`,
+        which still raises it for an explicitly-named worker.
+        """
+        adapter = MultiWorkerFakeAdapter(
+            workers=[("w1", 2), ("w2", 2)], unauthorized=frozenset({"w1"}),
+        )
+        result = PACKER.distribute(
+            adapter=adapter, units=("u1",), ledger_lines=[], live_digest="d",
+        )
+        skip = next(s for s in result.skipped if s.worker == "w1")
+        self.assertIn("unauthorized", skip.reason)
+        self.assertEqual({a.plan.worker for a in result.assignments}, {"w2"})
+
+    def test_three_unreachable_workers_yield_four_places_not_ten(self) -> None:
+        """Five workers at capacity two, three unreachable: only the two
+        CONFIRMED healthy workers contribute (2 x 2 = 4), never the full
+        5 x 2 = 10 a defaulted guess would produce.
+        """
+        adapter = MultiWorkerFakeAdapter(
+            workers=[("w1", 2), ("w2", 2), ("w3", 2), ("w4", 2), ("w5", 2)],
+            unreachable=frozenset({"w3", "w4", "w5"}),
+        )
+        result = PACKER.distribute(
+            adapter=adapter, units=tuple(f"u{i}" for i in range(10)),
+            ledger_lines=[], live_digest="d",
+        )
+        self.assertEqual(result.places, 4)
+
+    def test_distribute_source_never_reads_capacity_directly(self) -> None:
+        """`distribute()`'s only route to a number is `plan().granted`,
+        reached through `_triage()` -- it must never read `Worker.capacity`
+        itself, which would bypass the clamp `plan()` exists to enforce.
+        """
+        source = inspect.getsource(PACKER.distribute)
+        self.assertNotIn(".capacity", source)
+
+    # ---- no mid-flight redistribution, no persistence ----
+
+    def test_no_mid_flight_redistribution_after_submission_failure(self) -> None:
+        """A unit left `unplaced` by one `distribute()` call never gets
+        silently retried inside that SAME call. It becomes assignable only
+        on a LATER call, once the caller's own ledger state reflects
+        whatever freed the capacity -- `distribute()` itself never revisits
+        its own past result.
+        """
+        first_adapter = MultiWorkerFakeAdapter(
+            workers=[("w1", 2)], active={"w1": ["w1/kernel-a", "w1/kernel-b"]},
+        )
+        first = PACKER.distribute(
+            adapter=first_adapter, units=("u1",), ledger_lines=[], live_digest="d",
+        )
+        self.assertEqual(first.unplaced, ("u1",))
+        self.assertEqual(first.places, 0)
+
+        # Same units, a SECOND call, only after capacity actually freed --
+        # never something the first call did on its own.
+        second_adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)], active={"w1": []})
+        second = PACKER.distribute(
+            adapter=second_adapter, units=("u1",), ledger_lines=[], live_digest="d",
+        )
+        self.assertEqual(second.unplaced, ())
+        self.assertEqual(second.assignments[0].units, ("u1",))
+
+    def test_distribute_writes_no_ledger_line(self) -> None:
+        """A `distribute()` call is a pure computation over the ledger's
+        fold and live worker state -- it must never append a line to any
+        ledger file. Snapshot the file's raw bytes before and after and
+        assert byte-identical.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger_path = Path(tmp) / "ledger.jsonl"
+            ledger_path.write_text(
+                json.dumps(LEDGER.submitted_event(
+                    entrypoint="a.ipynb", source_digest="d" * 64,
+                    submission_id="w1/kernel-1", worker="w1",
+                    requested_capacity=1, granted_capacity=1,
+                )) + "\n",
+                encoding="utf-8",
+            )
+            before = ledger_path.read_bytes()
+
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 2)])
+            PACKER.distribute(
+                adapter=adapter,
+                units=("u1", "u2"),
+                ledger_lines=ledger_path.read_text(encoding="utf-8").splitlines(),
+                live_digest="d",
+            )
+
+            after = ledger_path.read_bytes()
+            self.assertEqual(before, after)
+
+    # ---- edge inputs ----
+
+    def test_duplicate_unit_identifiers_refuse_by_name_and_position(self) -> None:
+        """A repeated identity destroys `unplaced`/`assignments`' own
+        reporting-by-identity, and would double-submit the same work under
+        two accounts -- `PackerError` names each repeated identifier AND
+        its positions.
+        """
+        adapter = MultiWorkerFakeAdapter(workers=[("w1", 5)])
+        with self.assertRaises(PACKER.PackerError) as caught:
+            PACKER.distribute(
+                adapter=adapter, units=("u1", "u2", "u1", "u3", "u2"),
+                ledger_lines=[], live_digest="d",
+            )
+        message = str(caught.exception)
+        self.assertIn("'u1'", message)
+        self.assertIn("[0, 2]", message)
+        self.assertIn("'u2'", message)
+        self.assertIn("[1, 4]", message)
+        self.assertNotIn("u3", message)  # never repeated -- never named
+
+    def test_empty_units_is_an_honest_result_with_places_computed(self) -> None:
+        """Empty `units` is the "how many places do I have" query, not a
+        refusal -- `places` is still an honest, computed number (zero, here,
+        since `requested=len(units)=0` clamps every worker to zero), never
+        an exception forcing the caller to invent a unit.
+        """
+        adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 2)])
+        result = PACKER.distribute(
+            adapter=adapter, units=(), ledger_lines=[], live_digest="d",
+        )
+        self.assertEqual(result.units, ())
+        self.assertEqual(result.unplaced, ())
+        self.assertEqual(result.places, 0)  # computed, not skipped
+
+    def test_surplus_workers_stay_in_assignments_with_empty_units(self) -> None:
+        """A worker with granted capacity but no unit left to receive is
+        "had room, didn't need it" -- it stays in `assignments` with
+        `units=()`, never moved to `skipped`, which is reserved for workers
+        that had NO room at all.
+        """
+        adapter = MultiWorkerFakeAdapter(
+            workers=[("w1", 1), ("w2", 1), ("w3", 1)],
+        )
+        result = PACKER.distribute(
+            adapter=adapter, units=("u1",), ledger_lines=[], live_digest="d",
+        )
+        self.assertEqual(len(result.assignments), 3)
+        by_worker = {a.plan.worker: a.units for a in result.assignments}
+        self.assertEqual(by_worker["w2"], ())
+        self.assertEqual(by_worker["w3"], ())
+        self.assertEqual(result.skipped, ())
+
+    def test_zero_healthy_workers_is_a_result_not_a_raise(self) -> None:
+        """`adapter.workers()` reporting workers that are ALL unhealthy is
+        an honest terminal result -- `places=0`, every unit `unplaced`,
+        every worker named in `skipped` -- never a raise. Only a
+        completely EMPTY `adapter.workers()` still raises (5.5's own
+        counterpart test).
+        """
+        adapter = MultiWorkerFakeAdapter(
+            workers=[("w1", 2), ("w2", 2)], unauthorized=frozenset({"w1", "w2"}),
+        )
+        result = PACKER.distribute(
+            adapter=adapter, units=("u1", "u2"), ledger_lines=[], live_digest="d",
+        )
+        self.assertEqual(result.places, 0)
+        self.assertEqual(result.unplaced, ("u1", "u2"))
+        self.assertEqual(result.assignments, ())
+        self.assertEqual({s.worker for s in result.skipped}, {"w1", "w2"})
+
+    def test_zero_workers_at_all_still_raises(self) -> None:
+        """No workers reported at all is a different fact than "no HEALTHY
+        workers" -- `distribute()` reuses `select()`'s own existing first
+        refusal for it, unchanged.
+        """
+        adapter = MultiWorkerFakeAdapter(workers=[])
+        with self.assertRaises(PACKER.PackerError) as caught:
+            PACKER.distribute(
+                adapter=adapter, units=("u1",), ledger_lines=[], live_digest="d",
+            )
+        self.assertIn("adapter reports no workers at all", str(caught.exception))
 
 
 class AcceleratorRequestDoctrineTests(unittest.TestCase):
@@ -10351,6 +10815,55 @@ class TargetVocabularyLeakTests(unittest.TestCase):
     def test_no_module_in_the_skill_names_the_target(self) -> None:
         for script in self.MODULE_SCRIPTS:
             self._assert_clean(script)
+
+    def test_module_scripts_still_covers_packer_and_remote_cli(self) -> None:
+        """This change edits `packer.py` and `remote_cli.py` and adds no
+        new production script, so `MODULE_SCRIPTS` needs no new entry --
+        asserted explicitly rather than assumed.
+        """
+        self.assertIn(PACKER_SCRIPT, self.MODULE_SCRIPTS)
+        self.assertIn(REMOTE_CLI_SCRIPT, self.MODULE_SCRIPTS)
+
+
+class SuiteIntegrityTests(unittest.TestCase):
+    """This file's own doctrine: every top-level class and every `test_`
+    method is a unique name across the WHOLE suite. A duplicate class name
+    once silently disabled seven tests in this repository while the suite
+    still reported OK -- `unittest` simply overwrites the earlier
+    definition with the later one, and neither the runner nor a green
+    exit code says so.
+    """
+
+    def test_no_duplicate_class_or_test_method_names_in_suite(self) -> None:
+        tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+
+        class_names: list[str] = []
+        method_names: list[str] = []
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.ClassDef):
+                class_names.append(node.name)
+                for child in ast.iter_child_nodes(node):
+                    if isinstance(child, ast.FunctionDef) and child.name.startswith("test_"):
+                        method_names.append(f"{node.name}.{child.name}")
+
+        def _duplicates(names: list[str]) -> list[str]:
+            seen: dict[str, int] = {}
+            for name in names:
+                seen[name] = seen.get(name, 0) + 1
+            return [name for name, count in seen.items() if count > 1]
+
+        duplicate_classes = _duplicates(class_names)
+        duplicate_methods = _duplicates(method_names)
+
+        self.assertEqual(
+            duplicate_classes, [],
+            f"duplicate top-level class name(s): {duplicate_classes}",
+        )
+        self.assertEqual(
+            duplicate_methods, [],
+            f"duplicate test method name(s) (report as an audit finding, "
+            f"do not hand-fix here): {duplicate_methods}",
+        )
 
 
 class AdapterEnvironmentTests(unittest.TestCase):

@@ -35,7 +35,7 @@ import importlib.util
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Sequence
 
 
 def _load_sibling(module_name: str, filename: str):
@@ -105,6 +105,61 @@ class Plan:
     in_flight: int
     granted: int
     in_flight_source: str
+
+
+@dataclass(frozen=True)
+class Assignment:
+    """One worker's slice of a `distribute()` call: the WHOLE `Plan` that
+    granted these places, never a copied-out `granted` number alone. The
+    same doctrine `Plan` itself enforces one arity up — collapsing this
+    down to a bare integer would make a clamped grant indistinguishable
+    from an unclamped one, exactly the confusion `Plan`'s four separate
+    fields exist to prevent.
+
+    `units` holds this worker's assigned identities, in the order they were
+    handed to `distribute()`. A worker that was granted capacity but had no
+    units left to receive still appears here, with `units=()` — "had room,
+    didn't need it" is a different fact than "had no room", so it is never
+    folded into `skipped`.
+    """
+
+    plan: Plan
+    units: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Skip:
+    """One worker `distribute()` granted zero places to, and why —
+    `reason` is triage's own message, unprefixed by the worker id `worker`
+    already carries.
+    """
+
+    worker: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class Distribution:
+    """The result of one `distribute()` call. Four separate facts, on
+    purpose, the same way `Plan` refuses to collapse its own four fields
+    into one: `units` (what was handed in), `places` (total granted
+    capacity), `assignments` (who got what), and `unplaced` (what did not
+    fit, by identity). There is deliberately no `complete: bool` field —
+    a boolean is exactly the collapse this module exists to refuse;
+    `unplaced` already carries the fact, richer than a flag ever could.
+
+    Two invariants hold for every `Distribution` this module returns:
+    every unit in `units` appears exactly once across `assignments` and
+    `unplaced` combined (conservation — nothing vanishes), and the set of
+    workers named across `assignments` and `skipped` equals
+    `adapter.workers()` exactly (no account disappears silently).
+    """
+
+    units: tuple[str, ...]
+    places: int
+    assignments: tuple[Assignment, ...]
+    unplaced: tuple[str, ...]
+    skipped: tuple[Skip, ...]
 
 
 def plan(
@@ -184,6 +239,56 @@ def plan(
     )
 
 
+def _triage(
+    *,
+    adapter: "ADAPTER.Adapter",
+    worker: "ADAPTER.Worker",
+    requested: int,
+    ledger_lines: Iterable[str],
+    live_digest: str | Callable[[], str],
+) -> tuple[Plan | None, str | None]:
+    """Decide whether ONE worker counts as healthy-and-grantable, the exact
+    per-worker branch `select()` used to inline in its own loop. Returns
+    `(plan, None)` when it does, `(None, reason)` when it does not — never
+    both, never neither. `reason` is the same three exact messages
+    `select()` has always produced, unprefixed by `worker.id` (a caller
+    that already has the worker identity separately, like `distribute()`'s
+    `Skip`, does not need it repeated inside the message itself).
+
+    A private helper, not a shared body: `select()` calls this once per
+    worker and returns on the FIRST healthy one — a one-account live probe.
+    `distribute()` calls this once per worker too, but never stops early —
+    an N-account probe. Rewriting `select()` as
+    `distribute(units=(x,))[0]` would turn its one-account probe into an
+    N-account one against a live service, which is why the two share this
+    triage step and nothing more.
+    """
+    try:
+        candidate = plan(
+            adapter=adapter,
+            worker_id=worker.id,
+            requested=requested,
+            ledger_lines=ledger_lines,
+            live_digest=live_digest,
+        )
+    except ADAPTER.WorkerUnauthorized as exc:
+        return None, f"unauthorized ({exc})"
+
+    if candidate.in_flight_source != "list_active":
+        return None, (
+            "live capacity evidence unavailable (service "
+            "unreachable or refusing) — not counted healthy"
+        )
+
+    if candidate.granted < 1:
+        return None, (
+            f"no capacity granted right now "
+            f"(cap={candidate.cap}, in_flight={candidate.in_flight})"
+        )
+
+    return candidate, None
+
+
 def select(
     *,
     adapter: "ADAPTER.Adapter",
@@ -242,30 +347,15 @@ def select(
 
     reasons: list[str] = []
     for worker in workers:
-        try:
-            candidate = plan(
-                adapter=adapter,
-                worker_id=worker.id,
-                requested=requested,
-                ledger_lines=ledger_lines,
-                live_digest=live_digest,
-            )
-        except ADAPTER.WorkerUnauthorized as exc:
-            reasons.append(f"{worker.id}: unauthorized ({exc})")
-            continue
-
-        if candidate.in_flight_source != "list_active":
-            reasons.append(
-                f"{worker.id}: live capacity evidence unavailable (service "
-                "unreachable or refusing) — not counted healthy"
-            )
-            continue
-
-        if candidate.granted < 1:
-            reasons.append(
-                f"{worker.id}: no capacity granted right now "
-                f"(cap={candidate.cap}, in_flight={candidate.in_flight})"
-            )
+        candidate, reason = _triage(
+            adapter=adapter,
+            worker=worker,
+            requested=requested,
+            ledger_lines=ledger_lines,
+            live_digest=live_digest,
+        )
+        if candidate is None:
+            reasons.append(f"{worker.id}: {reason}")
             continue
 
         return candidate
@@ -275,4 +365,145 @@ def select(
         f"{[worker.id for worker in workers]}; restore at least one "
         "account's credential, or wait for the service to become "
         f"reachable, before retrying with no --worker named: {'; '.join(reasons)}"
+    )
+
+
+def _round_robin_sequence(plans: list[Plan]) -> list[str]:
+    """Ragged round-robin over already-granted `Plan`s, in the order they
+    were handed in (which is `adapter.workers()`'s own declared order,
+    filtered to `granted >= 1` — `distribute()` invents no ordering of its
+    own). For `r = 0, 1, 2, ...`, every worker with `granted(w) > r` gets
+    one more slot in this round; the round-robin stops the instant a round
+    adds nothing, which is exactly what makes ragged rows (`w1(2), w2(1),
+    w3(2)`) terminate at the right length (5, not 6) instead of looping
+    forever. Deterministic because `plans` is never re-sorted and neither a
+    `dict` nor a `set` participates in the walk.
+    """
+    order_ids = [candidate.worker for candidate in plans]
+    granted_by_id = {candidate.worker: candidate.granted for candidate in plans}
+    sequence: list[str] = []
+    round_index = 0
+    while True:
+        round_ids = [worker_id for worker_id in order_ids if granted_by_id[worker_id] > round_index]
+        if not round_ids:
+            break
+        sequence.extend(round_ids)
+        round_index += 1
+    return sequence
+
+
+def distribute(
+    *,
+    adapter: "ADAPTER.Adapter",
+    units: Sequence[str],
+    ledger_lines: Iterable[str],
+    live_digest: str | Callable[[], str],
+) -> Distribution:
+    """Aggregate capacity across EVERY worker `adapter.workers()` reports,
+    and assign opaque `units` to it round-robin, ragged rows and all.
+
+    Where `select()` answers "give me ONE worker with capacity" and stops
+    at the first healthy account, `distribute()` answers a different
+    question: "spread ALL of these units across every account that has
+    room". It never invents an ordering of its own — worker order comes
+    from `adapter.workers()`, unit order from the caller — and it inspects
+    nothing about a unit beyond "an opaque `str`"; what a unit MEANS is the
+    caller's knowledge, never this module's.
+
+    No `requested` parameter: every worker is asked `requested=len(units)`
+    and `plan()` (via `_triage()`) does the clamping, exactly once per
+    worker. Pre-slicing `len(units) // len(workers)` before asking is
+    REJECTED — three units over five workers would floor to a zero-sized
+    ask at every worker and distribute nothing at all, the same collapse
+    `requested=0` would cause here too; asking each worker for the FULL
+    `len(units)` and letting the clamp do its job is what lets a small
+    campaign still spread across several accounts with one open place each.
+
+    `adapter.workers()` reporting no workers at all reuses `select()`'s own
+    first refusal, unchanged — an adapter with nothing to distribute across
+    is not this function's fact to soften into an empty result. Duplicate
+    unit identifiers refuse by name AND position instead: `unplaced` and
+    `assignments` both report by identity, and a repeated identity would
+    make "which one is unplaced" unanswerable, besides quietly submitting
+    the same unit twice under two different accounts.
+
+    Health is read exactly once, only through `_triage()` — the same two
+    fields `plan()` already reports, never a second, separate health probe
+    and never a worker's own declared cap read directly here. A worker
+    `_triage()` could not confirm live contributes zero places and is
+    named in `skipped` by
+    identity; a revoked worker is skipped the same way, its
+    `WorkerUnauthorized` never propagating out of this function. Nothing
+    computed here is persisted: no ledger line is appended, and no
+    already-computed assignment is ever revisited by a later call to this
+    same function — a unit left `unplaced` becomes assignable again only on
+    a SUBSEQUENT `distribute()` call, once the ledger reflects whatever
+    changed.
+    """
+    if not isinstance(adapter, ADAPTER.Adapter):
+        raise PackerError(
+            f"{adapter!r} is not an Adapter instance; capacity is discovered "
+            "through the adapter seam only, never accepted some other way"
+        )
+
+    workers = adapter.workers()
+    if not workers:
+        raise PackerError(
+            "adapter reports no workers at all; automatic selection has "
+            "nothing to choose among"
+        )
+
+    units = tuple(units)
+
+    positions_by_unit: dict[str, list[int]] = {}
+    for index, unit in enumerate(units):
+        positions_by_unit.setdefault(unit, []).append(index)
+    duplicates = {
+        unit: positions for unit, positions in positions_by_unit.items() if len(positions) > 1
+    }
+    if duplicates:
+        detail = "; ".join(
+            f"{unit!r} at positions {positions}" for unit, positions in duplicates.items()
+        )
+        raise PackerError(
+            "duplicate unit identifiers refuse to distribute — placing both "
+            f"would double-submit the same work under two accounts: {detail}"
+        )
+
+    requested = len(units)
+    granted_plans: list[Plan] = []
+    skipped: list[Skip] = []
+    for worker in workers:
+        candidate, reason = _triage(
+            adapter=adapter,
+            worker=worker,
+            requested=requested,
+            ledger_lines=ledger_lines,
+            live_digest=live_digest,
+        )
+        if candidate is None:
+            skipped.append(Skip(worker=worker.id, reason=reason))
+            continue
+        granted_plans.append(candidate)
+
+    places = sum(candidate.granted for candidate in granted_plans)
+    sequence = _round_robin_sequence(granted_plans)
+    assigned_count = min(len(units), len(sequence))
+
+    units_by_worker: dict[str, list[str]] = {candidate.worker: [] for candidate in granted_plans}
+    for index in range(assigned_count):
+        units_by_worker[sequence[index]].append(units[index])
+    unplaced = units[assigned_count:]
+
+    assignments = tuple(
+        Assignment(plan=candidate, units=tuple(units_by_worker[candidate.worker]))
+        for candidate in granted_plans
+    )
+
+    return Distribution(
+        units=units,
+        places=places,
+        assignments=assignments,
+        unplaced=unplaced,
+        skipped=tuple(skipped),
     )
