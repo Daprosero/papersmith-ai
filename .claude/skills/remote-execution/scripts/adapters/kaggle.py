@@ -203,39 +203,24 @@ _KAGGLE_STATUS_TO_SEAM = {
     "error": "failed",
 }
 
-_QUOTED_STATUS = re.compile(r'"([^"]+)"')
 _SLUG_DISALLOWED = re.compile(r"[^a-z0-9-]+")
 
 
 def _normalize_status_word(token: str) -> str:
-    """Strip an enum class prefix, when the CLI quoted one, from an
+    """Strip an enum class prefix, when one is present, from an
     already-lowercased status token.
 
-    RE-VERIFIED against the installed `kaggle` 1.7.4.5, in its source
-    rather than from memory of a live run: `kernels_status_cli()` prints
-    `'%s has status "%s"' % (kernel, status)` where `status` is a
-    `KernelWorkerStatus` enum member, so the quoted text is the enum's own
-    `str()` repr — `KernelWorkerStatus.RUNNING` — and not the bare word
-    `"running"` earlier versions apparently used; the version claim here
-    named one that was never installed on this machine. The bare word is
-    always the part after the last `.` on every form observed; a genuine
-    bare status word never contains one itself, so this is a no-op for
-    that case.
+    `poll()` no longer needs this at all: `kaggle_driver.py`'s own
+    `cmd_poll` prints `response.status.name` — the bare `KernelWorkerStatus`
+    member name (`"RUNNING"`), never a class-qualified repr — so there is
+    no prefix left to strip on that path. `list_active()` below still
+    shells out to the `kaggle` CLI directly (Decision 6's capacity-metering
+    rebuild is a later commit) and still reads `kernels list`'s own
+    `status` column, which CAN carry the qualified repr
+    (`KernelWorkerStatus.RUNNING`) on the installed client — this function
+    stays for that one remaining caller.
     """
     return token.rsplit(".", 1)[-1] if "." in token else token
-
-
-def _extract_status_token(raw: str) -> str:
-    """Pull a status word out of the CLI's own sentence, when it quotes
-    one (`... has status "complete"`, or the installed client's own
-    `... has status "KernelWorkerStatus.RUNNING"`); fall back to the
-    whole trimmed, lowercased line otherwise. Either way this returns a
-    CANDIDATE token for `_KAGGLE_STATUS_TO_SEAM` to translate — never a
-    value handed upward as `Status.state` directly.
-    """
-    match = _QUOTED_STATUS.search(raw)
-    token = match.group(1) if match else raw
-    return _normalize_status_word(token.strip().lower())
 
 
 def _slugify(text: str) -> str:
@@ -829,42 +814,60 @@ class KaggleAdapter(ADAPTER.Adapter):
         return payload
 
     def poll(self, submission_id: str) -> "ADAPTER.Status":
-        """Ask Kaggle for one kernel's status and translate it into the
-        seam's own five-value vocabulary — never pass Kaggle's own text
-        through as `state`. The full raw line goes in `detail` only.
+        """Ask the SDK driver for one kernel session's status
+        (`kaggle_driver.py`'s own `cmd_poll`, which calls
+        `get_kernel_session_status`) and translate it into the seam's own
+        five-value vocabulary — never pass Kaggle's own text through as
+        `state`. `kernels status` (the `kaggle` CLI's own Basic-auth path)
+        is retired here exactly the way `_push()` already retired
+        `kernels push`: same `_run()`/`_env_for()` boundary, same
+        `shell=False`/list-argv/allowlisted-env discipline, only the
+        child's own identity and the shape of its answer changed.
+
+        The driver prints the bare `KernelWorkerStatus` member name
+        (`response.status.name`, e.g. `"RUNNING"`) as JSON, never the old
+        CLI's quoted-sentence shape — no extraction step is needed to pull
+        a candidate token out of a line of prose anymore, only a
+        lowercase and a table lookup. `failureMessage`, when the service
+        supplies one, is appended to `detail` rather than silently
+        dropped; `detail` never becomes anything but this driver's own
+        reported facts.
         """
         worker = submission_id.split("/", 1)[0]
         handle = self._credential_for(worker)
-        argv = [self._kaggle_executable, "kernels", "status", submission_id]
+        argv = [sys.executable, str(self._driver_script), "poll", submission_id]
         result = self._run(argv, env=self._env_for(handle))
-        if result.returncode != 0:
-            raise KaggleAdapterError(
-                f"kernels status for {submission_id} exited {result.returncode}: "
-                f"{result.stderr.strip()}"
-            )
-        raw = result.stdout.strip()
-        token = _extract_status_token(raw)
-        state = _KAGGLE_STATUS_TO_SEAM.get(token, "unknown")
-        return ADAPTER.Status(state=state, detail=raw)
+        payload = self._parse_driver_result(result, action=f"poll for {submission_id}")
+        raw_status = str(payload.get("status") or "")
+        failure_message = payload.get("failureMessage")
+        detail = raw_status if not failure_message else f"{raw_status}: {failure_message}"
+        state = _KAGGLE_STATUS_TO_SEAM.get(raw_status.strip().lower(), "unknown")
+        return ADAPTER.Status(state=state, detail=detail)
 
     def fetch(self, submission_id: str, into: Path) -> "ADAPTER.Fetched":
-        """Materialize a kernel's output under `into`. A non-zero exit is a
-        refusal — this method never reports `complete=False` for a call
-        that actually failed; `complete=False` is reserved for a backend
-        that positively says "not finished yet", which Kaggle's own
-        `kernels output` command does not distinguish from failure, so
-        this adapter does not fabricate that distinction either.
+        """Materialize a kernel's output under `into`, via the SDK driver's
+        own `cmd_fetch` (`kaggle_driver.py`) rather than `kernels output`
+        (the `kaggle` CLI's own Basic-auth path, retired here the same way
+        `poll()` retired `kernels status`). A non-zero exit is a refusal —
+        this method never reports `complete=False` for a call that
+        actually failed; `complete=False` is reserved for a backend that
+        positively says "not finished yet", which neither the retired CLI
+        nor this driver distinguishes from failure, so this adapter does
+        not fabricate that distinction either.
+
+        The driver writes files directly into `into` (a real filesystem
+        path both processes share); this method still derives the
+        returned file LIST by listing that directory afterward, never by
+        trusting the driver's own JSON `files` field — the same
+        discipline `kernels output`'s retired call already held, now
+        applied to a different child.
         """
         worker = submission_id.split("/", 1)[0]
         handle = self._credential_for(worker)
         into.mkdir(parents=True, exist_ok=True)
-        argv = [self._kaggle_executable, "kernels", "output", submission_id, "-p", str(into)]
+        argv = [sys.executable, str(self._driver_script), "fetch", submission_id, str(into)]
         result = self._run(argv, env=self._env_for(handle))
-        if result.returncode != 0:
-            raise KaggleAdapterError(
-                f"kernels output for {submission_id} exited {result.returncode}: "
-                f"{result.stderr.strip()}"
-            )
+        self._parse_driver_result(result, action=f"fetch for {submission_id}")
         files = tuple(sorted(p.name for p in into.iterdir() if p.is_file()))
         return ADAPTER.Fetched(path=into, complete=True, files=files)
 

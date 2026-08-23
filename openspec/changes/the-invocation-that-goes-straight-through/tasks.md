@@ -58,10 +58,10 @@ Chain strategy: stacked-to-main
 
 ## Phase 3: `poll`/`fetch` wired through the driver (Commit 3)
 
-- [ ] 3.1 RED→GREEN: retarget `poll()` to driver's `get_kernel_session_status`; update status-translation test.
-- [ ] 3.2 OPEN QUESTION, named not solved: does `list_kernel_session_output`'s URLs need session auth? Resolution step: a rehearsal, run only on the user's explicit permission — not scheduled here.
-- [ ] 3.3 RED→GREEN: implement `fetch()` file-by-file via `list_kernel_session_output` + session `log`; if 3.2 unresolved, attach auth defensively and mark the doctrine row `unverified-by-rehearsal`.
-- [ ] 3.4 RED→GREEN: `test_fetch_never_relies_on_kernel_session_id_from_status_response`.
+- [x] 3.1 RED→GREEN: retarget `poll()` to driver's `get_kernel_session_status`; update status-translation test.
+- [x] 3.2 OPEN QUESTION, named not solved: does `list_kernel_session_output`'s URLs need session auth? Resolution step: a rehearsal, run only on the user's explicit permission — not scheduled here. (Still unresolved after this commit; `cmd_fetch`'s own docstring in `kaggle_driver.py` names it explicitly and documents the defensive choice made instead.)
+- [x] 3.3 RED→GREEN: implement `fetch()` file-by-file via `list_kernel_session_output` + session `log`; if 3.2 unresolved, attach auth defensively and mark the doctrine row `unverified-by-rehearsal`. (Auth attached defensively via the driver's own already-authenticated session; the `SKILL.md` transport-table row itself is written in Commit 5's full rewrite — the `unverified-by-rehearsal` status is recorded in code now so it cannot be lost before then.)
+- [x] 3.4 RED→GREEN: `test_fetch_never_relies_on_kernel_session_id_from_status_response`.
 
 ## Phase 4: Auto-selection + rebuilt capacity metering (Commit 4)
 

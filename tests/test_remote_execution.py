@@ -2373,25 +2373,60 @@ def _write_fake_driver(
     capture_metadata_to: Path | None = None,
     capture_entrypoint_to: tuple[str, Path] | None = None,
     exit_code: int = 0,
+    poll_status: str = "COMPLETE",
+    poll_failure_message: str | None = None,
+    fetch_files: dict[str, str] | None = None,
+    sleep_seconds: float = 0.0,
 ) -> Path:
-    """A minimal stand-in for `kaggle_driver.py`'s own `submit` operation —
-    never imports `kagglesdk`, never reaches a socket. Reads only the
-    staging directory path `KaggleAdapter._push()` hands it on argv
-    (`sys.argv[2]`, since `sys.argv[1]` is always `"submit"` here) and,
-    optionally, copies one named file out of that staging copy for a test
-    to inspect afterward — the same role the old fake `kaggle kernels
-    push` scripts played on `KAGGLE_EXECUTABLE`'s own boundary before this
-    driver replaced the CLI as the child `_push()` shells out to.
+    """A minimal stand-in for `kaggle_driver.py`'s `submit`, `poll` and
+    `fetch` operations — never imports `kagglesdk`, never reaches a
+    socket. Dispatches on `sys.argv[1]` (the op name `_run()` always
+    passes, exactly as the real driver's own `main()` does):
+
+    - `submit` (the default, preserved byte-for-byte from before `poll`/
+      `fetch` gained their own dispatch branches): reads the staging
+      directory path `KaggleAdapter._push()` hands it on argv
+      (`sys.argv[2]`) and, optionally, copies one named file out of that
+      staging copy for a test to inspect afterward.
+    - `poll`: answers with a fixed `status`/`failureMessage` pair, the
+      exact shape `cmd_poll` prints for real — a test picks `poll_status`
+      to drive `adapters/kaggle.py`'s own translation table.
+    - `fetch`: writes `fetch_files` (name -> text content) into the `into`
+      directory `sys.argv[3]` names, the same role the old fake `kaggle
+      kernels output` script played on `KAGGLE_EXECUTABLE`'s own boundary
+      before this driver replaced the CLI as `poll()`/`fetch()` shell out
+      to instead.
+
+    `exit_code`/`sleep_seconds` apply uniformly, BEFORE any op-specific
+    branch runs — this is what lets one refusal/timeout fixture double for
+    every operation, not only `submit`.
     """
     directory.mkdir(parents=True, exist_ok=True)
     script = directory / "fake_kaggle_driver.py"
+    fetch_payload = fetch_files if fetch_files is not None else {"result.txt": "ok"}
     lines = [
-        "import json, shutil, sys",
+        "import json, shutil, sys, time",
         "from pathlib import Path",
+        f"SLEEP = {sleep_seconds!r}",
+        "if SLEEP:",
+        "    time.sleep(SLEEP)",
         f"EXIT_CODE = {exit_code!r}",
         "if EXIT_CODE != 0:",
         "    print(json.dumps({'ok': False, 'error': 'simulated failure'}))",
         "    sys.exit(EXIT_CODE)",
+        "op = sys.argv[1]",
+        "if op == 'poll':",
+        "    print(json.dumps({'ok': True, 'status': "
+        f"{poll_status!r}, 'failureMessage': {poll_failure_message!r}}}))",
+        "    sys.exit(0)",
+        "if op == 'fetch':",
+        "    into_dir = Path(sys.argv[3])",
+        "    into_dir.mkdir(parents=True, exist_ok=True)",
+        f"    fetch_payload = {fetch_payload!r}",
+        "    for name, content in fetch_payload.items():",
+        "        (into_dir / name).write_text(content, encoding='utf-8')",
+        "    print(json.dumps({'ok': True, 'files': sorted(fetch_payload.keys())}))",
+        "    sys.exit(0)",
         "staging_dir = Path(sys.argv[2])",
     ]
     if capture_metadata_to is not None:
@@ -2582,141 +2617,19 @@ class KaggleAdapterTests(unittest.TestCase):
             self.assertEqual([w.id for w in workers], ["acct-1"])
             self.assertEqual(workers[0].capacity, KAGGLE.KAGGLE_WORKER_CAPACITY)
 
-    def test_a_service_status_outside_the_five_value_vocabulary_is_translated(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            bin_dir = tmp_path / "bin"
-            _write_fake_kaggle(bin_dir, status_text="cancelAcknowledged")
-            token_path = _write_fake_token(tmp_path / "creds")
-
-            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
-            with unittest.mock.patch.dict(
-                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
-            ):
-                adapter = KAGGLE.KaggleAdapter(credentials={"acct-1": handle})
-                status = adapter.poll("acct-1/kernel-1")
-
-            self.assertEqual(status.state, "unknown")
-            self.assertIn("cancelAcknowledged", status.detail)
-
-    def test_a_genuinely_valid_status_translates_straight_through(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            bin_dir = tmp_path / "bin"
-            _write_fake_kaggle(bin_dir, status_text="running")
-            token_path = _write_fake_token(tmp_path / "creds")
-
-            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
-            with unittest.mock.patch.dict(
-                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
-            ):
-                adapter = KAGGLE.KaggleAdapter(credentials={"acct-1": handle})
-                status = adapter.poll("acct-1/kernel-1")
-
-            self.assertEqual(status.state, "running")
-
-    def test_kaggle_cli_2_2_4s_enum_repr_status_translates_correctly(self) -> None:
-        """Kaggle CLI 2.2.4 was confirmed, against a real running kernel,
-        to print `has status "KernelWorkerStatus.RUNNING"` -- the enum's
-        own `str()` repr, quoted whole -- rather than the bare word
-        `"running"` earlier versions apparently used. Lowercasing that
-        whole repr produces `"kernelworkerstatus.running"`, which matches
-        no key in `_KAGGLE_STATUS_TO_SEAM` and silently fell through to
-        `"unknown"` even though the kernel was, in fact, running.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            bin_dir = tmp_path / "bin"
-            _write_fake_kaggle(bin_dir, status_text="KernelWorkerStatus.RUNNING")
-            token_path = _write_fake_token(tmp_path / "creds")
-
-            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
-            with unittest.mock.patch.dict(
-                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
-            ):
-                adapter = KAGGLE.KaggleAdapter(credentials={"acct-1": handle})
-                status = adapter.poll("acct-1/kernel-1")
-
-            self.assertEqual(status.state, "running")
-            self.assertIn("KernelWorkerStatus.RUNNING", status.detail)
-
-    def test_non_zero_exit_from_the_service_cli_produces_a_refusal(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            bin_dir = tmp_path / "bin"
-            _write_fake_kaggle(bin_dir, exit_code=7)
-            token_path = _write_fake_token(tmp_path / "creds")
-
-            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
-            with unittest.mock.patch.dict(
-                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
-            ):
-                adapter = KAGGLE.KaggleAdapter(credentials={"acct-1": handle})
-                with self.assertRaises(KAGGLE.KaggleAdapterError):
-                    adapter.poll("acct-1/kernel-1")
-
-    def test_subprocess_timeout_yields_a_refusal_not_a_fabricated_status(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            bin_dir = tmp_path / "bin"
-            _write_fake_kaggle(bin_dir, sleep_seconds=5)
-            token_path = _write_fake_token(tmp_path / "creds")
-
-            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
-            with unittest.mock.patch.dict(
-                os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
-            ):
-                adapter = KAGGLE.KaggleAdapter(credentials={"acct-1": handle}, timeout=0.3)
-                with self.assertRaises(KAGGLE.KaggleAdapterError):
-                    adapter.poll("acct-1/kernel-1")
-
-    def test_worker_id_with_shell_metacharacters_reaches_argv_verbatim_executes_nothing(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            bin_dir = tmp_path / "bin"
-            _write_fake_kaggle(bin_dir)
-            token_path = _write_fake_token(tmp_path / "creds")
-            # No "/" anywhere in this string: `poll()` derives a worker id
-            # from a submission id by splitting on the FIRST "/", and this
-            # test's own `/kernel-1` suffix is what that split is meant to
-            # find — a malicious segment containing its own "/" would
-            # confuse this test's own arithmetic, not the adapter's.
-            marker_name = "pwned-marker"
-            malicious_worker = (
-                f"acct-1$(touch {marker_name})`touch {marker_name}`;touch {marker_name}"
-            )
-            handle = KAGGLE.CredentialHandle(worker_id=malicious_worker, token_path=token_path)
-
-            recorded_argv: list[list[str]] = []
-            real_run = subprocess.run
-
-            def recording_run(argv, **kwargs):
-                recorded_argv.append(list(argv))
-                return real_run(argv, **kwargs)
-
-            marker_path = Path.cwd() / marker_name
-            try:
-                with unittest.mock.patch.dict(
-                    os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
-                ), unittest.mock.patch.object(
-                    KAGGLE.subprocess, "run", side_effect=recording_run
-                ):
-                    adapter = KAGGLE.KaggleAdapter(credentials={malicious_worker: handle})
-                    status = adapter.poll(f"{malicious_worker}/kernel-1")
-
-                # Never executed: shell=False plus a list argv means the
-                # whole malicious string travels as ONE argv element, never
-                # evaluated by a shell.
-                self.assertFalse(marker_path.exists())
-                self.assertEqual(status.state, "complete")
-                self.assertEqual(
-                    recorded_argv[-1][-1], f"{malicious_worker}/kernel-1"
-                )
-            finally:
-                if marker_path.exists():
-                    marker_path.unlink()
+    # `poll()`'s own status-translation coverage against the `kaggle` CLI
+    # (this class's own fixture, `_write_fake_kaggle`) retired here: once
+    # `poll()` shells out to `kaggle_driver.py` instead (Commit 3), that CLI
+    # fixture no longer sits anywhere on `poll()`'s own call path at all --
+    # left in place unmodified, these tests would have started reaching the
+    # REAL `kaggle_driver.py` against `sys.executable` instead of any fake,
+    # a correctness AND safety regression (this skill launches nothing to
+    # Kaggle on its own initiative). Their equivalent, deeper coverage --
+    # status translation, the five-value vocabulary's `"unknown"` fallback,
+    # non-zero exit, timeout, and the argv-injection guard, all against a
+    # fake `kaggle_driver.py` stand-in on the SAME outer interception point
+    # `submit()`'s own wiring already established -- now lives in
+    # `PollFetchDriverTests` below.
 
     def test_kaggle_registers_assemble_metadata_requesting_the_pinned_accelerator(
         self,
@@ -4301,6 +4214,64 @@ def _kaggle_http_client_with_recorder(credential_value: str, response_json: dict
     return client, recorder
 
 
+class _RoutingRecordingTransport(requests.adapters.BaseAdapter):
+    """Like `_RecordingTransport` above, but answers PER-URL rather than
+    with one fixed payload -- what `cmd_fetch`'s own inner interception
+    needs and `cmd_submit`'s does not: a single call to
+    `list_kernel_session_output` (the RPC endpoint, JSON) is followed by
+    one plain `session.get(url)` PER FILE `cmd_fetch` reads off that
+    response, all through the SAME `requests.Session` (this is precisely
+    why `session.auth` -- and therefore the Bearer header -- reaches those
+    file requests too, unless something goes out of its way to strip it).
+
+    `file_bodies` maps an exact fixture URL to the raw bytes that URL
+    "downloads" to; any other URL gets `rpc_response_json` as a JSON body,
+    which is what the RPC endpoint itself needs. Every request is recorded
+    unconditionally, matching `_RecordingTransport`'s own reached-first
+    discipline.
+    """
+
+    def __init__(self, rpc_response_json: dict, file_bodies: dict[str, bytes]) -> None:
+        super().__init__()
+        self.calls: list = []
+        self._rpc_response_json = rpc_response_json
+        self._file_bodies = file_bodies
+
+    def send(self, request, **kwargs):  # noqa: D401 - requests' own signature
+        self.calls.append(request)
+        response = requests.Response()
+        response.status_code = 200
+        response.request = request
+        if request.url in self._file_bodies:
+            response.headers["Content-Type"] = "application/octet-stream"
+            response._content = self._file_bodies[request.url]
+        else:
+            response.headers["Content-Type"] = "application/json"
+            response._content = json.dumps(self._rpc_response_json).encode("utf-8")
+        return response
+
+    def close(self) -> None:
+        pass
+
+
+def _kaggle_http_client_with_routing_recorder(
+    credential_value: str, rpc_response_json: dict, file_bodies: dict[str, bytes]
+):
+    """`_kaggle_http_client_with_recorder`'s own construction, mounting a
+    `_RoutingRecordingTransport` instead -- see that class for why
+    `cmd_fetch`'s own inner interception needs per-URL answers where
+    `cmd_submit`'s single-response recorder does not.
+    """
+    driver = _load_kaggle_driver_module()
+    with unittest.mock.patch.dict(os.environ, {"KAGGLE_API_TOKEN": credential_value}):
+        client = driver.KaggleHttpClient()
+        client._init_session()
+    recorder = _RoutingRecordingTransport(rpc_response_json, file_bodies)
+    client._session.mount("https://", recorder)
+    client._session.mount("http://", recorder)
+    return client, recorder
+
+
 def _write_driver_staging_dir(
     tmp_path: Path,
     *,
@@ -4601,6 +4572,418 @@ class DriverInterceptionTests(unittest.TestCase):
         self.assertEqual(body["enableGpu"], "true")
         self.assertEqual(body["enableInternet"], "true")
         self.assertNotIn("machineShape", body)
+
+
+class PollFetchDriverTests(unittest.TestCase):
+    """Commit 3: `poll()` and `fetch()` retargeted from the `kaggle` CLI
+    onto `kaggle_driver.py`, exactly the way `submit()`/`_push()` already
+    were in commit 2. Two layers, same discipline as `DriverInterceptionTests`
+    (inner) and `SubmitDriverWiringTests` (outer):
+
+    - The ADAPTER-level tests below drive `KaggleAdapter.poll()`/`.fetch()`
+      against a fake `kaggle_driver.py` stand-in on a real subprocess
+      boundary (the OUTER interception point), proving the credential and
+      the operation both reach a real child process.
+    - The DRIVER-level tests drive `kaggle_driver.cmd_poll`/`cmd_fetch`
+      directly against a REAL `KaggleHttpClient` with a recording
+      transport mounted on its session (the INNER interception point),
+      proving what the driver's own request/response handling actually
+      does, offline.
+
+    `fetch`'s own open question (see the design's Open Questions and
+    `kaggle_driver.py`'s own `cmd_fetch` docstring): whether
+    `list_kernel_session_output`'s per-file URLs need this session's own
+    Bearer credential is settled only by a live rehearsal, not run here.
+    This file proves the DEFENSIVE choice this commit makes instead —
+    attaching that credential anyway — is what the code actually does,
+    never that the choice is the one measurement would have picked.
+    """
+
+    # ---- Adapter-level: poll() retargeted (OUTER interception) ----
+
+    def test_poll_outer_interception_reached_count(self) -> None:
+        """Group 5: `poll()`'s retargeted subprocess boundary must be
+        observed reached, not merely assumed — a `poll()` that silently
+        reverted to shelling out to `self._kaggle_executable` (the `kaggle`
+        CLI) instead would leave this fake driver stand-in wholly
+        unreached, and only an explicit count catches that.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            driver = _write_fake_driver(tmp_path / "driver", poll_status="RUNNING")
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
+
+            recorded_argv: list[list[str]] = []
+            real_run = subprocess.run
+
+            def recording_run(argv, **kwargs):
+                recorded_argv.append(list(argv))
+                return real_run(argv, **kwargs)
+
+            with unittest.mock.patch.object(
+                KAGGLE.subprocess, "run", side_effect=recording_run
+            ):
+                adapter = KAGGLE.KaggleAdapter(
+                    credentials={"acct-1": handle}, driver_script=driver
+                )
+                status = adapter.poll("acct-1/kernel-1")
+
+            self.assertGreater(
+                len(recorded_argv), 0, "poll's outer interception point was never reached"
+            )
+            self.assertEqual(status.state, "running")
+            self.assertEqual(recorded_argv[-1][-1], "acct-1/kernel-1")
+            self.assertEqual(recorded_argv[-1][:2], [sys.executable, str(driver)])
+
+    def test_poll_maps_the_enum_bare_name_not_a_cli_sentence(self) -> None:
+        """The driver prints `response.status.name` verbatim (`cmd_poll` in
+        `kaggle_driver.py`) — a bare enum member name like `"RUNNING"`,
+        never the CLI's old quoted-sentence shape
+        (`... has status "KernelWorkerStatus.RUNNING"`) that used to need
+        its own extraction step. This is the retargeted replacement for
+        this suite's former `test_kaggle_cli_2_2_4s_enum_repr_status_translates_correctly`:
+        that test's own guarded shape (a CLI sentence to parse) cannot
+        occur anymore once `poll()` reads clean JSON from the driver
+        instead, so there is nothing left of that shape to hold onto —
+        this proves the CURRENT bare-name contract translates correctly
+        instead.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            driver = _write_fake_driver(tmp_path / "driver", poll_status="COMPLETE")
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
+
+            adapter = KAGGLE.KaggleAdapter(
+                credentials={"acct-1": handle}, driver_script=driver
+            )
+            status = adapter.poll("acct-1/kernel-1")
+
+            self.assertEqual(status.state, "complete")
+            self.assertEqual(status.detail, "COMPLETE")
+
+    def test_poll_status_outside_the_five_state_vocabulary_becomes_unknown(self) -> None:
+        """`CANCEL_ACKNOWLEDGED`, `CANCEL_REQUESTED` and `NEW_SCRIPT` are
+        real `KernelWorkerStatus` members this table was never asked to
+        translate — each must fall through to `"unknown"`, never crash and
+        never get silently dropped onto some other state.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            driver = _write_fake_driver(
+                tmp_path / "driver", poll_status="CANCEL_ACKNOWLEDGED"
+            )
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
+
+            adapter = KAGGLE.KaggleAdapter(
+                credentials={"acct-1": handle}, driver_script=driver
+            )
+            status = adapter.poll("acct-1/kernel-1")
+
+            self.assertEqual(status.state, "unknown")
+            self.assertIn("CANCEL_ACKNOWLEDGED", status.detail)
+
+    def test_poll_reports_a_failure_message_when_the_service_supplies_one(self) -> None:
+        """`ApiGetKernelSessionStatusResponse.failure_message` is the one
+        field this response carries beyond the bare status — when present
+        it must reach `Status.detail`, never be silently dropped.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            driver = _write_fake_driver(
+                tmp_path / "driver",
+                poll_status="ERROR",
+                poll_failure_message="the kernel crashed",
+            )
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
+
+            adapter = KAGGLE.KaggleAdapter(
+                credentials={"acct-1": handle}, driver_script=driver
+            )
+            status = adapter.poll("acct-1/kernel-1")
+
+            self.assertEqual(status.state, "failed")
+            self.assertIn("ERROR", status.detail)
+            self.assertIn("the kernel crashed", status.detail)
+
+    def test_poll_non_zero_exit_from_the_driver_produces_a_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            driver = _write_fake_driver(tmp_path / "driver", exit_code=3)
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
+
+            adapter = KAGGLE.KaggleAdapter(
+                credentials={"acct-1": handle}, driver_script=driver
+            )
+            with self.assertRaises(KAGGLE.KaggleAdapterError):
+                adapter.poll("acct-1/kernel-1")
+
+    def test_poll_subprocess_timeout_yields_a_refusal_not_a_fabricated_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            driver = _write_fake_driver(tmp_path / "driver", sleep_seconds=5)
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
+
+            adapter = KAGGLE.KaggleAdapter(
+                credentials={"acct-1": handle}, driver_script=driver, timeout=0.3
+            )
+            with self.assertRaises(KAGGLE.KaggleAdapterError):
+                adapter.poll("acct-1/kernel-1")
+
+    def test_poll_worker_id_with_shell_metacharacters_reaches_argv_verbatim_executes_nothing(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            driver = _write_fake_driver(tmp_path / "driver", poll_status="COMPLETE")
+            token_path = _write_fake_token(tmp_path / "creds")
+            marker_name = "pwned-marker-poll"
+            malicious_worker = (
+                f"acct-1$(touch {marker_name})`touch {marker_name}`;touch {marker_name}"
+            )
+            handle = KAGGLE.CredentialHandle(worker_id=malicious_worker, token_path=token_path)
+
+            recorded_argv: list[list[str]] = []
+            real_run = subprocess.run
+
+            def recording_run(argv, **kwargs):
+                recorded_argv.append(list(argv))
+                return real_run(argv, **kwargs)
+
+            marker_path = Path.cwd() / marker_name
+            try:
+                with unittest.mock.patch.object(
+                    KAGGLE.subprocess, "run", side_effect=recording_run
+                ):
+                    adapter = KAGGLE.KaggleAdapter(
+                        credentials={malicious_worker: handle}, driver_script=driver
+                    )
+                    status = adapter.poll(f"{malicious_worker}/kernel-1")
+
+                # Never executed: shell=False plus a list argv means the
+                # whole malicious string travels as ONE argv element, never
+                # evaluated by a shell.
+                self.assertFalse(marker_path.exists())
+                self.assertEqual(status.state, "complete")
+                self.assertEqual(
+                    recorded_argv[-1][-1], f"{malicious_worker}/kernel-1"
+                )
+            finally:
+                if marker_path.exists():
+                    marker_path.unlink()
+
+    # ---- Adapter-level: fetch() retargeted (OUTER interception) ----
+
+    def test_fetch_outer_interception_reached_count(self) -> None:
+        """Group 5, `fetch()`'s own retargeted boundary — a `fetch()` that
+        reverted to shelling out to `self._kaggle_executable` would leave
+        this fake driver stand-in wholly unreached.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            driver = _write_fake_driver(
+                tmp_path / "driver", fetch_files={"metrics.json": "{}"}
+            )
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
+
+            recorded_argv: list[list[str]] = []
+            real_run = subprocess.run
+
+            def recording_run(argv, **kwargs):
+                recorded_argv.append(list(argv))
+                return real_run(argv, **kwargs)
+
+            with unittest.mock.patch.object(
+                KAGGLE.subprocess, "run", side_effect=recording_run
+            ):
+                adapter = KAGGLE.KaggleAdapter(
+                    credentials={"acct-1": handle}, driver_script=driver
+                )
+                with tempfile.TemporaryDirectory() as into_tmp:
+                    fetched = adapter.fetch("acct-1/kernel-1", Path(into_tmp) / "out")
+
+            self.assertGreater(
+                len(recorded_argv), 0, "fetch's outer interception point was never reached"
+            )
+            self.assertEqual(fetched.files, ("metrics.json",))
+            self.assertTrue(fetched.complete)
+
+    def test_fetch_non_zero_exit_from_the_driver_produces_a_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            driver = _write_fake_driver(tmp_path / "driver", exit_code=1)
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
+
+            adapter = KAGGLE.KaggleAdapter(
+                credentials={"acct-1": handle}, driver_script=driver
+            )
+            with tempfile.TemporaryDirectory() as into_tmp:
+                with self.assertRaises(KAGGLE.KaggleAdapterError):
+                    adapter.fetch("acct-1/kernel-1", Path(into_tmp) / "out")
+
+    # ---- Driver-level: cmd_fetch (INNER interception) ----
+
+    def test_driver_cmd_fetch_reached_count_writes_files_and_log(self) -> None:
+        """The inner interception point for `fetch`: a REAL `KaggleHttpClient`
+        drives `list_kernel_session_output` through a recording transport,
+        then `cmd_fetch` issues one plain `session.get(url)` per listed
+        file through that SAME session — every one of those is recorded
+        too, since they share one mounted transport. Two files, not one:
+        a `cmd_fetch` that silently dropped the second file on the way to
+        disk must fail this test, not merely a `cmd_fetch` that dropped
+        every file.
+        """
+        driver = _load_kaggle_driver_module()
+        file_url_1 = "https://files.example.invalid/output/result.csv"
+        file_url_2 = "https://files.example.invalid/output/model.bin"
+        rpc_response = {
+            "files": [
+                {"url": file_url_1, "fileName": "result.csv"},
+                {"url": file_url_2, "fileName": "model.bin"},
+            ],
+            "log": "kernel log line 1\n",
+        }
+        client, recorder = _kaggle_http_client_with_routing_recorder(
+            FIXTURE_TOKEN,
+            rpc_response,
+            {file_url_1: b"a,b\n1,2\n", file_url_2: b"\x00\x01binary"},
+        )
+        kernels_client = driver.KernelsApiClient(client)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            into = Path(tmp) / "out"
+            result = driver.cmd_fetch(kernels_client, "w1/papersmith-job", into)
+
+            self.assertGreater(
+                len(recorder.calls), 0, "fetch's inner interception point was never reached"
+            )
+            self.assertEqual(sorted(result["files"]), ["log.txt", "model.bin", "result.csv"])
+            self.assertEqual((into / "result.csv").read_bytes(), b"a,b\n1,2\n")
+            self.assertEqual((into / "model.bin").read_bytes(), b"\x00\x01binary")
+            self.assertEqual(
+                (into / "log.txt").read_text(encoding="utf-8"), "kernel log line 1\n"
+            )
+
+    def test_fetch_attaches_this_sessions_bearer_credential_defensively_to_file_urls(
+        self,
+    ) -> None:
+        """The open question this commit does NOT resolve: whether
+        `list_kernel_session_output`'s per-file URLs need this session's
+        own Bearer credential is settled only by a live rehearsal (see the
+        design's Open Questions and `kaggle_driver.py`'s own `cmd_fetch`
+        docstring) — not run here, not guessed at as true. What IS
+        measurable offline is what this commit's code actually does:
+        reuse the SAME already-authenticated session `list_kernel_session_output`
+        itself used, so `requests`' own `session.auth` hook attaches the
+        identical `Authorization: Bearer <token>` header to the per-file
+        GET too. If a live rehearsal later proves the URLs reject that
+        header, this is the one assertion that must change — not silently,
+        but as a deliberate, measured revision of this same test.
+        """
+        driver = _load_kaggle_driver_module()
+        file_url = "https://files.example.invalid/output/result.csv"
+        rpc_response = {
+            "files": [{"url": file_url, "fileName": "result.csv"}],
+            "log": None,
+        }
+        client, recorder = _kaggle_http_client_with_routing_recorder(
+            FIXTURE_TOKEN, rpc_response, {file_url: b"a,b\n1,2\n"}
+        )
+        kernels_client = driver.KernelsApiClient(client)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            driver.cmd_fetch(kernels_client, "w1/papersmith-job", Path(tmp) / "out")
+
+        file_request = next(c for c in recorder.calls if c.url == file_url)
+        self.assertEqual(
+            file_request.headers.get("Authorization"),
+            f"Bearer {FIXTURE_TOKEN}",
+            "fetch must attach this session's own Bearer credential "
+            "defensively to each per-file URL: whether it is actually "
+            "required is unresolved without a live rehearsal, and silently "
+            "omitting it risks a 401 that would look identical to a "
+            "backend refusal",
+        )
+
+    def test_fetch_never_relies_on_kernel_session_id_from_status_response(self) -> None:
+        """Task 3.4 / the design's own measured fact:
+        `ApiGetKernelSessionStatusResponse` carries only `status` and
+        `failure_message` — no `kernel_session_id` at all — so
+        `download_kernel_output_zip` (which NEEDS exactly that id) is
+        structurally unreachable from a status poll. `cmd_fetch` must
+        never call `get_kernel_session_status`, `download_kernel_output_zip`
+        or `download_kernel_output` on its own path; a stub client that
+        raises the moment any of the three is called proves it, without
+        needing a real `kagglesdk` response type at all.
+        """
+        driver = _load_kaggle_driver_module()
+
+        class _FakeFileResponse:
+            def __init__(self, content: bytes) -> None:
+                self.content = content
+
+            def raise_for_status(self) -> None:
+                return None
+
+        class _FakeSession:
+            def get(self, url: str) -> "_FakeFileResponse":
+                return _FakeFileResponse(b"a,b\n1,2\n")
+
+        class _FakeHttpClient:
+            def __init__(self) -> None:
+                self._session = _FakeSession()
+
+        fake_output_response = SimpleNamespace(
+            files=[
+                SimpleNamespace(
+                    url="https://files.example.invalid/result.csv",
+                    file_name="result.csv",
+                )
+            ],
+            log="kernel log\n",
+        )
+
+        class _RefusingKernelsClient:
+            def __init__(self) -> None:
+                self._client = _FakeHttpClient()
+
+            def list_kernel_session_output(self, request):
+                return fake_output_response
+
+            def get_kernel_session_status(self, request):
+                raise AssertionError(
+                    "cmd_fetch must never call get_kernel_session_status -- "
+                    "it carries no kernel_session_id to feed "
+                    "download_kernel_output_zip"
+                )
+
+            def download_kernel_output_zip(self, request):
+                raise AssertionError(
+                    "cmd_fetch must never call download_kernel_output_zip -- "
+                    "no measured response carries the kernel_session_id it "
+                    "needs"
+                )
+
+            def download_kernel_output(self, request):
+                raise AssertionError(
+                    "cmd_fetch must go through list_kernel_session_output's "
+                    "own URLs, not download_kernel_output"
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            into = Path(tmp) / "out"
+            result = driver.cmd_fetch(_RefusingKernelsClient(), "w1/papersmith-job", into)
+
+            self.assertEqual(sorted(result["files"]), ["log.txt", "result.csv"])
+            self.assertEqual((into / "result.csv").read_bytes(), b"a,b\n1,2\n")
+            self.assertEqual((into / "log.txt").read_text(encoding="utf-8"), "kernel log\n")
 
 
 def _installed_kaggle_client_source() -> str | None:
@@ -9971,37 +10354,47 @@ class BackendResolutionTests(unittest.TestCase):
         `ADAPTER.resolve('kaggle')` would trivially succeed in-process
         regardless of whether `remote_cli.py` itself can resolve it.
 
-        `PATH` is forced empty for the child, so the `kaggle` executable is
-        guaranteed unfindable: `subprocess.run(['kaggle', ...])` fails with
-        a purely local `FileNotFoundError` before any network I/O is even
-        attempted, wrapped by `adapters/kaggle.py` into `"could not run
-        kaggle: ..."`. That message — NOT `"no adapter registered under
-        'kaggle'"` — is the proof `--backend kaggle` resolved to the real
-        adapter and got as far as trying to invoke it.
+        RETARGETED by Commit 3, for a safety reason discovered while
+        writing it, not merely a cosmetic rename: this test used to force
+        `PATH=""` so the plain `kaggle` executable `poll()` shelled out to
+        was guaranteed unfindable, giving a purely local `FileNotFoundError`
+        with no risk of ever reaching a socket. Once `poll()` shells out to
+        `kaggle_driver.py` under `sys.executable` instead (both already-
+        resolved, absolute paths neither one depends on `PATH` for), that
+        trick stops working — running this test UNCHANGED after Commit 3's
+        retarget let the real driver run for real, with a syntactically
+        valid but bogus `FIXTURE_TOKEN`, and it reached the genuine
+        `https://www.kaggle.com/api/v1/kernels/status` endpoint and got a
+        real `401 Unauthorized` back. That is exactly the live call this
+        whole change must never make without the user's explicit
+        permission, so the fixture is rebuilt here to fail LOCALLY again,
+        for the new topology: `--credential-dir` now names a path that does
+        not exist, so `_env_for()` — read: BEFORE `poll()` ever calls
+        `self._run()`, i.e. before any subprocess, let alone any socket, is
+        touched — raises `KaggleAdapterError` reading it. That message is
+        `KaggleAdapterError`'s own text and names the worker id this
+        adapter alone would have derived from `--submission-id`, which is
+        the proof `--backend kaggle` resolved to the real adapter (never
+        `"no adapter registered under 'kaggle'"`) without ever risking a
+        network call to prove it.
         """
         with tempfile.TemporaryDirectory() as tmp:
-            # A real credential file, because the adapter now reads one
-            # before it shells out: an unreadable path would refuse EARLIER
-            # than the invocation this test is about, and the refusal it
-            # proved would be the wrong one.
-            fake_credential = Path(tmp) / "fake-creds"
-            fake_credential.write_text(FIXTURE_TOKEN + "\n", encoding="utf-8")
-            env = dict(os.environ)
-            env["PATH"] = ""
+            missing_credential = Path(tmp) / "does-not-exist" / "token"
             result = subprocess.run(
                 [
                     sys.executable, str(REMOTE_CLI_SCRIPT),
                     "poll",
                     "--submission-id", "someuser/some-slug",
                     "--backend", "kaggle",
-                    "--credential-dir", str(fake_credential),
+                    "--credential-dir", str(missing_credential),
                 ],
-                env=env, capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, timeout=30,
             )
 
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertNotIn("no adapter registered", result.stderr)
-        self.assertIn("could not run", result.stderr)
+        self.assertIn("could not read the credential file", result.stderr)
+        self.assertIn("someuser", result.stderr)
 
 
 class SmokeLedgerResolutionTests(unittest.TestCase):

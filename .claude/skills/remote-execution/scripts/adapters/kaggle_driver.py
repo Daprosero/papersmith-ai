@@ -62,6 +62,7 @@ try:
     from kagglesdk.kernels.services.kernels_api_service import KernelsApiClient
     from kagglesdk.kernels.types.kernels_api_service import (
         ApiGetKernelSessionStatusRequest,
+        ApiListKernelSessionOutputRequest,
         ApiSaveKernelRequest,
     )
     import requests  # a `kagglesdk` dependency in its own right; imported
@@ -203,24 +204,81 @@ def cmd_poll(client: "KernelsApiClient", submission_id: str) -> dict:
 
 
 def cmd_fetch(client: "KernelsApiClient", submission_id: str, into: Path) -> dict:
-    """Deliberately unimplemented in this commit.
+    """Materialize one kernel session's output under `into`, file by file.
 
-    `download_kernel_output_zip` needs a `kernel_session_id` no measured
-    `poll`/`status` response carries, so fetching file-by-file through
-    `list_kernel_session_output`'s own per-file URLs is the design's
-    intended shape — but whether those URLs need the session's own
-    Bearer credential, or answer to an anonymous GET, is an open question
-    only a live rehearsal (run solely on the user's explicit permission)
-    can settle. Guessing at that shape now and being wrong would be a
-    silent data loss at fetch time; refusing loudly here is the safer
-    failure until Phase 3 resolves it.
+    MEASURED, not assumed: `ApiGetKernelSessionStatusResponse` (`poll`'s own
+    response shape, `kernels_api_service.py:245`) carries exactly `status`
+    and `failure_message` — no `kernel_session_id` anywhere on it — so
+    `download_kernel_output_zip`, which needs precisely that id
+    (`ApiDownloadKernelOutputZipRequest.kernel_session_id`), is structurally
+    unreachable from any poll this driver could ever perform. That is the
+    design's own reason for going file-by-file through
+    `list_kernel_session_output` instead: it takes a `user_name`/
+    `kernel_slug` pair (this function already has both, from `submission_id`
+    alone) and answers with a `files` list — each entry a `(url, fileName)`
+    pair — plus the session's own `log`, with no session id required on
+    either side.
+
+    OPEN QUESTION, named here rather than guessed at (see the design's own
+    Open Questions and this repository's tasks for Phase 3): whether those
+    per-file `url`s need THIS session's own Bearer credential, or answer to
+    an anonymous GET, is settled only by a live rehearsal against a real
+    account — not run by this commit, not run by this file, ever, without
+    the user's explicit permission. This function makes the DEFENSIVE
+    choice instead of picking a side: it downloads through
+    `client._client._session` — the exact same already-authenticated
+    `requests.Session` the `list_kernel_session_output` call just above
+    used — so `requests`' own `session.auth` hook attaches the identical
+    `Authorization: Bearer <token>` header to every per-file GET too,
+    without this function constructing a second auth mechanism of its own.
+    If a URL needs no such header, an extra one that the URL's own host
+    simply ignores costs nothing; if a URL DOES need it, omitting it would
+    be a silent, wrong download disguised as a successful one — the costlier
+    of the two wrong guesses this open question names, and the one this
+    choice avoids. Doctrine (`SKILL.md`'s credential-transport table,
+    rewritten in a later commit) must record this row as
+    `unverified-by-rehearsal` rather than a settled guarantee.
+
+    `client._client._session` reaches into two attributes the SDK marks
+    private (`KernelsApiClient._client`, `KaggleHttpClient._session`)
+    because `kagglesdk` exposes no public accessor for the session a raw
+    per-file URL must be fetched through — `download_kernel_output`/
+    `download_kernel_output_zip` are RPC calls returning a redirect or a
+    typed file download, neither of which is the shape
+    `list_kernel_session_output` itself already returns. There is no route
+    to these URLs through this SDK's own public surface.
+
+    Never relies on the driver's own reported file names for anything but
+    what to write to disk; a file entry missing a name or url refuses
+    rather than guessing at either.
     """
-    raise DriverError(
-        "fetch is not implemented by this driver in this commit: whether "
-        "list_kernel_session_output's per-file URLs need this session's "
-        "own credential is an open question a live rehearsal must settle "
-        "first; see the design's open questions"
-    )
+    worker, slug = submission_id.split("/", 1)
+    request = ApiListKernelSessionOutputRequest()
+    request.user_name = worker
+    request.kernel_slug = slug
+    response = client.list_kernel_session_output(request)
+
+    into.mkdir(parents=True, exist_ok=True)
+    session = client._client._session
+    written: list[str] = []
+    for output_file in response.files or []:
+        name = output_file.file_name
+        url = output_file.url
+        if not name or not url:
+            raise DriverError(
+                f"list_kernel_session_output for {submission_id} returned a "
+                f"file entry missing a name or url: name={name!r} url={url!r}"
+            )
+        file_response = session.get(url)
+        file_response.raise_for_status()
+        (into / name).write_bytes(file_response.content)
+        written.append(name)
+
+    if response.log:
+        (into / "log.txt").write_text(response.log, encoding="utf-8")
+        written.append("log.txt")
+
+    return {"files": sorted(written)}
 
 
 def _print_result(payload: dict) -> None:
