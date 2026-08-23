@@ -1107,6 +1107,7 @@ belongs here is which reported state routes to which one:
 | `fetch` | A submission the ledger calls returned whose result is not on disk yet | the `remote-execution` skill |
 | `reconcile` | `remoteExecution` reporting `drift` or `unreliable`: the ledger and the service disagree, or a line of the log could not be read | the `remote-execution` skill |
 | `generate-job` | No job folder for the campaign about to be offered — `remoteExecution.jobs` empty, or naming none that matches | the `remote-execution` skill |
+| `distribute` | A campaign whose units outnumber what one account can hold at once: it reports which account each unit would go to and which ones do not fit, and sends nothing | the `remote-execution` skill |
 | `smoke record` | `smokeReady: false` for a job that has rehearsed and whose verdict was never written down | the `remote-execution` skill |
 | `readiness` | `smokeReady` itself: it is the function `probe` calls to compute that fact, and asking it directly is how you see the reason | the `remote-execution` skill |
 

@@ -20,6 +20,19 @@ asking for exactly two and receiving it. Those are different facts to know
 before spending an afternoon waiting on a service, and this module keeps
 them different by never collapsing them into one number in the first place.
 
+Three functions read that one clamp at three different scopes, never a
+fourth kind of number invented for any of them. `plan()` answers for ONE
+named worker — a fact about that worker alone. `select()` walks every
+worker `adapter.workers()` reports, in that same declared order, and
+returns the first one whose health can be established and that still has
+room; it stops at the first healthy account, a one-account probe.
+`distribute()` walks every worker too, but never stops early: it reads
+`plan()` for each one, sums what every healthy account actually grants
+into one total, and spreads a caller's own opaque work units across that
+total round-robin. One worker's clamp — `select()`'s whole concern — is
+one case among many `distribute()` reads the exact same way, never a
+special one it treats differently.
+
 Depends only on `adapter.py`'s ABC (`plan()` requires a real `Adapter`
 instance, checked structurally, not merely documented) and `ledger.py`'s
 `fold()` (to learn what is already in flight before granting more). Names
@@ -79,7 +92,11 @@ class PackerError(Exception):
 
 @dataclass(frozen=True)
 class Plan:
-    """One capacity decision for one worker, with the clamp kept visible.
+    """One capacity decision for one named worker, with the clamp kept
+    visible — the single case `select()` returns the first healthy
+    instance of, and the same case `distribute()` computes for every
+    worker in a whole set and then sums, never a second, richer shape
+    invented for either caller.
 
     Every field here is a distinct fact; none is derivable from another
     without also knowing at least one more:

@@ -64,6 +64,19 @@ Three modules exist so far, each service-blind and stdlib-only:
   actually confirm is never counted healthy) and still has capacity
   granted; naming no healthy worker at all is a refusal listing every
   account tried and the remedy, never a silent pass or an arbitrary pick.
+  `distribute(...)` reads the same clamp across EVERY worker at once,
+  never a fourth kind of number invented for it: it calls `plan()` for
+  each one (through the same private triage step `select()` uses, so the
+  two never drift onto two different health rules), sums whatever every
+  healthy account actually grants into one `places` total, and spreads a
+  caller's own work units across that total round-robin, ragged rows and
+  all — a unit left over when the total runs out is named in `unplaced`
+  by identity, never silently dropped or folded into a boolean. A `unit`
+  is an opaque `str` end to end: `distribute()` inspects nothing about
+  its contents, sorts nothing, splits nothing, and the CLI surface below
+  never imposes a separator on one either — `--unit` is repeatable
+  precisely so a unit containing its own comma, slash, or space still
+  survives untouched from the command line through to `assignments`.
 - `scripts/remote_cli.py` — the CLI front door, five submission/status
   commands (`submit`, `status`, `poll`, `fetch`, `reconcile`) plus
   `generate-job`, `smoke record` and `readiness` (see "Smoke" below).

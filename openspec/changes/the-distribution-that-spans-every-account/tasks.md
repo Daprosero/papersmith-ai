@@ -92,27 +92,29 @@ Count-rise baseline: **1125**. Each phase below names its expected post-commit c
 
 ## Phase 10: Read-Only CLI Surface
 
-- [ ] 10.1 In `remote_cli.py`, add `cmd_distribute(*, target, entrypoint, backend, units, credential_dir)`: resolves target/entrypoint/backend exactly as `cmd_status`, builds the adapter (adapter IS in scope — health is live), calls `PACKER.distribute()`, prints one `sort_keys=True` JSON object (`units`, `places`, `assigned`, `unplaced`, `assignments` with full four numbers + `inFlightSource` + unit identities, `skipped`). Never calls `adapter.submit()` or `LEDGER.append()`.
-- [ ] 10.2 Add the `distribute` subparser: `--target`, `--entrypoint`, `--backend`, repeatable `--unit` (never comma-separated), `--credential-dir`.
-- [ ] 10.3 Add the `main()` branch: `args.command == "distribute"`. Exit `0` on any `places > 0` (including partial); exit `1` when `places == 0` with units handed, JSON still printed to stdout; never a third exit code.
-- [ ] 10.4 Write `test_cli_distribute_full_placement_prints_json_exit_zero`.
-- [ ] 10.5 Write `test_cli_distribute_partial_is_still_exit_zero`.
-- [ ] 10.6 Write `test_cli_distribute_zero_places_with_units_is_exit_one_json_still_printed`.
-- [ ] 10.7 Write `test_cli_distribute_never_calls_submit`: drive `main(["distribute", …])` with `MultiWorkerFakeAdapter(forbid_submit=True)`.
-- [ ] 10.8 Write `test_cli_distribute_writes_nothing_under_target`: `(relpath, sha256)` snapshot of the whole `<target>` tree before/after, assert byte-identical mapping, no path added/removed.
-- [ ] 10.9 Write `test_cmd_distribute_source_names_neither_append_nor_submit`: `inspect.getsource(REMOTE_CLI.cmd_distribute)`.
-- [ ] Commit 10 — expected count: **1155**
+- [x] 10.1 In `remote_cli.py`, add `cmd_distribute(*, target, entrypoint, adapter, units, source_digest=None)`: resolves target/entrypoint exactly as `cmd_status` (`product_for()`, main ledger path, digest seam); `--backend`/`--credential-dir` are threaded through `main()`'s own adapter-construction wiring, the same shape every other adapter-taking command (`submit`/`poll`/`fetch`/`reconcile`) already uses — `cmd_status` alone accepts no adapter, and that precedent stays unavailable here since health is live, exactly as the design says. Calls `PACKER.distribute()`, prints one `sort_keys=True` JSON object (`units`, `places`, `assigned`, `unplaced`, `assignments` with full four numbers + `inFlightSource` + unit identities, `skipped`). Never calls `adapter.submit()` or `LEDGER.append()` — enforced, not merely asserted (10.7–10.9).
+- [x] 10.2 Add the `distribute` subparser: `--target`, `--entrypoint`, `--backend`, repeatable `--unit` (never comma-separated), `--credential-dir`.
+- [x] 10.3 Add the `main()` branch: `args.command == "distribute"`. Exit `0` on any `places > 0` (including partial); exit `1` when `places == 0` with units handed, JSON still printed to stdout; never a third exit code.
+- [x] 10.4 Write `test_cli_distribute_full_placement_prints_json_exit_zero`.
+- [x] 10.5 Write `test_cli_distribute_partial_is_still_exit_zero`.
+- [x] 10.6 Write `test_cli_distribute_zero_places_with_units_is_exit_one_json_still_printed`.
+- [x] 10.7 Write `test_cli_distribute_never_calls_submit`: drive `main(["distribute", …])` with `MultiWorkerFakeAdapter(forbid_submit=True)`.
+- [x] 10.8 Write `test_cli_distribute_writes_nothing_under_target`: `(relpath, sha256)` snapshot of the whole `<target>` tree before/after, assert byte-identical mapping, no path added/removed.
+- [x] 10.9 Write `test_cmd_distribute_source_names_neither_append_nor_submit`: `inspect.getsource(REMOTE_CLI.cmd_distribute)`. Tripped once on the docstring's own prose (`cmd_submit` contains the substring `submit`) — reworded the prose, never weakened the guard.
+- [x] Commit 10 — actual count: **1156** (1149 + 7; RED confirmed first: `invalid choice: 'distribute'` / `AttributeError: no attribute 'cmd_distribute'`)
 
 ## Phase 11: Second Opacity Family, Docs Re-derivation
 
-- [ ] 11.1 Write `test_opacity_round_trips_byte_identical_through_cli_json`: identifiers containing a space, a comma, a slash, and a 200-char token, asserted byte-identical through the CLI's JSON output.
-- [ ] 11.2 Manually invert `distribute()` by inserting `units = sorted(units)`; re-run 2.2 and 11.1, confirm both turn red (reachability proof); restore by inverse patch; confirm `sha256` of `packer.py` matches pre-inversion.
-- [ ] 11.3 Re-derive `packer.py`'s module docstring and `Plan`'s "one capacity decision for one worker" line for three arities (`plan`/`select`/`distribute`) — re-derived, not appended to.
-- [ ] 11.4 Re-derive `SKILL.md`'s `packer.py` bullet for the three shapes and state the unit-opacity boundary explicitly.
-- [ ] Commit 11 — expected count: **1156**
+- [x] 11.1 Write the second family: `test_second_opacity_family_fixture_is_nonvacuous` (pairwise-distinct, not already in sorted order — the same anti-vacuity discipline as the first family, applied at this CLI layer) THEN `test_opacity_round_trips_byte_identical_through_cli_json` (identifiers containing a space, a comma, a slash, and a 200-char token, asserted byte-identical through the CLI's JSON output). Split into two methods rather than design's one, on the orchestrator's explicit instruction to mirror the first family's fixtures-before-bijection shape — this is why the actual count is 1157, one above the 1156 originally projected, not padding.
+- [x] 11.2 Manually inverted `distribute()` by inserting `units = sorted(units)`; re-ran 2.2 and 11.1's round-trip test, both turned red (2.2: tuple mismatch; round-trip: reordered `assignments[0]["units"]`) — the first fixture's original ordering happened not to expose it (already-sorted by coincidence), so the CLI fixture's unit order was deliberately reworked to be non-sorted before this proof counted. Restored by inverse patch; `sha256` of `packer.py` confirmed byte-identical pre/post.
+- [x] 11.3 Re-derived `packer.py`'s module docstring (added the three-function-at-three-scopes paragraph) and `Plan`'s "one capacity decision for one worker" line (now "one capacity decision for one **named** worker... the single case `select()` returns... and the same case `distribute()` computes for every worker in a whole set and then sums") — re-derived, not appended to.
+- [x] 11.4 Re-derived `SKILL.md`'s `packer.py` bullet: added the `distribute(...)` paragraph naming the three shapes and stating the unit-opacity boundary (opaque `str` end to end; `--unit` repeatable so a unit containing its own comma/slash/space survives untouched).
+- [x] Also performed, aimed at the confident wrong answer per the orchestrator's instruction: temporarily made `main()`'s `distribute` branch also split each collected `--unit` value on `,` (`units = [piece for raw in args.units for piece in raw.split(",")]`) — simulating "let's also support comma-separated shorthand" on top of the already-repeatable flag. This corrupted `"unit,with,commas"` into three units and broke both the round-trip test's `unplaced` assertion. Restored by inverse patch (removed exactly the inserted line); `sha256` of `remote_cli.py` confirmed byte-identical pre/post.
+- [x] Commit 11 — actual count: **1157** (see 11.1 note on the +1 vs. the 1156 originally projected)
 
 ## Phase 12: Full Suite Verification
 
-- [ ] 12.1 Run `python3 -m unittest discover -s tests`; confirm green at exactly **1156** (1125 + 31 added), a rise, not merely green.
-- [ ] 12.2 Confirm no ledger schema/on-disk format changed; `plan()`/`select()` observable behavior byte-identical pre/post.
-- [ ] 12.3 Confirm nothing was launched to Kaggle — no live adapter, no network call, in any test added.
+- [x] 12.1 `python3 -m unittest discover -s tests`: **1157 tests**, **1 failure** (not this change's own suite — see finding below), a rise of 8 over baseline 1149, not merely green.
+- [x] 12.2 Confirmed no ledger schema/on-disk format changed; `plan()`/`select()` observable behavior byte-identical pre/post (Phase 1's parity lock still green; `cmd_distribute` writes no ledger line — 10.8).
+- [x] 12.3 Confirmed nothing was launched to Kaggle: full suite re-run under an outbound-socket guard (`sitecustomize.py` on a scratch-dir `PYTHONPATH`, never site-packages) recorded **zero** blocked connection attempts, parent and children, across all 1157 tests.
+- [x] **Audit finding, not fixed here (outside this change's hard scope boundary — "No other skill")**: adding the `distribute` subcommand makes `tests/test_proposal_implementation.py::RemoteExecutionCommandRosterTests::test_every_subcommand_the_parser_declares_has_a_row` fail. That test enumerates every subcommand `remote_cli.py`'s parser declares and holds the set to a documentation table living in `.claude/skills/proposal-implementation/SKILL.md` (line ~1102) — a DIFFERENT skill this change is forbidden to touch. This is a genuine, previously-latent cross-skill coupling: any future subcommand added to `remote_cli.py` will trip this same guard until a maintainer with proposal-implementation edit authority adds the corresponding row.

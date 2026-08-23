@@ -44,7 +44,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 
 def _load_sibling(module_name: str, filename: str):
@@ -695,6 +695,84 @@ def cmd_status(
         **_render(state),
         "smoke": {"ledgerPath": smoke_ledger_path, **_render(smoke_state)},
         "staleness": _job_folder_staleness(Path(entrypoint).resolve()),
+    }
+
+
+def cmd_distribute(
+    *,
+    target: str | Path,
+    entrypoint: str | Path,
+    adapter: "ADAPTER.Adapter",
+    units: Sequence[str],
+    source_digest: Callable[[Path, str], str] | None = None,
+) -> dict:
+    """Report how `units` -- opaque identifiers this function never
+    inspects beyond passing them through -- would spread across every
+    worker `adapter` reports right now, aggregated by
+    `packer.distribute()`. Nothing is recorded and nothing is handed to
+    the adapter's own work-issuing operation: this call's only route to
+    the adapter is `distribute()`'s own health read, the same
+    `list_active()`/`list_active()`-fallback path `plan()` already uses.
+
+    Target/entrypoint resolve exactly as `cmd_status` resolves them --
+    `product_for()`, the same main ledger path, the same digest seam --
+    because this is `status`'s read discipline extended across every
+    worker at once, never a dispatch-and-record command's write one.
+    Unlike `cmd_status`,
+    an `adapter` parameter genuinely is in scope, because a worker's
+    health is read live here; that live read is the only thing this
+    function does with the adapter, and three separate proofs at the
+    CLI layer -- a double forbidding any work-issuing call, a whole-tree
+    hash snapshot proving no path under `target` ever changes, and this
+    function's own source naming neither of the two operations that
+    would move work or record it -- hold that plainly rather than
+    resting on this paragraph alone.
+
+    The returned mapping carries four separate facts, mirroring
+    `packer.Distribution` field for field: `units` (how many were
+    handed in), `places` (total granted capacity, summed across every
+    healthy worker), `assigned` (how many of `units` actually landed
+    somewhere), and `unplaced` (the exact identities that did not).
+    `assignments` renders each worker's whole `Plan` -- all four of its
+    own numbers, plus `inFlightSource` -- next to the identities it was
+    given, never a bare granted count alone; `skipped` names every
+    worker `packer.distribute()` could not use and why.
+    """
+    target = Path(target).resolve()
+    if not target.is_dir():
+        raise RemoteCLIError(
+            f"--target {target} does not resolve to an existing directory"
+        )
+
+    product = product_for(target, entrypoint)
+    ledger_path = _main_ledger_path(target, product)
+    ledger_lines = _read_ledger_lines(ledger_path)
+
+    digest_fn = source_digest or _load_source_digest()
+    live = digest_fn(target, product)
+
+    result = PACKER.distribute(
+        adapter=adapter, units=units, ledger_lines=ledger_lines, live_digest=live,
+    )
+
+    return {
+        "units": len(result.units),
+        "places": result.places,
+        "assigned": len(result.units) - len(result.unplaced),
+        "unplaced": list(result.unplaced),
+        "assignments": [
+            {
+                "worker": row.plan.worker,
+                "requested": row.plan.requested,
+                "cap": row.plan.cap,
+                "inFlight": row.plan.in_flight,
+                "granted": row.plan.granted,
+                "inFlightSource": row.plan.in_flight_source,
+                "units": list(row.units),
+            }
+            for row in result.assignments
+        ],
+        "skipped": [{"worker": row.worker, "reason": row.reason} for row in result.skipped],
     }
 
 
@@ -1353,6 +1431,30 @@ def _build_parser() -> argparse.ArgumentParser:
     status.add_argument("--target", required=True, type=Path)
     status.add_argument("--entrypoint", required=True, type=Path)
 
+    distribute = subparsers.add_parser(
+        "distribute",
+        help="report how opaque work units would spread across every healthy "
+        "worker account right now; issues no work and records nothing",
+    )
+    distribute.add_argument("--target", required=True, type=Path)
+    distribute.add_argument("--entrypoint", required=True, type=Path)
+    distribute.add_argument(
+        "--backend",
+        required=True,
+        help="the name a concrete adapter was registered under via adapter.register()",
+    )
+    distribute.add_argument(
+        "--unit", dest="units", action="append", required=True,
+        help="repeatable: one opaque work-unit identifier. Never comma-separated -- "
+        "a separator would impose structure on an identifier this command, like "
+        "packer.distribute() underneath it, treats as opaque; a unit containing "
+        "its own comma would otherwise be split.",
+    )
+    distribute.add_argument(
+        "--credential-dir", type=Path, default=None,
+        help="override: use this directory instead of lazily materializing one by worker id",
+    )
+
     poll = subparsers.add_parser(
         "poll", help="ask the adapter for one submission's status"
     )
@@ -1548,6 +1650,34 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         print(json.dumps({**result, "ledgerPath": str(result["ledgerPath"])}, sort_keys=True))
+        return 0
+
+    if args.command == "distribute":
+        try:
+            _load_backend_module(args.backend)
+            adapter_cls = ADAPTER.resolve(args.backend)
+        except KeyError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+        provider = CREDENTIALS.provider(
+            accounts_cli=_accounts_cli_for(adapter_cls), override=args.credential_dir
+        )
+        try:
+            result = cmd_distribute(
+                target=args.target,
+                entrypoint=args.entrypoint,
+                adapter=_construct_adapter(adapter_cls, provider),
+                units=args.units,
+            )
+        except (RemoteCLIError, PACKER.PackerError, LEDGER.LedgerError,
+                ADAPTER.AdapterError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+        print(json.dumps(result, sort_keys=True))
+        if result["places"] == 0 and result["units"] > 0:
+            return 1
         return 0
 
     if args.command == "poll":

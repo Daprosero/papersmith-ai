@@ -5910,6 +5910,211 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("adapter reports no workers at all", str(caught.exception))
 
 
+def _snapshot_tree(root: Path) -> dict[str, str]:
+    """`(relpath, sha256)` for every regular file under `root`, keyed by
+    its path relative to `root` -- the whole-tree write detector Phase 10's
+    `distribute` no-write proof needs. Catches ANY write under `root`
+    (a new file, a removed file, or a changed one), not only the one
+    ledger append this change happens to think of first.
+    """
+    snapshot: dict[str, str] = {}
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for filename in filenames:
+            path = Path(dirpath) / filename
+            relative = str(path.relative_to(root))
+            snapshot[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return snapshot
+
+
+class DistributeCliTests(unittest.TestCase):
+    """`remote_cli.cmd_distribute()` and the `distribute` subcommand --
+    read-only reporting over `packer.distribute()`, driven through the
+    real `remote_cli.main()` entry point against `MultiWorkerFakeAdapter`,
+    exactly the runtime harness `WorkerSelectionAndMeteringTests` and
+    `DistributionTests` above already use for the arithmetic underneath.
+
+    `distribute` resolves `--target`/`--entrypoint` exactly as `status`
+    does (`product_for()`, the same ledger path, the same digest seam) --
+    it is `status`'s read discipline, not `submit`'s write one. Unlike
+    `status`, an adapter IS in scope here, because health is read live;
+    that adapter is proven inert three separate ways below, never by
+    prose alone.
+    """
+
+    def _target_and_notebook(self, tmp: str) -> tuple[Path, Path]:
+        target = Path(tmp) / "repo"
+        notebooks = _make_product(target, "MIL-CREDA")
+        notebook = notebooks / "a.ipynb"
+        notebook.write_text("{}", encoding="utf-8")
+        return target, notebook
+
+    def _run_distribute(
+        self, *, target: Path, notebook: Path, units: list[str], adapter: "ADAPTER.Adapter",
+    ) -> tuple[int, str]:
+        stdout = io.StringIO()
+        with unittest.mock.patch.object(
+            REMOTE_CLI, "_load_backend_module", return_value=None
+        ), unittest.mock.patch.object(
+            REMOTE_CLI.ADAPTER, "resolve", return_value=MultiWorkerFakeAdapter,
+        ), unittest.mock.patch.object(
+            REMOTE_CLI, "_construct_adapter", return_value=adapter,
+        ), unittest.mock.patch.object(
+            # Stubbed for the same reason every OTHER focused test in this
+            # file stubs `source_digest` rather than reaching the real
+            # loader: `_load_source_digest()` caches its result process-wide
+            # in `sys.modules`, and this class's own name sorts before
+            # `RealDigestLoaderTests`' -- reaching the real loader here
+            # would poison that class's "loader fails loudly when its
+            # target is gone" reachable-red fixture for the rest of the run.
+            REMOTE_CLI, "_load_source_digest", return_value=lambda t, p: "d" * 64,
+        ), contextlib.redirect_stdout(stdout):
+            argv = ["distribute", "--target", str(target), "--entrypoint", str(notebook),
+                     "--backend", "fake-multi"]
+            for unit in units:
+                argv += ["--unit", unit]
+            exit_code = REMOTE_CLI.main(argv)
+        return exit_code, stdout.getvalue()
+
+    def test_cli_distribute_full_placement_prints_json_exit_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 2)])
+            units = ["u0", "u1", "u2", "u3"]
+
+            exit_code, printed = self._run_distribute(
+                target=target, notebook=notebook, units=units, adapter=adapter,
+            )
+
+            self.assertEqual(exit_code, 0)
+            payload = json.loads(printed)
+            self.assertEqual(payload["units"], 4)
+            self.assertEqual(payload["places"], 4)
+            self.assertEqual(payload["assigned"], 4)
+            self.assertEqual(payload["unplaced"], [])
+            self.assertEqual(len(payload["assignments"]), 2)
+            for row in payload["assignments"]:
+                self.assertIn("inFlightSource", row)
+                self.assertIn("granted", row)
+                self.assertIn("cap", row)
+                self.assertIn("requested", row)
+
+    def test_cli_distribute_partial_is_still_exit_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+            units = ["u0", "u1", "u2"]
+
+            exit_code, printed = self._run_distribute(
+                target=target, notebook=notebook, units=units, adapter=adapter,
+            )
+
+            self.assertEqual(exit_code, 0)
+            payload = json.loads(printed)
+            self.assertEqual(payload["places"], 2)
+            self.assertEqual(payload["assigned"], 2)
+            self.assertEqual(payload["unplaced"], ["u2"])
+
+    def test_cli_distribute_zero_places_with_units_is_exit_one_json_still_printed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(
+                workers=[("w1", 2)], unreachable=frozenset({"w1"}),
+            )
+            units = ["u0"]
+
+            exit_code, printed = self._run_distribute(
+                target=target, notebook=notebook, units=units, adapter=adapter,
+            )
+
+            self.assertEqual(exit_code, 1)
+            payload = json.loads(printed)
+            self.assertEqual(payload["places"], 0)
+            self.assertEqual(payload["unplaced"], ["u0"])
+            self.assertEqual(len(payload["skipped"]), 1)
+
+    def test_cli_distribute_never_calls_submit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)], forbid_submit=True)
+            units = ["u0", "u1"]
+
+            exit_code, _printed = self._run_distribute(
+                target=target, notebook=notebook, units=units, adapter=adapter,
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(adapter.submit_calls, [])
+
+    def test_cli_distribute_writes_nothing_under_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 2)])
+            units = ["u0", "u1", "u2"]
+
+            before = _snapshot_tree(target)
+            self._run_distribute(
+                target=target, notebook=notebook, units=units, adapter=adapter,
+            )
+            after = _snapshot_tree(target)
+
+            self.assertEqual(before, after)
+
+    def test_cmd_distribute_source_names_neither_append_nor_submit(self) -> None:
+        source = inspect.getsource(REMOTE_CLI.cmd_distribute)
+        self.assertNotIn("append", source)
+        self.assertNotIn("submit", source)
+
+    # ---- Phase 11: second opacity family, through the CLI's own JSON ----
+
+    # Deliberately NOT in sorted order -- see the nonvacuity test below,
+    # the same anti-vacuity discipline `DistributionTests`' own opacity
+    # lock fixtures use, applied at this CLI layer instead.
+    SECOND_OPACITY_FAMILY_UNITS = (
+        "x" * 200,
+        "unit/with/a/slash",
+        "unit,with,commas",
+        "unit with a space",
+    )
+
+    def test_second_opacity_family_fixture_is_nonvacuous(self) -> None:
+        """Proven BEFORE the round-trip test below, the same discipline
+        `test_opacity_lock_fixtures_are_nonvacuous` uses one layer down:
+        a later "simplification" of this fixture must not be able to make
+        the round-trip test trivially true.
+        """
+        units = self.SECOND_OPACITY_FAMILY_UNITS
+        self.assertEqual(len(units), len(set(units)))  # pairwise distinct
+        self.assertNotEqual(list(units), sorted(units))
+
+    def test_opacity_round_trips_byte_identical_through_cli_json(self) -> None:
+        """Identifiers containing a space, a comma, a slash, and a 200-char
+        token, round-tripped through the real `distribute` subcommand's
+        JSON stdout -- the CLI layer's own opacity proof, sibling to
+        `DistributionTests`' bijection lock over `packer.distribute()`
+        itself. A CLI that parsed, split, sorted, or truncated a unit's
+        contents anywhere between argparse and `json.dumps` would break
+        this, since the fixture above is proven not already in the order
+        a silent re-sort would produce.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 4)])
+            units = list(self.SECOND_OPACITY_FAMILY_UNITS)
+
+            exit_code, printed = self._run_distribute(
+                target=target, notebook=notebook, units=units, adapter=adapter,
+            )
+
+            self.assertEqual(exit_code, 0)
+            payload = json.loads(printed)
+            self.assertEqual(payload["places"], 4)
+            self.assertEqual(payload["unplaced"], [])
+            self.assertEqual(len(payload["assignments"]), 1)
+            self.assertEqual(payload["assignments"][0]["units"], units)
+
+
 class AcceleratorRequestDoctrineTests(unittest.TestCase):
     """`assemble_metadata` must emit the accelerator key the installed
     client actually reads.
