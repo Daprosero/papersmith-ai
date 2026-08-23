@@ -304,6 +304,17 @@ def cmd_fetch(client: "KernelsApiClient", submission_id: str, into: Path) -> dic
     into.mkdir(parents=True, exist_ok=True)
     session = client._client._session
     written: list[str] = []
+
+    # The log goes first, before a single output file is attempted. It used
+    # to be written after the loop, which meant any file that failed took the
+    # log down with it -- and the log is the only artifact that says why a
+    # remote run failed. A log that arrives only when everything else already
+    # worked is a log nobody will ever have at the moment they need it.
+    if response.log:
+        (into / "log.txt").write_text(response.log, encoding="utf-8")
+        written.append("log.txt")
+
+    root = into.resolve()
     for output_file in response.files or []:
         name = output_file.file_name
         url = output_file.url
@@ -312,14 +323,25 @@ def cmd_fetch(client: "KernelsApiClient", submission_id: str, into: Path) -> dic
                 f"list_kernel_session_output for {submission_id} returned a "
                 f"file entry missing a name or url: name={name!r} url={url!r}"
             )
+        # `file_name` is a path relative to the remote working directory, not
+        # a flat basename: a run that reads a dataset answers with entries
+        # several directories deep under the clone. One `mkdir` on `into`
+        # cannot serve those, so each file makes its own parents.
+        destination = (into / name).resolve()
+        # Creating parents for a name the service chose is what makes this
+        # check necessary rather than merely prudent: before, a name climbing
+        # out of `into` failed on a missing directory; now it would be built
+        # on the way out. Refuse instead of writing somewhere nobody asked for.
+        if destination != root and root not in destination.parents:
+            raise DriverError(
+                f"list_kernel_session_output for {submission_id} returned a "
+                f"file name that leaves the destination: {name!r}"
+            )
         file_response = session.get(url)
         file_response.raise_for_status()
-        (into / name).write_bytes(file_response.content)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(file_response.content)
         written.append(name)
-
-    if response.log:
-        (into / "log.txt").write_text(response.log, encoding="utf-8")
-        written.append("log.txt")
 
     return {"files": sorted(written)}
 

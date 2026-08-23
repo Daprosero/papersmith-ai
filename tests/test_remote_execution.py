@@ -4887,6 +4887,103 @@ class PollFetchDriverTests(unittest.TestCase):
 
     # ---- Driver-level: cmd_fetch (INNER interception) ----
 
+    def test_driver_cmd_fetch_writes_a_nested_name_and_the_log_survives_a_failure(self) -> None:
+        """A returned name is a path, not a basename, and the log goes first.
+
+        The remote answers with entries relative to its working directory --
+        a run that reads a dataset produces `clone/.benchmark-data/...`. One
+        `mkdir` on the destination cannot serve those, and the fetch used to
+        die on the first one. The existing coverage survived that for a
+        precise reason: every fixture name in it is flat.
+
+        The second half is the ordering, and it is the half that cost a
+        diagnosis. The log was written after the file loop, so any file that
+        failed took it down too -- leaving a failed run explained by nothing.
+        Here the second file refuses, and the assertion is that the log is on
+        disk anyway.
+        """
+        driver = _load_kaggle_driver_module()
+
+        class _Session:
+            def get(self, url):
+                if "boom" in url:
+                    raise RuntimeError("the remote hung up on this one")
+                return SimpleNamespace(
+                    content=b"payload",
+                    raise_for_status=lambda: None)
+
+        class _Client:
+            def __init__(self):
+                self._client = SimpleNamespace(_session=_Session())
+
+            def list_kernel_session_output(self, request):
+                return SimpleNamespace(
+                    files=[
+                        SimpleNamespace(
+                            url="https://files.example.invalid/nested",
+                            file_name="clone/.cache/corpus/raw/holdout"),
+                        SimpleNamespace(
+                            url="https://files.example.invalid/boom",
+                            file_name="second.csv"),
+                    ],
+                    log="why the run failed\n")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            into = Path(tmp) / "out"
+            with self.assertRaises(RuntimeError):
+                driver.cmd_fetch(
+                    _Client(), "acct-1/kernel-1", into)
+            nested = into / "clone/.cache/corpus/raw/holdout"
+            self.assertTrue(
+                nested.is_file(),
+                "a name carrying directories must make its own parents; one "
+                "mkdir on the destination cannot serve it")
+            self.assertEqual(nested.read_bytes(), b"payload")
+            log = into / "log.txt"
+            self.assertTrue(
+                log.is_file(),
+                "the log must already be on disk when a later file fails; a "
+                "log that only arrives after everything else worked is a log "
+                "nobody has when they need it")
+            self.assertEqual(log.read_text(encoding="utf-8"),
+                             "why the run failed\n")
+
+    def test_driver_cmd_fetch_refuses_a_name_that_leaves_the_destination(self) -> None:
+        """Making parents for a service-chosen name is what makes this needed.
+
+        Before, a name climbing out of the destination died on a directory
+        that did not exist. Now the directory would be built on the way out,
+        so the fix that stops the crash is also what opens the escape. The
+        refusal is part of the same change, not a separate hardening.
+        """
+        driver = _load_kaggle_driver_module()
+
+        class _Session:
+            def get(self, url):
+                return SimpleNamespace(
+                    content=b"x", raise_for_status=lambda: None)
+
+        class _Client:
+            def __init__(self):
+                self._client = SimpleNamespace(_session=_Session())
+
+            def list_kernel_session_output(self, request):
+                return SimpleNamespace(
+                    files=[SimpleNamespace(
+                        url="https://files.example.invalid/escape",
+                        file_name="../../escaped.txt")],
+                    log="")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            into = Path(tmp) / "out"
+            with self.assertRaises(driver.DriverError) as caught:
+                driver.cmd_fetch(
+                    _Client(), "acct-1/kernel-1", into)
+            self.assertIn("leaves the destination", str(caught.exception))
+            self.assertFalse(
+                (Path(tmp) / "escaped.txt").exists(),
+                "nothing may be written outside the destination")
+
     def test_driver_cmd_fetch_reached_count_writes_files_and_log(self) -> None:
         """The inner interception point for `fetch`: a REAL `KaggleHttpClient`
         drives `list_kernel_session_output` through a recording transport,
