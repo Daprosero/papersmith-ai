@@ -1742,6 +1742,37 @@ STAGE_OUTCOME_ROW = re.compile(
 #: holds. Any other stage-2 skip reason is `driver-required`.
 DRIVE_STAGE_RESERVED_SKIP = "no reachable surface (stage 1)"
 
+#: The one skip reason a post-drive stage (numbered after the `user-drive`
+#: stage) may carry -- "available, the operator chose not to take it" --
+#: legal only once the drive itself reached agreement. Any other stage's
+#: `skipped:` text is untouched by this rule; it is unconditional and free.
+POST_DRIVE_OFFERED_SKIP = "offered, declined"
+
+#: A `## User drive` section's own `- Outcome:` line -- the one field W5
+#: needs before W6 specifies the rest of that section's required content.
+#: Read only inside the section, exactly like `frozen_section_fields`.
+USER_DRIVE_OUTCOME_LINE = re.compile(r"^-\s*Outcome:\s*(.+?)\s*$")
+
+
+def user_drive_outcome(lines):
+    """The `## User drive` section's own `- Outcome:` value, or `None` if
+    the section carries no such line.
+    """
+    in_section = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "## User drive":
+            in_section = True
+            continue
+        if in_section and stripped.startswith("## "):
+            break
+        if not in_section:
+            continue
+        match = USER_DRIVE_OUTCOME_LINE.match(stripped)
+        if match:
+            return match.group(1)
+    return None
+
 
 def stage_roster(text):
     """The `(stage id, REPORT_SHAPE key)` roster a report's stage table
@@ -2279,6 +2310,31 @@ def run_check_report(args):
                          "'no-closed-roster'; an empty '## Undecidable' is "
                          "not the same claim as one full of them",
                          f"{path}:1")
+
+        # `skipped: offered, declined` is the one skip text legal only
+        # after the drive itself reached agreement -- equivalence reached
+        # is what makes the question worth asking. Scoped to stages
+        # numbered *after* the drive stage, derived the same way, never a
+        # hardcoded "3, 4, 5": stage 2's own row already cannot carry this
+        # text at all, since it must equal `DRIVE_STAGE_RESERVED_SKIP`
+        # exactly or fail as `driver-required` above.
+        drive_agreed = (stage_outcomes.get(drive_stage_id) == "ran"
+                       and user_drive_outcome(lines) == "agree")
+        for stage_id, key in required_stages:
+            if int(stage_id) <= int(drive_stage_id):
+                continue
+            outcome = stage_outcomes.get(stage_id)
+            if not outcome or not outcome.startswith("skipped:"):
+                continue
+            if outcome.split(":", 1)[1].strip() != POST_DRIVE_OFFERED_SKIP:
+                continue
+            if not drive_agreed:
+                fail(key,
+                     f"stage {stage_id}'s row reads "
+                     f"'skipped: {POST_DRIVE_OFFERED_SKIP}', which is legal "
+                     f"only once stage {drive_stage_id} reads `ran` and "
+                     "'## User drive''s own '- Outcome:' reads `agree`; "
+                     "no question was asked here", f"{path}:1")
 
     # The one cross-section rule: an `## Undecidable` entry claiming
     # `- Rung: probe` must name a move whose own `## Move outcomes` row is

@@ -170,6 +170,15 @@ and the zero-model path is never a caller's shortcut to assert. "Optional"
 applies only to stages 3 through 5, after a successful drive, never to
 stage 2 itself.
 
+A stage-3/4/5 row MAY read `skipped: offered, declined` -- available, the
+operator chose not to take it -- distinguishable at a glance from any other
+`skipped: <reason>` text, which always means "could not run." That text is
+legal only once stage 2 itself reads `ran` and `## User drive`'s own
+`- Outcome:` reads `agree`: equivalence reached is what makes the question
+worth asking in the first place. Without that agreement, no question was
+asked, and `check-report` rejects the `offered, declined` text wherever it
+appears on 3 through 5 -- stage 2's own row may never carry it at all.
+
 Stages 3 through 5 carry no lock over the one fact that would matter most:
 whether the two readers, or the two drives, were actually blind, isolated,
 and out of contact with each other. `check-report` can enforce that an

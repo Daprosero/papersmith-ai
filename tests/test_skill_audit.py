@@ -4351,6 +4351,75 @@ class StageOutcomesTests(BoxMixin, unittest.TestCase):
             {"0": "frozen", "1": "undecidable", "2": "user-drive",
              "3": "reading-diff", "4": "drives", "5": "found-by"})
 
+    def _with_stage_two_agreed(self, report, post_drive_overrides=None):
+        """`VALID_REPORT` with stage 2 promoted to `ran` and a minimal
+        `## User drive` section declaring `agree`, for the post-drive
+        gating tests below. `post_drive_overrides` maps a stage id to the
+        row text it should carry instead of `VALID_REPORT_STAGE_OVERRIDES`'
+        default for that id.
+        """
+        cli = audit_cli_module()
+        text = report.replace(
+            f"- Stage: 2: skipped: {cli.DRIVE_STAGE_RESERVED_SKIP}\n",
+            "- Stage: 2: ran\n", 1)
+        text = text.replace(
+            "## Ranked findings",
+            "## User drive\n\n- Outcome: agree\n\n## Ranked findings", 1)
+        for stage_id, outcome in (post_drive_overrides or {}).items():
+            needle = f"- Stage: {stage_id}: {VALID_REPORT_STAGE_OVERRIDES[stage_id]}\n"
+            self.assertIn(needle, text, "the graft's anchor must be present")
+            text = text.replace(needle, f"- Stage: {stage_id}: {outcome}\n", 1)
+        return text
+
+    def test_post_drive_offered_declined_is_accepted_after_agreement(self):
+        text = self._with_stage_two_agreed(
+            VALID_REPORT, {"3": "skipped: offered, declined"})
+        result, payload = self.check(text, name="post-drive-offered-agreed.md")
+        self.assertEqual(result.returncode, 0, payload)
+
+    def test_post_drive_offered_declined_without_agreement_is_rejected(self):
+        broken = VALID_REPORT.replace(
+            "- Stage: 3: skipped: no blind reading pair compared in this "
+            "pass\n",
+            "- Stage: 3: skipped: offered, declined\n", 1)
+        result, payload = self.check(
+            broken, name="post-drive-offered-no-agreement.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "reading-diff"]
+        self.assertTrue(
+            any("3" in v["detail"] for v in violations),
+            f"an unagreed offered/declined stage 3 must be rejected and "
+            f"must name stage 3: {violations}")
+
+    def test_post_drive_offered_declined_needs_the_agree_outcome_specifically(self):
+        """Stage 2 `ran` is not enough on its own -- the drive must have
+        reached `agree`, not merely have been attempted.
+        """
+        text = self._with_stage_two_agreed(
+            VALID_REPORT, {"4": "skipped: offered, declined"})
+        text = text.replace("- Outcome: agree\n", "- Outcome: disk-stale\n", 1)
+        result, payload = self.check(text, name="post-drive-offered-not-agree.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "drives"]
+        self.assertTrue(
+            any("4" in v["detail"] for v in violations),
+            f"a stage-2 outcome short of agree must still reject the "
+            f"offered/declined text on stage 4: {violations}")
+
+    def test_stage_two_own_row_can_never_read_offered_declined(self):
+        cli = audit_cli_module()
+        broken = VALID_REPORT.replace(
+            f"- Stage: 2: skipped: {cli.DRIVE_STAGE_RESERVED_SKIP}\n",
+            "- Stage: 2: skipped: offered, declined\n", 1)
+        result, payload = self.check(broken, name="stage2-offered-declined.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "driver-required"]
+        self.assertTrue(
+            any("2" in v["detail"] for v in violations),
+            f"stage 2's own row must never read offered/declined: {violations}")
+
     def test_stage_model_total_sums_a_synthetic_table(self):
         cli = audit_cli_module()
         synthetic = ("| Stage | Models | Demands |\n"
