@@ -12,6 +12,7 @@ import inspect
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -101,7 +102,12 @@ def write_fixture_interpreter(bin_dir):
         os.symlink(sys.executable, target)
         return target
     target = bin_dir / "python"
-    target.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+    # `shlex.quote`, not an f-string inside double quotes: POSIX double
+    # quotes still expand `$(...)` and backticks. Nothing hostile reaches
+    # `sys.executable` here, but a quoting rule that only holds while the
+    # input stays friendly is not a quoting rule.
+    target.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n",
+                      encoding="utf-8")
     target.chmod(0o755)
     return target
 
