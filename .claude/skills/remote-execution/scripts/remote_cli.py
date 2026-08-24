@@ -42,6 +42,7 @@ import inspect
 import json
 import os
 import re
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -1275,6 +1276,7 @@ def cmd_fetch(
     dest: str | Path,
     adapter: "ADAPTER.Adapter",
     source_digest: Callable[[Path, str], str] | None = None,
+    force: bool = False,
 ) -> dict:
     """Materialize one submission's result, quarantining it structurally
     when it is not judged current — never discarding it, and never merging
@@ -1284,6 +1286,24 @@ def cmd_fetch(
     one fact that matters most: a `returned` event must never be recorded
     unless the artifact it names is actually, completely, on disk.
 
+    0. Once `final_dest` is known (step 1's placement decision), and
+       BEFORE `adapter.fetch()` is ever called: if `final_dest` already
+       exists, this is a re-fetch of a submission this call already
+       materialized. Paying for a second download only to discover that
+       `os.replace()` cannot replace a non-empty destination directory
+       (`OSError: [Errno 66] Directory not empty`) is the wrong place to
+       notice — the guard runs here, before the network call, not after
+       it. Default: refuse cleanly, naming the existing path and the way
+       out (`--force`). `force=True` REMOVES the existing `final_dest`
+       tree (`shutil.rmtree`) before the fetch proceeds, so the fresh
+       download replaces it outright — this is a destructive overwrite of
+       whatever the earlier fetch left there, stated here so it is never
+       an implicit side effect of passing the flag. A duplicate `returned`
+       ledger event, if one is ever appended for the same submission id
+       regardless, is harmless: `fold()` has no accumulator for it —
+       `terminal_by_id[submissionId]` is an overwrite by an
+       equal-kind event and `verdicts[submissionId]` recomputes the
+       identical value under the identical key.
     1. `LEDGER.currency_verdict()` — the SAME rule `fold()` itself uses for
        an already-recorded `returned` event — is evaluated here BEFORE one
        exists, against the ledger state read at the top of this call. A
@@ -1346,6 +1366,14 @@ def cmd_fetch(
         final_dest = Path(dest).resolve()
     else:
         final_dest = target / product / LEDGER_DIRNAME / QUARANTINE_DIRNAME / submission_id
+
+    if final_dest.exists():
+        if not force:
+            raise RemoteCLIError(
+                f"already fetched at {final_dest} -- pass --force to "
+                "remove the existing directory and re-fetch"
+            )
+        shutil.rmtree(final_dest)
 
     observed_concurrency = state.pending_for(submission["worker"])
     staleness = _job_folder_staleness(Path(entrypoint).resolve())
@@ -1974,6 +2002,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="the name a concrete adapter was registered under via adapter.register()",
     )
     fetch.add_argument(
+        "--force",
+        action="store_true",
+        help="remove an already-materialized destination and re-fetch, "
+        "instead of refusing",
+    )
+    fetch.add_argument(
         "--credential-dir", type=Path, default=None,
         help="override: use this directory instead of lazily materializing one by worker id",
     )
@@ -2257,6 +2291,7 @@ def main(argv: list[str] | None = None) -> int:
                 submission_id=args.submission_id,
                 dest=args.dest,
                 adapter=_construct_adapter(adapter_cls, provider),
+                force=args.force,
             )
         except (RemoteCLIError, LEDGER.LedgerError, ADAPTER.AdapterError) as exc:
             print(f"error: {exc}", file=sys.stderr)

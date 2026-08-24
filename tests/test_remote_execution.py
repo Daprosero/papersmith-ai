@@ -2265,6 +2265,131 @@ class FetchTests(unittest.TestCase):
             self.assertEqual(ledger_path.read_text(encoding="utf-8"), lines_before)
             self.assertFalse(dest.exists())
 
+    def test_refetch_refuses_cleanly_naming_the_existing_path(self) -> None:
+        """A second `cmd_fetch()` for a submission already materialized at
+        `dest` must refuse before ever calling `adapter.fetch()` again --
+        not raise the raw `OSError` `os.replace()` produces against a
+        non-empty destination directory.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                ledger_path,
+                entrypoint="Notebooks/a.ipynb",
+                submission_id="s1",
+                worker="w1",
+                source_digest="d" * 64,
+            )
+
+            adapter = FakeAdapter(worker_id="w1", capacity=2)
+            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+
+            REMOTE_CLI.cmd_fetch(
+                target=target,
+                entrypoint=notebook,
+                submission_id="s1",
+                dest=dest,
+                adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
+            self.assertTrue((dest / "result.txt").exists())
+            lines_after_first_fetch = ledger_path.read_text(encoding="utf-8")
+
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
+                REMOTE_CLI.cmd_fetch(
+                    target=target,
+                    entrypoint=notebook,
+                    submission_id="s1",
+                    dest=dest,
+                    adapter=adapter,
+                    source_digest=lambda t, n: "d" * 64,
+                )
+            self.assertIn("already fetched at", str(ctx.exception))
+            self.assertIn(str(dest), str(ctx.exception))
+            self.assertIn("--force", str(ctx.exception))
+
+            # No second `returned` event: the refusal happened before the
+            # adapter was ever asked to fetch again.
+            self.assertEqual(ledger_path.read_text(encoding="utf-8"), lines_after_first_fetch)
+            self.assertTrue((dest / "result.txt").exists())
+
+    def test_refetch_with_force_replaces_the_existing_directory(self) -> None:
+        """`--force` removes the previously-materialized `final_dest` and
+        lets the fetch proceed exactly as a first fetch would -- including
+        appending a second `returned` event, which `fold()` treats as a
+        harmless overwrite of the same submission id, never an
+        accumulation.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                ledger_path,
+                entrypoint="Notebooks/a.ipynb",
+                submission_id="s1",
+                worker="w1",
+                source_digest="d" * 64,
+            )
+
+            adapter = FakeAdapter(worker_id="w1", capacity=2)
+            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+
+            REMOTE_CLI.cmd_fetch(
+                target=target,
+                entrypoint=notebook,
+                submission_id="s1",
+                dest=dest,
+                adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
+            # A stray file that a plain overwrite (not a fresh directory)
+            # would leave behind -- proves --force actually removes the
+            # old tree rather than merging into it.
+            (dest / "stale-leftover.txt").write_text("stale", encoding="utf-8")
+
+            result = REMOTE_CLI.cmd_fetch(
+                target=target,
+                entrypoint=notebook,
+                submission_id="s1",
+                dest=dest,
+                adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+                force=True,
+            )
+
+            self.assertTrue(result["complete"])
+            self.assertTrue((dest / "result.txt").exists())
+            self.assertFalse((dest / "stale-leftover.txt").exists())
+
+            lines = ledger_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 3)  # submitted, returned, returned
+            first_returned = json.loads(lines[-2])
+            second_returned = json.loads(lines[-1])
+            self.assertEqual(first_returned["kind"], "returned")
+            self.assertEqual(second_returned["kind"], "returned")
+
+            # The duplicate `returned` event is harmless to fold(): the
+            # computed state is identical to a single-event fold.
+            state = LEDGER.fold(lines, live_digest="d" * 64)
+            single_event_state = LEDGER.fold(lines[:2], live_digest="d" * 64)
+            self.assertEqual(
+                state.entrypoints[("Notebooks/a.ipynb", "w1")].state,
+                single_event_state.entrypoints[("Notebooks/a.ipynb", "w1")].state,
+            )
+
     def test_observed_concurrency_reflects_actual_pending_not_the_grant(self) -> None:
         """(packer attempts 2, service actually runs 1 → recorded 1):
         `plan()` grants capacity for two concurrent jobs on this worker, but
