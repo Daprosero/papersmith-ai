@@ -3030,6 +3030,51 @@ Making the finding's digest agree with '## Frozen' would remove the rejection.
             f"rejected and must name the finding: {violations}")
 
 
+#: The canonical env-var name the lock below checks each of the three
+#: sites against -- never imported by the sites themselves. Each of
+#: `FrozenPayloadTests.test_structure_payload_carries_frozen`,
+#: `StructureSelfProbeTests.test_the_shipped_recipe_drives_a_real_external_process`,
+#: and `SKILL.md`'s own obligation text hardcodes this name as its own
+#: literal, so the three can drift independently and the lock is the
+#: thing that would notice. The bare-uppercase-noun-phrase shape follows
+#: `IMPLEMENTATION_PROPOSALS` in `tests/test_proposal_implementation.py`.
+LIVE_DRIVER_ENV_VAR = "SKILL_AUDIT_LIVE_DRIVER"
+
+
+class LiveDriverGateNameLockTests(unittest.TestCase):
+    """The opt-in gate's env-var name is pinned identical across the three
+    sites that must agree on it: `FrozenPayloadTests
+    .test_structure_payload_carries_frozen`'s own `os.environ` read,
+    `StructureSelfProbeTests
+    .test_the_shipped_recipe_drives_a_real_external_process`'s own
+    `os.environ` read, and `SKILL.md`'s recorded obligation text. A rename
+    at exactly one site breaks this lock, naming that site -- the same
+    discipline `SchemaVersionDerivationTests` established for a numeral,
+    applied here to a literal name instead.
+    """
+
+    def test_the_gate_name_is_identical_across_all_three_sites(self):
+        frozen_src = function_source(
+            Path(__file__), "test_structure_payload_carries_frozen")
+        selfprobe_src = function_source(
+            Path(__file__),
+            "test_the_shipped_recipe_drives_a_real_external_process")
+        doctrine = doctrine_text()
+
+        self.assertIn(
+            LIVE_DRIVER_ENV_VAR, frozen_src,
+            "test_structure_payload_carries_frozen does not read "
+            f"{LIVE_DRIVER_ENV_VAR}")
+        self.assertIn(
+            LIVE_DRIVER_ENV_VAR, selfprobe_src,
+            "test_the_shipped_recipe_drives_a_real_external_process does "
+            f"not read {LIVE_DRIVER_ENV_VAR}")
+        self.assertIn(
+            LIVE_DRIVER_ENV_VAR, doctrine,
+            f"SKILL.md does not record the obligation to run with "
+            f"{LIVE_DRIVER_ENV_VAR}=1")
+
+
 class FrozenPayloadTests(unittest.TestCase):
     """`frozen` travels in every subcommand's own payload, not only
     `roster`'s. Driven for real, against this skill's own shipped recipes,
@@ -3048,6 +3093,17 @@ class FrozenPayloadTests(unittest.TestCase):
         different shape, an inability to look, not a verdict. Either
         honest outcome is accepted here; only a crash is not.
         """
+        # Opt-in gate, new to this repository -- there is no
+        # `skipUnless`/decorator precedent for it here, only the plain
+        # `self.skipTest` mechanics this class already uses for an
+        # `Unprobeable` result. The literal name is hardcoded (not shared
+        # via a Python constant) so this site, its sibling below, and
+        # SKILL.md's own recorded obligation can drift independently, and
+        # `LiveDriverGateNameLockTests` catches it if they do.
+        if not os.environ.get("SKILL_AUDIT_LIVE_DRIVER"):
+            self.skipTest(
+                "spawns a real external `claude -p` process; opt in with "
+                "SKILL_AUDIT_LIVE_DRIVER=1")
         result, payload = structure_json(
             STRUCTURE_SPEC, SKILL_ROOT, repo=FORGE, extra=("--timeout", "45"))
         if result.returncode == 2:
@@ -3785,6 +3841,13 @@ class StructureSelfProbeTests(unittest.TestCase):
         Bounded at 45s for the driver step itself (`--timeout`), well
         under `run_cli`'s own 90s ceiling for this one invocation.
         """
+        # Opt-in gate, new to this repository -- see
+        # `FrozenPayloadTests.test_structure_payload_carries_frozen` for
+        # why the literal name is hardcoded here rather than shared.
+        if not os.environ.get("SKILL_AUDIT_LIVE_DRIVER"):
+            self.skipTest(
+                "spawns a real external `claude -p` process; opt in with "
+                "SKILL_AUDIT_LIVE_DRIVER=1")
         cli = audit_cli_module()
         before = {name: cli.tree_digest(SKILL_ROOT.parent / name)
                  for name in SIBLING_SKILLS_TO_CHECK}

@@ -85,6 +85,17 @@ documentation alone, and diff it against what the producer actually emits. This
 is the only move that catches the document and the producer drifting apart while
 each stays internally consistent. It is only sound under the conditions below.
 
+`structure`'s `fromZero` side now drives a real external `claude -p` process
+through a `driver` step. The two tests that exercise this for real
+(`FrozenPayloadTests.test_structure_payload_carries_frozen` and
+`StructureSelfProbeTests.test_the_shipped_recipe_drives_a_real_external_process`)
+default to skipped and opt in only with `SKILL_AUDIT_LIVE_DRIVER=1`. Before
+any change to `run_box_step`, `BOX_STEP_KINDS`, `DRIVER_ENV_ALLOWLIST`, or the
+shipped recipe's `driver` step, run
+`SKILL_AUDIT_LIVE_DRIVER=1 .venv/bin/python -m unittest tests.test_skill_audit.FrozenPayloadTests.test_structure_payload_carries_frozen tests.test_skill_audit.StructureSelfProbeTests.test_the_shipped_recipe_drives_a_real_external_process`
+so the change is proven against the real driver mechanism, not only against
+its default-skipped shadow.
+
 ### Move 6, in detail
 
 Invert every lock the audit leans on, and watch it fire. The mutation sweep is
