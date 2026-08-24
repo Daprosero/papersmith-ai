@@ -4422,13 +4422,115 @@ def manifest_provisioning(target: Path) -> dict:
     return result
 
 
+# The floor THIS skill's own layout templates need, independent of anything
+# a target declares. `--help` used to claim "The layout templates assume
+# 3.10+" and nothing checked it: a 3.9.6 interpreter built a venv and
+# reported `status: "created"` with no warning at all.
+SKILL_PYTHON_FLOOR: tuple[int, int] = (3, 10)
+
+_VERSION_NUMBER_RE = re.compile(r"(\d+)\.(\d+)")
+
+
+def _parse_python_version(text: str) -> tuple[int, int] | None:
+    """The `(major, minor)` pair out of a `python --version` style report
+    (`"Python 3.12.13"`) or a PEP 440 lower-bound specifier (`">=3.11"`) --
+    the same shape either way, just the first `X.Y` this finds.
+    """
+    match = _VERSION_NUMBER_RE.search(text)
+    if not match:
+        return None
+    return (int(match.group(1)), int(match.group(2)))
+
+
+def _target_declared_python_floor(target: Path) -> tuple[int, int] | None:
+    """The target's own declared `python_requires` LOWER bound, read from
+    `setup.cfg` (`[options] python_requires`) or `pyproject.toml`'s PEP 621
+    `requires-python`, whichever exists — `None` when neither declares one.
+    Only the lower bound is read; an upper bound or an exclusion range is
+    not this skill's concern, only "how low can the interpreter go".
+    """
+    setup_cfg = target / "setup.cfg"
+    if setup_cfg.is_file():
+        import configparser
+
+        parser = configparser.ConfigParser()
+        try:
+            parser.read_string(setup_cfg.read_text(encoding="utf-8"))
+            requires = parser.get("options", "python_requires", fallback=None)
+        except configparser.Error:
+            requires = None
+        if requires:
+            parsed = _parse_python_version(requires)
+            if parsed is not None:
+                return parsed
+    pyproject = target / "pyproject.toml"
+    if pyproject.is_file():
+        match = re.search(
+            r'requires-python\s*=\s*"[^"]*?(\d+\.\d+)',
+            pyproject.read_text(encoding="utf-8"),
+        )
+        if match:
+            parsed = _parse_python_version(match.group(1))
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _python_floor(target: Path) -> tuple[tuple[int, int], str]:
+    """The EFFECTIVE floor: the higher of this skill's own floor and the
+    target's declared one, with a source label naming which one won —
+    `Refused` must be able to name both the floor and its source, never
+    just a bare version number a reader has to guess the origin of.
+    """
+    declared = _target_declared_python_floor(target)
+    if declared is not None and declared > SKILL_PYTHON_FLOOR:
+        return declared, "target declaration"
+    return SKILL_PYTHON_FLOOR, "skill default"
+
+
+def _probe_python_version(python: str) -> tuple[int, int] | None:
+    """`<python> --version`, `shell=False` with a list argv exactly like the
+    `venv` invocation below — no string interpolation, so a `--python`
+    value containing shell metacharacters is passed as one literal argv
+    element and fails as a missing executable, never as a shell expansion.
+    `None` when the interpreter cannot even be launched; that failure
+    surfaces at the real `venv` invocation, never invented here.
+    """
+    try:
+        proc = subprocess.run([python, "--version"], capture_output=True, text=True)
+    except OSError:
+        return None
+    return _parse_python_version(proc.stdout or proc.stderr)
+
+
+def _refuse_if_below_floor(
+    version: tuple[int, int] | None, floor: tuple[int, int], source: str,
+) -> None:
+    if version is None or version >= floor:
+        return
+    raise Refused(
+        "PYTHON_BELOW_FLOOR",
+        f"interpreter reports Python {version[0]}.{version[1]}, below the "
+        f"effective floor {floor[0]}.{floor[1]} ({source}). Provision a "
+        f"newer interpreter with --python.",
+    )
+
+
 def cmd_env(args: argparse.Namespace) -> dict:
     require_non_forge_interpreter()
     target = resolve_target(args.target)
     venv_dir = target / ".venv"
+    floor, floor_source = _python_floor(target)
+    bin_dir = "Scripts" if os.name == "nt" else "bin"
+    interpreter = venv_dir / bin_dir / ("python.exe" if os.name == "nt" else "python")
+    pip = venv_dir / bin_dir / ("pip.exe" if os.name == "nt" else "pip")
     created = False
     if not (venv_dir / "pyvenv.cfg").exists():
+        # Check site 1: BEFORE spending the work of building a venv from an
+        # under-floor interpreter, which the reuse-path check below could
+        # only ever discover AFTER — leaving a useless venv on disk.
         if args.python:
+            _refuse_if_below_floor(_probe_python_version(args.python), floor, floor_source)
             proc = subprocess.run(
                 [args.python, "-m", "venv", str(venv_dir)], capture_output=True, text=True,
             )
@@ -4437,12 +4539,34 @@ def cmd_env(args: argparse.Namespace) -> dict:
         else:
             venv.EnvBuilder(with_pip=True, clear=False).create(venv_dir)
         created = True
-    bin_dir = "Scripts" if os.name == "nt" else "bin"
-    interpreter = venv_dir / bin_dir / ("python.exe" if os.name == "nt" else "python")
-    pip = venv_dir / bin_dir / ("pip.exe" if os.name == "nt" else "pip")
+        # Python 3.12 dropped setuptools from `ensurepip`: a fresh venv's
+        # `pip` has no PEP 517 build backend at all, and `nextCommand`
+        # below ends in an editable install (`pip install -e <target>`)
+        # that needs exactly one. Measured: a freshly built 3.12 venv fails
+        # that editable step with `BackendUnavailable: Cannot import
+        # 'setuptools.build_meta'` while every non-editable requirement
+        # installs fine — this venv promises a command it cannot run on its
+        # own. Seeding here is what makes the promise true; existing venvs
+        # on this machine already carry setuptools as a transitive build
+        # dependency, so this is specific to a FRESH venv, not every venv.
+        seed = subprocess.run(
+            [str(pip), "install", "setuptools", "wheel"], capture_output=True, text=True,
+        )
+        if seed.returncode != 0:
+            raise Refused(
+                "VENV_FAILED",
+                seed.stderr.strip() or "could not seed the build backend "
+                "(setuptools, wheel) this venv's own nextCommand needs",
+            )
     version = subprocess.run(
         [str(interpreter), "--version"], capture_output=True, text=True,
     ).stdout.strip()
+    # Check site 2: AFTER the interpreter is known for certain — the reuse
+    # path (`status: "present"`) never runs site 1 at all (nothing is built
+    # on that path), so this is the only site that can see an EXISTING
+    # under-floor venv, and it is the last check before this command would
+    # otherwise report success.
+    _refuse_if_below_floor(_parse_python_version(version), floor, floor_source)
     # One invocation, forge dev-reqs first and every honoured target manifest
     # last (Decision 8): joint resolution surfaces a real conflict as pip's own
     # error instead of a later, silently shadowed pin, and target-last means the
@@ -5557,7 +5681,8 @@ def main(argv: list[str] | None = None) -> int:
         if name == "env":
             p.add_argument("--python", default=None,
                            help="interpreter to build the venv from (default: this one). "
-                                "The layout templates assume 3.10+")
+                                "Refused below 3.10, or the target's own declared "
+                                "python_requires floor, whichever is higher.")
         elif name == "compose":
             # Composition reads the findings and the entry, nothing layout-shaped.
             p.add_argument("--finding", required=True, help="id of the finding to compose")

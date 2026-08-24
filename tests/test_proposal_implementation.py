@@ -10028,6 +10028,115 @@ class ManifestProvisioningTests(unittest.TestCase):
             self.assertNotIn(word, source.lower())
 
 
+class PythonFloorTests(unittest.TestCase):
+    """`env` used to promise a floor (`--help`: "The layout templates
+    assume 3.10+") and check nothing: a 3.9.6 interpreter built a venv and
+    reported `status: "created"` with no warning. Two check sites, one
+    shared predicate (`_python_floor`) -- a fresh-build route
+    (`--python` below the floor) and a reuse route (an existing venv whose
+    own interpreter is below the floor); neither can see the other's
+    failure mode.
+    """
+
+    def box(self, suffix, files=()):
+        path = FORGE / "implementations" / f"_pyfloor_{suffix}_{os.getpid()}"
+        path.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, path, ignore_errors=True)
+        for name, text in files:
+            (path / name).write_text(text, encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(path)], check=True, capture_output=True)
+        return path
+
+    def fake_interpreter(self, target: Path, version_text: str) -> Path:
+        """A stand-in `python` that answers only `--version`, never a real
+        interpreter -- this test never needs one to reach far enough to
+        exercise a REFUSAL, which must happen before any real `venv`
+        invocation.
+        """
+        script = target / "fake_python"
+        script.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "--version" ]; then\n'
+            f'    echo "{version_text}"\n'
+            "    exit 0\n"
+            "fi\n"
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        return script
+
+    def test_cmd_env_refuses_under_floor_interpreter_skill_default(self):
+        target = self.box("skillfloor")
+        fake = self.fake_interpreter(target, "Python 3.9.6")
+        with self.assertRaises(impl.Refused) as caught:
+            impl.cmd_env(argparse.Namespace(target=str(target), python=str(fake)))
+        self.assertEqual(caught.exception.code, "PYTHON_BELOW_FLOOR")
+        self.assertIn("3.10", caught.exception.detail)
+        self.assertIn("skill default", caught.exception.detail)
+        self.assertFalse((target / ".venv").exists(),
+                          "a refused build must leave no venv behind")
+
+    def test_cmd_env_refuses_under_floor_interpreter_target_declaration_higher(self):
+        target = self.box(
+            "targetfloor",
+            [("setup.cfg", "[options]\npython_requires = >=3.11\n")],
+        )
+        fake = self.fake_interpreter(target, "Python 3.10.4")
+        with self.assertRaises(impl.Refused) as caught:
+            impl.cmd_env(argparse.Namespace(target=str(target), python=str(fake)))
+        self.assertEqual(caught.exception.code, "PYTHON_BELOW_FLOOR")
+        self.assertIn("3.11", caught.exception.detail)
+        self.assertIn("target declaration", caught.exception.detail)
+
+    def test_cmd_env_reuse_site_refuses_existing_under_floor_venv(self):
+        target = self.box("reuse")
+        venv_dir = target / ".venv"
+        bin_dir = venv_dir / ("Scripts" if os.name == "nt" else "bin")
+        bin_dir.mkdir(parents=True)
+        (venv_dir / "pyvenv.cfg").write_text("", encoding="utf-8")
+        fake = self.fake_interpreter(target, "Python 3.9.6")
+        interpreter_path = bin_dir / ("python.exe" if os.name == "nt" else "python")
+        shutil.copy(fake, interpreter_path)
+        interpreter_path.chmod(0o755)
+        with self.assertRaises(impl.Refused) as caught:
+            impl.cmd_env(argparse.Namespace(target=str(target), python=None))
+        self.assertEqual(caught.exception.code, "PYTHON_BELOW_FLOOR")
+        self.assertIn("3.10", caught.exception.detail)
+
+    def test_at_or_above_floor_created_reporting_unchanged(self):
+        target = self.box("atfloor")
+        env_result = impl.cmd_env(
+            argparse.Namespace(target=str(target), python=sys.executable))
+        self.assertEqual(env_result["status"], "created")
+        self.assertNotIn("PYTHON_BELOW_FLOOR", json.dumps(env_result))
+
+    def test_fresh_venv_is_seeded_with_a_build_backend(self):
+        """Python 3.12 dropped `setuptools` from `ensurepip`; a fresh venv's
+        own `pip` alone cannot satisfy `nextCommand`'s editable install
+        (`pip install -e <target>`), which needs a PEP 517 backend.
+        """
+        target = self.box("seeded")
+        env_result = impl.cmd_env(
+            argparse.Namespace(target=str(target), python=sys.executable))
+        pip = Path(env_result["pip"])
+        listing = subprocess.run(
+            [str(pip), "list"], capture_output=True, text=True, check=True,
+        ).stdout.lower()
+        self.assertIn("setuptools", listing)
+
+    def test_python_floor_prefers_the_higher_of_skill_and_target(self):
+        lower = self.box("lower", [("setup.cfg", "[options]\npython_requires = >=3.8\n")])
+        floor, source = impl._python_floor(lower)
+        self.assertEqual(floor, impl.SKILL_PYTHON_FLOOR)
+        self.assertEqual(source, "skill default")
+
+        higher = self.box("higher", [("setup.cfg", "[options]\npython_requires = >=3.12\n")])
+        floor, source = impl._python_floor(higher)
+        self.assertEqual(floor, (3, 12))
+        self.assertEqual(source, "target declaration")
+
+
 class EntryModuleLivenessTests(unittest.TestCase):
     """`live` must come from an EXECUTED import of the target's own entry
     module, never from `config` alone — a pure-Python module imports fine on
