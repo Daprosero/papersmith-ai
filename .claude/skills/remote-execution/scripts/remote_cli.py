@@ -498,9 +498,46 @@ def cmd_submit(
     source_digest: Callable[[Path, str], str] | None = None,
     product: str | None = None,
     smoke: bool = False,
+    units: Sequence[str] | None = None,
 ) -> dict:
     """Guard, resolve a product, plan, submit, and record — the whole submit
     path, in this order.
+
+    `units` is `submit --unit`'s own campaign switch (Finding 2; Decisions
+    6, 7) — repeatable, the exact same flag `cmd_distribute` already
+    declares. `None` or empty keeps every existing caller on TODAY's
+    single-worker path below, byte-identical: `packer.select()` (no
+    `--worker`) or `packer.plan()` (a named `--worker`), one
+    `adapter.submit()`, one ledger event. A non-empty `units` switches
+    into CAMPAIGN mode instead: `packer.distribute()` replaces
+    `select()`/`plan()` entirely, consuming the spread across every
+    healthy account rather than stopping at the first one — the defect
+    this phase closes (`cmd_distribute`'s own docstring: "nothing is
+    recorded and nothing is handed to" the adapter). `worker` is refused
+    together with `units`: campaign mode has no "which account" fork for a
+    caller to override, the same reason `distribute()` itself takes no
+    `worker` parameter.
+
+    Guard order past the target resolution is unchanged either way:
+    `guard_entrypoint()` → `product_for()` → `_gate_job_folder_pin()` →
+    the digest, computed once and reused for every assignment in campaign
+    mode — a single `distribute()` call already reads live health for
+    every worker in one pass, so there is no per-assignment health re-read
+    to stagger the digest around.
+
+    Campaign mode issues one `adapter.submit()` and appends one ledger
+    event per `packer.Distribution` assignment (Decision 6) — never one
+    per unit, since a worker's whole assigned unit list travels inside
+    that ONE job's opaque `run_config["units"]`, unread by this function.
+    An assignment whose `units` came back empty (a healthy account with
+    room but nothing left to hand it, `packer.Assignment`'s own documented
+    case) submits nothing and is reported with `submissionId: None` —
+    "had room, didn't need it" stays a fact about capacity, never a
+    fabricated job. The returned mapping mirrors `packer.Distribution`
+    field for field (Decision 7): `assignments[]`, `unplaced[]`, and
+    `skipped[]` (worker → `Skip.reason`, unprefixed, exactly as
+    `cmd_distribute` already renders it) — carried through unchanged, no
+    new triage logic invented here.
 
     `smoke=True` (`submit --smoke`) does two things together, both
     load-bearing (design #744 section 7, and see `SMOKE_LEDGER_FILENAME`'s
@@ -595,6 +632,70 @@ def cmd_submit(
         else _main_ledger_path(target, resolved_product)
     )
     ledger_lines = _read_ledger_lines(ledger_path)
+
+    if units:
+        if worker is not None:
+            raise RemoteCLIError(
+                "--worker and --unit are mutually exclusive: campaign mode "
+                "(--unit) spreads across every healthy account itself and "
+                "has no single named account for --worker to select"
+            )
+
+        distribution = PACKER.distribute(
+            adapter=adapter,
+            units=units,
+            ledger_lines=ledger_lines,
+            live_digest=digest,
+        )
+
+        assignments: list[dict] = []
+        for row in distribution.assignments:
+            submission_id = None
+            if row.units:
+                run_config = {"mode": "smoke"} if smoke else {}
+                run_config = dict(run_config)
+                run_config["units"] = list(row.units)
+                job = ADAPTER.Job(
+                    entrypoint=resolved_entrypoint,
+                    run_config=run_config,
+                    worker=row.plan.worker,
+                )
+                submission = adapter.submit(job)
+                submission_id = submission.id
+
+                event = LEDGER.submitted_event(
+                    entrypoint=str(relative_entrypoint),
+                    source_digest=digest,
+                    submission_id=submission_id,
+                    worker=row.plan.worker,
+                    requested_capacity=row.plan.requested,
+                    granted_capacity=row.plan.granted,
+                )
+                LEDGER.append(ledger_path, event)
+
+            assignments.append(
+                {
+                    "worker": row.plan.worker,
+                    "requested": row.plan.requested,
+                    "cap": row.plan.cap,
+                    "inFlight": row.plan.in_flight,
+                    "granted": row.plan.granted,
+                    "inFlightSource": row.plan.in_flight_source,
+                    "units": list(row.units),
+                    "submissionId": submission_id,
+                }
+            )
+
+        return {
+            "assignments": assignments,
+            "unplaced": list(distribution.unplaced),
+            "skipped": [
+                {"worker": row.worker, "reason": row.reason} for row in distribution.skipped
+            ],
+            "ledgerPath": ledger_path,
+            "staleness": _job_folder_staleness(resolved_entrypoint),
+            "smoke": smoke,
+        }
 
     if worker is None:
         plan = PACKER.select(
@@ -1424,6 +1525,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--smoke", action="store_true",
         help="submit a rehearsal run: mode='smoke', recorded to smoke.jsonl, never ledger.jsonl",
     )
+    submit.add_argument(
+        "--unit", dest="units", action="append", default=None,
+        help="repeatable: the exact same flag `distribute` declares. Switches "
+        "`submit` into campaign mode -- `packer.distribute()` replaces "
+        "`packer.select()`/`packer.plan()`, spreading across every healthy "
+        "account instead of stopping at the first one. Mutually exclusive "
+        "with --worker: campaign mode has no single named account to select.",
+    )
 
     status = subparsers.add_parser(
         "status", help="report the fold for one product's ledger; resolves nothing"
@@ -1563,6 +1672,31 @@ def _build_parser() -> argparse.ArgumentParser:
             "bypasses a computedNotDeclared refusal"
         ),
     )
+    generate_job.add_argument(
+        "--accelerator-kind", dest="accelerator_kind", default=None,
+        help="override: the expected accelerator kind (e.g. 'cuda'). Omitted "
+        "together with --accelerator-architecture, the service adapter's own "
+        "registered default is used instead (never a forge-invented value); "
+        "given without --accelerator-architecture, refused.",
+    )
+    generate_job.add_argument(
+        "--accelerator-architecture", dest="accelerator_architectures",
+        action="append", default=None,
+        help="repeatable override: an expected accelerator architecture "
+        "(e.g. 'sm_60'). Given without --accelerator-kind, refused.",
+    )
+    generate_job.add_argument(
+        "--environment-requirement", dest="environment_requirements",
+        action="append", default=None,
+        help="repeatable: a pip requirement specifier for the target's own "
+        "declared environment install — target knowledge, never a service "
+        "or forge default.",
+    )
+    generate_job.add_argument(
+        "--environment-index-url", dest="environment_index_url", default=None,
+        help="optional index URL for --environment-requirement; given "
+        "without at least one --environment-requirement, refused.",
+    )
 
     smoke = subparsers.add_parser(
         "smoke", help="smoke-run bookkeeping: recording a rehearsal's evidence-derived verdict"
@@ -1621,11 +1755,26 @@ def main(argv: list[str] | None = None) -> int:
                 adapter=_construct_adapter(adapter_cls, provider),
                 product=args.product,
                 smoke=args.smoke,
+                units=args.units,
             )
         except (RemoteCLIError, PACKER.PackerError, LEDGER.LedgerError,
                 ADAPTER.AdapterError, JOBFOLDER.JobFolderError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
+
+        if args.units:
+            # Campaign mode's own JSON shape -- `assignments[]`/
+            # `unplaced[]`/`skipped[]`, mirroring `distribute`'s own CLI
+            # rendering, never the single-submission shape below.
+            print(
+                json.dumps(
+                    {**result, "ledgerPath": str(result["ledgerPath"])},
+                    sort_keys=True,
+                )
+            )
+            if not result["assignments"] and result["unplaced"]:
+                return 1
+            return 0
 
         print(
             json.dumps(
@@ -1798,6 +1947,10 @@ def main(argv: list[str] | None = None) -> int:
                 smoke_required_evidence=args.smoke_required_evidence or None,
                 regenerate=args.regenerate,
                 accept_unresolved=args.accept_unresolved,
+                accelerator_kind=args.accelerator_kind,
+                accelerator_architectures=args.accelerator_architectures,
+                environment_requirements=args.environment_requirements,
+                environment_index_url=args.environment_index_url,
             )
         except (JOBFOLDER.JobFolderError, ADAPTER.AdapterError, KeyError) as exc:
             print(f"error: {exc}", file=sys.stderr)

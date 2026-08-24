@@ -1,6 +1,6 @@
 ---
 name: remote-execution
-description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry), the packer's capacity clamp and worker auto-selection, the full `remote_cli` front door (`submit` with its path guard, optional `--worker` and `--smoke`, `status`, `poll`, `fetch` with quarantine, `reconcile`, `distribute`, `generate-job`, `smoke record`, `readiness`), and one concrete backend: `adapters/kaggle.py` — the ONLY file in this entire skill allowed to name a service. It shells out to `adapters/kaggle_driver.py`, the ONLY file in this skill permitted to import the packaged `kagglesdk` client (pinned `kaggle==1.7.4.5`, since `kagglesdk` ships inside that distribution) rather than the `kaggle` CLI's own Basic-auth path, which the stored token shape cannot authenticate against at all; derives worker identity solely from kaggle-accounts' own sanctioned `list --json` command, and accepts credentials only as a `CredentialHandle(worker_id, token_path)` — read at exactly one expression, in that one file, and put on `KAGGLE_API_TOKEN` for one child process, because `kagglesdk`'s own `_try_fill_auth()` reads that variable by value with no path check at all — the CLI itself authenticates neither a path nor that variable. A rehearsal run (`smoke.jsonl`, a distinct file from the main ledger) proves readiness from evidence-completeness, never a human assertion, and never a clock. Stdlib-only except that one named driver script."
+description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry), the packer's capacity clamp and worker auto-selection, the full `remote_cli` front door (`submit` with its path guard, optional `--worker` and `--smoke`, repeatable `--unit` for full-spread campaign mode, `status`, `poll`, `fetch` with quarantine, `reconcile`, `distribute`, `generate-job`, `smoke record`, `readiness`), and one concrete backend: `adapters/kaggle.py` — the ONLY file in this entire skill allowed to name a service. It shells out to `adapters/kaggle_driver.py`, the ONLY file in this skill permitted to import the packaged `kagglesdk` client (pinned `kaggle==1.7.4.5`, since `kagglesdk` ships inside that distribution) rather than the `kaggle` CLI's own Basic-auth path, which the stored token shape cannot authenticate against at all; derives worker identity solely from kaggle-accounts' own sanctioned `list --json` command, and accepts credentials only as a `CredentialHandle(worker_id, token_path)` — read at exactly one expression, in that one file, and put on `KAGGLE_API_TOKEN` for one child process, because `kagglesdk`'s own `_try_fill_auth()` reads that variable by value with no path check at all — the CLI itself authenticates neither a path nor that variable. A rehearsal run (`smoke.jsonl`, a distinct file from the main ledger) proves readiness from evidence-completeness, never a human assertion, and never a clock. Stdlib-only except that one named driver script."
 ---
 
 # Remote Execution
@@ -129,6 +129,28 @@ Three modules exist so far, each service-blind and stdlib-only:
     the `Job` handed to the adapter, and routes the resulting `submitted`
     event to `smoke.jsonl` instead of `ledger.jsonl` (see "Smoke" below) —
     both together, never one without the other.
+  - `submit --unit` (repeatable, the exact same flag `distribute` declares)
+    switches into CAMPAIGN mode (Finding 2; Decisions 6, 7): `--worker` is
+    refused together with it (campaign mode spreads itself; there is no
+    single named account for `--worker` to select), and
+    `packer.distribute()` replaces `packer.select()`/`packer.plan()`
+    entirely — the guarantee is EVERY healthy account, never the first
+    one. `cmd_distribute`'s own read-only report used to be the only
+    consumer of that spread; `submit --unit` is the write path that
+    actually issues it. One `adapter.submit()` and one ledger event per
+    `packer.Distribution` assignment — never one per unit, since a
+    worker's whole assigned unit list travels inside that ONE job's opaque
+    `run_config["units"]`. An assignment a healthy account was granted but
+    had no units left to receive (`packer.Assignment`'s own documented
+    "had room, didn't need it" case) submits nothing and reports
+    `submissionId: null` — capacity with nothing to spend is never turned
+    into a fabricated job. The result mirrors `packer.Distribution` field
+    for field: `assignments[]` (worker, its whole `Plan`, its units, its
+    submission id), `unplaced[]` (units that did not fit, by identity),
+    and `skipped[]` (`worker -> Skip.reason`, unprefixed) — an excluded
+    account is always named with its reason, never silently dropped.
+    Single-unit `submit` (no `--unit` at all) is untouched: today's
+    `select()`/`plan()` path, byte-identical.
   - `status` folds the ledger and reports per-entrypoint state, what is
     `staleInFlight`, what is quarantined, and `unreadableLines`. It accepts
     no `adapter` parameter at all — a structural fact, not a convention —
@@ -484,6 +506,26 @@ executable — no test in this suite reaches the network or a real account).
     actually turns on. Omitted entirely, no `accelerator` block is
     written and a job behaves exactly as it did before this field
     existed — additive, `schemaVersion` stays 1.
+  - **The from-zero gap, closed (session addition): a job generated with
+    no caller-declared accelerator at all is not left unprotected
+    anymore.** `generate-job` exposes `--accelerator-kind`/
+    `--accelerator-architecture` (repeatable) as an OVERRIDE only; a
+    caller who gives neither gets `jobfolder.generate_job()`'s own
+    fallback instead of a silent omission: `ADAPTER.resolve_default_accelerator(service)`,
+    a THIRD registry beside `register`/`register_metadata`, the same
+    shape and the same reason — service knowledge (which architecture a
+    backend is expected to hand out) never becomes a forge-invented
+    value, and a backend that registers no default leaves generation
+    exactly as it always was, no block written. `adapters/kaggle.py`
+    registers its own, beside `KAGGLE_WORKER_CAPACITY`, in the identical
+    honest framing: observed against real rehearsals (both a `sm_60` and
+    a `sm_75` card seen for the same request), not a law, and expected to
+    be revised as the service's own hardware pool changes.
+    `--environment-requirement` (repeatable)/`--environment-index-url`
+    carry no such default — an install is TARGET knowledge (which
+    packages one specific repository needs), so `generate-job` only ever
+    forwards what a caller explicitly declares, never a registry, never
+    a guess.
   - **Compare against the INSTALLED build, and refuse only after
     `bootstrap.json` is written.** `detect_hardware()` now also captures
     `environment.archList` (`torch.cuda.get_arch_list()` — the

@@ -6212,6 +6212,165 @@ class DistributeCliTests(unittest.TestCase):
             self.assertEqual(payload["assignments"][0]["units"], units)
 
 
+class CampaignSubmitTests(unittest.TestCase):
+    """Phase 3 (Finding 2; Decisions 6, 7): `submit --unit` (repeatable,
+    the same flag `distribute` already declares) switches `cmd_submit`
+    into CAMPAIGN mode -- `packer.distribute()` replaces `packer.select()`,
+    and the result reports `assignments[]`/`unplaced[]`/`skipped[worker ->
+    reason]` straight from `packer.Distribution`/`Skip.reason`, never a new
+    triage layer invented here (Decision 7). Single-unit `submit` (no
+    `--unit` at all) stays on today's `select()`/`plan()` path,
+    byte-identical (Decision 6's regression lock).
+
+    `PACKER.select`/`PACKER.distribute` are patched to refuse a call this
+    guard says should never happen -- the same fixture-and-call-count
+    discipline `WorkerSelectionAndMeteringTests` already uses one layer
+    down -- never asserted by reading `cmd_submit`'s own source.
+    """
+
+    def _target_and_notebook(self, tmp: str, name: str = "MIL-CREDA") -> tuple[Path, Path]:
+        target = Path(tmp) / "repo"
+        notebooks = _make_product(target, name)
+        notebook = notebooks / "a.ipynb"
+        notebook.write_text("{}", encoding="utf-8")
+        return target, notebook
+
+    def test_units_switch_to_campaign_mode_and_never_call_select(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 2)])
+
+            with unittest.mock.patch.object(
+                PACKER, "select",
+                side_effect=AssertionError(
+                    "packer.select() must never be called once --unit "
+                    "switches cmd_submit into campaign mode"
+                ),
+            ):
+                result = REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, requested=1,
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                    units=("u0", "u1", "u2", "u3"),
+                )
+
+            self.assertIn("assignments", result)
+            submitted_workers = {row["worker"] for row in result["assignments"]}
+            self.assertEqual(submitted_workers, {"w1", "w2"})
+            self.assertEqual(sorted(adapter.submit_calls), ["w1", "w2"])
+
+    def test_campaign_result_reports_assignments_unplaced_skipped_from_distribution(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            worker_ids = ["w1", "w2", "w3", "w4", "w5"]
+            adapter = MultiWorkerFakeAdapter(
+                workers=[(w, 1) for w in worker_ids],
+                unauthorized=frozenset({"w5"}),
+            )
+            # Four healthy accounts, cap 1 each: 4 places for 6 units, 2
+            # unplaced, the fifth (revoked) named in `skipped` with reason.
+            units = tuple(f"u{i}" for i in range(6))
+
+            result = REMOTE_CLI.cmd_submit(
+                target=target, entrypoint=notebook, requested=1,
+                adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                units=units,
+            )
+
+            self.assertEqual(len(result["assignments"]), 4)
+            submitted_workers = {row["worker"] for row in result["assignments"]}
+            self.assertEqual(submitted_workers, {"w1", "w2", "w3", "w4"})
+            self.assertEqual(len(result["unplaced"]), 2)
+            self.assertEqual(len(result["skipped"]), 1)
+            self.assertEqual(result["skipped"][0]["worker"], "w5")
+            self.assertIn("unauthorized", result["skipped"][0]["reason"])
+            self.assertEqual(sorted(adapter.submit_calls), ["w1", "w2", "w3", "w4"])
+            # One ledger event per assignment -- never one per unit.
+            ledger_lines = Path(result["ledgerPath"]).read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(ledger_lines), 4)
+            for row in result["assignments"]:
+                self.assertIn("submissionId", row)
+                self.assertIsNotNone(row["submissionId"])
+
+    def test_single_unit_submit_without_units_stays_on_select_path(self) -> None:
+        """Decision 6's regression lock: `cmd_submit` with no `units=` at
+        all is untouched by this phase -- the exact `select()`/`plan()`
+        path today's callers already depend on.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 2)])
+
+            with unittest.mock.patch.object(
+                PACKER, "distribute",
+                side_effect=AssertionError(
+                    "packer.distribute() must never be called for a "
+                    "single-unit submission with no --unit at all"
+                ),
+            ):
+                result = REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, requested=1,
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                )
+
+            self.assertEqual(result["submission"].worker, "w1")
+            self.assertEqual(adapter.submit_calls, ["w1"])
+            self.assertNotIn("assignments", result)
+
+    def test_cli_submit_repeatable_unit_flag_switches_to_campaign_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 2)])
+            stdout = io.StringIO()
+            with unittest.mock.patch.object(
+                REMOTE_CLI, "_load_backend_module", return_value=None
+            ), unittest.mock.patch.object(
+                REMOTE_CLI.ADAPTER, "resolve", return_value=MultiWorkerFakeAdapter,
+            ), unittest.mock.patch.object(
+                REMOTE_CLI, "_construct_adapter", return_value=adapter,
+            ), unittest.mock.patch.object(
+                REMOTE_CLI, "_load_source_digest", return_value=lambda t, p: "d" * 64,
+            ), contextlib.redirect_stdout(stdout):
+                argv = [
+                    "submit", "--target", str(target), "--entrypoint", str(notebook),
+                    "--backend", "fake-multi",
+                    "--unit", "u0", "--unit", "u1", "--unit", "u2", "--unit", "u3",
+                ]
+                exit_code = REMOTE_CLI.main(argv)
+
+            self.assertEqual(exit_code, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertIn("assignments", payload)
+            self.assertEqual(len(payload["assignments"]), 2)
+            self.assertEqual(payload["unplaced"], [])
+
+    def test_cli_submit_with_no_unit_flag_keeps_single_unit_json_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+            stdout = io.StringIO()
+            with unittest.mock.patch.object(
+                REMOTE_CLI, "_load_backend_module", return_value=None
+            ), unittest.mock.patch.object(
+                REMOTE_CLI.ADAPTER, "resolve", return_value=MultiWorkerFakeAdapter,
+            ), unittest.mock.patch.object(
+                REMOTE_CLI, "_construct_adapter", return_value=adapter,
+            ), unittest.mock.patch.object(
+                REMOTE_CLI, "_load_source_digest", return_value=lambda t, p: "d" * 64,
+            ), contextlib.redirect_stdout(stdout):
+                argv = [
+                    "submit", "--target", str(target), "--entrypoint", str(notebook),
+                    "--backend", "fake-multi",
+                ]
+                exit_code = REMOTE_CLI.main(argv)
+
+            self.assertEqual(exit_code, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertIn("submissionId", payload)
+            self.assertNotIn("assignments", payload)
+
+
 class AcceleratorRequestDoctrineTests(unittest.TestCase):
     """`assemble_metadata` must emit the accelerator key the installed
     client actually reads.
@@ -6757,6 +6916,297 @@ class JobFolderTests(unittest.TestCase):
             run_config = json.loads((job_dir / "run-config.json").read_text(encoding="utf-8"))
             self.assertEqual(len(run_config["unresolvedImports"]), 1)
             self.assertIn("__import__", run_config["unresolvedImports"][0])
+
+
+class DefaultAcceleratorProvisioningTests(unittest.TestCase):
+    """Session addition (not in the original `tasks.md`, added at the
+    user's explicit request): the from-zero gap. `generate-job` had no
+    `--accelerator-*`/`--environment-*` flags at all, and `generate_job()`
+    passed `build_run_config` fifteen-plus named parameters with neither
+    the accelerator nor the environment install among them -- a job
+    created from zero came out with no accelerator declaration and no
+    install block, the exact "producer with no caller" defect class this
+    whole batch exists to close.
+
+    The fix keeps the three-category boundary the user drew: the
+    accelerator ARCHITECTURE default is SERVICE knowledge (`adapters/
+    kaggle.py` is the one file permitted to state it, the same as
+    `KAGGLE_WORKER_CAPACITY`), never a forge default and never required of
+    every backend -- a THIRD registry (`register_default_accelerator`/
+    `resolve_default_accelerator`), the same shape as the existing
+    `register_metadata`, lets `generate_job()` ask a service adapter for
+    its default without ever naming that service. The environment
+    install stays TARGET knowledge -- explicit declaration only, no
+    registry, no default, ever.
+    """
+
+    FAKE_SERVICE_WITH_DEFAULT = "fake-service-with-default-accelerator"
+    FAKE_SERVICE_NO_DEFAULT = "fake-service-no-default-accelerator"
+    FAKE_DEFAULT_KIND = "cuda"
+    FAKE_DEFAULT_ARCHITECTURES = ("sm_60", "sm_75")
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        for service in (cls.FAKE_SERVICE_WITH_DEFAULT, cls.FAKE_SERVICE_NO_DEFAULT):
+            ADAPTER.register_metadata(
+                service,
+                lambda run_config: ("fake-metadata.json", json.dumps({"ok": True})),
+            )
+        ADAPTER.register_default_accelerator(
+            cls.FAKE_SERVICE_WITH_DEFAULT,
+            lambda: (cls.FAKE_DEFAULT_KIND, cls.FAKE_DEFAULT_ARCHITECTURES),
+        )
+
+    def setUp(self) -> None:
+        patcher = unittest.mock.patch.object(
+            JOBFOLDER, "verify_pin_preconditions", return_value=None
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _fixture_assets(self, tmp: str) -> tuple[Path, Path]:
+        bootstrap = Path(tmp) / "fixture_bootstrap.py"
+        invoke = Path(tmp) / "fixture_invoke.py"
+        bootstrap.write_text("# fixture bootstrap cell\nprint('cell-0')\n", encoding="utf-8")
+        invoke.write_text("# fixture invoke cell\nprint('cell-1')\n", encoding="utf-8")
+        return bootstrap, invoke
+
+    def _ensure_default_source_tree(self, target: Path) -> None:
+        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        if not harness.exists():
+            harness.parent.mkdir(parents=True, exist_ok=True)
+            harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
+
+    def _generate(self, tmp: str, target: Path, *, service: str, **overrides) -> Path:
+        bootstrap, invoke = self._fixture_assets(tmp)
+        self._ensure_default_source_tree(target)
+        kwargs = dict(
+            target=target,
+            service=service,
+            job_name="search-a",
+            product="MIL-CREDA",
+            commit="a" * 40,
+            repo_url="https://example.invalid/repo.git",
+            repo_ref="main",
+            clone_paths=["src/MIL_CREDA_Benchmark"],
+            run_module="MIL_CREDA_Benchmark.harness",
+            run_function="campaign",
+            bootstrap_asset=bootstrap,
+            invoke_asset=invoke,
+        )
+        kwargs.update(overrides)
+        return JOBFOLDER.generate_job(**kwargs)
+
+    # -- adapter.py: the third registry, on its own -----------------------
+
+    def test_adapter_registry_round_trips_default_accelerator_provider(self) -> None:
+        ADAPTER.register_default_accelerator(
+            "round-trip-fake", lambda: ("cuda", ("sm_86",))
+        )
+        provider = ADAPTER.resolve_default_accelerator("round-trip-fake")
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider(), ("cuda", ("sm_86",)))
+
+    def test_resolve_default_accelerator_returns_none_when_nothing_registered(self) -> None:
+        self.assertIsNone(
+            ADAPTER.resolve_default_accelerator("no-such-service-ever-registered")
+        )
+
+    # -- adapters/kaggle.py: the service's own declared default -----------
+
+    def test_kaggle_registers_its_own_default_accelerator(self) -> None:
+        """The declared default is service knowledge, framed the same
+        honest way `KAGGLE_WORKER_CAPACITY` already is: observed, not a
+        law. This locks the REGISTRATION, not a guessed value -- the
+        assertion below reads back exactly the module's own constants.
+        """
+        provider = ADAPTER.resolve_default_accelerator("kaggle")
+        self.assertIsNotNone(provider, "adapters/kaggle.py must register a default")
+        kind, architectures = provider()
+        self.assertEqual(kind, KAGGLE.KAGGLE_ACCELERATOR_KIND)
+        self.assertEqual(tuple(architectures), tuple(KAGGLE.KAGGLE_ACCELERATOR_ARCHITECTURES))
+        # An architecture LIST, never a device name (Decision 1's own
+        # rule, held here too): no literal hardware model name leaks in.
+        for name in ("Tesla", "P100", "T4"):
+            self.assertNotIn(name, kind)
+            for arch in architectures:
+                self.assertNotIn(name, arch)
+
+    # -- jobfolder.generate_job(): resolves the gap ------------------------
+
+    def test_generate_job_fills_default_accelerator_from_service_when_undeclared(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            destination = self._generate(
+                tmp, target, service=self.FAKE_SERVICE_WITH_DEFAULT,
+            )
+            run_config = json.loads(
+                (destination / "run-config.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                run_config["accelerator"],
+                {"kind": self.FAKE_DEFAULT_KIND, "architectures": list(self.FAKE_DEFAULT_ARCHITECTURES)},
+            )
+
+    def test_generate_job_explicit_override_wins_over_service_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            destination = self._generate(
+                tmp, target, service=self.FAKE_SERVICE_WITH_DEFAULT,
+                accelerator_kind="cuda", accelerator_architectures=["sm_90"],
+            )
+            run_config = json.loads(
+                (destination / "run-config.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                run_config["accelerator"], {"kind": "cuda", "architectures": ["sm_90"]},
+            )
+
+    def test_generate_job_with_no_registered_default_omits_accelerator_block(self) -> None:
+        """A service that never registers a default behaves exactly as
+        every service did before this addition -- no gate, no block,
+        never a guess."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            destination = self._generate(
+                tmp, target, service=self.FAKE_SERVICE_NO_DEFAULT,
+            )
+            run_config = json.loads(
+                (destination / "run-config.json").read_text(encoding="utf-8")
+            )
+            self.assertNotIn("accelerator", run_config)
+
+    def test_generate_job_threads_environment_requirements_and_index_url(self) -> None:
+        """Target knowledge, never a forge default: explicit declaration
+        only, no registry, no default -- unlike the accelerator above.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            destination = self._generate(
+                tmp, target, service=self.FAKE_SERVICE_NO_DEFAULT,
+                environment_requirements=["torch==9.9.9+cu999"],
+                environment_index_url="https://example.invalid/whl",
+            )
+            run_config = json.loads(
+                (destination / "run-config.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                run_config["environment"],
+                {
+                    "install": {
+                        "requirements": ["torch==9.9.9+cu999"],
+                        "indexUrl": "https://example.invalid/whl",
+                    }
+                },
+            )
+
+    # -- CLI wiring: --accelerator-*/--environment-* flags -----------------
+
+    def test_generate_job_parser_declares_accelerator_and_environment_flags(self) -> None:
+        parser = REMOTE_CLI._build_parser()
+        args = parser.parse_args([
+            "generate-job", "--target", "/tmp/x", "--service", "svc",
+            "--job-name", "job", "--product", "P", "--commit", "a" * 40,
+            "--repo-url", "https://example.invalid/r.git", "--repo-ref", "main",
+            "--run-module", "m", "--run-function", "f",
+            "--accelerator-kind", "cuda",
+            "--accelerator-architecture", "sm_60",
+            "--accelerator-architecture", "sm_75",
+            "--environment-requirement", "torch==9.9.9+cu999",
+            "--environment-index-url", "https://example.invalid/whl",
+        ])
+        self.assertEqual(args.accelerator_kind, "cuda")
+        self.assertEqual(args.accelerator_architectures, ["sm_60", "sm_75"])
+        self.assertEqual(args.environment_requirements, ["torch==9.9.9+cu999"])
+        self.assertEqual(args.environment_index_url, "https://example.invalid/whl")
+
+    def test_generate_job_parser_flags_default_to_none_when_absent(self) -> None:
+        parser = REMOTE_CLI._build_parser()
+        args = parser.parse_args([
+            "generate-job", "--target", "/tmp/x", "--service", "svc",
+            "--job-name", "job", "--product", "P", "--commit", "a" * 40,
+            "--repo-url", "https://example.invalid/r.git", "--repo-ref", "main",
+            "--run-module", "m", "--run-function", "f",
+        ])
+        self.assertIsNone(args.accelerator_kind)
+        self.assertIsNone(args.accelerator_architectures)
+        self.assertIsNone(args.environment_requirements)
+        self.assertIsNone(args.environment_index_url)
+
+    def test_cli_generate_job_with_explicit_accelerator_and_environment_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            self._ensure_default_source_tree(target)
+            bootstrap, invoke = self._fixture_assets(tmp)
+
+            with unittest.mock.patch.object(
+                JOBFOLDER, "DEFAULT_BOOTSTRAP_ASSET", bootstrap
+            ), unittest.mock.patch.object(JOBFOLDER, "DEFAULT_INVOKE_ASSET", invoke):
+                exit_code = REMOTE_CLI.main([
+                    "generate-job",
+                    "--target", str(target),
+                    "--service", self.FAKE_SERVICE_NO_DEFAULT,
+                    "--job-name", "cli-explicit-accel",
+                    "--product", "MIL-CREDA",
+                    "--commit", "a" * 40,
+                    "--repo-url", "https://example.invalid/repo.git",
+                    "--repo-ref", "main",
+                    "--clone-path", "src/MIL_CREDA_Benchmark",
+                    "--run-module", "MIL_CREDA_Benchmark.harness",
+                    "--run-function", "campaign",
+                    "--accelerator-kind", "cuda",
+                    "--accelerator-architecture", "sm_90",
+                    "--environment-requirement", "torch==9.9.9+cu999",
+                ])
+
+            self.assertEqual(exit_code, 0)
+            job_dir = target / "tools" / self.FAKE_SERVICE_NO_DEFAULT / "cli-explicit-accel"
+            run_config = json.loads((job_dir / "run-config.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                run_config["accelerator"], {"kind": "cuda", "architectures": ["sm_90"]}
+            )
+            self.assertEqual(
+                run_config["environment"],
+                {"install": {"requirements": ["torch==9.9.9+cu999"]}},
+            )
+
+    def test_cli_generate_job_with_no_accelerator_flags_uses_service_default(self) -> None:
+        """The from-zero acceptance case: a caller supplies NOTHING about
+        the accelerator, and the generated job still comes out protected
+        -- the default travels from the service adapter, never from the
+        caller and never invented by this CLI.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            self._ensure_default_source_tree(target)
+            bootstrap, invoke = self._fixture_assets(tmp)
+
+            with unittest.mock.patch.object(
+                JOBFOLDER, "DEFAULT_BOOTSTRAP_ASSET", bootstrap
+            ), unittest.mock.patch.object(JOBFOLDER, "DEFAULT_INVOKE_ASSET", invoke):
+                exit_code = REMOTE_CLI.main([
+                    "generate-job",
+                    "--target", str(target),
+                    "--service", self.FAKE_SERVICE_WITH_DEFAULT,
+                    "--job-name", "cli-from-zero",
+                    "--product", "MIL-CREDA",
+                    "--commit", "a" * 40,
+                    "--repo-url", "https://example.invalid/repo.git",
+                    "--repo-ref", "main",
+                    "--clone-path", "src/MIL_CREDA_Benchmark",
+                    "--run-module", "MIL_CREDA_Benchmark.harness",
+                    "--run-function", "campaign",
+                ])
+
+            self.assertEqual(exit_code, 0)
+            job_dir = target / "tools" / self.FAKE_SERVICE_WITH_DEFAULT / "cli-from-zero"
+            run_config = json.loads((job_dir / "run-config.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                run_config["accelerator"],
+                {"kind": self.FAKE_DEFAULT_KIND, "architectures": list(self.FAKE_DEFAULT_ARCHITECTURES)},
+            )
 
 
 class CommitShapeTests(unittest.TestCase):

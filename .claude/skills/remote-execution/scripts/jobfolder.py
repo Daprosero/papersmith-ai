@@ -780,6 +780,10 @@ def generate_job(
     bootstrap_asset: str | Path | None = None,
     invoke_asset: str | Path | None = None,
     accept_unresolved: bool = False,
+    accelerator_kind: str | None = None,
+    accelerator_architectures: Sequence[str] | None = None,
+    environment_requirements: Sequence[str] | None = None,
+    environment_index_url: str | None = None,
 ) -> Path:
     """Generate one job folder, atomically, refusing to overwrite an
     existing one unless `regenerate=True`.
@@ -823,6 +827,20 @@ def generate_job(
     itself fails, the aside copy is renamed straight back — `destination`
     is either the old job folder or the new one at every instant an
     outside observer could look, never neither and never a mix.
+
+    `accelerator_kind`/`accelerator_architectures`, when BOTH omitted (the
+    from-zero case), are resolved from `service`'s own registered default
+    via `ADAPTER.resolve_default_accelerator()` — service knowledge,
+    read the same way `ADAPTER.resolve_metadata()` is a few lines below,
+    never a value this module invents or hardcodes itself. A caller
+    supplying either half explicitly always wins outright; a service
+    that registered no default (or registered none at all) leaves the
+    generated job with no `accelerator` block, exactly as every job did
+    before this default existed — silence, not a guess.
+    `environment_requirements`/`environment_index_url` carry no such
+    default: an install is TARGET knowledge (which packages a specific
+    repository needs), never service knowledge, so this function only
+    ever forwards what a caller explicitly declared.
     """
     resolved_target = resolve_target(target)
     destination = resolve_destination(resolved_target, service, job_name)
@@ -858,6 +876,16 @@ def generate_job(
     resolved_bootstrap = Path(bootstrap_asset) if bootstrap_asset else DEFAULT_BOOTSTRAP_ASSET
     resolved_invoke = Path(invoke_asset) if invoke_asset else DEFAULT_INVOKE_ASSET
 
+    # From-zero gap (session addition): a caller declaring NEITHER half of
+    # the accelerator pair gets the service adapter's own registered
+    # default, never a value this module invents. An explicit caller value
+    # (either half) always wins and skips this lookup entirely — matching
+    # `build_run_config()`'s own refusal below for a half-given pair.
+    if accelerator_kind is None and accelerator_architectures is None:
+        default_accelerator = ADAPTER.resolve_default_accelerator(service)
+        if default_accelerator is not None:
+            accelerator_kind, accelerator_architectures = default_accelerator()
+
     run_config = build_run_config(
         product=product,
         service=service,
@@ -876,6 +904,10 @@ def generate_job(
         invoke_asset=resolved_invoke,
         unresolved_imports=clone_resolution["unresolved"] if accept_unresolved else None,
         smoke_required_evidence=smoke_required_evidence,
+        accelerator_kind=accelerator_kind,
+        accelerator_architectures=accelerator_architectures,
+        environment_requirements=environment_requirements,
+        environment_index_url=environment_index_url,
     )
     notebook = build_notebook(resolved_bootstrap, resolved_invoke)
     metadata_filename, metadata_text = ADAPTER.resolve_metadata(service)(run_config)

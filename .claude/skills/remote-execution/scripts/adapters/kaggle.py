@@ -167,6 +167,42 @@ _DRIVER_EXIT_UNAUTHORIZED = 3
 # never asserted as a universal per-account or per-service ceiling.
 KAGGLE_WORKER_CAPACITY = 2
 
+# The accelerator ARCHITECTURE this service is expected to hand a
+# submitted kernel by default — beside `KAGGLE_WORKER_CAPACITY` above, and
+# framed with the exact same honesty: an observed property of the
+# service, measured against real rehearsals, not a law. Kaggle has been
+# seen to hand out both a Tesla P100 (`sm_60`) and a Tesla T4 (`sm_75`)
+# for the same free-tier GPU request, and WHICH one arrives on any given
+# submission is the service's own draw, never this adapter's to pick —
+# see `Status.detail` for what the service reports it actually granted.
+# "cuda"/"sm_60"/"sm_75" name a CUDA compute capability, the SAME
+# vocabulary `runner_bootstrap.py`'s own accelerator gate already compares
+# `torch.cuda.get_arch_list()` entries against — never a Kaggle-specific
+# vocabulary, and never a device model name (Decision 1's own rule: an
+# architecture answers "can this build run here", never "is this the
+# card I named").
+#
+# This is a DEFAULT, not a requirement: a job's own declaration (this
+# module's `register_default_accelerator` call below) is consulted only
+# when a caller supplies neither `--accelerator-kind` nor
+# `--accelerator-architecture` at `generate-job` time — an explicit
+# declaration always overrides it. It is documented and expected to be
+# revised as Kaggle's own hardware pool changes, and it is never asserted
+# as a universal per-account or per-service guarantee.
+KAGGLE_ACCELERATOR_KIND = "cuda"
+KAGGLE_ACCELERATOR_ARCHITECTURES = ("sm_60", "sm_75")
+
+
+def _default_accelerator() -> tuple[str, tuple[str, ...]]:
+    """`ADAPTER.register_default_accelerator("kaggle", ...)`'s own
+    provider — called by `jobfolder.generate_job()` only when a caller
+    declared neither half of the accelerator pair itself, so a job
+    generated from zero still comes out with a declared expectation
+    instead of none at all.
+    """
+    return KAGGLE_ACCELERATOR_KIND, KAGGLE_ACCELERATOR_ARCHITECTURES
+
+
 # The accelerator this repository's submissions request, in the only
 # vocabulary the installed client can express: a boolean. It is
 # a request, not a receipt: asking for one is not the same as
@@ -961,3 +997,4 @@ class KaggleAdapter(ADAPTER.Adapter):
 
 ADAPTER.register("kaggle", KaggleAdapter)
 ADAPTER.register_metadata("kaggle", assemble_metadata)
+ADAPTER.register_default_accelerator("kaggle", _default_accelerator)

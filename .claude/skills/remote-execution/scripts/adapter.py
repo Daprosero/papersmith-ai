@@ -32,7 +32,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Sequence
 
 
 @dataclass(frozen=True)
@@ -310,3 +310,43 @@ def resolve_metadata(name: str) -> MetadataAssembler:
         return _METADATA_REGISTRY[name]
     except KeyError:
         raise KeyError(f"no metadata assembler registered under {name!r}") from None
+
+
+# A THIRD, separate registry — the same reason the metadata one above is
+# separate from the ABC: which accelerator a service is EXPECTED to hand
+# out by default is service knowledge (a fact about one backend's own
+# hardware pool), never a forge default and never required of every
+# backend.
+# `jobfolder.py` calls `resolve_default_accelerator(service)` only when a
+# caller declared NEITHER half of the accelerator pair itself; a caller's
+# own `--accelerator-kind`/`--accelerator-architecture` always overrides
+# whatever this returns, and a backend that registers nothing here simply
+# leaves `generate_job()` writing no `accelerator` block at all — silence,
+# not a guess, exactly the behavior every backend had before this registry
+# existed.
+DefaultAcceleratorProvider = Callable[[], tuple[str, Sequence[str]]]
+
+_DEFAULT_ACCELERATOR_REGISTRY: dict[str, DefaultAcceleratorProvider] = {}
+
+
+def register_default_accelerator(name: str, fn: DefaultAcceleratorProvider) -> None:
+    """Register a service's own expected-accelerator default under a name
+    a caller can select by.
+
+    `fn() -> (kind, architectures)` — exactly the two fields
+    `jobfolder.build_run_config()` already names, and nothing else: this
+    registry carries no device name, no package, no target vocabulary.
+    """
+    _DEFAULT_ACCELERATOR_REGISTRY[name] = fn
+
+
+def resolve_default_accelerator(name: str) -> DefaultAcceleratorProvider | None:
+    """Look up a previously registered default-accelerator provider by
+    name, or `None` when no backend registered one under it.
+
+    Unlike `resolve()`/`resolve_metadata()` above, a miss here is never an
+    error: having no declared default is a legitimate, additive-safe
+    state a caller (`generate_job()`) is expected to handle by writing no
+    `accelerator` block at all, not a caller mistake to refuse.
+    """
+    return _DEFAULT_ACCELERATOR_REGISTRY.get(name)
