@@ -493,7 +493,20 @@ BOX_STEP_KINDS = ("exec", "driver")
 #: parent process. Names only: the child's environment is constructed from
 #: this allowlist, never copied from `os.environ` wholesale, and only the
 #: names travel into the report -- values never do.
-DRIVER_ENV_ALLOWLIST = ("HOME", "LANG", "LC_ALL", "PATH", "TERM", "TMPDIR")
+#:
+#: `USER` joined this list under W4, measured rather than guessed: isolated
+#: with `env -i`, `HOME PATH LANG TMPDIR` alone answers an authenticated
+#: driver CLI with "Not logged in - Please run /login" -- a refusal naming
+#: the wrong cause, because the driver cannot reach the OS keychain without
+#: knowing who is asking. Adding `SHELL` or `LOGNAME` does not change the
+#: refusal; adding `USER` does. `USER` is a username, not a credential; this
+#: allowlist exists to keep a driver from inheriting the whole environment,
+#: never to conceal identity. The list stays hand-written on purpose --
+#: deriving it from the recipe would let the recipe grant itself anything,
+#: and a denylist pattern (`*KEY*`, `*SECRET*`) fails open on the first
+#: credential whose name matches neither pattern.
+DRIVER_ENV_ALLOWLIST = ("HOME", "LANG", "LC_ALL", "PATH", "TERM", "TMPDIR",
+                        "USER")
 
 #: The directory namespace the ignorance control gate seeds a from-zero box
 #: with, before trusting that box was ever empty. Absurd and namespaced so
@@ -546,7 +559,31 @@ def assert_no_subject_reference(text, subject, repo):
             "reference the producer it exists to be compared against")
 
 
-def run_box_step(step, repo, subject, box, timeout):
+def assert_brief_names_no_shape(text, forbidden):
+    """Refuse a `driver` step's argv part that names a structural element
+    of the subject's own declared architecture.
+
+    `forbidden` is derived entirely from the subject's own `structure`
+    recipe -- the declared side's `Path` column plus each entry's own
+    basename -- never a hand-list of "things a brief must not say" living
+    inside this skill or its recipe. Naming a structural element (e.g. the
+    literal `SKILL.md`, or `scripts/`) would dictate the driver's output
+    shape and reintroduce the exact from-zero fraud this domain closes: the
+    producer's own shape arriving spoken instead of copied.
+    """
+    for name in forbidden:
+        if name and name in text:
+            raise Unprobeable(
+                f"kind=brief-names-the-shape: a fromZero driver step's argv "
+                f"names {name!r}, which the subject's own declared file "
+                "table lists; a brief may name the problem it is meant to "
+                "solve, and never any artefact the subject declares it "
+                "ships -- naming the shape would dictate the driver's "
+                "output and copy the producer's structure instead of "
+                "letting the driver build its own")
+
+
+def run_box_step(step, repo, subject, box, timeout, forbidden_shape=()):
     """One `fromZero` build step, run inside the box with no shell.
 
     Mirrors `probe_code_side`'s discipline: argv as a list of strings,
@@ -558,10 +595,11 @@ def run_box_step(step, repo, subject, box, timeout):
     must declare a `kind` from `BOX_STEP_KINDS`; `driver` additionally
     resolves `cwd` under the box (refusing an occupied one), builds a
     constructed environment from `env`'s declared names intersected with
-    `DRIVER_ENV_ALLOWLIST`, and proves `argv[0]`'s real path sits outside
-    both the repository and the subject. Every part of every step, either
-    kind, is interpolated through `FROM_ZERO_TOKENS` alone and scanned for
-    a literal reference to the subject.
+    `DRIVER_ENV_ALLOWLIST`, proves `argv[0]`'s real path sits outside both
+    the repository and the subject, and scans every argv part against
+    `forbidden_shape` (see `assert_brief_names_no_shape`). Every part of
+    every step, either kind, is interpolated through `FROM_ZERO_TOKENS`
+    alone and scanned for a literal reference to the subject.
 
     Returns a small info dict -- `run_structure` transcribes a `driver`
     step's own info into the report-facing `ignorance` block; an `exec`
@@ -608,12 +646,25 @@ def run_box_step(step, repo, subject, box, timeout):
     child_env = None
     info = {"stepKind": kind}
     if kind == "driver":
+        for part in argv:
+            assert_brief_names_no_shape(part, forbidden_shape)
         names = env_spec or []
         unknown = sorted(set(names) - set(DRIVER_ENV_ALLOWLIST))
         if unknown:
             raise Unprobeable(
                 f"a fromZero driver step names env {unknown}, outside "
-                f"{sorted(DRIVER_ENV_ALLOWLIST)}")
+                f"{sorted(DRIVER_ENV_ALLOWLIST)}; a driver refusing for an "
+                "environment reason is a candidate for widening this list "
+                "by measurement -- run the declared argv under `env -i` "
+                "with only the declared names and observe which addition "
+                "changes the refusal")
+        # A name declared here but absent from the parent process is
+        # dropped from `child_env` with nothing said below -- silent by
+        # construction. `envMissing` makes that drop visible: transcribed
+        # into `## User drive`, a recipe declaring `USER` on a machine that
+        # has none then reads as a stated fact, not as an inexplicable
+        # refusal from the child.
+        missing = sorted(name for name in names if name not in os.environ)
         child_env = {name: os.environ[name] for name in names
                     if name in os.environ}
         real_path = shutil.which(argv[0], path=child_env.get("PATH"))
@@ -630,7 +681,8 @@ def run_box_step(step, repo, subject, box, timeout):
                 "inside the repository or the subject; a driver shipped "
                 "inside what it audits is not external")
         info.update({"argv": list(argv), "argv0RealPath": str(real),
-                    "cwd": str(step_cwd), "envNames": sorted(names)})
+                    "cwd": str(step_cwd), "envMissing": missing,
+                    "envNames": sorted(names)})
 
     try:
         completed = subprocess.run(
@@ -1131,6 +1183,16 @@ def run_structure(args):
             "the declared side normalises to zero members; an empty declared "
             "side would report the entire disk as builder-broken")
 
+    # The roster `assert_brief_names_no_shape` refuses a driver's brief
+    # from naming: the declared side's own `Path` column, plus each
+    # entry's basename, so a subject that adds a shipped file
+    # automatically widens what its own brief may not say -- never a
+    # second, hand-maintained list of "structural elements" living beside
+    # the guard against exactly that pattern.
+    forbidden_shape = tuple(sorted(
+        {member for member in raw_members if member}
+        | {Path(member).name for member in raw_members if member}))
+
     disk_root = resolve_under(recipe.get("disk", {}).get("root"), subject,
                               "disk.root")
     if not disk_root.is_dir():
@@ -1159,7 +1221,8 @@ def run_structure(args):
         control_gate = ignorance_control_gate(box, exclude)
         box_digest_before = frozen_digest(box, exclude)
         subject_before = tree_digest(subject, exclude)
-        step_infos = [run_box_step(step, repo, subject, box, args.timeout)
+        step_infos = [run_box_step(step, repo, subject, box, args.timeout,
+                                   forbidden_shape=forbidden_shape)
                      for step in steps]
         box_digest_after = frozen_digest(box, exclude)
 
@@ -1225,6 +1288,7 @@ def run_structure(args):
             "boxDigestBefore": box_digest_before,
             "controlGate": control_gate,
             "cwd": driver_info.get("cwd") if driver_info else None,
+            "envMissing": driver_info.get("envMissing") if driver_info else [],
             "envNames": driver_info.get("envNames") if driver_info else [],
         },
         "missingFrom": missing_from,

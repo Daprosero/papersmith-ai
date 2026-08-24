@@ -15,6 +15,7 @@ named execution with a named observation is.
 import ast
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -2506,13 +2507,14 @@ class UsageReferenceTests(unittest.TestCase):
                 result = subprocess.run(
                     [sys.executable, *invocation.split()], cwd=str(FORGE),
                     shell=False, capture_output=True, text=True, timeout=120)
-                # [EXPECTED UNTIL W4] The one `structure` invocation runs
-                # the shipped recipe, whose `fromZero.steps` still name the
-                # subject directly and so is `Unprobeable` (exit 2) until
-                # W4 supplies an operator-declared driver. That is a
-                # documented invocation genuinely *running* and reporting
-                # an honest inability to look, not a crash -- accepted here
-                # alongside 0/1, for this one command only.
+                # [W4] The one `structure` invocation now drives a real
+                # external `claude -p` process; `claude -p` is not
+                # reproducible run to run (accepted in the design's own
+                # risk register), so a genuine inability to look (e.g. a
+                # bounded timeout, exit 2) is an honest outcome here
+                # alongside 0/1, for this one command only -- never a
+                # crash, and this is a documented invocation genuinely
+                # *running*, not standing in for one.
                 allowed = (0, 1, 2) if "structure" in invocation else (0, 1)
                 self.assertIn(
                     result.returncode, allowed,
@@ -2961,17 +2963,17 @@ class FrozenPayloadTests(unittest.TestCase):
         self._assert_frozen_shape(payload)
 
     def test_structure_payload_carries_frozen(self):
-        """[EXPECTED UNTIL W4] Still driven for real, against the shipped
-        recipe -- but that recipe is presently `Unprobeable` (the
-        subject-reference refusal fires on its `git archive
-        HEAD:<subject>` step), and an `Unprobeable` payload carries no
-        `frozen` key at all: it is a different shape, an inability to
-        look, not a verdict. This branch is the honest reflection of that,
-        not a fixture built only for this assertion.
+        """[W4] Still driven for real, against the shipped recipe -- which
+        now invokes a real external `claude -p` driver, not reproducible
+        run to run (accepted in the design's own risk register). An
+        `Unprobeable` payload carries no `frozen` key at all: it is a
+        different shape, an inability to look, not a verdict. Either
+        honest outcome is accepted here; only a crash is not.
         """
-        result, payload = structure_json(STRUCTURE_SPEC, SKILL_ROOT, repo=FORGE)
+        result, payload = structure_json(
+            STRUCTURE_SPEC, SKILL_ROOT, repo=FORGE, extra=("--timeout", "45"))
         if result.returncode == 2:
-            self.assertIn("subject-reference", payload["error"])
+            self.assertIn("error", payload)
             return
         self._assert_frozen_shape(payload)
 
@@ -3509,6 +3511,175 @@ class DriverStepKindTests(StructureBoxMixin, unittest.TestCase):
         self.assertEqual(result.returncode, 2, payload)
         self.assertIn("ignorance-control-stalled", payload["error"])
 
+    def test_user_is_allowlisted(self):
+        """W4: `USER` joined `DRIVER_ENV_ALLOWLIST` -- declaring it must
+        never be refused as out-of-allowlist.
+        """
+        surface = "user_allowlisted"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            "user_allowlisted_subject", declared=["a.txt"],
+            disk_files={"a.txt": "x\n"})
+        source = self.write(
+            self.structure_script_box("user_allowlisted"), "a.txt", "x\n")
+        steps = [
+            {"kind": "driver", "argv": ["mkdir", "-p", "{box}/build"],
+             "env": ["PATH", "USER"]},
+            ["cp", str(source), "{box}/build/a.txt"],
+        ]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(sorted(payload["ignorance"]["envNames"]),
+                         ["PATH", "USER"])
+
+    def test_out_of_allowlist_refusal_names_the_measurement(self):
+        surface = "env_measurement"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            "env_measurement_subject", declared=["a.txt"],
+            disk_files={"a.txt": "x\n"})
+        steps = [{"kind": "driver", "argv": ["mkdir", "-p", "{box}/build"],
+                  "env": ["PATH", "SSH_AUTH_SOCK"]}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("env -i", payload["error"])
+
+    def test_declared_but_absent_env_name_appears_in_env_missing(self):
+        """A name declared but not present in the parent process must be
+        transcribed, sorted, into `envMissing` -- never silently dropped.
+        """
+        surface = "env_missing"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            "env_missing_subject", declared=["a.txt"], disk_files={"a.txt": "x\n"})
+        source = self.write(
+            self.structure_script_box("env_missing"), "a.txt", "x\n")
+        steps = [
+            {"kind": "driver", "argv": ["mkdir", "-p", "{box}/build"],
+             "env": ["PATH", "TERM"]},
+            ["cp", str(source), "{box}/build/a.txt"],
+        ]
+        spec = self.make_recipe(subject, surface, steps)
+        saved = os.environ.pop("TERM", None)
+        try:
+            result, payload = structure_json(spec, subject, repo=FORGE)
+        finally:
+            if saved is not None:
+                os.environ["TERM"] = saved
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["ignorance"]["envMissing"], ["TERM"])
+
+    def test_a_brief_naming_a_declared_path_is_refused(self):
+        """A driver step's argv naming a literal the subject's own declared
+        file table lists is refused, `kind=brief-names-the-shape` -- never
+        recorded, never driven.
+        """
+        surface = "brief_names_shape"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            "brief_names_shape_subject", declared=["only-mentioned-here.txt"],
+            disk_files={"only-mentioned-here.txt": "x\n"})
+        steps = [{"kind": "driver",
+                  "argv": ["echo", "go read only-mentioned-here.txt"],
+                  "env": ["PATH"]}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("brief-names-the-shape", payload["error"])
+        self.assertIn("only-mentioned-here.txt", payload["error"])
+
+    def test_a_problem_shaped_brief_naming_no_subject_file_passes(self):
+        surface = "brief_problem_shaped"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            "brief_problem_shaped_subject", declared=["only-mentioned-here.txt"],
+            disk_files={"only-mentioned-here.txt": "x\n"})
+        source = self.write(
+            self.structure_script_box("brief_problem_shaped"), "a.txt", "x\n")
+        steps = [
+            {"kind": "driver",
+             "argv": ["echo", "audit a tool against its own documentation"],
+             "cwd": "build", "env": ["PATH"]},
+            ["cp", str(source), "{box}/build/only-mentioned-here.txt"],
+        ]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+
+    def test_the_forbidden_roster_widens_when_the_subject_declares_a_new_row(self):
+        """Proof of derivation, never a hand-list: a row added to the
+        subject's own declared table is refused in the brief without any
+        edit to the guard itself.
+        """
+        surface = "brief_roster_derived"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            "brief_roster_derived_subject",
+            declared=["a.txt", "a-brand-new-declared-row.txt"],
+            disk_files={"a.txt": "x\n", "a-brand-new-declared-row.txt": "x\n"})
+        steps = [{"kind": "driver",
+                  "argv": ["echo", "mentions a-brand-new-declared-row.txt"],
+                  "env": ["PATH"]}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("brief-names-the-shape", payload["error"])
+        self.assertIn("a-brand-new-declared-row.txt", payload["error"])
+
+
+class DriverArgvRecipeTests(unittest.TestCase):
+    """W4: the shipped recipe's `fromZero` is a driver invocation, and the
+    skill still names no CLI of its own.
+    """
+
+    def test_the_shipped_recipe_declares_no_git_archive_or_tar(self):
+        recipe = json.loads(STRUCTURE_SPEC.read_text(encoding="utf-8"))
+        for step in recipe["fromZero"]["steps"]:
+            argv = step["argv"] if isinstance(step, dict) else step
+            with self.subTest(argv=argv):
+                self.assertTrue(
+                    all(part not in ("git", "archive", "tar") for part in argv),
+                    "the recipe's fromZero side must no longer be a copy "
+                    f"operation: {argv}")
+
+    def test_the_shipped_recipe_declares_a_driver_step(self):
+        recipe = json.loads(STRUCTURE_SPEC.read_text(encoding="utf-8"))
+        steps = recipe["fromZero"]["steps"]
+        self.assertEqual(len(steps), 1)
+        self.assertEqual(steps[0]["kind"], "driver")
+        self.assertEqual(steps[0]["argv"][0], "claude")
+
+    def test_the_skill_names_no_vendor_cli(self):
+        """The skill itself declares no default driver; the recipe alone
+        names one. Grepped for common vendor CLI names in `audit_cli.py`'s
+        own source -- never in the recipe, which is where a declaration
+        belongs.
+        """
+        source = CLI.read_text(encoding="utf-8")
+        for vendor in ("codex", "opencode", '"claude"', "'claude'"):
+            with self.subTest(vendor=vendor):
+                self.assertNotIn(vendor, source)
+
+    def test_the_declared_argv0_resolves_outside_repo_and_subject(self):
+        """The externality check stays a predicate, never a pinned value:
+        no version string of the resolved `claude` binary is hard-coded
+        anywhere in `audit_cli.py` or the shipped recipe.
+        """
+        cli = audit_cli_module()
+        real = cli.shutil.which("claude")
+        self.assertIsNotNone(real, "this environment has no `claude` on PATH")
+        resolved = Path(real).resolve()
+        self.assertFalse(FORGE in resolved.parents or resolved == FORGE)
+        self.assertFalse(SKILL_ROOT in resolved.parents or resolved == SKILL_ROOT)
+        source = CLI.read_text(encoding="utf-8")
+        recipe_text = STRUCTURE_SPEC.read_text(encoding="utf-8")
+        version_marker = re.search(r"\d+\.\d+\.\d+", str(resolved.parent.name))
+        if version_marker:
+            self.assertNotIn(version_marker.group(0), source)
+            self.assertNotIn(version_marker.group(0), recipe_text)
+
 
 class StructureSelfProbeTests(unittest.TestCase):
     """The shipped recipe, pointed at the auditor's own layout.
@@ -3517,32 +3688,50 @@ class StructureSelfProbeTests(unittest.TestCase):
     against `HEAD`; that is documented as accurate, not papered over.
     """
 
-    def test_the_shipped_recipe_is_unprobeable_until_w4_supplies_a_driver(self):
-        """[EXPECTED UNTIL W4] The shipped recipe's `fromZero.steps` still
-        runs `git archive HEAD:.claude/skills/skill-audit` -- a from-zero
-        step that names the subject by its own repo-relative path. That is
-        exactly the defect this change closes, so the subject-reference
-        refusal now fires on it. This is the accepted intermediate state
-        from the design's own risk register: an honest inability to look,
-        never a silent pass. W4 -- an operator-declared driver `argv`,
-        deliberately not hard-coded by this skill -- replaces the recipe's
-        `fromZero.steps` and restores a real verdict; until it lands,
-        `structure` against this skill's own shipped recipe reports
-        `Unprobeable`, and it must never touch a sibling skill in getting
-        there.
+    def test_the_shipped_recipe_drives_a_real_external_process(self):
+        """[W4] The shipped recipe's `fromZero.steps` is now one `driver`
+        step invoking the real, external `claude -p` CLI with a
+        problem-only brief -- never a copy operation, and never a step
+        naming the subject by its own path. `claude -p` is not
+        reproducible run to run (accepted in the design's own risk
+        register), so this test holds only what is true on every run:
+
+        - the old `subject-reference` refusal (the tar recipe's own
+          defect) never fires again -- that class of failure is gone;
+        - the result is one of two honest outcomes: a real `structure`
+          verdict (exit 0, `outcome` a real arithmetic result) or a
+          genuine inability to look (exit 2, e.g. a bounded timeout) --
+          never a crash, and never the old copy-recipe's defect;
+        - a sibling skill is never touched, whichever of the two holds.
+
+        Bounded at 45s for the driver step itself (`--timeout`), well
+        under `run_cli`'s own 90s ceiling for this one invocation.
         """
         cli = audit_cli_module()
         before = {name: cli.tree_digest(SKILL_ROOT.parent / name)
                  for name in SIBLING_SKILLS_TO_CHECK}
-        result, payload = structure_json(STRUCTURE_SPEC, SKILL_ROOT, repo=FORGE)
+        result = run_cli("structure", "--subject", str(SKILL_ROOT),
+                         "--spec", str(STRUCTURE_SPEC), "--repo-root", str(FORGE),
+                         "--timeout", "45", timeout=90)
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            raise AssertionError(
+                f"structure exited {result.returncode} without JSON on "
+                f"stdout.\nstdout={result.stdout!r}\nstderr={result.stderr!r}")
         after = {name: cli.tree_digest(SKILL_ROOT.parent / name)
                 for name in SIBLING_SKILLS_TO_CHECK}
-        self.assertEqual(result.returncode, 2, payload)
-        self.assertIn("subject-reference", payload["error"])
         self.assertEqual(
             before, after,
             "structure reads the subject and builds its own box; it must "
-            "never touch a sibling skill, even while refusing to look")
+            "never touch a sibling skill, whatever the driver did")
+        if result.returncode == 0:
+            self.assertIn(payload["outcome"], STRUCTURE_OUTCOMES, payload)
+        else:
+            self.assertEqual(result.returncode, 2, payload)
+            self.assertNotIn(
+                "subject-reference", payload.get("error", ""),
+                "the old tar recipe's defect must never fire again")
 
 
 # ==========================================================================
