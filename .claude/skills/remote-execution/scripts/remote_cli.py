@@ -1286,7 +1286,7 @@ def cmd_fetch(
     one fact that matters most: a `returned` event must never be recorded
     unless the artifact it names is actually, completely, on disk.
 
-    0. Once `final_dest` is known (step 1's placement decision), and
+    0. Once `final_dest` is known (step 2's placement decision), and
        BEFORE `adapter.fetch()` is ever called: if `final_dest` already
        exists, this is a re-fetch of a submission this call already
        materialized. Paying for a second download only to discover that
@@ -1304,7 +1304,29 @@ def cmd_fetch(
        `terminal_by_id[submissionId]` is an overwrite by an
        equal-kind event and `verdicts[submissionId]` recomputes the
        identical value under the identical key.
-    1. `LEDGER.currency_verdict()` — the SAME rule `fold()` itself uses for
+    1. `<final_dest>.partial/` is a DIFFERENT fact from step 0's, and it
+       is checked first — before step 0's `shutil.rmtree()` can destroy
+       anything on a refusal that was going to happen anyway. Its
+       presence means a previous fetch of this submission ended without
+       reaching step 6's rename: a crashed or killed download, a
+       `complete=False` result step 5 deliberately left on disk, or
+       another fetch of this same submission running right now. Step 3
+       hands that exact path to `adapter.fetch()`, which is free to write
+       into a directory that already has files in it — so without this
+       guard the leftover run's files and this run's files are promoted
+       together, by step 6, as one artifact set that never existed. That
+       is worse than either failure this function already refuses,
+       because it does not raise: it produces a plausible wrong answer,
+       which is precisely what the ledger machinery around it exists to
+       prevent. Refuse, naming the leftover path and the action that
+       clears it. `--force` does NOT clear it, deliberately: `--force`
+       means "the destination is already materialized, replace it", and
+       a `.partial/` is neither materialized nor necessarily inert — it
+       may hold the only copy of bytes already paid for, or be the live
+       working directory of a fetch still running. Removing it is a
+       decision with real cost, so this reports and lets the human make
+       it.
+    2. `LEDGER.currency_verdict()` — the SAME rule `fold()` itself uses for
        an already-recorded `returned` event — is evaluated here BEFORE one
        exists, against the ledger state read at the top of this call. A
        `current` verdict uses the caller's own `dest`; anything else
@@ -1314,31 +1336,33 @@ def cmd_fetch(
        shard reader ever enumerates. This is a placement decision made
        once, not a filter a merge step could forget to apply later: the
        artifact is never even offered a path a merge could reach.
-    2. `observed_concurrency` is read from the SAME pre-fetch ledger state,
+    3. `observed_concurrency` is read from the SAME pre-fetch ledger state,
        via `LedgerState.pending_for()` — the count of this worker's pending
        submissions at the instant just before this one is about to be
        recorded as done, including itself. A grant the packer allowed for
        N concurrent jobs, honored by the service for fewer than N, shows up
        here as a smaller number than N — visible, not assumed.
-    3. `adapter.fetch()` is handed `<dest-or-quarantine>.partial/`, never
+    4. `adapter.fetch()` is handed `<dest-or-quarantine>.partial/`, never
        the final path directly. This is the ONE call in this whole function
        that can fail partway through after having already written SOME
        bytes to disk — a network drop, a killed process, a raised
        exception from inside the adapter itself. Nothing before this line
        has touched the filesystem at all, and nothing after it runs unless
        this call returns normally.
-    4. `Fetched.complete` is checked before anything else happens. `False`
+    5. `Fetched.complete` is checked before anything else happens. `False`
        means the backend itself considers the result unfinished — this
        function returns without renaming and without appending anything,
        leaving the ledger's own state exactly as `pending` as it already
-       was, which is what makes a retry safe. Only `complete=True` reaches
-       the rename.
-    5. `os.replace()` — an atomic rename on the same filesystem — moves the
+       was, which is what makes a retry safe. The `.partial/` directory
+       stays on disk and is returned as `path`, so the retry meets step
+       1's guard rather than silently merging into it. Only
+       `complete=True` reaches the rename.
+    6. `os.replace()` — an atomic rename on the same filesystem — moves the
        `.partial/` directory into its final name. This is the one line
        that turns "an artifact happens to exist on disk" into "the
        artifact is at the path this call promises callers", and it runs
        before the ledger is touched.
-    6. `LEDGER.append()` runs LAST, only after the rename above has
+    7. `LEDGER.append()` runs LAST, only after the rename above has
        already succeeded. If the process is killed at any point before
        this line, the submission reads back as `pending` on the next fold
        — retryable, never a false `returned` — because nothing before this
@@ -1367,6 +1391,24 @@ def cmd_fetch(
     else:
         final_dest = target / product / LEDGER_DIRNAME / QUARANTINE_DIRNAME / submission_id
 
+    partial_dest = final_dest.with_name(final_dest.name + PARTIAL_SUFFIX)
+
+    # Ahead of the `--force` removal below on purpose: a refusal that was
+    # going to happen anyway must not first delete an already-fetched tree.
+    if partial_dest.exists():
+        raise RemoteCLIError(
+            f"a leftover {partial_dest} exists from a fetch that never "
+            "finished -- a crashed or killed download, a result the "
+            "backend reported as incomplete, or another fetch of this "
+            "same submission running right now. It is never merged into "
+            "and never promoted, because mixing two runs' files into one "
+            "artifact set is a wrong answer that does not announce "
+            "itself. --force does not clear it: it may hold the only "
+            "copy of bytes already paid for, or be a running fetch's "
+            "working directory. Inspect it, then remove it by hand "
+            f"(rm -rf {partial_dest}) before retrying"
+        )
+
     if final_dest.exists():
         if not force:
             raise RemoteCLIError(
@@ -1378,7 +1420,6 @@ def cmd_fetch(
     observed_concurrency = state.pending_for(submission["worker"])
     staleness = _job_folder_staleness(Path(entrypoint).resolve())
 
-    partial_dest = final_dest.with_name(final_dest.name + PARTIAL_SUFFIX)
     fetched = adapter.fetch(submission_id, partial_dest)
 
     if not fetched.complete:
@@ -2005,7 +2046,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="remove an already-materialized destination and re-fetch, "
-        "instead of refusing",
+        "instead of refusing; a leftover <dest>.partial/ from a fetch "
+        "that never finished is never cleared by this flag",
     )
     fetch.add_argument(
         "--credential-dir", type=Path, default=None,

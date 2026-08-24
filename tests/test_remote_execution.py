@@ -2415,6 +2415,175 @@ class FetchTests(unittest.TestCase):
                 single_event_state.entrypoints[("Notebooks/a.ipynb", "w1")].state,
             )
 
+    def _pending_fetch_fixture(self, tmp: str) -> tuple:
+        """The fixture every leftover-`.partial/` test below starts from: a
+        target with one pending submission, and the `dest` a `current`
+        verdict routes a fetch to.
+        """
+        target = Path(tmp) / "repo"
+        notebooks = _make_product(target, "MIL-CREDA")
+        notebook = notebooks / "a.ipynb"
+        notebook.write_text("{}", encoding="utf-8")
+
+        ledger_path = (
+            target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+        )
+        _append_pending_submission(
+            ledger_path,
+            entrypoint="Notebooks/a.ipynb",
+            submission_id="s1",
+            worker="w1",
+            source_digest="d" * 64,
+        )
+        dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+        return target, notebook, ledger_path, dest
+
+    def test_retry_after_crash_refuses_instead_of_merging_into_the_leftover_partial(
+        self,
+    ) -> None:
+        """The third defect found in this function, and the only one that
+        never raised: a `.partial/` left behind by a killed fetch was handed
+        straight back to `adapter.fetch()`, which writes into a directory
+        that already holds another run's files. The mixture was then
+        promoted by `os.replace()` as one clean artifact set -- a plausible
+        wrong answer, which is exactly what the ledger around it exists to
+        prevent. The retry must refuse instead, and must leave the leftover
+        bytes exactly where it found them.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook, ledger_path, dest = self._pending_fetch_fixture(tmp)
+            partial_dest = dest.with_name(dest.name + REMOTE_CLI.PARTIAL_SUFFIX)
+
+            with self.assertRaises(ConnectionError):
+                REMOTE_CLI.cmd_fetch(
+                    target=target,
+                    entrypoint=notebook,
+                    submission_id="s1",
+                    dest=dest,
+                    adapter=CrashingFetchAdapter(worker_id="w1", capacity=2),
+                    source_digest=lambda t, n: "d" * 64,
+                )
+            self.assertTrue((partial_dest / "partial.bin").exists())
+            lines_before = ledger_path.read_text(encoding="utf-8")
+
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
+                REMOTE_CLI.cmd_fetch(
+                    target=target,
+                    entrypoint=notebook,
+                    submission_id="s1",
+                    dest=dest,
+                    adapter=FakeAdapter(worker_id="w1", capacity=2),
+                    source_digest=lambda t, n: "d" * 64,
+                )
+
+            # Nothing was promoted, so the crash's bytes cannot have reached
+            # `dest` -- the merge symptom this test exists to forbid is
+            # `partial.bin` sitting next to `result.txt` under `dest`.
+            self.assertFalse(dest.exists())
+            self.assertEqual(ledger_path.read_text(encoding="utf-8"), lines_before)
+            # Reported, not resolved: the leftover is neither read nor
+            # removed, and its bytes are byte-for-byte what the crash left.
+            self.assertEqual(
+                (partial_dest / "partial.bin").read_text(encoding="utf-8"),
+                "only-partial-bytes",
+            )
+            self.assertFalse((partial_dest / "result.txt").exists())
+
+            # A refusal that does not say what to do next is a dead end:
+            # this one names the leftover path and the action that clears it.
+            message = str(ctx.exception)
+            self.assertIn(str(partial_dest), message)
+            self.assertIn("remove it by hand", message)
+            self.assertIn(f"rm -rf {partial_dest}", message)
+
+    def test_retry_after_incomplete_fetch_refuses_on_the_partial_it_was_handed_back(
+        self,
+    ) -> None:
+        """A `.partial/` is not only a crash artifact: `complete=False`
+        deliberately leaves one on disk and returns its path, which is the
+        one shape of leftover that occurs during entirely normal operation.
+        That retry must meet the same guard -- otherwise the commonest path
+        into this function is the one that merges.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook, ledger_path, dest = self._pending_fetch_fixture(tmp)
+
+            result = REMOTE_CLI.cmd_fetch(
+                target=target,
+                entrypoint=notebook,
+                submission_id="s1",
+                dest=dest,
+                adapter=IncompleteFetchAdapter(worker_id="w1", capacity=2),
+                source_digest=lambda t, n: "d" * 64,
+            )
+            self.assertFalse(result["complete"])
+            partial_dest = result["path"]
+            self.assertTrue(partial_dest.exists())
+
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
+                REMOTE_CLI.cmd_fetch(
+                    target=target,
+                    entrypoint=notebook,
+                    submission_id="s1",
+                    dest=dest,
+                    adapter=FakeAdapter(worker_id="w1", capacity=2),
+                    source_digest=lambda t, n: "d" * 64,
+                )
+
+            self.assertIn(str(partial_dest), str(ctx.exception))
+            self.assertFalse(dest.exists())
+            self.assertFalse((partial_dest / "result.txt").exists())
+
+    def test_force_neither_clears_a_leftover_partial_nor_deletes_the_destination(
+        self,
+    ) -> None:
+        """`--force` means "the destination is already materialized, replace
+        it". A `.partial/` is neither materialized nor necessarily inert --
+        it may be the only copy of bytes already paid for, or a running
+        fetch's working directory -- so the flag must not reach it. And
+        because the refusal was going to happen anyway, it must fire BEFORE
+        `--force`'s own `shutil.rmtree()`: a guard that first destroys the
+        previous fetch and only then refuses costs the caller an artifact
+        for nothing.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook, ledger_path, dest = self._pending_fetch_fixture(tmp)
+
+            REMOTE_CLI.cmd_fetch(
+                target=target,
+                entrypoint=notebook,
+                submission_id="s1",
+                dest=dest,
+                adapter=FakeAdapter(worker_id="w1", capacity=2),
+                source_digest=lambda t, n: "d" * 64,
+            )
+            self.assertTrue((dest / "result.txt").exists())
+
+            partial_dest = dest.with_name(dest.name + REMOTE_CLI.PARTIAL_SUFFIX)
+            partial_dest.mkdir(parents=True)
+            (partial_dest / "sentinel.bin").write_text("do-not-touch", encoding="utf-8")
+            lines_before = ledger_path.read_text(encoding="utf-8")
+
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
+                REMOTE_CLI.cmd_fetch(
+                    target=target,
+                    entrypoint=notebook,
+                    submission_id="s1",
+                    dest=dest,
+                    adapter=FakeAdapter(worker_id="w1", capacity=2),
+                    source_digest=lambda t, n: "d" * 64,
+                    force=True,
+                )
+
+            self.assertIn("--force does not clear it", str(ctx.exception))
+            self.assertEqual(
+                (partial_dest / "sentinel.bin").read_text(encoding="utf-8"),
+                "do-not-touch",
+            )
+            # The already-fetched destination survived the refusal intact.
+            self.assertEqual((dest / "result.txt").read_text(encoding="utf-8"), "ok")
+            self.assertEqual(ledger_path.read_text(encoding="utf-8"), lines_before)
+
     def test_observed_concurrency_reflects_actual_pending_not_the_grant(self) -> None:
         """(packer attempts 2, service actually runs 1 → recorded 1):
         `plan()` grants capacity for two concurrent jobs on this worker, but
