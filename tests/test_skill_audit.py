@@ -519,6 +519,54 @@ class MovesTableTests(unittest.TestCase):
                     "a numbered move with no lock is a move that is not audited")
 
 
+#: `## How the moves fail`'s own header -- read the same way every other
+#: documented table in this file is, never restated as a hand-typed list of
+#: rows beside it.
+HOW_MOVES_FAIL_HEADER = "| Failure | Requirement |"
+
+
+class RemoteRungSmokeRuleTests(unittest.TestCase):
+    """The smoke rule: one row in `## How the moves fail`, service-blind.
+
+    No new `REPORT_SHAPE` key, no new heading -- that table is already
+    "each of these has already cost a phase; each is a requirement, not a
+    caveat," which is exactly what this is.
+    """
+
+    def _rows(self):
+        tables = markdown_table_rows(doctrine_text(), HOW_MOVES_FAIL_HEADER)
+        self.assertEqual(len(tables), 1, "one 'How the moves fail' table, exactly")
+        return tables[0]
+
+    def test_a_row_demands_the_smoke_block_over_a_full_run(self):
+        rows = self._rows()
+        matches = [row for row in rows
+                  if "run.smoke" in row[1] and "run-config.json" in row[1]]
+        self.assertEqual(
+            len(matches), 1,
+            f"expected exactly one row demanding the run.smoke block; found "
+            f"{len(matches)} in {rows}")
+        requirement = matches[0][1]
+        self.assertIn("smoke_module", requirement)
+        self.assertIn("smoke_function", requirement)
+
+    def test_the_smoke_rule_declares_no_epoch_or_pilot_scale_dial(self):
+        rows = self._rows()
+        matches = [row for row in rows if "run.smoke" in row[1]]
+        self.assertEqual(len(matches), 1)
+        requirement = matches[0][1]
+        self.assertIn(
+            "no epoch or pilot-scale dial", requirement,
+            "the smoke rule must state, in its own words, that it "
+            "introduces no epoch or pilot-scale dial")
+
+    def test_the_smoke_vocabulary_stays_off_the_forge_floor(self):
+        for word in ("smoke", "job", "mode", "run-config.json", "module",
+                     "function", "kwargs", "requiredEvidence"):
+            with self.subTest(word=word):
+                self.assertNotIn(word.lower(), FORGE_VOCABULARY_FLOOR)
+
+
 class DoctrineNumeralTests(unittest.TestCase):
     """No numeral in this skill's own doctrine states the size of an enumeration.
 
