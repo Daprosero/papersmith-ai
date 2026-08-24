@@ -775,6 +775,13 @@ SELF_SPEC = PROBES / "skill-audit.subcommands.json"
 #: is gitignored, which is exactly why their removal is proven by listing content
 #: rather than by `git status` — porcelain over an ignored tree is empty by
 #: construction and would report a box that is still sitting there as cleaned.
+#:
+#: A cleanup proof walks the box's own subtree, never the whole of this
+#: directory, which is a working area holding gigabytes of unrelated sibling
+#: work. The two walks answer the identical question — a path can only sit
+#: under a box if it sits under that box — but the wide one sha256s every
+#: unrelated file only to discard it, and two runs walking the same shared tree
+#: contend over it.
 BOXES = FORGE / "implementations"
 
 #: The producer, declared. The documented side of any comparison may not name
@@ -3330,12 +3337,12 @@ class StructureBoxLifecycleTests(StructureBoxMixin, unittest.TestCase):
                                 [["python3", str(script), "{box}/build"]])
         result, payload = structure_json(spec, subject, repo=FORGE)
         self.assertEqual(result.returncode, 0, payload)
-        after = audit_cli_module().tree_digest(BOXES)
+        after = audit_cli_module().tree_digest(box)
         self.assertEqual(
-            [p for p in after if p.startswith(f"_structure_{surface}/")], [],
-            "the box's paths must be absent from a fresh content walk of "
-            "implementations/ -- the same proof every other box's cleanup "
-            "uses in this file, never `git status`")
+            after, {},
+            "the box must be content-empty in a fresh walk of its own "
+            "subtree -- the same proof every other box's cleanup uses in "
+            "this file, never `git status`")
         self.assertFalse(box.exists())
 
 
@@ -4018,12 +4025,12 @@ class WalkthroughBoxSharingTests(WalkthroughBoxMixin, unittest.TestCase):
         spec = self.make_recipe(subject, surface, steps)
         result, payload = walkthrough_json(spec, subject, repo=FORGE)
         self.assertEqual(result.returncode, 0, payload)
-        after = audit_cli_module().tree_digest(BOXES)
+        after = audit_cli_module().tree_digest(box)
         self.assertEqual(
-            [p for p in after if p.startswith(f"_walkthrough_{surface}/")], [],
-            "the box's paths must be absent from a fresh content walk of "
-            "implementations/ -- the same proof every other box's cleanup "
-            "uses in this file, never `git status`")
+            after, {},
+            "the box must be content-empty in a fresh walk of its own "
+            "subtree -- the same proof every other box's cleanup uses in "
+            "this file, never `git status`")
         self.assertFalse(box.exists())
 
 
@@ -5634,11 +5641,11 @@ class SensitivityBoxLifecycleTests(SensitivityBoxMixin, unittest.TestCase):
         spec = self.make_recipe(subject, surface)
         result, payload = sensitivity_json(spec, subject, repo=FORGE)
         self.assertEqual(result.returncode, 0, payload)
-        after = audit_cli_module().tree_digest(BOXES)
+        after = audit_cli_module().tree_digest(box)
         self.assertEqual(
-            [p for p in after if p.startswith(f"_sensitivity_{surface}/")], [],
-            "the box's paths must be absent from a fresh content walk of "
-            "implementations/, never proven by `git status`")
+            after, {},
+            "the box must be content-empty in a fresh walk of its own "
+            "subtree, never proven by `git status`")
         self.assertFalse(box.exists())
 
     def test_a_sensitivity_run_leaves_the_subject_untouched(self):
