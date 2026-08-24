@@ -4,7 +4,7 @@ The scaffold step copies this file in once, verbatim, and substitutes nothing
 into it — every value below is prefilled empty, and stays that way until a
 person fills it in as the work happens.
 
-Each of the six blocks is prefilled empty on purpose, and only at this level.
+Each of the seven blocks is prefilled empty on purpose, and only at this level.
 Emptiness at the block level is unambiguous: no repository ever means "I
 measured that `distribution` is empty" before a single shard has run. One
 level down that stops being true — a replication run can measure that
@@ -71,4 +71,15 @@ __benchmark__ = {
     #         "identicalAcrossShards": ["datasetSize"],
     #     }
     "distribution": {},
+
+    # The dotted module and function that actually pull the target's runtime
+    # in — the same two values `generate-job --run-module`/`--run-function`
+    # already require, so nothing new is asked for. `probe`'s harness
+    # resolution and `introspect`'s liveness check both read this rather than
+    # assuming a filename of the forge's own choosing, e.g.:
+    #     "entry": {
+    #         "module": "Example_Method_Benchmark.benchmark",
+    #         "function": "run",
+    #     }
+    "entry": {"module": "", "function": ""},
 }

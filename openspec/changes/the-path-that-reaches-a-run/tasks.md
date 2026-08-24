@@ -63,13 +63,21 @@ Chain strategy: stacked-to-main
 
 ## Phase 3 — Full healthy-account spread consumption (Finding 2; Decisions 6, 7)
 
-- [ ] 3.1 RED `tests/test_remote_execution.py`: `cmd_submit` with repeatable `--unit` switches to campaign mode and calls `PACKER.distribute()`, not `select()`.
-- [ ] 3.2 GREEN `remote_cli.py::cmd_submit` (`:491`): add `--unit` (same flag `distribute` declares); branch to campaign mode.
-- [ ] 3.3 RED: campaign result reports `assignments[]`/`unplaced[]`/`skipped[worker→reason]` straight from `Distribution`/`Skip.reason`, one `adapter.submit()` + one ledger event per assignment.
-- [ ] 3.4 GREEN: implement per Decision 7 — no new triage logic, carry `Distribution` unchanged.
-- [ ] 3.5 RED regression lock: single-unit `submit` (no `--unit`) stays byte-identical to today's `select()`/`plan()` path.
-- [ ] 3.6 Invert: swap `distribute()` back to `select()` inside the campaign branch → confirm a four-of-five-healthy campaign only reaches the first account → restore by inverse patch + `sha256`.
-- [ ] 3.7 `remote-execution/SKILL.md`: document the spread guarantee — every healthy account, exclusions named with reason.
+- [x] 3.1 RED `tests/test_remote_execution.py`: `cmd_submit` with repeatable `--unit` switches to campaign mode and calls `PACKER.distribute()`, not `select()`.
+- [x] 3.2 GREEN `remote_cli.py::cmd_submit` (`:491`): add `--unit` (same flag `distribute` declares); branch to campaign mode.
+- [x] 3.3 RED: campaign result reports `assignments[]`/`unplaced[]`/`skipped[worker→reason]` straight from `Distribution`/`Skip.reason`, one `adapter.submit()` + one ledger event per assignment.
+- [x] 3.4 GREEN: implement per Decision 7 — no new triage logic, carry `Distribution` unchanged.
+- [x] 3.5 RED regression lock: single-unit `submit` (no `--unit`) stays byte-identical to today's `select()`/`plan()` path.
+- [x] 3.6 Invert: swap `distribute()` back to `select()` inside the campaign branch → confirm a four-of-five-healthy campaign only reaches the first account → restore by inverse patch + `sha256`.
+- [x] 3.7 `remote-execution/SKILL.md`: document the spread guarantee — every healthy account, exclusions named with reason.
+
+### Phase 3 Addendum — user-required additions (session prompt, not in original tasks.md)
+
+- [x] 3A.1 `adapters/kaggle.py`: declare `KAGGLE_ACCELERATOR_KIND`/`KAGGLE_ACCELERATOR_ARCHITECTURES` beside `KAGGLE_WORKER_CAPACITY`, same honest "observed, not a law" framing — service knowledge, never a forge default.
+- [x] 3A.2 `adapter.py`: a third registry (`register_default_accelerator`/`resolve_default_accelerator`), the same shape as `register_metadata`, so `jobfolder.py` can ask a service adapter for its default without naming it.
+- [x] 3A.3 `jobfolder.py::generate_job()`: thread `accelerator_kind`/`accelerator_architectures`/`environment_requirements`/`environment_index_url` down to `build_run_config` (currently absent from the fifteen-plus params passed at `:861`); when neither accelerator half is given, resolve a default from `ADAPTER.resolve_default_accelerator(service)`.
+- [x] 3A.4 `remote_cli.py`: `generate-job` gains `--accelerator-kind`/`--accelerator-architecture` (override) and `--environment-requirement`/`--environment-index-url` (target's own declared install — never a forge default).
+- [x] 3A.5 Invert strongest case: disable the default-accelerator resolution in `generate_job()` → confirm a from-zero job generates with no `accelerator` block (unprotected) → restore by inverse patch + `sha256`.
 
 ## Phase 4 — Per-campaign consent gate (Finding 3; Decisions 4, 5) — turns today's green `submit` tests red
 
@@ -101,17 +109,17 @@ Chain strategy: stacked-to-main
 
 ## Phase 6 — Harness resolution + gate agreement (Findings 7, 8; Decisions 10, 11)
 
-- [ ] 6.1 RED: `assets/kit/src_benchmark/__init__.py` scaffold test — `__benchmark__` gains a seventh block `entry: {module, function}`, prefilled empty; update the "six blocks" scaffold test to seven (non-additive cost, named explicitly).
-- [ ] 6.2 GREEN: add the `entry` block verbatim per the Interfaces/Contracts spec.
-- [ ] 6.3 RED: `probe_state` (`:1634`) reports `harnessStatus: undeclared` when `entry.module` is empty; declared+present → path; declared+missing → `declaredMissing` naming the declared name and searched path. `BENCHMARK_MODULE` (`:1415`) stops being the primary lookup, reachable only as the scaffold default.
-- [ ] 6.4 GREEN: read `entry.module` from the declaration; implement the three-way branch.
-- [ ] 6.5 RED: one absent-harness-file target vs. one present-under-declared-name target — distinguished without a second hardcoded name (forge-vocabulary guard applies).
-- [ ] 6.6 RED: `search_state` (`:691`) reads declared `search.requiredScale`, compares against the record's own recorded scale along declared axis names, returns `recordScale` + tri-state `scaleSatisfied` (`true`/`false`/`null`).
-- [ ] 6.7 GREEN: implement per Decision 11 — `scaleSatisfied: null` (record names none of the declared axes) advances neither gate.
-- [ ] 6.8 RED: `nextStep` does not report `benchmark`/`piloted` while `scaleSatisfied` is `false` or `null`; the below-scale case reuses `search-first` with a `reason` (Decision 12).
-- [ ] 6.9 GREEN: wire `scaleSatisfied` into the `nextStep` gate.
-- [ ] 6.10 Invert strongest case: default `scaleSatisfied` to `true` when the record has no matching axis (disable the null branch) → confirm `nextStep: benchmark` advances on an unprovable precondition → restore by inverse patch + `sha256`.
-- [ ] 6.11 `proposal-implementation/SKILL.md`: document the seventh scaffold block.
+- [x] 6.1 RED: `assets/kit/src_benchmark/__init__.py` scaffold test — `__benchmark__` gains a seventh block `entry: {module, function}`, prefilled empty; update the "six blocks" scaffold test to seven (non-additive cost, named explicitly).
+- [x] 6.2 GREEN: add the `entry` block verbatim per the Interfaces/Contracts spec.
+- [x] 6.3 RED: `probe_state` (`:1634`) reports `harnessStatus: undeclared` when `entry.module` is empty; declared+present → path; declared+missing → `declaredMissing` naming the declared name and searched path. `BENCHMARK_MODULE` (`:1415`) stops being the primary lookup, reachable only as the scaffold default.
+- [x] 6.4 GREEN: read `entry.module` from the declaration; implement the three-way branch.
+- [x] 6.5 RED: one absent-harness-file target vs. one present-under-declared-name target — distinguished without a second hardcoded name (forge-vocabulary guard applies).
+- [x] 6.6 RED: `search_state` (`:691`) reads declared `search.requiredScale`, compares against the record's own recorded scale along declared axis names, returns `recordScale` + tri-state `scaleSatisfied` (`true`/`false`/`null`).
+- [x] 6.7 GREEN: implement per Decision 11 — `scaleSatisfied: null` (record names none of the declared axes) advances neither gate.
+- [x] 6.8 RED: `nextStep` does not report `benchmark`/`piloted` while `scaleSatisfied` is `false` or `null`; the below-scale case reuses `search-first` with a `reason` (Decision 12).
+- [x] 6.9 GREEN: wire `scaleSatisfied` into the `nextStep` gate.
+- [x] 6.10 Invert strongest case: default `scaleSatisfied` to `true` when the record has no matching axis (disable the null branch) → confirm `nextStep: benchmark` advances on an unprovable precondition → restore by inverse patch + `sha256`.
+- [x] 6.11 `proposal-implementation/SKILL.md`: document the seventh scaffold block.
 
 ## Phase 7 — Three misdirecting refusals, each its own case (Finding 4; Decision 13) — fixes the spec's flagged thinness
 

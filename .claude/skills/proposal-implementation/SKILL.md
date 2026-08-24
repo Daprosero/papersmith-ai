@@ -898,12 +898,12 @@ whatever interpreter the target has. Both work the same whether the implementati
 computes with arrays or with tensors, because which one is right depends on the stage
 the proposal is at, not on this skill's preference.
 
-### The benchmark declaration, and its six blocks
+### The benchmark declaration, and its seven blocks
 
 `src/<Package>_Benchmark/__init__.py` carries one literal, `__benchmark__`, and
 every check downstream of it — `search`, `distribution`, `report`, the wiring
 crossing behind `wiring-first`, `probe`'s whole ladder — reads that one dict
-and nothing else. The kit scaffolds it with all six top-level blocks present
+and nothing else. The kit scaffolds it with all seven top-level blocks present
 and empty (`assets/kit/src_benchmark/__init__.py`), so a freshly materialized
 target already has the file; what it does not yet have is anything written
 into it:
@@ -931,6 +931,10 @@ into it:
             "conclusions": ["tables.conclusion"],
             "figures": ["figures.curves"],
             "dimensions": {"accuracy": "higher", "seconds": "lower"},
+        },
+        "entry": {
+            "module": "Example_Method_Benchmark.benchmark",
+            "function": "run",
         },
         "distribution": {
             "axis": "seed",
@@ -960,6 +964,7 @@ names a somebody:
 | `search` | Flow B's `search-first` rung | Once a search is actually run and has a scale and a tie rule of its own |
 | `report` | Flow B's `report-first` rung | Once the renderers and conclusions exist to name |
 | `distribution` | Flow B's shard work | Once a run is actually split across machines |
+| `entry` | Flow B's harness placement | Once the harness module exists and its own entry point is known |
 
 The first two rows are the ones that used to have no step at all. The other four
 are the same rule stated one level up: a block is written when the work it
@@ -1008,7 +1013,7 @@ on: `absent` (no `src/<Package>_Benchmark/` directory at all — nothing could
 have declared anything yet) and `undeclared` (the directory exists, but
 either nothing parses as `__benchmark__`, or one does and every block in it is
 still at its scaffolded empty value — see
-[The benchmark declaration, and its six blocks](#the-benchmark-declaration-and-its-six-blocks))
+[The benchmark declaration, and its seven blocks](#the-benchmark-declaration-and-its-seven-blocks))
 both block the run. `declared` — at least one block answered — does not, and
 lets the ladder continue to the checks below that read what was answered.
 
@@ -1142,11 +1147,24 @@ three invocations and points at the owning skill for the rest.
 
 `search` carries the same reading `verify` already reports (see the hard rule on a
 search being an experiment, declared as one, under
-[Proving the comparison measures anything at all](#proving-the-comparison-measures-anything-at-all)),
-and `recordFound` is the one field this rung acts on: a search block is declared, and
-its own `record` does not exist where the declaration says it lives. Nothing here
-learns what the search is choosing — the declaration does, and this only asks the
-filesystem whether the answer is there.
+[Proving the comparison measures anything at all](#proving-the-comparison-measures-anything-at-all)).
+Two fields fire this rung, sharing one remedy: `recordFound` — a search block is
+declared, and its own `record` does not exist where the declaration says it lives —
+and `scaleSatisfied` short of `true`. Nothing here learns what the search is
+choosing — the declaration does, and this only asks the filesystem whether the
+answer is there and at the scale the declaration itself requires.
+
+**`scaleSatisfied` is a tri-state, and both non-`true` values fire this rung.**
+`search_state` reads the record's own recorded scale along exactly the axis
+names `requiredScale` declares, and reports `recordScale` beside it.
+`scaleSatisfied: false` means the record names every declared axis and falls
+short on at least one — read `recordScale` next to `requiredScale` to see which
+one. `scaleSatisfied: null` means the record names none of the declared axes at
+all: an unprovable precondition, not a satisfied one, the same doctrine the pin
+probe already applies to a question it cannot ask. Neither advances the ladder,
+and the cost is accepted rather than softened: a target whose record stays
+silent about the declared axes now refuses here, where it used to pass on
+`recordFound` alone.
 
 **Why it sits after `wiring-first` and `poll-first`, and before `report-first`, and
 why that order is not a preference.** `wiring-first` stays ahead because correcting a
@@ -1920,13 +1938,13 @@ is a fact nobody reads:
 | `baselines` | The prior implementations there are to compare against | Yes — nothing to compare against outranks everything else on the ladder |
 | `comparable` | Whether that list is non-empty, stated once so nobody re-derives it | Reported whatever it says |
 | `coupling` | Which notebook cells reach into the target's internals instead of its declared surface | **Never** — a static fact, reported so somebody can decide about it |
-| `harness` | Where the benchmark module is, or `null` when the package has none yet | Reported whatever it says |
+| `harnessStatus` | Where the target's own declaration says its harness module is: `undeclared`, present at `path`, or `declaredMissing` naming `declaredModule` and `searchedPath` | Reported whatever it says |
 | `nextStep` | The one thing to do next | This is the answer, not a fact feeding it |
 | `notebook` | Where the pilot notebook is, or `null` | Reported whatever it says |
 | `remoteExecution` | The ledger's fold, plus the job folders that exist on disk right now | Yes — a submission already out is `poll-first` |
 | `report` | Whether the document a human reads agrees with the run | Yes — a document in drift is `report-first` |
 | `results` | What the last pilot measured, and at what scale | Yes — below scale is `piloted`, at scale is `already-benchmarked` |
-| `search` | Whether a declared search chose anything, and what a full run would cost | Yes — a record absent from disk is `search-first` |
+| `search` | Whether a declared search chose anything, and what a full run would cost | Yes — a record absent from disk, or its `scaleSatisfied` short of `true`, is `search-first` |
 | `unreachedModules` | Arms declaring mathematics they never call | Yes — that is `wiring-first` |
 | `wiring` | The proposed wiring, present only when the answer is `benchmark` | Reported whatever it says |
 

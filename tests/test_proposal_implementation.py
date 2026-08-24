@@ -2255,6 +2255,97 @@ class SearchIsAnExperimentTests(unittest.TestCase):
             self.assertNotIn(tool, (source[1] or "").lower())
 
 
+class SearchRecordScaleAgreementTests(unittest.TestCase):
+    """The declaration is the fact: `search_state` reads the record's own
+    recorded scale along exactly the axis names `requiredScale` declares, and
+    reports a tri-state `scaleSatisfied` — `true`/`false`/`null` — never a
+    plain boolean. `null` is what an unprovable precondition looks like: the
+    record names none of the declared axes, the same doctrine
+    `_verify_commit_reachable` already applies to a question that could not
+    be asked.
+
+    No axis vocabulary is forge-known: whichever names `requiredScale` uses
+    are exactly the names looked up in the record, so a record naming its
+    scale under any other key reads as answering none of them.
+    """
+
+    COMPLETE = {
+        "what": "el techo del coeficiente de adaptación, por familia",
+        "requiredScale": {"epochs": 20, "seeds": 3},
+        "role": "valid",
+        "tieRule": "el techo más chico entre los empatados",
+        "record": "Results/ceilings.json",
+    }
+
+    def _state(self, record_payload):
+        with tempfile.TemporaryDirectory() as raw:
+            product = Path(raw) / "Method"
+            results = product / "Results"
+            results.mkdir(parents=True, exist_ok=True)
+            (results / "ceilings.json").write_text(
+                json.dumps(record_payload), encoding="utf-8")
+            return impl.search_state({"search": self.COMPLETE},
+                                     ["Results/ceilings.json"], product)
+
+    def test_a_record_naming_none_of_the_declared_axes_is_null_not_false(self):
+        """The tri-state's whole point: a record that answers nothing about
+        scale is not the same fact as a record that answers it and falls
+        short. Collapsing this to `False` would read an unasked question as
+        a failed one."""
+        state = self._state({"someOtherField": 1})
+        self.assertEqual(state["recordScale"], {})
+        self.assertIsNone(state["scaleSatisfied"])
+
+    def test_a_record_meeting_every_declared_axis_is_true(self):
+        state = self._state({"epochs": 20, "seeds": 5})
+        self.assertEqual(state["recordScale"], {"epochs": 20, "seeds": 5})
+        self.assertIs(state["scaleSatisfied"], True)
+
+    def test_a_record_short_on_one_declared_axis_is_false(self):
+        state = self._state({"epochs": 20, "seeds": 1})
+        self.assertIs(state["scaleSatisfied"], False)
+
+    def test_a_record_naming_only_some_of_the_declared_axes_is_false(self):
+        """Naming `epochs` and staying silent on `seeds` is not the same fact
+        as naming neither — a partial answer is not an unasked question."""
+        state = self._state({"epochs": 20})
+        self.assertEqual(state["recordScale"], {"epochs": 20})
+        self.assertIs(state["scaleSatisfied"], False)
+
+    def test_an_empty_record_reads_as_null(self):
+        state = self._state({})
+        self.assertEqual(state["recordScale"], {})
+        self.assertIsNone(state["scaleSatisfied"])
+
+    def test_no_required_scale_leaves_scale_satisfied_null_and_gap_computed_lazily(self):
+        """A search that never declared `requiredScale` has nothing to
+        satisfy — `scaleSatisfied` stays `None` rather than manufacturing a
+        verdict from a requirement that was never named."""
+        incomplete = {k: v for k, v in self.COMPLETE.items() if k != "requiredScale"}
+        with tempfile.TemporaryDirectory() as raw:
+            product = Path(raw) / "Method"
+            results = product / "Results"
+            results.mkdir(parents=True, exist_ok=True)
+            (results / "ceilings.json").write_text(
+                json.dumps({"epochs": 20, "seeds": 5}), encoding="utf-8")
+            state = impl.search_state({"search": incomplete},
+                                      ["Results/ceilings.json"], product)
+        self.assertIsNone(state["scaleSatisfied"])
+
+    def test_a_list_valued_axis_is_measured_by_length(self):
+        """`_scale_of` already treats a list as the count of what it holds —
+        `seeds: [0, 1, 2, 3, 4]` is a scale of five, the same rule the pilot
+        comparison already applies."""
+        state = self._state({"epochs": 25, "seeds": [0, 1, 2, 3, 4]})
+        self.assertIs(state["scaleSatisfied"], True)
+
+    def test_absence_of_a_record_on_disk_reports_recordscale_empty_not_an_error(self):
+        state = impl.search_state({"search": self.COMPLETE},
+                                  ["Results/ceilings.json"])
+        self.assertEqual(state["recordScale"], {})
+        self.assertIsNone(state["scaleSatisfied"])
+
+
 class UndeclaredRecordsTests(unittest.TestCase):
     """Lo que la corrida deja escrito donde viven sus registros, o está declarado
     o se reporta.
@@ -3864,7 +3955,7 @@ class SearchDeclaredBeforeTheRunTests(unittest.TestCase):
                 "}\n")
 
     def probe_with(self, wiring, *, search=None, record_present=False,
-                   pilot=False, suffix=""):
+                   record_scale=None, pilot=False, suffix=""):
         box = FORGE / "implementations" / f"_e2e_search_first_{suffix}_{os.getpid()}"
         try:
             (box / "src/Method").mkdir(parents=True)
@@ -3891,7 +3982,8 @@ class SearchDeclaredBeforeTheRunTests(unittest.TestCase):
             if record_present:
                 results = box / "Method" / "Results"
                 results.mkdir(parents=True, exist_ok=True)
-                (results / "ceilings.json").write_text("{}", encoding="utf-8")
+                (results / "ceilings.json").write_text(
+                    json.dumps(record_scale or {}), encoding="utf-8")
             if pilot:
                 results = box / "Method" / "Results"
                 results.mkdir(parents=True, exist_ok=True)
@@ -3932,11 +4024,43 @@ class SearchDeclaredBeforeTheRunTests(unittest.TestCase):
     def test_a_record_on_disk_does_not_trigger_search_first(self):
         """The other pole: without it, a search that is declared and already
         satisfied would still block every run behind a step it has already
-        passed."""
+        passed. `record_scale` names every declared axis and meets it — the
+        accepted cost of Decision 11 is that an empty or below-scale record
+        no longer passes silently, so this fixture now has to earn `ok`
+        rather than assume it from mere presence on disk."""
         probe = self.probe_with(self.WITH, search=self.SEARCH,
-                                record_present=True, suffix="satisfied")
+                                record_present=True,
+                                record_scale={"epochs": 20, "seeds": 3},
+                                suffix="satisfied")
         self.assertIs(probe["search"]["recordFound"], True)
+        self.assertIs(probe["search"]["scaleSatisfied"], True)
         self.assertNotEqual(probe["nextStep"], "search-first")
+
+    def test_a_record_naming_none_of_the_declared_axes_yields_search_first(self):
+        """Decision 11's accepted cost, measured directly: a record present
+        on disk but silent about scale used to pass — `recordFound` alone
+        cannot tell a run at scale from a record that answers nothing about
+        it. `scaleSatisfied: null` now refuses to advance either, the same
+        doctrine an unprovable precondition already gets elsewhere."""
+        probe = self.probe_with(self.WITH, search=self.SEARCH,
+                                record_present=True, record_scale={},
+                                suffix="null_scale")
+        self.assertIs(probe["search"]["recordFound"], True)
+        self.assertIsNone(probe["search"]["scaleSatisfied"])
+        self.assertEqual(probe["nextStep"], "search-first")
+
+    def test_a_record_below_the_declared_scale_yields_search_first(self):
+        """The other half of the tri-state: a record that does name the
+        declared axes but falls short of them is `false`, not `null`, and
+        still refuses to advance — the disagreement Finding 8 exists to
+        close, closed on the forge's own side of it."""
+        probe = self.probe_with(self.WITH, search=self.SEARCH,
+                                record_present=True,
+                                record_scale={"epochs": 20, "seeds": 1},
+                                suffix="below_scale")
+        self.assertIs(probe["search"]["recordFound"], True)
+        self.assertIs(probe["search"]["scaleSatisfied"], False)
+        self.assertEqual(probe["nextStep"], "search-first")
 
     def test_no_declared_search_is_unaffected(self):
         """Absence of a declaration is not a finding: most repositories
@@ -4899,8 +5023,15 @@ class MaterializeBenchmarkDeclarationTests(unittest.TestCase):
         self.assertIsNotNone(value, "no literal __benchmark__ assignment found")
         self.assertEqual(
             set(value),
-            {"revision", "premises", "arms", "search", "report", "distribution"})
+            {"revision", "premises", "arms", "search", "report", "distribution",
+             "entry"})
         for key, field in value.items():
+            if key == "entry":
+                # The seventh block's own blank shape: a dict of two blank
+                # scalars, not an empty container like the other six.
+                self.assertEqual(field, {"module": "", "function": ""},
+                                 f"{key!r} is not empty: {field!r}")
+                continue
             self.assertIn(field, ("", {}, []), f"{key!r} is not empty: {field!r}")
 
     def test_scaffold_gaps_no_longer_reports_it_missing_once_written(self):
@@ -6881,6 +7012,20 @@ class HarnessPlacementTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         return json.loads(proc.stdout or "{}")
 
+    def declare_entry(self, box, module_name="benchmark", function_name="run"):
+        """Fill in the scaffold's own `entry` block, as the agent would once
+        the harness is written — the seventh block, prefilled empty by the
+        kit and never invented by this fixture."""
+        path = box / "src" / f"{self.PACKAGE}_Benchmark" / "__init__.py"
+        source = path.read_text(encoding="utf-8")
+        updated = source.replace(
+            '"entry": {"module": "", "function": ""},',
+            '"entry": {"module": "%s_Benchmark.%s", "function": "%s"},'
+            % (self.PACKAGE, module_name, function_name))
+        self.assertNotEqual(updated, source,
+                            "the scaffold's `entry` block was not found to declare")
+        path.write_text(updated, encoding="utf-8")
+
     def test_a_doctrine_faithful_scaffold_reports_no_stray_modules(self):
         """The reason the harness cannot move to the notebooks instead: a `.py`
         outside `SOURCE_ROOTS` is a stray module, and admitting `Notebooks/`
@@ -6892,15 +7037,42 @@ class HarnessPlacementTests(unittest.TestCase):
         self.assertEqual(structure["status"], "ok")
 
     def test_probe_finds_the_harness_doctrine_told_the_agent_to_write(self):
-        """`harness: null` on a target that followed the instructions exactly.
-        The reader's cheapest conclusion is that they wrote the file in the
-        wrong place, and the instructions were right."""
-        probe = self.run_cli("probe", self.scaffold("probe"))
+        """Once the declaration names the harness, `probe` finds it at the
+        place doctrine put it. The reader's cheapest wrong conclusion used
+        to be that the file was in the wrong place; the instructions were
+        right, and now the declaration is what says so."""
+        box = self.scaffold("probe")
+        self.declare_entry(box)
+        probe = self.run_cli("probe", box)
 
-        self.assertEqual(probe["harness"],
+        self.assertEqual(probe["harnessStatus"]["status"], "present")
+        self.assertEqual(probe["harnessStatus"]["path"],
                          f"src/{self.PACKAGE}_Benchmark/{impl.BENCHMARK_MODULE}")
         self.assertEqual(probe["notebook"],
                          f"{self.NAME}/Notebooks/{impl.PROBE_NOTEBOOK}")
+
+    def test_probe_reports_undeclared_on_a_fresh_scaffold(self):
+        """A fresh scaffold's `entry` block is blank. This must not be read
+        as "no harness file exists" — the file doctrine says to write is
+        sitting right there, unreachable to the resolver until the
+        declaration names it."""
+        probe = self.run_cli("probe", self.scaffold("fresh"))
+        self.assertEqual(probe["harnessStatus"]["status"], "undeclared")
+
+    def test_probe_names_the_declared_module_and_where_it_looked_when_missing(self):
+        """One target has no harness file under the name it declared; this is
+        that target, told apart from absence by the declaration alone —
+        `benchmark.py` sits on disk, but nothing is declared to call it
+        `harness`, so the declared name is what is missing, not the file."""
+        box = self.scaffold("declared_missing")
+        self.declare_entry(box, module_name="harness")
+        probe = self.run_cli("probe", box)
+
+        self.assertEqual(probe["harnessStatus"]["status"], "declaredMissing")
+        self.assertEqual(probe["harnessStatus"]["declaredModule"],
+                         f"{self.PACKAGE}_Benchmark.harness")
+        self.assertEqual(probe["harnessStatus"]["searchedPath"],
+                         f"src/{self.PACKAGE}_Benchmark/harness.py")
 
     def test_the_harness_becoming_visible_does_not_turn_the_distribution_red(self):
         """New, and worth pinning. Placing the harness where doctrine says makes
@@ -8013,8 +8185,9 @@ FORGE_LEXICON: dict[str, str] = {
               "generic vocabulary for where data comes from, named by no target",
     "figures": "one of the two module names rule A allows a worked example to "
                "draw from, because the kit's own declaration already uses it",
-    "harness": "probe returns a harness key and the doctrine says the harness "
-               "refuses; the forge's own file for it is benchmark.py",
+    "harness": "probe returns a harnessStatus key and the doctrine says the "
+               "harness refuses; the kit's own scaffold default for it is "
+               "benchmark.py",
     "init": "the __init__.py every Python package on earth is required to have, "
             "including the declaration this skill writes",
     "kernel": "generic compute vocabulary for the unit a device queues, needed "
@@ -8639,6 +8812,57 @@ class DeclarationBlockRosterTests(unittest.TestCase):
         self.assertIn(
             "asked for by the flow, never invented here",
             self.KIT_DECLARATION.read_text(encoding="utf-8"))
+
+
+class SeventhScaffoldBlockTests(unittest.TestCase):
+    """The scaffold's `__benchmark__` literal gains a seventh block, `entry`,
+    prefilled empty exactly like the other six — and the doctrine's own count
+    of "six blocks" moves to seven with it, named here rather than absorbed
+    silently.
+
+    This is the one non-additive cost of Decision 10: `probe`'s harness
+    resolution can only stop naming `benchmark.py` for every target once a
+    target has somewhere of its own to declare a different name instead.
+    """
+
+    KIT_DECLARATION = KIT / "src_benchmark" / "__init__.py"
+
+    def declared_blocks(self) -> dict:
+        tree = ast.parse(self.KIT_DECLARATION.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "__benchmark__"
+                    for t in node.targets):
+                return ast.literal_eval(node.value)
+        self.fail("the kit declares no `__benchmark__` literal")
+
+    def test_the_scaffold_declares_seven_blocks_not_six(self):
+        declared = self.declared_blocks()
+        self.assertEqual(
+            sorted(declared),
+            ["arms", "distribution", "entry", "premises", "report",
+             "revision", "search"],
+            "the scaffold must carry exactly seven top-level blocks")
+
+    def test_the_entry_block_is_prefilled_empty(self):
+        declared = self.declared_blocks()
+        self.assertEqual(declared["entry"], {"module": "", "function": ""})
+
+    def test_the_doctrine_names_seven_blocks_not_six(self):
+        """The prose that counted the blocks has to count seven now, or the
+        doctrine is the one place still telling a reader the old number."""
+        text = SKILL_MD.read_text(encoding="utf-8")
+        self.assertIn("its seven blocks", text)
+        self.assertNotIn("its six blocks", text)
+        self.assertIn("all seven top-level blocks", text)
+
+    def test_a_fresh_untouched_scaffold_still_reads_as_blank(self):
+        """The seventh block's own blank value is `{"module": "", "function":
+        ""}` — a non-empty dict, unlike every other block's `{}` or `""`.
+        Bare truthiness would read that dict as an answer nobody gave, and a
+        freshly materialized target would report `"declared"` before a
+        single block had anything written into it."""
+        self.assertTrue(impl._declaration_is_blank(self.declared_blocks()))
 
 
 class VerifyStatusRosterTests(unittest.TestCase):
@@ -9701,6 +9925,96 @@ class EntryModuleResolutionTests(unittest.TestCase):
             "'entry': {'module': 'Method_Benchmark.custom_entry', 'function': 'run'}}\n")
         self.assertEqual(impl.resolve_entry_module(target, "Method", "Method"),
                           "Method_Benchmark.custom_entry")
+
+
+class HarnessStatusResolutionTests(unittest.TestCase):
+    """Where `probe` gets its harness's name from — the target's own
+    declaration, `entry.module`, never a second hardcoded filename beside
+    `BENCHMARK_MODULE`.
+
+    Three states, and they answer three different questions: `undeclared`
+    (nothing named yet — silence about the tree says nothing), `present` (the
+    declared module's file exists), and `declaredMissing` (a module is named
+    and its file is not where the declaration says — named with the declared
+    module and the exact path looked for, because a refusal that does not say
+    where it looked cannot be acted on).
+    """
+
+    def box(self, suffix, declaration):
+        path = FORGE / "implementations" / f"_harnessstatus_{suffix}_{os.getpid()}"
+        (path / "src" / "Method_Benchmark").mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, path, ignore_errors=True)
+        (path / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            declaration, encoding="utf-8")
+        return path
+
+    def test_an_empty_entry_module_reports_undeclared(self):
+        """Nothing declared yet. This must never be read as "no harness
+        file exists" — the tree may hold one under any name at all."""
+        target = self.box("undeclared", "__benchmark__ = {'revision': 'r01.md'}\n")
+        status = impl.resolve_harness_status(target, "Method", "Method")
+        self.assertEqual(status["status"], "undeclared")
+        self.assertIsNone(status["declaredModule"])
+        self.assertIsNone(status["path"])
+        self.assertIsNone(status["searchedPath"])
+
+    def test_a_declared_module_present_on_disk_reports_its_path(self):
+        target = self.box(
+            "present",
+            "__benchmark__ = {'revision': 'r01.md', "
+            "'entry': {'module': 'Method_Benchmark.benchmark', 'function': 'run'}}\n")
+        (target / "src" / "Method_Benchmark" / "benchmark.py").write_text(
+            "VALUE = 1\n", encoding="utf-8")
+        status = impl.resolve_harness_status(target, "Method", "Method")
+        self.assertEqual(status["status"], "present")
+        self.assertEqual(status["declaredModule"], "Method_Benchmark.benchmark")
+        self.assertEqual(status["path"], "src/Method_Benchmark/benchmark.py")
+        self.assertIsNone(status["searchedPath"])
+
+    def test_a_declared_module_missing_from_disk_names_it_and_where_it_looked(self):
+        """Present under a different name is not the same fact as absent, and
+        this is the case that tells the two apart without a second hardcoded
+        filename: the target names its harness `harness.py`, nothing at
+        `benchmark.py` was ever written, and the declared name is honoured."""
+        target = self.box(
+            "declared_missing",
+            "__benchmark__ = {'revision': 'r01.md', "
+            "'entry': {'module': 'Method_Benchmark.harness', 'function': 'run'}}\n")
+        status = impl.resolve_harness_status(target, "Method", "Method")
+        self.assertEqual(status["status"], "declaredMissing")
+        self.assertEqual(status["declaredModule"], "Method_Benchmark.harness")
+        self.assertIsNone(status["path"])
+        self.assertEqual(status["searchedPath"], "src/Method_Benchmark/harness.py")
+
+    def test_absent_and_missing_are_told_apart_by_the_declaration_alone(self):
+        """One target has no harness file at all; another has it under the
+        declared name. Neither reads the forge's own filename convention to
+        tell them apart."""
+        absent = self.box("absent_pole",
+                          "__benchmark__ = {'revision': 'r01.md', "
+                          "'entry': {'module': 'Method_Benchmark.harness', "
+                          "'function': 'run'}}\n")
+        present = self.box("present_pole",
+                           "__benchmark__ = {'revision': 'r01.md', "
+                           "'entry': {'module': 'Method_Benchmark.harness', "
+                           "'function': 'run'}}\n")
+        (present / "src" / "Method_Benchmark" / "harness.py").write_text(
+            "VALUE = 1\n", encoding="utf-8")
+
+        self.assertEqual(
+            impl.resolve_harness_status(absent, "Method", "Method")["status"],
+            "declaredMissing")
+        self.assertEqual(
+            impl.resolve_harness_status(present, "Method", "Method")["status"],
+            "present")
+
+    def test_no_second_hardcoded_filename_names_the_harness(self):
+        """The design's own rejected alternative, measured rather than
+        argued: a second hardcoded name beside `BENCHMARK_MODULE` would be
+        the same defect twice."""
+        source = inspect.getsource(impl.resolve_harness_status)
+        self.assertNotIn("BENCHMARK_MODULE", source,
+                         "the declared entry name is the only lookup here")
 
 
 class EnvFirstGateTests(unittest.TestCase):

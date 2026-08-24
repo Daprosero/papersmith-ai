@@ -321,6 +321,48 @@ def declared_required_scale(search: dict) -> dict:
     return dict(declared) if isinstance(declared, dict) else {}
 
 
+def _record_scale(expected: Path | None, axes: dict) -> dict:
+    """The record's own reported scale, read only under the axis names
+    `requiredScale` itself declares.
+
+    No axis vocabulary is forge-known: whichever names `requiredScale`
+    declares are exactly the names looked up here, so a record naming its
+    scale under any other key is read as answering none of them — never
+    guessed at, never learned from one target and applied to the next.
+    """
+    if expected is None or not axes or not expected.is_file():
+        return {}
+    try:
+        payload = json.loads(expected.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {axis: payload[axis] for axis in axes if axis in payload}
+
+
+def _scale_satisfied(record_scale: dict, required_scale: dict) -> bool | None:
+    """Tri-state: whether the record's own scale meets what was declared.
+
+    `None` when the record names none of the declared axes at all — an
+    unprovable precondition, not a satisfied one, the same doctrine
+    `_verify_commit_reachable` already applies to a question that could not
+    be asked. `False` when it names some axes but not every declared one, or
+    names every one and falls short on at least one. `True` only when every
+    declared axis is present and each meets or exceeds its requirement.
+    """
+    if not record_scale:
+        return None
+    if set(record_scale) != set(required_scale):
+        return False
+    return all(
+        _scale_of(record_scale[axis]) is not None
+        and _scale_of(required_scale[axis]) is not None
+        and _scale_of(record_scale[axis]) >= _scale_of(required_scale[axis])
+        for axis in required_scale
+    )
+
+
 #: A token in prose that looks like something in the code: dotted, underscored or
 #: shouted. A bare lowercase word is an English word far more often than a symbol,
 #: and reporting those would bury the ones that matter.
@@ -732,10 +774,11 @@ def search_state(contract: dict, declared_records: list,
             return {"status": declaration_status, "declared": {}, "missing": [],
                     "malformed": [],
                     "recordNotDeclared": None, "recordFound": None,
-                    "strayRecords": [],
+                    "strayRecords": [], "recordScale": {}, "scaleSatisfied": None,
                     "note": "no benchmark declaration to read a search from yet"}
         return {"status": "none", "declared": {}, "missing": [], "malformed": [],
                 "recordNotDeclared": None, "recordFound": None, "strayRecords": [],
+                "recordScale": {}, "scaleSatisfied": None,
                 "note": "no search declared; `undeclaredRecords` is what would "
                         "surface one that left an artefact"}
 
@@ -768,6 +811,7 @@ def search_state(contract: dict, declared_records: list,
     # looking for that filename anywhere under the product.
     found = None
     stray: list[str] = []
+    expected = None
     if record and product is not None and product.is_dir():
         expected = product / record
         found = expected.is_file()
@@ -775,6 +819,16 @@ def search_state(contract: dict, declared_records: list,
             stray = [str(p.relative_to(product))
                      for p in sorted(product.rglob(Path(record).name))
                      if p.is_file()]
+
+    # The declaration is the fact: whatever axis names `requiredScale` uses
+    # are the only names read back off the record. A value of the wrong
+    # shape is already reported as `malformed` above and contributes no axes
+    # here, so a scalar `requiredScale` cannot silently answer `scaleSatisfied`.
+    required_scale = search.get("requiredScale") \
+        if isinstance(search.get("requiredScale"), dict) else {}
+    record_scale = _record_scale(expected, required_scale)
+    scale_satisfied = (_scale_satisfied(record_scale, required_scale)
+                       if required_scale else None)
 
     return {
         "status": ("ok" if not missing and not malformed and covered
@@ -785,6 +839,12 @@ def search_state(contract: dict, declared_records: list,
         "missing": missing,
         "malformed": malformed,
         "recordNotDeclared": None if covered else record,
+        # `null` when the record names none of the declared axes — see
+        # `_scale_satisfied`. Reported beside the declaration, never folded
+        # into `status`, so a below-scale record is still `"ok"` here and the
+        # caller (`probe`'s ladder) is what turns it into `search-first`.
+        "recordScale": record_scale,
+        "scaleSatisfied": scale_satisfied,
     }
 
 
@@ -2087,7 +2147,11 @@ def cmd_probe(args) -> dict:
     # governing scalar has not yet been chosen is not a configuration — nothing about
     # what "trainable" or "benchmark" means changes, but the run about to be offered
     # would have to invent a value it was never handed, silently or otherwise. That is
-    # worse than a report in drift and cheaper to catch before it runs.
+    # worse than a report in drift and cheaper to catch before it runs. A record
+    # present but silent about the declared scale — or short of it — shares
+    # this same remedy (Decision 12): `scaleSatisfied` short of `true` is not
+    # a chosen configuration either, and `null` (the record names none of the
+    # declared axes) is an unprovable precondition, not a satisfied one.
     #
     # The report comes last — a report in drift describes a sound run wrongly, which
     # costs a sentence rather than the campaign, but still must not be printed with
@@ -2121,18 +2185,20 @@ def cmd_probe(args) -> dict:
     # Only `pending` names a submission a wait can actually resolve.
     elif next_step in ("benchmark", "piloted") and remote["status"] == "pending":
         next_step = "poll-first"
-    elif next_step in ("benchmark", "piloted") and search["recordFound"] is False:
+    elif next_step in ("benchmark", "piloted") and (
+            search["recordFound"] is False
+            or (declared_required_scale(search)
+                and search["scaleSatisfied"] is not True)):
         next_step = "search-first"
     elif next_step in ("benchmark", "piloted") and report["status"] != "ok":
         next_step = "report-first"
 
     proposal = wiring_proposal(target, name, baselines) if next_step == "benchmark" else None
-    # The harness is a module of the benchmark package, not a file beside a
-    # notebook: `.py` outside `SOURCE_ROOTS` is a stray module, `wiring.py` has to
-    # sit next to it, and `declared_dimension_names` and `benchmark_reach` both
-    # read only under `src/<Package>_Benchmark/`. Looking beside the notebooks
-    # reported `harness: null` on a target that had followed doctrine exactly.
-    harness = target / "src" / f"{package_name(name)}_Benchmark" / BENCHMARK_MODULE
+    # The harness's name is read from the target's own declaration
+    # (`resolve_harness_status`), never assumed from a filename: a fixed
+    # convention here reported `harness: null` on a target that had followed
+    # doctrine exactly but named its module something else.
+    harness_status = resolve_harness_status(target, name, package_name(name))
     notebook = target / name / "Notebooks" / PROBE_NOTEBOOK
     return {
         "status": "ok",
@@ -2141,7 +2207,7 @@ def cmd_probe(args) -> dict:
         "backend": backend,
         "baselines": baselines,
         "comparable": bool(baselines),
-        "harness": str(harness.relative_to(target)) if harness.exists() else None,
+        "harnessStatus": harness_status,
         "notebook": str(notebook.relative_to(target)) if notebook.exists() else None,
         "results": state,
         "report": report,
@@ -3021,6 +3087,40 @@ def resolve_entry_module(target: Path, name: str, package: str) -> str:
     return f"{package}_Benchmark.{Path(BENCHMARK_MODULE).stem}"
 
 
+def resolve_harness_status(target: Path, name: str, package: str) -> dict:
+    """Where the target's own declaration says its harness module lives.
+
+    Reads `entry.module` from the benchmark declaration and looks only for
+    the file that dotted module resolves to on disk. The kit's own scaffold
+    filename convention is never read here, and never as a second fallback
+    to reach for — a second hardcoded name beside the first would be the
+    same defect twice, which is why `probe` used to report `harness: null`
+    for a target that had named its harness anything else.
+
+    Three states, and they answer three different questions:
+
+    - `"undeclared"`: `entry.module` is empty. Nothing has been declared to
+      look for, so this says nothing about whether the target's tree holds a
+      harness file under some other name — silence is not absence.
+    - `"declaredMissing"`: a module is declared and no file sits where that
+      declaration says. `declaredModule` and `searchedPath` are both named,
+      because a refusal that does not say where it looked cannot be acted on.
+    - present: the file exists at the declared location. `path` carries it,
+      relative to `target`.
+    """
+    contract = resolve_benchmark_declaration(target, name)["contract"]
+    declared = (contract.get("entry") or {}).get("module")
+    if not declared:
+        return {"status": "undeclared", "declaredModule": None,
+                "path": None, "searchedPath": None}
+    searched = target / "src" / Path(*declared.split(".")).with_suffix(".py")
+    if searched.is_file():
+        return {"status": "present", "declaredModule": declared,
+                "path": str(searched.relative_to(target)), "searchedPath": None}
+    return {"status": "declaredMissing", "declaredModule": declared,
+            "path": None, "searchedPath": str(searched.relative_to(target))}
+
+
 def introspect(target: Path, package: str, record: Path | None,
                entry_module: str = "") -> dict:
     """Run the two live checks inside the target's interpreter, or say why not.
@@ -3563,15 +3663,16 @@ def read_declaration(path: Path, name: str) -> dict | None:
     return None
 
 
-#: The six top-level blocks the kit's scaffold writes (see
+#: The seven top-level blocks the kit's scaffold writes (see
 #: `assets/kit/src_benchmark/__init__.py`), and the value each one carries when
-#: nobody has answered it yet: `""` for the lone scalar, `{}` for the five
+#: nobody has answered it yet: `""` for the lone scalar, `{}` for the six
 #: containers. Named once here so "blank" has one definition every reader of
 #: the resolver's `"declared"`/`"undeclared"` split shares, rather than each
 #: caller inventing its own idea of empty.
 BENCHMARK_BLOCKS = {
     "revision": "", "premises": {}, "arms": {},
     "search": {}, "report": {}, "distribution": {},
+    "entry": {"module": "", "function": ""},
 }
 
 
@@ -3584,10 +3685,16 @@ def _declaration_is_blank(contract: dict) -> bool:
     an answered, measured result, because a repository can legitimately
     measure that a field is empty. No repository ever means "I measured that
     the whole `distribution` block is empty" the same way — a blank *block* is
-    unambiguously unanswered, never a result. So this checks truthiness at the
-    block level on purpose, the mirror image of the field-level rule.
+    unambiguously unanswered, never a result.
+
+    Compared against `BENCHMARK_BLOCKS`' own template value rather than bare
+    truthiness, because `entry`'s blank value is `{"module": "", "function":
+    ""}` — a non-empty dict, unlike every other block's `{}` or `""`. Bare
+    truthiness would read that dict as an answer nobody gave, the moment a
+    target is first materialized.
     """
-    return not any(contract.get(block) for block in BENCHMARK_BLOCKS)
+    return all(contract.get(block, value) == value
+               for block, value in BENCHMARK_BLOCKS.items())
 
 
 def resolve_benchmark_declaration(target: Path, name: str) -> dict:
@@ -3621,7 +3728,7 @@ def resolve_benchmark_declaration(target: Path, name: str) -> dict:
 
     **A blank literal is `"undeclared"`, not `"declared"`.** The kit's scaffold
     (`assets/kit/src_benchmark/__init__.py`) writes a `__benchmark__` that
-    parses cleanly — six blocks, each at its empty value — the moment a
+    parses cleanly — seven blocks, each at its empty value — the moment a
     target is materialized, before anybody has answered a single one. Treating
     a successful parse alone as `"declared"` would make that scaffold read as
     a finished declaration on the day it is created, which is the defect this
