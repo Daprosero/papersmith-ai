@@ -797,6 +797,16 @@ class KaggleAdapter(ADAPTER.Adapter):
         carries none gets a minimal template synthesized here, in the
         staged copy only; the job folder itself still never needs to
         carry one, exactly as before.
+
+        `machine_shape` is force-set onto the staged template with
+        `setdefault`, immediately before `id`/`code_file` are filled in —
+        ABSENT-key-only, never value-only: a GENERATED job folder whose
+        `kernel-metadata.json` predates this (`assemble_metadata()` did
+        not yet write the key) is the one shape that otherwise reaches
+        `kernels push` with no requested card at all, silently landing on
+        whatever the service defaults to. A template that already names
+        one — freshly generated, or a target that deliberately asks for a
+        different card — is staged exactly as read.
         """
         metadata_path = job.entrypoint.parent / KERNEL_METADATA_FILENAME
         if job.run_config and not metadata_path.is_file():
@@ -827,6 +837,23 @@ class KaggleAdapter(ADAPTER.Adapter):
                     "enable_gpu": REQUEST_GPU,
                     "machine_shape": KAGGLE_MACHINE_SHAPE,
                 }
+
+            # `id` and `code_file`, below, are not the only fields this
+            # method has ever forced onto a staged template -- this one
+            # joins them, but ABSENCE-gated rather than unconditional.
+            # `assemble_metadata()` only writes `machine_shape` into
+            # templates it generates fresh; a `kernel-metadata.json`
+            # versioned into a job folder before that landed carries none
+            # at all, and was the one shape that kept landing on whatever
+            # the service defaults to (a P100, observed) even after this
+            # adapter started requesting a named card everywhere else.
+            # `setdefault` rather than a plain assignment: a template that
+            # already names a `machine_shape` -- generated fresh, or a
+            # target that deliberately asks for something else -- is read
+            # back exactly as staged. This method cannot tell "never set"
+            # apart from "set on purpose to a different value", and only
+            # the former is this defect.
+            template.setdefault("machine_shape", KAGGLE_MACHINE_SHAPE)
 
             title = template.get("title")
             slug = _slugify(title) if title else _kernel_slug(job.entrypoint)

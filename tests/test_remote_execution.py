@@ -3265,6 +3265,107 @@ class KaggleAdapterTests(unittest.TestCase):
                 original_metadata,
             )
 
+    def test_submit_forces_machine_shape_onto_a_pre_f7_metadata_template(
+        self,
+    ) -> None:
+        """A GENERATED job folder's `kernel-metadata.json` written before
+        `machine_shape` existed carries no such key at all -- exactly the
+        fixture the test directly above this one already uses, and exactly
+        the real file this repository shipped at
+        `tools/kaggle/ceiling-search/kernel-metadata.json`. Pushing it
+        unmodified lands on whatever the service defaults to, silently,
+        which is the entire class of waste F7 exists to prevent. The
+        staged copy must carry `machine_shape` even though the versioned
+        file on disk never does.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            job_dir = tmp_path / "job"
+            job_dir.mkdir()
+            entrypoint = job_dir / "runner.ipynb"
+            entrypoint.write_text("{}", encoding="utf-8")
+            # Byte-for-byte the shape a pre-F7 `kernel-metadata.json`
+            # actually has: no `machine_shape` key anywhere in it.
+            original_metadata = json.dumps(
+                {
+                    "id": "",
+                    "title": "papersmith-ceiling-search",
+                    "code_file": "",
+                    "language": "python",
+                    "kernel_type": "notebook",
+                    "is_private": True,
+                    "enable_internet": True,
+                    "enable_gpu": True,
+                }
+            )
+            (job_dir / "kernel-metadata.json").write_text(
+                original_metadata, encoding="utf-8"
+            )
+
+            captured_metadata = tmp_path / "captured-kernel-metadata.json"
+            driver = _write_fake_driver(
+                tmp_path / "driver", capture_metadata_to=captured_metadata
+            )
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
+            adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle}, driver_script=driver)
+            job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
+            adapter.submit(job)
+
+            pushed = json.loads(captured_metadata.read_text(encoding="utf-8"))
+            self.assertEqual(pushed["machine_shape"], KAGGLE.KAGGLE_MACHINE_SHAPE)
+            # The versioned file itself is still never mutated.
+            self.assertEqual(
+                (job_dir / "kernel-metadata.json").read_text(encoding="utf-8"),
+                original_metadata,
+            )
+            self.assertNotIn("machine_shape", json.loads(original_metadata))
+
+    def test_submit_never_overrides_a_deliberately_declared_machine_shape(
+        self,
+    ) -> None:
+        """The absence-gated force-set must never clobber a template that
+        already names a card -- generated fresh by `assemble_metadata()`,
+        or a target that deliberately asks for a different one. `submit()`
+        has no way to tell "never set" apart from "set on purpose to a
+        different value", so only the former may be touched.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            job_dir = tmp_path / "job"
+            job_dir.mkdir()
+            entrypoint = job_dir / "runner.ipynb"
+            entrypoint.write_text("{}", encoding="utf-8")
+            original_metadata = json.dumps(
+                {
+                    "id": "",
+                    "title": "papersmith-domain-adaptation",
+                    "code_file": "",
+                    "language": "python",
+                    "kernel_type": "notebook",
+                    "is_private": True,
+                    "enable_internet": True,
+                    "enable_gpu": True,
+                    "machine_shape": "NvidiaTeslaP100",
+                }
+            )
+            (job_dir / "kernel-metadata.json").write_text(
+                original_metadata, encoding="utf-8"
+            )
+
+            captured_metadata = tmp_path / "captured-kernel-metadata.json"
+            driver = _write_fake_driver(
+                tmp_path / "driver", capture_metadata_to=captured_metadata
+            )
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
+            adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle}, driver_script=driver)
+            job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
+            adapter.submit(job)
+
+            pushed = json.loads(captured_metadata.read_text(encoding="utf-8"))
+            self.assertEqual(pushed["machine_shape"], "NvidiaTeslaP100")
+
     def test_submit_slug_comes_from_title_not_the_constant_entrypoint_filename(
         self,
     ) -> None:
