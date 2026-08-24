@@ -157,12 +157,18 @@ class PathGuardError(RemoteCLIError):
 
 
 class ConsentError(RemoteCLIError):
-    """A campaign submission refused for lack of, or a mismatch in, the
-    per-campaign consent token `submit --unit` requires (Finding 3;
-    Decisions 4, 5). Raised BEFORE `packer.distribute()` runs — no digest
-    is wasted arguing with an adapter, no quota is spent, no ledger line
-    is appended — for exactly the same "refuse while refusing still costs
-    nothing" reason `_gate_job_folder_pin()` already refuses ahead of it.
+    """ANY `submit` refused for lack of, or a mismatch in, the consent
+    token this invocation needs -- campaign, single send, and rehearsal
+    alike (Finding 3; Decisions 4, 5; and this phase's own correction: the
+    original gate fired only for campaign mode, which let a plain `submit`
+    or `submit --smoke` reach `adapter.submit()` with nobody having been
+    asked -- the exact launch the user's complaint named).
+
+    Raised BEFORE `packer.select()`/`packer.plan()`/`packer.distribute()`
+    runs -- no adapter health read, no plan, no quota spent, no ledger
+    line appended -- for exactly the same "refuse while refusing still
+    costs nothing" reason `_gate_job_folder_pin()` already refuses ahead
+    of it.
     """
 
 
@@ -389,6 +395,83 @@ def campaign_consent_token(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _verify_launch_consent(
+    *, consent: str | None, expected_consent: str, units: Sequence[str] | None,
+) -> None:
+    """The ONE consent check every `submit` invocation goes through --
+    campaign, single send, and rehearsal alike. Correction to Finding 3:
+    the original gate fired only when `units` was truthy, which left a
+    plain `submit` (no `--unit`, with or without `--smoke`) reaching
+    `adapter.submit()` with NOBODY asked -- the exact launch the user's
+    own complaint named. The fix is not a second case bolted onto the
+    first; it is the same check, called unconditionally, for every mode,
+    written as a structural invariant rather than a list of gated cases:
+    nothing reaches `packer.select()`/`packer.plan()`/`packer.distribute()`
+    -- and therefore never `adapter.submit()` -- without a token that
+    matches what is being sent.
+
+    `expected_consent` is always `campaign_consent_token()`'s own output
+    -- ONE derivation, ONE shape, for BOTH campaign and single-send
+    tokens: an empty ordered unit list is itself a legitimate input to
+    that function, not a reason to invent a second one. The worker is
+    never part of that payload, deliberately, for two different reasons
+    depending on the caller: with no `--worker`, the account is chosen by
+    `packer.select()` AFTER consent would be given, so binding it would
+    make the token unmintable in advance; with `--worker` named, the
+    account is the caller's own explicit choice and does not need the
+    token's protection to be honest.
+
+    Missing consent for CAMPAIGN mode (`units` truthy) points the caller
+    at `distribute --unit ...`, which mints and prints the token -- there
+    is no other place a campaign token could come from.
+
+    Missing consent for SINGLE-SEND mode (`units` empty, including a
+    smoke rehearsal) has no equivalent minting command: there is no
+    `distribute` step for one entrypoint. So THIS function prints the
+    exact expected token itself, inside the refusal message. That is safe
+    ONLY because the call that reaches this refusal never gets past it:
+    no `packer.select()`/`packer.plan()`, no `adapter.submit()`, nothing
+    launched. A token printed by a run that submitted nothing can never
+    BE the approval it names -- only a second, deliberate invocation that
+    copies it back into `--consent` is.
+    """
+    if consent is None:
+        if units:
+            raise ConsentError(
+                "campaign submit refuses without --consent: run "
+                "`distribute --unit ...` first, for this exact pin, "
+                "entrypoint and ordered unit list, and pass back the "
+                "token it prints. Nothing is launched without an "
+                "explicit, per-campaign approval carried by this "
+                "invocation's own argv."
+            )
+        raise ConsentError(
+            "submit refuses without --consent: nothing is launched "
+            "without an explicit, per-launch approval carried by this "
+            "invocation's own argv, and a single send has no "
+            "`distribute` step to mint one ahead of time. This exact "
+            "invocation submitted nothing -- no plan, no adapter call, "
+            "no ledger line -- so printing the token it would need is "
+            f"safe: re-run with --consent {expected_consent} to approve "
+            "this exact pin and entrypoint. The token above is NOT "
+            "itself the approval -- only a second, deliberate "
+            "invocation that passes it back is."
+        )
+    if consent != expected_consent:
+        raise ConsentError(
+            "consent token does not match this invocation's pin, "
+            "entrypoint, or ordered unit list: a token authorizes one "
+            "exact launch only, and it stops authorizing the instant the "
+            "pin, entrypoint, or unit list moves -- "
+            + (
+                "mint a fresh one with `distribute --unit ...`"
+                if units
+                else "re-run with no --consent to see the token this "
+                "exact invocation needs"
+            )
+        )
+
+
 def _gate_job_folder_pin(resolved_entrypoint: Path) -> None:
     """Put a job-folder submission's own declared pin through the same
     three conditions `generate-job` enforces — BEFORE the digest walk, the
@@ -601,23 +684,37 @@ def cmd_submit(
 
     Guard order past the target resolution is unchanged either way:
     `guard_entrypoint()` → `product_for()` → `_gate_job_folder_pin()` →
-    the digest, computed once and reused for every assignment in campaign
-    mode — a single `distribute()` call already reads live health for
-    every worker in one pass, so there is no per-assignment health re-read
-    to stagger the digest around.
+    the consent gate below → the digest, computed once and reused for
+    every assignment in campaign mode — a single `distribute()` call
+    already reads live health for every worker in one pass, so there is
+    no per-assignment health re-read to stagger the digest around.
 
-    `consent` is campaign mode's own gate (Finding 3; Decisions 4, 5):
-    `units` truthy with no matching `consent` refuses via `ConsentError`,
-    BEFORE `packer.distribute()` is ever called — no adapter health read,
-    no plan, no `adapter.submit()`, no ledger line. The expected token is
-    `campaign_consent_token()`, computed from THIS invocation's own job
-    folder pin (`_job_folder_commit()`, `None` for the legacy shape),
-    relative entrypoint, and `units` in the exact order given — the SAME
-    function `distribute --unit ...` calls to print the token a caller is
-    meant to pass back here. A single-worker submission (`units` empty or
-    `None`) never reads `consent` at all: it has no unit list for a token
-    to bind to, and Decision 6's own regression lock already keeps that
-    path byte-identical to before this phase.
+    `consent` gates EVERY mode this function has (Finding 3; Decisions 4,
+    5 -- corrected: the original pass gated campaign mode only, which left
+    a plain `submit` or `submit --smoke` reaching `adapter.submit()` with
+    nobody asked, the exact launch the user's complaint named). Stated as
+    the invariant it now is: nothing reaches
+    `packer.select()`/`packer.plan()`/`packer.distribute()` -- and
+    therefore never `adapter.submit()` -- without a `consent` token that
+    matches `campaign_consent_token()`'s own output for THIS invocation's
+    job folder pin (`_job_folder_commit()`, `None` for the legacy shape),
+    relative entrypoint, and `units` in the exact order given (the empty
+    tuple for a single send -- one derivation, one shape, never a second
+    one invented for the non-campaign case). `_verify_launch_consent()`
+    runs this check unconditionally, right after `_gate_job_folder_pin()`
+    and before the digest is ever computed, so a refusal on any mode costs
+    nothing: no digest walk, no plan, no adapter call, no ledger line.
+
+    For a campaign, `distribute --unit ...` mints the token ahead of time
+    and prints it -- the caller passes it back here. A single send has no
+    equivalent minting command, so `submit` itself mints the expected
+    token and prints it IN the refusal, which is safe only because the
+    refusing call never gets past this gate: nothing was launched by the
+    run that named the token. The worker is never part of what the token
+    binds, in either mode: with no `--worker`, the account is chosen by
+    `packer.select()` AFTER consent would be given, so binding it would
+    make the token unmintable in advance; with `--worker` named, the
+    account is the caller's own explicit, already-honest choice.
 
     Campaign mode issues one `adapter.submit()` and appends one ledger
     event per `packer.Distribution` assignment (Decision 6) — never one
@@ -717,6 +814,28 @@ def cmd_submit(
         target, resolved_entrypoint, resolved_product
     )
 
+    if units and worker is not None:
+        raise RemoteCLIError(
+            "--worker and --unit are mutually exclusive: campaign mode "
+            "(--unit) spreads across every healthy account itself and "
+            "has no single named account for --worker to select"
+        )
+
+    # Unconditional invariant (this phase's correction to Finding 3):
+    # every mode -- campaign, single send, rehearsal -- is verified here,
+    # before the digest is computed, before any plan, and before
+    # `adapter.submit()`. `units or ()` feeds `campaign_consent_token()`
+    # the empty ordered unit list for a single send -- a legitimate input
+    # to the SAME derivation, never a second one.
+    expected_consent = campaign_consent_token(
+        pin_commit=_job_folder_commit(resolved_entrypoint),
+        relative_entrypoint=relative_entrypoint,
+        units=units or (),
+    )
+    _verify_launch_consent(
+        consent=consent, expected_consent=expected_consent, units=units,
+    )
+
     digest_fn = source_digest or _load_source_digest()
     digest = digest_fn(target, resolved_product)
 
@@ -728,36 +847,6 @@ def cmd_submit(
     ledger_lines = _read_ledger_lines(ledger_path)
 
     if units:
-        if worker is not None:
-            raise RemoteCLIError(
-                "--worker and --unit are mutually exclusive: campaign mode "
-                "(--unit) spreads across every healthy account itself and "
-                "has no single named account for --worker to select"
-            )
-
-        expected_consent = campaign_consent_token(
-            pin_commit=_job_folder_commit(resolved_entrypoint),
-            relative_entrypoint=relative_entrypoint,
-            units=units,
-        )
-        if consent is None:
-            raise ConsentError(
-                "campaign submit refuses without --consent: run "
-                "`distribute --unit ...` first, for this exact pin, "
-                "entrypoint and ordered unit list, and pass back the "
-                "token it prints. Nothing is launched without an "
-                "explicit, per-campaign approval carried by this "
-                "invocation's own argv."
-            )
-        if consent != expected_consent:
-            raise ConsentError(
-                "consent token does not match this invocation's pin, "
-                "entrypoint, or ordered unit list: a token authorizes "
-                "one exact campaign only, and it stops authorizing the "
-                "instant the pin or the unit set moves — mint a fresh "
-                "one with `distribute --unit ...`"
-            )
-
         distribution = PACKER.distribute(
             adapter=adapter,
             units=units,
@@ -1672,11 +1761,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     submit.add_argument(
         "--consent", default=None,
-        help="required together with --unit: the token `distribute --unit "
-        "...` printed for this exact pin, entrypoint and ordered unit "
-        "list. Read only from parsed argv -- never a config key, an "
-        "environment variable, or any switch that outlives this process. "
-        "A single-worker submission (no --unit) never reads this flag.",
+        help="required for EVERY submission, campaign or single-send, "
+        "rehearsal or not: the token authorizing this exact pin, "
+        "entrypoint, and ordered unit list (empty for a single send). "
+        "With --unit, `distribute --unit ...` mints and prints it first. "
+        "Without --unit, there is no minting command -- run `submit` once "
+        "with no --consent and it refuses, printing the exact token to "
+        "pass back on a second, deliberate invocation. Read only from "
+        "parsed argv -- never a config key, an environment variable, or "
+        "any switch that outlives this process.",
     )
 
     status = subparsers.add_parser(

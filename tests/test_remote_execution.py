@@ -1125,6 +1125,51 @@ def _write_job_folder_run_config(job_dir: Path, **overrides: object) -> dict:
     return run_config
 
 
+_CONSENT_TOKEN_IN_MESSAGE = re.compile(r"--consent ([0-9a-f]{64})")
+
+
+def _mint_launch_consent(
+    *,
+    target: Path,
+    entrypoint: Path,
+    adapter,
+    source_digest,
+    product: str | None = None,
+) -> str:
+    """Mint the single-send consent token the SAME way a real caller would
+    -- by calling `cmd_submit()` once with no `--consent`, letting it
+    refuse, and reading the exact token back out of its own `ConsentError`
+    message, never a private re-derivation of `campaign_consent_token()`'s
+    own inputs.
+
+    Safe to call before the "real" submission this token is for: the
+    Phase 4 correction places this refusal BEFORE
+    `packer.select()`/`packer.plan()`/`packer.distribute()` and before
+    `adapter.submit()`, so this minting call reaches neither -- it submits
+    nothing, spends no quota, and appends no ledger line. That is the same
+    property that makes printing the token in the first place safe.
+    """
+    try:
+        REMOTE_CLI.cmd_submit(
+            target=target,
+            entrypoint=entrypoint,
+            requested=1,
+            adapter=adapter,
+            source_digest=source_digest,
+            product=product,
+        )
+    except REMOTE_CLI.ConsentError as exc:
+        match = _CONSENT_TOKEN_IN_MESSAGE.search(str(exc))
+        if not match:
+            raise AssertionError(
+                f"expected the refusal to print '--consent <token>', got: {exc}"
+            ) from None
+        return match.group(1)
+    raise AssertionError(
+        "expected cmd_submit() with no --consent to refuse before minting"
+    )
+
+
 class PathGuardTests(unittest.TestCase):
     """`remote_cli.guard_entrypoint()` — the sole holder of file-kind policy.
 
@@ -1496,6 +1541,10 @@ class SubmitTests(unittest.TestCase):
                 return "d" * 64
 
             adapter = FakeAdapter(worker_id="w1", capacity=2)
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=fake_source_digest,
+            )
             result = REMOTE_CLI.cmd_submit(
                 target=target,
                 entrypoint=notebook,
@@ -1503,6 +1552,7 @@ class SubmitTests(unittest.TestCase):
                 requested=1,
                 adapter=adapter,
                 source_digest=fake_source_digest,
+                consent=token,
             )
 
             # target.resolve(), not the raw tmp path: on darwin, tempfile's
@@ -1575,6 +1625,11 @@ class SubmitTests(unittest.TestCase):
             os.chdir(tmp)
             try:
                 adapter = FakeAdapter(worker_id="w1", capacity=2)
+                token = _mint_launch_consent(
+                    target=Path("repo"),
+                    entrypoint=Path("repo/MIL-CREDA/Notebooks/a.ipynb"),
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                )
                 result = REMOTE_CLI.cmd_submit(
                     target=Path("repo"),  # relative to the tmp dir just chdir'd into
                     entrypoint=Path("repo/MIL-CREDA/Notebooks/a.ipynb"),
@@ -1582,6 +1637,7 @@ class SubmitTests(unittest.TestCase):
                     requested=1,
                     adapter=adapter,
                     source_digest=lambda t, n: "d" * 64,
+                    consent=token,
                 )
             finally:
                 os.chdir(original_cwd)
@@ -1628,6 +1684,11 @@ class SubmitTests(unittest.TestCase):
             os.chdir(tmp)
             try:
                 adapter = FakeAdapter(worker_id="w1", capacity=2)
+                token = _mint_launch_consent(
+                    target=Path("repo"),
+                    entrypoint=Path("repo/tools/kaggle/search-a/runner.ipynb"),
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                )
                 result = REMOTE_CLI.cmd_submit(
                     target=Path("repo"),
                     entrypoint=Path("repo/tools/kaggle/search-a/runner.ipynb"),
@@ -1635,6 +1696,7 @@ class SubmitTests(unittest.TestCase):
                     requested=1,
                     adapter=adapter,
                     source_digest=lambda t, n: "d" * 64,
+                    consent=token,
                 )
             finally:
                 os.chdir(original_cwd)
@@ -1677,6 +1739,10 @@ class SubmitTests(unittest.TestCase):
                 return "d" * 64
 
             adapter = FakeAdapter(worker_id="w1", capacity=2)
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=fake_source_digest,
+            )
             result = REMOTE_CLI.cmd_submit(
                 target=target,
                 entrypoint=notebook,
@@ -1684,6 +1750,7 @@ class SubmitTests(unittest.TestCase):
                 requested=1,
                 adapter=adapter,
                 source_digest=fake_source_digest,
+                consent=token,
             )
 
             ledger_path = (
@@ -1726,6 +1793,10 @@ class SubmitTests(unittest.TestCase):
             # succeed under the wrong product.
 
             adapter = FakeAdapter(worker_id="w1", capacity=2)
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64, product="OverrideProduct",
+            )
             result = REMOTE_CLI.cmd_submit(
                 target=target,
                 entrypoint=notebook,
@@ -1734,6 +1805,7 @@ class SubmitTests(unittest.TestCase):
                 adapter=adapter,
                 source_digest=lambda t, n: "d" * 64,
                 product="OverrideProduct",
+                consent=token,
             )
 
             ledger_path = (
@@ -3238,6 +3310,10 @@ class KaggleAdapterTests(unittest.TestCase):
                     driver_script=driver,
                 )
 
+                token = _mint_launch_consent(
+                    target=target, entrypoint=notebook, adapter=adapter,
+                    source_digest=lambda t, n: "d" * 64,
+                )
                 submit_result = REMOTE_CLI.cmd_submit(
                     target=target,
                     entrypoint=notebook,
@@ -3245,6 +3321,7 @@ class KaggleAdapterTests(unittest.TestCase):
                     requested=1,
                     adapter=adapter,
                     source_digest=lambda t, n: "d" * 64,
+                    consent=token,
                 )
 
                 submission_id = submit_result["submission"].id
@@ -3651,9 +3728,14 @@ class CredentialSecurityTests(unittest.TestCase):
                 credentials=provider, accounts_cli=fake_accounts_cli, driver_script=driver
             )
 
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
             submit_result = REMOTE_CLI.cmd_submit(
                 target=target, entrypoint=notebook, worker=worker, requested=1,
                 adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                consent=token,
             )
             submission_id = submit_result["submission"].id
             ledger_path = submit_result["ledgerPath"]
@@ -5372,10 +5454,15 @@ class WorkerSelectionAndMeteringTests(unittest.TestCase):
                 unauthorized=frozenset({"w2"}),
                 forbid_submit=True,
             )
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
             with self.assertRaises(ADAPTER.WorkerUnauthorized) as caught:
                 REMOTE_CLI.cmd_submit(
                     target=target, entrypoint=notebook, worker="w2", requested=1,
                     adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                    consent=token,
                 )
             self.assertIn("w2", str(caught.exception))
             self.assertEqual(adapter.submit_calls, [])  # no quota spent
@@ -5388,9 +5475,14 @@ class WorkerSelectionAndMeteringTests(unittest.TestCase):
             notebook.write_text("{}", encoding="utf-8")
 
             adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 2)])
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
             result = REMOTE_CLI.cmd_submit(
                 target=target, entrypoint=notebook, requested=1,
                 adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                consent=token,
             )  # no `worker=` at all -- the argument that used to be mandatory
 
             self.assertEqual(result["submission"].worker, "w1")
@@ -5437,9 +5529,13 @@ class WorkerSelectionAndMeteringTests(unittest.TestCase):
             with unittest.mock.patch.object(
                 JOBFOLDER, "verify_pin_preconditions", return_value=None
             ):
+                token = _mint_launch_consent(
+                    target=target, entrypoint=notebook, adapter=adapter,
+                    source_digest=lambda t, n: "d" * 64,
+                )
                 result = REMOTE_CLI.cmd_submit(
                     target=target, entrypoint=notebook, requested=1, adapter=adapter,
-                    source_digest=lambda t, n: "d" * 64,
+                    source_digest=lambda t, n: "d" * 64, consent=token,
                 )
 
             records = [
@@ -6314,13 +6410,27 @@ class CampaignSubmitTests(unittest.TestCase):
                 self.assertIsNotNone(row["submissionId"])
 
     def test_single_unit_submit_without_units_stays_on_select_path(self) -> None:
-        """Decision 6's regression lock: `cmd_submit` with no `units=` at
-        all is untouched by this phase -- the exact `select()`/`plan()`
-        path today's callers already depend on.
+        """Decision 6's regression lock, UPDATED by this phase's own
+        correction to Finding 3: `cmd_submit` with no `units=` at all is
+        still routed through `select()`/`plan()`, never `distribute()` --
+        that half of the lock stays byte-identical. What this correction
+        deliberately breaks is the OTHER half: a single send now needs its
+        own consent token too (minted here via `_mint_launch_consent()`
+        exactly as a real caller would), because the invariant this phase
+        adds is "nothing reaches `adapter.submit()` without a matching
+        token" -- campaign, single send, and rehearsal alike -- not
+        "campaigns only", which is the exact gap the user's own complaint
+        named (a plain `submit`/`submit --smoke` used to reach the adapter
+        with nobody asked).
         """
         with tempfile.TemporaryDirectory() as tmp:
             target, notebook = self._target_and_notebook(tmp)
             adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 2)])
+
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
 
             with unittest.mock.patch.object(
                 PACKER, "distribute",
@@ -6332,6 +6442,7 @@ class CampaignSubmitTests(unittest.TestCase):
                 result = REMOTE_CLI.cmd_submit(
                     target=target, entrypoint=notebook, requested=1,
                     adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                    consent=token,
                 )
 
             self.assertEqual(result["submission"].worker, "w1")
@@ -6385,55 +6496,92 @@ class CampaignSubmitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target, notebook = self._target_and_notebook(tmp)
             adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
-            stdout = io.StringIO()
-            with unittest.mock.patch.object(
-                REMOTE_CLI, "_load_backend_module", return_value=None
-            ), unittest.mock.patch.object(
-                REMOTE_CLI.ADAPTER, "resolve", return_value=MultiWorkerFakeAdapter,
-            ), unittest.mock.patch.object(
-                REMOTE_CLI, "_construct_adapter", return_value=adapter,
-            ), unittest.mock.patch.object(
-                REMOTE_CLI, "_load_source_digest", return_value=lambda t, p: "d" * 64,
-            ), contextlib.redirect_stdout(stdout):
-                argv = [
-                    "submit", "--target", str(target), "--entrypoint", str(notebook),
-                    "--backend", "fake-multi",
-                ]
-                exit_code = REMOTE_CLI.main(argv)
+
+            def _run(argv: list[str]) -> tuple[int, str, str]:
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with unittest.mock.patch.object(
+                    REMOTE_CLI, "_load_backend_module", return_value=None
+                ), unittest.mock.patch.object(
+                    REMOTE_CLI.ADAPTER, "resolve", return_value=MultiWorkerFakeAdapter,
+                ), unittest.mock.patch.object(
+                    REMOTE_CLI, "_construct_adapter", return_value=adapter,
+                ), unittest.mock.patch.object(
+                    REMOTE_CLI, "_load_source_digest", return_value=lambda t, p: "d" * 64,
+                ), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    exit_code = REMOTE_CLI.main(argv)
+                return exit_code, stdout.getvalue(), stderr.getvalue()
+
+            base_argv = [
+                "submit", "--target", str(target), "--entrypoint", str(notebook),
+                "--backend", "fake-multi",
+            ]
+
+            # Phase 4 correction (this phase): a single-send `submit`, no
+            # `--unit` at all, has no `distribute` step to mint a token
+            # ahead of time -- so `submit` itself prints the token this
+            # invocation needs, in its own refusal, on the first call.
+            no_consent_exit, no_consent_stdout, no_consent_stderr = _run(base_argv)
+            self.assertEqual(no_consent_exit, 1)
+            self.assertEqual(no_consent_stdout, "", "a refusal must print no JSON at all")
+            match = _CONSENT_TOKEN_IN_MESSAGE.search(no_consent_stderr)
+            self.assertIsNotNone(
+                match, f"refusal did not print '--consent <token>': {no_consent_stderr}"
+            )
+            token = match.group(1)
+
+            exit_code, stdout_value, _ = _run(base_argv + ["--consent", token])
 
             self.assertEqual(exit_code, 0)
-            payload = json.loads(stdout.getvalue())
+            payload = json.loads(stdout_value)
             self.assertIn("submissionId", payload)
             self.assertNotIn("assignments", payload)
 
 
 class ConsentGateTests(unittest.TestCase):
-    """Phase 4 (Finding 3; Decisions 4, 5): `submit --unit` (campaign mode)
-    refuses without an explicit `--consent <token>` -- the "nothing is
-    launched without explicit permission" rule the user has stated in
-    their own words, moved out of agent instructions (where a fresh
-    session could never see it) and into the skill itself.
+    """Phase 4 (Finding 3; Decisions 4, 5), corrected in a later pass:
+    `submit` refuses without an explicit `--consent <token>` -- the
+    "nothing is launched without explicit permission" rule the user has
+    stated in their own words, moved out of agent instructions (where a
+    fresh session could never see it) and into the skill itself.
 
-    The user's own scope: PER CAMPAIGN, never per shard. One approval
-    covers the exact ordered unit list of THAT invocation -- thirty
-    shards, one prompt, not thirty. The token is derived, never
-    persisted: `sha256(pin commit, relative entrypoint, ordered unit
-    list)`, printed by `distribute` -- already read-only, already
-    computing the spread, already handing it to nobody. It expires by
-    construction the instant the pin or the unit set moves, not by any
-    policy this module would have to remember to enforce.
+    The original pass gated CAMPAIGN mode only (`units` truthy), which
+    left a plain `submit --target X --entrypoint Y --backend Z` -- and
+    equally `submit --smoke` -- reaching `adapter.submit()` with nobody
+    asked. That is the exact launch the user's complaint named, and it is
+    not a second case to add beside the campaign one: the invariant is
+    now unconditional -- NOTHING reaches
+    `packer.select()`/`packer.plan()`/`packer.distribute()`, and
+    therefore never `adapter.submit()`, without a token that matches what
+    is being sent. Campaign, single send, rehearsal -- all of them, one
+    check, never a list of cases.
 
-    Single-worker `submit` (no `--unit` at all) is untouched: it has no
-    unit list for a token to bind to, and Decision 6's own regression lock
-    (`CampaignSubmitTests.test_single_unit_submit_without_units_stays_on_select_path`)
-    already pins that path byte-identical to before this phase.
+    One derivation covers both shapes:
+    `campaign_consent_token(pin_commit, relative_entrypoint, units)` --
+    `units` is the campaign's own ordered tuple for campaign mode, and the
+    empty tuple for a single send (a legitimate input to the same
+    function, not a second one). The token is never persisted: nothing on
+    disk, in an env var, or in a config file ever carries it forward. It
+    expires by construction the instant the pin, entrypoint, or unit list
+    moves.
+
+    For a campaign, `distribute --unit ...` mints the token ahead of time
+    and prints it. A single send has no equivalent minting command --
+    there is no `distribute` for one entrypoint -- so `submit` itself
+    mints the expected token and prints it IN THE REFUSAL. That is safe
+    only because the refusing call never reaches
+    `packer.select()`/`plan()`/`distribute()` or `adapter.submit()`:
+    nothing was launched by the run that named the token, so the printed
+    token can never BE the approval it names -- only a second, deliberate
+    invocation that passes it back is. `_mint_launch_consent()` above
+    exercises exactly this path.
 
     Honest limit, stated rather than implied: no gate here can prove a
     human was present at the keyboard. It proves only that the launch was
     deliberate (a token had to be minted first, by a caller who had to
-    already know the exact pin, entrypoint and unit list), bound (to
-    exactly that campaign) and unstored (nothing on disk, in an env var,
-    or in a config file ever carries it forward to a later invocation).
+    already know the exact pin and entrypoint), bound (to exactly that
+    launch), and unstored (nothing on disk, in an env var, or in a config
+    file ever carries it forward to a later invocation).
     """
 
     def setUp(self) -> None:
@@ -6485,22 +6633,118 @@ class ConsentGateTests(unittest.TestCase):
             self.assertIn("consent", str(caught.exception).lower())
             self.assertEqual(adapter.submit_calls, [])
 
-    def test_single_unit_submit_needs_no_consent_at_all(self) -> None:
-        """The regression lock this phase must not break: no `--unit` at
-        all means no campaign, and no campaign means nothing for a token
-        to bind to -- `consent` is simply never read on this path.
+    def test_single_send_submit_without_consent_also_refuses(self) -> None:
+        """This phase's correction to Finding 3: a plain `submit` (no
+        `--unit` at all -- no campaign) used to reach the adapter with NO
+        token and NO refusal. That is the exact gap the user's complaint
+        named -- the launch that happened without permission was a single
+        rehearsal, not a campaign. The invariant is now unconditional:
+        `units` empty is not an exemption, it is the empty-ordered-list
+        input `campaign_consent_token()` already treats as legitimate.
         """
         with tempfile.TemporaryDirectory() as tmp:
             target, notebook = self._target_and_notebook(tmp)
             adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
 
+            with self.assertRaises(REMOTE_CLI.ConsentError) as caught:
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, requested=1,
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                )
+
+            self.assertIn("consent", str(caught.exception).lower())
+            self.assertEqual(adapter.submit_calls, [], "no quota spent on refusal")
+
+    def test_single_send_submit_smoke_without_consent_also_refuses(self) -> None:
+        """`--smoke` is a real submission -- it dials out, uploads a
+        staged copy and spends quota -- so exempting it from the same gate
+        would make the invariant optional in exactly the workflow that
+        runs most often. This is the launch the user was originally angry
+        about, reproduced: a rehearsal, not a campaign.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+
+            with self.assertRaises(REMOTE_CLI.ConsentError):
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, requested=1,
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                    smoke=True,
+                )
+
+            self.assertEqual(adapter.submit_calls, [])
+
+    def test_single_send_refusal_prints_the_exact_token_it_needs(self) -> None:
+        """A single send has no `distribute` step to mint a token ahead of
+        time, so `submit` itself must print the expected token in its OWN
+        refusal message -- safe only because this exact call reaches
+        neither `packer.select()`/`plan()` nor `adapter.submit()`. The
+        printed token, passed back on a second invocation, must then
+        actually be accepted.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+
+            with unittest.mock.patch.object(
+                PACKER, "select",
+                side_effect=AssertionError(
+                    "packer.select() must never run before the consent gate"
+                ),
+            ):
+                with self.assertRaises(REMOTE_CLI.ConsentError) as caught:
+                    REMOTE_CLI.cmd_submit(
+                        target=target, entrypoint=notebook, requested=1,
+                        adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                    )
+
+            match = _CONSENT_TOKEN_IN_MESSAGE.search(str(caught.exception))
+            self.assertIsNotNone(
+                match, f"refusal did not print '--consent <token>': {caught.exception}"
+            )
+            token = match.group(1)
+
             result = REMOTE_CLI.cmd_submit(
                 target=target, entrypoint=notebook, requested=1,
                 adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                consent=token,
             )
-
             self.assertEqual(adapter.submit_calls, ["w1"])
             self.assertNotIn("assignments", result)
+
+    def test_a_single_send_token_minted_for_one_entrypoint_refuses_for_another(
+        self,
+    ) -> None:
+        """A token authorizes one exact launch only. Minting it against
+        one entrypoint must not authorize submitting a DIFFERENT
+        entrypoint, even under the same target and adapter -- the
+        single-send counterpart of `test_a_token_minted_for_a_different_
+        entrypoint_refuses` below, which proves the same fact for campaign
+        mode.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks_a = _make_product(target, "MIL-CREDA")
+            notebook_a = notebooks_a / "a.ipynb"
+            notebook_a.write_text("{}", encoding="utf-8")
+            notebooks_b = _make_product(target, "OtherProduct")
+            notebook_b = notebooks_b / "b.ipynb"
+            notebook_b.write_text("{}", encoding="utf-8")
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+
+            token_for_a = _mint_launch_consent(
+                target=target, entrypoint=notebook_a, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
+
+            with self.assertRaises(REMOTE_CLI.ConsentError):
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook_b, requested=1,
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                    consent=token_for_a,
+                )
+            self.assertEqual(adapter.submit_calls, [])
 
     # -- 4.4/4.5: shared derivation; distribute's own token authorizes ----
 
@@ -10103,7 +10347,9 @@ class SubmitPinGateTests(unittest.TestCase):
             self.submitted.append(job)
             return super().submit(job)
 
-    def _submit(self, target: Path, notebook: Path, adapter) -> dict:
+    def _submit(
+        self, target: Path, notebook: Path, adapter, *, consent: str | None = None,
+    ) -> dict:
         return REMOTE_CLI.cmd_submit(
             target=target,
             entrypoint=notebook,
@@ -10111,6 +10357,7 @@ class SubmitPinGateTests(unittest.TestCase):
             requested=1,
             adapter=adapter,
             source_digest=lambda t, n: "d" * 64,
+            consent=consent,
         )
 
     def _ledger_path(self, target: Path) -> Path:
@@ -10223,7 +10470,13 @@ class SubmitPinGateTests(unittest.TestCase):
             with unittest.mock.patch.object(
                 JOBFOLDER, "_verify_commit_reachable", return_value=None
             ):
-                result = self._submit(target, job_dir / "runner.ipynb", adapter)
+                token = _mint_launch_consent(
+                    target=target, entrypoint=job_dir / "runner.ipynb", adapter=adapter,
+                    source_digest=lambda t, n: "d" * 64,
+                )
+                result = self._submit(
+                    target, job_dir / "runner.ipynb", adapter, consent=token,
+                )
 
             self.assertEqual(len(adapter.submitted), 1)
             self.assertEqual(result["staleness"]["status"], "fresh")
@@ -10306,7 +10559,11 @@ class SubmitPinGateTests(unittest.TestCase):
             )
             adapter = self._SpyAdapter(worker_id="w1", capacity=2)
 
-            result = self._submit(target, notebook, adapter)
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
+            result = self._submit(target, notebook, adapter, consent=token)
 
             self.assertEqual(len(adapter.submitted), 1)
             self.assertIsNone(result["staleness"])
@@ -10504,6 +10761,10 @@ class StalenessRoutingTests(unittest.TestCase):
             notebook = job_dir / "runner.ipynb"
 
             adapter = FakeAdapter(worker_id="w1", capacity=2)
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
             result = REMOTE_CLI.cmd_submit(
                 target=target,
                 entrypoint=notebook,
@@ -10511,6 +10772,7 @@ class StalenessRoutingTests(unittest.TestCase):
                 requested=1,
                 adapter=adapter,
                 source_digest=lambda t, n: "d" * 64,
+                consent=token,
             )
 
             self.assertIsNotNone(result["staleness"])
@@ -10591,6 +10853,10 @@ class StalenessRoutingTests(unittest.TestCase):
             notebook = job_dir / "runner.ipynb"
 
             adapter = FakeAdapter(worker_id="w1", capacity=2)
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
             submit_result = REMOTE_CLI.cmd_submit(
                 target=target,
                 entrypoint=notebook,
@@ -10598,6 +10864,7 @@ class StalenessRoutingTests(unittest.TestCase):
                 requested=1,
                 adapter=adapter,
                 source_digest=lambda t, n: "d" * 64,
+                consent=token,
             )
 
             dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "search-a"
@@ -11872,13 +12139,22 @@ class SmokeTests(unittest.TestCase):
 
             adapter = FakeAdapter(worker_id="w1", capacity=2)
 
+            # One token covers both calls below: the consent payload binds
+            # pin + entrypoint + ordered unit list (empty for both), never
+            # the `smoke` flag -- "the rehearsed bytes and the submitted
+            # bytes are the same bytes" is exactly this binding.
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
             full_result = REMOTE_CLI.cmd_submit(
                 target=target, entrypoint=notebook, worker="w1", requested=1,
-                adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                adapter=adapter, source_digest=lambda t, n: "d" * 64, consent=token,
             )
             smoke_result = REMOTE_CLI.cmd_submit(
                 target=target, entrypoint=notebook, worker="w1", requested=1,
                 adapter=adapter, source_digest=lambda t, n: "d" * 64, smoke=True,
+                consent=token,
             )
 
             # Different files -- the whole point of the design's rejection.
@@ -11913,13 +12189,19 @@ class SmokeTests(unittest.TestCase):
 
             adapter = FakeAdapter(worker_id="w1", capacity=2)
 
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
             REMOTE_CLI.cmd_submit(
                 target=target, entrypoint=notebook, worker="w1", requested=1,
                 adapter=adapter, source_digest=lambda t, n: "d" * 64, smoke=True,
+                consent=token,
             )
             full_result = REMOTE_CLI.cmd_submit(
                 target=target, entrypoint=notebook, worker="w1", requested=1,
                 adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                consent=token,
             )
 
             main_lines = full_result["ledgerPath"].read_text(encoding="utf-8").splitlines()
@@ -11940,15 +12222,21 @@ class SmokeTests(unittest.TestCase):
             notebook.write_text("{}", encoding="utf-8")
 
             spy = _SpySubmitAdapter(worker_id="w1", capacity=2)
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=spy,
+                source_digest=lambda t, n: "d" * 64,
+            )
             REMOTE_CLI.cmd_submit(
                 target=target, entrypoint=notebook, worker="w1", requested=1,
                 adapter=spy, source_digest=lambda t, n: "d" * 64, smoke=True,
+                consent=token,
             )
             self.assertEqual(dict(spy.last_job.run_config), {"mode": "smoke"})
 
             REMOTE_CLI.cmd_submit(
                 target=target, entrypoint=notebook, worker="w1", requested=1,
                 adapter=spy, source_digest=lambda t, n: "d" * 64,
+                consent=token,
             )
             self.assertEqual(dict(spy.last_job.run_config), {})
 
@@ -12457,16 +12745,32 @@ class SmokeTests(unittest.TestCase):
             job_dir = self._generate(tmp, target, commit=commit)
             notebook = job_dir / "runner.ipynb"
 
+            submit_argv = [
+                "submit",
+                "--target", str(target),
+                "--entrypoint", str(notebook),
+                "--worker", "fake-1",  # FakeAdapter's own default worker id
+                "--backend", backend_name,
+                "--smoke",
+            ]
+
+            # A single send has no `distribute` step to mint a token ahead
+            # of time -- `submit` itself refuses first and prints the
+            # exact token this exact pin/entrypoint needs.
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                no_consent_exit = REMOTE_CLI.main(submit_argv)
+            self.assertEqual(no_consent_exit, 1)
+            match = _CONSENT_TOKEN_IN_MESSAGE.search(stderr.getvalue())
+            self.assertIsNotNone(
+                match, f"refusal did not print '--consent <token>': {stderr.getvalue()}"
+            )
+            token = match.group(1)
+
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
-                exit_code = REMOTE_CLI.main([
-                    "submit",
-                    "--target", str(target),
-                    "--entrypoint", str(notebook),
-                    "--worker", "fake-1",  # FakeAdapter's own default worker id
-                    "--backend", backend_name,
-                    "--smoke",
-                ])
+                exit_code = REMOTE_CLI.main(submit_argv + ["--consent", token])
             self.assertEqual(exit_code, 0)
             submit_printed = json.loads(stdout.getvalue())
             self.assertTrue(submit_printed["smoke"])
@@ -13405,9 +13709,14 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
             notebook.write_text("{}", encoding="utf-8")
 
             adapter = FakeAdapter(worker_id="w1", capacity=2)
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+            )
             submit_result = REMOTE_CLI.cmd_submit(
                 target=target, entrypoint=notebook, worker="w1", requested=1,
                 adapter=adapter, source_digest=lambda t, n: "d" * 64, smoke=True,
+                consent=token,
             )
             submission_id = submit_result["submission"].id
             self.assertTrue(submit_result["ledgerPath"].name, "smoke.jsonl")

@@ -95,6 +95,67 @@ Chain strategy: stacked-to-main
 - [x] 4.12 Update every test listed in 4.1 to pass `--consent` explicitly — this update must be its own visible diff hunk.
 - [x] 4.13 `remote-execution/SKILL.md`: document the authorization contract — per-campaign, argv-only, never persisted, and the honest limit: no gate can prove a human was present, only that the launch was deliberate, bound and unstored.
 
+### Phase 4 Correction — user-requested, applied in a later pass (not in original tasks.md)
+
+The gate above fired only when `units` was truthy (campaign mode), which
+left a plain `submit --target X --entrypoint Y --backend Z` — and
+equally `submit --smoke` — reaching `adapter.submit()` with nobody
+asked. That is the exact launch the user's original complaint named,
+reproduced on demand as part of this correction's inversion step.
+
+- [x] 4C.1 Rewrite the gate as a structural invariant, not a
+  campaign-only case: `_verify_launch_consent()` runs unconditionally in
+  `cmd_submit`, right after `_gate_job_folder_pin()` and before the
+  digest is ever computed, for EVERY mode — campaign, single send, and
+  `--smoke` rehearsal alike.
+- [x] 4C.2 Reuse `campaign_consent_token()` for the single-send token too
+  (`units=()`, the empty ordered unit list) — one derivation, one shape,
+  never a second one invented for the non-campaign case. The worker is
+  never bound into either token: unmintable in advance for
+  `packer.select()`'s own automatic choice, and already the caller's
+  explicit choice when `--worker` is named.
+- [x] 4C.3 A single send has no `distribute` step to mint a token ahead
+  of time, so `submit` itself mints and prints the exact expected token
+  inside its own refusal — safe only because that refusing call never
+  reaches `packer.select()`/`plan()`/`distribute()` or
+  `adapter.submit()`. Documented explicitly so the printed token cannot
+  be mistaken for the approval it names.
+- [x] 4C.4 RED, then GREEN: `submit` (no `--unit`) and `submit --smoke`
+  without `--consent` refuse; the refusal's own message contains
+  `--consent <token>`.
+- [x] 4C.5 RED, then GREEN: a token minted for one entrypoint refuses for
+  a different entrypoint under single-send mode too (the campaign case
+  was already covered; this is its single-send counterpart).
+- [x] 4C.6 Updated every existing test that called `cmd_submit()`/CLI
+  `submit` without a token (28 call sites across `SubmitTests`,
+  `SubmitDriverWiringTests`, `CredentialSecurityTests`,
+  `WorkerSelectionAndMeteringTests`, `CampaignSubmitTests`,
+  `ConsentGateTests`, `SubmitPinGateTests`, `StalenessRoutingTests`,
+  `SmokeTests`, `SmokeLedgerResolutionTests`) to mint and pass a token —
+  visible as its own diff, never folded in silently. Added
+  `_mint_launch_consent()` test helper that mints the way a real caller
+  would: call once with no `--consent`, read the token back out of the
+  `ConsentError` message.
+- [x] 4C.7 Deliberately broke `CampaignSubmitTests
+  .test_single_unit_submit_without_units_stays_on_select_path` (Phase 3's
+  byte-identical regression lock) in the one respect this correction
+  changes — the routing half (`select()`/`plan()`, never `distribute()`)
+  stays byte-identical; the token requirement is new and the test now
+  reflects it.
+- [x] 4C.8 Invert strongest case (reproduces the original complaint
+  exactly): restore the `units`-truthy-only gating condition → confirm a
+  `submit --smoke` with no `--consent` reaches `adapter.submit()` (proven
+  via `adapter.submit_calls`) → restore by inverse patch → confirm by
+  `sha256` of the whole file, matched before and after.
+- [x] 4C.9 Second inversion: drop `entrypoint` from
+  `campaign_consent_token()`'s payload → confirm a token minted for one
+  entrypoint now wrongly authorizes a different one (both the existing
+  campaign-mode cross-entrypoint test and the new single-send one fail)
+  → restore by inverse patch → confirm by `sha256`.
+- [x] 4C.10 `remote-execution/SKILL.md`: rewrite the consent section as
+  the unconditional invariant it now is — no longer "per-campaign gate",
+  "single-unit submit never reads --consent".
+
 ## Phase 5 — env provisioning + executed-evidence liveness (Findings 5, 6; Decisions 8, 9, 12)
 
 - [x] 5.1 RED `tests/test_proposal_implementation.py`: `cmd_env`'s `nextCommand` lists forge dev-reqs first, then honoured target manifests last (`requirements.txt`, target's `requirements-dev.txt`, `-e .` when `pyproject.toml`/`setup.py`/`setup.cfg` exists) — names only from `ROOT_KEEP` (`:103`).

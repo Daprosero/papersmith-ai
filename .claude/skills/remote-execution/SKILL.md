@@ -151,30 +151,56 @@ Three modules exist so far, each service-blind and stdlib-only:
     account is always named with its reason, never silently dropped.
     Single-unit `submit` (no `--unit` at all) is untouched: today's
     `select()`/`plan()` path, byte-identical.
-  - **Per-campaign consent gate** (Finding 3; Decisions 4, 5): campaign
-    mode (`--unit`) refuses without an explicit `--consent <token>` —
-    the "nothing is launched without explicit permission" rule, held
-    until now only in agent instructions where a fresh session invoking
-    `submit` would meet nothing that asks. Scoped **per campaign, not per
+  - **Consent gate, every launch** (Finding 3; Decisions 4, 5 — corrected
+    in a later pass): `submit` refuses without an explicit `--consent
+    <token>` — the "nothing is launched without explicit permission"
+    rule, held until now only in agent instructions where a fresh session
+    invoking `submit` would meet nothing that asks.
+
+    **This gate is unconditional, not a campaign-only case.** The first
+    pass gated campaign mode (`--unit`) alone, which left a plain `submit
+    --target X --entrypoint Y --backend Z` — and equally `submit --smoke`
+    — reaching the adapter with nobody asked: a single rehearsal, not a
+    campaign, is the exact launch the complaint that produced this gate
+    named. The fix is not a second case bolted onto the first; it is the
+    same check, called unconditionally: nothing reaches
+    `packer.select()`/`packer.plan()`/`packer.distribute()`, and
+    therefore never `adapter.submit()`, without a token that matches what
+    is being sent. Campaign mode is scoped **per campaign, not per
     shard**: one approval, carried by one invocation, covers every unit
-    that invocation submits — thirty shards, one prompt. A CLI cannot
-    prompt on its own, so the gate refuses by default and is released by
-    a token, deliberately never a `--yes` boolean: a boolean satisfies
-    "not persisted" on paper and reproduces this exact defect the moment
-    it lands in a wrapper script.
+    that invocation submits — thirty shards, one prompt. A single send is
+    scoped **per launch**: one approval per `submit` invocation. A CLI
+    cannot prompt on its own, so the gate refuses by default and is
+    released by a token, deliberately never a `--yes` boolean: a boolean
+    satisfies "not persisted" on paper and reproduces this exact defect
+    the moment it lands in a wrapper script.
 
     The token is **derived**, not issued: `sha256(pin commit, relative
     entrypoint, ordered unit list)`, computed by
-    `campaign_consent_token()` — the ONE function both `distribute`
-    (which prints it, in `consentToken`) and `submit` (which recomputes
-    it from the job folder's own declared commit via `JOBFOLDER.read()`,
-    plus the invocation's own `--entrypoint` and `--unit` list) call.
-    `distribute` was already read-only, already computed the spread, and
-    already handed it to nobody — printing the token adds no new write.
+    `campaign_consent_token()` — ONE function, ONE shape, for both modes.
+    An empty ordered unit list is a legitimate input for a single send,
+    never a reason to invent a second derivation. For a campaign,
+    `distribute` mints and prints it (in `consentToken`) ahead of time —
+    already read-only, already computing the spread, already handing it
+    to nobody, so printing the token adds no new write. **A single send
+    has no equivalent minting command** — there is no `distribute` for
+    one entrypoint — so `submit` itself mints the expected token and
+    prints it **inside its own refusal** on the first, consent-less call.
+    That is safe only because the refusing call never gets past the
+    gate: no plan, no adapter call, no ledger line — nothing was
+    launched by the run that named the token, so the printed token can
+    never BE the approval it names, only something a second, deliberate
+    invocation that passes it back into `--consent` can be. The worker is
+    never part of what either token binds: with no `--worker`, the
+    account is chosen by `packer.select()` AFTER consent would be given,
+    so binding it would make the token unmintable in advance; with
+    `--worker` named, the account is the caller's own explicit,
+    already-honest choice.
+
     It expires **by construction**, not by policy: a pin that moves, an
     entrypoint that changes, or a unit added, removed or reordered all
     change the payload and therefore the digest, so a stale or
-    cross-campaign token simply stops matching — there is no separate
+    cross-launch token simply stops matching — there is no separate
     staleness check to remember to run. Live worker health is
     deliberately NOT bound into the token: a flapping account would
     otherwise revoke an approval that was legitimately given.
@@ -183,16 +209,16 @@ Three modules exist so far, each service-blind and stdlib-only:
     consent is read **only from parsed argv** (never a config key, an
     environment variable, or a ledger line); a whole-tree hash snapshot
     across two invocations proves nothing under `target` records it; and
-    a token minted for a different pin, entrypoint, or unit set refuses.
-    Single-unit `submit` (no `--unit`) never reads `--consent` at all —
-    it has no unit list for a token to bind to.
+    a token minted for a different pin, entrypoint, or unit set refuses —
+    including a single-send token minted for one entrypoint, which does
+    not authorize submitting a different one.
 
     **The honest limit, stated rather than implied: no gate can prove a
     human was present at the keyboard.** It proves only that the launch
     was deliberate (a token had to be minted first, by a caller who
-    already knew the exact pin, entrypoint and unit list), bound (to
-    exactly that campaign), and unstored (nothing here ever carries it
-    forward to a later invocation).
+    already knew the exact pin and entrypoint), bound (to exactly that
+    launch), and unstored (nothing here ever carries it forward to a
+    later invocation).
   - `status` folds the ledger and reports per-entrypoint state, what is
     `staleInFlight`, what is quarantined, and `unreadableLines`. It accepts
     no `adapter` parameter at all — a structural fact, not a convention —
