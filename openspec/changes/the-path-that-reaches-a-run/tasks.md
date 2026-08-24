@@ -184,16 +184,16 @@ reproduced on demand as part of this correction's inversion step.
 
 ## Phase 7 — Three misdirecting refusals, each its own case (Finding 4; Decision 13) — fixes the spec's flagged thinness
 
-- [ ] 7.1 RED (case A — `pin-published`): a pushed commit transferring 12.4 MiB on a slow link (measured 209s, then 27s re-run same commit) must not report "not pushed" from transfer time alone; the scratch-repo probe still never runs in `target`.
-- [ ] 7.2 GREEN `jobfolder.py` (`:910`): add `PIN_PUBLISHED_TIMEOUT_SECONDS`, separate from `GIT_TIMEOUT_SECONDS` (120s) — set to **240s** (≈1.15× the measured 209s worst case, rounded up, giving headroom above the observed worst case while staying bounded); pass it to the `pin-published` `_run_git` call only.
-- [ ] 7.3 Invert: reuse `GIT_TIMEOUT_SECONDS` for the pin-published probe (disable the separation) → confirm the slow-transfer case regresses to "not pushed" → restore by inverse patch + `sha256`.
-- [ ] 7.4 RED (case B — `--entrypoint`): a valid job folder (directory holding `run-config.json` + `runner.ipynb`) passed to `--entrypoint` reports "a file was expected, notebook is at `<path>`" — never "regenerate a job".
-- [ ] 7.5 GREEN `remote_cli.py::guard_entrypoint` (`:374`): detect the directory-holding-job-folder shape; name the notebook inside it.
-- [ ] 7.6 Invert (disable shape detection) → confirm the folder input still misdirects to regenerate-job → restore by inverse patch + `sha256`.
-- [ ] 7.7 RED (case C — `status --product`): a `status` invocation lacking `--product` must not refuse citing a flag `status`'s own parser never declares; test reads `_build_parser()`'s `status` subparser actions directly.
-- [ ] 7.8 GREEN `remote_cli.py::product_for` (`:182`): derive the remedy from the calling subcommand's actual declared flags, never hand-written prose.
-- [ ] 7.9 Invert (revert to hand-written status message) → confirm `status` refuses citing `--product` → restore by inverse patch + `sha256`.
-- [ ] 7.10 `remote-execution/SKILL.md`: note refusal messages are parser-derived.
+- [x] 7.1 RED (case A — `pin-published`): a pushed commit transferring 12.4 MiB on a slow link (measured 209s, then 27s re-run same commit) must not report "not pushed" from transfer time alone; the scratch-repo probe still never runs in `target`.
+- [x] 7.2 GREEN `jobfolder.py` (`:910`): add `PIN_PUBLISHED_TIMEOUT_SECONDS`, separate from `GIT_TIMEOUT_SECONDS` (120s) — set to **240s** (≈1.15× the measured 209s worst case, rounded up, giving headroom above the observed worst case while staying bounded); pass it to the `pin-published` `_run_git` call only. Additionally: `_run_git`'s own timeout branch now raises a distinct `GitTimeoutError(JobFolderError)` subclass, and `_verify_commit_reachable()` catches it in its own branch with its own wording — a timeout ("the question could not be finished asking") never shares a message with a confirmed refusal ("the remote answered no").
+- [x] 7.3 Invert: reuse `GIT_TIMEOUT_SECONDS` for the pin-published probe (disable the separation) → confirm the slow-transfer case regresses to "not pushed" → restore by inverse patch + `sha256`.
+- [x] 7.4 RED (case B — `--entrypoint`): a valid job folder (directory holding `run-config.json` + `runner.ipynb`) passed to `--entrypoint` reports "a file was expected, notebook is at `<path>`" — never "regenerate a job".
+- [x] 7.5 GREEN `remote_cli.py::guard_entrypoint` (`:374`): detect the directory-holding-job-folder shape; name the notebook inside it.
+- [x] 7.6 Invert (disable shape detection) → confirm the folder input still misdirects to regenerate-job → restore by inverse patch + `sha256`.
+- [x] 7.7 RED (case C — `status --product`): a `status` invocation lacking `--product` must not refuse citing a flag `status`'s own parser never declares; test reads `_build_parser()`'s `status` subparser actions directly.
+- [x] 7.8 GREEN `remote_cli.py::product_for` (`:182`): derive the remedy from the calling subcommand's actual declared flags, never hand-written prose. `product_for()` gains a `command` keyword; all five call sites (`submit`, `status`, `distribute`, `fetch`, `reconcile`) pass their own subcommand name.
+- [x] 7.9 Invert (revert to hand-written status message) → confirm `status` refuses citing `--product` → restore by inverse patch + `sha256`.
+- [x] 7.10 `remote-execution/SKILL.md`: note refusal messages are parser-derived.
 
 ## Phase 8 — Guiding table doctrine (Finding 9; Decision 14) — defers first if the 1200-line budget tightens
 

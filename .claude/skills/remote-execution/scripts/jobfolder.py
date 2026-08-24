@@ -133,6 +133,23 @@ class JobFolderError(Exception):
     """Generation refused before writing anything a later step couldn't undo."""
 
 
+class GitTimeoutError(JobFolderError):
+    """A git subprocess `_run_git()` invoked expired its own timeout budget
+    before finishing — a DISTINCT subclass of `JobFolderError`, never the
+    same generic instance a non-zero exit or an `OSError` raises (Finding 4
+    case A). `except JobFolderError` still catches this — it IS one, so
+    nothing that only asks "did generation refuse" changes — but a caller
+    that needs to say WHY, like `_verify_commit_reachable()`'s own
+    refusal, can now tell "the question could not be finished asking"
+    apart from "the remote answered no". Sharing one message between the
+    two once let a slow-but-otherwise-successful fetch get reported as
+    though the remote had refused the commit outright — a true
+    measurement (the transfer exceeded the budget) producing a false
+    conclusion (the commit must be unpublished) — which is the exact
+    misdiagnosis this distinction exists to end.
+    """
+
+
 TOOLS_DIRNAME = "tools"
 RUN_CONFIG_FILENAME = "run-config.json"
 RUNNER_FILENAME = "runner.ipynb"
@@ -1000,6 +1017,26 @@ GIT_ENV_ALLOWLIST = (
 )
 GIT_TIMEOUT_SECONDS = 120.0
 
+# `pin-published`'s own budget (Finding 4 case A; Decision 13a) --
+# deliberately a SEPARATE constant from `GIT_TIMEOUT_SECONDS` above, never
+# the same one reused. That local budget times two nearly-instant,
+# purely-local calls this module makes elsewhere (`rev-parse`,
+# `cat-file -e`); the pin-published probe below is the one call in this
+# whole module that transfers real bytes over the network, and a shared
+# budget made the verdict track the LINK, not the pin: measured against
+# the live remote this skill targets, transferring 12.4 MiB on a slow
+# connection took 209s once and 27s on an identical re-run of the SAME
+# commit. Under the old shared 120s budget, the first, slower run
+# reported the commit as "not pushed" -- a true measurement (the transfer
+# really did take longer than 120s) producing a false conclusion (the
+# commit was published all along), because the timeout and the
+# reachability question shared one message. 240s (~1.15x the measured
+# 209s worst case, rounded up) is picked from that measurement, not
+# invented: headroom above the observed worst case while staying
+# bounded, never merged back into the local calls' own 120s, which they
+# have never needed.
+PIN_PUBLISHED_TIMEOUT_SECONDS = 240.0
+
 
 @dataclass(frozen=True)
 class JobFolder:
@@ -1030,8 +1067,12 @@ def _run_git(
     it. The environment is built from `GIT_ENV_ALLOWLIST` alone, never
     this process's own `os.environ` forwarded wholesale. `cwd` is always
     a path the caller has already resolved — never `git -C` applied to a
-    raw, unresolved argument. A non-zero exit or an expired timeout raises
-    `JobFolderError` rather than being silently ignored.
+    raw, unresolved argument. A non-zero exit raises `JobFolderError`
+    rather than being silently ignored; an expired timeout raises
+    `GitTimeoutError`, a distinct subclass of the same, so a caller that
+    needs to tell "the question could not be finished asking" apart from
+    "the answer was no" can (Finding 4 case A) — every existing caller
+    that only catches `JobFolderError` keeps catching this too.
 
     `GIT_TERMINAL_PROMPT=0` and `stdin=DEVNULL` make "this never blocks
     waiting for a human" true rather than hopeful, and they are set HERE
@@ -1064,7 +1105,7 @@ def _run_git(
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
-        raise JobFolderError(f"git {' '.join(args)} timed out after {timeout}s") from exc
+        raise GitTimeoutError(f"git {' '.join(args)} timed out after {timeout}s") from exc
     except OSError as exc:
         raise JobFolderError(f"could not run git: {exc}") from exc
     if result.returncode != 0:
@@ -1128,6 +1169,19 @@ def _verify_commit_reachable(
       repository makes the question structurally unanswerable from local
       state; the depth makes it the runner's question. Neither one
       substitutes for the other.
+    * The fetch call passes `timeout=PIN_PUBLISHED_TIMEOUT_SECONDS`
+      explicitly — a THIRD fact measured against the same live remote,
+      easy to get backwards in the same way: `_run_git()`'s own default,
+      `GIT_TIMEOUT_SECONDS` (120s), is what the `git init -q` call above
+      still runs under, because that call is purely local and never
+      needed more. The fetch transfers real bytes, and 12.4 MiB on a slow
+      connection took 209s once and 27s on an identical re-run of the
+      SAME commit. Sharing one budget between the two made the verdict
+      track the LINK, not the pin: the slower run reported the commit as
+      "not pushed" from transfer time alone. A timeout is "the question
+      could not be asked", never "the answer is no", and the two must not
+      share one refusal message either — see the two `except` branches
+      below.
 
     `git cat-file -e <pinned>^{commit}` (used by `_staleness_for()` below)
     only proves the pin exists in the target's LOCAL history; it is silent
@@ -1169,17 +1223,32 @@ def _verify_commit_reachable(
     existing `computedNotDeclared` refusal, never a warning — both when
     the remote confirms it cannot serve `commit` AND when the question
     could not be asked at all (a DNS failure, a timeout, an unreachable
-    host, a scratch repository that could not be made). Those are
-    indistinguishable in git's own exit code, and deliberately not
-    distinguished here either: a network failure cannot confirm
-    reachability any more than it can deny it, the same way
-    `_staleness_for()`'s own `unknown` verdict is never rendered as
-    `fresh`. Generation is local and costs nothing to re-run once
+    host, a scratch repository that could not be made). A network
+    failure cannot confirm reachability any more than it can deny it, the
+    same way `_staleness_for()`'s own `unknown` verdict is never rendered
+    as `fresh`. Generation is local and costs nothing to re-run once
     connectivity is back; a wrong PASS here costs spent remote-execution
     quota and a failure discovered only after the push — the exact
     expense this check exists to avoid. Git's own message (which does
     name the distinct underlying cause) is carried into the refusal
     rather than replaced with a second, coarser one.
+
+    A timeout (`GitTimeoutError`, raised by `_run_git()` for exactly this
+    case) is refused through its OWN branch, with its OWN wording, never
+    folded into the same message a confirmed "not our ref" or a DNS
+    failure produces (Finding 4 case A). A timeout means "the question
+    could not be finished asking" — it is silent on which answer the
+    remote would have given — and is a categorically different fact from
+    "the remote answered no", even though both refuse generation exactly
+    the same way. A shared budget once let a slow-but-successful fetch
+    time out and get reported with the SAME "could not be confirmed
+    reachable ... push it and pin the commit the remote actually
+    received" wording a genuine refusal gets: a true measurement (the
+    transfer took over 120s) producing a false conclusion (the commit
+    must be unpublished), because the timeout and the refusal shared one
+    message. `PIN_PUBLISHED_TIMEOUT_SECONDS` narrows how often this
+    branch fires at all; this message split is what keeps it honest on
+    the rarer occasion a probe still exceeds even that wider budget.
 
     An SSH-shaped `repo_url` gets a sentence added to that same refusal,
     not a guard of its own. The probe is unauthenticated on purpose, and
@@ -1193,8 +1262,30 @@ def _verify_commit_reachable(
         with tempfile.TemporaryDirectory(prefix="jobfolder-probe-") as scratch:
             _run_git(["init", "-q"], cwd=scratch)
             _run_git(
-                ["fetch", "--dry-run", "--depth", "1", repo_url, commit], cwd=scratch
+                ["fetch", "--dry-run", "--depth", "1", repo_url, commit],
+                cwd=scratch,
+                timeout=PIN_PUBLISHED_TIMEOUT_SECONDS,
             )
+    except GitTimeoutError as exc:
+        # A timeout is refused through its OWN branch, with its OWN
+        # wording (Finding 4 case A): "the question could not be finished
+        # asking" is a categorically different fact from "the remote
+        # answered no", even though both refuse generation the same way.
+        # Sharing the message below with this case once let a
+        # slow-but-successful fetch get reported as a confirmed refusal —
+        # a true measurement (the transfer exceeded the budget) producing
+        # a false conclusion (the commit must be unpublished).
+        raise JobFolderError(
+            f"{decision} refuses: could not confirm whether commit "
+            f"{commit!r} is reachable on the declared remote {repo_url!r} "
+            f"— the probe itself timed out before finishing: {exc}. A "
+            "timeout means the question could not be finished asking, "
+            "which is NOT the same as the remote saying no, and is not, "
+            "by itself, evidence the commit is unpublished. Retry once "
+            "the connection allows the probe to finish — a large "
+            "transfer on a slow link can exceed even the "
+            f"{PIN_PUBLISHED_TIMEOUT_SECONDS}s budget this probe is given."
+        ) from exc
     except (JobFolderError, OSError) as exc:
         remedy = (
             f" — push it to {repo_ref!r} on {repo_url!r} and pin the "

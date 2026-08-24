@@ -196,10 +196,32 @@ SMOKE_LEDGER_FILENAME = "smoke.jsonl"
 SMOKE_RESULT_KIND = "smokeResult"
 
 
+def _subcommand_option_strings(command: str) -> frozenset[str]:
+    """The exact `--flag` strings `_build_parser()` declares for `command`'s
+    own subparser — read from the parser itself, never a second,
+    hand-maintained list a refusal message could drift from the CLI it
+    describes (Finding 4 case C; Decision 13c).
+
+    Built fresh from `_build_parser()` rather than cached: this only runs
+    on `product_for()`'s own refusal path, never on a resolved call, so
+    the cost of rebuilding the whole parser is paid at most once per
+    refusal, never on the path that matters for speed.
+    """
+    parser = _build_parser()
+    subparsers_action = next(
+        action for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    subparser = subparsers_action.choices[command]
+    return frozenset(subparser._option_string_actions)
+
+
 def product_for(
     target: Path,
     entrypoint: str | Path,
     explicit: str | None = None,
+    *,
+    command: str | None = None,
 ) -> str:
     """Resolve which product's ledger `entrypoint` belongs to — explicitly,
     never guessed. Replaces `name_for()`, reusing its same resolve-first
@@ -207,6 +229,24 @@ def product_for(
     `status`, `fetch`'s quarantine path, and `reconcile`'s ledger selection
     keep calling the SAME derivation rather than each growing its own copy
     that could quietly disagree.
+
+    `command` names the CALLING subcommand (`"submit"`, `"status"`,
+    `"distribute"`, `"fetch"`, `"reconcile"`) and affects nothing but the
+    wording of the refusal at the bottom of this function (Finding 4 case
+    C). Only `submit` (and `generate-job`, which never calls this
+    function) declares a `--product` override; `status`, `distribute`,
+    `fetch` and `reconcile` do not. All five used to reach the SAME
+    hand-written "no explicit --product" refusal regardless of which
+    subcommand asked, which sent a `status` caller looking for a flag
+    `status`'s own parser never accepts — a remedy that cannot be
+    performed is worse than a refusal that names nothing, because it
+    costs the caller the attempt. The remedy is now derived from
+    `_build_parser()`'s own declared flags for `command`, never
+    hand-written prose: `--product` is named only when `command`'s own
+    subparser actually declares it. Omitted (`None`), the refusal never
+    names `--product` either — the same conservative choice as a
+    subcommand confirmed not to declare it, since an unknown caller's
+    flags cannot be confirmed at all.
 
     Four steps, in this fixed order, mirroring the fold's own treatment of
     an unrecognized event `kind`: an ambiguous input is refused, not
@@ -278,11 +318,30 @@ def product_for(
         product = parts[0]
 
     if product is None:
-        raise RemoteCLIError(
-            f"cannot resolve a product for {resolved}: no explicit "
-            "--product, no product declared in its run-config.json, and "
-            "the legacy <Name>/Notebooks/ shape does not apply"
+        can_override = (
+            command is not None and "--product" in _subcommand_option_strings(command)
         )
+        if can_override:
+            # Only a subcommand whose OWN parser actually declares
+            # `--product` (confirmed via `_subcommand_option_strings()`,
+            # never assumed) gets a message naming it as a remedy.
+            reason = (
+                "no explicit --product, no product declared in its "
+                "run-config.json, and the legacy <Name>/Notebooks/ shape "
+                "does not apply"
+            )
+        else:
+            # `command` names a subcommand that does not declare
+            # `--product` (e.g. `status`), or `command` is unknown
+            # (`None`) and therefore cannot be confirmed to declare it
+            # either way. Either way, the message never names a flag the
+            # caller cannot actually type: a remedy that cannot be
+            # performed is worse than a refusal that names nothing.
+            reason = (
+                "no product declared in its run-config.json, and the "
+                "legacy <Name>/Notebooks/ shape does not apply"
+            )
+        raise RemoteCLIError(f"cannot resolve a product for {resolved}: {reason}")
 
     if product == TOOLS_DIRNAME:
         raise RemoteCLIError(
@@ -589,6 +648,20 @@ def guard_entrypoint(target: Path, entrypoint: Path) -> Path:
     documentation-like escape (this skill's own threat matrix) would walk
     straight through; resolving first and checking the resolved target is
     what closes it, on both shapes alike.
+
+    One narrower case gets its OWN message before either shape check's
+    generic refusal (Finding 4 case B): a path that is exactly the
+    job-folder DIRECTORY itself — three components past `target`, first
+    `TOOLS_DIRNAME`, and actually holding both `run-config.json` and
+    `runner.ipynb` — is one level above the answer, not a path in the
+    wrong location. The generic "does not stay under ... nor under ..."
+    message reads as a location problem and sends the caller to
+    regenerate a job that was already sound; this instead says a file was
+    expected, not a directory, and names exactly where the notebook is.
+    A directory merely SHAPED like a job folder by depth alone, holding
+    neither file, is not this case and still falls through to the generic
+    refusal below — as does a `.ipynb` FILE one level too shallow (no
+    `<job-name>` component at all), which is a different defect entirely.
     """
     resolved = Path(entrypoint).resolve()
 
@@ -605,6 +678,28 @@ def guard_entrypoint(target: Path, entrypoint: Path) -> Path:
     job_folder_shape = len(parts) == 4 and parts[0] == TOOLS_DIRNAME
 
     if not (legacy_shape or job_folder_shape):
+        job_folder_directory = (
+            len(parts) == 3
+            and parts[0] == TOOLS_DIRNAME
+            and resolved.is_dir()
+            and (resolved / RUN_CONFIG_FILENAME).is_file()
+            and (resolved / JOBFOLDER.RUNNER_FILENAME).is_file()
+        )
+        if job_folder_directory:
+            # Finding 4 case B: `--entrypoint` was handed the job folder
+            # DIRECTORY itself, one level above the answer, not the
+            # notebook FILE inside it. The generic shape-mismatch message
+            # below reads as though the folder were in the wrong
+            # location and sends the caller to regenerate a job that was
+            # perfectly sound — this names what was wanted, what was
+            # given, and exactly what to type instead.
+            notebook = resolved / JOBFOLDER.RUNNER_FILENAME
+            raise PathGuardError(
+                f"refusing {entrypoint}: a file was expected, not a "
+                f"directory — {resolved} is the job folder itself, one "
+                f"level above the answer; the notebook is at {notebook} — "
+                "pass that path to --entrypoint instead"
+            )
         raise PathGuardError(
             f"refusing {entrypoint}: resolved path {resolved} does not stay "
             f"under <target>/<Name>/{NOTEBOOKS_DIRNAME}/ nor under "
@@ -808,7 +903,9 @@ def cmd_submit(
         )
 
     resolved_entrypoint = guard_entrypoint(target, Path(entrypoint))
-    resolved_product = product_for(target, resolved_entrypoint, explicit=product)
+    resolved_product = product_for(
+        target, resolved_entrypoint, explicit=product, command="submit"
+    )
     _gate_job_folder_pin(resolved_entrypoint)
     relative_entrypoint = _relative_entrypoint(
         target, resolved_entrypoint, resolved_product
@@ -974,7 +1071,7 @@ def cmd_status(
             f"--target {target} does not resolve to an existing directory"
         )
 
-    product = product_for(target, entrypoint)
+    product = product_for(target, entrypoint, command="status")
     ledger_path = _main_ledger_path(target, product)
     smoke_ledger_path = _smoke_ledger_path(target, product)
 
@@ -1063,7 +1160,7 @@ def cmd_distribute(
         )
 
     resolved_entrypoint = Path(entrypoint).resolve()
-    product = product_for(target, resolved_entrypoint)
+    product = product_for(target, resolved_entrypoint, command="distribute")
     relative_entrypoint = _relative_entrypoint(target, resolved_entrypoint, product)
     ledger_path = _main_ledger_path(target, product)
     ledger_lines = _read_ledger_lines(ledger_path)
@@ -1192,7 +1289,7 @@ def cmd_fetch(
             f"--target {target} does not resolve to an existing directory"
         )
 
-    product = product_for(target, entrypoint)
+    product = product_for(target, entrypoint, command="fetch")
     digest_fn = source_digest or _load_source_digest()
     live = digest_fn(target, product)
 
@@ -1296,7 +1393,7 @@ def cmd_reconcile(
             f"--target {target} does not resolve to an existing directory"
         )
 
-    product = product_for(target, entrypoint)
+    product = product_for(target, entrypoint, command="reconcile")
     digest_fn = source_digest or _load_source_digest()
     live = digest_fn(target, product)
 

@@ -13868,5 +13868,284 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
             self.assertFalse(main_ledger_path.exists())
 
 
+# ---------------------------------------------------------------------------
+# Phase 7 -- three misdirecting refusals, each its own case (Finding 4;
+# Decision 13). The spec's own word budget forced one scenario each; these
+# are three distinct defects with three distinct causes, opened into
+# concrete cases rather than carrying that thinness forward.
+# ---------------------------------------------------------------------------
+
+
+class PinPublishedTimeoutBudgetTests(unittest.TestCase):
+    """Case A -- `_verify_commit_reachable()`'s probe must own its own time
+    budget, separate from `GIT_TIMEOUT_SECONDS` (120s), which the two local
+    calls around it (`rev-parse`, `cat-file -e`) legitimately never need
+    more than.
+
+    Measured against the live remote this skill targets, transferring
+    12.4 MiB on a slow link: 209s once, 27s on an identical re-run of the
+    SAME commit. A shared budget made the verdict track the LINK, not the
+    pin -- the first, slower run reported the commit as "not pushed" from
+    transfer time alone, and a whole session concluded from that one
+    measurement that this repository could never publish on that
+    connection. A true measurement, a false conclusion, because the
+    message named the wrong cause.
+
+    Every test in this class has a reachable red: before this task,
+    `jobfolder` exposes no `PIN_PUBLISHED_TIMEOUT_SECONDS` attribute at
+    all, and the fetch call passes no `timeout` keyword of its own, so it
+    silently inherits `_run_git`'s `GIT_TIMEOUT_SECONDS` default.
+    """
+
+    def test_pin_published_timeout_is_a_separate_constant_from_git_timeout(
+        self,
+    ) -> None:
+        """The two budgets must stop being one -- read as two distinct
+        module constants, not a single shared default reused twice."""
+        self.assertTrue(
+            hasattr(JOBFOLDER, "PIN_PUBLISHED_TIMEOUT_SECONDS"),
+            "jobfolder.py declares no PIN_PUBLISHED_TIMEOUT_SECONDS at all",
+        )
+        self.assertNotEqual(
+            JOBFOLDER.PIN_PUBLISHED_TIMEOUT_SECONDS,
+            JOBFOLDER.GIT_TIMEOUT_SECONDS,
+            "pin-published must not share its budget with the local git "
+            "calls around it",
+        )
+        self.assertGreater(
+            JOBFOLDER.PIN_PUBLISHED_TIMEOUT_SECONDS,
+            209,
+            "the new budget must cover the measured 209s worst case with "
+            "headroom, not merely equal it",
+        )
+
+    def test_the_fetch_call_alone_receives_the_new_budget(self) -> None:
+        """`pin-published` is the ONLY condition that reaches the network;
+        the local `init` (and, by the same rule elsewhere in this module,
+        `rev-parse`/`cat-file -e`) never needs more than the 120s local
+        default, so only the fetch call's own `timeout` keyword may differ.
+        """
+        recorded = []
+
+        def fake_run_git(args, *, cwd, timeout=None):
+            recorded.append((list(args), timeout))
+            return unittest.mock.Mock(returncode=0, stdout="", stderr="")
+
+        with unittest.mock.patch.object(JOBFOLDER, "_run_git", side_effect=fake_run_git):
+            JOBFOLDER._verify_commit_reachable(
+                "c" * 40, "https://example.invalid/repo.git", "main"
+            )
+
+        by_command = {args[0]: timeout for args, timeout in recorded}
+        self.assertEqual(
+            by_command["fetch"], JOBFOLDER.PIN_PUBLISHED_TIMEOUT_SECONDS,
+            "the fetch call must receive the dedicated pin-published budget",
+        )
+        self.assertNotEqual(
+            by_command["init"], JOBFOLDER.PIN_PUBLISHED_TIMEOUT_SECONDS,
+            "the local init call must not be widened along with the fetch",
+        )
+
+    def test_a_measured_209s_transfer_is_not_reported_as_unpublished(self) -> None:
+        """The exact regression this task fixes, reproduced at the
+        `_run_git` seam: a transfer that exceeds the OLD shared 120s
+        budget but fits inside the new, separate one must not raise --
+        the probe still never runs anywhere but the scratch repository."""
+        call_timeouts = []
+
+        def fake_run_git(args, *, cwd, timeout=None):
+            if list(args)[:1] == ["fetch"]:
+                # `timeout=None` means the caller passed no keyword at all,
+                # which (both before and after this task) means "whatever
+                # `_run_git`'s own default is" -- mimicked here explicitly
+                # since mocking `_run_git` bypasses its real default.
+                effective = (
+                    timeout if timeout is not None else JOBFOLDER.GIT_TIMEOUT_SECONDS
+                )
+                call_timeouts.append(effective)
+                if effective <= JOBFOLDER.GIT_TIMEOUT_SECONDS:
+                    raise JOBFOLDER.JobFolderError(
+                        "git fetch --dry-run --depth 1 ... timed out after "
+                        f"{effective}s"
+                    )
+            return unittest.mock.Mock(returncode=0, stdout="", stderr="")
+
+        with unittest.mock.patch.object(JOBFOLDER, "_run_git", side_effect=fake_run_git):
+            self.assertIsNone(
+                JOBFOLDER._verify_commit_reachable(
+                    "c" * 40, "https://example.invalid/repo.git", "main"
+                )
+            )
+        self.assertEqual(call_timeouts, [JOBFOLDER.PIN_PUBLISHED_TIMEOUT_SECONDS])
+
+    def test_a_genuinely_expired_pin_published_probe_still_refuses(self) -> None:
+        """The wider budget is headroom, not an unconditional pass: a
+        timeout that exceeds even the new budget must still refuse, naming
+        the timeout -- never silently swallowed."""
+
+        def fake_run_git(args, *, cwd, timeout=None):
+            if list(args)[:1] == ["fetch"]:
+                raise JOBFOLDER.JobFolderError(
+                    f"git fetch --dry-run --depth 1 ... timed out after {timeout}s"
+                )
+            return unittest.mock.Mock(returncode=0, stdout="", stderr="")
+
+        with unittest.mock.patch.object(JOBFOLDER, "_run_git", side_effect=fake_run_git):
+            with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                JOBFOLDER._verify_commit_reachable(
+                    "c" * 40, "https://example.invalid/repo.git", "main"
+                )
+        self.assertIn("timed out", str(ctx.exception))
+        self.assertNotIn("not pushed", str(ctx.exception).lower())
+
+
+class EntrypointJobFolderDirectoryTests(unittest.TestCase):
+    """Case B -- `guard_entrypoint()` handed the job folder DIRECTORY
+    itself (holding `run-config.json` + `runner.ipynb`) instead of the
+    notebook FILE inside it must say what it wanted, what it got, and what
+    to type -- never the generic shape-mismatch message, which reads as
+    though the folder were in the wrong location and sends the caller to
+    regenerate a job that was sound.
+
+    Every test in this class has a reachable red: before this task,
+    `guard_entrypoint()` has no special case for this shape at all, so a
+    job folder directory falls straight into the generic "does not stay
+    under ... nor under ..." refusal, which names neither a file nor a
+    notebook path.
+    """
+
+    def test_a_job_folder_directory_names_the_notebook_inside_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            job_dir = _make_job_folder(target, "svc", "job-a")
+            (job_dir / "run-config.json").write_text("{}", encoding="utf-8")
+            notebook = job_dir / "runner.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            with self.assertRaises(REMOTE_CLI.PathGuardError) as ctx:
+                REMOTE_CLI.guard_entrypoint(target.resolve(), job_dir)
+
+            message = str(ctx.exception)
+            self.assertIn("a file was expected", message)
+            self.assertIn(str(notebook.resolve()), message)
+            self.assertNotIn("regenerate", message.lower())
+
+    def test_a_bare_directory_lacking_run_config_still_gets_the_generic_refusal(
+        self,
+    ) -> None:
+        """The narrower case must not swallow the general one: a directory
+        that merely LOOKS job-folder-shaped by depth, but holds neither
+        `run-config.json` nor `runner.ipynb`, is not this special case."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            job_dir = target / "tools" / "svc" / "job-a"
+            job_dir.mkdir(parents=True)
+            # Deliberately empty -- no run-config.json, no runner.ipynb.
+
+            with self.assertRaises(REMOTE_CLI.PathGuardError) as ctx:
+                REMOTE_CLI.guard_entrypoint(target.resolve(), job_dir)
+
+            message = str(ctx.exception)
+            self.assertNotIn("a file was expected", message)
+
+    def test_the_shallow_file_case_keeps_its_existing_generic_refusal(self) -> None:
+        """Regression lock for `test_three_deep_tools_path_is_refused`'s own
+        case: a `.ipynb` FILE one level too shallow (no job-name directory)
+        is a different defect and must keep the generic message, never the
+        job-folder-directory one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            service_dir = target / "tools" / "svc"
+            service_dir.mkdir(parents=True)
+            notebook = service_dir / "runner.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            with self.assertRaises(REMOTE_CLI.PathGuardError) as ctx:
+                REMOTE_CLI.guard_entrypoint(target.resolve(), notebook)
+
+            message = str(ctx.exception)
+            self.assertNotIn("a file was expected", message)
+
+
+class ProductForParserDerivedRemedyTests(unittest.TestCase):
+    """Case C -- `product_for()`'s refusal must never name `--product` as a
+    remedy unless the CALLING subcommand's own parser actually declares
+    that flag. Only `submit` and `generate-job` declare `--product`;
+    `status`, `distribute`, `fetch` and `reconcile` do not, yet all five
+    used to reach the SAME hand-written "no explicit --product" prose
+    regardless of which subcommand asked.
+
+    Every test in this class has a reachable red: before this task,
+    `product_for()` accepts no `command` keyword at all, so passing one
+    raises `TypeError`, and its refusal is hand-written prose that names
+    `--product` unconditionally.
+    """
+
+    def _subparser_option_strings(self, command: str) -> frozenset[str]:
+        """Read `_build_parser()`'s own subparser actions directly -- never
+        a hand-maintained assumption about what a subcommand declares."""
+        parser = REMOTE_CLI._build_parser()
+        subparsers_action = next(
+            action for action in parser._actions
+            if isinstance(action, REMOTE_CLI.argparse._SubParsersAction)
+        )
+        subparser = subparsers_action.choices[command]
+        return frozenset(subparser._option_string_actions)
+
+    def test_status_subparser_declares_no_product_flag(self) -> None:
+        """Locks the fixture assumption every other test below relies on,
+        read from the parser itself rather than assumed by hand."""
+        self.assertNotIn("--product", self._subparser_option_strings("status"))
+
+    def test_submit_subparser_does_declare_a_product_flag(self) -> None:
+        self.assertIn("--product", self._subparser_option_strings("submit"))
+
+    def _unresolvable_entrypoint(self, target: Path) -> Path:
+        """Neither shape `product_for()` resolves: not `tools/<svc>/<job>/`
+        (job-folder), not `<Name>/Notebooks/` (legacy)."""
+        entrypoint = target / "random" / "foo.ipynb"
+        entrypoint.parent.mkdir(parents=True)
+        entrypoint.write_text("{}", encoding="utf-8")
+        return entrypoint
+
+    def test_a_status_refusal_never_cites_a_flag_status_does_not_declare(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            entrypoint = self._unresolvable_entrypoint(target)
+
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
+                REMOTE_CLI.product_for(target.resolve(), entrypoint, command="status")
+
+            self.assertNotIn("--product", str(ctx.exception))
+
+    def test_a_submit_refusal_still_names_its_own_product_override(self) -> None:
+        """The remedy is derived, not merely deleted: a subcommand that
+        DOES declare `--product` must keep naming it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            entrypoint = self._unresolvable_entrypoint(target)
+
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
+                REMOTE_CLI.product_for(target.resolve(), entrypoint, command="submit")
+
+            self.assertIn("--product", str(ctx.exception))
+
+    def test_cmd_status_itself_reaches_the_non_misdirecting_refusal(self) -> None:
+        """End-to-end at the `cmd_status` seam, not only at `product_for()`
+        directly -- proving `cmd_status` actually passes its own command
+        name through, not merely that `product_for()` supports the kwarg."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            target.mkdir()
+            entrypoint = self._unresolvable_entrypoint(target)
+
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
+                REMOTE_CLI.cmd_status(target=target, entrypoint=entrypoint)
+
+            self.assertNotIn("--product", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

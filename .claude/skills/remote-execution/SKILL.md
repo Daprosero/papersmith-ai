@@ -125,7 +125,16 @@ Three modules exist so far, each service-blind and stdlib-only:
     (`Job.entrypoint`, the ledger's `entrypoint` field, the fold's indices)
     stays deliberately blind to that question; widening this one guard,
     not reworking any of those, is how a future non-notebook workload
-    becomes admissible. `--smoke` sets `run_config["mode"] = "smoke"` on
+    becomes admissible. One narrower case gets its own message before
+    either shape's generic refusal (Finding 4 case B): a path that IS the
+    job-folder DIRECTORY itself (exactly three components past `target`,
+    first `TOOLS_DIRNAME`, actually holding both `run-config.json` and
+    `runner.ipynb`) is one level above the answer, not a path in the
+    wrong location — the generic "does not stay under ... nor under ..."
+    message read like a location problem and sent the caller to
+    regenerate a job that was already sound. The dedicated message says a
+    file was expected, not a directory, and names exactly where the
+    notebook is. `--smoke` sets `run_config["mode"] = "smoke"` on
     the `Job` handed to the adapter, and routes the resulting `submitted`
     event to `smoke.jsonl` instead of `ledger.jsonl` (see "Smoke" below) —
     both together, never one without the other.
@@ -251,8 +260,8 @@ Three modules exist so far, each service-blind and stdlib-only:
     `orphanLocal` — reported, and `--resolve` (human-invoked only, default
     `False`) is the one path that appends `errored(reason="not-found-at-service")`
     for it.
-  - `product_for(target, entrypoint, explicit=None)` resolves which
-    product's ledger an entrypoint belongs to — explicit, never guessed.
+  - `product_for(target, entrypoint, explicit=None, *, command=None)` resolves
+    which product's ledger an entrypoint belongs to — explicit, never guessed.
     Replaces the narrower `name_for()`: an explicit `--product` wins over
     everything; else, for the job-folder shape, the `product` field
     declared in that job's own `run-config.json` (read beside the
@@ -264,6 +273,17 @@ Three modules exist so far, each service-blind and stdlib-only:
     itself. `status`, `fetch`'s quarantine path and `reconcile`'s ledger
     selection all call this SAME function, so none of them can grow a
     second copy that quietly disagrees with another.
+
+    **Refusal messages are parser-derived, never hand-written prose.**
+    `command` names the calling subcommand (`submit`, `status`,
+    `distribute`, `fetch`, `reconcile`), and the unresolved-product refusal
+    names `--product` as a remedy only when `command`'s OWN
+    `_build_parser()` subparser actually declares that flag — checked at
+    the call, never assumed. Only `submit` (and `generate-job`, which
+    never calls this function) declares `--product`; `status`,
+    `distribute`, `fetch` and `reconcile` do not, so their refusal never
+    cites it. A remedy the caller cannot perform is worse than a refusal
+    that names nothing: it costs them the attempt.
 - `scripts/adapters/kaggle.py` — the ONE file below the adapter seam allowed
   to name a service. `workers()` reports usernames from kaggle-accounts' own
   sanctioned `list --json` command (run as a subprocess; this module never
@@ -517,6 +537,18 @@ executable — no test in this suite reaches the network or a real account).
      `--repo-url` is not refused on sight; it is probed like any other and,
      if it fails, the refusal says the probe was unauthenticated so the
      failure is not misread as a local accident.
+  4. **It owns its own time budget, `PIN_PUBLISHED_TIMEOUT_SECONDS` (240s)
+     — a SEPARATE constant from `GIT_TIMEOUT_SECONDS` (120s), never the
+     same one reused (Finding 4 case A).** That local budget times the two
+     nearly-instant, purely-local calls elsewhere in this module
+     (`rev-parse`, `cat-file -e`); this probe is the one call that
+     transfers real bytes over the network, and measured against the live
+     remote this skill targets, 12.4 MiB on a slow link took 209s once and
+     27s on an identical re-run of the SAME commit. A shared 120s budget
+     once made the verdict track the LINK, not the pin: the slower run
+     reported the commit as "not pushed" from transfer time alone — a true
+     measurement producing a false conclusion. 240s (~1.15x the measured
+     worst case) is picked from that measurement, not invented.
 
   The refusal names the commit, the remote, the missing push addressed to
   `--repo-ref`, and carries git's own message. Failure to create or
@@ -524,6 +556,14 @@ executable — no test in this suite reaches the network or a real account).
   that cannot be asked is never reported as a clean answer. Nothing is
   written into your repository by the probe — no ref, no `FETCH_HEAD`, no
   object — and the tool never commits or pushes on your behalf.
+
+  **A timeout is refused through its own, separate message, never folded
+  into the one above.** `_run_git()` raises `GitTimeoutError` (a distinct
+  `JobFolderError` subclass) for an expired timeout; `_verify_commit_reachable()`
+  catches it in its own branch and says the question could not be finished
+  asking, which is NOT the same fact as the remote answering no — the two
+  must never share a message, or a slow-but-published pin reads exactly
+  like an unpublished one.
 
 - `assets/runner_bootstrap.py` (cell 0) and `assets/runner_invoke.py`
   (cell 1) now hold their REAL content — copied byte-for-byte into every
@@ -662,17 +702,21 @@ executable — no test in this suite reaches the network or a real account).
   `resolve_clone_paths()` again once `target` is known — never a second,
   parallel validator for the symlink case.
 
-  Open question this slice inherited from `cmd_submit`'s own `--product`
+  Decision this slice inherited from `cmd_submit`'s own `--product`
   migration (T6b) and did not change: `status`, `fetch` and `reconcile`
-  still expose no `--product` flag, only `submit` does. This slice's own
-  decision: leave that as is. Each of those three commands reads an
-  already-generated job folder whose own `run-config.json` already
-  declares its product (`product_for()`'s step 2), so an explicit override
-  is not load-bearing there the way it is for `submit`, which can be asked
-  to record a submission for a job folder with no declared product at all.
-  `generate-job` itself needs no `--product` resolution step either — it
-  writes the declared `product` value straight into `run-config.json`, it
-  never has to resolve one from a path the way `product_for()` does.
+  still expose no `--product` flag, only `submit` does. Each of those three
+  commands reads an already-generated job folder whose own
+  `run-config.json` already declares its product (`product_for()`'s step
+  2), so an explicit override is not load-bearing there the way it is for
+  `submit`, which can be asked to record a submission for a job folder with
+  no declared product at all. `generate-job` itself needs no `--product`
+  resolution step either — it writes the declared `product` value straight
+  into `run-config.json`, it never has to resolve one from a path the way
+  `product_for()` does. Since that gap between "declares the flag" and
+  "does not" is real and intentional, `product_for()`'s refusal message
+  is derived from `_build_parser()` per calling subcommand (Finding 4 case
+  C) rather than naming `--product` unconditionally — a `status` refusal
+  used to point a caller at a flag `status` itself refuses to parse.
 
   `jobfolder.read(job_dir) -> JobFolder` is now the ONE reader. There is
   no `is_stale()` a caller can forget: `JobFolder.staleness` is computed
