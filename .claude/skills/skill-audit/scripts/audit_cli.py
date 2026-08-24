@@ -562,6 +562,18 @@ def run_box_step(step, repo, subject, box, timeout):
     both the repository and the subject. Every part of every step, either
     kind, is interpolated through `FROM_ZERO_TOKENS` alone and scanned for
     a literal reference to the subject.
+
+    Returns a small info dict -- `run_structure` transcribes a `driver`
+    step's own info into the report-facing `ignorance` block; an `exec`
+    step returns only `{"stepKind": "exec"}`, carrying nothing to
+    transcribe. Keyed `stepKind`, never `kind`: `EscalationPartitionTests`
+    holds `"kind"` to exactly one meaning across this module -- a note's or
+    a stall's own classification, produced solely by `note()` and
+    `stalled()` -- and a second dict literal carrying that key anywhere
+    else is refused structurally, on sight, regardless of what it means.
+    This step-kind value is a different word wearing the same spelling by
+    accident; the fix is to stop sharing the spelling, not to carve an
+    exception into the lock.
     """
     if isinstance(step, list):
         kind, raw_argv, cwd_spec, env_spec = "exec", step, None, None
@@ -594,6 +606,7 @@ def run_box_step(step, repo, subject, box, timeout):
         step_cwd.mkdir(parents=True, exist_ok=True)
 
     child_env = None
+    info = {"stepKind": kind}
     if kind == "driver":
         names = env_spec or []
         unknown = sorted(set(names) - set(DRIVER_ENV_ALLOWLIST))
@@ -616,6 +629,8 @@ def run_box_step(step, repo, subject, box, timeout):
                 f"kind=driver-not-external: {argv[0]!r} resolves to {real}, "
                 "inside the repository or the subject; a driver shipped "
                 "inside what it audits is not external")
+        info.update({"argv": list(argv), "argv0RealPath": str(real),
+                    "cwd": str(step_cwd), "envNames": sorted(names)})
 
     try:
         completed = subprocess.run(
@@ -631,6 +646,7 @@ def run_box_step(step, repo, subject, box, timeout):
         raise Unprobeable(
             f"a fromZero step exited {completed.returncode}: "
             f"{completed.stderr.strip()[:400]}")
+    return info
 
 
 def ignorance_control_gate(box, exclude):
@@ -663,6 +679,7 @@ def ignorance_control_gate(box, exclude):
         raise Unprobeable(
             "kind=ignorance-control-stalled: the box did not read empty "
             "immediately after being re-erased")
+    return "passed"
 
 
 def box_empty_or_absent(box, exclude=()):
@@ -1139,10 +1156,12 @@ def run_structure(args):
     box.mkdir(parents=True, exist_ok=True)
 
     try:
-        ignorance_control_gate(box, exclude)
+        control_gate = ignorance_control_gate(box, exclude)
+        box_digest_before = frozen_digest(box, exclude)
         subject_before = tree_digest(subject, exclude)
-        for step in steps:
-            run_box_step(step, repo, subject, box, args.timeout)
+        step_infos = [run_box_step(step, repo, subject, box, args.timeout)
+                     for step in steps]
+        box_digest_after = frozen_digest(box, exclude)
 
         from_zero_root = resolve_under(
             from_zero_spec.get("root"), box, "fromZero.root")
@@ -1181,6 +1200,16 @@ def run_structure(args):
     outcome, only_in, missing_from = structure_outcome(
         declared_set, disk_set, from_zero_set)
 
+    # The enforceable half of `## User drive`, machine-emitted rather than
+    # narrated: whichever step actually declared `kind: driver` is the one
+    # whose argv/cwd/env-names/real-path a report transcribes. A recipe
+    # built entirely from `exec` steps carries no driver step at all, and
+    # `driver` stays `None` -- `## User drive`'s required content is what
+    # demands one exist when stage 2 is declared `ran`, not this payload.
+    driver_info = next(
+        (info for info in step_infos if info.get("stepKind") == "driver"),
+        None)
+
     emit({
         "containment": {"afterRemoved": after_removed, "beforeEmpty": before_empty,
                         "box": str(box)},
@@ -1189,6 +1218,15 @@ def run_structure(args):
                        if entry["kind"] in ESCALATION_BUCKETS["escalatable"]],
         "frozen": {"digest": frozen_digest(subject, exclude),
                    "exclude": list(exclude), "subject": str(subject)},
+        "ignorance": {
+            "argv": driver_info.get("argv") if driver_info else None,
+            "argv0RealPath": driver_info.get("argv0RealPath") if driver_info else None,
+            "boxDigestAfter": box_digest_after,
+            "boxDigestBefore": box_digest_before,
+            "controlGate": control_gate,
+            "cwd": driver_info.get("cwd") if driver_info else None,
+            "envNames": driver_info.get("envNames") if driver_info else [],
+        },
         "missingFrom": missing_from,
         "notes": notes,
         "onlyIn": only_in,
@@ -1774,6 +1812,67 @@ def user_drive_outcome(lines):
     return None
 
 
+#: `## User drive`'s own `- Digest:` line, held to `## Frozen`'s declared
+#: digest exactly like every finding's own `- Digest:` already is: proof
+#: the driven-audit narrative is about the same subject state as the rest
+#: of the report.
+USER_DRIVE_DIGEST_LINE = re.compile(r"^-\s*Digest:\s*(\S+)\s*$")
+
+#: The heading under which `## User drive` states what the drive did *not*
+#: prove -- training-data exposure, contact between drives, "genuinely
+#: ignorant" versus "was not shown the file". A bare heading with nothing
+#: under it is the same claim as an absent one: a drive that believes it
+#: proved everything has misread what it did.
+USER_DRIVE_DECLARED_HEADING = "### Declared, not proven"
+
+
+def user_drive_digest(lines):
+    """`## User drive`'s own `- Digest:` value, or `None` if the section
+    carries no such line. Mirrors `frozen_section_fields`'s `- Digest:`
+    field, reading only inside the section.
+    """
+    in_section = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "## User drive":
+            in_section = True
+            continue
+        if in_section and stripped.startswith("## "):
+            break
+        if not in_section:
+            continue
+        match = USER_DRIVE_DIGEST_LINE.match(stripped)
+        if match:
+            return match.group(1)
+    return None
+
+
+def user_drive_declared_only_nonempty(lines):
+    """Whether `## User drive`'s `### Declared, not proven` subsection
+    carries at least one non-empty line beneath it, before the next
+    heading of either level.
+    """
+    in_user_drive = False
+    in_declared = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "## User drive":
+            in_user_drive = True
+            continue
+        if in_user_drive and stripped.startswith("## "):
+            break
+        if not in_user_drive:
+            continue
+        if stripped == USER_DRIVE_DECLARED_HEADING:
+            in_declared = True
+            continue
+        if in_declared and stripped.startswith("#"):
+            break
+        if in_declared and stripped:
+            return True
+    return False
+
+
 def stage_roster(text):
     """The `(stage id, REPORT_SHAPE key)` roster a report's stage table
     demands, derived from one stages table rather than listed by hand --
@@ -2257,6 +2356,29 @@ def run_check_report(args):
                 fail(key,
                      f"stage {stage_id} is declared ran, so the report "
                      f"must carry {marker!r}", f"{path}:1")
+            elif key == "user-drive":
+                # The enforceable half: `## User drive`'s own `- Digest:`
+                # must agree with `## Frozen`'s, exactly as every finding's
+                # own `- Digest:` already must -- proof the driven-audit
+                # narrative is about the same subject state as the rest of
+                # the report.
+                drive_digest = user_drive_digest(lines)
+                if not drive_digest or (frozen.get("digest")
+                                        and drive_digest != frozen["digest"]):
+                    fail(key,
+                         "'## User drive' carries no '- Digest:' agreeing "
+                         f"with '## Frozen''s declared digest "
+                         f"{frozen.get('digest')!r}", f"{path}:1")
+                # The declared-only half: stated, never implied as proof.
+                # A drive claiming to have proven everything has misread
+                # what it did, so an empty column is refused the same as
+                # an absent one.
+                if not user_drive_declared_only_nonempty(lines):
+                    fail(key,
+                         "'## User drive' carries no non-empty "
+                         f"{USER_DRIVE_DECLARED_HEADING!r} content; the "
+                         "declared-only column must be stated, never "
+                         "implied as proof", f"{path}:1")
         else:
             not_run_value = FIELD_NOT_RUN.get(key)
             if not_run_value:

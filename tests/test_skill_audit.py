@@ -2928,6 +2928,52 @@ class DriverStepKindTests(StructureBoxMixin, unittest.TestCase):
         self.assertEqual(result.returncode, 0, payload)
         self.assertEqual(payload["outcome"], "agree")
 
+    def test_a_driver_step_populates_the_ignorance_block(self):
+        """The enforceable half of `## User drive`, machine-emitted: a
+        report transcribes this rather than narrating it.
+        """
+        surface = "driver_ignorance"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            "driver_ignorance_subject", declared=["a.txt"],
+            disk_files={"a.txt": "x\n"})
+        source = self.write(
+            self.structure_script_box("driver_ignorance_source"), "a.txt", "x\n")
+        steps = [
+            {"kind": "driver", "argv": ["mkdir", "-p", "{box}/build"],
+             "env": ["PATH"]},
+            ["cp", str(source), "{box}/build/a.txt"],
+        ]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        ignorance = payload["ignorance"]
+        self.assertEqual(ignorance["controlGate"], "passed")
+        self.assertEqual(ignorance["argv"], ["mkdir", "-p", f"{payload['containment']['box']}/build"])
+        self.assertEqual(ignorance["envNames"], ["PATH"])
+        self.assertTrue(ignorance["argv0RealPath"].startswith("/"))
+        self.assertTrue(ignorance["boxDigestBefore"].startswith("sha256:"))
+        self.assertTrue(ignorance["boxDigestAfter"].startswith("sha256:"))
+        self.assertNotEqual(
+            ignorance["boxDigestBefore"], ignorance["boxDigestAfter"],
+            "the box held nothing before the driver ran and its own build "
+            "directory after; the two digests must disagree")
+
+    def test_an_exec_only_recipe_emits_no_driver_in_the_ignorance_block(self):
+        surface = "no_driver"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            "no_driver_subject", declared=["a.txt"], disk_files={"a.txt": "x\n"})
+        script = self.build_script(subject, {"a.txt": "x\n"})
+        spec = self.make_recipe(
+            subject, surface, [["python3", str(script), "{box}/build"]])
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        ignorance = payload["ignorance"]
+        self.assertEqual(ignorance["controlGate"], "passed")
+        self.assertIsNone(ignorance["argv"])
+        self.assertEqual(ignorance["envNames"], [])
+
     def test_a_step_naming_the_subject_token_is_refused(self):
         surface = "subject_token"
         self.structure_box(surface)
@@ -4364,7 +4410,14 @@ class StageOutcomesTests(BoxMixin, unittest.TestCase):
             "- Stage: 2: ran\n", 1)
         text = text.replace(
             "## Ranked findings",
-            "## User drive\n\n- Outcome: agree\n\n## Ranked findings", 1)
+            "## User drive\n\n"
+            "- Outcome: agree\n"
+            f"- Digest: {VALID_REPORT_DIGEST}\n\n"
+            f"{cli.USER_DRIVE_DECLARED_HEADING}\n\n"
+            "- Whether the model behind argv[0] already knew this "
+            "subject's shape from training data is not measured here, "
+            "stated as an assumption.\n\n"
+            "## Ranked findings", 1)
         for stage_id, outcome in (post_drive_overrides or {}).items():
             needle = f"- Stage: {stage_id}: {VALID_REPORT_STAGE_OVERRIDES[stage_id]}\n"
             self.assertIn(needle, text, "the graft's anchor must be present")
@@ -4419,6 +4472,69 @@ class StageOutcomesTests(BoxMixin, unittest.TestCase):
         self.assertTrue(
             any("2" in v["detail"] for v in violations),
             f"stage 2's own row must never read offered/declined: {violations}")
+
+    def test_stage_two_ran_with_full_user_drive_content_is_accepted(self):
+        """[LOCK] The grounded baseline every inversion below mutates."""
+        text = self._with_stage_two_agreed(VALID_REPORT)
+        result, payload = self.check(text, name="user-drive-complete.md")
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["violations"], [])
+
+    def test_user_drive_digest_disagreeing_with_frozen_is_rejected(self):
+        text = self._with_stage_two_agreed(VALID_REPORT)
+        broken = text.replace(
+            f"- Digest: {VALID_REPORT_DIGEST}\n\n"
+            f"{audit_cli_module().USER_DRIVE_DECLARED_HEADING}",
+            f"- Digest: sha256:{'0' * 64}\n\n"
+            f"{audit_cli_module().USER_DRIVE_DECLARED_HEADING}", 1)
+        self.assertNotEqual(broken, text, "the graft must land")
+        result, payload = self.check(broken, name="user-drive-digest-mismatch.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "user-drive"]
+        self.assertTrue(
+            any("Digest" in v["detail"] for v in violations),
+            f"a '## User drive' digest disagreeing with '## Frozen' must "
+            f"be rejected: {violations}")
+
+    def test_user_drive_missing_digest_is_rejected(self):
+        # `VALID_REPORT_DIGEST` also appears in `## Frozen` and in every
+        # finding, so the replace is anchored on the immediately preceding
+        # `- Outcome: agree` line, unique to `## User drive`.
+        text = self._with_stage_two_agreed(VALID_REPORT)
+        broken = text.replace(
+            f"- Outcome: agree\n- Digest: {VALID_REPORT_DIGEST}\n",
+            "- Outcome: agree\n", 1)
+        self.assertNotEqual(broken, text, "the graft must land")
+        result, payload = self.check(broken, name="user-drive-no-digest.md")
+        self.assertEqual(result.returncode, 1, payload)
+        self.assertIn("user-drive", [v["item"] for v in payload["violations"]])
+
+    def test_user_drive_empty_declared_only_section_is_rejected(self):
+        cli = audit_cli_module()
+        text = self._with_stage_two_agreed(VALID_REPORT)
+        broken = text.replace(
+            "- Whether the model behind argv[0] already knew this "
+            "subject's shape from training data is not measured here, "
+            "stated as an assumption.\n\n",
+            "", 1)
+        self.assertNotEqual(broken, text, "the graft must land")
+        self.assertIn(cli.USER_DRIVE_DECLARED_HEADING, broken,
+                      "the bare heading must survive; only its content is removed")
+        result, payload = self.check(broken, name="user-drive-empty-declared.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "user-drive"]
+        self.assertTrue(
+            any("Declared" in v["detail"] for v in violations),
+            f"an empty declared-only section must be rejected: {violations}")
+
+    def test_user_drive_missing_declared_only_heading_is_rejected(self):
+        cli = audit_cli_module()
+        text = self._with_stage_two_agreed(VALID_REPORT)
+        broken = text.replace(f"{cli.USER_DRIVE_DECLARED_HEADING}\n\n", "", 1)
+        self.assertNotEqual(broken, text, "the graft must land")
+        result, payload = self.check(broken, name="user-drive-no-declared-heading.md")
+        self.assertEqual(result.returncode, 1, payload)
+        self.assertIn("user-drive", [v["item"] for v in payload["violations"]])
 
     def test_stage_model_total_sums_a_synthetic_table(self):
         cli = audit_cli_module()
