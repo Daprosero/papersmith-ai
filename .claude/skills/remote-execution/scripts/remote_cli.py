@@ -1115,14 +1115,21 @@ def cmd_status(
     smoke_state = LEDGER.fold(_read_ledger_lines(smoke_ledger_path), live_digest=live)
 
     def _render(folded: "LEDGER.LedgerState") -> dict:
+        # `folded.entrypoints` is keyed by `(entrypoint, worker)` (F4:
+        # Decision 6) -- `"entrypoints"` ALWAYS nests a per-worker sub-dict
+        # under each entrypoint now, a documented breaking shape change
+        # from the flat `{entrypoint: {...}}` this used to render. Five
+        # accounts submitting the same entrypoint used to fold into one
+        # flat entry where four of the five silently vanished; nesting is
+        # what makes all five visible in one render.
+        nested: dict[str, dict[str, dict]] = {}
+        for (entry_name, worker), entry in folded.entrypoints.items():
+            nested.setdefault(entry_name, {})[worker] = {
+                "state": entry.state,
+                "staleInFlight": entry.stale_in_flight,
+            }
         return {
-            "entrypoints": {
-                entry_name: {
-                    "state": entry.state,
-                    "staleInFlight": entry.stale_in_flight,
-                }
-                for entry_name, entry in folded.entrypoints.items()
-            },
+            "entrypoints": nested,
             "staleInFlight": folded.stale_in_flight,
             "quarantined": folded.from_stale_submission,
             "unreadableLines": folded.unreadable_lines,
@@ -1439,11 +1446,17 @@ def cmd_reconcile(
     )
 
     def _pending_ids(folded: "LEDGER.LedgerState") -> set[str]:
+        # `folded.entrypoints`/`folded.latest` are keyed by
+        # `(entrypoint, worker)` (F4: Decision 6) -- filtering `.latest`
+        # by `worker` first and indexing `.entrypoints` by the same pair
+        # is what keeps this reconcile call scoped to only THIS worker's
+        # own state, never another worker's resubmission of the same
+        # entrypoint.
         return {
             submission["submissionId"]
-            for submission in folded.latest.values()
-            if submission.get("worker") == worker
-            and folded.entrypoints[submission["entrypoint"]].state == "pending"
+            for (entrypoint, submission_worker), submission in folded.latest.items()
+            if submission_worker == worker
+            and folded.entrypoints[(entrypoint, submission_worker)].state == "pending"
         }
 
     remote_active = set(adapter.list_active(worker))

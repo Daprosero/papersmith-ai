@@ -354,7 +354,7 @@ class FoldCurrencyTests(unittest.TestCase):
         state = LEDGER.fold(self._lines(s1, r1), live_digest="digest-1")
 
         self.assertEqual(state.verdicts["s1"], "current")
-        self.assertEqual(state.entrypoints["Notebooks/a.ipynb"].state, "returned")
+        self.assertEqual(state.entrypoints[("Notebooks/a.ipynb", "acct-1")].state, "returned")
         self.assertEqual(state.from_stale_submission, ())
 
     def test_from_stale_submission_when_result_belongs_to_superseded_submission(self) -> None:
@@ -387,6 +387,47 @@ class FoldCurrencyTests(unittest.TestCase):
 
         self.assertEqual(state.verdicts["s1"], "fromStaleSubmission")
         self.assertIn("Notebooks/a.ipynb", state.from_stale_submission)
+
+    def test_cross_worker_submissions_dont_supersede(self) -> None:
+        """F4 (Decision 6): worker A submits, then worker B submits the
+        SAME entrypoint. Before this fix, `latest` was keyed by entrypoint
+        alone, so B's submission would silently overwrite A's in the fold
+        and A's own result would read back `fromStaleSubmission` even
+        though nothing about A's own submission ever changed. `latest` is
+        now keyed by `(entrypoint, worker)`: A remains `current` for its
+        own key, entirely unaffected by B.
+        """
+        a_submit = LEDGER.submitted_event(
+            entrypoint="Notebooks/a.ipynb",
+            source_digest="digest-1",
+            submission_id="s-a",
+            worker="acct-A",
+            requested_capacity=1,
+            granted_capacity=1,
+            ts="2026-08-17T00:00:00Z",
+        )
+        b_submit = LEDGER.submitted_event(  # a DIFFERENT worker, same entrypoint
+            entrypoint="Notebooks/a.ipynb",
+            source_digest="digest-1",
+            submission_id="s-b",
+            worker="acct-B",
+            requested_capacity=1,
+            granted_capacity=1,
+            ts="2026-08-17T00:05:00Z",
+        )
+        a_returned = LEDGER.returned_event(
+            submission_id="s-a", artifact_path="/out/s-a", observed_concurrency=1,
+            ts="2026-08-17T00:10:00Z",
+        )
+
+        state = LEDGER.fold(self._lines(a_submit, b_submit, a_returned), live_digest="digest-1")
+
+        self.assertEqual(state.verdicts["s-a"], "current")
+        self.assertEqual(state.from_stale_submission, ())
+        self.assertEqual(state.entrypoints[("Notebooks/a.ipynb", "acct-A")].state, "returned")
+        self.assertEqual(state.entrypoints[("Notebooks/a.ipynb", "acct-B")].state, "pending")
+        self.assertEqual(state.latest[("Notebooks/a.ipynb", "acct-A")]["submissionId"], "s-a")
+        self.assertEqual(state.latest[("Notebooks/a.ipynb", "acct-B")]["submissionId"], "s-b")
 
     def test_from_stale_submission_when_latest_submission_id_matches_but_source_moved_since(
         self,
@@ -473,7 +514,7 @@ class FoldCurrencyTests(unittest.TestCase):
 
         state = LEDGER.fold(self._lines(s1), live_digest="digest-2")
 
-        self.assertEqual(state.entrypoints["Notebooks/a.ipynb"].state, "pending")
+        self.assertEqual(state.entrypoints[("Notebooks/a.ipynb", "acct-1")].state, "pending")
         self.assertIn("Notebooks/a.ipynb", state.stale_in_flight)
         # The stronger guarantee than "nothing called cancel() in this test":
         # fold() takes no adapter and no cancel callable at all, so there is
@@ -510,7 +551,7 @@ class FoldCurrencyTests(unittest.TestCase):
 
             state = LEDGER.fold(lines, live_digest="digest-2")
             self.assertEqual(state.by_id["s1"]["sourceDigest"], "digest-1")
-            self.assertEqual(state.latest["Notebooks/a.ipynb"]["submissionId"], "s2")
+            self.assertEqual(state.latest[("Notebooks/a.ipynb", "acct-1")]["submissionId"], "s2")
 
     def test_corrupted_line_counted_skipped_and_file_not_rewritten(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -535,7 +576,7 @@ class FoldCurrencyTests(unittest.TestCase):
             after = path.read_bytes()
 
             self.assertEqual(state.unreadable_lines, 1)
-            self.assertEqual(state.entrypoints["Notebooks/a.ipynb"].state, "pending")
+            self.assertEqual(state.entrypoints[("Notebooks/a.ipynb", "acct-1")].state, "pending")
             # fold() only reads `lines`; it never opens the ledger file
             # itself, so nothing about this call could rewrite it. This
             # assertion is what pins that, rather than trusting the claim.
@@ -572,7 +613,7 @@ class FoldCurrencyTests(unittest.TestCase):
         # If `ts` had been used to order events, s1 (the later timestamp)
         # would have been treated as the latest submission and both
         # assertions below would flip.
-        self.assertEqual(state.latest["Notebooks/a.ipynb"]["submissionId"], "s2")
+        self.assertEqual(state.latest[("Notebooks/a.ipynb", "acct-1")]["submissionId"], "s2")
         self.assertEqual(state.verdicts["s2"], "current")
         self.assertEqual(state.verdicts["s1"], "fromStaleSubmission")
 
@@ -834,7 +875,7 @@ class AdapterSeamTests(unittest.TestCase):
 
             lines = ledger_path.read_text(encoding="utf-8").splitlines()
             state = LEDGER.fold(lines, live_digest="digest-1")
-            self.assertEqual(state.entrypoints[str(job.entrypoint)].state, "returned")
+            self.assertEqual(state.entrypoints[(str(job.entrypoint), submission.worker)].state, "returned")
             self.assertEqual(state.verdicts[submission.id], "current")
 
 
@@ -2037,7 +2078,13 @@ class StatusTests(unittest.TestCase):
                 target=target, entrypoint=notebook, source_digest=lambda t, n: "digest-new"
             )
 
-            self.assertEqual(result["entrypoints"]["Notebooks/a.ipynb"]["state"], "pending")
+            # F4 (Decision 6): `"entrypoints"` now ALWAYS nests a per-worker
+            # sub-dict under each entrypoint — a documented breaking shape
+            # change from the flat `{entrypoint: {...}}` this used to
+            # render, updated in place here rather than deleted.
+            self.assertEqual(
+                result["entrypoints"]["Notebooks/a.ipynb"]["w1"]["state"], "pending"
+            )
             self.assertIn("Notebooks/a.ipynb", result["staleInFlight"])
             self.assertEqual(result["unreadableLines"], 1)
             self.assertEqual(result["quarantined"], ())
@@ -2047,6 +2094,41 @@ class StatusTests(unittest.TestCase):
             # fact rather than a rule its body would otherwise have to be
             # trusted to follow.
             self.assertNotIn("adapter", inspect.signature(REMOTE_CLI.cmd_status).parameters)
+
+    def test_status_nests_multiple_workers_under_one_entrypoint(self) -> None:
+        """F4's whole point, rendered: five accounts submitting the same
+        entrypoint used to fold into ONE flat entry where four of the five
+        silently vanished from `latest`. All five must now be visible,
+        each under its own worker key, in one `cmd_status` render.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.LEDGER_FILENAME
+            )
+            for worker in ("w1", "w2", "w3"):
+                _append_pending_submission(
+                    ledger_path,
+                    entrypoint="Notebooks/a.ipynb",
+                    submission_id=f"s-{worker}",
+                    worker=worker,
+                    source_digest="digest-1",
+                )
+
+            result = REMOTE_CLI.cmd_status(
+                target=target, entrypoint=notebook, source_digest=lambda t, n: "digest-1"
+            )
+
+            entry = result["entrypoints"]["Notebooks/a.ipynb"]
+            self.assertEqual(set(entry), {"w1", "w2", "w3"})
+            for worker in ("w1", "w2", "w3"):
+                self.assertEqual(entry[worker]["state"], "pending")
+                self.assertEqual(entry[worker]["staleInFlight"], False)
 
 
 class FetchTests(unittest.TestCase):
@@ -2139,7 +2221,7 @@ class FetchTests(unittest.TestCase):
             state = LEDGER.fold(
                 ledger_path.read_text(encoding="utf-8").splitlines(), live_digest="d" * 64
             )
-            self.assertEqual(state.entrypoints["Notebooks/a.ipynb"].state, "pending")
+            self.assertEqual(state.entrypoints[("Notebooks/a.ipynb", "w1")].state, "pending")
 
             # The .partial/ directory holds exactly the crash's partial
             # bytes and was never renamed into `dest`.
@@ -2383,6 +2465,123 @@ class ReconcileTests(unittest.TestCase):
             appended = json.loads(lines_after_resolve[-1])
             self.assertEqual(appended["kind"], "errored")
             self.assertEqual(appended["reason"], "not-found-at-service")
+
+    def test_cmd_reconcile_filters_per_worker(self) -> None:
+        """F4: two DIFFERENT workers, `w1` and `w2`, both have a pending
+        submission for the SAME entrypoint. Reconciling for `w1` alone must
+        consider only `w1`'s own `(entrypoint, worker)` state -- `w2`'s
+        pending submission must never leak into `w1`'s own `orphanLocal`
+        computation, and never be silently treated as `w1`'s own local
+        pending id either.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="s-w1", worker="w1", source_digest="d" * 64,
+            )
+            _append_pending_submission(
+                ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="s-w2", worker="w2", source_digest="d" * 64,
+            )
+
+            # The service reports nothing active for w1 -- s-w1 should be
+            # reported orphanLocal; s-w2 belongs to a different worker and
+            # must never appear in EITHER direction of w1's own report.
+            adapter = ScriptedListActiveAdapter(worker_id="w1", active=())
+            result = REMOTE_CLI.cmd_reconcile(
+                target=target, entrypoint=notebook, worker="w1",
+                adapter=adapter, source_digest=lambda t, n: "d" * 64,
+            )
+            self.assertEqual(result["orphanLocal"], ("s-w1",))
+            self.assertNotIn("s-w2", result["orphanLocal"])
+            self.assertNotIn("s-w2", result["orphanRemote"])
+
+            # And w2's own reconcile is scoped the same way, in reverse.
+            adapter_w2 = ScriptedListActiveAdapter(worker_id="w2", active=())
+            result_w2 = REMOTE_CLI.cmd_reconcile(
+                target=target, entrypoint=notebook, worker="w2",
+                adapter=adapter_w2, source_digest=lambda t, n: "d" * 64,
+            )
+            self.assertEqual(result_w2["orphanLocal"], ("s-w2",))
+            self.assertNotIn("s-w1", result_w2["orphanLocal"])
+
+
+class FiveAccountFanoutTests(unittest.TestCase):
+    """F4's own acceptance scenario, end to end: five accounts submit the
+    SAME entrypoint; before this fix, `fold()` read that as one account
+    superseding itself four times over, and `cmd_fetch` quarantined four
+    of the five artifacts as `fromStaleSubmission` -- measured live,
+    2026-08-24, on five real accounts.
+    """
+
+    def test_five_account_fanout_all_land_at_dest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            workers = ["w1", "w2", "w3", "w4", "w5"]
+            adapter = MultiWorkerFakeAdapter(workers=[(w, 2) for w in workers])
+
+            submission_ids = {}
+            for worker in workers:
+                token = _mint_launch_consent(
+                    target=target, entrypoint=notebook, adapter=adapter,
+                    source_digest=lambda t, n: "d" * 64, worker=worker,
+                )
+                result = REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, worker=worker, requested=1,
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64, consent=token,
+                )
+                submission_ids[worker] = result["submission"].id
+
+            self.assertEqual(len(set(submission_ids.values())), 5,
+                              "five accounts must produce five distinct submission ids")
+
+            for worker in workers:
+                dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / worker
+                fetch_result = REMOTE_CLI.cmd_fetch(
+                    target=target, entrypoint=notebook,
+                    submission_id=submission_ids[worker], dest=dest,
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                )
+                self.assertEqual(
+                    fetch_result["verdict"], "current",
+                    f"{worker}'s own submission must never read as superseded by "
+                    "another worker's fan-out submission",
+                )
+                self.assertEqual(fetch_result["path"], dest)
+                self.assertTrue(dest.exists())
+
+            # None quarantined: the quarantine directory was never created
+            # at all, for any of the five.
+            quarantine_dir = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.QUARANTINE_DIRNAME
+            )
+            self.assertFalse(quarantine_dir.exists())
+
+            # And every returned event confirms it: five `returned` lines,
+            # one per worker's own submission id.
+            ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.LEDGER_FILENAME
+            )
+            lines = ledger_path.read_text(encoding="utf-8").splitlines()
+            returned_ids = {
+                json.loads(line)["submissionId"]
+                for line in lines if json.loads(line)["kind"] == "returned"
+            }
+            self.assertEqual(returned_ids, set(submission_ids.values()))
 
 
 # A stand-in credential in the shape kaggle-accounts actually materializes
@@ -12443,7 +12642,7 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual(len(main_lines), 1)
 
             state = LEDGER.fold(main_lines, live_digest="d" * 64)
-            entry = "tools/kaggle/search-a/runner.ipynb"
+            entry = ("tools/kaggle/search-a/runner.ipynb", "w1")
             self.assertEqual(state.entrypoints[entry].state, "pending")
             self.assertEqual(
                 state.latest[entry]["submissionId"], full_result["submission"].id,
@@ -12484,7 +12683,7 @@ class SmokeTests(unittest.TestCase):
             main_lines = full_result["ledgerPath"].read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(main_lines), 1)
             state = LEDGER.fold(main_lines, live_digest="d" * 64)
-            entry = "tools/kaggle/search-a/runner.ipynb"
+            entry = ("tools/kaggle/search-a/runner.ipynb", "w1")
             self.assertEqual(
                 state.latest[entry]["submissionId"], full_result["submission"].id,
             )
@@ -13957,11 +14156,11 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
             )
 
             self.assertEqual(
-                result["entrypoints"]["Notebooks/a.ipynb"]["state"], "pending",
+                result["entrypoints"]["Notebooks/a.ipynb"]["w1"]["state"], "pending",
             )
             self.assertIn("smoke", result)
             self.assertEqual(
-                result["smoke"]["entrypoints"]["Notebooks/a.ipynb"]["state"],
+                result["smoke"]["entrypoints"]["Notebooks/a.ipynb"]["w1"]["state"],
                 "pending",
             )
             self.assertEqual(result["smoke"]["ledgerPath"], smoke_ledger_path)

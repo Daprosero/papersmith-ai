@@ -210,8 +210,8 @@ class LedgerState:
     """
 
     by_id: dict[str, dict]
-    latest: dict[str, dict]
-    entrypoints: dict[str, EntrypointState]
+    latest: dict[tuple[str, str], dict]
+    entrypoints: dict[tuple[str, str], EntrypointState]
     verdicts: dict[str, str]
     unreadable_lines: int
 
@@ -219,14 +219,23 @@ class LedgerState:
     def stale_in_flight(self) -> tuple[str, ...]:
         """Entrypoints with a pending submission the source has moved past.
 
+        Named by ENTRYPOINT alone, deduplicated — an entrypoint counts as
+        stale-in-flight if ANY of its workers is, even though `entrypoints`
+        itself is now keyed by `(entrypoint, worker)` (Decision 6). JSON has
+        no tuple key, `stale_in_flight` is consumed as a flat name list by
+        every existing caller, and nesting this one too would be a second
+        breaking shape change buying nothing over the first.
+
         Reported, never acted on — see `fold()`'s note on why this function
         never calls `cancel()`.
         """
         return tuple(
             sorted(
-                entrypoint
-                for entrypoint, state in self.entrypoints.items()
-                if state.stale_in_flight
+                {
+                    entrypoint
+                    for (entrypoint, _worker), state in self.entrypoints.items()
+                    if state.stale_in_flight
+                }
             )
         )
 
@@ -246,18 +255,20 @@ class LedgerState:
 
         This is what the packer's capacity clamp (a later module) treats as
         concurrent work already committed to `worker` before granting any
-        more. Only an entrypoint's latest submission is ever considered —
-        `self.latest` already keeps just that one per entrypoint, so an
-        older, superseded submission to this same worker can never be
-        double-counted here even if, taken in isolation, it is itself still
-        pending: it stopped being what this entrypoint's state answers for
-        the moment a newer submission superseded it.
+        more. Only an entrypoint's latest submission FOR THIS WORKER is
+        ever considered — `self.latest` is keyed by `(entrypoint, worker)`
+        (Decision 6), so a resubmission by a DIFFERENT worker to the same
+        entrypoint can never shadow or double-count this one's own latest
+        submission, and an older, superseded submission from this same
+        worker can never be double-counted either: it stopped being what
+        this `(entrypoint, worker)` pair's state answers for the moment a
+        newer submission from the SAME worker superseded it.
         """
         return sum(
             1
-            for submission in self.latest.values()
-            if submission.get("worker") == worker
-            and self.entrypoints[submission["entrypoint"]].state == "pending"
+            for (entrypoint, submission_worker), submission in self.latest.items()
+            if submission_worker == worker
+            and self.entrypoints[(entrypoint, submission_worker)].state == "pending"
         )
 
 
@@ -325,11 +336,16 @@ def fold(lines: Iterable[str], live_digest: str | Callable[[], str]) -> LedgerSt
         kind = event.get("kind")
         if kind == "submitted":
             by_id[event["submissionId"]] = event
-            # Overwritten every time a submitted event for this entrypoint
-            # is seen, in the order this loop sees them — append order, not
-            # `ts`. The last write wins, same as it would for any other
-            # last-one-in-wins index over an ordered log.
-            latest[event["entrypoint"]] = event
+            # Overwritten every time a submitted event for this EXACT
+            # (entrypoint, worker) pair is seen, in the order this loop
+            # sees them — append order, not `ts`. The last write wins, same
+            # as it would for any other last-one-in-wins index over an
+            # ordered log. Keyed by the pair, not the entrypoint alone
+            # (Decision 6): five accounts submitting the same entrypoint
+            # are five independent "latest" facts, one per worker, not one
+            # fact where the fourth and fifth submissions read as
+            # superseding the first three.
+            latest[(event["entrypoint"], event["worker"])] = event
         elif kind in _TERMINAL_KINDS:
             terminal_by_id[event["submissionId"]] = event
             if kind == "returned":
@@ -348,8 +364,8 @@ def fold(lines: Iterable[str], live_digest: str | Callable[[], str]) -> LedgerSt
             continue
         verdicts[event["submissionId"]] = currency_verdict(submission, latest, live)
 
-    entrypoints: dict[str, EntrypointState] = {}
-    for entrypoint, submission in latest.items():
+    entrypoints: dict[tuple[str, str], EntrypointState] = {}
+    for key, submission in latest.items():
         terminal = terminal_by_id.get(submission["submissionId"])
         if terminal is None:
             state = "pending"
@@ -364,7 +380,7 @@ def fold(lines: Iterable[str], live_digest: str | Callable[[], str]) -> LedgerSt
         # in-flight one, however stale the source has since become.
         stale_in_flight = state == "pending" and submission["sourceDigest"] != live
 
-        entrypoints[entrypoint] = EntrypointState(
+        entrypoints[key] = EntrypointState(
             state=state, stale_in_flight=stale_in_flight
         )
 
@@ -378,7 +394,7 @@ def fold(lines: Iterable[str], live_digest: str | Callable[[], str]) -> LedgerSt
 
 
 def currency_verdict(
-    submission: Mapping[str, object], latest: Mapping[str, dict], live: str
+    submission: Mapping[str, object], latest: Mapping[tuple[str, str], dict], live: str
 ) -> str:
     """The currency rule a `returned` event's submission is judged by.
 
@@ -404,16 +420,24 @@ def currency_verdict(
       Id-equality alone would miss this: the id still matches the latest
       one, so an id-only check would call this result current too.
 
+    `latest` is keyed by `(entrypoint, worker)` (Decision 6): this reads
+    only the SAME worker's own latest submission for this entrypoint, so a
+    different worker's resubmission of the same entrypoint can never mark
+    this one superseded. A caller passing an old, entrypoint-only-keyed
+    `latest` dict fails CLOSED here, not open: `.get()` on a mismatched key
+    shape finds nothing, `latest_for_key` is `None`, and the submission is
+    over-quarantined as superseded rather than falsely admitted as current.
+
     Either check alone lets a superseded result read as current, which is
     the one defect class this whole ledger exists to prevent. A submission
     this log never recorded (a defensive case that should not arise given
     `submission` always comes from `by_id`) is treated as superseded rather
     than current — this rule fails closed, not open.
     """
-    latest_for_entrypoint = latest.get(submission["entrypoint"])
+    latest_for_key = latest.get((submission["entrypoint"], submission["worker"]))
     superseded = (
-        latest_for_entrypoint is None
-        or latest_for_entrypoint["submissionId"] != submission["submissionId"]
+        latest_for_key is None
+        or latest_for_key["submissionId"] != submission["submissionId"]
     )
     source_moved = submission["sourceDigest"] != live
     current = not superseded and not source_moved
