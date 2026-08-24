@@ -37,6 +37,7 @@ ORIGINAL_HELPERS = FORGE / "tests" / "test_proposal_implementation.py"
 MOVES_HEADER = "| Move | Ships as | Lock |"
 SUBCOMMAND_HEADER = "| Subcommand | Derives | Emits |"
 REPORT_HEADER = "| Item | Required content | Rejected when |"
+STAGES_HEADER = "| Stage | Models | Demands |"
 
 #: Words a target owns that the forge is forbidden to borrow — the floor the
 #: derived guard stands on. Being a fixed list, it can only ever hold leaks
@@ -4121,3 +4122,63 @@ class StageOutcomesTests(BoxMixin, unittest.TestCase):
             dict(roster),
             {"0": "frozen", "1": "undecidable", "2": "user-drive",
              "3": "reading-diff", "4": "drives", "5": "found-by"})
+
+    def test_stage_model_total_sums_a_synthetic_table(self):
+        cli = audit_cli_module()
+        synthetic = ("| Stage | Models | Demands |\n"
+                    "| --- | --- | --- |\n"
+                    "| 0. Zero-model stage | 0 | `frozen` |\n"
+                    "| 1. Three-model stage | 3 | `undecidable` |\n")
+        self.assertEqual(cli.stage_model_total(synthetic), 3)
+
+    def test_a_stages_models_cell_that_is_not_an_integer_is_unprobeable(self):
+        cli = audit_cli_module()
+        bad = ("| Stage | Models | Demands |\n"
+              "| --- | --- | --- |\n"
+              "| 0. Not a number | many | `frozen` |\n")
+        with self.assertRaises(cli.Unprobeable):
+            cli.stage_model_total(bad)
+
+    def test_the_model_count_sentence_names_the_derived_sum(self):
+        """[LOCK] "N model runs, total" and its own per-stage breakdown are
+        read back from `SKILL.md`'s prose and checked against the stages
+        table's own `Models` column, never the reverse. Without the
+        breakdown half, correcting the leading numeral by hand would leave
+        the sentence's second half free to rot independently -- so both
+        halves are asserted, grounded in the real doctrine, never in a
+        mirrored literal.
+        """
+        cli = audit_cli_module()
+        text = doctrine_text()
+        total = cli.stage_model_total(text)
+
+        numeral = re.search(r"\b(\w+) model runs, total\b", text)
+        self.assertIsNotNone(
+            numeral, "SKILL.md carries no 'N model runs, total' sentence")
+        word = numeral.group(1).lower()
+        self.assertIn(word, cli.CARDINALS, f"{word!r} is not a known cardinal")
+        self.assertEqual(
+            cli.CARDINALS[word], total,
+            f"the sentence says {word!r} but the stages table's Models "
+            f"column sums to {total}")
+
+        tables = markdown_table_rows(text, STAGES_HEADER)
+        self.assertEqual(len(tables), 1, "one stages table, exactly")
+        for row in tables[0]:
+            stage_match = re.match(r"^(\d+)\b", row[0]) if row else None
+            if not stage_match:
+                continue
+            stage_id = stage_match.group(1)
+            models = int(row[1].strip())
+            if models == 0:
+                continue
+            breakdown = re.search(rf"\b(\w+) for stage {stage_id}\b", text)
+            self.assertIsNotNone(
+                breakdown,
+                f"the sentence's breakdown names no cardinal for stage "
+                f"{stage_id}, which the table gives {models} Models")
+            breakdown_word = breakdown.group(1).lower()
+            self.assertEqual(
+                cli.CARDINALS.get(breakdown_word), models,
+                f"stage {stage_id} has {models} Models but the sentence's "
+                f"breakdown says {breakdown_word!r}")

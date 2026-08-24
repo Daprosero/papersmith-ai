@@ -1602,6 +1602,35 @@ def stage_roster(text):
     return roster
 
 
+def stage_model_total(text):
+    """The stages table's `Models` column, summed -- the figure the
+    doctrine's own "N model runs, total" sentence must name.
+
+    Parsed the same way every other documented side in this module is,
+    with `markdown_table_rows`, never a second hand-maintained figure held
+    beside the table it describes. The lock over the sentence itself lives
+    in `tests/test_skill_audit.py`, not here: `check-report` validates
+    reports, and this sentence is the skill's own doctrine, the same home
+    `stage_roster`'s own derivation test already occupies.
+    """
+    tables = markdown_table_rows(text, STAGES_TABLE_HEADER)
+    if len(tables) != 1:
+        raise Unprobeable(
+            f"expected exactly one {STAGES_TABLE_HEADER!r} table to sum "
+            f"Models from; found {len(tables)}")
+    total = 0
+    for row in tables[0]:
+        if len(row) < 2:
+            raise Unprobeable(f"a stages-table row is not three cells: {row!r}")
+        try:
+            total += int(row[1].strip())
+        except ValueError:
+            raise Unprobeable(
+                f"a stages-table row's Models cell is not an integer: "
+                f"{row!r}")
+    return total
+
+
 def resolve_stages_doctrine():
     """The path the stages table is always read from.
 
