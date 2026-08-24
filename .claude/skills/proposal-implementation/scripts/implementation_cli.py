@@ -2172,6 +2172,12 @@ def cmd_probe(args) -> dict:
     # of the ladder. Read only when `live` was actually attempted — `None`
     # means `report_state` never got there (report itself undeclared), and
     # that state already has its own, more specific rung below.
+    elif next_step in ("benchmark", "piloted") and report.get("live") == (
+            "undeclared"):
+        # An entry nobody declared is a gap in the declaration, and the rung
+        # for that already exists one line above. Routing it to `env-first`
+        # would name the interpreter for something the interpreter did not do.
+        next_step = "declare-first"
     elif next_step in ("benchmark", "piloted") and report.get("live") not in (
             None, "ok"):
         next_step = "env-first"
@@ -3074,17 +3080,21 @@ print(json.dumps({"subsets": subsets, "inertConclusions": inert}))
 def resolve_entry_module(target: Path, name: str, package: str) -> str:
     """The dotted module whose import actually pulls the target's runtime in.
 
-    Read from the benchmark's own declaration's `entry.module` when a later
-    phase has landed that block; until then it is reachable only as this
-    scaffold default — the harness filename convention (`BENCHMARK_MODULE`)
-    already used to locate the file on disk, a forge convention and never a
-    target's own package, dataset or device name.
+    `None` when the declaration does not name one, and never a guess.
+
+    It used to fall back to the forge's own filename convention, and that
+    fallback is what made an undeclared entry look like a broken environment:
+    the guessed module does not exist, importing it fails, and liveness
+    reported the failure of the guess as the failure of the interpreter. A
+    target whose harness carries any other name got told to repair an
+    environment that was working.
+
+    `resolve_harness_status` below already refuses to guess for exactly this
+    reason and answers `undeclared` instead. This is its sibling and now
+    answers the same way, so one absence produces one fact rather than two.
     """
     contract = resolve_benchmark_declaration(target, name)["contract"]
-    declared = (contract.get("entry") or {}).get("module")
-    if declared:
-        return declared
-    return f"{package}_Benchmark.{Path(BENCHMARK_MODULE).stem}"
+    return (contract.get("entry") or {}).get("module") or None
 
 
 def resolve_harness_status(target: Path, name: str, package: str) -> dict:
@@ -3137,6 +3147,16 @@ def introspect(target: Path, package: str, record: Path | None,
     subprocess's non-zero exit and quoted verbatim from its last stderr line,
     never paraphrased — is the truthful verdict.
     """
+    if not entry_module:
+        # Nothing declared which module carries the runtime, so there is
+        # nothing to execute and no verdict about the interpreter to give.
+        # Answering `unavailable` here would blame an environment that was
+        # never asked a question.
+        return {"status": "undeclared",
+                "detail": "the benchmark declaration names no `entry.module`, "
+                          "so there is nothing to import; declare it and this "
+                          "becomes a reading about the interpreter"}
+
     bin_dir = "Scripts" if os.name == "nt" else "bin"
     interpreter = target / ".venv" / bin_dir / ("python.exe" if os.name == "nt"
                                                 else "python")

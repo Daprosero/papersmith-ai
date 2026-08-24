@@ -1539,6 +1539,7 @@ class ReportContractTests(unittest.TestCase):
         "        'components': {'terms': ['fit'], 'share': None},\n"
         "        'dimensions': {'accuracy': 'higher', 'seconds': 'lower', 'fit': None},\n"
         "    },\n"
+        "    'entry': {'module': 'Method_Benchmark.benchmark', 'function': 'run'},\n"
         "}\n"
     )
 
@@ -9107,6 +9108,8 @@ class ProbeReportedFactsRosterTests(unittest.TestCase):
         "               'components': {'first': 'the first term'},\n"
         "               'record': 'summary.json',\n"
         "               'records': ['Results/summary.json']},\n"
+        "    'entry': {'module': 'Method_Benchmark.benchmark',\n"
+        "              'function': 'run'},\n"
         "}\n")
     WIRING = ("from Method.called import called\n"
               "from Method.never_called import total\n")
@@ -10073,11 +10076,20 @@ class EntryModuleResolutionTests(unittest.TestCase):
             declaration, encoding="utf-8")
         return path
 
-    def test_falls_back_to_the_scaffold_harness_convention_when_undeclared(self):
+    def test_an_undeclared_entry_resolves_to_nothing_rather_than_a_guess(self):
+        """This asserted the guess, and the guess was the defect.
+
+        Falling back to the forge's own filename convention meant an
+        undeclared entry produced a module name that does not exist, whose
+        failed import was then reported as the interpreter's. A target whose
+        harness carries any other name got sent to repair a working
+        environment. `resolve_harness_status` already refuses to guess for
+        this reason; its sibling now refuses too.
+        """
         target = self.box("fallback", "__benchmark__ = {'revision': 'r01.md'}\n")
-        self.assertEqual(
+        self.assertIsNone(
             impl.resolve_entry_module(target, "Method", "Method"),
-            f"Method_Benchmark.{Path(impl.BENCHMARK_MODULE).stem}")
+            "an absent declaration is an absence, not a name to invent")
 
     def test_an_explicitly_declared_entry_module_wins(self):
         target = self.box(
@@ -10208,6 +10220,41 @@ class EnvFirstGateTests(unittest.TestCase):
         self.assertEqual(probe["report"]["live"], "unavailable")
         self.assertEqual(probe["nextStep"], "env-first")
         self.assertNotEqual(probe["nextStep"], "benchmark")
+
+    def test_an_undeclared_entry_is_a_declaration_gap_not_a_broken_environment(self):
+        """Measured against a real target: six of seven blocks declared, the
+        seventh empty, an environment that imports everything it needs — and
+        the flow answered that the interpreter could not import the entry
+        module. It could. Nothing had said which module to import.
+
+        `resolve_harness_status` already refuses to guess a filename and
+        reports `undeclared` instead. Its sibling guessed the forge's own
+        convention, handed the guess to liveness, and liveness reported the
+        guess's failure as the environment's. Two different facts under one
+        message, which is the shape this whole flow exists to remove.
+        """
+        box, _ = self.build_target("entry_undeclared")
+        # Six blocks declared, the seventh absent — a target written before
+        # `entry` existed. The environment is sound; the module simply is not
+        # under the name the forge would have assumed.
+        init = box / "src/Method_Benchmark/__init__.py"
+        text = init.read_text(encoding="utf-8")
+        start = text.index("    'entry'")
+        end = text.index("\n", text.index("'function'", start)) + 1
+        init.write_text(text[:start] + text[end:], encoding="utf-8")
+        module = box / "src/Method_Benchmark/benchmark.py"
+        module.rename(module.with_name("harness.py"))
+        probe = self.probe(box)
+        self.assertNotEqual(
+            probe["report"]["live"], "unavailable",
+            "an undeclared entry is not an environment that cannot import; "
+            "reporting it as one sends the reader to repair what is working")
+        self.assertEqual(probe["report"]["live"], "undeclared")
+        self.assertNotEqual(
+            probe["nextStep"], "env-first",
+            "the missing thing is a declaration, and the rung for a missing "
+            "declaration already exists")
+        self.assertEqual(probe["nextStep"], "declare-first")
 
     def test_the_same_target_reaches_benchmark_once_the_entry_module_imports(self):
         box, _ = self.build_target("envfirst_ok")
