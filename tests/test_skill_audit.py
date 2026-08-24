@@ -3800,10 +3800,17 @@ class DriverArgvRecipeTests(unittest.TestCase):
         """The externality check stays a predicate, never a pinned value:
         no version string of the resolved `claude` binary is hard-coded
         anywhere in `audit_cli.py` or the shipped recipe.
+
+        This check spawns nothing -- only `shutil.which` plus path
+        inspection, zero API cost, deterministic, sub-millisecond -- so it
+        stays permanently ungated by `SKILL_AUDIT_LIVE_DRIVER`. It skips
+        (never hard-fails) when `claude` is absent from PATH, replacing the
+        previous hard failure with an announced silence.
         """
         cli = audit_cli_module()
         real = cli.shutil.which("claude")
-        self.assertIsNotNone(real, "this environment has no `claude` on PATH")
+        if real is None:
+            self.skipTest("this environment has no `claude` on PATH")
         resolved = Path(real).resolve()
         self.assertFalse(FORGE in resolved.parents or resolved == FORGE)
         self.assertFalse(SKILL_ROOT in resolved.parents or resolved == SKILL_ROOT)
