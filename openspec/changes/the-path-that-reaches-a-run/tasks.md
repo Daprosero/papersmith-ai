@@ -81,19 +81,19 @@ Chain strategy: stacked-to-main
 
 ## Phase 4 — Per-campaign consent gate (Finding 3; Decisions 4, 5) — turns today's green `submit` tests red
 
-- [ ] 4.1 Grep every existing `cmd_submit` test lacking a consent token; list them so the update is visible in the diff, not folded silently elsewhere.
-- [ ] 4.2 RED: `submit` without `--consent` refuses.
-- [ ] 4.3 GREEN `remote_cli.py`: add `--consent <token>`; refuse when absent; read **only** from parsed argv.
-- [ ] 4.4 RED: token = `sha256(pin commit, relative entrypoint, ordered unit list)`, printed by `distribute`; `submit` recomputes it from the job folder's own declared commit (`JOBFOLDER.read()`) + argv unit list, and refuses on mismatch.
-- [ ] 4.5 GREEN: shared token-derivation function used by both `distribute`'s print and `submit`'s verify.
-- [ ] 4.6 RED (commit-state threat-matrix case): a token minted at pin A refuses at pin B.
-- [ ] 4.7 RED (Decision 5 scope): added, removed, or reordered units in the invocation refuse against the minted token.
-- [ ] 4.8 GREEN: bind the check to exact ordered-unit-list equality.
-- [ ] 4.9 RED: whole-tree hash snapshot across two invocations proves nothing on disk stores consent (no config, no env var, no ledger line).
-- [ ] 4.10 RED: a cross-campaign token (minted for a different unit set) refuses.
-- [ ] 4.11 Invert strongest case: disable the ordered-unit-list equality check → confirm a token minted for a smaller unit set still authorizes a campaign whose unit list grew → restore by inverse patch + `sha256`.
-- [ ] 4.12 Update every test listed in 4.1 to pass `--consent` explicitly — this update must be its own visible diff hunk.
-- [ ] 4.13 `remote-execution/SKILL.md`: document the authorization contract — per-campaign, argv-only, never persisted, and the honest limit: no gate can prove a human was present, only that the launch was deliberate, bound and unstored.
+- [x] 4.1 Grep every existing `cmd_submit` test lacking a consent token; list them so the update is visible in the diff, not folded silently elsewhere.
+- [x] 4.2 RED: `submit` without `--consent` refuses.
+- [x] 4.3 GREEN `remote_cli.py`: add `--consent <token>`; refuse when absent; read **only** from parsed argv.
+- [x] 4.4 RED: token = `sha256(pin commit, relative entrypoint, ordered unit list)`, printed by `distribute`; `submit` recomputes it from the job folder's own declared commit (`JOBFOLDER.read()`) + argv unit list, and refuses on mismatch.
+- [x] 4.5 GREEN: shared token-derivation function used by both `distribute`'s print and `submit`'s verify.
+- [x] 4.6 RED (commit-state threat-matrix case): a token minted at pin A refuses at pin B.
+- [x] 4.7 RED (Decision 5 scope): added, removed, or reordered units in the invocation refuse against the minted token.
+- [x] 4.8 GREEN: bind the check to exact ordered-unit-list equality.
+- [x] 4.9 RED: whole-tree hash snapshot across two invocations proves nothing on disk stores consent (no config, no env var, no ledger line).
+- [x] 4.10 RED: a cross-campaign token (minted for a different unit set) refuses.
+- [x] 4.11 Invert strongest case: disable the ordered-unit-list equality check → confirm a token minted for a smaller unit set still authorizes a campaign whose unit list grew → restore by inverse patch + `sha256`.
+- [x] 4.12 Update every test listed in 4.1 to pass `--consent` explicitly — this update must be its own visible diff hunk.
+- [x] 4.13 `remote-execution/SKILL.md`: document the authorization contract — per-campaign, argv-only, never persisted, and the honest limit: no gate can prove a human was present, only that the launch was deliberate, bound and unstored.
 
 ## Phase 5 — env provisioning + executed-evidence liveness (Findings 5, 6; Decisions 8, 9, 12)
 
@@ -136,10 +136,10 @@ Chain strategy: stacked-to-main
 
 ## Phase 8 — Guiding table doctrine (Finding 9; Decision 14) — defers first if the 1200-line budget tightens
 
-- [ ] 8.1 RED `proposal-implementation/SKILL.md`: parser-derived test reads `_build_parser()`'s subparser actions; asserts every table row names its applicable flags, and a stale-pin row exists (job folder exists, `staleness: drift` → `generate-job`).
-- [ ] 8.2 GREEN: add the flags column (`readiness` lists `--job-dir`/`--worker`, never `--target`/`--entrypoint`); add the stale-pin row.
-- [ ] 8.3 Invert (remove the stale-pin row) → confirm the parser-derived test fails → restore by inverse patch + `sha256`.
-- [ ] 8.4 Confirm final suite count = 1160 + total tests added across Phases 1–8; a suite merely staying green is not evidence, and a test green on first write covering already-held behaviour counts as coverage, not a caught defect.
+- [x] 8.1 RED `proposal-implementation/SKILL.md`: parser-derived test reads `_build_parser()`'s subparser actions; asserts every table row names its applicable flags, and a stale-pin row exists (job folder exists, `staleness: drift` → `generate-job`).
+- [x] 8.2 GREEN: add the flags column (`readiness` lists `--job-dir`/`--worker`, never `--target`/`--entrypoint`); add the stale-pin row.
+- [x] 8.3 Invert (remove the stale-pin row) → confirm the parser-derived test fails → restore by inverse patch + `sha256`.
+- [x] 8.4 Confirm final suite count = 1160 + total tests added across Phases 1–8; a suite merely staying green is not evidence, and a test green on first write covering already-held behaviour counts as coverage, not a caught defect.
 
 ---
 

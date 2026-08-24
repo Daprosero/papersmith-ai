@@ -39,6 +39,12 @@ TOKEN_RE = re.compile(r"\{\{[A-Z0-9_]+\}\}")
 SKILL_MD = SKILL_ROOT / "SKILL.md"
 USAGE_MD = SKILL_ROOT / "references" / "usage.md"
 
+#: The remote-execution seam table's header, held in one place so the roster
+#: test and the flags/stale-pin test below read the identical table rather
+#: than two headers drifting apart from each other.
+SEAM_TABLE_HEADER = ("| Subcommand | The reported state that routes here "
+                     "| Applicable flags | Where the flags are documented |")
+
 STAGE_ONE_HEADER = "| Gap `plan` and `verify` report | Written from |"
 STAGE_TWO_HEADER = "| Written into | Written from |"
 
@@ -9408,6 +9414,76 @@ def subcommand_surface(source: Path, function: str) -> dict[str, tuple[str, ...]
             for path, declared in flags.items() if path not in owners}
 
 
+def required_flags(source: Path, function: str) -> dict[str, tuple[str, ...]]:
+    """The subset of `subcommand_surface` each subcommand marks `required=True`.
+
+    A standalone reading, deliberately not folded into `subcommand_surface`
+    itself: that function is one of `CopiedHelperFidelityTests`' pinned
+    copies (`test_skill_audit.py` holds a byte-identical one), so changing
+    its body here would drift the copy out from under a suite this change
+    does not own. This performs the identical `_build_parser()` walk,
+    narrowed to the flags that define a row's shape -- the reason
+    `readiness` (`--job-dir`/`--worker`) is not `--target`/`--entrypoint`
+    shaped the way every neighbouring row in the guiding table is.
+    """
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    definition = next(
+        (node for node in ast.walk(tree)
+         if isinstance(node, ast.FunctionDef) and node.name == function), None)
+    if definition is None:
+        raise AssertionError(f"{source.name} defines no {function}")
+
+    groups: dict[str, str] = {}
+    commands: dict[str, str] = {}
+    flags: dict[str, list[str]] = {}
+    owners: set[str] = set()
+
+    def only_target(node):
+        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            return None
+        return node.targets[0].id
+
+    def is_required(call: ast.Call) -> bool:
+        for keyword in call.keywords:
+            if keyword.arg == "required":
+                return isinstance(keyword.value, ast.Constant) \
+                    and keyword.value.value is True
+        return False
+
+    for node in ast.walk(definition):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            call, name = node.value, only_target(node)
+            attribute = call.func.attr if isinstance(call.func, ast.Attribute) else ""
+            holder = (call.func.value.id
+                      if isinstance(call.func, ast.Attribute)
+                      and isinstance(call.func.value, ast.Name) else "")
+            if attribute == "add_subparsers":
+                if name is not None:
+                    groups[name] = commands.get(holder, "")
+                owners.add(commands.get(holder, ""))
+                continue
+            if attribute == "add_parser" and holder in groups and call.args:
+                literal = call.args[0]
+                if not isinstance(literal, ast.Constant):
+                    continue
+                path = f"{groups[holder]} {literal.value}".strip()
+                flags.setdefault(path, [])
+                if name is not None:
+                    commands[name] = path
+                continue
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr == "add_argument" \
+                and isinstance(node.func.value, ast.Name) \
+                and node.func.value.id in commands and node.args \
+                and isinstance(node.args[0], ast.Constant) \
+                and str(node.args[0].value).startswith("--") \
+                and is_required(node):
+            flags[commands[node.func.value.id]].append(node.args[0].value)
+
+    return {path: tuple(sorted(set(declared)))
+            for path, declared in flags.items() if path not in owners}
+
+
 class RemoteExecutionCommandRosterTests(unittest.TestCase):
     """This flow depends on a CLI it never names.
 
@@ -9434,8 +9510,7 @@ class RemoteExecutionCommandRosterTests(unittest.TestCase):
     end-to-end tests are what carry it.
     """
 
-    TABLE_HEADER = ("| Subcommand | The reported state that routes here "
-                    "| Where the flags are documented |")
+    TABLE_HEADER = SEAM_TABLE_HEADER
     GATES_TABLE_HEADER = "| Situation | Action |"
 
     @classmethod
@@ -9530,6 +9605,92 @@ class RemoteExecutionCommandRosterTests(unittest.TestCase):
                 len(shown), len(declared[command]),
                 f"`usage.md` reprints every flag {command} declares, which is "
                 "a second copy of a list this skill does not own")
+
+
+class GuidingTableFlagsTests(unittest.TestCase):
+    """The table named subcommands and never how to call them.
+
+    Followed literally, `readiness` reads like every neighbouring row —
+    `--target`/`--entrypoint` — because nothing in the table said otherwise.
+    It takes `--job-dir`/`--worker` instead, and the mismatch surfaces only
+    as a usage error, which reads like the reader's fault rather than the
+    table's.
+
+    And no row at all answered a job folder that *exists* and is pinned to a
+    commit that has moved: `generate-job`'s row covers an absent folder,
+    `reconcile`'s covers the ledger and the service disagreeing, and a
+    stale pin fell between both.
+
+    Both repairs read `_build_parser()` rather than restate it, the same way
+    `RemoteExecutionCommandRosterTests` already derives column one: a flags
+    column that is hand-typed is the exact drift this table exists to
+    remove, so it is checked against `required_flags()` — the same walk,
+    narrowed to what `required=True` marks — instead of being taken on
+    faith.
+    """
+
+    TABLE_HEADER = SEAM_TABLE_HEADER
+
+    @classmethod
+    def remote_cli(cls):
+        return impl.REMOTE_EXECUTION_CLI_SCRIPT
+
+    def declared_required(self):
+        surface = required_flags(self.remote_cli(), "_build_parser")
+        self.assertTrue(surface, "the remote-execution parser was read as empty")
+        return surface
+
+    def table_rows(self):
+        tables = markdown_table_rows(
+            SKILL_MD.read_text(encoding="utf-8"), self.TABLE_HEADER)
+        self.assertEqual(
+            len(tables), 1,
+            "the remote-execution seam table is stated in no parseable "
+            "table with a flags column")
+        return tables[0]
+
+    @staticmethod
+    def flags_cell(cell):
+        return {flag.strip().strip("`") for flag in cell.split(",") if flag.strip()}
+
+    def test_every_row_names_its_required_flags(self):
+        """Column three has to match `_build_parser()`, not a guess made from
+        the shape of the row above it."""
+        required = self.declared_required()
+        for row in self.table_rows():
+            command = row[0].strip("`")
+            self.assertIn(command, required,
+                          f"{command!r} names no subcommand `_build_parser()` declares")
+            self.assertEqual(
+                self.flags_cell(row[2]), set(required[command]),
+                f"the flags column for {command!r} does not match the "
+                "required arguments `_build_parser()` declares for it")
+
+    def test_readiness_is_not_target_entrypoint_shaped(self):
+        """The exact mismatch that cost three flag-shape errors in a row."""
+        rows = {row[0].strip("`"): row[2] for row in self.table_rows()}
+        self.assertIn("readiness", rows)
+        shown = self.flags_cell(rows["readiness"])
+        self.assertEqual(shown, {"--job-dir", "--worker"})
+        self.assertNotIn("--target", shown)
+        self.assertNotIn("--entrypoint", shown)
+
+    def test_a_stale_pinned_job_folder_has_its_own_row(self):
+        """A job folder that exists, pinned to a commit that has moved, maps
+        to no row today — the exact state that blocked a launch this week.
+        `generate-job`'s existing row only covers an absent folder."""
+        stale_rows = [row for row in self.table_rows()
+                      if row[0].strip("`") == "generate-job"
+                      and "drift" in row[1]]
+        self.assertEqual(
+            len(stale_rows), 1,
+            "no row answers a job folder that exists with a pin that has "
+            "drifted from what the clone paths hold")
+        required = self.declared_required()
+        self.assertEqual(
+            self.flags_cell(stale_rows[0][2]), set(required["generate-job"]),
+            "the stale-pin row's flags column does not match "
+            "`_build_parser()`'s required generate-job arguments")
 
 
 class ShardRefusalCrossJoinTests(unittest.TestCase):

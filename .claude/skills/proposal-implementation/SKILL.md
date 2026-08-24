@@ -1125,23 +1125,39 @@ send — but it left a reader told to wait, or told a ledger had drifted, with n
 name to type. The commands belong to the forge's `remote-execution` skill; what
 belongs here is which reported state routes to which one:
 
-| Subcommand | The reported state that routes here | Where the flags are documented |
-| --- | --- | --- |
-| `submit` | None. This flow offers a campaign to a human and never sends one itself | the `remote-execution` skill |
-| `status` | `remoteExecution` on any target: it folds the same ledger `probe` reports, for when you want it fresher than the last read | the `remote-execution` skill |
-| `poll` | `nextStep: "poll-first"` — a submission is out and its answer has not come back | the `remote-execution` skill |
-| `fetch` | A submission the ledger calls returned whose result is not on disk yet | the `remote-execution` skill |
-| `reconcile` | `remoteExecution` reporting `drift` or `unreliable`: the ledger and the service disagree, or a line of the log could not be read | the `remote-execution` skill |
-| `generate-job` | No job folder for the campaign about to be offered — `remoteExecution.jobs` empty, or naming none that matches | the `remote-execution` skill |
-| `distribute` | A campaign whose units outnumber what one account can hold at once: it reports which account each unit would go to and which ones do not fit, and sends nothing | the `remote-execution` skill |
-| `smoke record` | `smokeReady: false` for a job that has rehearsed and whose verdict was never written down | the `remote-execution` skill |
-| `readiness` | `smokeReady` itself: it is the function `probe` calls to compute that fact, and asking it directly is how you see the reason | the `remote-execution` skill |
+| Subcommand | The reported state that routes here | Applicable flags | Where the flags are documented |
+| --- | --- | --- | --- |
+| `submit` | None. This flow offers a campaign to a human and never sends one itself | `--backend`, `--entrypoint`, `--target` | the `remote-execution` skill |
+| `status` | `remoteExecution` on any target: it folds the same ledger `probe` reports, for when you want it fresher than the last read | `--entrypoint`, `--target` | the `remote-execution` skill |
+| `poll` | `nextStep: "poll-first"` — a submission is out and its answer has not come back | `--backend`, `--submission-id` | the `remote-execution` skill |
+| `fetch` | A submission the ledger calls returned whose result is not on disk yet | `--backend`, `--dest`, `--entrypoint`, `--submission-id`, `--target` | the `remote-execution` skill |
+| `reconcile` | `remoteExecution` reporting `drift` or `unreliable`: the ledger and the service disagree, or a line of the log could not be read | `--backend`, `--entrypoint`, `--target`, `--worker` | the `remote-execution` skill |
+| `generate-job` | No job folder for the campaign about to be offered — `remoteExecution.jobs` empty, or naming none that matches | `--job-name`, `--product`, `--repo-ref`, `--repo-url`, `--run-function`, `--run-module`, `--service`, `--target` | the `remote-execution` skill |
+| `generate-job` | A job folder exists and its declared pin no longer matches what the clone paths hold — `staleness` reports `drift`: regenerate (`--regenerate`) rather than offer a run against a repository that has moved | `--job-name`, `--product`, `--repo-ref`, `--repo-url`, `--run-function`, `--run-module`, `--service`, `--target` | the `remote-execution` skill |
+| `distribute` | A campaign whose units outnumber what one account can hold at once: it reports which account each unit would go to and which ones do not fit, and sends nothing | `--backend`, `--entrypoint`, `--target`, `--unit` | the `remote-execution` skill |
+| `smoke record` | `smokeReady: false` for a job that has rehearsed and whose verdict was never written down | `--from-artifact`, `--job-dir`, `--worker` | the `remote-execution` skill |
+| `readiness` | `smokeReady` itself: it is the function `probe` calls to compute that fact, and asking it directly is how you see the reason | `--job-dir`, `--worker` | the `remote-execution` skill |
 
 Column one is read by the suite against that CLI's own parser, so a subcommand
 added there fails the tests until this table says which state sends a reader to
-it. The flags are deliberately not restated: two copies of a flag list is the
-drift this table exists to remove, and `references/usage.md` shows the shape of
-three invocations and points at the owning skill for the rest.
+it. Column three — applicable flags — is read from the same parser, narrowed to
+what each subcommand marks `required=True`: the shape a reader actually has to
+match, which is exactly where `readiness` (`--job-dir`/`--worker`) stopped being
+`--target`/`--entrypoint` shaped the way every neighbouring row here is, and
+following the table as if it were would refuse on a usage error rather than
+route anywhere. The full flag lists are still deliberately not restated: two
+copies of a flag list is the drift this table exists to remove, and
+`references/usage.md` shows the shape of three invocations and points at the
+owning skill for the rest.
+
+**A job folder that exists is not the same defect as one that is absent.**
+`generate-job`'s first row above covers `remoteExecution.jobs` naming none —
+there is nothing on disk yet. A job folder can also exist and be pinned to a
+commit the repository has since moved past: `staleness` reports that as
+`drift`, distinct from the absent-folder case and from `reconcile`'s ledger/
+service disagreement, and it maps to the second `generate-job` row — the same
+command, run with `--regenerate` against the existing folder rather than a
+fresh one.
 
 ### `nextStep: "search-first"` — a declared search has not chosen anything yet
 
