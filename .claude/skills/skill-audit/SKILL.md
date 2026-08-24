@@ -1,6 +1,6 @@
 ---
 name: skill-audit
-description: "Trigger: audit a skill, a CLI, or any subject that enumerates a closed set — accepted operations, subcommands, error codes, shipped assets — for the gap between what the running code accepts and what its own documentation claims. Derives both halves rather than reading either: the code side by driving the subject as a real process and taking the roster out of its own refusal message, the documented side by parsing a table. Reports; never repairs. Refuses outright without a shell, because an audit that cannot execute cannot adjudicate. Stdlib-only, no venv, no network."
+description: "Trigger: audit a skill, a CLI, or any subject that enumerates a closed set — accepted operations, subcommands, error codes, shipped assets — for the gap between what the running code accepts and what its own documentation claims. Derives both halves rather than reading either: the code side by driving the subject as a real process and taking the roster out of its own refusal message, the documented side by parsing a table. Reports; never repairs. Refuses outright without a shell, because an audit that cannot execute cannot adjudicate. Stdlib-only, no venv, no network except through `structure`'s opt-in `driver` step."
 ---
 
 # Skill Audit

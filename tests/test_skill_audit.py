@@ -2438,6 +2438,54 @@ class SchemaVersionDerivationTests(unittest.TestCase):
         self.assertEqual(int(match.group(1)), cli.REPORT_SCHEMA_VERSION)
 
 
+#: The network clause, wherever it appears -- captured up to its own
+#: sentence-ending period so the lock can inspect what qualifies it
+#: without caring about the surrounding prose.
+NETWORK_CLAUSE = re.compile(r"no network\b[^.]*\.")
+
+
+def driver_declaring_recipes():
+    """Recipes under `references/probes/*.json` that declare a `driver`
+    step, derived by grepping each file's raw text for the literal step
+    kind -- never a hand-typed list of which recipe happens to hold one
+    today. The lock below reads this as a set; it never reads its length.
+    """
+    return [path for path in sorted(PROBES.glob("*.json"))
+            if '"kind": "driver"' in path.read_text(encoding="utf-8")]
+
+
+class NetworkClauseDerivationTests(unittest.TestCase):
+    """`SKILL.md`'s frontmatter `description` and `audit_cli.py`'s module
+    docstring each state a network clause; this locks both, independently,
+    to whether any shipped recipe under `references/probes/*.json`
+    declares a `"kind": "driver"` step -- the same discipline
+    `SchemaVersionDerivationTests` already established for the schema
+    version sentence, and `test_the_model_count_sentence_names_the_derived_sum`
+    established for the model-count sentence: read the real doctrine back
+    and check it against a derived condition, never a mirrored literal.
+    The lock reads only the set-level boolean; it never asserts which
+    subcommand the clause must name (`skill-audit.first-run.json` serves
+    `walkthrough`, and that mapping is not derivable from this recipe set).
+    """
+
+    def _assert_site(self, text, site_name):
+        drivers = driver_declaring_recipes()
+        clause = NETWORK_CLAUSE.search(text)
+        self.assertIsNotNone(
+            clause, f"{site_name} carries no network clause at all")
+        if drivers:
+            self.assertIn(
+                "driver", clause.group(0),
+                f"{site_name} states an unqualified 'no network' while "
+                f"{drivers[0].name} declares a driver step")
+
+    def test_skill_md_network_clause_matches_the_derived_condition(self):
+        self._assert_site(doctrine_text(), "SKILL.md")
+
+    def test_audit_cli_network_clause_matches_the_derived_condition(self):
+        self._assert_site(audit_cli_module().__doc__, "audit_cli.py")
+
+
 class HistoricalReportRecordTests(unittest.TestCase):
     """The historical `audit-proposal-deliberation-operations.md` report is
     a record, never a fixture: `9ffcda9`'s falsification of it -- adding a

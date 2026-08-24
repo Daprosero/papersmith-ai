@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The mechanism behind `skill-audit`: derive both halves of a closed set.
 
-Stdlib only, no venv, no network. Every subcommand writes JSON to stdout with
+Stdlib only, no venv, no network except through `structure`'s opt-in `driver`
+step. Every subcommand writes JSON to stdout with
 sorted keys and returns an integer status, so a caller can hold the output to a
 schema instead of to a paragraph.
 
