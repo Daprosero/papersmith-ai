@@ -291,6 +291,31 @@ class AppendTests(unittest.TestCase):
             with self.assertRaises(json.JSONDecodeError):
                 json.loads(raw.decode("utf-8"))
 
+    def test_append_writes_a_gitignore_the_first_time_it_creates_the_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger_dir = Path(tmp) / "repo" / "MIL-CREDA" / ".remote-execution"
+            path = ledger_dir / "ledger.jsonl"
+            self.assertFalse(ledger_dir.exists())
+
+            LEDGER.append(path, _sample_submitted_event())
+
+            gitignore = ledger_dir / ".gitignore"
+            self.assertTrue(gitignore.exists())
+            self.assertEqual(gitignore.read_text(encoding="utf-8").strip().splitlines()[-1], "*")
+
+    def test_append_never_overwrites_an_existing_gitignore_in_that_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger_dir = Path(tmp) / "repo" / "MIL-CREDA" / ".remote-execution"
+            ledger_dir.mkdir(parents=True)
+            gitignore = ledger_dir / ".gitignore"
+            gitignore.write_text("a-human-or-earlier-run-wrote-this\n", encoding="utf-8")
+
+            LEDGER.append(ledger_dir / "ledger.jsonl", _sample_submitted_event())
+
+            self.assertEqual(
+                gitignore.read_text(encoding="utf-8"), "a-human-or-earlier-run-wrote-this\n"
+            )
+
     def test_concurrent_appends_from_multiple_processes_lose_no_line_and_tear_no_line(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "ledger.jsonl"

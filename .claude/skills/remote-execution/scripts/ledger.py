@@ -71,6 +71,48 @@ class LedgerError(Exception):
     """An append could not be trusted to have landed as a whole event."""
 
 
+# Written into a ledger directory the moment `_ensure_local_state_dir()`
+# first creates it — see that function's docstring for why every byte
+# under such a directory is excluded, not only the ledger files.
+_LOCAL_STATE_GITIGNORE = (
+    "# Written by ledger.py::append() the moment this directory was first\n"
+    "# created. Everything under here — fetched artifacts and ledger files\n"
+    "# alike — is this repository's own local remote-execution\n"
+    "# bookkeeping: reproducible or per-machine, never something a fresh\n"
+    "# clone needs. A manual .gitignore edit in one target's checkout does\n"
+    "# not help the next one; this file exists so no target needs that\n"
+    "# edit at all.\n"
+    "*\n"
+)
+
+
+def _ensure_local_state_dir(directory: Path) -> None:
+    """Create `directory` if missing, and make sure it carries its own
+    `.gitignore` from the moment it exists.
+
+    This directory (`<target>/<product>/.remote-execution/`) is created
+    afresh for every target/product pair this module is ever pointed at.
+    A human fixing one existing target's root `.gitignore` by hand fixes
+    exactly that one repository and leaves the next target with the same
+    untracked-66-MB defect. Writing the ignore file HERE, at the one
+    place this module creates the directory, is what closes the gap for
+    every target, not just the one already caught.
+
+    Deliberately a proactive WRITE, not the harder refusal
+    `kaggle-accounts`' `accounts_cli.assert_ignored()` uses before storing
+    a credential: that function's entire protection model IS the ignore
+    rule, and its failure mode (a leaked token) is irreversible. A ledger
+    event is not a credential — an unignored ledger file is a
+    history-hygiene annoyance, cleanable after the fact with `git rm
+    --cached`, never a secret leak. That asymmetry is why this writes the
+    file instead of blocking the caller who did nothing wrong.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    gitignore_path = directory / ".gitignore"
+    if not gitignore_path.exists():
+        gitignore_path.write_text(_LOCAL_STATE_GITIGNORE, encoding="utf-8")
+
+
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -155,7 +197,7 @@ def append(path: str | Path, event: Mapping[str, object]) -> None:
         )
 
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_local_state_dir(path.parent)
 
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     try:
