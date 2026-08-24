@@ -799,10 +799,26 @@ class RefusalProbeTests(unittest.TestCase):
 
         The needles come from the executed probe, never from a list written
         here, so this cannot pass by agreeing with a stale copy of the set.
+
+        Scoped to shipped source (`.md`/`.py`/`.json`), the same filter
+        `test_no_floor_word_appears_in_the_skill_itself` above already
+        uses, and for the same reason: an unfiltered `rglob("*")` also
+        matches compiled bytecode under `__pycache__/` -- present only
+        AFTER a subprocess has actually run this skill's own CLI once (this
+        test's own `roster_json` call above does exactly that), so this
+        failure is intermittent by nature: absent on a clean checkout,
+        present on a second run. `.pyc` magic bytes are not valid UTF-8
+        (measured: 0x61 under Python 3.9, 0xCB under 3.12 -- both fail
+        `str.decode`), and this test's subject is what the auditor's own
+        SOURCE restates, never what a bytecode cache happens to contain.
+        Catching the decode error instead of scoping the glob would let a
+        genuinely unreadable SHIPPED file pass unnoticed, which is not the
+        same lesson.
         """
         _, payload = roster_json(PD_SPEC, PD)
-        auditor = sorted(path for path in SKILL_ROOT.rglob("*")
-                         if path.is_file())
+        auditor = sorted(
+            path for path in SKILL_ROOT.rglob("*")
+            if path.is_file() and path.suffix in (".md", ".py", ".json"))
         auditor.append(Path(__file__))
         for path in auditor:
             text = path.read_text(encoding="utf-8")

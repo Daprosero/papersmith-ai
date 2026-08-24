@@ -6295,17 +6295,34 @@ class KitSurfaceLanguageTests(unittest.TestCase):
         the translation reaches every line of prose in the file, docstring or
         comment, and neither is behaviour. What is asserted is that no line the
         interpreter reads changed.
+
+        The subject here is SEMANTIC equivalence to a fixed reference source,
+        not agreement with one interpreter's own unparse spelling.
+        `ast.unparse` is not stable across versions for every construct --
+        measured: a tuple assignment target like `(a, b) = f()` unparses with
+        parentheses under Python 3.9 and without them under 3.12, even though
+        the AST (and the behaviour) is identical either way. Pinning the
+        unparsed STRING would silently re-pin this test to whichever
+        interpreter last recorded it, and the same break would return on the
+        next interpreter upgrade. Both sides are therefore put through the
+        SAME `ast.unparse` -- the reference text is parsed and re-unparsed
+        too, not compared as a raw literal -- so the comparison is of two
+        canonicalized forms under THIS run's own interpreter, not of one
+        canonicalized form against a string frozen under a different one.
         """
-        tree = ast.parse((KIT / "nb" / "report_digest.py").read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef)):
-                continue
-            if (node.body and isinstance(node.body[0], ast.Expr)
-                    and isinstance(node.body[0].value, ast.Constant)
-                    and isinstance(node.body[0].value.value, str)):
-                node.body.pop(0)
-        self.assertEqual(
-            ast.unparse(ast.fix_missing_locations(tree)),
+        def _stripped_unparse(tree: ast.AST) -> str:
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef)):
+                    continue
+                if (node.body and isinstance(node.body[0], ast.Expr)
+                        and isinstance(node.body[0].value, ast.Constant)
+                        and isinstance(node.body[0].value.value, str)):
+                    node.body.pop(0)
+            return ast.unparse(ast.fix_missing_locations(tree))
+
+        actual = _stripped_unparse(
+            ast.parse((KIT / "nb" / "report_digest.py").read_text(encoding="utf-8")))
+        reference_source = (
             "from __future__ import annotations\n"
             "import hashlib\n"
             "from pathlib import Path\n"
@@ -6334,6 +6351,8 @@ class KitSurfaceLanguageTests(unittest.TestCase):
             "        repository = repository or found_repository\n"
             "        package = package or found_package\n"
             "    return f'{MARKER} {source_digest(repository, package)}'")
+        expected = _stripped_unparse(ast.parse(reference_source))
+        self.assertEqual(actual, expected)
 
 
 class StageTwoInstructionsTests(unittest.TestCase):
