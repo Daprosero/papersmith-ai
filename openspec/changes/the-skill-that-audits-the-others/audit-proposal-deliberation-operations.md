@@ -35,10 +35,9 @@ without a product decision.
 
 - Stage: 0: ran
 - Stage: 1: ran
-- Stage: 2: skipped: no reachable surface (stage 1)
-- Stage: 3: skipped: no blind reading pair compared in this pass
-- Stage: 4: skipped: no differential drive run in this pass
-- Stage: 5: skipped: no transcript partition run in this pass
+- Stage: 2: skipped: no blind reading pair compared in this pass
+- Stage: 3: skipped: no differential drive run in this pass
+- Stage: 4: skipped: no transcript partition run in this pass
 
 ## Ranked findings
 
@@ -141,9 +140,6 @@ without a product decision.
   the correct ordering rather than a matter of taste.
 
 ## Undecidable
-
-- Kind: no-closed-roster
-- Rung: readers
 
 ## Disputed severity
 

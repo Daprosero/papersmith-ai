@@ -1665,6 +1665,7 @@ REPORT_SHAPE = {
     "ranked-findings": "## Ranked findings",
     "reading-diff": "## Reading diff",
     "repair-units": "## Repair units",
+    "report-integrity": "## Report integrity",
     "stage-outcomes": "## Stage outcomes",
     "unchecked-section": "## Unchecked",
     "undecidable": "## Undecidable",
@@ -2162,6 +2163,238 @@ def parse_exclude_field(value):
     return tuple(part.strip() for part in value.split(",") if part.strip())
 
 
+#: The report-shape schema version this tool validates against. Named
+#: `skill-audit-report/N` in a report's own `- Schema:` line -- a monotone
+#: integer, never semver (no meaningful minor/patch distinction exists for a
+#: validator that either knows a shape or does not) and never a date (two
+#: schema changes on one day would collide) or a git sha (unreadable to a
+#: human hitting a refusal, and it would couple the schema to a commit a
+#: revert would falsify). Derived-checked, not restated: `SKILL.md` states
+#: the version once, in prose, and a lock asserts this constant equals it --
+#: the same discipline `stage_model_total` already established for "Six
+#: model runs, total".
+REPORT_SCHEMA_VERSION = 1
+
+#: `## Report integrity` is judged entirely by the identity gate below,
+#: before the unconditional sweep in `run_check_report` ever runs. Named
+#: here explicitly, rather than left as an unreachable branch of that sweep:
+#: a future edit that moves the gate later would otherwise silently
+#: reintroduce the exact collapse this domain exists to prevent -- a report
+#: that predates the shape being judged as an ordinary missing section.
+PRE_SWEEP_ITEMS = {"report-integrity"}
+
+REPORT_INTEGRITY_HEADING = "## Report integrity"
+REPORT_INTEGRITY_SCHEMA_LINE = re.compile(r"^-\s*Schema:\s*(\S+)\s*$")
+REPORT_INTEGRITY_SELF_DIGEST_LINE = re.compile(r"^-\s*Self-digest:\s*(\S+)\s*$")
+
+
+def _top_level_section_span(lines, heading):
+    """The `[start, end)` line-index span of one top-level `## ` section,
+    heading line included, running to the next `## ` line or EOF. `None`
+    when the heading does not appear verbatim as its own stripped line.
+    """
+    start = None
+    for index, line in enumerate(lines):
+        if line.strip() == heading:
+            start = index
+            break
+    if start is None:
+        return None
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if lines[index].startswith("## "):
+            end = index
+            break
+    return start, end
+
+
+def report_self_digest(text):
+    """A report's own canonical self-digest, over its text with the one
+    `- Self-digest:` line inside `## Report integrity` excluded.
+
+    The exclusion is stated as an algorithm so two implementations cannot
+    disagree about what they are hashing:
+
+    1. Replace `\\r\\n` and lone `\\r` with `\\n` (universal-newline reading,
+       regardless of how the caller obtained `text`); split on `\\n`.
+    2. Locate `## Report integrity` -- the line equal to that string after
+       `.strip()` -- running to the next line starting with `## ` or EOF.
+    3. Inside that span, find every line matching `^-\\s*Self-digest:\\s*
+       (\\S+)\\s*$`. Two or more raises `Unprobeable`: the tool cannot tell
+       which line is the claim, and picking one would be adjudication with
+       nothing behind it.
+    4. **Remove** that one line entirely -- never blank it. A blanked line
+       is still a line whose presence depends on the field, and two
+       implementations could reasonably disagree about whether it stays;
+       removing it is decidable by inspection.
+    5. `rstrip()` every remaining line of spaces, tabs, and `\\r`; drop
+       trailing empty lines at EOF; join with `\\n`.
+    6. Encode UTF-8, hash with sha256, and return it in `frozen_digest`'s own
+       `"sha256:" + hexdigest` shape -- a report carries one digest
+       vocabulary, not two.
+
+    Canonical content, not raw bytes: a trailing-newline difference or a
+    CRLF/LF conversion must not read as tampering, the same class of
+    misdiagnosis this project already found in a `403` caused by a missing
+    `owner_slug` field and in a `claude` driver refusing for a missing
+    `USER`. Only what no editor asked a human about is normalized; nothing a
+    human could have meant is.
+    """
+    # `str.splitlines()` already treats `\r\n` and lone `\r` as line breaks
+    # exactly like `\n` -- the universal-newline read step -- and discards
+    # the specific line-ending byte, so no separate normalization call is
+    # needed (and none is made: `SuiteIntegrityTests`'s write-verb lock
+    # scans every attribute-call name in this file by spelling alone, and
+    # cannot distinguish `str.replace` from a filesystem write; the honest
+    # fix is to need no method carrying that name here, not an exemption
+    # naming a function that writes nothing at all).
+    lines = text.splitlines()
+    span = _top_level_section_span(lines, REPORT_INTEGRITY_HEADING)
+    kept = list(lines)
+    if span is not None:
+        start, end = span
+        digest_indices = [
+            index for index in range(start, end)
+            if REPORT_INTEGRITY_SELF_DIGEST_LINE.match(lines[index].strip())]
+        if len(digest_indices) >= 2:
+            raise Unprobeable(
+                f"the report carries {len(digest_indices)} '- Self-digest:' "
+                "lines under '## Report integrity'; the tool cannot tell "
+                "which one is the claim, and choosing would be a verdict "
+                "with nothing behind it")
+        if digest_indices:
+            del kept[digest_indices[0]]
+    while kept and kept[-1] == "":
+        kept.pop()
+    canonical = "\n".join(line.rstrip(" \t\r") for line in kept)
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def report_integrity_fields(lines):
+    """The `- Schema:` and `- Self-digest:` values under `## Report
+    integrity`, read only inside that section -- exactly like
+    `frozen_section_fields`. `None` for either key the section does not
+    carry. Raises `Unprobeable` when either field appears twice: the same
+    "which line is the claim" inability `report_self_digest` raises for a
+    duplicated `- Self-digest:`, extended to `- Schema:` for symmetry.
+    """
+    span = _top_level_section_span(lines, REPORT_INTEGRITY_HEADING)
+    if span is None:
+        return None
+    start, end = span
+    schema_values, self_values = [], []
+    for index in range(start, end):
+        stripped = lines[index].strip()
+        match = REPORT_INTEGRITY_SCHEMA_LINE.match(stripped)
+        if match:
+            schema_values.append(match.group(1))
+            continue
+        match = REPORT_INTEGRITY_SELF_DIGEST_LINE.match(stripped)
+        if match:
+            self_values.append(match.group(1))
+    if len(schema_values) >= 2 or len(self_values) >= 2:
+        raise Unprobeable(
+            "the report's '## Report integrity' section carries more than "
+            "one '- Schema:' or '- Self-digest:' line; the tool cannot tell "
+            "which one is the claim, and choosing would be a verdict with "
+            "nothing behind it")
+    return {"schema": schema_values[0] if schema_values else None,
+            "selfDigest": self_values[0] if self_values else None}
+
+
+def report_identity_gate(text, lines):
+    """The RECONCILED three-way classification (spec's
+    `report-tamper-evidence` domain, reconciled against the design's
+    mechanism): `valid` (exit 0), `tampered` (exit 1, a finding), or
+    `predates the schema` (exit 2, `Unprobeable` -- an inability to judge,
+    never an error and never a clean verdict).
+
+    Returns `None` when the report is current-schema and its self-digest
+    recomputes -- the caller proceeds to the existing sweep. Otherwise
+    returns `(exit_code, payload)`, which the caller emits and returns
+    directly: nothing else is computed for a report that will not be
+    judged, and a `tampered` report is never handed the rest of the sweep
+    either, so a single mismatch is never buried among unrelated findings.
+
+    The presence-combination is checked BEFORE the schema-version value --
+    the reconciliation's load-bearing ordering. Both fields absent together
+    is the only shape that means "written before this shape existed";
+    exactly one present is a partial, inconsistent state that means someone
+    edited the report, classified `tampered` rather than `predates the
+    schema`. Reading the schema value first would let an attacker strip
+    only `- Schema:` and escape into the unjudged, `predates` bucket --
+    exactly the loophole this ordering closes.
+    """
+    fields = report_integrity_fields(lines)
+    schema = fields["schema"] if fields else None
+    self_digest = fields["selfDigest"] if fields else None
+
+    if schema is None and self_digest is None:
+        return 2, {
+            "error": (
+                "this report carries no '## Report integrity' section (or "
+                "an empty one), so it was written before the report shape "
+                "carried one. That is not tampering, and this tool will not "
+                "judge it: it cannot distinguish a record written under an "
+                "older shape from one whose identity was removed, and "
+                "guessing would make those two indistinguishable forever. "
+                "Read it by hand, or supersede it with a new report under "
+                "the current shape."),
+            "status": "predates-the-schema"}
+
+    if schema is None or self_digest is None:
+        missing = "- Schema:" if schema is None else "- Self-digest:"
+        present = "- Self-digest:" if schema is None else "- Schema:"
+        return 1, {"rederived": False, "violations": [{
+            "detail": (
+                f"the report's '## Report integrity' section carries "
+                f"{present!r} but not {missing!r}. A report with exactly "
+                "one of the two identity fields is not a report written "
+                "before this shape existed -- that would carry neither -- "
+                "it is a report someone edited after the fact. This is "
+                "tampered, not predates-the-schema."),
+            "item": "report-integrity", "where": "line 1"}]}
+
+    current = f"skill-audit-report/{REPORT_SCHEMA_VERSION}"
+    if schema != current:
+        match = re.match(r"skill-audit-report/(\d+)$", schema)
+        if match and int(match.group(1)) < REPORT_SCHEMA_VERSION:
+            return 2, {
+                "error": (
+                    f"this report declares schema {schema!r}; this tool "
+                    f"ships {current!r}. It validates one shape, and "
+                    "judging an older record under a newer shape is how a "
+                    "record gets edited to fit. Supersede it, or read it by "
+                    "hand."),
+                "status": "predates-the-schema"}
+        # `match` and NOT older means a numbered version above current, the
+        # symmetric case; no `match` at all means the value names no
+        # `skill-audit-report/N` shape this tool has ever shipped. Both read
+        # the same to a validator that only ever knows one shape: it has not
+        # judged a report written under a shape it does not recognise.
+        return 2, {
+            "error": (
+                f"this report declares schema {schema!r}, which this tool "
+                f"(shipping {current!r}) does not recognise. A validator "
+                "that does not know a shape has not judged a report "
+                "written under it."),
+            "status": "postdates-the-schema"}
+
+    recomputed = report_self_digest(text)
+    if recomputed != self_digest:
+        return 1, {"rederived": False, "violations": [{
+            "detail": (
+                f"the report's recorded self-digest {self_digest} disagrees "
+                f"with its content, which now digests to {recomputed}. A "
+                "report is a record of one audit at one moment: a wrong "
+                "report is superseded by a new report, never edited into "
+                "agreement. Recomputing this field would make the guard "
+                "ceremony -- do not."),
+            "item": "report-integrity", "where": "line 1"}]}
+
+    return None
+
+
 def run_check_report(args):
     """Validate a damage report against the shape, as a process.
 
@@ -2184,6 +2417,32 @@ def run_check_report(args):
     def fail(item, detail, where):
         violations.append({"detail": detail, "item": item, "where": where})
 
+    # The identity gate runs before everything else in this function --
+    # nothing else is computed for a report that will not be judged. A
+    # `predates-the-schema` (or `postdates-the-schema`) verdict emits a
+    # payload with no `violations` key at all, never the standard shape; a
+    # `tampered` verdict emits exactly one violation and returns
+    # immediately, so a digest mismatch is never buried among unrelated
+    # findings by continuing on to the rest of the sweep below.
+    gate = report_identity_gate(text, lines)
+    if gate is not None:
+        exit_code, payload = gate
+        emit(payload)
+        return exit_code
+
+    # `## Report integrity` must be the report's first `## ` section: the
+    # schema marker governs every later judgment, so a validator that must
+    # scan the whole file to learn which shape it is reading has already
+    # read it under an assumption. Checked only once the gate above has
+    # already confirmed the section is present and its identity is valid --
+    # a misplaced-but-valid section is an ordinary violation, appended to
+    # the same list the rest of this sweep builds, never a second gate.
+    first_heading = next((line for line in lines if line.startswith("## ")), None)
+    if first_heading != REPORT_INTEGRITY_HEADING:
+        fail("report-integrity",
+             f"{REPORT_INTEGRITY_HEADING!r} must be the report's first "
+             f"'## ' section; found {first_heading!r} first", f"{path}:1")
+
     # Both doctrine tables are resolved up front: the moves table for
     # `## Move outcomes` below, and the stages table for which
     # `REPORT_SHAPE` items are conditional at all. Unprobeable propagates
@@ -2199,10 +2458,12 @@ def run_check_report(args):
     # hand-written set, so a stage added to the table without its own
     # `REPORT_SHAPE` key changes nothing here and a stage naming an
     # existing key is exempted from the unconditional sweep automatically.
+    # `PRE_SWEEP_ITEMS` is excluded the same way: `report-integrity` is
+    # judged entirely by the gate above, never by this loop.
     conditional_items = {key for _, key in required_stages}
 
     for item, marker in REPORT_SHAPE.items():
-        if item in conditional_items:
+        if item in conditional_items or item in PRE_SWEEP_ITEMS:
             continue
         if marker.startswith("## ") and marker not in lines:
             fail(item, f"the report carries no {marker!r} section",

@@ -3,6 +3,11 @@
 This report is shipped as a worked example, so `check-report` has something to
 accept in the reference beside the invocation that validates it.
 
+## Report integrity
+
+- Schema: skill-audit-report/1
+- Self-digest: sha256:3fc0fe65d7f922235028a26ed1df78e0426cb441899e1727e0776f508897a567
+
 ## Frozen
 
 - Digest: sha256:f9f163e09a5078c732f596f31c660b4229a97eec1e4fa5de3b6b09eef93ad6e3

@@ -313,8 +313,15 @@ computed, documented, and deliberately never branched on is **not** a finding.
 `check-report` enforces this. A shape enforced only by prose is a
 hand-maintained roster, which is the class this skill exists to find.
 
+The current report shape is `skill-audit-report/1`. A report predating this
+shape (no `## Report integrity` section at all) is not judged against it —
+see `report-integrity` below — and this sentence is the one place the
+version is stated; `REPORT_SCHEMA_VERSION` is held to it by a lock, never
+restated as a second literal.
+
 | Item | Required content | Rejected when |
 | --- | --- | --- |
+| `report-integrity` | `## Report integrity`, the report's first `## ` section, carrying `- Schema: skill-audit-report/N` and `- Self-digest:` — a canonical-content digest over the report's own text with that one line excluded, reusing the existing `sha256:` spelling and canonical-string-then-hash idiom `frozen_digest` already uses | Both fields absent together means the report predates this shape and is not judged (a separate outcome, never `1`); exactly one of the two present is `tampered`, never read as predating; a present digest that disagrees with recomputation is `tampered`; the section is present but is not the report's first `## ` heading |
 | `ranked-findings` | Findings, ordered, each naming **both halves** at `file:line` | A finding cites a single `file:line`; that is a candidate, not a finding |
 | `move-number` | The move that found each finding | A finding names no move |
 | `move-outcomes` | `## Move outcomes`, one row per move named in the moves table above, each `ran` or `skipped: <reason>` | A move has no row, or a `skipped` row carries no reason |

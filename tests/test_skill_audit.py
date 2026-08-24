@@ -13,6 +13,7 @@ named execution with a named observation is.
 """
 
 import ast
+import hashlib
 import json
 import re
 import subprocess
@@ -283,6 +284,55 @@ def stage_outcomes_block(overrides=None,
     for stage_id, _ in roster:
         lines.append(f"- Stage: {stage_id}: {overrides.get(stage_id, default)}")
     return "\n".join(lines) + "\n"
+
+
+def report_with_integrity(body, schema=None):
+    """Prepend `## Report integrity` to a report fixture's `body`, right
+    after its title line, with a `- Self-digest:` computed through the
+    shipped `report_self_digest()` -- never hand-typed, and never a shipped
+    report copied and hand-edited. Mirrors `stage_outcomes_block`'s own
+    discipline: build fixtures in a box, through the mechanism under test,
+    not beside it.
+
+    `schema` defaults to the shipped `REPORT_SCHEMA_VERSION`; a caller
+    testing the predates/postdates path passes an explicit older or newer
+    integer, or omits the whole section by not calling this at all.
+    """
+    cli = audit_cli_module()
+    version = cli.REPORT_SCHEMA_VERSION if schema is None else schema
+    lines = body.splitlines(keepends=True)
+    insert_at = 1
+    while insert_at < len(lines) and lines[insert_at].strip() == "":
+        insert_at += 1
+    placeholder = ("## Report integrity\n\n"
+                  f"- Schema: skill-audit-report/{version}\n"
+                  "- Self-digest: sha256:0\n\n")
+    draft = "".join(lines[:insert_at]) + placeholder + "".join(lines[insert_at:])
+    digest = cli.report_self_digest(draft)
+    return draft.replace("- Self-digest: sha256:0\n",
+                         f"- Self-digest: {digest}\n", 1)
+
+
+def resign(text):
+    """Recompute and re-stamp a report fixture's own `- Self-digest:` after
+    a test has mutated some unrelated part of its body, so the specific
+    shape violation under test is never buried under an incidental digest
+    mismatch the mutation happened to cause.
+
+    Never used to build a tamper-detection fixture itself: those construct
+    their own deliberate mismatch and must not be resigned back into
+    agreement -- that would be testing nothing.
+    """
+    cli = audit_cli_module()
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        if re.match(r"^-\s*Self-digest:\s*\S+\s*$", line.strip()):
+            lines[index] = "- Self-digest: sha256:0"
+            digest = cli.report_self_digest("\n".join(lines))
+            lines[index] = f"- Self-digest: {digest}"
+            return "\n".join(lines)
+    raise AssertionError(
+        "resign() called on text with no '- Self-digest:' line to replace")
 
 
 def moves_rows() -> list[list[str]]:
@@ -1479,7 +1529,12 @@ VALID_REPORT_STAGE_OVERRIDES = {
     "5": "skipped: no transcript partition run in this pass",
 }
 
-VALID_REPORT = f"""# Audit: a subject, one surface
+#: The body `VALID_REPORT` is built from, before `## Report integrity` is
+#: prepended and a fresh self-digest is stamped through the shipped
+#: function. Kept as its own name because a handful of fixtures below need
+#: to graft onto this exact shape without inheriting a *second*, unrelated
+#: fixture's self-digest.
+VALID_REPORT_BODY = f"""# Audit: a subject, one surface
 
 ## Frozen
 
@@ -1560,6 +1615,13 @@ Rename the quoted heading and the scope claim stops being honoured.
 | Build or delete the unread declared value | F2 | 0 |
 """
 
+#: `VALID_REPORT_BODY`, with `## Report integrity` prepended and a real,
+#: freshly-computed self-digest -- never hand-typed. Every test below that
+#: mutates this text and expects anything other than `tampered` must route
+#: the mutated text through `resign()` first (most `check()` helpers below
+#: do this once, for every caller, rather than at each call site).
+VALID_REPORT = report_with_integrity(VALID_REPORT_BODY)
+
 
 class ReportShapeTests(BoxMixin, unittest.TestCase):
     """A shape enforced only by prose is a hand-maintained roster.
@@ -1571,7 +1633,7 @@ class ReportShapeTests(BoxMixin, unittest.TestCase):
     def check(self, text, name="report.md"):
         box = getattr(self, "_box", None) or self.make_box("report")
         self._box = box
-        path = self.write(box, name, text)
+        path = self.write(box, name, resign(text))
         result = run_cli("check-report", str(path))
         return result, json.loads(result.stdout)
 
@@ -1661,7 +1723,7 @@ class FoundByTests(BoxMixin, unittest.TestCase):
     def check(self, text, name="report.md"):
         box = getattr(self, "_box", None) or self.make_box("found_by")
         self._box = box
-        path = self.write(box, name, text)
+        path = self.write(box, name, resign(text))
         result = run_cli("check-report", str(path))
         return result, json.loads(result.stdout)
 
@@ -1745,7 +1807,7 @@ class DisputedSeverityTests(BoxMixin, unittest.TestCase):
     def check(self, text, name="report.md"):
         box = getattr(self, "_box", None) or self.make_box("disputed")
         self._box = box
-        path = self.write(box, name, text)
+        path = self.write(box, name, resign(text))
         result = run_cli("check-report", str(path))
         return result, json.loads(result.stdout)
 
@@ -1791,7 +1853,8 @@ class ForbiddenSupportTests(BoxMixin, unittest.TestCase):
     def check(self, text, name):
         box = getattr(self, "_box", None) or self.make_box("support")
         self._box = box
-        result = run_cli("check-report", str(self.write(box, name, text)))
+        result = run_cli(
+            "check-report", str(self.write(box, name, resign(text))))
         return result, json.loads(result.stdout)
 
     def _reject(self, item, line, name):
@@ -1865,7 +1928,7 @@ class MoveOutcomesTests(BoxMixin, unittest.TestCase):
     def check(self, text, name="report.md", extra=()):
         box = getattr(self, "_box", None) or self.make_box("move-outcomes")
         self._box = box
-        path = self.write(box, name, text)
+        path = self.write(box, name, resign(text))
         result = run_cli("check-report", str(path), *extra)
         return result, json.loads(result.stdout)
 
@@ -1930,7 +1993,7 @@ class RepairUnitsTests(BoxMixin, unittest.TestCase):
     def check(self, text, name="report.md"):
         box = getattr(self, "_box", None) or self.make_box("repair-units")
         self._box = box
-        path = self.write(box, name, text)
+        path = self.write(box, name, resign(text))
         result = run_cli("check-report", str(path))
         return result, json.loads(result.stdout)
 
@@ -1986,7 +2049,7 @@ class CheckReportSubjectTests(BoxMixin, unittest.TestCase):
     """
 
     def _report(self, digest, subject):
-        return f"""# Audit: a subject, re-derived
+        return report_with_integrity(f"""# Audit: a subject, re-derived
 
 ## Frozen
 
@@ -2052,7 +2115,7 @@ A changed subject byte would change the re-derived digest.
 | Unit | Findings | Changed lines |
 | --- | --- | --- |
 | N/A | F1 | 0 |
-"""
+""")
 
     def test_subject_flag_omitted_reports_rederived_false(self):
         box = self.make_box("subject_omitted")
@@ -2098,6 +2161,299 @@ A changed subject byte would change the re-derived digest.
             violations, [],
             f"a subject changed since '## Frozen' was written must be "
             f"rejected: {payload['violations']}")
+
+
+class ReportIntegrityGateTests(BoxMixin, unittest.TestCase):
+    """W9: a report carries a self-digest, distinctly named from the
+    subject's own `## Frozen` digest, and `check-report` classifies every
+    report into exactly one of `valid` / `tampered` / `predates the
+    schema` -- never a fourth outcome, and never a collapse of the last
+    two into one.
+    """
+
+    def check(self, text, name="report.md"):
+        """Deliberately never resigns: every test here is about the gate
+        itself, so a digest mismatch (or absence) must reach `check-report`
+        exactly as constructed.
+        """
+        box = getattr(self, "_box", None) or self.make_box("identity")
+        self._box = box
+        path = self.write(box, name, text)
+        result = run_cli("check-report", str(path))
+        try:
+            return result, json.loads(result.stdout)
+        except json.JSONDecodeError:
+            raise AssertionError(f"not JSON: {result.stdout!r} / {result.stderr!r}")
+
+    # -- valid ------------------------------------------------------------
+
+    def test_a_freshly_signed_report_is_valid(self):
+        result, payload = self.check(VALID_REPORT, name="valid.md")
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["violations"], [])
+
+    # -- predates the schema -----------------------------------------------
+
+    def test_no_section_at_all_predates_the_schema(self):
+        result, payload = self.check(VALID_REPORT_BODY, name="no-section.md")
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertEqual(payload["status"], "predates-the-schema")
+        self.assertNotIn("violations", payload)
+
+    def test_an_empty_section_predates_the_schema(self):
+        lines = VALID_REPORT_BODY.splitlines(keepends=True)
+        text = "".join(lines[:2]) + "## Report integrity\n\n" + "".join(lines[2:])
+        result, payload = self.check(text, name="empty-section.md")
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertEqual(payload["status"], "predates-the-schema")
+
+    def test_the_predates_refusal_names_the_remedy(self):
+        result, payload = self.check(VALID_REPORT_BODY, name="predates-remedy.md")
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("supersede", payload["error"].lower())
+        self.assertIn("read it by hand", payload["error"].lower())
+
+    def test_an_older_schema_version_predates_the_schema(self):
+        text = report_with_integrity(VALID_REPORT_BODY, schema=0)
+        result, payload = self.check(text, name="older-schema.md")
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertEqual(payload["status"], "predates-the-schema")
+        self.assertIn("supersede", payload["error"].lower())
+
+    def test_a_newer_schema_version_postdates_the_schema(self):
+        text = report_with_integrity(VALID_REPORT_BODY, schema=999)
+        result, payload = self.check(text, name="newer-schema.md")
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertEqual(payload["status"], "postdates-the-schema")
+
+    # -- tampered -----------------------------------------------------------
+
+    def test_a_digest_mismatch_is_tampered_never_predates(self):
+        broken = VALID_REPORT.replace(
+            "the running host names more members than the table does.",
+            "the running host names FEWER members than the table does.", 1)
+        self.assertNotEqual(broken, VALID_REPORT, "the mutation must land")
+        result, payload = self.check(broken, name="digest-mismatch.md")
+        self.assertEqual(result.returncode, 1, payload)
+        self.assertNotIn("status", payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "report-integrity"]
+        self.assertTrue(violations, payload)
+
+    def test_the_tampered_refusal_names_the_remedy_and_never_a_repair(self):
+        broken = VALID_REPORT.replace(
+            "the running host names more members than the table does.",
+            "a mutated sentence with a different digest entirely.", 1)
+        result, payload = self.check(broken, name="tampered-remedy.md")
+        self.assertEqual(result.returncode, 1, payload)
+        detail = payload["violations"][0]["detail"].lower()
+        self.assertIn("superseded", detail)
+        self.assertIn("do not", detail)
+
+    def test_schema_present_self_digest_absent_is_tampered_not_predates(self):
+        """The reconciliation's load-bearing case: deleting only the
+        `- Self-digest:` line must not buy escape into the unjudged
+        `predates-the-schema` bucket.
+        """
+        digest_line = next(
+            line for line in VALID_REPORT.splitlines()
+            if line.strip().startswith("- Self-digest:"))
+        broken = VALID_REPORT.replace(digest_line + "\n", "", 1)
+        self.assertNotEqual(broken, VALID_REPORT)
+        result, payload = self.check(broken, name="schema-only.md")
+        self.assertEqual(result.returncode, 1, payload)
+        self.assertNotIn("status", payload)
+        self.assertIn("report-integrity", [v["item"] for v in payload["violations"]])
+        detail = payload["violations"][0]["detail"].lower()
+        self.assertIn("tampered", detail)
+        self.assertIn("not predates-the-schema", detail)
+
+    def test_self_digest_present_schema_absent_is_tampered_not_predates(self):
+        """The mirror case: deleting only `- Schema:` is the same defect."""
+        schema_line = next(
+            line for line in VALID_REPORT.splitlines()
+            if line.strip().startswith("- Schema:"))
+        broken = VALID_REPORT.replace(schema_line + "\n", "", 1)
+        self.assertNotEqual(broken, VALID_REPORT)
+        result, payload = self.check(broken, name="digest-only.md")
+        self.assertEqual(result.returncode, 1, payload)
+        self.assertNotIn("status", payload)
+        self.assertIn("report-integrity", [v["item"] for v in payload["violations"]])
+
+    def test_two_self_digest_lines_is_unprobeable(self):
+        digest_line = next(
+            line for line in VALID_REPORT.splitlines()
+            if line.strip().startswith("- Self-digest:"))
+        broken = VALID_REPORT.replace(
+            digest_line, digest_line + "\n" + digest_line, 1)
+        result, payload = self.check(broken, name="duplicated-digest.md")
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertEqual(payload["status"], "unprobeable")
+        self.assertIn("which one is the claim", payload["error"])
+
+    def test_no_repair_or_recompute_flag_exists(self):
+        flags = subcommand_surface(CLI, "build_parser").get("check-report", ())
+        for flag in flags:
+            with self.subTest(flag=flag):
+                self.assertNotRegex(
+                    flag.lower(), r"repair|recompute|resign|fix",
+                    "check-report must expose no flag that recomputes or "
+                    "rewrites a stored '- Self-digest:' in place")
+
+    # -- canonicalization / exclusion ---------------------------------------
+
+    def test_digest_excludes_its_own_line_regardless_of_its_value(self):
+        cli = audit_cli_module()
+        original_digest = cli.report_self_digest(VALID_REPORT)
+        digest_line = next(
+            line for line in VALID_REPORT.splitlines()
+            if line.strip().startswith("- Self-digest:"))
+        swapped = VALID_REPORT.replace(
+            digest_line, "- Self-digest: sha256:" + "f" * 64, 1)
+        self.assertEqual(
+            cli.report_self_digest(swapped), original_digest,
+            "the self-digest line's own value must never affect the "
+            "digest computed over the rest of the report")
+
+    def test_blanking_the_line_instead_of_removing_it_changes_the_digest(self):
+        """Q9 step 4 is load-bearing: a blanked '- Self-digest:' line no
+        longer matches the exclusion pattern at all, so it stays inside
+        the hashed content and the digest must move.
+        """
+        cli = audit_cli_module()
+        digest_line = next(
+            line for line in VALID_REPORT.splitlines()
+            if line.strip().startswith("- Self-digest:"))
+        blanked = VALID_REPORT.replace(digest_line, "- Self-digest:", 1)
+        self.assertNotEqual(
+            cli.report_self_digest(blanked), cli.report_self_digest(VALID_REPORT))
+
+    def test_trailing_newline_drift_does_not_change_the_digest(self):
+        cli = audit_cli_module()
+        self.assertEqual(
+            cli.report_self_digest(VALID_REPORT),
+            cli.report_self_digest(VALID_REPORT + "\n\n\n"))
+
+    def test_crlf_drift_does_not_change_the_digest(self):
+        cli = audit_cli_module()
+        crlf = VALID_REPORT.replace("\n", "\r\n")
+        self.assertEqual(
+            cli.report_self_digest(VALID_REPORT), cli.report_self_digest(crlf))
+
+    # -- position -------------------------------------------------------------
+
+    def test_report_integrity_must_be_the_first_heading(self):
+        lines = VALID_REPORT.splitlines(keepends=True)
+        integrity_start = next(
+            i for i, line in enumerate(lines) if line.strip() == "## Report integrity")
+        integrity_end = next(
+            i for i in range(integrity_start + 1, len(lines))
+            if lines[i].startswith("## "))
+        section = "".join(lines[integrity_start:integrity_end])
+        rest = "".join(lines[:integrity_start]) + "".join(lines[integrity_end:])
+        # Graft the whole '## Report integrity' block in immediately after
+        # '## Frozen', instead of before it -- still present, still a
+        # single well-formed section, just not first.
+        moved = rest.replace(
+            "## Frozen\n\n", "## Frozen\n\n" + section + "\n", 1)
+        self.assertNotEqual(moved, VALID_REPORT)
+        text = resign(moved)
+        result, payload = self.check(text, name="misplaced.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "report-integrity"]
+        self.assertTrue(
+            any("first" in v["detail"] for v in violations), violations)
+
+    # -- inversion: the only reachability proof ------------------------------
+
+    def test_inversion_one_character_change_is_caught_and_restore_confirmed(self):
+        cli = audit_cli_module()
+        box = self.make_box("inversion")
+        path = self.write(box, "report.md", VALID_REPORT)
+        original_sha256 = hashlib.sha256(
+            path.read_bytes()).hexdigest()
+
+        mutated = VALID_REPORT.replace(
+            "the running host names more members than the table does.",
+            "the running host names more members than the table doet.", 1)
+        self.assertNotEqual(mutated, VALID_REPORT, "the one-character edit must land")
+        path.write_text(mutated, encoding="utf-8")
+        result = run_cli("check-report", str(path))
+        payload = json.loads(result.stdout)
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "report-integrity"]
+        self.assertTrue(violations, "the one-character mutation must be caught")
+
+        # Restore by the exact inverse of the edit just made, confirmed by
+        # content digest -- never a blind rewrite and never `git checkout
+        # --`, which cannot distinguish a reverted mutation from work never
+        # made. This file is a test fixture, not a git-tracked path, so the
+        # inverse here is the literal inverse text edit plus a sha256
+        # equality check against the pre-mutation bytes.
+        path.write_text(VALID_REPORT, encoding="utf-8")
+        restored_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        self.assertEqual(restored_sha256, original_sha256)
+        result = run_cli("check-report", str(path))
+        payload = json.loads(result.stdout)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["violations"], [])
+
+
+class SchemaVersionDerivationTests(unittest.TestCase):
+    """`SKILL.md` states the current schema version once, in prose; a lock
+    holds `REPORT_SCHEMA_VERSION` to that exact sentence -- the same
+    discipline `stage_model_total`'s own derivation lock already
+    established for "Six model runs, total".
+    """
+
+    def test_the_stated_version_matches_the_constant(self):
+        cli = audit_cli_module()
+        match = re.search(r"skill-audit-report/(\d+)", doctrine_text())
+        self.assertIsNotNone(
+            match, "SKILL.md must state the current schema version somewhere")
+        self.assertEqual(int(match.group(1)), cli.REPORT_SCHEMA_VERSION)
+
+
+class HistoricalReportRecordTests(unittest.TestCase):
+    """The historical `audit-proposal-deliberation-operations.md` report is
+    a record, never a fixture: `9ffcda9`'s falsification of it -- adding a
+    stage row and an `## Undecidable` entry it never had, so it would keep
+    validating under a schema change -- is reverted, pinned, and never
+    retro-fitted with `## Report integrity`.
+    """
+
+    #: `sha256` of the report's content at `9ffcda9~1`, i.e. before W1's
+    #: falsifying edit -- confirmed at apply time against
+    #: `git show 9ffcda9~1:<path>` and pinned here so any future edit at
+    #: all, including a well-meant retro-fit of `## Report integrity`,
+    #: turns this test red.
+    PRE_FALSIFICATION_SHA256 = (
+        "a3f01c3596f51126f6569b8b945e260fad0227be97c74a7bbf5893308d370719")
+
+    def test_the_report_is_byte_identical_to_its_pre_falsification_content(self):
+        actual = hashlib.sha256(REPORT.read_bytes()).hexdigest()
+        self.assertEqual(
+            actual, self.PRE_FALSIFICATION_SHA256,
+            "a report is a record; supersede it, do not edit it -- this "
+            "includes adding '## Report integrity' after the fact")
+
+    def test_no_other_archived_report_carries_both_frozen_and_findings(self):
+        """W9's own enumeration, re-verified: exactly one file under
+        `openspec/changes/**/*.md` carries both `## Frozen` and
+        `## Ranked findings` -- the one already known and reverted above.
+        A hit beyond that one would need its own row in the design before
+        this unit could be considered complete; finding a second one here
+        is itself the discovery, not a silent pass.
+        """
+        hits = []
+        for path in sorted((FORGE / "openspec" / "changes").rglob("*.md")):
+            text = path.read_text(encoding="utf-8")
+            if "## Frozen" in text.splitlines() and \
+                    "## Ranked findings" in text.splitlines():
+                hits.append(path)
+        self.assertEqual(hits, [REPORT])
 
 
 class ReportSchemaSelfDescriptionTests(unittest.TestCase):
@@ -2183,12 +2539,27 @@ class FirstDamageReportTests(unittest.TestCase):
     """The auditor ships an audit. Without one it is the orphan class it
     exists to find."""
 
-    def test_the_shipped_report_validates(self):
+    def test_the_shipped_report_is_classified_as_predating_the_shape(self):
+        """W9: this report was written before `## Report integrity`
+        existed, and commit `9ffcda9`'s edit adding a stage row and an
+        `## Undecidable` entry to it -- so it would keep validating under
+        a schema change -- is reverted. A record and a fixture cannot be
+        the same file: this one is now a record, classified `predates the
+        schema`, never held to perpetual current-schema validity.
+
+        Strictly stronger than the assertion it replaces: it fails if the
+        classification silently drifts to `valid` (a retro-fitted marker)
+        or to `tampered` (the era fact colliding with the tamper fact),
+        not only if the report stops parsing.
+        """
         result = run_cli("check-report", str(REPORT))
         payload = json.loads(result.stdout)
-        self.assertEqual(result.returncode, 0,
-                         f"the shipped report does not validate: {payload}")
-        self.assertEqual(payload["violations"], [])
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertEqual(payload["status"], "predates-the-schema", payload)
+        self.assertNotIn(
+            "violations", payload,
+            "a report that was not judged must not carry a judgment's own "
+            "vocabulary")
 
     def test_the_report_carries_both_required_kinds_of_finding(self):
         text = REPORT.read_text(encoding="utf-8")
@@ -2568,7 +2939,7 @@ Making the finding's digest agree with '## Frozen' would remove the rejection.
 | --- | --- | --- |
 | N/A | F1 | 0 |
 """
-        path = self.write(box, "mismatch.md", report)
+        path = self.write(box, "mismatch.md", report_with_integrity(report))
         result = run_cli("check-report", str(path))
         payload = json.loads(result.stdout)
         self.assertEqual(result.returncode, 1, payload)
@@ -4194,7 +4565,7 @@ class StageOutcomesTests(BoxMixin, unittest.TestCase):
     def check(self, text, name="report.md"):
         box = getattr(self, "_box", None) or self.make_box("stage-outcomes")
         self._box = box
-        path = self.write(box, name, text)
+        path = self.write(box, name, resign(text))
         result = run_cli("check-report", str(path))
         return result, json.loads(result.stdout)
 
