@@ -84,6 +84,38 @@ documentation alone, and diff it against what the producer actually emits. This
 is the only move that catches the document and the producer drifting apart while
 each stays internally consistent. It is only sound under the conditions below.
 
+### Move 6, in detail
+
+Invert every lock the audit leans on, and watch it fire. The mutation sweep is
+bounded, not exhaustive: a **guarded fact** is the `(file, line, literal)`
+triple a named test asserts on, derived from the subject's own declared lock
+roster where one exists, otherwise from the probe recipe's declared
+`mutations` block -- never listed by hand. Facts the sweep did not reach are
+named in `## Unchecked`, never silently dropped.
+
+One subprocess test-run per guarded fact, serial, each restored before the
+next. **Hard cap: eight guarded facts per run**, plus the per-step timeout
+`run_box_step` already applies; overflow lands in `## Unchecked`. A
+wall-clock budget was considered and rejected: it would make a report's
+contents depend on the machine that produced it, so two runs of the same
+audit on different machines could disagree about what was checked -- the
+same class of defect as "green by accident of the machine." A count cap
+is deterministic and travels with the report.
+
+Restore discipline, inherited from the table below: `sha256` before, write
+the mutation, run, apply the **inverse patch**, re-`sha256`, assert equality.
+Never `git checkout --`. A restore that does not reproduce the digest halts
+the sweep as `Unprobeable` -- a damaged tree is an inability to look, and the
+sweep must not keep mutating. Invert the effect the guard asserts, not the
+comparison around it: flipping `==` to `!=` only changes which subset is
+excluded and yields a different wrong answer, never the absence of the fact.
+
+A guarded fact whose mutation leaves the suite green is an obsolete guard:
+adjudicated `not adjudicable`, remedy build-or-delete, its own `## Repair
+units` row with a changed-line forecast. **The auditor never deletes a
+test.** It reports, and the finding routes into `## Repair units` so the
+next change picks it up as a work item.
+
 ### Move 8, in detail
 
 Every earlier move probes one closed surface in isolation. This one drives the

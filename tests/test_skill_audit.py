@@ -4351,6 +4351,57 @@ class StageOutcomesTests(BoxMixin, unittest.TestCase):
             move_ran, name="undecidable-probe-move-ran.md")
         self.assertEqual(result.returncode, 0, payload)
 
+    def test_not_adjudicable_finding_under_ranked_findings_is_rejected(self):
+        """Cross-section rule, mirrored: a `not adjudicable` finding cannot
+        have two homes. `VALID_REPORT`'s F1 sits under '## Ranked findings'
+        with adjudication `doctrine wrong`; promoting its adjudication to
+        `not adjudicable` without moving it is rejected.
+        """
+        broken = VALID_REPORT.replace(
+            "- Adjudication: doctrine wrong\n",
+            "- Adjudication: not adjudicable\n", 1)
+        result, payload = self.check(broken, name="not-adjudicable-wrong-home.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "not-adjudicable"]
+        self.assertTrue(
+            any("F1" in v["where"] for v in violations),
+            f"F1's promoted adjudication must be rejected and must name "
+            f"F1: {violations}")
+
+    def test_finding_under_not_adjudicable_with_other_verdict_is_rejected(self):
+        """The reverse mismatch: F2 sits under '## Not adjudicable' with
+        adjudication `not adjudicable`; demoting its adjudication without
+        moving it out of that section is rejected too.
+        """
+        broken = VALID_REPORT.replace(
+            "- Adjudication: not adjudicable\n",
+            "- Adjudication: doctrine wrong\n", 1)
+        result, payload = self.check(broken, name="ranked-in-not-adjudicable.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "not-adjudicable"]
+        self.assertTrue(
+            any("F2" in v["where"] for v in violations),
+            f"F2's demoted adjudication must be rejected and must name "
+            f"F2: {violations}")
+
+    def test_a_not_adjudicable_finding_still_needs_exactly_one_repair_unit(self):
+        """`repair_unit_rows` enforcement already covers every finding, this
+        included -- confirmed here rather than assumed, since W7 folds
+        `not adjudicable` findings into the same coverage.
+        """
+        broken = VALID_REPORT.replace(
+            "| Build or delete the unread declared value | F2 | 0 |\n", "", 1)
+        self.assertNotEqual(broken, VALID_REPORT, "the graft must land")
+        result, payload = self.check(broken, name="not-adjudicable-no-unit.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "repair-units"]
+        self.assertTrue(
+            any("F2" in v["detail"] for v in violations),
+            f"F2 losing its repair unit must be rejected: {violations}")
+
     def test_stage_roster_reads_a_synthetic_table_never_a_hardcoded_list(self):
         """The roster comes from parsing whatever table it is given, not
         from a list held inside the tool -- proven with a synthetic stage

@@ -2056,14 +2056,22 @@ CITATION = re.compile(r"`[^`\s]+:\d+`")
 
 
 def report_findings(lines):
-    """Every `### F<n>.` block, with the lines that belong to it."""
+    """Every `### F<n>.` block, with the lines that belong to it and the
+    top-level `## ` section it sits directly under -- the section a
+    finding's own `- Adjudication:` must agree with when that adjudication
+    is `not adjudicable`.
+    """
     blocks = []
+    section = None
     for index, line in enumerate(lines):
         if re.match(r"^### F\d+\.", line.strip()):
             blocks.append({"label": line.strip()[4:].split(".")[0],
-                           "line": index + 1, "start": index, "text": []})
-        elif blocks and line.startswith("## "):
-            blocks[-1]["end"] = index
+                           "line": index + 1, "start": index, "text": [],
+                           "section": section})
+        elif line.startswith("## "):
+            section = line.strip()
+            if blocks and "end" not in blocks[-1]:
+                blocks[-1]["end"] = index
         elif blocks and "end" not in blocks[-1]:
             blocks[-1]["text"].append(line)
     return blocks
@@ -2253,6 +2261,19 @@ def run_check_report(args):
             fail("adjudication",
                  "every finding carries exactly one adjudication from "
                  + ", ".join(ADJUDICATIONS), where)
+        elif (verdict.group(1) == "not adjudicable") \
+                != (finding["section"] == "## Not adjudicable"):
+            # Mirrors the `## Undecidable` <-> `## Move outcomes`
+            # cross-section rule: a `not adjudicable` finding cannot have
+            # two homes. Either direction of the mismatch is refused --
+            # this section without that adjudication, or that adjudication
+            # outside this section.
+            fail("not-adjudicable",
+                 f"finding {finding['label']}'s adjudication is "
+                 f"{verdict.group(1)!r} but it sits under "
+                 f"{finding['section']!r}; a `not adjudicable` finding "
+                 "belongs under '## Not adjudicable' and nowhere else",
+                 where)
 
         citations = {c for c in CITATION.findall(body)}
         if len(citations) < 2:
