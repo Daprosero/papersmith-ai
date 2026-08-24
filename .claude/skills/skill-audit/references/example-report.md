@@ -6,7 +6,7 @@ accept in the reference beside the invocation that validates it.
 ## Report integrity
 
 - Schema: skill-audit-report/1
-- Self-digest: sha256:3fc0fe65d7f922235028a26ed1df78e0426cb441899e1727e0776f508897a567
+- Self-digest: sha256:b69203f25b67528be95e4b87eb9a5bd822e50a38c815bd49d0b252cbe4785973
 
 ## Frozen
 
@@ -26,6 +26,7 @@ accept in the reference beside the invocation that validates it.
 - Move: 7: skipped: single-harness count only, not compared
 - Move: 8: skipped: no ordered user-mode flow driven in this pass
 - Move: 9: skipped: no supplied reading pair compared in this pass
+- Move: 10: skipped: no computed-value sweep run in this pass
 - Move: textual: ran
 
 ## Stage outcomes
@@ -69,6 +70,8 @@ accept in the reference beside the invocation that validates it.
 
 - Kind: no-closed-roster
 - Rung: readers
+
+## Computed-value provenance
 
 ## Disputed severity
 

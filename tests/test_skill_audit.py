@@ -287,6 +287,24 @@ def stage_outcomes_block(overrides=None,
     return "\n".join(lines) + "\n"
 
 
+def move_outcomes_block(overrides=None,
+                        default="skipped: not exercised by this fixture"):
+    """Render `## Move outcomes` from the real moves table in `SKILL.md`,
+    never from a list hand-typed inside this file. W1's exact pattern for
+    `stage_outcomes_block`, applied to moves: a move inserted into the
+    table (Move 10, here) propagates to every fixture through this one
+    helper, rather than through every hand-edited literal block that
+    guarantees the same breakage at the next insertion.
+    """
+    cli = audit_cli_module()
+    roster = cli.move_roster(doctrine_text())
+    overrides = overrides or {}
+    lines = ["## Move outcomes", ""]
+    for move_id in roster:
+        lines.append(f"- Move: {move_id}: {overrides.get(move_id, default)}")
+    return "\n".join(lines) + "\n"
+
+
 def report_with_integrity(body, schema=None):
     """Prepend `## Report integrity` to a report fixture's `body`, right
     after its title line, with a `- Self-digest:` computed through the
@@ -509,8 +527,8 @@ class MovesTableTests(unittest.TestCase):
             (numbered if match else textual).append(
                 int(match.group(1)) if match else row)
         self.assertEqual(
-            sorted(numbered), list(range(0, 10)),
-            "the table must carry exactly one row per move 0 through 9, with no "
+            sorted(numbered), list(range(0, 11)),
+            "the table must carry exactly one row per move 0 through 10, with no "
             f"gap and no repeat; found {sorted(numbered)}")
         self.assertEqual(
             len(textual), 1,
@@ -1036,7 +1054,7 @@ class SelfAuditSubcommandRosterTests(unittest.TestCase):
         self.assertEqual(payload["phantom"], [])
         self.assertEqual(sorted(payload["code"]),
                          ["check-report", "reading-diff", "roster",
-                          "structure", "walkthrough"])
+                          "sensitivity", "structure", "walkthrough"])
 
     def test_the_roster_comes_from_argparse_and_not_from_a_list(self):
         _, payload = roster_json(SELF_SPEC, SKILL_ROOT)
@@ -1530,6 +1548,24 @@ VALID_REPORT_STAGE_OVERRIDES = {
     "5": "skipped: no transcript partition run in this pass",
 }
 
+#: `VALID_REPORT`'s move-outcome text, by move id. Fed through
+#: `move_outcomes_block` rather than hand-typed as a `## Move outcomes`
+#: block, so a move inserted into the real table (Move 10, W10) propagates
+#: to this fixture automatically instead of leaving a stale literal behind.
+VALID_REPORT_MOVE_OVERRIDES = {
+    "0": "ran",
+    "1": "skipped: no from-zero build declared for this surface",
+    "2": "skipped: not driven from disk in this pass",
+    "3": "skipped: no external boundary crossed in this pass",
+    "4": "skipped: no installed dependency read in this pass",
+    "5": "skipped: no live probe attempted, no consent sought",
+    "6": "skipped: no lock inverted in this pass",
+    "7": "skipped: single-harness count only, not compared",
+    "8": "skipped: no ordered user-mode flow driven in this pass",
+    "9": "skipped: no supplied reading pair compared in this pass",
+    "textual": "ran",
+}
+
 #: The body `VALID_REPORT` is built from, before `## Report integrity` is
 #: prepended and a fresh self-digest is stamped through the shipped
 #: function. Kept as its own name because a handful of fixtures below need
@@ -1543,20 +1579,7 @@ VALID_REPORT_BODY = f"""# Audit: a subject, one surface
 - Subject: a subject, one surface
 - Exclude: (none)
 
-## Move outcomes
-
-- Move: 0: ran
-- Move: 1: skipped: no from-zero build declared for this surface
-- Move: 2: skipped: not driven from disk in this pass
-- Move: 3: skipped: no external boundary crossed in this pass
-- Move: 4: skipped: no installed dependency read in this pass
-- Move: 5: skipped: no live probe attempted, no consent sought
-- Move: 6: skipped: no lock inverted in this pass
-- Move: 7: skipped: single-harness count only, not compared
-- Move: 8: skipped: no ordered user-mode flow driven in this pass
-- Move: 9: skipped: no supplied reading pair compared in this pass
-- Move: textual: ran
-
+{move_outcomes_block(VALID_REPORT_MOVE_OVERRIDES)}
 {stage_outcomes_block(VALID_REPORT_STAGE_OVERRIDES)}
 ## Ranked findings
 
@@ -1587,6 +1610,8 @@ VALID_REPORT_BODY = f"""# Audit: a subject, one surface
 ## Undecidable
 
 {UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}
+## Computed-value provenance
+
 ## Disputed severity
 
 ## Clean, stated as results
@@ -2058,20 +2083,7 @@ class CheckReportSubjectTests(BoxMixin, unittest.TestCase):
 - Subject: {subject}
 - Exclude: (none)
 
-## Move outcomes
-
-- Move: 0: ran
-- Move: 1: skipped: no from-zero build declared for this surface
-- Move: 2: skipped: not driven from disk in this pass
-- Move: 3: skipped: no external boundary crossed in this pass
-- Move: 4: skipped: no installed dependency read in this pass
-- Move: 5: skipped: no live probe attempted, no consent sought
-- Move: 6: skipped: no lock inverted in this pass
-- Move: 7: skipped: single-harness count only, not compared
-- Move: 8: skipped: no ordered user-mode flow driven in this pass
-- Move: 9: skipped: no supplied reading pair compared in this pass
-- Move: textual: ran
-
+{move_outcomes_block(VALID_REPORT_MOVE_OVERRIDES)}
 {stage_outcomes_block(VALID_REPORT_STAGE_OVERRIDES)}
 ## Ranked findings
 
@@ -2091,6 +2103,8 @@ class CheckReportSubjectTests(BoxMixin, unittest.TestCase):
 ## Undecidable
 
 {UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}
+## Computed-value provenance
+
 ## Disputed severity
 
 ## Clean, stated as results
@@ -2515,7 +2529,18 @@ class UsageReferenceTests(unittest.TestCase):
                 # alongside 0/1, for this one command only -- never a
                 # crash, and this is a documented invocation genuinely
                 # *running*, not standing in for one.
-                allowed = (0, 1, 2) if "structure" in invocation else (0, 1)
+                #
+                # [W10] The one `sensitivity` invocation points at this
+                # skill's own layout, which declares no computed-value
+                # table of its own -- the honest, deterministic
+                # "no-closed-roster" result, exit 2, documented as such in
+                # usage.md rather than papered over with a fixture.
+                if "structure" in invocation:
+                    allowed = (0, 1, 2)
+                elif "sensitivity" in invocation:
+                    allowed = (2,)
+                else:
+                    allowed = (0, 1)
                 self.assertIn(
                     result.returncode, allowed,
                     f"a documented invocation must run: {result.stderr[:300]}")
@@ -2701,10 +2726,19 @@ class NothingWasRepairedTests(unittest.TestCase):
         ignorance control gate's own seeded marker), never into the
         subject, and `test_a_structure_run_leaves_the_subject_and_its_
         ground_untouched` above is what actually proves that, by bytes.
+
+        `run_sensitivity`, `materialize_subject_copy`, `vary_by_absence`,
+        and `restore_exact_bytes` joined the exemption with Move 10: each
+        writes only inside `run_sensitivity`'s own box (the subject copy
+        Move 10 perturbs), never into the subject, and
+        `test_a_sensitivity_run_leaves_the_subject_untouched` below is
+        what actually proves that, by bytes.
         """
         box_lifecycle_exemption = {
             "run_structure", "run_walkthrough", "erase_box",
-            "run_box_step", "ignorance_control_gate"}
+            "run_box_step", "ignorance_control_gate", "run_sensitivity",
+            "materialize_subject_copy", "vary_by_absence",
+            "restore_exact_bytes"}
         for path in sorted(SKILL_ROOT.rglob("*")):
             if not path.is_file() or path.suffix != ".py":
                 continue
@@ -2882,20 +2916,7 @@ class FrozenDigestTests(BoxMixin, unittest.TestCase):
 - Subject: {box}
 - Exclude: (none)
 
-## Move outcomes
-
-- Move: 0: ran
-- Move: 1: skipped: no from-zero build declared for this surface
-- Move: 2: skipped: not driven from disk in this pass
-- Move: 3: skipped: no external boundary crossed in this pass
-- Move: 4: skipped: no installed dependency read in this pass
-- Move: 5: skipped: no live probe attempted, no consent sought
-- Move: 6: skipped: no lock inverted in this pass
-- Move: 7: skipped: single-harness count only, not compared
-- Move: 8: skipped: no ordered user-mode flow driven in this pass
-- Move: 9: skipped: no supplied reading pair compared in this pass
-- Move: textual: ran
-
+{move_outcomes_block(VALID_REPORT_MOVE_OVERRIDES)}
 {stage_outcomes_block(VALID_REPORT_STAGE_OVERRIDES)}
 ## Ranked findings
 
@@ -2915,6 +2936,8 @@ class FrozenDigestTests(BoxMixin, unittest.TestCase):
 ## Undecidable
 
 {UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}
+## Computed-value provenance
+
 ## Disputed severity
 
 ## Clean, stated as results
@@ -4863,7 +4886,7 @@ class StageOutcomesTests(BoxMixin, unittest.TestCase):
         being non-empty is part of the measurement, not a formality.
         """
         broken = VALID_REPORT.replace(
-            f"{UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}\n## Disputed severity",
+            f"{UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}\n## Computed-value provenance\n\n## Disputed severity",
             "## Disputed severity", 1)
         self.assertNotEqual(broken, VALID_REPORT, "the graft must land")
         result, payload = self.check(broken, name="stage2-empty-undecidable.md")
@@ -4916,10 +4939,11 @@ class StageOutcomesTests(BoxMixin, unittest.TestCase):
         for invented in ("a-reason-nobody-emits", "comparison-not-run"):
             with self.subTest(kind=invented):
                 text = VALID_REPORT.replace(
-                    f"{UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}\n## Disputed severity",
+                    f"{UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}\n## Computed-value provenance\n\n## Disputed severity",
                     f"{UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}\n"
                     f"- Kind: {invented}\n"
                     "- Rung: readers\n\n"
+                    "## Computed-value provenance\n\n"
                     "## Disputed severity", 1)
                 self.assertNotEqual(text, VALID_REPORT, "the graft must land")
                 result, payload = self.check(
@@ -4938,11 +4962,12 @@ class StageOutcomesTests(BoxMixin, unittest.TestCase):
         is rejected; declaring move 9 `ran` in the same fixture is accepted.
         """
         with_entry = VALID_REPORT.replace(
-            f"{UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}\n## Disputed severity",
+            f"{UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}\n## Computed-value provenance\n\n## Disputed severity",
             f"{UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}\n"
             "- Kind: no-closed-roster\n"
             "- Rung: probe\n"
             "- Probe: 9\n\n"
+            "## Computed-value provenance\n\n"
             "## Disputed severity", 1)
         self.assertNotEqual(with_entry, VALID_REPORT, "the graft must land")
 
@@ -5254,3 +5279,435 @@ class StageOutcomesTests(BoxMixin, unittest.TestCase):
                 cli.CARDINALS.get(breakdown_word), models,
                 f"stage {stage_id} has {models} Models but the sentence's "
                 f"breakdown says {breakdown_word!r}")
+
+
+# ==========================================================================
+# W10 -- `sensitivity`: does a declared computed value actually track the
+# declared input it claims to depend on? Move 1 run twice, under two
+# different inputs, pointed at products instead of guards.
+# ==========================================================================
+
+SENSITIVITY_SPEC = PROBES / "skill-audit.sensitivity.json"
+
+
+def sensitivity_json(spec, subject, repo=FORGE, extra=()):
+    """Drive `sensitivity` as a process and parse what it wrote to stdout."""
+    result = run_cli("sensitivity", "--subject", str(subject),
+                     "--spec", str(spec), "--repo-root", str(repo), *extra)
+    try:
+        return result, json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise AssertionError(
+            f"sensitivity exited {result.returncode} without JSON on "
+            f"stdout.\nstdout={result.stdout!r}\nstderr={result.stderr!r}")
+
+
+class SensitivityBoxMixin(BoxMixin):
+    """Fixtures for `sensitivity`: a subject declaring a results table and
+    a real producer script, plus the box `sensitivity` builds fresh under
+    `implementations/`.
+    """
+
+    def sensitivity_box(self, surface):
+        box = BOXES / f"_sensitivity_{surface}"
+        self.addCleanup(self._erase_sensitivity_box, box)
+        return box
+
+    def _erase_sensitivity_box(self, box):
+        if not box.exists():
+            return
+        for path in sorted(box.rglob("*"), reverse=True):
+            path.rmdir() if path.is_dir() else path.unlink()
+        box.rmdir()
+
+    def make_sensitivity_subject(self, name, initial_value, data_files, producer):
+        subject = self.make_box(name)
+        self.write(subject, "RESULTS.md",
+                  f"| Metric | Value |\n| --- | --- |\n| rows | {initial_value} |\n")
+        for relative, content in data_files.items():
+            self.write(subject, f"data/{relative}", content)
+        self.write(subject, "run.py", producer)
+        return subject
+
+    def make_recipe(self, subject, surface, argv=None, exclude=()):
+        spec = subject / "sensitivity.json"
+        spec.write_text(json.dumps({
+            "surface": surface,
+            "declared": {"path": "RESULTS.md", "table": "| Metric | Value |",
+                        "column": 1},
+            "disk": {"root": "data"},
+            "argv": argv or ["python3", "{subject}/run.py"],
+            "cwd": ".",
+            "env": ["PATH"],
+            "exclude": list(exclude),
+        }, indent=2), encoding="utf-8")
+        return spec
+
+
+#: A producer that never touches its own box at all -- the control-stall
+#: fixture. Silence, not a refusal: it exits 0 having read and written
+#: nothing, so the declared site's values never move from the shipped
+#: fixture's own initial state.
+STALLED_PRODUCER = "pass\n"
+
+#: A producer that writes the identical literal regardless of what its box
+#: holds -- half 1 of the load-bearing inversion.
+HARDCODED_PRODUCER = (
+    "import pathlib\n"
+    "pathlib.Path('RESULTS.md').write_text(\n"
+    "    '| Metric | Value |\\n| --- | --- |\\n| rows | 42 |\\n',\n"
+    "    encoding='utf-8')\n")
+
+#: A producer that genuinely counts lines under its own `data/` -- half 2
+#: of the same inversion, the identical value computed from the identical
+#: input.
+COMPUTED_PRODUCER = (
+    "import pathlib\n"
+    "total = 0\n"
+    "data_dir = pathlib.Path('data')\n"
+    "if data_dir.is_dir():\n"
+    "    for f in sorted(data_dir.rglob('*')):\n"
+    "        if f.is_file():\n"
+    "            total += len(f.read_text(encoding='utf-8').splitlines())\n"
+    "pathlib.Path('RESULTS.md').write_text(\n"
+    "    f'| Metric | Value |\\n| --- | --- |\\n| rows | {total} |\\n',\n"
+    "    encoding='utf-8')\n")
+
+
+class SensitivityInversionTests(SensitivityBoxMixin, unittest.TestCase):
+    """The load-bearing proof, in two halves: a probe that fires on
+    everything is as useless as one that fires on nothing.
+    """
+
+    def test_half_one_a_hardcoded_value_is_reported_not_adjudicable(self):
+        surface = "hardcoded"
+        self.sensitivity_box(surface)
+        subject = self.make_sensitivity_subject(
+            "hardcoded_subject", initial_value=999,
+            data_files={"a.txt": "one\ntwo\nthree\n", "b.txt": "four\nfive\n"},
+            producer=HARDCODED_PRODUCER)
+        spec = self.make_recipe(subject, surface)
+        result, payload = sensitivity_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["control"], "passed")
+        self.assertIn("rows", payload["notAdjudicable"])
+        for outcome in payload["matrix"]["rows"].values():
+            self.assertEqual(outcome, "unchanged", payload["matrix"])
+
+    def test_half_two_the_identical_value_genuinely_computed_is_silent(self):
+        """Same fixture shape, producer changed to compute the same value
+        from the same input. Without this half, half one proves nothing.
+        """
+        surface = "computed"
+        self.sensitivity_box(surface)
+        subject = self.make_sensitivity_subject(
+            "computed_subject", initial_value=999,
+            data_files={"a.txt": "one\ntwo\nthree\n", "b.txt": "four\nfive\n"},
+            producer=COMPUTED_PRODUCER)
+        spec = self.make_recipe(subject, surface)
+        result, payload = sensitivity_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["control"], "passed")
+        self.assertNotIn("rows", payload["notAdjudicable"])
+        self.assertTrue(
+            any(outcome == "moved"
+               for outcome in payload["matrix"]["rows"].values()),
+            payload["matrix"])
+
+
+class SensitivityControlGateTests(SensitivityBoxMixin, unittest.TestCase):
+    """The inverted control: proof a producer reads its own box before any
+    per-input `unchanged` cell is allowed to mean anything.
+    """
+
+    def test_a_producer_that_never_reads_its_box_stalls_the_control(self):
+        surface = "stalled"
+        self.sensitivity_box(surface)
+        subject = self.make_sensitivity_subject(
+            "stalled_subject", initial_value=7,
+            data_files={"a.txt": "one\n"}, producer=STALLED_PRODUCER)
+        spec = self.make_recipe(subject, surface)
+        result, payload = sensitivity_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("sensitivity-control-stalled", payload["error"])
+        self.assertIn("never read", payload["error"].lower())
+        self.assertIn("typed in", payload["error"].lower())
+
+    def test_a_producer_that_does_read_its_box_passes_the_control(self):
+        """Proof the stall test above is not asserting a constant."""
+        surface = "control_passes"
+        self.sensitivity_box(surface)
+        subject = self.make_sensitivity_subject(
+            "control_passes_subject", initial_value=999,
+            data_files={"a.txt": "one\ntwo\n"}, producer=COMPUTED_PRODUCER)
+        spec = self.make_recipe(subject, surface)
+        result, payload = sensitivity_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["control"], "passed")
+
+
+class SensitivityDeclarationTests(SensitivityBoxMixin, unittest.TestCase):
+    """Candidate pairs derive from the subject's own declaration alone."""
+
+    def test_a_subject_declaring_no_computed_values_is_a_first_class_result(self):
+        surface = "no_declaration"
+        self.sensitivity_box(surface)
+        subject = self.make_box("no_declaration_subject")
+        self.write(subject, "RESULTS.md", "Nothing here but prose.\n")
+        self.write(subject, "data/a.txt", "x\n")
+        self.write(subject, "run.py", HARDCODED_PRODUCER)
+        spec = self.make_recipe(subject, surface)
+        result, payload = sensitivity_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertEqual(payload["notes"][0]["kind"], "no-closed-roster")
+        self.assertEqual(payload["matrix"], {})
+
+    def test_a_differently_labelled_subject_needs_no_guard_edit(self):
+        """Proof of derivation, never a hand-list: a subject naming its
+        computed value something this suite has never used before is
+        still picked up correctly, with zero edits anywhere in
+        `audit_cli.py` -- the roster lives only in the subject's own table.
+        """
+        surface = "differently_labelled"
+        self.sensitivity_box(surface)
+        subject = self.make_box("differently_labelled_subject")
+        self.write(subject, "RESULTS.md",
+                  "| Metric | Value |\n| --- | --- |\n"
+                  "| a-name-never-used-elsewhere-in-this-suite | 999 |\n")
+        self.write(subject, "data/a.txt", "one\ntwo\n")
+        self.write(subject, "run.py", (
+            "import pathlib\n"
+            "total = len(pathlib.Path('data/a.txt').read_text("
+            "encoding='utf-8').splitlines())\n"
+            "pathlib.Path('RESULTS.md').write_text(\n"
+            "    '| Metric | Value |\\n| --- | --- |\\n'\n"
+            "    f'| a-name-never-used-elsewhere-in-this-suite | {total} |\\n',\n"
+            "    encoding='utf-8')\n"))
+        spec = self.make_recipe(subject, surface)
+        result, payload = sensitivity_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertIn("a-name-never-used-elsewhere-in-this-suite",
+                      payload["matrix"])
+
+
+class SensitivityCapTests(SensitivityBoxMixin, unittest.TestCase):
+    """A count cap, never a wall-clock budget; overflow named, not dropped."""
+
+    def test_more_than_the_cap_is_named_in_unchecked(self):
+        surface = "cap"
+        self.sensitivity_box(surface)
+        data_files = {f"f{i}.txt": f"line{i}\n" for i in range(6)}
+        subject = self.make_sensitivity_subject(
+            "cap_subject", initial_value=999, data_files=data_files,
+            producer=COMPUTED_PRODUCER)
+        spec = self.make_recipe(subject, surface)
+        result, payload = sensitivity_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["inputsTotal"], 6)
+        self.assertEqual(len(payload["inputsVaried"]), 4)
+        self.assertEqual(len(payload["inputsUnchecked"]), 2)
+        self.assertEqual(
+            sorted(payload["inputsVaried"] + payload["inputsUnchecked"]),
+            sorted(f"data/f{i}.txt" for i in range(6)))
+
+    def test_cap_selection_is_deterministic_across_runs(self):
+        surface = "cap_determinism"
+        self.sensitivity_box(surface)
+        data_files = {f"f{i}.txt": f"line{i}\n" for i in range(6)}
+        subject = self.make_sensitivity_subject(
+            "cap_determinism_subject", initial_value=999,
+            data_files=data_files, producer=COMPUTED_PRODUCER)
+        spec = self.make_recipe(subject, surface)
+        result1, payload1 = sensitivity_json(spec, subject, repo=FORGE)
+        self.assertEqual(result1.returncode, 0, payload1)
+        result2, payload2 = sensitivity_json(spec, subject, repo=FORGE)
+        self.assertEqual(result2.returncode, 0, payload2)
+        self.assertEqual(payload1["inputsVaried"], payload2["inputsVaried"])
+
+
+class SensitivityThresholdTests(SensitivityBoxMixin, unittest.TestCase):
+    def test_unchanged_for_one_input_and_moved_for_another_is_not_a_finding(self):
+        surface = "threshold"
+        self.sensitivity_box(surface)
+        # Reads only a.txt; b.txt is declared but never touched.
+        producer = (
+            "import pathlib\n"
+            "total = 0\n"
+            "a = pathlib.Path('data/a.txt')\n"
+            "if a.is_file():\n"
+            "    total = len(a.read_text(encoding='utf-8').splitlines())\n"
+            "pathlib.Path('RESULTS.md').write_text(\n"
+            "    f'| Metric | Value |\\n| --- | --- |\\n| rows | {total} |\\n',\n"
+            "    encoding='utf-8')\n")
+        subject = self.make_sensitivity_subject(
+            "threshold_subject", initial_value=999,
+            data_files={"a.txt": "one\ntwo\nthree\n", "b.txt": "four\n"},
+            producer=producer)
+        spec = self.make_recipe(subject, surface)
+        result, payload = sensitivity_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertNotIn(
+            "rows", payload["notAdjudicable"],
+            "unchanged for one input out of two must not cross the "
+            "threshold; the matrix is published, not the accusation")
+        self.assertEqual(payload["matrix"]["rows"]["data/a.txt"], "moved")
+        self.assertEqual(payload["matrix"]["rows"]["data/b.txt"], "unchanged")
+
+
+class SensitivityRestoreTests(SensitivityBoxMixin, unittest.TestCase):
+    """Restore discipline inherited from Move 6, verbatim: `sha256` before,
+    remove, drive, write the exact bytes back, `sha256` again.
+    """
+
+    def test_a_restore_mismatch_halts_the_sweep(self):
+        """A producer that recreates a removed input as a directory,
+        instead of leaving it absent, makes the write-back fail
+        structurally -- caught, never silent, and the sweep halts rather
+        than attempting anything further.
+        """
+        surface = "restore_mismatch"
+        self.sensitivity_box(surface)
+        producer = (
+            "import pathlib\n"
+            "removed = pathlib.Path('data/a.txt')\n"
+            "if not removed.exists():\n"
+            "    removed.mkdir(parents=True)\n"
+            "pathlib.Path('RESULTS.md').write_text(\n"
+            "    '| Metric | Value |\\n| --- | --- |\\n| rows | 1 |\\n',\n"
+            "    encoding='utf-8')\n")
+        subject = self.make_sensitivity_subject(
+            "restore_mismatch_subject", initial_value=999,
+            data_files={"a.txt": "one\n"}, producer=producer)
+        spec = self.make_recipe(subject, surface)
+        result, payload = sensitivity_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("sensitivity-restore-failed", payload["error"])
+
+    def test_a_producer_writing_into_the_real_subject_is_refused(self):
+        surface = "escape"
+        self.sensitivity_box(surface)
+        subject = self.make_sensitivity_subject(
+            "escape_subject", initial_value=999,
+            data_files={"a.txt": "one\n"}, producer="pass\n")
+        # Escape by relative navigation from the copy's own cwd, exactly
+        # the shape a real accidental escape would take -- the copy sits
+        # at implementations/_sensitivity_<surface>/subject, two levels
+        # below implementations/ itself, a sibling of the real subject.
+        escape_producer = (
+            "import pathlib\n"
+            f"pathlib.Path('../../{subject.name}/escaped.txt').write_text("
+            "'escaped', encoding='utf-8')\n"
+            "pathlib.Path('RESULTS.md').write_text(\n"
+            "    '| Metric | Value |\\n| --- | --- |\\n| rows | 1 |\\n',\n"
+            "    encoding='utf-8')\n")
+        self.write(subject, "run.py", escape_producer)
+        spec = self.make_recipe(subject, surface)
+        escaped = subject / "escaped.txt"
+        self.addCleanup(lambda: escaped.unlink() if escaped.exists() else None)
+        result, payload = sensitivity_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("build-escaped-the-box", payload["error"])
+
+
+class SensitivityBoxLifecycleTests(SensitivityBoxMixin, unittest.TestCase):
+    def test_a_non_empty_box_is_refused_and_left_untouched(self):
+        surface = "occupied"
+        box = self.sensitivity_box(surface)
+        box.mkdir(parents=True, exist_ok=True)
+        (box / "stranger.txt").write_text("already here\n", encoding="utf-8")
+        subject = self.make_sensitivity_subject(
+            "occupied_subject", initial_value=999,
+            data_files={"a.txt": "one\n"}, producer=COMPUTED_PRODUCER)
+        spec = self.make_recipe(subject, surface)
+        result, payload = sensitivity_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn(str(box), payload["error"])
+        self.assertTrue((box / "stranger.txt").exists(),
+                        "a box that was not ours to adopt must be left alone")
+
+    def test_cleanup_is_proven_by_content_never_by_git_status(self):
+        surface = "cleanup_proof"
+        box = self.sensitivity_box(surface)
+        subject = self.make_sensitivity_subject(
+            "cleanup_subject", initial_value=999,
+            data_files={"a.txt": "one\n"}, producer=COMPUTED_PRODUCER)
+        spec = self.make_recipe(subject, surface)
+        result, payload = sensitivity_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        after = audit_cli_module().tree_digest(BOXES)
+        self.assertEqual(
+            [p for p in after if p.startswith(f"_sensitivity_{surface}/")], [],
+            "the box's paths must be absent from a fresh content walk of "
+            "implementations/, never proven by `git status`")
+        self.assertFalse(box.exists())
+
+    def test_a_sensitivity_run_leaves_the_subject_untouched(self):
+        """The proof `SuiteIntegrityTests`'s write-verb lock cannot itself
+        provide: `run_sensitivity`, `materialize_subject_copy`,
+        `vary_by_absence`, and `restore_exact_bytes` all write, but only
+        ever inside the box this run owns. Driven for real, against the
+        real subcommand, comparing the subject's own tree by bytes.
+        """
+        surface = "untouched"
+        self.sensitivity_box(surface)
+        subject = self.make_sensitivity_subject(
+            "untouched_subject", initial_value=999,
+            data_files={"a.txt": "one\ntwo\n", "b.txt": "three\n"},
+            producer=COMPUTED_PRODUCER)
+        spec = self.make_recipe(subject, surface)
+        cli = audit_cli_module()
+        before = cli.tree_digest(subject)
+        result, payload = sensitivity_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        after = cli.tree_digest(subject)
+        self.assertEqual(before, after,
+                         "sensitivity perturbs a copy; the real subject "
+                         "must be byte-identical before and after")
+
+
+class SensitivityMoveRosterTests(unittest.TestCase):
+    """Move 10 arrives in the required move-outcome roster by derivation,
+    not by a code change: `\\d+` already parsed `10` before this unit
+    existed.
+    """
+
+    def test_move_10_is_in_the_derived_roster(self):
+        cli = audit_cli_module()
+        self.assertIn("10", cli.move_roster(doctrine_text()))
+
+    def test_move_10_costs_zero_model_runs(self):
+        """Move 10 is a move, not a stage: the stages table, and the
+        derived model-count sentence, are both untouched by this unit."""
+        cli = audit_cli_module()
+        roster = dict(cli.stage_roster(doctrine_text()))
+        self.assertNotIn("computed-value-provenance", roster.values())
+
+
+class SensitivityAdjudicationTests(SensitivityBoxMixin, unittest.TestCase):
+    """W10's own reconciled deviation: `artefact wrong` is never emitted
+    by Move 10, though it remains a valid adjudication for other moves.
+    """
+
+    def test_artefact_wrong_remains_in_the_closed_set(self):
+        cli = audit_cli_module()
+        self.assertIn("artefact wrong", cli.ADJUDICATIONS)
+
+    def test_move_10_emits_not_adjudicable_only(self):
+        """Measured against a planted hardcoded-value fixture: the
+        payload itself carries no adjudication field at all -- that
+        judgment belongs to whoever authors the report from
+        `notAdjudicable`, and this test fixes the vocabulary available to
+        them for a Move 10 "did not move" fact to one member, not to
+        convention.
+        """
+        surface = "adjudication_only"
+        self.sensitivity_box(surface)
+        subject = self.make_sensitivity_subject(
+            "adjudication_only_subject", initial_value=999,
+            data_files={"a.txt": "one\n", "b.txt": "two\n"},
+            producer=HARDCODED_PRODUCER)
+        spec = self.make_recipe(subject, surface)
+        result, payload = sensitivity_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertIn("rows", payload["notAdjudicable"])
+        self.assertNotIn("adjudication", payload)

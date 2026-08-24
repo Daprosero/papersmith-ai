@@ -57,6 +57,7 @@ move, in order; the numbering is the order.
 | 7. Compare per-harness test counts before and after; a count that did not rise is a finding | `doctrine` | `tests/test_skill_audit.py` |
 | 8. Drive the whole documented flow in order, against one real shared box, and name the first step that breaks its own declared expectation | `walkthrough` | `tests/test_skill_audit.py` |
 | 9. Compare two supplied readings of one prose surface by mechanical diff, and never let the comparison close | `reading-diff` | `tests/test_skill_audit.py` |
+| 10. Vary a declared input a result claims to depend on, and ask whether the declared output moves | `sensitivity` | `tests/test_skill_audit.py` |
 | Read every artifact's opening paragraphs against its own frontmatter and its own shipped files | `doctrine` | no lock — irreducibly textual, and carried anyway |
 
 The last row has no code and no lock, and says so. Prose contradicting prose
@@ -144,6 +145,40 @@ as a constant rather than a computed value; and a behavioural lock proving a
 reading naming more than a real code side never yields an `unregistered`
 key at all. A supplied reading may propose a candidate for a later gate; it
 may never itself close a comparison.
+
+### Move 10, in detail
+
+Every earlier move asks whether a documented set and a running set agree.
+This one asks a different question of a single reported value: was it
+computed, or was it typed in? Materialize the subject into a copy -- `##
+Frozen` pins the real subject's digest for the whole report, so the real
+subject is never touched -- then remove one declared input at a time from
+that copy, re-drive the subject's own declared producer, and re-read the
+declared results site. A declared value that never moves across every
+input it was checked against, up to a bounded cap, is `not adjudicable`:
+a fact with no computation traceable to it. The candidate `(output,
+input)` pairs are never listed by hand; they come from the subject's own
+declared results table, the same `declared` site grammar `structure`
+already uses.
+
+An inverted control runs first, exactly as it does before the real
+ignorant drive: every declared input is removed **at once**, and the
+producer is proven to notice -- either by refusing, or by the declared
+values changing from what the freshly-copied box already held before
+anything ran. Without that proof, the sweep stalls rather than accusing a
+producer it never reached: it cannot tell "never read the box" from
+"every value is typed in", and guessing would make those two
+indistinguishable forever. Only once the control passes does a per-input
+`unchanged` cell mean anything.
+
+**Hard cap: four declared inputs varied per run**, sorted-first-four for
+determinism -- overflow lands in `## Unchecked`, naming the total. A count
+cap, never a wall-clock budget, for the same reason Move 6's own cap is
+one: a time budget would make a report's contents depend on the machine
+that produced it. Restore discipline is inherited from Move 6 verbatim:
+`sha256` before, remove, drive, write the exact bytes back, `sha256`
+again, assert equality -- never `git checkout --`, which has no target
+here at all, since the copy is not tracked by git.
 
 ## The stages
 
@@ -262,6 +297,7 @@ requirement, not a caveat.
 | A new name is proven free by the default search | The default search honours `.gitignore`. Search with it disabled and hidden files included, or the negative is worthless |
 | An inversion is undone with `git checkout --` | Restore by inverse patch and confirm by content comparison; checkout restores from the index and silently discards unrelated work |
 | A remote-job rung is claimed from a full run, or from nothing at all | Drive it through that job's own `run.smoke` block (module / function / kwargs / requiredEvidence) in `run-config.json`; a job declaring none of `smoke_module`/`smoke_function` is itself a finding, service-blind, with no epoch or pilot-scale dial: a shard measured at pilot scale is not a cheaper shard, it is a different experiment |
+| A "did not move" report accuses a producer never proven to read its box | Fire an inverted control first: remove every declared input at once and demand the producer notice, by refusal or by its declared values changing. A per-input `unchanged` cell means nothing until the control has passed |
 
 ## The evidence ladder
 
@@ -304,6 +340,13 @@ These findings get their **own report section**, distinct from the ranked
 findings, so a reader can see at a glance which findings are defects and which
 are open questions about intent.
 
+Move 10 emits `not adjudicable` only, never `artefact wrong`: distinguishing
+"documented dependency, no path" from "no computation at all" would need a
+hand-written roster of documented dependencies -- the exact second roster
+this skill refuses everywhere else. A finding's own text states the
+observation and the tested range, never a motive: an output may legitimately
+be insensitive to one input over a narrower range than the one checked.
+
 Do not apply the rule "every reported fact must be branched on". It is false by
 construction: facts are deliberately reported without gating anything, and the
 bar for such a value is documentation, not consumption. A value that is
@@ -342,6 +385,7 @@ restated as a second literal.
 | `reading-diff` | `## Reading diff`, demanded when stage 3 is `ran` | Absent while stage 3's row reads `ran` |
 | `drives` | `## Drives`, demanded when stage 4 is `ran`; no finding may attribute itself to the skill-less drive while naming the subject as its own target | Absent while stage 4's row reads `ran`, or a finding commits that category error |
 | `not-adjudicable` | `## Not adjudicable`, bare heading; when non-empty, each entry names the absent half, its `- Evidence:`, and the `## Repair units` unit it belongs to | The heading is absent, or a finding whose `- Adjudication:` reads `not adjudicable` sits under `## Ranked findings` instead |
+| `computed-value-provenance` | `## Computed-value provenance`, bare heading, unconditional -- like `## Not adjudicable` and `## Disputed severity`, demanded whether or not Move 10 ran; when Move 10 ran, transcribes `sensitivity`'s own emitted payload: the producer, the control outcome, the inputs varied and the total declared, the range swept, and the full matrix -- published even when no cell crosses the finding threshold | The heading is absent |
 
 A report in which **no** finding is marked `CONFIRMED by execution` must say so
 in its **first line**. A clean surface still gets the full report shape,
@@ -360,6 +404,7 @@ carries no vocabulary of its own beyond that one heading.
 | `structure` | Declared side by parsing a structure table; on-disk side by walking `--subject`; from-zero side by walking a recipe-built scaffold inside an empty box | `sides`, `outcome`, `onlyIn`, `missingFrom`, `notes`, `containment` |
 | `walkthrough` | An ordered recipe of steps, each run for real against one shared box, each held to its own declared expectation | `steps`, `stall`, `unreached`, `containment` |
 | `reading-diff` | Two supplied readings of one prose surface, given directly rather than derived | `agreement`, `shared`, `onlyIn`, `comparison`, `candidates`, `limit`, `frozen` |
+| `sensitivity` | A copy of the subject, a producer driven once per varied declared input, and the declared results site re-read after each drive | `control`, `matrix`, `notAdjudicable`, `inputsVaried`, `inputsUnchecked`, `inputsTotal`, `notes`, `containment` |
 
 `roster` exits `0` for **any** verdict, findings included, and `2` when the
 probe could not be driven or the extraction matched nothing. Inability to look
@@ -388,6 +433,13 @@ and `2` only when it could not look: something other than exactly two
 `probe_code_side`, or `finish`, and `comparison` is always `not-run` for the
 surface it names.
 
+`sensitivity` exits `0` for **any** verdict, a `not adjudicable` finding
+included, and for the degenerate "this subject declares no computed values"
+result. It exits `2` only when it could not look: an occupied box, a control
+that never proved the producer reads its copy, a restore that did not
+reproduce its pre-variation bytes, or a drive that wrote outside its own box.
+None of those four is a finding; each is an inability to look.
+
 ## The shipped files
 
 This skill's own `structure` recipe (`references/probes/skill-audit.structure.json`)
@@ -407,6 +459,7 @@ the same change.
 | `references/probes/proposal-deliberation.accepted-operations.json` | the first subject's `roster` recipe |
 | `references/probes/skill-audit.reading-a.json` | the first supplied reading of the worked `reading-diff` invocation |
 | `references/probes/skill-audit.reading-b.json` | the second supplied reading of the worked `reading-diff` invocation |
+| `references/probes/skill-audit.sensitivity.json` | the self-probe recipe for `sensitivity` |
 
 ## Decision Gates
 
@@ -451,6 +504,13 @@ the same change.
 | A stage's `## Stage outcomes` row is `skipped` | Demand nothing that stage's `Demands` cell names |
 | An `## Undecidable` entry claims `- Rung: probe` | Its `- Probe: <move>` must name a move whose own `## Move outcomes` row is `ran` |
 | A finding attributes itself to the skill-less drive and names the subject as its target | Reject it; that drive never ran the skill's own machinery and cannot make a claim with the subject as its target |
+| A `sensitivity` box already holds files | Exit `2` naming the path; never adopt a non-empty box |
+| The subject declares no computed values in a parseable table | Emit "this subject declares no computed values" naming the range searched; exit `2`, never a clean verdict |
+| A sensitivity control drive exits `0` and the declared values do not change | Exit `2`, `kind=sensitivity-control-stalled`; every pair is `unreached` until a producer is proven to consume its box |
+| A sensitivity per-variation restore does not reproduce its pre-variation bytes | Exit `2`; the sweep halts, and the next variation is never attempted |
+| A sensitivity drive writes outside its own box | Exit `2` as `build-escaped-the-box`; never reported as a finding |
+| A declared value is `unchanged` for every varied input | `not adjudicable`, never `artefact wrong`; the finding states the observation and the tested range, never a motive |
+| More declared inputs exist than the sensitivity cap | Vary the first four, sorted; name the rest in `## Unchecked` with the true total |
 
 ## Handoff
 

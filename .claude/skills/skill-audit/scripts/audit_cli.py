@@ -1023,6 +1023,22 @@ def build_parser():
         "--reading", action="append", default=[],
         help="a reading file; declare this flag exactly twice")
 
+    sensitivity = commands.add_parser(
+        "sensitivity",
+        help="vary a declared input a result claims to depend on, and "
+             "report whether the declared output moves")
+    sensitivity.add_argument("--subject", required=True,
+                             help="the subject's root directory")
+    sensitivity.add_argument("--spec", required=True,
+                             help="the JSON recipe describing the declared "
+                                  "site, the disk root to vary, and the "
+                                  "producer to drive")
+    sensitivity.add_argument("--repo-root", default=".",
+                             help="the root the box and {repoRoot} token "
+                                  "resolve under")
+    sensitivity.add_argument("--timeout", type=int, default=30,
+                             help="seconds before a hanging drive is exit 2")
+
     return parser
 
 
@@ -1297,6 +1313,380 @@ def run_structure(args):
         "outcome": outcome,
         "sides": {"declared": sorted(declared_set), "disk": sorted(disk_set),
                  "fromZero": sorted(from_zero_set)},
+        "surface": surface,
+    })
+    return 0
+
+
+#: Move 10's hard cap on the number of declared (output, input) pairs
+#: varied per run -- a count, never a wall-clock budget, cited from Move
+#: 6's own reasoning rather than re-argued: a time budget would make a
+#: report's contents depend on the machine that produced it. Bounded
+#: below Move 6's own cap of eight: one sensitivity drive is a full
+#: producer invocation, not a subprocess test run, so its unit cost is
+#: strictly higher and its worst case (4 varied + 1 control + 1 baseline
+#: = 6 drives) stays strictly under Move 6's own cap regardless.
+SENSITIVITY_INPUT_CAP = 4
+
+#: The declared range a Move 10 variation sweeps -- absence needs no
+#: semantics and is the widest possible range, so "legitimately
+#: insensitive over a small range" has no purchase: if a value survives
+#: its input's disappearance, no smaller variation would have moved it.
+SENSITIVITY_VARIATION_RANGE = "present -> absent"
+
+
+def declared_value_pairs(text, site):
+    """Every `(label, value)` row of a declared results table -- `label`
+    always the row's column 0, `value` at the site's own declared column.
+    Reuses `markdown_table_rows`, the exact parser `doctrine_side` already
+    calls, so this can never see a row `doctrine_side`'s own no-closed-
+    roster classification would have missed.
+    """
+    header = site.get("table")
+    if not header:
+        return []
+    tables = markdown_table_rows(text, header)
+    rows = [row for table in tables for row in table]
+    column = site.get("column", 0)
+    pairs = []
+    for row in rows:
+        if not row or column >= len(row):
+            continue
+        label = row[0].strip().strip("`").strip()
+        value = row[column].strip().strip("`").strip()
+        if label:
+            pairs.append((label, value))
+    return pairs
+
+
+def materialize_subject_copy(subject, box, exclude):
+    """Copy `subject` into `box/subject`, file by file -- the substrate
+    Move 10 perturbs. `## Frozen` pins the real subject's digest for the
+    whole report, so the real subject is never touched; everything below
+    happens inside this copy, and `erase_box(box)` in the caller's
+    `finally` removes it regardless of outcome -- a restore that cannot
+    partially succeed, strictly stronger than an inverse patch.
+
+    Copying here is not the `fromZero` fraud: that defect was presenting
+    a copy of the product as an independent derivation. Here the copy is
+    perturbed and compared against *itself* under a different input --
+    copying is the only honest method when the copy is what gets varied.
+    """
+    destination = box / "subject"
+    destination.mkdir(parents=True, exist_ok=True)
+    for relative in sorted(tree_digest(subject, exclude)):
+        source_path = subject / relative
+        target_path = destination / relative
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(source_path.read_bytes())
+    return destination
+
+
+def vary_by_absence(copy_root, relative_paths):
+    """Remove each of `relative_paths` from `copy_root`, returning their
+    original bytes keyed by path. The variation is absence (Q17): it
+    needs no format semantics, is deterministic, and is the widest
+    possible range a declared input can be varied over.
+    """
+    original = {}
+    for relative in relative_paths:
+        path = copy_root / relative
+        original[relative] = path.read_bytes()
+        path.unlink()
+    return original
+
+
+def restore_exact_bytes(copy_root, original):
+    """Write every `{relative: bytes}` pair in `original` back into
+    `copy_root`, confirmed by sha256 equality per file. Never a blind
+    string replace, and never `git checkout --`, which has no target at
+    all here: `copy_root` is not tracked by git.
+    """
+    for relative, data in original.items():
+        path = copy_root / relative
+        try:
+            if path.is_dir():
+                raise OSError(f"{path} is now a directory, not a file")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            reproduced = hashlib.sha256(path.read_bytes()).hexdigest() \
+                == hashlib.sha256(data).hexdigest()
+        except OSError as error:
+            raise Unprobeable(
+                f"kind=sensitivity-restore-failed: writing {relative} back "
+                f"failed: {error}; the sweep halts here rather than "
+                "attempting the next variation")
+        if not reproduced:
+            raise Unprobeable(
+                f"kind=sensitivity-restore-failed: writing {relative} back "
+                "did not reproduce its pre-variation bytes; the sweep "
+                "halts here rather than attempting the next variation")
+
+
+def run_sensitivity_drive(recipe, real_subject, copy_root, box, repo, timeout):
+    """Drive the subject's own declared producer once, inside the copy.
+
+    Mirrors `run_box_step`'s discipline -- argv as a list of strings,
+    `shell=False`, a constructed child environment from declared names
+    intersected with `DRIVER_ENV_ALLOWLIST` -- reused verbatim rather than
+    reimplemented, one allowlist shared with the driver step-kind. `cwd`
+    resolves under the copy (never the box, and never able to climb out).
+    `{subject}` interpolates to the **copy**, the exact inverse of
+    `fromZero`'s own rule, through the same `interpolate_token` every
+    other recipe-declared argv already uses; `assert_no_subject_reference`
+    still scans every part against the **real** subject, so an argv
+    naming the original by hand is refused exactly like `fromZero`'s.
+    """
+    raw_argv = recipe.get("argv")
+    if not raw_argv or not all(isinstance(part, str) for part in raw_argv):
+        raise Unprobeable("the recipe's argv must be a list of strings")
+    argv = [interpolate_token(part, repo, copy_root, box) for part in raw_argv]
+    for part in argv:
+        assert_no_subject_reference(part, real_subject, repo)
+
+    cwd = resolve_under(recipe.get("cwd"), copy_root, "sensitivity.cwd")
+
+    names = recipe.get("env") or []
+    unknown = sorted(set(names) - set(DRIVER_ENV_ALLOWLIST))
+    if unknown:
+        raise Unprobeable(
+            f"the sensitivity recipe names env {unknown}, outside "
+            f"{sorted(DRIVER_ENV_ALLOWLIST)}")
+    child_env = {name: os.environ[name] for name in names if name in os.environ}
+
+    try:
+        return subprocess.run(
+            argv, cwd=str(cwd), shell=False, env=child_env,
+            capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError as error:
+        raise Unprobeable(f"the recipe's argv[0] is not executable: {error}")
+    except subprocess.TimeoutExpired:
+        raise Unprobeable(
+            f"the producer did not answer within {timeout}s; a drive that "
+            "hangs is an inability to look, never a clean verdict")
+
+
+def sensitivity_control_gate(pre_values, post_completed, post_readable,
+                             pre_pairs, post_pairs):
+    """The inverted control that stops Move 10 accusing a producer never
+    proven to consume its box (Q16): every declared input removed at
+    once, driven, and the declared site's values demanded to differ from
+    what the freshly-copied box already held before anything ran.
+
+    `Unprobeable` (never a finding) when the producer both exits `0` and
+    leaves the declared values byte-identical to their pre-drive state:
+    the tool cannot tell "never read the box at all" from "every declared
+    value is typed in", and choosing would be a verdict with nothing
+    behind it. A nonzero exit or an unreadable site after the drive both
+    read as the producer demonstrably consuming what the box held, and
+    pass without needing the value comparison at all.
+    """
+    if post_completed.returncode != 0 or not post_readable:
+        return "passed"
+    if dict(pre_pairs) == dict(post_pairs):
+        raise Unprobeable(
+            "kind=sensitivity-control-stalled: with every declared input "
+            "removed at once, the producer exited 0 and the declared "
+            "values did not change from their pre-drive state. Two "
+            "readings, and this tool will not choose between them: the "
+            "producer never read this box at all, or every declared "
+            "value here is typed in rather than computed. Every pair is "
+            "unreached until a producer is proven to consume its box")
+    return "passed"
+
+
+def run_sensitivity(args):
+    """Move 10: does a declared computed value actually track the
+    declared input it claims to depend on?
+
+    Materialize the subject into a copy, prove a producer reads that copy
+    at all (the inverted control), drive it once for a baseline, then
+    remove one declared input at a time -- up to `SENSITIVITY_INPUT_CAP`
+    -- re-driving and re-reading the declared site after each. A declared
+    value that never moves across every input it was checked against is
+    `not adjudicable`: a fact with no computation traceable to it: the
+    provenance cannot be proven or disproven because nothing runs on the
+    input side of it to test. Never `artefact wrong` -- distinguishing
+    "documented dependency, no path" from "no computation at all" would
+    need a hand-written roster of documented dependencies, the exact
+    second roster this skill refuses everywhere else.
+
+    Exit `0` for any verdict, a `not adjudicable` finding included, and
+    the degenerate "this subject declares no computed values" result.
+    Exit `2` only when the tool could not look: an occupied box, a
+    stalled control, a restore mismatch, or an escape.
+    """
+    spec_path = Path(args.spec)
+    if not spec_path.is_file():
+        raise Unprobeable(f"no sensitivity recipe at {spec_path}")
+    try:
+        recipe = json.loads(spec_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise Unprobeable(f"the sensitivity recipe is unreadable: {error}")
+
+    subject = Path(args.subject).resolve()
+    repo = Path(args.repo_root).resolve()
+    surface = recipe.get("surface", "")
+    if not surface:
+        raise Unprobeable("the recipe names no surface to box the sweep under")
+    exclude = tuple(recipe.get("exclude", ()))
+    declared_site = recipe.get("declared", {})
+
+    box = repo / "implementations" / f"_sensitivity_{surface}"
+    before_empty = box_empty_or_absent(box)
+    if not before_empty:
+        raise Unprobeable(
+            f"a non-empty box already occupies {box}; remove it by hand "
+            "before running sensitivity again -- an occupied box is never "
+            "silently adopted")
+    box.mkdir(parents=True, exist_ok=True)
+
+    try:
+        control_seed_gate = ignorance_control_gate(box, exclude)
+        copy_root = materialize_subject_copy(subject, box, exclude)
+        subject_before = tree_digest(subject, exclude)
+
+        declared_path = resolve_site(declared_site, copy_root, repo)
+        declared_text = read_site(declared_path)
+        header_span = f"{declared_path}:1-{max(len(declared_text.splitlines()), 1)}"
+        _, doctrine_status = doctrine_side(declared_text, declared_site)
+        if doctrine_status != "closed":
+            notes = [note(
+                "no-closed-roster",
+                "this subject declares no computed values in a parseable "
+                "table; the range searched is named here",
+                str(declared_path), header_span)]
+            emit({
+                "control": None, "frozen": {"digest": frozen_digest(subject, exclude),
+                                            "exclude": list(exclude), "subject": str(subject)},
+                "inputsTotal": 0, "inputsUnchecked": [], "inputsVaried": [],
+                "matrix": {}, "notAdjudicable": [], "notes": notes,
+                "range": SENSITIVITY_VARIATION_RANGE, "surface": surface})
+            return 2
+
+        disk_root_spec = recipe.get("disk", {}).get("root")
+        disk_root = resolve_under(disk_root_spec, copy_root, "disk.root")
+        if not disk_root.is_dir():
+            raise Unprobeable(f"the recipe's disk.root does not exist: {disk_root}")
+        disk_relative_prefix = disk_root.relative_to(copy_root)
+        input_relatives = sorted(
+            (disk_relative_prefix / member).as_posix()
+            for member in tree_digest(disk_root, exclude))
+        if not input_relatives:
+            raise Unprobeable(
+                "the recipe's disk.root normalises to zero members; there "
+                "is nothing to vary")
+
+        # Deterministic, machine-independent selection: sorted-first-N.
+        # `## Unchecked` names every input beyond the cap, and total names
+        # the true size, so a reader never mistakes the cap for exhaustive.
+        inputs_varied = input_relatives[:SENSITIVITY_INPUT_CAP]
+        inputs_unchecked = input_relatives[SENSITIVITY_INPUT_CAP:]
+
+        # --- Control: every declared input removed at once. ---
+        pre_control_text = read_site(declared_path)
+        pre_control_pairs = declared_value_pairs(pre_control_text, declared_site)
+        removed_all = vary_by_absence(copy_root, input_relatives)
+        control_completed = run_sensitivity_drive(
+            recipe, subject, copy_root, box, repo, args.timeout)
+        try:
+            post_control_text = read_site(declared_path)
+            post_control_readable = True
+        except Unprobeable:
+            post_control_text, post_control_readable = "", False
+        post_control_pairs = (
+            declared_value_pairs(post_control_text, declared_site)
+            if post_control_readable else [])
+        restore_exact_bytes(copy_root, removed_all)
+        control_gate = sensitivity_control_gate(
+            pre_control_pairs, control_completed, post_control_readable,
+            pre_control_pairs, post_control_pairs)
+
+        # --- Baseline: every declared input present. ---
+        baseline_completed = run_sensitivity_drive(
+            recipe, subject, copy_root, box, repo, args.timeout)
+        baseline_text = read_site(declared_path)
+        baseline_pairs = dict(declared_value_pairs(baseline_text, declared_site))
+
+        # The per-run copy-tree check below proves a producer wrote
+        # nowhere else in the copy. Snapshotted *after* the baseline
+        # drive, not before: the declared results file is expected to
+        # change on every drive, including the control and the baseline
+        # -- that churn is the whole point of Move 10, never evidence of
+        # an escape. The declared path itself is excluded from both
+        # snapshots for the same reason; every other path in the copy
+        # must still be byte-identical once the sweep finishes.
+        declared_relative = declared_path.relative_to(copy_root).as_posix()
+        copy_digest_start = {
+            path: value for path, value in tree_digest(copy_root, exclude).items()
+            if path != declared_relative}
+
+        # --- One variation at a time, restored before the next. ---
+        matrix = {label: {} for label in baseline_pairs}
+        for relative in inputs_varied:
+            removed = vary_by_absence(copy_root, [relative])
+            completed = run_sensitivity_drive(
+                recipe, subject, copy_root, box, repo, args.timeout)
+            try:
+                text_after = read_site(declared_path)
+                readable = True
+            except Unprobeable:
+                text_after, readable = "", False
+            pairs_after = (
+                dict(declared_value_pairs(text_after, declared_site))
+                if readable else {})
+            restore_exact_bytes(copy_root, removed)
+
+            for label, baseline_value in baseline_pairs.items():
+                if completed.returncode != 0 or not readable:
+                    outcome = "producer-refused"
+                elif pairs_after.get(label) != baseline_value:
+                    outcome = "moved"
+                else:
+                    outcome = "unchanged"
+                matrix[label][relative] = outcome
+
+        copy_digest_end = {
+            path: value for path, value in tree_digest(copy_root, exclude).items()
+            if path != declared_relative}
+        if copy_digest_start != copy_digest_end:
+            raise Unprobeable(
+                "kind=sensitivity-restore-failed: the copy's own tree "
+                "digest disagrees before and after the sweep, even though "
+                "every per-file restore reported success; a producer "
+                "wrote somewhere else in the copy")
+
+        subject_after = tree_digest(subject, exclude)
+        if subject_before != subject_after:
+            changed = sorted(
+                p for p in set(subject_before) | set(subject_after)
+                if subject_before.get(p) != subject_after.get(p))
+            raise Unprobeable(
+                f"kind=build-escaped-the-box: the sensitivity drive changed "
+                f"the subject at {changed}; a drive writing outside its "
+                "box is an inability to look, never a finding")
+
+        not_adjudicable = sorted(
+            label for label, row in matrix.items()
+            if row and all(outcome == "unchanged" for outcome in row.values()))
+
+        after_removed = box_empty_or_absent(box)
+    finally:
+        erase_box(box)
+
+    emit({
+        "containment": {"afterRemoved": after_removed, "beforeEmpty": before_empty,
+                        "box": str(box)},
+        "control": control_gate,
+        "frozen": {"digest": frozen_digest(subject, exclude),
+                   "exclude": list(exclude), "subject": str(subject)},
+        "inputsTotal": len(input_relatives),
+        "inputsUnchecked": inputs_unchecked,
+        "inputsVaried": inputs_varied,
+        "matrix": matrix,
+        "notAdjudicable": not_adjudicable,
+        "notes": [],
+        "range": SENSITIVITY_VARIATION_RANGE,
         "surface": surface,
     })
     return 0
@@ -1717,6 +2107,7 @@ REPORT_SHAPE = {
     "adjudication": "- Adjudication:",
     "changed-line-forecast": "## Changed-line forecast",
     "clean-section": "## Clean, stated as results",
+    "computed-value-provenance": "## Computed-value provenance",
     "disputed-severity": "## Disputed severity",
     "drives": "## Drives",
     "evidence-marker": "- Evidence:",
@@ -2887,6 +3278,7 @@ DISPATCH = {
     "structure": run_structure,
     "walkthrough": run_walkthrough,
     "reading-diff": run_reading_diff,
+    "sensitivity": run_sensitivity,
 }
 
 
