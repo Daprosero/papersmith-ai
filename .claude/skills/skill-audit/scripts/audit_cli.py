@@ -18,10 +18,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import uuid
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -467,6 +469,83 @@ def interpolate_gate_token(text, repo, subject, box, candidate):
     return _TOKEN_RE.sub(replace, text)
 
 
+#: Only `{repoRoot}` and `{box}` interpolate inside a `fromZero.steps`
+#: entry -- never `{subject}`. The from-zero side is meant to build a
+#: comparison *target*, never to reference the producer it will be compared
+#: against; refusing the token at the interpolation layer is the structural
+#: half of that soundness condition. `assert_no_subject_reference` below is
+#: the other half, for a recipe that embeds the subject's path directly
+#: rather than through the token -- the exact shape of the tar recipe this
+#: change replaces (`git archive HEAD:.claude/skills/skill-audit`, no
+#: `{subject}` token in sight).
+FROM_ZERO_TOKENS = STRUCTURE_TOKENS - {"subject"}
+
+#: The step-kind vocabulary a `fromZero.steps` dict element may declare. A
+#: bare list stays kind `exec`, run exactly as before -- no existing recipe
+#: or fixture changes shape. `driver` is the one new kind: it additionally
+#: resolves `cwd` under the box, constructs an environment from declared
+#: names, and proves `argv[0]`'s real path is external. An unknown `kind`
+#: is `Unprobeable`, the same treatment `interpolate_token` already gives
+#: an unknown `{token}`.
+BOX_STEP_KINDS = ("exec", "driver")
+
+#: Environment variable *names* a `driver` step may ask to inherit from the
+#: parent process. Names only: the child's environment is constructed from
+#: this allowlist, never copied from `os.environ` wholesale, and only the
+#: names travel into the report -- values never do.
+DRIVER_ENV_ALLOWLIST = ("HOME", "LANG", "LC_ALL", "PATH", "TERM", "TMPDIR")
+
+#: The directory namespace the ignorance control gate seeds a from-zero box
+#: with, before trusting that box was ever empty. Absurd and namespaced so
+#: it can never collide with a real driver's own output.
+IGNORANCE_CONTROL_DIR = "__audit_ignorance_control__"
+
+
+def interpolate_from_zero_token(text, repo, box):
+    """Substitute `{repoRoot}` and `{box}` inside one `fromZero.steps` part.
+
+    Never `{subject}`: the from-zero side may not reference the producer it
+    exists to be compared against, so that token is refused here
+    structurally rather than by convention -- the same discipline
+    `interpolate_token` already gives a token it never declared.
+    """
+    def replace(match):
+        token = match.group(1)
+        if token == "subject":
+            raise Unprobeable(
+                "kind=subject-reference: a fromZero step's argv names "
+                "{subject}; the from-zero side may never reference the "
+                "producer it exists to be compared against")
+        if token not in FROM_ZERO_TOKENS:
+            raise Unprobeable(
+                f"the recipe's step names an unknown token {{{token}}}; only "
+                f"{sorted(FROM_ZERO_TOKENS)} interpolate")
+        return {"repoRoot": str(repo), "box": str(box)}[token]
+    return _TOKEN_RE.sub(replace, text)
+
+
+def assert_no_subject_reference(text, subject, repo):
+    """Refuse an interpolated `fromZero` part that names the subject by its
+    absolute or repo-relative path, even when no `{subject}` token was used
+    to get there.
+
+    This is what actually catches the tar recipe's own defect: its argv
+    never used `{subject}`, it spelled the path out by hand
+    (`HEAD:.claude/skills/skill-audit`). Refusing the token alone would
+    have missed it.
+    """
+    subject_abs = str(subject)
+    try:
+        subject_rel = subject.relative_to(repo).as_posix()
+    except ValueError:
+        subject_rel = None
+    if subject_abs in text or (subject_rel and subject_rel in text):
+        raise Unprobeable(
+            "kind=subject-reference: a fromZero step's argv names the "
+            f"subject ({subject_abs!r}); the from-zero side may never "
+            "reference the producer it exists to be compared against")
+
+
 def run_box_step(step, repo, subject, box, timeout):
     """One `fromZero` build step, run inside the box with no shell.
 
@@ -474,13 +553,73 @@ def run_box_step(step, repo, subject, box, timeout):
     `shell=False`, a hang becomes exit `2` rather than a wait forever, and a
     nonzero exit from the build itself is an inability to build from-zero,
     never an empty from-zero side.
+
+    A bare list is kind `exec`, unchanged from before this change. A dict
+    must declare a `kind` from `BOX_STEP_KINDS`; `driver` additionally
+    resolves `cwd` under the box (refusing an occupied one), builds a
+    constructed environment from `env`'s declared names intersected with
+    `DRIVER_ENV_ALLOWLIST`, and proves `argv[0]`'s real path sits outside
+    both the repository and the subject. Every part of every step, either
+    kind, is interpolated through `FROM_ZERO_TOKENS` alone and scanned for
+    a literal reference to the subject.
     """
-    if not step or not all(isinstance(part, str) for part in step):
+    if isinstance(step, list):
+        kind, raw_argv, cwd_spec, env_spec = "exec", step, None, None
+    elif isinstance(step, dict):
+        kind = step.get("kind", "exec")
+        if kind not in BOX_STEP_KINDS:
+            raise Unprobeable(
+                f"a fromZero step names kind {kind!r}, which is not one of "
+                f"{BOX_STEP_KINDS}")
+        raw_argv = step.get("argv")
+        cwd_spec = step.get("cwd")
+        env_spec = step.get("env")
+    else:
+        raise Unprobeable("a fromZero step must be a list or a dict")
+
+    if not raw_argv or not all(isinstance(part, str) for part in raw_argv):
         raise Unprobeable("a fromZero step's argv must be a list of strings")
-    argv = [interpolate_token(part, repo, subject, box) for part in step]
+
+    argv = [interpolate_from_zero_token(part, repo, box) for part in raw_argv]
+    for part in argv:
+        assert_no_subject_reference(part, subject, repo)
+
+    step_cwd = box
+    if cwd_spec:
+        step_cwd = resolve_under(cwd_spec, box, "driver.cwd")
+        if not box_empty_or_absent(step_cwd):
+            raise Unprobeable(
+                f"a fromZero driver step's cwd is not empty: {step_cwd}; "
+                "an occupied box is never silently adopted")
+        step_cwd.mkdir(parents=True, exist_ok=True)
+
+    child_env = None
+    if kind == "driver":
+        names = env_spec or []
+        unknown = sorted(set(names) - set(DRIVER_ENV_ALLOWLIST))
+        if unknown:
+            raise Unprobeable(
+                f"a fromZero driver step names env {unknown}, outside "
+                f"{sorted(DRIVER_ENV_ALLOWLIST)}")
+        child_env = {name: os.environ[name] for name in names
+                    if name in os.environ}
+        real_path = shutil.which(argv[0], path=child_env.get("PATH"))
+        if not real_path:
+            raise Unprobeable(
+                f"a fromZero driver step's argv[0] is not executable: "
+                f"{argv[0]!r}")
+        real = Path(real_path).resolve()
+        inside_repo = real == repo or repo in real.parents
+        inside_subject = real == subject or subject in real.parents
+        if inside_repo or inside_subject:
+            raise Unprobeable(
+                f"kind=driver-not-external: {argv[0]!r} resolves to {real}, "
+                "inside the repository or the subject; a driver shipped "
+                "inside what it audits is not external")
+
     try:
         completed = subprocess.run(
-            argv, cwd=str(box), shell=False,
+            argv, cwd=str(step_cwd), shell=False, env=child_env,
             capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError as error:
         raise Unprobeable(f"a fromZero step's argv[0] is not executable: {error}")
@@ -492,6 +631,38 @@ def run_box_step(step, repo, subject, box, timeout):
         raise Unprobeable(
             f"a fromZero step exited {completed.returncode}: "
             f"{completed.stderr.strip()[:400]}")
+
+
+def ignorance_control_gate(box, exclude):
+    """Prove the from-zero box's own emptiness detector can see
+    contamination, before trusting that emptiness at all.
+
+    Modelled on `candidate_gate_steps`'s inverted control: seed a nonce the
+    tool generates, demand `tree_digest` name it, erase, demand it read
+    empty again. An `exclude` broad enough to hide the seed -- `["*"]`, or
+    anything that over-matches -- would make every box look empty and the
+    ignorance claim true by construction, indistinguishable from its own
+    absence; proving the detector sees the seed first is what makes this a
+    control rather than ceremony.
+    """
+    nonce = uuid.uuid4().hex
+    relative = f"{IGNORANCE_CONTROL_DIR}/{nonce}.txt"
+    marker = box / IGNORANCE_CONTROL_DIR / f"{nonce}.txt"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(nonce, encoding="utf-8")
+    seeded = tree_digest(box, exclude)
+    if relative not in seeded:
+        raise Unprobeable(
+            "kind=ignorance-control-stalled: the box's own emptiness "
+            f"detector did not see a seeded marker at {relative!r}; every "
+            "from-zero conclusion downstream is unreached until the "
+            "detector can prove it sees contamination")
+    erase_box(box)
+    box.mkdir(parents=True, exist_ok=True)
+    if not box_empty_or_absent(box, exclude):
+        raise Unprobeable(
+            "kind=ignorance-control-stalled: the box did not read empty "
+            "immediately after being re-erased")
 
 
 def box_empty_or_absent(box, exclude=()):
@@ -968,6 +1139,7 @@ def run_structure(args):
     box.mkdir(parents=True, exist_ok=True)
 
     try:
+        ignorance_control_gate(box, exclude)
         subject_before = tree_digest(subject, exclude)
         for step in steps:
             run_box_step(step, repo, subject, box, args.timeout)

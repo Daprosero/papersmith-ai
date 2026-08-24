@@ -382,8 +382,14 @@ class SkillHouseShapeTests(unittest.TestCase):
         # box lifecycle: `shutil.rmtree` removes a box in one call, so the
         # walk-restriction lock never has to carve out an exception for a
         # hand-rolled recursive delete written beside `tree_digest`.
+        # `os` arrived with the `driver` step-kind's constructed environment:
+        # `os.environ` is read to build a child env from declared *names*
+        # intersected with `DRIVER_ENV_ALLOWLIST`, never passed wholesale.
+        # `uuid` arrived with the ignorance control gate's seeded marker, a
+        # nonce that must never collide with a real driver's own output.
         permitted = {"__future__", "argparse", "fnmatch", "hashlib", "json",
-                     "pathlib", "re", "shutil", "subprocess", "sys"}
+                     "os", "pathlib", "re", "shutil", "subprocess", "sys",
+                     "uuid"}
         self.assertEqual(
             sorted(imported - permitted), [],
             "audit_cli.py must import nothing outside the standard library, and "
@@ -2096,8 +2102,16 @@ class UsageReferenceTests(unittest.TestCase):
                 result = subprocess.run(
                     [sys.executable, *invocation.split()], cwd=str(FORGE),
                     shell=False, capture_output=True, text=True, timeout=120)
+                # [EXPECTED UNTIL W4] The one `structure` invocation runs
+                # the shipped recipe, whose `fromZero.steps` still name the
+                # subject directly and so is `Unprobeable` (exit 2) until
+                # W4 supplies an operator-declared driver. That is a
+                # documented invocation genuinely *running* and reporting
+                # an honest inability to look, not a crash -- accepted here
+                # alongside 0/1, for this one command only.
+                allowed = (0, 1, 2) if "structure" in invocation else (0, 1)
                 self.assertIn(
-                    result.returncode, (0, 1),
+                    result.returncode, allowed,
                     f"a documented invocation must run: {result.stderr[:300]}")
                 json.loads(result.stdout)
 
@@ -2259,8 +2273,17 @@ class NothingWasRepairedTests(unittest.TestCase):
         exemption whose limit lives only in a docstring is a claim with
         nothing behind it. The limit is held by the two tests above, each
         driving the real subcommand and reading the subject's bytes off disk.
+
+        `run_box_step` and `ignorance_control_gate` joined the exemption
+        with the `driver` step-kind: both write only inside the box
+        `run_structure` already owns (a driver step's `cwd`, and the
+        ignorance control gate's own seeded marker), never into the
+        subject, and `test_a_structure_run_leaves_the_subject_and_its_
+        ground_untouched` above is what actually proves that, by bytes.
         """
-        box_lifecycle_exemption = {"run_structure", "run_walkthrough", "erase_box"}
+        box_lifecycle_exemption = {
+            "run_structure", "run_walkthrough", "erase_box",
+            "run_box_step", "ignorance_control_gate"}
         for path in sorted(SKILL_ROOT.rglob("*")):
             if not path.is_file() or path.suffix != ".py":
                 continue
@@ -2519,7 +2542,18 @@ class FrozenPayloadTests(unittest.TestCase):
         self._assert_frozen_shape(payload)
 
     def test_structure_payload_carries_frozen(self):
-        _, payload = structure_json(STRUCTURE_SPEC, SKILL_ROOT, repo=FORGE)
+        """[EXPECTED UNTIL W4] Still driven for real, against the shipped
+        recipe -- but that recipe is presently `Unprobeable` (the
+        subject-reference refusal fires on its `git archive
+        HEAD:<subject>` step), and an `Unprobeable` payload carries no
+        `frozen` key at all: it is a different shape, an inability to
+        look, not a verdict. This branch is the honest reflection of that,
+        not a fixture built only for this assertion.
+        """
+        result, payload = structure_json(STRUCTURE_SPEC, SKILL_ROOT, repo=FORGE)
+        if result.returncode == 2:
+            self.assertIn("subject-reference", payload["error"])
+            return
         self._assert_frozen_shape(payload)
 
     def test_walkthrough_payload_carries_frozen(self):
@@ -2637,6 +2671,18 @@ class StructureBoxMixin(BoxMixin):
         self.addCleanup(self._erase_structure_box, box)
         return box
 
+    def structure_script_box(self, name):
+        """A box for a fixture's own build/escape script, outside both
+        `subject` and the `_skill_audit_*` namespace `make_box` cleans up
+        globally. See `build_script`'s docstring for why both matter.
+        """
+        box = BOXES / f"_structure_scripts_{name}"
+        if box.exists():
+            self._erase_structure_box(box)
+        box.mkdir(parents=True)
+        self.addCleanup(self._erase_structure_box, box)
+        return box
+
     def _erase_structure_box(self, box):
         if not box.exists():
             return
@@ -2657,14 +2703,36 @@ class StructureBoxMixin(BoxMixin):
         """A build step's script: writes `files` byte-identically under
         whatever root it is called with, so the arithmetic tests exercise
         agreement or divergence deliberately rather than by accident.
+
+        Lives in a box that is a *sibling* of `subject`, never inside it.
+        The from-zero side may never reference the subject at all -- not
+        even by accident, through a fixture's own script sitting inside the
+        directory the audit is comparing against. Placing the script beside
+        `subject` instead of inside it keeps that soundness condition real
+        rather than exempting the test fixtures from it.
+
+        Housed under the `_structure_scripts_` namespace, cleaned up via
+        `_erase_structure_box` rather than `make_box`: `make_box`'s own
+        cleanup asserts the *entire* `_skill_audit_*` namespace is empty at
+        each box's turn, an invariant written for exactly one box per test.
+        A second `_skill_audit_*` box would trip that assertion on the
+        first of the two cleanups to run, for a reason that has nothing to
+        do with either box actually leaking.
         """
+        # `scripts-{short}` rather than `{short}_scripts`, and a distinct
+        # `_structure_scripts_` prefix rather than `_skill_audit_`: the
+        # literal-scan refusal checks for the subject's own path as a
+        # *substring*, so nothing derived from `short` may sit immediately
+        # after the same prefix subject's own box used.
+        short = subject.name.removeprefix("_skill_audit_")
+        scripts = self.structure_script_box(short)
         lines = ["import pathlib, sys", "root = pathlib.Path(sys.argv[1])"]
         for relative, content in files.items():
             lines.append(
                 f"(root / {relative!r}).parent.mkdir(parents=True, exist_ok=True)")
             lines.append(
                 f"(root / {relative!r}).write_text({content!r}, encoding='utf-8')")
-        return self.write(subject, "build.py", "\n".join(lines) + "\n")
+        return self.write(scripts, "build.py", "\n".join(lines) + "\n")
 
     def make_recipe(self, subject, surface, steps, exclude=()):
         spec = subject / "structure.json"
@@ -2758,14 +2826,24 @@ class StructureBoxLifecycleTests(StructureBoxMixin, unittest.TestCase):
 
     def test_a_build_that_writes_outside_the_box_is_exit_two(self):
         surface = "escape"
-        self.structure_box(surface)
+        box = self.structure_box(surface)
         subject = self.make_subject(
             "escape_subject", declared=["a.txt"], disk_files={"a.txt": "x\n"})
+        # The escape script lives in a sibling box, never inside `subject`
+        # -- the from-zero side may not reference the subject at all, so
+        # the escape has to reach it by relative navigation from the box
+        # (its own cwd), exactly the shape a real accidental escape would
+        # take, never by an argv part that literally spells the subject's
+        # path out.
         escape_script = self.write(
-            subject, "escape.py",
+            self.structure_script_box("escape"), "escape.py",
             "import pathlib, sys\n"
             "pathlib.Path(sys.argv[1]).write_text('escaped', encoding='utf-8')\n")
-        steps = [["python3", str(escape_script), "{subject}/escaped.txt"]]
+        steps = [["python3", str(escape_script),
+                  f"../{subject.name}/escaped.txt"]]
+        self.assertEqual(box.parent, subject.parent,
+                         "the relative escape below assumes box and subject "
+                         "are siblings under implementations/")
         spec = self.make_recipe(subject, surface, steps)
         escaped = subject / "escaped.txt"
         self.addCleanup(lambda: escaped.unlink() if escaped.exists() else None)
@@ -2817,6 +2895,156 @@ class StructureBoxLifecycleTests(StructureBoxMixin, unittest.TestCase):
         self.assertFalse(box.exists())
 
 
+class DriverStepKindTests(StructureBoxMixin, unittest.TestCase):
+    """The `driver` step-kind, the from-zero side's subject-reference
+    refusal, and the ignorance control gate that precedes both.
+    """
+
+    def test_an_unknown_step_kind_is_unprobeable(self):
+        surface = "unknown_kind"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            "unknown_kind_subject", declared=["a.txt"], disk_files={"a.txt": "x\n"})
+        steps = [{"kind": "mystery", "argv": ["mkdir", "-p", "{box}/build"]}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("mystery", payload["error"])
+
+    def test_a_driver_step_builds_from_zero_and_agrees(self):
+        surface = "driver_happy"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            "driver_happy_subject", declared=["a.txt"], disk_files={"a.txt": "x\n"})
+        source = self.write(
+            self.structure_script_box("driver_source"), "a.txt", "x\n")
+        steps = [
+            {"kind": "driver", "argv": ["mkdir", "-p", "{box}/build"],
+             "env": ["PATH"], "brief": "stand up the build root"},
+            ["cp", str(source), "{box}/build/a.txt"],
+        ]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["outcome"], "agree")
+
+    def test_a_step_naming_the_subject_token_is_refused(self):
+        surface = "subject_token"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            "subject_token_subject", declared=["a.txt"], disk_files={"a.txt": "x\n"})
+        steps = [{"kind": "driver", "argv": ["echo", "{subject}"], "env": []}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("subject-reference", payload["error"])
+
+    def test_a_step_with_the_subjects_literal_path_is_refused(self):
+        """The exact shape of the tar recipe's own defect: no `{subject}`
+        token anywhere, the path spelled out by hand instead.
+        """
+        surface = "subject_literal"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            "subject_literal_subject", declared=["a.txt"],
+            disk_files={"a.txt": "x\n"})
+        steps = [["echo", f"HEAD:{subject.relative_to(FORGE).as_posix()}"]]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("subject-reference", payload["error"])
+
+    def test_a_git_step_naming_a_different_path_still_runs(self):
+        """Only a step referencing *the subject* is refused. A `git`
+        command naming somewhere else entirely -- not through the token,
+        not by a literal match -- is an ordinary from-zero step.
+        """
+        surface = "git_elsewhere"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            "git_elsewhere_subject", declared=["a.txt"],
+            disk_files={"a.txt": "x\n"})
+        source = self.write(
+            self.structure_script_box("git_elsewhere_source"), "a.txt", "x\n")
+        steps = [
+            {"kind": "driver",
+             "argv": ["git", "-C", "{repoRoot}", "rev-parse", "--show-toplevel"],
+             "env": ["PATH"]},
+            {"kind": "driver", "argv": ["mkdir", "-p", "{box}/build"],
+             "env": ["PATH"]},
+            ["cp", str(source), "{box}/build/a.txt"],
+        ]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["outcome"], "agree")
+
+    def test_an_env_name_outside_the_allowlist_is_refused(self):
+        surface = "env_outside"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            "env_outside_subject", declared=["a.txt"], disk_files={"a.txt": "x\n"})
+        steps = [{"kind": "driver", "argv": ["mkdir", "-p", "{box}/build"],
+                  "env": ["PATH", "SSH_AUTH_SOCK"]}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("SSH_AUTH_SOCK", payload["error"])
+
+    def test_driver_argv0_inside_the_repo_but_outside_the_subject_is_refused(self):
+        surface = "driver_repo_local"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            "driver_repo_local_subject", declared=["a.txt"],
+            disk_files={"a.txt": "x\n"})
+        scripts = self.structure_script_box("driver_repo_local")
+        local_driver = scripts / "local_driver.sh"
+        local_driver.write_text(
+            "#!/bin/sh\nmkdir -p \"$1\"\n", encoding="utf-8")
+        local_driver.chmod(0o755)
+        steps = [{"kind": "driver", "argv": [str(local_driver), "{box}/build"],
+                  "env": ["PATH"]}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("driver-not-external", payload["error"])
+
+    def test_driver_cwd_escaping_the_box_is_refused(self):
+        surface = "driver_cwd_escape"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            "driver_cwd_escape_subject", declared=["a.txt"],
+            disk_files={"a.txt": "x\n"})
+        steps = [{"kind": "driver", "argv": ["mkdir", "-p", "build"],
+                  "cwd": "../..", "env": ["PATH"]}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("driver.cwd", payload["error"])
+
+    def test_ignorance_control_gate_stalls_when_exclude_hides_the_seed(self):
+        """The control is `exclude`-aware, which is what makes it more
+        than ceremony: an `exclude` broad enough to hide the seed would
+        make every box look empty and the ignorance claim true by
+        construction. `["*"]` is exactly that pattern.
+        """
+        surface = "control_gate_blind"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            "control_gate_blind_subject", declared=["a.txt"],
+            disk_files={"a.txt": "x\n"})
+        steps = [{"kind": "driver", "argv": ["mkdir", "-p", "{box}/build"],
+                  "env": ["PATH"]}]
+        # Excludes only the control gate's own seed directory -- never `["*"]`,
+        # which would also blind `disk_set`/`declared_set` and trip the
+        # unrelated "zero members" refusal before the gate is ever reached.
+        spec = self.make_recipe(
+            subject, surface, steps, exclude=["__audit_ignorance_control__/*"])
+        result, payload = structure_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("ignorance-control-stalled", payload["error"])
+
+
 class StructureSelfProbeTests(unittest.TestCase):
     """The shipped recipe, pointed at the auditor's own layout.
 
@@ -2824,32 +3052,32 @@ class StructureSelfProbeTests(unittest.TestCase):
     against `HEAD`; that is documented as accurate, not papered over.
     """
 
-    def test_the_shipped_recipe_runs_and_touches_no_sibling_skill(self):
+    def test_the_shipped_recipe_is_unprobeable_until_w4_supplies_a_driver(self):
+        """[EXPECTED UNTIL W4] The shipped recipe's `fromZero.steps` still
+        runs `git archive HEAD:.claude/skills/skill-audit` -- a from-zero
+        step that names the subject by its own repo-relative path. That is
+        exactly the defect this change closes, so the subject-reference
+        refusal now fires on it. This is the accepted intermediate state
+        from the design's own risk register: an honest inability to look,
+        never a silent pass. W4 -- an operator-declared driver `argv`,
+        deliberately not hard-coded by this skill -- replaces the recipe's
+        `fromZero.steps` and restores a real verdict; until it lands,
+        `structure` against this skill's own shipped recipe reports
+        `Unprobeable`, and it must never touch a sibling skill in getting
+        there.
+        """
         cli = audit_cli_module()
         before = {name: cli.tree_digest(SKILL_ROOT.parent / name)
                  for name in SIBLING_SKILLS_TO_CHECK}
         result, payload = structure_json(STRUCTURE_SPEC, SKILL_ROOT, repo=FORGE)
         after = {name: cli.tree_digest(SKILL_ROOT.parent / name)
                 for name in SIBLING_SKILLS_TO_CHECK}
-        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("subject-reference", payload["error"])
         self.assertEqual(
             before, after,
             "structure reads the subject and builds its own box; it must "
-            "never touch a sibling skill")
-        self.assertIn(payload["outcome"], STRUCTURE_OUTCOMES,
-                      "the outcome must be one this tool can reach")
-        # Membership alone cannot fail -- every value it could hold is in the
-        # tuple -- so it says nothing about the shipped table. What can be
-        # asserted without pinning the commit state is the half that does not
-        # depend on it: the from-zero side reads HEAD and so differs whenever
-        # work is uncommitted, but the declared side is this skill's own
-        # shipped-files table, and it has no excuse to disagree with the disk
-        # it describes.
-        self.assertEqual(
-            (payload["onlyIn"]["declared"], payload["missingFrom"]["declared"]),
-            ([], []),
-            "the shipped-files table disagrees with the files on disk; it is "
-            "hand-written, and this is the only thing that notices")
+            "never touch a sibling skill, even while refusing to look")
 
 
 # ==========================================================================

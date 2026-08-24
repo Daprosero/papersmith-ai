@@ -192,6 +192,7 @@ proves it convincingly. All of these hold or the comparison's result is not read
 | Both directions report as sets, never as a boolean | `unregistered`, `phantom` and `duplicated` are different defects with different remedies |
 | The comparison is proven reachable-red both ways | Adding to the code side fires `unregistered`; deleting a documented row fires `phantom` |
 | The documented side comes from a parseable table, never from prose | The reader who writes the from-zero side has just read the artifact and will reproduce it unconsciously |
+| The from-zero side never references the subject | Not the `{subject}` token, not a hand-typed absolute or repo-relative path to it. The mirror of the first row: a from-zero build that reads from the subject is not a build, it is a copy wearing one |
 
 Where the subject has no such table, **"there is no closed roster here" is the
 finding**, emitted as a first-class result with the range that was searched. It
