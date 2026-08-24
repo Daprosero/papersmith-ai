@@ -1451,12 +1451,14 @@ REPORT_SHAPE = {
     "frozen": "## Frozen",
     "move-number": "- Move:",
     "move-outcomes": "## Move outcomes",
+    "not-adjudicable": "## Not adjudicable",
     "ranked-findings": "## Ranked findings",
     "reading-diff": "## Reading diff",
     "repair-units": "## Repair units",
     "stage-outcomes": "## Stage outcomes",
     "unchecked-section": "## Unchecked",
     "undecidable": "## Undecidable",
+    "user-drive": "## User drive",
 }
 
 #: Every stage's own not-run value for the `REPORT_SHAPE` field it demands,
@@ -1559,6 +1561,14 @@ STAGES_TABLE_HEADER = "| Stage | Models | Demands |"
 #: `- Stage: <id>: skipped: <reason>`. Mirrors `MOVE_OUTCOME_ROW` exactly.
 STAGE_OUTCOME_ROW = re.compile(
     r"^-\s*Stage:\s*(\d+)\s*:\s*(ran|skipped:\s*.*)$")
+
+#: The one skip reason the `user-drive` stage may ever carry. An audit never
+#: reports on a subject without driving it -- the zero-model path is never a
+#: caller's shortcut to assert, so this literal is the only text
+#: `run_check_report` accepts, and only when the measurement it names
+#: (`## Undecidable` non-empty, every entry `no-closed-roster`) actually
+#: holds. Any other stage-2 skip reason is `driver-required`.
+DRIVE_STAGE_RESERVED_SKIP = "no reachable surface (stage 1)"
 
 
 def stage_roster(text):
@@ -1927,11 +1937,12 @@ def run_check_report(args):
                  f"disagrees with '## Frozen''s declared digest "
                  f"{frozen['digest']}", where)
 
-        # Stage 3's asymmetry, enforced structurally: the skill-less drive
-        # never ran the skill's own machinery, so a finding attributed to
-        # it can never make a claim with the subject itself as its target
-        # -- that pairing is a category error regardless of whether stage
-        # 3 is declared ran or skipped in this report.
+        # The differential drive's asymmetry, enforced structurally: the
+        # skill-less drive never ran the skill's own machinery, so a
+        # finding attributed to it can never make a claim with the subject
+        # itself as its target -- that pairing is a category error
+        # regardless of whether the differential-drive stage is declared
+        # ran or skipped in this report.
         drive = re.search(r"^- Drive:\s*(.+?)\s*$", body, re.MULTILINE)
         target = re.search(r"^- Target:\s*(.+?)\s*$", body, re.MULTILINE)
         if (drive and target and drive.group(1) == "skill-less"
@@ -2028,6 +2039,45 @@ def run_check_report(args):
                              f"'- Found by: {not_run_value}' is no longer "
                              "accepted",
                              f"{path}:{finding['line']} {finding['label']}")
+
+    # The binding ruling: an audit never reports on a subject without
+    # driving it. Derived structurally -- the `user-drive` stage id is
+    # whichever row in `required_stages` names that key, never a hardcoded
+    # `"2"` -- so a future renumbering moves this check along with the
+    # table it reads, exactly like every other stage check above.
+    drive_stage_id = next(
+        (stage_id for stage_id, key in required_stages if key == "user-drive"),
+        None)
+    if drive_stage_id is not None:
+        drive_outcome = stage_outcomes.get(drive_stage_id)
+        if drive_outcome is not None and drive_outcome.startswith("skipped:"):
+            drive_reason = drive_outcome.split(":", 1)[1].strip()
+            if drive_reason != DRIVE_STAGE_RESERVED_SKIP:
+                fail("driver-required",
+                     f"stage {drive_stage_id}'s row reads "
+                     f"'skipped: {drive_reason}'; an audit never reports "
+                     "on a subject without driving it, and the only "
+                     f"accepted skip reason is {DRIVE_STAGE_RESERVED_SKIP!r}",
+                     f"{path}:1")
+            else:
+                undecidable_id = next(
+                    (stage_id for stage_id, key in required_stages
+                     if key == "undecidable"), None)
+                stage1_ran = (undecidable_id is not None
+                             and stage_outcomes.get(undecidable_id) == "ran")
+                entries = undecidable_entries(lines)
+                all_no_closed_roster = bool(entries) and all(
+                    entry["surfaceKind"] == "no-closed-roster"
+                    for entry in entries)
+                if not (stage1_ran and all_no_closed_roster):
+                    fail("driver-required",
+                         f"stage {drive_stage_id}'s row reads "
+                         f"'skipped: {DRIVE_STAGE_RESERVED_SKIP}', which is "
+                         "only valid when stage 1 ran and '## Undecidable' "
+                         "is non-empty with every entry's '- Kind:' reading "
+                         "'no-closed-roster'; an empty '## Undecidable' is "
+                         "not the same claim as one full of them",
+                         f"{path}:1")
 
     # The one cross-section rule: an `## Undecidable` entry claiming
     # `- Rung: probe` must name a move whose own `## Move outcomes` row is

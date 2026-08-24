@@ -115,22 +115,26 @@ may never itself close a comparison.
 
 ## The stages
 
-A differential audit against a second subject runs in five stages, cheapest
+A differential audit against a second subject runs in six stages, cheapest
 first. Each is a row in a table, never a numbered heading -- the same reason
 move numbering lives in the moves table rather than in headings of its own.
+Stage 2 is not itself differential: it demands the subject be driven from
+ignorance whenever anything is reachable to drive, and every report --
+differential or not -- carries all six stage rows.
 
 | Stage | Models | Demands |
 | --- | --- | --- |
 | 0. Freeze the subject | 0 | `frozen` |
 | 1. Decide by tool | 0 | `undecidable` |
-| 2. Two blind readings, over that list only | 2 | `reading-diff` |
-| 3. Differential drive, one box with the skill and one without | 2 | `drives` |
-| 4. Partition the two transcripts | 1 | `found-by` |
+| 2. Drive from ignorance | 1 | `user-drive` |
+| 3. Two blind readings, over that list only | 2 | `reading-diff` |
+| 4. Differential drive, one box with the skill and one without | 2 | `drives` |
+| 5. Partition the two transcripts | 1 | `found-by` |
 
-Five model runs, total, and only if every stage after the first two actually
-runs -- two for stage 2's blind readings, two for stage 3's differential
-drive, one for stage 4's partition -- stated here, before any of them is
-launched.
+Six model runs, total, and only if every stage after the first three
+actually runs -- one for stage 2's drive from ignorance, two for stage 3's
+blind readings, two for stage 4's differential drive, one for stage 5's
+partition -- stated here, before any of them is launched.
 
 Each `Demands` cell holds a `REPORT_SHAPE` key, not prose, held to "The shape
 of a report" table below in both directions by
@@ -139,15 +143,34 @@ this table names it: `## Stage outcomes` records it `ran` or
 `skipped: <reason>`, mirroring `## Move outcomes` exactly, and only a `ran`
 row demands the artifact its own `Demands` cell names -- a `skipped` row
 demands nothing. A zero-model audit, stages 0 and 1 `ran` and stages 2
-through 4 all `skipped`, is a valid report on its own terms, never a partial
-one.
+through 5 all `skipped`, is a valid report on its own terms, never a partial
+one -- **except stage 2**, whose skip is accepted under exactly one reason,
+below.
 
 One cross-section rule ties `## Undecidable` back to `## Move outcomes`: an
 entry claiming `- Rung: probe` must name a move whose own row there reads
 `ran`. Declaring a probe was the answer and then skipping the move it names
 is refused, structurally.
 
-Stages 2 through 4 carry no lock over the one fact that would matter most:
+### The binding ruling: an audit never reports without driving
+
+Stage 2 accepts exactly one skip reason:
+
+    - Stage: 2: skipped: no reachable surface (stage 1)
+
+accepted only when stage 1's row reads `ran` and `## Undecidable` is
+**non-empty** with every entry's `- Kind:` reading `no-closed-roster`. An
+empty `## Undecidable` section is not the same claim as a section full of
+`no-closed-roster` entries: a cleanly-decided surface never enters that
+section at all, so its presence there is exactly what distinguishes "nothing
+was reachable" from "nobody looked." Any other stage 2 skip reason --
+including a genuinely empty `## Undecidable` -- is rejected as
+`driver-required`: an audit never reports on a subject without driving it,
+and the zero-model path is never a caller's shortcut to assert. "Optional"
+applies only to stages 3 through 5, after a successful drive, never to
+stage 2 itself.
+
+Stages 3 through 5 carry no lock over the one fact that would matter most:
 whether the two readers, or the two drives, were actually blind, isolated,
 and out of contact with each other. `check-report` can enforce that an
 artifact exists and has the shape this table names. It cannot enforce that
@@ -264,8 +287,10 @@ hand-maintained roster, which is the class this skill exists to find.
 | `disputed-severity` | `## Disputed severity`, bare heading; when non-empty, exactly two `- Position:` lines per dispute, each citing `file:line`, recorded verbatim, with no ranking | The heading is absent, or a dispute's positions are unpaired, or a position carries no citation |
 | `stage-outcomes` | `## Stage outcomes`, one row per stage named in the stages table above, each `ran` or `skipped: <reason>` | A stage has no row, or a `skipped` row carries no reason |
 | `undecidable` | `## Undecidable`, bare heading, demanded when stage 1 is `ran`; when non-empty, each entry names `- Kind:`, `- Rung:` (`probe` or `readers`), and, when the rung is `probe`, `- Probe: <move>` | The heading is absent while stage 1's row reads `ran`, or a `probe` rung names a move whose own `## Move outcomes` row is not `ran` |
-| `reading-diff` | `## Reading diff`, demanded when stage 2 is `ran` | Absent while stage 2's row reads `ran` |
-| `drives` | `## Drives`, demanded when stage 3 is `ran`; no finding may attribute itself to the skill-less drive while naming the subject as its own target | Absent while stage 3's row reads `ran`, or a finding commits that category error |
+| `user-drive` | `## User drive`, demanded when stage 2 is `ran`; the driver's `argv`, `argv[0]`'s resolved path, its `cwd`, the env names passed, the ignorance control gate's outcome, the box digest before and after, and the two-column enforceable / declared-only table | Absent while stage 2's row reads `ran`; or the declared-only column is empty, because a drive claiming to have proven everything has misread what it did; or the box digest disagrees with `## Frozen` |
+| `reading-diff` | `## Reading diff`, demanded when stage 3 is `ran` | Absent while stage 3's row reads `ran` |
+| `drives` | `## Drives`, demanded when stage 4 is `ran`; no finding may attribute itself to the skill-less drive while naming the subject as its own target | Absent while stage 4's row reads `ran`, or a finding commits that category error |
+| `not-adjudicable` | `## Not adjudicable`, bare heading; when non-empty, each entry names the absent half, its `- Evidence:`, and the `## Repair units` unit it belongs to | The heading is absent, or a finding whose `- Adjudication:` reads `not adjudicable` sits under `## Ranked findings` instead |
 
 A report in which **no** finding is marked `CONFIRMED by execution` must say so
 in its **first line**. A clean surface still gets the full report shape,

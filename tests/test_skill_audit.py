@@ -247,6 +247,43 @@ def doctrine_text() -> str:
     return SKILL_MD.read_text(encoding="utf-8")
 
 
+#: The stage-2 skip reason `check-report` accepts as the degenerate,
+#: nothing-reachable exemption from driving. Copied here rather than
+#: imported, exactly like every other fixture literal in this file: a
+#: fixture importing the value it is meant to check against would make the
+#: check vacuous.
+DRIVE_STAGE_RESERVED_SKIP = "no reachable surface (stage 1)"
+
+#: The one `## Undecidable` entry every fixture below carries alongside the
+#: reserved stage-2 skip. Non-empty, and its sole entry's `- Kind:` is
+#: `no-closed-roster` -- the exact measurement `check-report`'s hardening
+#: demands before it will honour the reserved skip at all.
+UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY = (
+    "- Kind: no-closed-roster\n"
+    "- Rung: readers\n")
+
+
+def stage_outcomes_block(overrides=None,
+                         default="skipped: not exercised by this fixture"):
+    """Render `## Stage outcomes` from the real stages table in `SKILL.md`,
+    never from a list hand-typed inside this file.
+
+    `overrides` maps a stage id (as the table names it) to the outcome text
+    that stage's row carries; any stage the roster names but `overrides`
+    does not is rendered with `default`. This is the mechanism the design
+    calls for so a stage inserted into the table propagates to every
+    fixture through one helper, rather than through four hand-edited
+    literal blocks that guarantee the same breakage at the next insertion.
+    """
+    cli = audit_cli_module()
+    roster = cli.stage_roster(doctrine_text())
+    overrides = overrides or {}
+    lines = ["## Stage outcomes", ""]
+    for stage_id, _ in roster:
+        lines.append(f"- Stage: {stage_id}: {overrides.get(stage_id, default)}")
+    return "\n".join(lines) + "\n"
+
+
 def moves_rows() -> list[list[str]]:
     """The moves table's rows, from the markdown and from nowhere else."""
     tables = markdown_table_rows(doctrine_text(), MOVES_HEADER)
@@ -1373,6 +1410,20 @@ class CopiedHelperFidelityTests(unittest.TestCase):
 #: exercised, and any two agreeing 64-hex strings would do.
 VALID_REPORT_DIGEST = "sha256:0a9752e7848b79dee5a2b48d478a7b7bad19d7db119a54d7bb034f4a4e3191be"
 
+#: `VALID_REPORT`'s stage-outcome text, by stage id -- the reserved skip on
+#: stage 2 and the renumbered reasons on 3-5. Fed through
+#: `stage_outcomes_block` rather than hand-typed as a `## Stage outcomes`
+#: block, so a stage inserted into the real table shifts this fixture along
+#: with it instead of leaving a stale, unrenumbered literal behind.
+VALID_REPORT_STAGE_OVERRIDES = {
+    "0": "ran",
+    "1": "ran",
+    "2": f"skipped: {DRIVE_STAGE_RESERVED_SKIP}",
+    "3": "skipped: no blind reading pair compared in this pass",
+    "4": "skipped: no differential drive run in this pass",
+    "5": "skipped: no transcript partition run in this pass",
+}
+
 VALID_REPORT = f"""# Audit: a subject, one surface
 
 ## Frozen
@@ -1395,14 +1446,7 @@ VALID_REPORT = f"""# Audit: a subject, one surface
 - Move: 9: skipped: no supplied reading pair compared in this pass
 - Move: textual: ran
 
-## Stage outcomes
-
-- Stage: 0: ran
-- Stage: 1: ran
-- Stage: 2: skipped: no blind reading pair compared in this pass
-- Stage: 3: skipped: no differential drive run in this pass
-- Stage: 4: skipped: no transcript partition run in this pass
-
+{stage_outcomes_block(VALID_REPORT_STAGE_OVERRIDES)}
 ## Ranked findings
 
 ### F1. A set restated in more places than it is derived
@@ -1431,6 +1475,7 @@ VALID_REPORT = f"""# Audit: a subject, one surface
 
 ## Undecidable
 
+{UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}
 ## Disputed severity
 
 ## Clean, stated as results
@@ -1503,6 +1548,7 @@ class ReportShapeTests(BoxMixin, unittest.TestCase):
             "frozen": ("## Frozen", "## Solidified"),
             "stage-outcomes": ("## Stage outcomes", "## Stage progress"),
             "undecidable": ("## Undecidable", "## Undecided"),
+            "not-adjudicable": ("## Not adjudicable", "## Not applicable"),
         }
         for item, (needle, replacement) in removals.items():
             with self.subTest(item=item):
@@ -1907,14 +1953,7 @@ class CheckReportSubjectTests(BoxMixin, unittest.TestCase):
 - Move: 9: skipped: no supplied reading pair compared in this pass
 - Move: textual: ran
 
-## Stage outcomes
-
-- Stage: 0: ran
-- Stage: 1: ran
-- Stage: 2: skipped: no blind reading pair compared in this pass
-- Stage: 3: skipped: no differential drive run in this pass
-- Stage: 4: skipped: no transcript partition run in this pass
-
+{stage_outcomes_block(VALID_REPORT_STAGE_OVERRIDES)}
 ## Ranked findings
 
 ### F1. A finding for the re-derivation fixture
@@ -1928,8 +1967,11 @@ class CheckReportSubjectTests(BoxMixin, unittest.TestCase):
 - Doctrine side: `SKILL.md:1`
 - Detail: only the subject-level digest is under test here.
 
+## Not adjudicable
+
 ## Undecidable
 
+{UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}
 ## Disputed severity
 
 ## Clean, stated as results
@@ -2409,14 +2451,7 @@ class FrozenDigestTests(BoxMixin, unittest.TestCase):
 - Move: 9: skipped: no supplied reading pair compared in this pass
 - Move: textual: ran
 
-## Stage outcomes
-
-- Stage: 0: ran
-- Stage: 1: ran
-- Stage: 2: skipped: no blind reading pair compared in this pass
-- Stage: 3: skipped: no differential drive run in this pass
-- Stage: 4: skipped: no transcript partition run in this pass
-
+{stage_outcomes_block(VALID_REPORT_STAGE_OVERRIDES)}
 ## Ranked findings
 
 ### F1. A finding whose own digest disagrees with the frozen one
@@ -2430,8 +2465,11 @@ class FrozenDigestTests(BoxMixin, unittest.TestCase):
 - Doctrine side: `SKILL.md:1`
 - Detail: planted for this test -- the two digests are deliberately unequal.
 
+## Not adjudicable
+
 ## Undecidable
 
+{UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}
 ## Disputed severity
 
 ## Clean, stated as results
@@ -3844,58 +3882,115 @@ class StageOutcomesTests(BoxMixin, unittest.TestCase):
 
     def test_a_stage_missing_its_row_is_named(self):
         broken = VALID_REPORT.replace(
-            "- Stage: 3: skipped: no differential drive run in this pass\n",
+            "- Stage: 4: skipped: no differential drive run in this pass\n",
             "", 1)
-        result, payload = self.check(broken, name="missing-stage-3.md")
-        self.assertEqual(result.returncode, 1, payload)
-        violations = [v for v in payload["violations"]
-                     if v["item"] == "stage-outcomes"]
-        self.assertTrue(
-            any("3" in v["detail"] for v in violations),
-            f"removing stage 3's row must name stage 3: {violations}")
-
-    def test_a_skipped_stage_row_with_an_empty_reason_is_rejected(self):
-        broken = VALID_REPORT.replace(
-            "- Stage: 4: skipped: no transcript partition run in this pass\n",
-            "- Stage: 4: skipped:\n", 1)
-        result, payload = self.check(broken, name="empty-stage-reason.md")
+        result, payload = self.check(broken, name="missing-stage-4.md")
         self.assertEqual(result.returncode, 1, payload)
         violations = [v for v in payload["violations"]
                      if v["item"] == "stage-outcomes"]
         self.assertTrue(
             any("4" in v["detail"] for v in violations),
-            f"an empty reason must still name stage 4: {violations}")
+            f"removing stage 4's row must name stage 4: {violations}")
+
+    def test_a_skipped_stage_row_with_an_empty_reason_is_rejected(self):
+        broken = VALID_REPORT.replace(
+            "- Stage: 5: skipped: no transcript partition run in this pass\n",
+            "- Stage: 5: skipped:\n", 1)
+        result, payload = self.check(broken, name="empty-stage-reason.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "stage-outcomes"]
+        self.assertTrue(
+            any("5" in v["detail"] for v in violations),
+            f"an empty reason must still name stage 5: {violations}")
 
     def test_ran_stage_without_artifact_is_rejected(self):
-        """Spec scenario: stage 2 declared `ran` with no `## Reading diff`
-        section is rejected, naming stage 2.
+        """Spec scenario: stage 3 declared `ran` with no `## Reading diff`
+        section is rejected, naming stage 3.
         """
         broken = VALID_REPORT.replace(
-            "- Stage: 2: skipped: no blind reading pair compared in this "
+            "- Stage: 3: skipped: no blind reading pair compared in this "
             "pass\n",
-            "- Stage: 2: ran\n", 1)
-        result, payload = self.check(broken, name="stage2-ran-no-artifact.md")
+            "- Stage: 3: ran\n", 1)
+        result, payload = self.check(broken, name="stage3-ran-no-artifact.md")
         self.assertEqual(result.returncode, 1, payload)
         violations = [v for v in payload["violations"]
                      if v["item"] == "reading-diff"]
         self.assertTrue(
+            any("3" in v["detail"] for v in violations),
+            f"stage 3 declared ran with no '## Reading diff' must be "
+            f"rejected and must name stage 3: {violations}")
+
+    def test_stage_two_ran_without_user_drive_artifact_is_rejected(self):
+        """The `user-drive` conditional artifact, demanded structurally the
+        same way `reading-diff` and `drives` already are: stage 2 declared
+        `ran` with no `## User drive` section is rejected, naming stage 2.
+        """
+        broken = VALID_REPORT.replace(
+            f"- Stage: 2: skipped: {DRIVE_STAGE_RESERVED_SKIP}\n",
+            "- Stage: 2: ran\n", 1)
+        result, payload = self.check(broken, name="stage2-ran-no-drive.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "user-drive"]
+        self.assertTrue(
             any("2" in v["detail"] for v in violations),
-            f"stage 2 declared ran with no '## Reading diff' must be "
+            f"stage 2 declared ran with no '## User drive' must be "
             f"rejected and must name stage 2: {violations}")
 
     def test_zero_model_audit_is_valid(self):
-        """[LOCK] Spec scenario: stages 0-1 `ran`, stages 2-4 all
-        `skipped: <reason>` -- accepted. `VALID_REPORT` is already exactly
-        this shape. Inverted immediately below by declaring stage 2 `ran`
-        in the same fixture without its artifact, and confirmed rejected --
-        the inversion is `test_ran_stage_without_artifact_is_rejected`
-        above, run against a `.replace()` of this same baseline text, and
-        restoration is implicit: `VALID_REPORT` itself is never mutated,
-        only a derived string is.
+        """[LOCK] Spec scenario: stages 0-1 `ran`, stage 2 `skipped` under
+        the one reserved reason, stages 3-5 `skipped: <reason>` -- accepted.
+        `VALID_REPORT` is already exactly this shape. Inverted immediately
+        below by declaring stage 3 `ran` in the same fixture without its
+        artifact, and confirmed rejected -- the inversion is
+        `test_ran_stage_without_artifact_is_rejected` above, run against a
+        `.replace()` of this same baseline text, and restoration is
+        implicit: `VALID_REPORT` itself is never mutated, only a derived
+        string is.
         """
         result, payload = self.check(VALID_REPORT, name="zero-model.md")
         self.assertEqual(result.returncode, 0, payload)
         self.assertEqual(payload["violations"], [])
+
+    def test_stage_two_skip_reason_other_than_reserved_is_driver_required(self):
+        """Spec scenario: a reachable-surface report cannot skip stage 2 for
+        any reason of its own choosing. Any text other than the one reserved
+        literal is rejected as `driver-required`, never accepted as
+        equivalent -- even a reason that reads plausibly.
+        """
+        broken = VALID_REPORT.replace(
+            f"- Stage: 2: skipped: {DRIVE_STAGE_RESERVED_SKIP}\n",
+            "- Stage: 2: skipped: too expensive to drive this pass\n", 1)
+        result, payload = self.check(broken, name="stage2-wrong-reason.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "driver-required"]
+        self.assertTrue(
+            any("2" in v["detail"] for v in violations),
+            f"a non-reserved stage-2 skip reason must be rejected as "
+            f"driver-required: {violations}")
+
+    def test_stage_two_reserved_skip_with_empty_undecidable_is_rejected(self):
+        """The gap the reconciliation found: design's per-entry check is
+        vacuously true over an *empty* `## Undecidable` section, because a
+        cleanly-decided surface never enters that section at all. A report
+        claiming the reserved skip while `## Undecidable` carries no entries
+        at all must still be rejected as `driver-required` -- the section
+        being non-empty is part of the measurement, not a formality.
+        """
+        broken = VALID_REPORT.replace(
+            f"{UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}\n## Disputed severity",
+            "## Disputed severity", 1)
+        self.assertNotEqual(broken, VALID_REPORT, "the graft must land")
+        result, payload = self.check(broken, name="stage2-empty-undecidable.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "driver-required"]
+        self.assertTrue(
+            any("2" in v["detail"] for v in violations),
+            f"the reserved skip over an empty '## Undecidable' must still "
+            f"be rejected: {violations}")
 
     def test_stage_3_asymmetry_rejects_skill_less_finding_against_subject(self):
         broken = VALID_REPORT.replace(
@@ -3938,8 +4033,8 @@ class StageOutcomesTests(BoxMixin, unittest.TestCase):
         for invented in ("a-reason-nobody-emits", "comparison-not-run"):
             with self.subTest(kind=invented):
                 text = VALID_REPORT.replace(
-                    "## Undecidable\n\n## Disputed severity",
-                    "## Undecidable\n\n"
+                    f"{UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}\n## Disputed severity",
+                    f"{UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}\n"
                     f"- Kind: {invented}\n"
                     "- Rung: readers\n\n"
                     "## Disputed severity", 1)
@@ -3960,8 +4055,8 @@ class StageOutcomesTests(BoxMixin, unittest.TestCase):
         is rejected; declaring move 9 `ran` in the same fixture is accepted.
         """
         with_entry = VALID_REPORT.replace(
-            "## Undecidable\n\n## Disputed severity",
-            "## Undecidable\n\n"
+            f"{UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}\n## Disputed severity",
+            f"{UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}\n"
             "- Kind: no-closed-roster\n"
             "- Rung: probe\n"
             "- Probe: 9\n\n"
@@ -4016,12 +4111,13 @@ class StageOutcomesTests(BoxMixin, unittest.TestCase):
         with self.assertRaises(cli.Unprobeable):
             cli.stage_roster(bad)
 
-    def test_the_real_stages_table_derives_stages_0_through_4(self):
+    def test_the_real_stages_table_derives_stages_0_through_5(self):
         cli = audit_cli_module()
         roster = cli.stage_roster(doctrine_text())
         self.assertEqual(
-            [stage_id for stage_id, _ in roster], ["0", "1", "2", "3", "4"])
+            [stage_id for stage_id, _ in roster],
+            ["0", "1", "2", "3", "4", "5"])
         self.assertEqual(
             dict(roster),
-            {"0": "frozen", "1": "undecidable", "2": "reading-diff",
-             "3": "drives", "4": "found-by"})
+            {"0": "frozen", "1": "undecidable", "2": "user-drive",
+             "3": "reading-diff", "4": "drives", "5": "found-by"})
