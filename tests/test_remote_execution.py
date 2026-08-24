@@ -6239,6 +6239,18 @@ class CampaignSubmitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target, notebook = self._target_and_notebook(tmp)
             adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 2)])
+            units = ("u0", "u1", "u2", "u3")
+
+            # Phase 4 (Finding 3; Decisions 4, 5): campaign submit now
+            # refuses without a consent token minted for this exact
+            # invocation. `distribute` is the one place that prints it —
+            # this cast is visible in the diff, deliberately, rather than
+            # quietly folding a `consent=` kwarg in beside `units=` as
+            # though nothing changed.
+            token = REMOTE_CLI.cmd_distribute(
+                target=target, entrypoint=notebook, adapter=adapter, units=units,
+                source_digest=lambda t, n: "d" * 64,
+            )["consentToken"]
 
             with unittest.mock.patch.object(
                 PACKER, "select",
@@ -6250,7 +6262,7 @@ class CampaignSubmitTests(unittest.TestCase):
                 result = REMOTE_CLI.cmd_submit(
                     target=target, entrypoint=notebook, requested=1,
                     adapter=adapter, source_digest=lambda t, n: "d" * 64,
-                    units=("u0", "u1", "u2", "u3"),
+                    units=units, consent=token,
                 )
 
             self.assertIn("assignments", result)
@@ -6272,10 +6284,18 @@ class CampaignSubmitTests(unittest.TestCase):
             # unplaced, the fifth (revoked) named in `skipped` with reason.
             units = tuple(f"u{i}" for i in range(6))
 
+            # Phase 4 (Finding 3; Decisions 4, 5): same visible cast as
+            # above — a consent token, minted by `distribute` for this
+            # exact ordered unit list, is now required.
+            token = REMOTE_CLI.cmd_distribute(
+                target=target, entrypoint=notebook, adapter=adapter, units=units,
+                source_digest=lambda t, n: "d" * 64,
+            )["consentToken"]
+
             result = REMOTE_CLI.cmd_submit(
                 target=target, entrypoint=notebook, requested=1,
                 adapter=adapter, source_digest=lambda t, n: "d" * 64,
-                units=units,
+                units=units, consent=token,
             )
 
             self.assertEqual(len(result["assignments"]), 4)
@@ -6322,25 +6342,41 @@ class CampaignSubmitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target, notebook = self._target_and_notebook(tmp)
             adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 2)])
-            stdout = io.StringIO()
-            with unittest.mock.patch.object(
-                REMOTE_CLI, "_load_backend_module", return_value=None
-            ), unittest.mock.patch.object(
-                REMOTE_CLI.ADAPTER, "resolve", return_value=MultiWorkerFakeAdapter,
-            ), unittest.mock.patch.object(
-                REMOTE_CLI, "_construct_adapter", return_value=adapter,
-            ), unittest.mock.patch.object(
-                REMOTE_CLI, "_load_source_digest", return_value=lambda t, p: "d" * 64,
-            ), contextlib.redirect_stdout(stdout):
-                argv = [
-                    "submit", "--target", str(target), "--entrypoint", str(notebook),
-                    "--backend", "fake-multi",
-                    "--unit", "u0", "--unit", "u1", "--unit", "u2", "--unit", "u3",
-                ]
-                exit_code = REMOTE_CLI.main(argv)
+
+            def _run(argv: list[str]) -> tuple[int, str]:
+                stdout = io.StringIO()
+                with unittest.mock.patch.object(
+                    REMOTE_CLI, "_load_backend_module", return_value=None
+                ), unittest.mock.patch.object(
+                    REMOTE_CLI.ADAPTER, "resolve", return_value=MultiWorkerFakeAdapter,
+                ), unittest.mock.patch.object(
+                    REMOTE_CLI, "_construct_adapter", return_value=adapter,
+                ), unittest.mock.patch.object(
+                    REMOTE_CLI, "_load_source_digest", return_value=lambda t, p: "d" * 64,
+                ), contextlib.redirect_stdout(stdout):
+                    exit_code = REMOTE_CLI.main(argv)
+                return exit_code, stdout.getvalue()
+
+            unit_flags = ["--unit", "u0", "--unit", "u1", "--unit", "u2", "--unit", "u3"]
+
+            # Phase 4 (Finding 3; Decisions 4, 5): `distribute` is the one
+            # place that prints the consent token this campaign submission
+            # now requires — this cast is visible in the diff, deliberately,
+            # rather than folding `--consent` in as though nothing changed.
+            distribute_exit, distribute_printed = _run(
+                ["distribute", "--target", str(target), "--entrypoint", str(notebook),
+                 "--backend", "fake-multi", *unit_flags]
+            )
+            self.assertEqual(distribute_exit, 0)
+            token = json.loads(distribute_printed)["consentToken"]
+
+            exit_code, printed = _run(
+                ["submit", "--target", str(target), "--entrypoint", str(notebook),
+                 "--backend", "fake-multi", *unit_flags, "--consent", token]
+            )
 
             self.assertEqual(exit_code, 0)
-            payload = json.loads(stdout.getvalue())
+            payload = json.loads(printed)
             self.assertIn("assignments", payload)
             self.assertEqual(len(payload["assignments"]), 2)
             self.assertEqual(payload["unplaced"], [])
@@ -6369,6 +6405,370 @@ class CampaignSubmitTests(unittest.TestCase):
             payload = json.loads(stdout.getvalue())
             self.assertIn("submissionId", payload)
             self.assertNotIn("assignments", payload)
+
+
+class ConsentGateTests(unittest.TestCase):
+    """Phase 4 (Finding 3; Decisions 4, 5): `submit --unit` (campaign mode)
+    refuses without an explicit `--consent <token>` -- the "nothing is
+    launched without explicit permission" rule the user has stated in
+    their own words, moved out of agent instructions (where a fresh
+    session could never see it) and into the skill itself.
+
+    The user's own scope: PER CAMPAIGN, never per shard. One approval
+    covers the exact ordered unit list of THAT invocation -- thirty
+    shards, one prompt, not thirty. The token is derived, never
+    persisted: `sha256(pin commit, relative entrypoint, ordered unit
+    list)`, printed by `distribute` -- already read-only, already
+    computing the spread, already handing it to nobody. It expires by
+    construction the instant the pin or the unit set moves, not by any
+    policy this module would have to remember to enforce.
+
+    Single-worker `submit` (no `--unit` at all) is untouched: it has no
+    unit list for a token to bind to, and Decision 6's own regression lock
+    (`CampaignSubmitTests.test_single_unit_submit_without_units_stays_on_select_path`)
+    already pins that path byte-identical to before this phase.
+
+    Honest limit, stated rather than implied: no gate here can prove a
+    human was present at the keyboard. It proves only that the launch was
+    deliberate (a token had to be minted first, by a caller who had to
+    already know the exact pin, entrypoint and unit list), bound (to
+    exactly that campaign) and unstored (nothing on disk, in an env var,
+    or in a config file ever carries it forward to a later invocation).
+    """
+
+    def setUp(self) -> None:
+        # Same reason `SubmitTests.setUp()` stubs this: this class's
+        # subject is the consent gate itself, not the three pin
+        # conditions, and its fixtures are plain directories, not git
+        # repositories. `SubmitPinGateTests` already drives those three
+        # conditions against real git repos; nothing here duplicates that.
+        patcher = unittest.mock.patch.object(
+            JOBFOLDER, "verify_pin_preconditions", return_value=None
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _target_and_notebook(self, tmp: str, name: str = "MIL-CREDA") -> tuple[Path, Path]:
+        target = Path(tmp) / "repo"
+        notebooks = _make_product(target, name)
+        notebook = notebooks / "a.ipynb"
+        notebook.write_text("{}", encoding="utf-8")
+        return target, notebook
+
+    def _job_folder_and_notebook(
+        self, tmp: str, *, commit: str,
+    ) -> tuple[Path, Path, Path]:
+        target = Path(tmp) / "repo"
+        (target / "MIL-CREDA").mkdir(parents=True)
+        job_dir = _make_job_folder(target, "kaggle", "search-a")
+        notebook = job_dir / "runner.ipynb"
+        notebook.write_text("{}", encoding="utf-8")
+        _write_job_folder_run_config(job_dir, commit=commit)
+        return target, job_dir, notebook
+
+    # -- 4.2/4.3: refuse without --consent at all -------------------------
+
+    def test_campaign_submit_without_consent_refuses_before_any_adapter_call(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 2)])
+
+            with self.assertRaises(REMOTE_CLI.ConsentError) as caught:
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, requested=1,
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                    units=("u0", "u1"),
+                )
+
+            self.assertIn("consent", str(caught.exception).lower())
+            self.assertEqual(adapter.submit_calls, [])
+
+    def test_single_unit_submit_needs_no_consent_at_all(self) -> None:
+        """The regression lock this phase must not break: no `--unit` at
+        all means no campaign, and no campaign means nothing for a token
+        to bind to -- `consent` is simply never read on this path.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+
+            result = REMOTE_CLI.cmd_submit(
+                target=target, entrypoint=notebook, requested=1,
+                adapter=adapter, source_digest=lambda t, n: "d" * 64,
+            )
+
+            self.assertEqual(adapter.submit_calls, ["w1"])
+            self.assertNotIn("assignments", result)
+
+    # -- 4.4/4.5: shared derivation; distribute's own token authorizes ----
+
+    def test_a_token_minted_by_distribute_authorizes_the_same_campaign(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 2)])
+            units = ("u0", "u1", "u2", "u3")
+
+            distribute_result = REMOTE_CLI.cmd_distribute(
+                target=target, entrypoint=notebook, adapter=adapter, units=units,
+                source_digest=lambda t, n: "d" * 64,
+            )
+            token = distribute_result["consentToken"]
+            self.assertTrue(token)
+
+            result = REMOTE_CLI.cmd_submit(
+                target=target, entrypoint=notebook, requested=1,
+                adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                units=units, consent=token,
+            )
+
+            self.assertIn("assignments", result)
+            self.assertEqual(sorted(adapter.submit_calls), ["w1", "w2"])
+
+    def test_a_forged_token_refuses_and_spends_no_quota(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+
+            with self.assertRaises(REMOTE_CLI.ConsentError):
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, requested=1,
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                    units=("u0",), consent="not-a-real-token",
+                )
+            self.assertEqual(adapter.submit_calls, [])
+
+    # -- 4.6: the token is bound to the job folder's OWN declared pin -----
+
+    def test_a_token_minted_at_one_pin_refuses_once_the_job_re_pins(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, job_dir, notebook = self._job_folder_and_notebook(
+                tmp, commit="a" * 40,
+            )
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+            units = ("u0",)
+
+            distribute_result = REMOTE_CLI.cmd_distribute(
+                target=target, entrypoint=notebook, adapter=adapter, units=units,
+                source_digest=lambda t, n: "d" * 64,
+            )
+            token = distribute_result["consentToken"]
+
+            # The job re-pins to a DIFFERENT commit -- exactly the pin
+            # `_gate_job_folder_pin()` reads through `JOBFOLDER.read()` at
+            # submit time, and no longer the one the token above was
+            # minted against.
+            _write_job_folder_run_config(job_dir, commit="b" * 40)
+
+            with self.assertRaises(REMOTE_CLI.ConsentError):
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, requested=1,
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                    units=units, consent=token,
+                )
+            self.assertEqual(adapter.submit_calls, [])
+
+    # -- 4.7: exact ordered-unit-list scope (Decision 5) -------------------
+
+    def test_a_unit_added_to_the_invocation_refuses_the_earlier_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 2)])
+            units = ("u0", "u1")
+
+            distribute_result = REMOTE_CLI.cmd_distribute(
+                target=target, entrypoint=notebook, adapter=adapter, units=units,
+                source_digest=lambda t, n: "d" * 64,
+            )
+            token = distribute_result["consentToken"]
+
+            with self.assertRaises(REMOTE_CLI.ConsentError):
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, requested=1,
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                    units=units + ("u2",), consent=token,
+                )
+            self.assertEqual(adapter.submit_calls, [])
+
+    def test_a_unit_removed_from_the_invocation_refuses_the_earlier_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+            units = ("u0", "u1", "u2")
+
+            distribute_result = REMOTE_CLI.cmd_distribute(
+                target=target, entrypoint=notebook, adapter=adapter, units=units,
+                source_digest=lambda t, n: "d" * 64,
+            )
+            token = distribute_result["consentToken"]
+
+            with self.assertRaises(REMOTE_CLI.ConsentError):
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, requested=1,
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                    units=units[:-1], consent=token,
+                )
+            self.assertEqual(adapter.submit_calls, [])
+
+    def test_units_reordered_refuses_the_earlier_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+            units = ("u0", "u1", "u2")
+
+            distribute_result = REMOTE_CLI.cmd_distribute(
+                target=target, entrypoint=notebook, adapter=adapter, units=units,
+                source_digest=lambda t, n: "d" * 64,
+            )
+            token = distribute_result["consentToken"]
+
+            reordered = (units[1], units[0], units[2])
+            # Nonvacuity: the fixture must actually be a reordering, not
+            # an accidental no-op relabeling of the same sequence.
+            self.assertNotEqual(reordered, units)
+
+            with self.assertRaises(REMOTE_CLI.ConsentError):
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, requested=1,
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                    units=reordered, consent=token,
+                )
+            self.assertEqual(adapter.submit_calls, [])
+
+    # -- 4.10: a cross-campaign token (different entrypoint) refuses ------
+
+    def test_a_token_minted_for_a_different_entrypoint_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks_a = _make_product(target, "MIL-CREDA")
+            notebook_a = notebooks_a / "a.ipynb"
+            notebook_a.write_text("{}", encoding="utf-8")
+            notebooks_b = _make_product(target, "OtherProduct")
+            notebook_b = notebooks_b / "b.ipynb"
+            notebook_b.write_text("{}", encoding="utf-8")
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+            units = ("u0",)
+
+            distribute_result = REMOTE_CLI.cmd_distribute(
+                target=target, entrypoint=notebook_a, adapter=adapter, units=units,
+                source_digest=lambda t, n: "d" * 64,
+            )
+            token = distribute_result["consentToken"]
+
+            with self.assertRaises(REMOTE_CLI.ConsentError):
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook_b, requested=1,
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                    units=units, consent=token,
+                )
+            self.assertEqual(adapter.submit_calls, [])
+
+    # -- 4.9: never persisted -- argv-only, and no residue across calls ---
+
+    def test_a_second_invocation_without_consent_refuses_exactly_as_if_none_had_ever_consented(
+        self,
+    ) -> None:
+        """The whole-tree hash proof: a FIRST, properly consented campaign
+        invocation succeeds and writes its ledger line, exactly as
+        expected. A SECOND invocation over the same units, carrying no
+        `--consent` at all, must refuse -- and must leave the tree exactly
+        as the first call's own success left it, proving nothing the first
+        call wrote (no config, no env var, no ledger line) is what a
+        stored flag would have needed to leave behind to reproduce the
+        very defect this gate exists to close.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+            units = ("u0",)
+
+            distribute_result = REMOTE_CLI.cmd_distribute(
+                target=target, entrypoint=notebook, adapter=adapter, units=units,
+                source_digest=lambda t, n: "d" * 64,
+            )
+            token = distribute_result["consentToken"]
+
+            REMOTE_CLI.cmd_submit(
+                target=target, entrypoint=notebook, requested=1,
+                adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                units=units, consent=token,
+            )
+            after_consented = _snapshot_tree(target)
+
+            with self.assertRaises(REMOTE_CLI.ConsentError):
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, requested=1,
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                    units=units,
+                )
+            after_refused = _snapshot_tree(target)
+
+            self.assertEqual(
+                after_consented, after_refused,
+                "the refused invocation wrote something under target -- "
+                "consent from the FIRST, already-spent invocation must "
+                "leave nothing behind for a later, unconsented one to read",
+            )
+
+    def test_consent_reads_only_the_parsed_argv_never_env_or_a_config_file(
+        self,
+    ) -> None:
+        """Source-level lock, the same discipline
+        `test_cmd_distribute_source_names_neither_append_nor_submit` and
+        `test_remote_cli_source_names_no_evidence_field_of_its_own` already
+        apply one layer down: the consent path never names `os.environ` or
+        `getenv` anywhere in `cmd_submit`'s own source.
+        """
+        source = inspect.getsource(REMOTE_CLI.cmd_submit)
+        self.assertNotIn("os.environ", source)
+        self.assertNotIn("getenv", source)
+
+    # -- CLI wiring: --consent, end to end ---------------------------------
+
+    def test_cli_submit_requires_and_verifies_the_consent_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+
+            def _run(argv: list[str]) -> tuple[int, str]:
+                stdout = io.StringIO()
+                with unittest.mock.patch.object(
+                    REMOTE_CLI, "_load_backend_module", return_value=None
+                ), unittest.mock.patch.object(
+                    REMOTE_CLI.ADAPTER, "resolve", return_value=MultiWorkerFakeAdapter,
+                ), unittest.mock.patch.object(
+                    REMOTE_CLI, "_construct_adapter", return_value=adapter,
+                ), unittest.mock.patch.object(
+                    REMOTE_CLI, "_load_source_digest", return_value=lambda t, p: "d" * 64,
+                ), contextlib.redirect_stdout(stdout):
+                    exit_code = REMOTE_CLI.main(argv)
+                return exit_code, stdout.getvalue()
+
+            distribute_argv = [
+                "distribute", "--target", str(target), "--entrypoint", str(notebook),
+                "--backend", "fake-multi", "--unit", "u0",
+            ]
+            exit_code, printed = _run(distribute_argv)
+            self.assertEqual(exit_code, 0)
+            token = json.loads(printed)["consentToken"]
+            self.assertTrue(token)
+
+            no_consent_argv = [
+                "submit", "--target", str(target), "--entrypoint", str(notebook),
+                "--backend", "fake-multi", "--unit", "u0",
+            ]
+            exit_code, printed = _run(no_consent_argv)
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(printed, "", "a refusal must print no JSON at all")
+
+            consented_argv = no_consent_argv + ["--consent", token]
+            exit_code, printed = _run(consented_argv)
+            self.assertEqual(exit_code, 0)
+            payload = json.loads(printed)
+            self.assertIn("assignments", payload)
+
+            self.assertEqual(adapter.submit_calls, ["w1"])
 
 
 class AcceleratorRequestDoctrineTests(unittest.TestCase):

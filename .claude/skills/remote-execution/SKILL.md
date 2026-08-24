@@ -151,6 +151,48 @@ Three modules exist so far, each service-blind and stdlib-only:
     account is always named with its reason, never silently dropped.
     Single-unit `submit` (no `--unit` at all) is untouched: today's
     `select()`/`plan()` path, byte-identical.
+  - **Per-campaign consent gate** (Finding 3; Decisions 4, 5): campaign
+    mode (`--unit`) refuses without an explicit `--consent <token>` —
+    the "nothing is launched without explicit permission" rule, held
+    until now only in agent instructions where a fresh session invoking
+    `submit` would meet nothing that asks. Scoped **per campaign, not per
+    shard**: one approval, carried by one invocation, covers every unit
+    that invocation submits — thirty shards, one prompt. A CLI cannot
+    prompt on its own, so the gate refuses by default and is released by
+    a token, deliberately never a `--yes` boolean: a boolean satisfies
+    "not persisted" on paper and reproduces this exact defect the moment
+    it lands in a wrapper script.
+
+    The token is **derived**, not issued: `sha256(pin commit, relative
+    entrypoint, ordered unit list)`, computed by
+    `campaign_consent_token()` — the ONE function both `distribute`
+    (which prints it, in `consentToken`) and `submit` (which recomputes
+    it from the job folder's own declared commit via `JOBFOLDER.read()`,
+    plus the invocation's own `--entrypoint` and `--unit` list) call.
+    `distribute` was already read-only, already computed the spread, and
+    already handed it to nobody — printing the token adds no new write.
+    It expires **by construction**, not by policy: a pin that moves, an
+    entrypoint that changes, or a unit added, removed or reordered all
+    change the payload and therefore the digest, so a stale or
+    cross-campaign token simply stops matching — there is no separate
+    staleness check to remember to run. Live worker health is
+    deliberately NOT bound into the token: a flapping account would
+    otherwise revoke an approval that was legitimately given.
+
+    Three things make non-persistence structural, not merely asserted:
+    consent is read **only from parsed argv** (never a config key, an
+    environment variable, or a ledger line); a whole-tree hash snapshot
+    across two invocations proves nothing under `target` records it; and
+    a token minted for a different pin, entrypoint, or unit set refuses.
+    Single-unit `submit` (no `--unit`) never reads `--consent` at all —
+    it has no unit list for a token to bind to.
+
+    **The honest limit, stated rather than implied: no gate can prove a
+    human was present at the keyboard.** It proves only that the launch
+    was deliberate (a token had to be minted first, by a caller who
+    already knew the exact pin, entrypoint and unit list), bound (to
+    exactly that campaign), and unstored (nothing here ever carries it
+    forward to a later invocation).
   - `status` folds the ledger and reports per-entrypoint state, what is
     `staleInFlight`, what is quarantined, and `unreadableLines`. It accepts
     no `adapter` parameter at all — a structural fact, not a convention —

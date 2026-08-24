@@ -36,6 +36,7 @@ Run with any Python 3.10+ (stdlib-only):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import inspect
 import json
@@ -153,6 +154,16 @@ class RemoteCLIError(Exception):
 
 class PathGuardError(RemoteCLIError):
     """An entrypoint failed this forge's own file-kind policy for what may run remotely."""
+
+
+class ConsentError(RemoteCLIError):
+    """A campaign submission refused for lack of, or a mismatch in, the
+    per-campaign consent token `submit --unit` requires (Finding 3;
+    Decisions 4, 5). Raised BEFORE `packer.distribute()` runs — no digest
+    is wasted arguing with an adapter, no quota is spent, no ledger line
+    is appended — for exactly the same "refuse while refusing still costs
+    nothing" reason `_gate_job_folder_pin()` already refuses ahead of it.
+    """
 
 
 NOTEBOOKS_DIRNAME = "Notebooks"
@@ -307,6 +318,75 @@ def _job_folder_staleness(resolved_entrypoint: Path) -> dict | None:
         return dict(JOBFOLDER.read(job_dir).staleness)
     except JOBFOLDER.JobFolderError:
         return None
+
+
+def _job_folder_commit(resolved_entrypoint: Path) -> str | None:
+    """The pin a campaign consent token binds to (Decision 4's "commit-state
+    threat-matrix case"): the job folder's OWN declared `commit`, read the
+    SAME way `_gate_job_folder_pin()` reads it — through `JOBFOLDER.read()`,
+    never a second, independent parse of `run-config.json`.
+
+    `None` for the legacy shape (no job folder at all) and for a
+    `run-config.json` `read()` cannot make sense of — the SAME two-path
+    tolerance `_job_folder_staleness()` already applies one function up,
+    for the same reason: a discriminator this narrow does not need to be
+    stricter than the staleness reporter sitting right beside it.
+    `campaign_consent_token()` hashes `None` exactly like any other value;
+    it is part of the payload here, not a special case this function has
+    to swallow.
+    """
+    job_dir = resolved_entrypoint.parent
+    if not (job_dir / RUN_CONFIG_FILENAME).is_file():
+        return None
+    try:
+        return JOBFOLDER.read(job_dir).run_config["commit"]
+    except JOBFOLDER.JobFolderError:
+        return None
+
+
+def campaign_consent_token(
+    *, pin_commit: str | None, relative_entrypoint: str | Path, units: Sequence[str],
+) -> str:
+    """The ONE digest both `distribute` (which prints it) and `submit`
+    (which verifies it) compute — a second, independently written hash
+    here would be safe only until the day the two quietly drifted apart,
+    at which point a legitimately-minted token would refuse and nobody
+    could say why (Decision 4: "shared token-derivation function used by
+    both distribute's print and submit's verify").
+
+    `sha256(pin commit, relative entrypoint, ordered unit list)`. Every
+    one of the three inputs is load-bearing:
+
+    - `pin_commit` binds the token to the exact code a runner would
+      clone. A job that re-pins to a different commit changes this value,
+      and a token minted at the old pin no longer authorizes anything —
+      self-expiring by construction, never by a staleness check this
+      function would have to remember to run.
+    - `relative_entrypoint` keeps a token minted for one product's
+      campaign from ever authorizing a different one, even by accident —
+      the cross-campaign case Decision 4 names explicitly.
+    - `units`, hashed IN THE GIVEN ORDER, never sorted and never
+      deduplicated: one approval covers the EXACT ordered unit list of
+      that invocation (Decision 5). A unit added, removed, or reordered
+      changes this payload and therefore the digest — there is no looser
+      notion of "the same campaign" for this function to fall back to.
+
+    Deliberately NOT a `--yes` boolean and deliberately not looked up
+    anywhere but the three arguments handed to it: this function reads no
+    file, no environment variable, and no ledger line. Nothing it computes
+    is ever written back to disk by this module — the whole reason a
+    token is never persisted is that nothing downstream of this function
+    ever tries to.
+    """
+    payload = json.dumps(
+        {
+            "pin": pin_commit,
+            "entrypoint": str(relative_entrypoint),
+            "units": list(units),
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _gate_job_folder_pin(resolved_entrypoint: Path) -> None:
@@ -499,6 +579,7 @@ def cmd_submit(
     product: str | None = None,
     smoke: bool = False,
     units: Sequence[str] | None = None,
+    consent: str | None = None,
 ) -> dict:
     """Guard, resolve a product, plan, submit, and record — the whole submit
     path, in this order.
@@ -524,6 +605,19 @@ def cmd_submit(
     mode — a single `distribute()` call already reads live health for
     every worker in one pass, so there is no per-assignment health re-read
     to stagger the digest around.
+
+    `consent` is campaign mode's own gate (Finding 3; Decisions 4, 5):
+    `units` truthy with no matching `consent` refuses via `ConsentError`,
+    BEFORE `packer.distribute()` is ever called — no adapter health read,
+    no plan, no `adapter.submit()`, no ledger line. The expected token is
+    `campaign_consent_token()`, computed from THIS invocation's own job
+    folder pin (`_job_folder_commit()`, `None` for the legacy shape),
+    relative entrypoint, and `units` in the exact order given — the SAME
+    function `distribute --unit ...` calls to print the token a caller is
+    meant to pass back here. A single-worker submission (`units` empty or
+    `None`) never reads `consent` at all: it has no unit list for a token
+    to bind to, and Decision 6's own regression lock already keeps that
+    path byte-identical to before this phase.
 
     Campaign mode issues one `adapter.submit()` and appends one ledger
     event per `packer.Distribution` assignment (Decision 6) — never one
@@ -639,6 +733,29 @@ def cmd_submit(
                 "--worker and --unit are mutually exclusive: campaign mode "
                 "(--unit) spreads across every healthy account itself and "
                 "has no single named account for --worker to select"
+            )
+
+        expected_consent = campaign_consent_token(
+            pin_commit=_job_folder_commit(resolved_entrypoint),
+            relative_entrypoint=relative_entrypoint,
+            units=units,
+        )
+        if consent is None:
+            raise ConsentError(
+                "campaign submit refuses without --consent: run "
+                "`distribute --unit ...` first, for this exact pin, "
+                "entrypoint and ordered unit list, and pass back the "
+                "token it prints. Nothing is launched without an "
+                "explicit, per-campaign approval carried by this "
+                "invocation's own argv."
+            )
+        if consent != expected_consent:
+            raise ConsentError(
+                "consent token does not match this invocation's pin, "
+                "entrypoint, or ordered unit list: a token authorizes "
+                "one exact campaign only, and it stops authorizing the "
+                "instant the pin or the unit set moves — mint a fresh "
+                "one with `distribute --unit ...`"
             )
 
         distribution = PACKER.distribute(
@@ -838,6 +955,17 @@ def cmd_distribute(
     own numbers, plus `inFlightSource` -- next to the identities it was
     given, never a bare granted count alone; `skipped` names every
     worker `packer.distribute()` could not use and why.
+
+    PLUS a fifth fact this call is the ONE place that ever prints
+    (Finding 3; Decision 4): `consentToken`, the digest a caller must
+    pass back through `--consent` before this exact pin, entrypoint and
+    ordered unit list may go on to spend a single account's quota.
+    Computed by `campaign_consent_token()` -- the SAME function the
+    quota-spending command's own verification calls -- never a second,
+    independently written hash here that could quietly drift from it.
+    This function still issues no work and records nothing: printing a
+    token is no more a write than reporting `places` or `unplaced`
+    already was.
     """
     target = Path(target).resolve()
     if not target.is_dir():
@@ -845,7 +973,9 @@ def cmd_distribute(
             f"--target {target} does not resolve to an existing directory"
         )
 
-    product = product_for(target, entrypoint)
+    resolved_entrypoint = Path(entrypoint).resolve()
+    product = product_for(target, resolved_entrypoint)
+    relative_entrypoint = _relative_entrypoint(target, resolved_entrypoint, product)
     ledger_path = _main_ledger_path(target, product)
     ledger_lines = _read_ledger_lines(ledger_path)
 
@@ -854,6 +984,12 @@ def cmd_distribute(
 
     result = PACKER.distribute(
         adapter=adapter, units=units, ledger_lines=ledger_lines, live_digest=live,
+    )
+
+    consent_token = campaign_consent_token(
+        pin_commit=_job_folder_commit(resolved_entrypoint),
+        relative_entrypoint=relative_entrypoint,
+        units=units,
     )
 
     return {
@@ -874,6 +1010,7 @@ def cmd_distribute(
             for row in result.assignments
         ],
         "skipped": [{"worker": row.worker, "reason": row.reason} for row in result.skipped],
+        "consentToken": consent_token,
     }
 
 
@@ -1533,6 +1670,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "account instead of stopping at the first one. Mutually exclusive "
         "with --worker: campaign mode has no single named account to select.",
     )
+    submit.add_argument(
+        "--consent", default=None,
+        help="required together with --unit: the token `distribute --unit "
+        "...` printed for this exact pin, entrypoint and ordered unit "
+        "list. Read only from parsed argv -- never a config key, an "
+        "environment variable, or any switch that outlives this process. "
+        "A single-worker submission (no --unit) never reads this flag.",
+    )
 
     status = subparsers.add_parser(
         "status", help="report the fold for one product's ledger; resolves nothing"
@@ -1756,6 +1901,7 @@ def main(argv: list[str] | None = None) -> int:
                 product=args.product,
                 smoke=args.smoke,
                 units=args.units,
+                consent=args.consent,
             )
         except (RemoteCLIError, PACKER.PackerError, LEDGER.LedgerError,
                 ADAPTER.AdapterError, JOBFOLDER.JobFolderError) as exc:
