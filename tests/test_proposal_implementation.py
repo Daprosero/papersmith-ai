@@ -69,6 +69,43 @@ FORGE_VOCABULARY_FLOOR = ("kaggle", "t4", "ceiling", "ramp", "transfer",
                           "creda", "milcreda", "latent")
 
 
+def write_fixture_interpreter(bin_dir):
+    """Put an interpreter equivalent to THIS one at `bin_dir/python`.
+
+    A fixture that wants "a venv whose interpreter can import what these
+    tests can import" cannot get one from `os.symlink(sys.executable, ...)`.
+    CPython resolves the launched path through the WHOLE symlink chain
+    before it looks for `pyvenv.cfg`, so a link to a venv's own `python`
+    lands on the base interpreter and the venv is silently lost. Measured
+    on 2026-08-24, launching through each shape:
+
+        symlink -> sys.prefix = /opt/homebrew/.../python@3.12   (no torch)
+        shim    -> sys.prefix = <this venv>                     (torch ok)
+
+    While the suite ran under a system interpreter that happened to carry
+    the fixtures' imports ambiently, the symlink was indistinguishable from
+    the real thing. It stopped being so the moment the suite moved into a
+    virtualenv of its own -- and four tests went red for a reason that had
+    nothing to do with what they assert.
+
+    A shim that `exec`s the real path keeps `sys.executable` and
+    `sys.prefix` exactly as this process has them, which is the whole
+    point of the fixture.
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        # `.exe` cannot be shimmed with a shell script; a link is the only
+        # shape available, and Windows has no venv-through-symlink problem
+        # to work around because it copies rather than links.
+        target = bin_dir / "python.exe"
+        os.symlink(sys.executable, target)
+        return target
+    target = bin_dir / "python"
+    target.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+    target.chmod(0o755)
+    return target
+
+
 def kit_assets(root=None):
     """Every text file under `assets/**` the register has to account for.
 
@@ -9180,10 +9217,8 @@ class ProbeReportedFactsRosterTests(unittest.TestCase):
             json.dumps({"cells": [{"value": 1.0, "first": 0.5}]}),
             encoding="utf-8")
 
-        bin_dir = box / ".venv" / ("Scripts" if os.name == "nt" else "bin")
-        bin_dir.mkdir(parents=True)
-        os.symlink(sys.executable,
-                   bin_dir / ("python.exe" if os.name == "nt" else "python"))
+        write_fixture_interpreter(
+            box / ".venv" / ("Scripts" if os.name == "nt" else "bin"))
 
         git = ["git", "-c", "user.email=forge@example.invalid",
                "-c", "user.name=forge", "-C", str(box)]
@@ -10153,9 +10188,8 @@ class EntryModuleLivenessTests(unittest.TestCase):
         # module whose successful import used to answer `live: ok` alone.
         (path / "src" / "Method_Benchmark" / "config.py").write_text(
             "SCALES = [1, 2, 3]\n", encoding="utf-8")
-        bin_dir = path / ".venv" / ("Scripts" if os.name == "nt" else "bin")
-        bin_dir.mkdir(parents=True)
-        os.symlink(sys.executable, bin_dir / ("python.exe" if os.name == "nt" else "python"))
+        write_fixture_interpreter(
+            path / ".venv" / ("Scripts" if os.name == "nt" else "bin"))
         return path
 
     def test_a_pure_python_config_import_alone_is_not_enough_evidence(self):
