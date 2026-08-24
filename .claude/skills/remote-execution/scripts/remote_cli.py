@@ -411,6 +411,7 @@ def _job_folder_commit(resolved_entrypoint: Path) -> str | None:
 
 def campaign_consent_token(
     *, pin_commit: str | None, relative_entrypoint: str | Path, units: Sequence[str],
+    worker: str | None = None,
 ) -> str:
     """The ONE digest both `distribute` (which prints it) and `submit`
     (which verifies it) compute — a second, independently written hash
@@ -419,8 +420,8 @@ def campaign_consent_token(
     could say why (Decision 4: "shared token-derivation function used by
     both distribute's print and submit's verify").
 
-    `sha256(pin commit, relative entrypoint, ordered unit list)`. Every
-    one of the three inputs is load-bearing:
+    `sha256(pin commit, relative entrypoint, ordered unit list[, worker])`.
+    Every input in the payload is load-bearing:
 
     - `pin_commit` binds the token to the exact code a runner would
       clone. A job that re-pins to a different commit changes this value,
@@ -435,27 +436,36 @@ def campaign_consent_token(
       that invocation (Decision 5). A unit added, removed, or reordered
       changes this payload and therefore the digest — there is no looser
       notion of "the same campaign" for this function to fall back to.
+    - `worker`, present in the payload ONLY when the caller explicitly
+      named one (`submit --worker <id>`, single-send, never `--unit`, never
+      auto-selected) — see `_verify_launch_consent`'s own docstring for why
+      an EXPLICIT worker must bind and an ABSENT one must not. Omitted
+      entirely (not `null`, not an empty string) when no worker was named,
+      so a campaign or auto-select derivation is byte-for-byte identical to
+      before this parameter existed — this is what keeps
+      `test_campaign_token_derivation_byte_identical_to_pre_change` true.
 
     Deliberately NOT a `--yes` boolean and deliberately not looked up
-    anywhere but the three arguments handed to it: this function reads no
+    anywhere but the arguments handed to it: this function reads no
     file, no environment variable, and no ledger line. Nothing it computes
     is ever written back to disk by this module — the whole reason a
     token is never persisted is that nothing downstream of this function
     ever tries to.
     """
-    payload = json.dumps(
-        {
-            "pin": pin_commit,
-            "entrypoint": str(relative_entrypoint),
-            "units": list(units),
-        },
-        sort_keys=True,
-    )
+    fields: dict[str, object] = {
+        "pin": pin_commit,
+        "entrypoint": str(relative_entrypoint),
+        "units": list(units),
+    }
+    if worker is not None:
+        fields["worker"] = worker
+    payload = json.dumps(fields, sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _verify_launch_consent(
     *, consent: str | None, expected_consent: str, units: Sequence[str] | None,
+    worker: str | None = None,
 ) -> None:
     """The ONE consent check every `submit` invocation goes through --
     campaign, single send, and rehearsal alike. Correction to Finding 3:
@@ -472,13 +482,23 @@ def _verify_launch_consent(
     `expected_consent` is always `campaign_consent_token()`'s own output
     -- ONE derivation, ONE shape, for BOTH campaign and single-send
     tokens: an empty ordered unit list is itself a legitimate input to
-    that function, not a reason to invent a second one. The worker is
-    never part of that payload, deliberately, for two different reasons
-    depending on the caller: with no `--worker`, the account is chosen by
-    `packer.select()` AFTER consent would be given, so binding it would
-    make the token unmintable in advance; with `--worker` named, the
-    account is the caller's own explicit choice and does not need the
-    token's protection to be honest.
+    that function, not a reason to invent a second one.
+
+    CORRECTED (F2): the worker binds into that payload when, and only
+    when, the caller explicitly named one with `--worker` at mint time.
+    The prior rationale here claimed "the account is the caller's own
+    explicit choice and does not need the token's protection to be
+    honest" -- that was false the moment it was tested: three different
+    real, named `--worker <account>` invocations on this machine all
+    minted the IDENTICAL token, because none of them fed the worker into
+    the digest at all. A token minted while approving one named account
+    was therefore valid for launching on ANY account, which is exactly the
+    cross-account authorization gap the token exists to close. With no
+    `--worker` (campaign mode, or auto-select single-send), the account is
+    chosen by `packer.select()`/`packer.distribute()` AFTER consent would
+    be given, so binding it is still structurally impossible in
+    advance -- that half of the old rationale survives; only the
+    named-worker half was wrong.
 
     Missing consent for CAMPAIGN mode (`units` truthy) points the caller
     at `distribute --unit ...`, which mints and prints the token -- there
@@ -504,6 +524,12 @@ def _verify_launch_consent(
                 "explicit, per-campaign approval carried by this "
                 "invocation's own argv."
             )
+        account_note = (
+            f" This token authorizes account {worker!r} only."
+            if worker is not None
+            else " This token names no single account -- it authorizes "
+            "whichever account is chosen at launch time."
+        )
         raise ConsentError(
             "submit refuses without --consent: nothing is launched "
             "without an explicit, per-launch approval carried by this "
@@ -512,16 +538,17 @@ def _verify_launch_consent(
             "invocation submitted nothing -- no plan, no adapter call, "
             "no ledger line -- so printing the token it would need is "
             f"safe: re-run with --consent {expected_consent} to approve "
-            "this exact pin and entrypoint. The token above is NOT "
-            "itself the approval -- only a second, deliberate "
-            "invocation that passes it back is."
+            "this exact pin and entrypoint." + account_note + " The token "
+            "above is NOT itself the approval -- only a second, "
+            "deliberate invocation that passes it back is."
         )
     if consent != expected_consent:
         raise ConsentError(
             "consent token does not match this invocation's pin, "
-            "entrypoint, or ordered unit list: a token authorizes one "
-            "exact launch only, and it stops authorizing the instant the "
-            "pin, entrypoint, or unit list moves -- "
+            "entrypoint, ordered unit list, or named worker: a token "
+            "authorizes one exact launch only -- on the one account it "
+            "named, when it named one -- and it stops authorizing the "
+            "instant the pin, entrypoint, unit list, or worker moves -- "
             + (
                 "mint a fresh one with `distribute --unit ...`"
                 if units
@@ -924,13 +951,20 @@ def cmd_submit(
     # `adapter.submit()`. `units or ()` feeds `campaign_consent_token()`
     # the empty ordered unit list for a single send -- a legitimate input
     # to the SAME derivation, never a second one.
+    # `worker` here is still the caller's own raw argument -- None unless
+    # `--worker` was explicitly passed. The mutual-exclusivity refusal
+    # above guarantees it is None whenever `units` is truthy, so passing
+    # it straight through binds an explicit single-send worker and leaves
+    # campaign/auto-select derivation untouched, in one expression.
     expected_consent = campaign_consent_token(
         pin_commit=_job_folder_commit(resolved_entrypoint),
         relative_entrypoint=relative_entrypoint,
         units=units or (),
+        worker=worker,
     )
     _verify_launch_consent(
         consent=consent, expected_consent=expected_consent, units=units,
+        worker=worker,
     )
 
     digest_fn = source_digest or _load_source_digest()
