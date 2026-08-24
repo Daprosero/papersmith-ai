@@ -175,7 +175,7 @@ KAGGLE_WORKER_CAPACITY = 2
 # for the same free-tier GPU request, and WHICH one arrives on any given
 # submission is the service's own draw, never this adapter's to pick —
 # see `Status.detail` for what the service reports it actually granted.
-# "cuda"/"sm_60"/"sm_75" name a CUDA compute capability, the SAME
+# "cuda"/"sm_75" name a CUDA compute capability, the SAME
 # vocabulary `runner_bootstrap.py`'s own accelerator gate already compares
 # `torch.cuda.get_arch_list()` entries against — never a Kaggle-specific
 # vocabulary, and never a device model name (Decision 1's own rule: an
@@ -189,8 +189,17 @@ KAGGLE_WORKER_CAPACITY = 2
 # declaration always overrides it. It is documented and expected to be
 # revised as Kaggle's own hardware pool changes, and it is never asserted
 # as a universal per-account or per-service guarantee.
+#
+# It names ONE architecture on purpose. The gate reads a declaration as
+# "the installed build must cover every architecture named here", so a
+# second, wider entry does not broaden what the job accepts -- it adds a
+# second thing the build has to satisfy, and refuses the job when it does
+# not. A measured 2026-08-24 rehearsal proved the cost of getting this
+# wrong: a two-entry default naming an architecture the installed build
+# never carries refused on EVERY runtime, including one the job was
+# otherwise free to run on.
 KAGGLE_ACCELERATOR_KIND = "cuda"
-KAGGLE_ACCELERATOR_ARCHITECTURES = ("sm_60", "sm_75")
+KAGGLE_ACCELERATOR_ARCHITECTURES = ("sm_75",)
 
 
 def _default_accelerator() -> tuple[str, tuple[str, ...]]:

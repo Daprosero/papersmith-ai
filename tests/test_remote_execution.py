@@ -7676,6 +7676,40 @@ class DefaultAcceleratorProvisioningTests(unittest.TestCase):
             for arch in architectures:
                 self.assertNotIn(name, arch)
 
+    # The arch list a real submission reported from the service on
+    # 2026-08-24 (kernel `papersmith-ceiling-search`, fetched log). It is a
+    # MEASUREMENT, not a pin: this repository installs no torch of its own
+    # for a remote run, so the only honest ground for the shipped default
+    # is what the service's own image was observed to carry. Revise it by
+    # taking a new measurement, never by widening it to make a test pass.
+    OBSERVED_SERVICE_ARCH_LIST = (
+        "sm_70", "sm_75", "sm_80", "sm_86", "sm_90", "sm_100", "sm_120",
+    )
+
+    def test_kaggle_default_is_covered_by_the_observed_service_arch_list(self) -> None:
+        """The seam the registration test above cannot see.
+
+        `check_accelerator`'s second assertion reads a declaration as "the
+        installed build must cover EVERY architecture named here", so an
+        extra entry does not widen what a job tolerates -- it narrows it,
+        by adding one more thing the build has to satisfy. A default
+        naming an architecture the service's image does not carry
+        therefore refuses on EVERY runtime, including one the job could
+        otherwise have run on, and no test that reads the constant back
+        can tell.
+        """
+        _, architectures = ADAPTER.resolve_default_accelerator("kaggle")()
+        uncovered = [
+            arch for arch in architectures
+            if arch not in self.OBSERVED_SERVICE_ARCH_LIST
+        ]
+        self.assertEqual(
+            uncovered, [],
+            "the shipped default names architectures the observed service "
+            "image does not carry; every generated job would refuse at its "
+            "bootstrap gate, on any card",
+        )
+
     # -- jobfolder.generate_job(): resolves the gap ------------------------
 
     def test_generate_job_fills_default_accelerator_from_service_when_undeclared(
