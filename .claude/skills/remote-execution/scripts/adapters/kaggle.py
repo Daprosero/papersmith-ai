@@ -201,6 +201,30 @@ KAGGLE_WORKER_CAPACITY = 2
 KAGGLE_ACCELERATOR_KIND = "cuda"
 KAGGLE_ACCELERATOR_ARCHITECTURES = ("sm_75",)
 
+# The named accelerator this adapter requests on every push, and the
+# architecture-vocabulary mapping that keeps the request and the runner's
+# own bootstrap gate from drifting apart. Observed, not a law, exactly like
+# `KAGGLE_ACCELERATOR_ARCHITECTURES` above: Kaggle has been seen to hand out
+# both a Tesla P100 (`sm_60`) and a Tesla T4 (`sm_75`) for the same
+# free-tier GPU request, and a bare `enable_gpu=True` cannot steer which one
+# arrives -- `machine_shape` is the field that can, and both are sent on
+# every push (Decision 3): `enable_gpu` because it is still the field a
+# reader unfamiliar with `machine_shape` expects, `machine_shape` because it
+# is the one the service actually consults for accelerator selection.
+#
+# PROVEN LIVE, 2026-08-24: a smoke kernel pushed to one account this
+# machine already holds a credential for, with
+# `machine_shape: "NvidiaTeslaT4"`, through this skill's own SDK driver
+# (`kaggle_driver.py` -- see `requirements.txt` for the pinned dependency
+# version), reached terminal state `complete`; its own `bootstrap.json`
+# reported
+# `{"capability": "sm_75", "device": {"kind": "cuda", "name": "Tesla T4"}}`,
+# matching `KAGGLE_ACCELERATOR_ARCHITECTURES[0]` below. Five earlier
+# submissions using bare `enable_gpu` alone all reported `failed` at 35-38s
+# on a drawn P100. Cost: 75s of a 21600s/week (6h) per-account quota.
+KAGGLE_MACHINE_SHAPES = {"NvidiaTeslaT4": "sm_75", "NvidiaTeslaP100": "sm_60"}
+KAGGLE_MACHINE_SHAPE = "NvidiaTeslaT4"
+
 
 def _default_accelerator() -> tuple[str, tuple[str, ...]]:
     """`ADAPTER.register_default_accelerator("kaggle", ...)`'s own
@@ -212,23 +236,28 @@ def _default_accelerator() -> tuple[str, tuple[str, ...]]:
     return KAGGLE_ACCELERATOR_KIND, KAGGLE_ACCELERATOR_ARCHITECTURES
 
 
-# The accelerator this repository's submissions request, in the only
-# vocabulary the installed client can express: a boolean. It is
-# a request, not a receipt: asking for one is not the same as
-# receiving one. What a
-# submission actually ran on is a fact the service states, at poll or fetch
-# time, in `Status.detail`, never assumed from this constant and never
-# stamped anywhere by this module on its own initiative.
+# The boolean accelerator request every push still carries alongside the
+# NAMED one (`KAGGLE_MACHINE_SHAPE` above). This constant, on its own, is a request, not a receipt:
+# asking for one is not the same as receiving one. What a submission
+# actually ran on is a fact the service states, at poll or fetch time, in
+# `Status.detail`, never assumed from this constant and never stamped
+# anywhere by this module on its own initiative.
 #
-# A NAMED accelerator cannot be requested through this client at all, and
-# that is measured rather than assumed: `kernels_push()` in the installed
-# `kaggle` 1.7.4.5 builds its save-kernel request field by field and reads
-# exactly `enable_gpu` and `enable_tpu` from a kernel's metadata; the string
-# `machine_shape` appears nowhere in that package, so a `machine_shape` key
-# in `kernel-metadata.json` is not merely ignored by the client — it is
-# never transmitted, and no server-side reader could act on it either.
-# Which GPU a session receives is therefore the service's choice, reported
-# in `Status.detail` like every other fact this module refuses to guess at.
+# A named accelerator COULD NOT be requested through the retired
+# `kaggle==1.7.4.5` client at all -- that claim was measured, not assumed
+# (its `kernels_push()` built the save-kernel request field by field and
+# read exactly `enable_gpu`/`enable_tpu`; the string `machine_shape` occurred
+# nowhere in that package, so a `machine_shape` key in `kernel-metadata.json`
+# was never transmitted, and every push this skill made before this change
+# silently ran wherever the service's own default draw landed). That claim
+# is retired, not carried forward: the packaged client `kaggle_driver.py`
+# imports now maps `machine_shape` straight onto its own save-kernel
+# request, and `KAGGLE_MACHINE_SHAPE` above reaches every push.
+# `enable_gpu`/`enable_tpu`
+# are documented DEPRECATED in the service's own request shape in favor of
+# `machine_shape`, and are kept here anyway as the field a reader unfamiliar
+# with the newer one still expects to see -- never relied on alone to steer
+# which card arrives.
 REQUEST_GPU = True
 
 # The filename `kernels push -p <dir>` looks for beside a kernel's
@@ -298,27 +327,31 @@ def assemble_metadata(run_config: Mapping[str, object]) -> tuple[str, str]:
     opaque `(filename, text)` pair; nothing above this module ever learns
     what either one means, only that they exist and where to write them.
 
-    The field set below is read off `kernels_push()` and `kernels_initialize()`
-    in the installed `kaggle` 1.7.4.5 (`kaggle/api/kaggle_api_extended.py`)
-    — the client's own template and its own validation of that file:
+    The field set below maps onto `ApiSaveKernelRequest` through
+    `kaggle_driver.py`'s own `_METADATA_PASSTHROUGH_KEYS` table (this
+    module never builds that request type itself — that stays the driver's
+    own job, the one file permitted to import the packaged client):
 
-    - `enable_gpu` — the key `kernels_push()` genuinely reads
-      (`request.enable_gpu = self.get_bool(meta_data, 'enable_gpu', False)`),
-      and the one the client's own `kernels init` template writes. This
-      adapter used to send `machine_shape: "NvidiaTeslaT4"` instead, on a
-      docstring's claim that `enable_gpu`/`enable_tpu` were "documented
-      DEPRECATED in favor of it". `machine_shape` occurs nowhere in the
-      installed client or its SDK, and the request is assembled field by
-      field, so that key never reached the service at all: every push this
-      skill has ever made silently ran on CPU. It is not carried alongside
-      `enable_gpu` here either — a key nothing transmits is a claim nothing
-      can verify, which is exactly the shape of the defect this replaced.
+    - `machine_shape` — `KAGGLE_MACHINE_SHAPE` (`"NvidiaTeslaT4"`), sent on
+      EVERY push. A prior version of this adapter emitted this key against
+      the retired `kaggle==1.7.4.5` client, whose `kernels_push()` built its
+      request field by field and never read `machine_shape` at all — that
+      key silently reached nobody, and every push this skill made before
+      that was noticed ran wherever the service's own default draw landed.
+      PROVEN LIVE against the current dependency (see
+      `KAGGLE_MACHINE_SHAPE`'s own comment above): a kernel pushed with this
+      field reached a Tesla T4 and completed.
+    - `enable_gpu` — kept alongside `machine_shape`, not in place of it: the
+      service's own request shape documents `enable_gpu`/`enable_tpu` as
+      DEPRECATED in favor of `machine_shape`, but a reader unfamiliar with
+      the newer field still expects to see this one, and sending both costs
+      nothing extra.
 
-      This is where the honesty about scope belongs: emitting the key the
-      client reads is a request, and a request is not a receipt. No offline
-      test can prove a submission actually received a GPU. The receipt
-      arrives with the first real run, in `Status.detail` — which is what
-      that field is for.
+      This is where the honesty about scope belongs: emitting the fields
+      the client reads is a request, and a request is not a receipt. No
+      offline test can prove a submission actually received a T4. The
+      receipt arrives with the first real run, in `Status.detail` — which
+      is what that field is for.
     - `enable_internet` — `True`. The generated runner does `git init` /
       `remote add` / `fetch` inside the kernel to reach the pinned commit,
       and Kaggle kernels have internet access disabled by default; without
@@ -356,6 +389,7 @@ def assemble_metadata(run_config: Mapping[str, object]) -> tuple[str, str]:
         "is_private": True,
         "enable_internet": True,
         "enable_gpu": REQUEST_GPU,
+        "machine_shape": KAGGLE_MACHINE_SHAPE,
     }
     return KERNEL_METADATA_FILENAME, json.dumps(payload)
 
@@ -612,9 +646,10 @@ class KaggleAdapter(ADAPTER.Adapter):
                 # to get.
                 remedy = (
                     f" — this adapter shells out to the SDK driver at "
-                    f"{argv[1]!r} under {sys.executable!r}; install the SDK "
+                    f"{argv[1]!r} under {sys.executable!r}; install this "
+                    f"skill's own pinned dependency (see `requirements.txt`) "
                     f"for that interpreter with `{sys.executable} -m pip "
-                    "install --user kaggle==1.7.4.5`"
+                    "install -r requirements.txt`"
                 )
             raise KaggleAdapterError(
                 f"could not run {argv[0]}: {exc}{remedy}") from exc
@@ -790,6 +825,7 @@ class KaggleAdapter(ADAPTER.Adapter):
                     "is_private": True,
                     "enable_internet": True,
                     "enable_gpu": REQUEST_GPU,
+                    "machine_shape": KAGGLE_MACHINE_SHAPE,
                 }
 
             title = template.get("title")

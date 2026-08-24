@@ -1,6 +1,6 @@
 ---
 name: remote-execution
-description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry), the packer's capacity clamp and worker auto-selection, the full `remote_cli` front door (`submit` with its path guard, optional `--worker` and `--smoke`, repeatable `--unit` for full-spread campaign mode, `status`, `poll`, `fetch` with quarantine, `reconcile`, `distribute`, `generate-job`, `smoke record`, `readiness`), and one concrete backend: `adapters/kaggle.py` — the ONLY file in this entire skill allowed to name a service. It shells out to `adapters/kaggle_driver.py`, the ONLY file in this skill permitted to import the packaged `kagglesdk` client (pinned `kaggle==1.7.4.5`, since `kagglesdk` ships inside that distribution) rather than the `kaggle` CLI's own Basic-auth path, which the stored token shape cannot authenticate against at all; derives worker identity solely from kaggle-accounts' own sanctioned `list --json` command, and accepts credentials only as a `CredentialHandle(worker_id, token_path)` — read at exactly one expression, in that one file, and put on `KAGGLE_API_TOKEN` for one child process, because `kagglesdk`'s own `_try_fill_auth()` reads that variable by value with no path check at all — the CLI itself authenticates neither a path nor that variable. A rehearsal run (`smoke.jsonl`, a distinct file from the main ledger) proves readiness from evidence-completeness, never a human assertion, and never a clock. Stdlib-only except that one named driver script."
+description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry), the packer's capacity clamp and worker auto-selection, the full `remote_cli` front door (`submit` with its path guard, optional `--worker` and `--smoke`, repeatable `--unit` for full-spread campaign mode, `status`, `poll`, `fetch` with quarantine, `reconcile`, `distribute`, `generate-job`, `smoke record`, `readiness`), and one concrete backend: `adapters/kaggle.py` — the ONLY file in this entire skill allowed to name a service. It shells out to `adapters/kaggle_driver.py`, the ONLY file in this skill permitted to import the packaged `kagglesdk` client (pinned `kagglesdk==0.1.37`, a standalone distribution since 2025-07-11 -- NOT vendored inside the `kaggle` CLI, a claim that was true of the retired `kaggle==1.7.4.5` and does not carry forward) rather than the `kaggle` CLI's own Basic-auth path, which the stored token shape cannot authenticate against at all; derives worker identity solely from kaggle-accounts' own sanctioned `list --json` command, and accepts credentials only as a `CredentialHandle(worker_id, token_path)` — read at exactly one expression, in that one file, and put on `KAGGLE_API_TOKEN` for one child process, because `kagglesdk`'s own `_try_fill_auth()` reads that variable by value with no path check at all — the CLI itself authenticates neither a path nor that variable. A rehearsal run (`smoke.jsonl`, a distinct file from the main ledger) proves readiness from evidence-completeness, never a human assertion, and never a clock. Stdlib-only except that one named driver script."
 ---
 
 # Remote Execution
@@ -345,23 +345,30 @@ Three modules exist so far, each service-blind and stdlib-only:
   and that choice stays **`unverified-by-rehearsal`** until a rehearsal,
   run only on the user's explicit permission, settles it either way.
 
-  `REQUEST_GPU = True` is
+  `REQUEST_GPU = True` and `KAGGLE_MACHINE_SHAPE = "NvidiaTeslaT4"` are
   declared here, and here alone in this whole skill — a request, not a
   receipt; what a submission actually ran on is a fact the service states
-  at poll/fetch time in `Status.detail`, never assumed from this constant.
-  **A named accelerator cannot be requested through this client at all.**
-  `assemble_metadata` used to emit `machine_shape: "NvidiaTeslaT4"` and omit
-  `enable_gpu` on a claim that the boolean keys were deprecated in favour of
-  it; `kernels_push()` in the installed `kaggle` reads `enable_gpu` and
-  `enable_tpu` and builds its request field by field, and the string
-  `machine_shape` occurs nowhere in that package, so that key was never
-  transmitted and every push this skill made ran on CPU. Which GPU a session
-  receives is the service's own choice, reported like every other fact this
-  skill refuses to guess at. `assemble_metadata`
+  at poll/fetch time in `Status.detail`, never assumed from either constant.
+  **A named accelerator now reaches every push.** The retired
+  `kaggle==1.7.4.5` client could not express one at all: its
+  `kernels_push()` read only `enable_gpu`/`enable_tpu`, built its request
+  field by field, and the string `machine_shape` occurred nowhere in that
+  package, so a `machine_shape` key silently reached nobody and every push
+  this skill made before this change ran wherever the service's own
+  default draw landed. `kagglesdk` (the current dependency) maps
+  `machine_shape` straight onto `ApiSaveKernelRequest`, and
+  `kaggle_driver.py`'s own `_METADATA_PASSTHROUGH_KEYS` now carries it
+  through. PROVEN LIVE, 2026-08-24: a kernel pushed with
+  `machine_shape: "NvidiaTeslaT4"` reached a Tesla T4 and completed, where
+  five earlier bare-`enable_gpu` submissions all failed on a drawn P100.
+  Which GPU a session receives remains the service's own choice, reported
+  like every other fact this skill refuses to guess at — a named request is
+  not a guaranteed receipt. `assemble_metadata`
   writes that request, and every other worker-independent field a push
-  needs, into a `kernel-metadata.json` template: `enable_gpu: true` (the
-  key the installed client reads, and the one its own `kernels init`
-  template writes),
+  needs, into a `kernel-metadata.json` template: `machine_shape` (the named
+  request), `enable_gpu: true` (kept alongside it, not in place of it — the
+  service documents it DEPRECATED in favor of `machine_shape` but a reader
+  unfamiliar with the newer field still expects to see it),
   `enable_internet: true` (the generated runner clones over git inside the
   kernel, and Kaggle disables internet by default), `language`,
   `kernel_type`, `is_private`, and a `title` derived from the job's own
@@ -918,28 +925,32 @@ outright, not softened into a paraphrase that would leave the same claim in
 different words. Every module here — the ledger, the adapter seam, the packer, `remote_cli.py`,
 `jobfolder.py`, the runner assets — imports nothing beyond the standard
 library. The one exception is `adapters/kaggle_driver.py`: it imports
-`kagglesdk`, vendored inside the `kaggle` distribution this repository's own
-`requirements.txt` pins at `kaggle==1.7.4.5` (see the credential-transport
-table above), and it is the ONLY file in this skill permitted to. Nothing
+`kagglesdk`, this repository's own `requirements.txt` pins at
+`kagglesdk==0.1.37` (see the credential-transport table above) — a
+STANDALONE distribution, not vendored inside the `kaggle` CLI; that claim
+was true of the retired `kaggle==1.7.4.5` and does not carry forward — and
+it is the ONLY file in this skill permitted to import it. Nothing
 else in this skill needs it: the ledger, the packer, the seam and every
 command that only reads them run with no packaged client installed at all.
 But `submit`, `poll`, `fetch` and `smoke` all end at that one driver script,
 so on an interpreter that cannot import `kagglesdk` they cannot start.
+`kagglesdk==0.1.37` itself declares `Requires-Python: >=3.11`.
 
-**No enforced minimum Python version — the driver's own selftest gates,
-never a version number.** This skill declares no `python_requires` and holds
-no version floor anywhere in its code; what actually gates is
-`kaggle_driver.py selftest`, run against the exact interpreter that will
-invoke it (`sys.executable`, inherited from the calling adapter process). It
-reports whether `kagglesdk` imports under that interpreter and, if it does
-not, refuses by name — the interpreter path and the exact install command —
-rather than asserting a version nothing checks
-(`test_driver_selftest_imports_kagglesdk`). Measured on this machine:
-`kagglesdk` is installed and importable under the system `/usr/bin/python3`
-(3.9); it is not installed under the Homebrew 3.11/3.12 interpreters also
-present here. Whichever interpreter a given machine actually resolves
-`sys.executable` to is the one the selftest must pass under, and that is an
-empirical fact about that machine, never a version this skill promises in
+**No enforced minimum Python version in THIS skill's own code — the
+driver's own selftest gates, never a version number.** This skill declares
+no `python_requires` and holds no version floor anywhere in its own code;
+what actually gates is `kaggle_driver.py selftest`, run against the exact
+interpreter that will invoke it (`sys.executable`, inherited from the
+calling adapter process). It reports whether `kagglesdk` imports under
+that interpreter and, if it does not, refuses by name — the interpreter
+path and the exact install command — rather than asserting a version
+nothing checks (`test_driver_selftest_imports_kagglesdk`). Measured on
+this machine: `kagglesdk==0.1.37` is installed and importable under this
+forge's own `.venv` (Python 3.12.13); it requires >=3.11 as its own
+declared floor, which is a fact about the DEPENDENCY, not a floor this
+skill's code enforces on its own — whichever interpreter a given machine
+actually resolves `sys.executable` to is the one the selftest must pass
+under, empirically, never a version this skill's own code promises in
 advance.
 
 Check pip's own note about where it put the driver's dependency: if that

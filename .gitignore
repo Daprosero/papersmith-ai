@@ -58,3 +58,6 @@ Target*.md
 # Material de referencia externo clonado para estudio: se lee, se destila y se
 # borra. Nunca se versiona código de terceros dentro de la forja.
 tmp-reference/
+
+# Local interpreter environments (never versioned; rebuild from requirements.txt)
+.venv/

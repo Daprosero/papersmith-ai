@@ -2570,6 +2570,7 @@ def _write_recording_driver(
         "    'env_keys': sorted(os.environ.keys()),\n"
         "    'credential': os.environ.get('KAGGLE_API_TOKEN'),\n"
         "    'id': metadata.get('id'),\n"
+        "    'machine_shape': metadata.get('machine_shape'),\n"
         "    'started': started,\n"
         "    'finished': time.time(),\n"
         "}\n"
@@ -2720,11 +2721,12 @@ class KaggleAdapterTests(unittest.TestCase):
     ) -> None:
         """`adapters/kaggle.py` registers `assemble_metadata` under the
         metadata registry, and calling it produces `kernel-metadata.json`
-        carrying the accelerator request under `enable_gpu` — the key
-        `kernels_push` actually reads. `machine_shape`, which this template
-        used to carry instead, is read by nothing in the installed client
-        and never transmitted; `AcceleratorRequestDoctrineTests` holds that
-        against the installed source directly. The template also carries
+        carrying the accelerator request under BOTH `machine_shape` (the
+        NAMED request, reaching `kaggle_driver.py`'s own
+        `_METADATA_PASSTHROUGH_KEYS` and from there `ApiSaveKernelRequest`)
+        and `enable_gpu` (kept alongside it — deprecated by the service in
+        `machine_shape`'s favor, but still the field a reader unfamiliar
+        with the newer one expects). The template also carries
         every field a push needs at minimum: `enable_internet` (the runner clones over git
         inside the kernel, and Kaggle disables internet by default),
         `language`, `kernel_type`, and `is_private`. `id` and `code_file`
@@ -2736,6 +2738,7 @@ class KaggleAdapterTests(unittest.TestCase):
         filename, text = assembler({"jobName": "domain-adaptation-2ep"})
         self.assertEqual(filename, "kernel-metadata.json")
         payload = json.loads(text)
+        self.assertEqual(payload["machine_shape"], KAGGLE.KAGGLE_MACHINE_SHAPE)
         self.assertIs(payload["enable_gpu"], True)
         self.assertEqual(payload["language"], "python")
         self.assertEqual(payload["kernel_type"], "notebook")
@@ -3423,12 +3426,14 @@ class SubmitDriverWiringTests(unittest.TestCase):
         self.assertEqual(request.slug, "w1/papersmith-job")
         self.assertEqual(request.id, 0)
 
-    def test_unmapped_metadata_key_refuses(self) -> None:
-        """Decision 4's closed table: a metadata key that is neither
-        consumed (`id`, `code_file`) nor passed straight through
-        (`_METADATA_PASSTHROUGH_KEYS`) is a refusal naming the key — never
-        a silent drop, the exact `machine_shape` defect class this driver
-        exists to close structurally.
+    def test_machine_shape_metadata_key_reaches_the_request(self) -> None:
+        """INVERTED (Commit 1, F7): this test used to assert `DriverError`
+        on a `machine_shape` metadata key -- true against the retired
+        `kaggle==1.7.4.5` client, whose request shape had no such field at
+        all. `machine_shape` is now in `_METADATA_PASSTHROUGH_KEYS`
+        (`kaggle_driver.py`), so the SAME key must now succeed and reach
+        the built `ApiSaveKernelRequest` unchanged. This must fail if the
+        field is ever stripped back out of the passthrough table.
         """
         driver = _load_kaggle_driver_module()
         with tempfile.TemporaryDirectory() as tmp:
@@ -3438,10 +3443,30 @@ class SubmitDriverWiringTests(unittest.TestCase):
             metadata["machine_shape"] = "NvidiaTeslaT4"
             metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
+            request = driver._save_kernel_request_from_staging(staging)
+
+        self.assertEqual(request.machine_shape, "NvidiaTeslaT4")
+
+    def test_unmapped_metadata_key_refuses(self) -> None:
+        """Decision 4's closed table still holds for a genuinely unknown
+        key: neither consumed (`id`, `code_file`) nor passed straight
+        through (`_METADATA_PASSTHROUGH_KEYS`) is a refusal naming the
+        key — never a silent drop. `machine_shape` moved from unknown to
+        mapped (see the inverted test above); this proves the table is
+        still CLOSED for everything else.
+        """
+        driver = _load_kaggle_driver_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            staging = _write_driver_staging_dir(Path(tmp))
+            metadata_path = staging / driver._KERNEL_METADATA_FILENAME
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["not_a_real_field"] = "whatever"
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
             with self.assertRaises(driver.DriverError) as caught:
                 driver._save_kernel_request_from_staging(staging)
 
-        self.assertIn("machine_shape", str(caught.exception))
+        self.assertIn("not_a_real_field", str(caught.exception))
 
     def test_sentinel_absent_from_argv(self) -> None:
         """The credential VALUE never becomes part of the child's own
@@ -4420,12 +4445,16 @@ def _write_driver_staging_dir(
     code_text: str = "print('hello')",
     enable_gpu: bool = True,
     enable_internet: bool = True,
+    machine_shape: str = "NvidiaTeslaT4",
 ) -> Path:
     """A staged job folder exactly as `adapters/kaggle.py`'s own
     `submit()` leaves one for the driver to read: `assemble_metadata()`'s
     own template, completed with `id` (`<owner>/<slug>`) and `code_file`
     the same way `submit()`'s staging step completes it, plus the
-    entrypoint file itself.
+    entrypoint file itself. `machine_shape` defaults to the real
+    `KAGGLE_MACHINE_SHAPE` value, matching what a real staged job folder
+    carries since Commit 1 (F7) -- pass `machine_shape=None` for a caller
+    that needs the pre-F7 shape (no key at all).
     """
     staging = tmp_path / "staging"
     staging.mkdir(parents=True, exist_ok=True)
@@ -4440,6 +4469,8 @@ def _write_driver_staging_dir(
         "enable_internet": enable_internet,
         "enable_gpu": enable_gpu,
     }
+    if machine_shape is not None:
+        metadata["machine_shape"] = machine_shape
     (staging / KAGGLE.KERNEL_METADATA_FILENAME).write_text(
         json.dumps(metadata), encoding="utf-8"
     )
@@ -4684,12 +4715,21 @@ class DriverInterceptionTests(unittest.TestCase):
 
     def test_enable_gpu_and_enable_internet_on_wire(self) -> None:
         """The `machine_shape` defect class, closed by OBSERVING the
-        request rather than by reading the client's source: the prior
-        adapter emitted a metadata key (`machine_shape`) nothing on the
-        installed client's request shape ever read, so it silently
-        reached nobody for the life of this skill. Here the wire itself
-        is inspected instead, and `enable_gpu`/`enable_internet` must be
-        present and true.
+        request rather than by reading the client's source: the retired
+        `kaggle==1.7.4.5` client's request shape never read `machine_shape`
+        at all, so it silently reached nobody for the life of this skill.
+        Here the wire itself is inspected instead, and
+        `enable_gpu`/`enable_internet` must be present and true.
+
+        RETARGETED for the `kagglesdk` swap: MEASURED, not assumed --
+        `PredefinedSerializer` (`kaggle_object.py`) passes a bool through
+        by identity, so `ApiSaveKernelRequest.to_json()` renders a real
+        JSON boolean (`true`), never the STRING `"true"` the retired
+        vendored client's own `clean_data()` used to render. Asserting the
+        old string shape here would now fail against a genuinely correct
+        request, for a reason that has nothing to do with this driver's
+        own correctness -- the CODE is right; only this test's pinned wire
+        shape was pinned to the retired client's own serialization quirk.
         """
         driver = _load_kaggle_driver_module()
         client, recorder = _kaggle_http_client_with_recorder(FIXTURE_TOKEN)
@@ -4703,14 +4743,9 @@ class DriverInterceptionTests(unittest.TestCase):
 
         self.assertGreater(len(recorder.calls), 0)
         body = json.loads(recorder.calls[0].body)
-        # Measured, not assumed: the installed client's own `clean_data()`
-        # renders a Python bool as the JSON STRING "true"/"false", never a
-        # JSON boolean — asserting `is True` here would fail against a
-        # genuinely correct request, for a reason that has nothing to do
-        # with this driver's own correctness.
-        self.assertEqual(body["enableGpu"], "true")
-        self.assertEqual(body["enableInternet"], "true")
-        self.assertNotIn("machineShape", body)
+        self.assertIs(body["enableGpu"], True)
+        self.assertIs(body["enableInternet"], True)
+        self.assertEqual(body["machineShape"], "NvidiaTeslaT4")
 
 
 class PollFetchDriverTests(unittest.TestCase):
@@ -5221,6 +5256,46 @@ class PollFetchDriverTests(unittest.TestCase):
             self.assertEqual((into / "result.csv").read_bytes(), b"a,b\n1,2\n")
             self.assertEqual((into / "log.txt").read_text(encoding="utf-8"), "kernel log\n")
 
+    def test_fetch_uses_list_output_user_name_never_download_owner_slug(self) -> None:
+        """MEASURED, not assumed: a THIRD download RPC exists on this SDK,
+        `download_kernel_output`, taking `ApiDownloadKernelOutputRequest`
+        whose owner-naming field is `owner_slug` (not `user_name`) --
+        leaving it unset answers 403 Forbidden, not a field-shaped error,
+        and its response is an `HttpRedirect` needing a SECOND fetch of
+        `redirect.url`. `cmd_fetch` never constructs that request type at
+        all: it builds `ApiListKernelSessionOutputRequest`, whose own
+        owner-naming field genuinely IS `user_name` (verified against the
+        installed `kagglesdk`'s own field metadata). This locks the request
+        TYPE `cmd_fetch` builds and the field it sets on it, so a change
+        that routed fetch through `download_kernel_output` instead would
+        fail here rather than surface later as an unexplained 403.
+        """
+        from kagglesdk.kernels.types.kernels_api_service import (
+            ApiDownloadKernelOutputRequest,
+            ApiListKernelSessionOutputRequest,
+        )
+
+        # The request type this driver actually builds carries `user_name`.
+        list_request = ApiListKernelSessionOutputRequest()
+        self.assertTrue(hasattr(list_request, "user_name"))
+
+        # The request type it deliberately never builds carries the
+        # DIFFERENTLY-NAMED `owner_slug` -- named here only to prove the
+        # two are not interchangeable, not because `cmd_fetch` ever touches
+        # this type.
+        download_request = ApiDownloadKernelOutputRequest()
+        self.assertTrue(hasattr(download_request, "owner_slug"))
+
+        driver = _load_kaggle_driver_module()
+        source = inspect.getsource(driver.cmd_fetch)
+        self.assertIn("request = ApiListKernelSessionOutputRequest()", source)
+        self.assertIn("request.user_name", source)
+        # `ApiDownloadKernelOutputRequest`/`owner_slug` may appear only in
+        # this function's own docstring, documenting why they are NOT used
+        # (see the module doc above) -- never as constructed code.
+        self.assertNotIn("ApiDownloadKernelOutputRequest()", source)
+        self.assertNotIn(".owner_slug", source)
+
 
 class MultiWorkerFakeAdapter(ADAPTER.Adapter):
     """A multi-worker stand-in for `packer.select()`'s own order/skip/refuse
@@ -5664,18 +5739,28 @@ class WorkerSelectionAndMeteringTests(unittest.TestCase):
     # ---- driver-level (INNER interception): the 1+N request shape ----
 
     def test_driver_capacity_derives_status_via_list_then_get_session_status(self) -> None:
-        """MEASURED, not assumed: `ApiListKernelsResponse.prepare_from` is a
-        CUSTOM override (unlike every other response shape this suite's
-        own recorders answer) -- the real `kernels.list` endpoint's wire
-        body is a bare JSON ARRAY, not an object wrapping a `kernels` key,
-        and this class's own `prepare_from` wraps that array into
-        `{"kernels": [...]}` itself before deserializing. The first
-        fixture response below is that bare array for exactly that
-        reason.
+        """RETARGETED for the `kagglesdk` swap: MEASURED, not assumed --
+        `ApiListKernelsResponse` carries NO custom `prepare_from` override
+        under `kagglesdk` 0.1.37 (the base `KaggleObject.prepare_from` just
+        does `cls.from_json(http_response.text)`). `list_kernels` reaches a
+        different endpoint entirely from the retired `kaggle` CLI's own
+        private REST call this suite used to fixture against
+        (`kernels.KernelsApiService/ListKernels`, a JSON-RPC-shaped POST,
+        confirmed by reading `ApiListKernelsRequest.endpoint()`): the wire
+        body genuinely IS an object carrying a `kernels` key, never a bare
+        array. Fixturing the bare array (as this test used to) silently
+        produced zero parsed kernels -- `"kernels" not in json_dict` is
+        True for a list just as it would be for an empty dict, so
+        `FieldMetadata.set_from_dict` skipped the field instead of raising,
+        and `cmd_capacity` returned after exactly one call with an empty
+        list, never reaching the per-kernel status calls its own docstring
+        promises. That silent short-circuit is the operational risk this
+        test exists to catch: `packer.plan()` depends on this 1+N shape to
+        meter capacity accurately.
         """
         driver = _load_kaggle_driver_module()
         responses = [
-            [{"ref": "acct-1/a", "slug": "a"}, {"ref": "acct-1/b", "slug": "b"}],
+            {"kernels": [{"ref": "acct-1/a", "slug": "a"}, {"ref": "acct-1/b", "slug": "b"}]},
             {"status": "QUEUED", "failureMessage": None},
             {"status": "COMPLETE", "failureMessage": None},
         ]
@@ -7017,69 +7102,111 @@ class ConsentGateTests(unittest.TestCase):
 
 class AcceleratorRequestDoctrineTests(unittest.TestCase):
     """`assemble_metadata` must emit the accelerator key the installed
-    client actually reads.
+    client actually reads — RETARGETED for Commit 1 (F7).
 
-    Reachable red: it emitted `machine_shape: "NvidiaTeslaT4"` and
-    deliberately omitted `enable_gpu` as "documented DEPRECATED in favor of
-    it". The installed `kernels_push` reads `enable_gpu`/`enable_tpu` and
-    builds its request field by field; `machine_shape` appears nowhere in
-    that client at all, so the key was never even transmitted and every
-    submission this skill ever pushed ran on CPU.
-
-    Two of the tests below read the INSTALLED client's own source rather
-    than trusting a docstring about it. That is the whole lesson of this
-    change: every claim in this adapter that named a version was checked
-    against a version that is not installed, and no test could contradict
-    it. They skip, loudly, on a machine where the client is absent — a
-    pass here is never proof on a machine that has nothing to check.
+    Historical reachable red, no longer this class's own subject: against
+    the retired `kaggle==1.7.4.5` client, `assemble_metadata` once emitted
+    `machine_shape: "NvidiaTeslaT4"` and omitted `enable_gpu`; that client's
+    `kernels_push` read only `enable_gpu`/`enable_tpu` and built its
+    request field by field, so `machine_shape` was never transmitted and
+    every submission this skill made ran wherever the service's own
+    default draw landed. That client is no longer installed at all (this
+    skill's own dependency is `kagglesdk` now, a hard requirement, not an
+    optional one to skip around) — so this class's own subject moves to
+    proving the CURRENT claim true against the CURRENT dependency: both
+    `enable_gpu` and `machine_shape` are keys the installed `kagglesdk`
+    genuinely recognizes on `ApiSaveKernelRequest`, and this adapter emits
+    both on every push.
     """
 
-    def test_assemble_metadata_emits_the_key_the_installed_client_reads(self) -> None:
+    def test_assemble_metadata_emits_keys_the_installed_client_recognizes(self) -> None:
         _, text = ADAPTER.resolve_metadata("kaggle")({"jobName": "domain-adaptation-2ep"})
         payload = json.loads(text)
 
         self.assertIs(payload["enable_gpu"], True)
-        self.assertNotIn(
-            "machine_shape",
-            payload,
-            "a key the installed client never reads and never transmits",
-        )
+        self.assertEqual(payload["machine_shape"], KAGGLE.KAGGLE_MACHINE_SHAPE)
 
-    def test_the_installed_client_reads_enable_gpu_and_knows_no_machine_shape(
+        # Not read back off a docstring's claim -- constructed against the
+        # REAL request type the installed `kagglesdk` ships, the same one
+        # `kaggle_driver.py`'s own `_save_kernel_request_from_staging` builds.
+        from kagglesdk.kernels.types.kernels_api_service import ApiSaveKernelRequest
+
+        request = ApiSaveKernelRequest()
+        self.assertTrue(hasattr(request, "enable_gpu"))
+        self.assertTrue(hasattr(request, "machine_shape"))
+
+    def test_every_version_this_adapter_claims_is_installed_or_named_retired(
         self,
     ) -> None:
-        source = _installed_kaggle_client_source()
-        if source is None:
-            self.skipTest(
-                "the `kaggle` client is not installed here — nothing to hold "
-                "this adapter's accelerator claim to, which is not the same as "
-                "holding it and finding it true"
-            )
-        self.assertIn("'enable_gpu'", source)
-        self.assertNotIn("machine_shape", source)
-
-    def test_every_version_this_adapter_claims_is_the_version_installed(self) -> None:
-        """The root cause, as a lock. Five docstrings claimed confirmation
-        against `kaggle` 2.2.4 while `KaggleApi.__version__` is something
-        else entirely, so every claim resting on that reading was unchecked
-        against what actually runs here.
+        """The root cause, as a lock, retargeted onto `kagglesdk`: every
+        `X.Y.Z`-shaped version literal `kaggle.py` names must be EITHER the
+        version actually installed, or the one client this skill has
+        explicitly retired (`kaggle==1.7.4.5`, cited only in historical,
+        past-tense doctrine) — never a third, unchecked number nobody
+        verified against what actually runs here.
         """
-        source = _installed_kaggle_client_source()
-        if source is None:
-            self.skipTest("the `kaggle` client is not installed here")
-        match = re.search(r"__version__ = '([^']+)'", source)
-        self.assertIsNotNone(match, "the installed client states no version")
-        installed = match.group(1)
-
+        installed = importlib.metadata.version("kagglesdk")
         claimed = set(
             re.findall(r"\b\d+\.\d+\.\d+(?:\.\d+)*\b", KAGGLE_SCRIPT.read_text(encoding="utf-8"))
         )
+        allowed = {installed, "1.7.4.5"}
         self.assertEqual(
-            claimed - {installed},
+            claimed - allowed,
             set(),
-            f"this adapter names a version it was not checked against; "
-            f"installed is {installed}",
+            f"this adapter names a version neither installed ({installed}) "
+            "nor the explicitly-retired kaggle==1.7.4.5",
         )
+
+    def test_machine_shape_and_architecture_cannot_drift_apart(self) -> None:
+        """The card requested (`KAGGLE_MACHINE_SHAPE`) and the architecture
+        the runner's own bootstrap gate demands
+        (`KAGGLE_ACCELERATOR_ARCHITECTURES`) are two separate constants;
+        renaming one without moving the other would ask for a card whose
+        silicon the gate then refuses on every runtime, including one the
+        job was otherwise free to run on -- a real, measured 2026-08-24
+        rehearsal failure this lock exists to prevent recurring.
+        """
+        self.assertEqual(
+            KAGGLE.KAGGLE_MACHINE_SHAPES[KAGGLE.KAGGLE_MACHINE_SHAPE],
+            KAGGLE.KAGGLE_ACCELERATOR_ARCHITECTURES[0],
+        )
+
+    def test_legacy_template_also_carries_machine_shape(self) -> None:
+        """`machine_shape` must reach BOTH `assemble_metadata()`'s
+        generated-job template and `submit()`'s own synthesized LEGACY
+        template (`KaggleAdapter.submit()`, no `kernel-metadata.json`
+        beside the entrypoint) -- missing the second is the easy defect: a
+        legacy push that skips it keeps landing on whatever the service's
+        default draw is, silently, exactly the shape of bug this whole
+        change exists to close.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            record_dir = tmp_path / "records"
+            driver = _write_recording_driver(tmp_path / "driver", record_dir)
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
+            adapter = KAGGLE.KaggleAdapter(
+                credentials={"w1": handle}, driver_script=driver
+            )
+
+            job_dir = tmp_path / "job"
+            job_dir.mkdir()
+            entrypoint = job_dir / "runner.ipynb"
+            entrypoint.write_text("{}", encoding="utf-8")
+            # Deliberately no kernel-metadata.json: the LEGACY shape.
+            job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
+
+            adapter.submit(job)
+
+            records = list(record_dir.iterdir())
+            self.assertGreater(len(records), 0, "the driver was never reached")
+            # Read while the staging directory (a `TemporaryDirectory`, torn
+            # down when `submit()`'s own `with` block exits) still exists --
+            # the recording driver reads it synchronously inside that block;
+            # this test reads only what THAT process already recorded.
+            record = json.loads(records[0].read_text(encoding="utf-8"))
+        self.assertEqual(record["machine_shape"], KAGGLE.KAGGLE_MACHINE_SHAPE)
 
     def test_the_request_is_never_reported_as_a_receipt(self) -> None:
         """Emitting the right key is a request. What a submission actually
@@ -13161,9 +13288,11 @@ class DoctrinePinTests(unittest.TestCase):
         self.assertIn("kagglesdk", body)
         self.assertIn("stdlib-only", body.lower())
 
-    # -- pin + drift lock (Decision 8) -------------------------------------
+    # -- pin + drift lock (Decision 8; retargeted onto `kagglesdk` now that
+    #    it ships as its own standalone distribution rather than vendored
+    #    inside `kaggle`) ------------------------------------------------
 
-    PIN_PATTERN = re.compile(r"^kaggle==([0-9][0-9A-Za-z.\-]*)\s*(#.*)?$")
+    PIN_PATTERN = re.compile(r"^kagglesdk==([0-9][0-9A-Za-z.\-]*)\s*(#.*)?$")
 
     def _pinned_version(self) -> str:
         text = REQUIREMENTS_TXT.read_text(encoding="utf-8")
@@ -13171,28 +13300,25 @@ class DoctrinePinTests(unittest.TestCase):
             match = self.PIN_PATTERN.match(line.strip())
             if match:
                 return match.group(1)
-        self.fail(f"{REQUIREMENTS_TXT} pins no exact kaggle==<version> requirement")
+        self.fail(f"{REQUIREMENTS_TXT} pins no exact kagglesdk==<version> requirement")
 
     @staticmethod
     def _assert_pin_matches_installed(testcase: unittest.TestCase, pinned: str, installed: str) -> None:
         testcase.assertEqual(
             pinned,
             installed,
-            f"requirements.txt pins kaggle=={pinned} but the installed kaggle "
-            f"is {installed} -- kagglesdk ships inside the kaggle distribution "
-            "with no distribution of its own, so a version bump that moves "
-            "its auth surface must fail loudly here rather than pass silently",
+            f"requirements.txt pins kagglesdk=={pinned} but the installed "
+            f"kagglesdk is {installed} -- a version bump that moves its auth "
+            "surface must fail loudly here rather than pass silently",
         )
 
     def test_pin_matches_installed_kaggle_version(self) -> None:
         pinned = self._pinned_version()
-        installed = importlib.metadata.version("kaggle")
+        installed = importlib.metadata.version("kagglesdk")
         self._assert_pin_matches_installed(self, pinned, installed)
 
     def test_drifted_installation_fails_naming_both_versions(self) -> None:
-        """`kagglesdk` ships inside the `kaggle` distribution with no
-        distribution of its own, so drift is measured against `kaggle`'s
-        own installed version. This exercises the SAME comparison
+        """This exercises the SAME comparison
         `test_pin_matches_installed_kaggle_version` runs, against a
         fabricated "installed" value, and requires the failure to name
         both versions -- never a bare `AssertionError` a reader has to
@@ -13215,7 +13341,7 @@ class DoctrinePinTests(unittest.TestCase):
         own invention.
         """
         text = REQUIREMENTS_TXT.read_text(encoding="utf-8")
-        self.assertIn("kaggle==1.7.4.5", text)
+        self.assertIn("kagglesdk==0.1.37", text)
         self.assertIn("not currently usable by the CLI", text)
 
     # -- generality guard completeness (task 5.8) --------------------------

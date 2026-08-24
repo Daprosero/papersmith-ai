@@ -102,6 +102,7 @@ _METADATA_PASSTHROUGH_KEYS = (
     "is_private",
     "enable_gpu",
     "enable_internet",
+    "machine_shape",
 )
 
 
@@ -134,12 +135,31 @@ def _save_kernel_request_from_staging(staging_dir: Path) -> "ApiSaveKernelReques
 
     The table is CLOSED: every metadata key is either consumed explicitly
     above (`id`, `code_file`) or passed straight through by name
-    (`_METADATA_PASSTHROUGH_KEYS`); a key that is neither is a refusal
-    naming it, never a silent drop. That closes the `machine_shape` defect
-    class structurally — the prior adapter emitted a key nothing on the
-    installed client's request shape ever read, so it silently reached
-    nobody; a key this table does not recognize now fails loudly here
-    instead of travelling to nobody a second time, under a different name.
+    (`_METADATA_PASSTHROUGH_KEYS`, which now includes `machine_shape` —
+    see `adapters/kaggle.py`'s own `KAGGLE_MACHINE_SHAPE`); a key that is
+    neither is a refusal naming it, never a silent drop. This is what
+    keeps a genuinely unmapped key from repeating the `machine_shape`
+    defect class under a different name: the retired `kaggle==1.7.4.5`
+    client's `kernels_push()` never read that key at all, so it silently
+    reached nobody for the life of this skill before this table started
+    mapping it explicitly.
+
+    No cancel path exists through this table or this client. Kaggle's own
+    `ApiCancelKernelSessionRequest` requires a `kernel_session_id`, and no
+    RPC this SDK exposes returns one for an existing session:
+    `get_kernel_session_status` answers only `status`/`failure_message`
+    (see `cmd_poll` above), `list_kernel_session_output` answers only
+    `files`/`log` (see `cmd_fetch` below), and `list_kernels` answers only
+    per-kernel metadata (see `cmd_capacity` below) — none of the three
+    carries a session id. The only reachable levers to stop a running
+    kernel are `delete_kernel` (destroys the kernel outright, not merely
+    the session) or Kaggle's own web UI; this is a durable limitation of
+    the service's public surface, not a gap in this driver, and
+    `adapters/kaggle.py`'s own `cancel()` refuses explicitly rather than
+    guessing at an unofficial operation. See
+    `test_fetch_never_relies_on_kernel_session_id_from_status_response`,
+    which proves the id's structural absence from `poll`'s own response
+    but never carried that fact to this cancel case until now.
     """
     metadata_path = staging_dir / _KERNEL_METADATA_FILENAME
     metadata = dict(json.loads(metadata_path.read_text(encoding="utf-8")))
@@ -260,6 +280,18 @@ def cmd_fetch(client: "KernelsApiClient", submission_id: str, into: Path) -> dic
     `kernel_slug` pair (this function already has both, from `submission_id`
     alone) and answers with a `files` list — each entry a `(url, fileName)`
     pair — plus the session's own `log`, with no session id required on
+
+    Also MEASURED, and worth stating because it looks like a plausible
+    alternative route: `download_kernel_output` (a THIRD download RPC,
+    distinct from both `list_kernel_session_output` above and
+    `download_kernel_output_zip`) takes `ApiDownloadKernelOutputRequest`,
+    whose owner-naming field is `owner_slug`, not `user_name` — leaving it
+    unset answers 403 Forbidden, not a field-shaped error, and its response
+    is an `HttpRedirect` requiring a SECOND fetch of `redirect.url`. This
+    function never constructs that request type at all, so neither trap
+    applies here: `ApiListKernelSessionOutputRequest.user_name` above is the
+    correct field for the RPC this function actually calls, not a mistaken
+    echo of `download_kernel_output`'s own `owner_slug`.
     either side.
 
     OPEN QUESTION, named here rather than guessed at (see the design's own
@@ -359,7 +391,7 @@ def main(argv: list[str]) -> int:
                 "error": (
                     f"kagglesdk is not importable under {sys.executable}: "
                     f"{_IMPORT_ERROR}; install it with "
-                    f"`{sys.executable} -m pip install --user kaggle==1.7.4.5`"
+                    f"`{sys.executable} -m pip install --user kagglesdk==0.1.37`"
                 ),
             }
         )
