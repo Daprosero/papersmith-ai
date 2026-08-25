@@ -15034,6 +15034,61 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
             # main ledger -- ledger.jsonl was never even created.
             self.assertFalse(main_ledger_path.exists())
 
+    def test_cmd_fetch_smoke_override_resolves_to_smoke_when_the_two_records_agree(
+        self,
+    ) -> None:
+        """End-to-end coverage for spec #1129's 'fetch --smoke narrows to
+        smoke.jsonl' scenario at the `cmd_fetch` boundary itself, not only
+        at `resolve_submission_ledger` directly (verify report #1134,
+        WARNING 1). A both-files-agreeing fixture, `smoke=True` passed
+        through `cmd_fetch`, must materialize from smoke.jsonl and leave
+        ledger.jsonl's line count unchanged; every existing smoke-fetch
+        test instead uses an id present in `smoke.jsonl` alone, which
+        never exercises the both-files tie-break this flag is for.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            main_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.LEDGER_FILENAME
+            )
+            smoke_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.SMOKE_LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                main_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="both-1", worker="w1", source_digest="d" * 64,
+            )
+            _append_pending_submission(
+                smoke_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="both-1", worker="w1", source_digest="d" * 64,
+            )
+
+            adapter = FakeAdapter(worker_id="w1", capacity=2)
+            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+            fetch_result = REMOTE_CLI.cmd_fetch(
+                target=target, entrypoint=notebook, submission_id="both-1",
+                dest=dest, adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                smoke=True,
+            )
+
+            self.assertTrue(fetch_result["complete"])
+            self.assertIsNone(fetch_result["arbitration"])
+            self.assertTrue((dest / "result.txt").exists())
+
+            smoke_lines = smoke_ledger_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(smoke_lines), 2)  # submitted + returned
+            self.assertEqual(json.loads(smoke_lines[-1])["kind"], "returned")
+            # ledger.jsonl (the non-narrowed file) must be untouched --
+            # still only the original `submitted` event this fixture wrote.
+            main_lines = main_ledger_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(main_lines), 1)
+
     def test_fetch_raises_a_clear_error_when_submission_is_in_neither_ledger(
         self,
     ) -> None:
@@ -15388,6 +15443,59 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
             self.assertEqual(json.loads(smoke_lines[-1])["kind"], "errored")
             # Never touched: the orphan lived in smoke.jsonl alone.
             self.assertFalse(main_ledger_path.exists())
+
+    def test_cmd_reconcile_resolve_smoke_override_appends_to_smoke_ledger_when_the_two_records_agree(
+        self,
+    ) -> None:
+        """End-to-end coverage for spec #1129's 'reconcile --smoke narrows
+        to smoke.jsonl' scenario at the `cmd_reconcile --resolve` boundary
+        (verify report #1134, WARNING 1). The existing smoke-orphan
+        reconcile test above uses an id present in `smoke.jsonl` alone;
+        this one is present in BOTH files with agreeing entrypoint/worker,
+        so it exercises `resolve_submission_ledger`'s both-files tie-break
+        through `cmd_reconcile` itself, not only through a direct call.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            main_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.LEDGER_FILENAME
+            )
+            smoke_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.SMOKE_LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                main_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="both-2", worker="w1", source_digest="d" * 64,
+            )
+            _append_pending_submission(
+                smoke_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="both-2", worker="w1", source_digest="d" * 64,
+            )
+
+            # The service no longer lists "both-2" at all -- an orphan.
+            adapter = ScriptedListActiveAdapter(worker_id="w1", active=())
+            result = REMOTE_CLI.cmd_reconcile(
+                target=target, entrypoint=notebook, worker="w1", adapter=adapter,
+                resolve=True, source_digest=lambda t, n: "d" * 64, smoke=True,
+            )
+
+            self.assertEqual(result["orphanLocal"], ("both-2",))
+            self.assertEqual(len(result["resolved"]), 1)
+            self.assertEqual(result["resolved"][0]["submissionId"], "both-2")
+
+            smoke_lines = smoke_ledger_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(smoke_lines), 2)  # submitted + errored
+            self.assertEqual(json.loads(smoke_lines[-1])["kind"], "errored")
+            # ledger.jsonl (the non-narrowed file) must be untouched --
+            # still only the original `submitted` event this fixture wrote.
+            main_lines = main_ledger_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(main_lines), 1)
 
 
 # ---------------------------------------------------------------------------
