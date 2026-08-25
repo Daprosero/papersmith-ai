@@ -354,7 +354,11 @@ def fold(lines: Iterable[str], live_digest: str | Callable[[], str]) -> LedgerSt
     latest: dict[str, dict] = {}
     latest_position: dict[tuple[str, str], int] = {}
     terminal_by_id: dict[str, tuple[int, dict]] = {}
-    returned_events: list[dict] = []
+    # Position travels with each `returned` event too (mirrors
+    # `terminal_by_id`, Part B): the verdicts loop below needs it for the
+    # same reason the entrypoints-settle loop does — see that loop's verdict
+    # override for why.
+    returned_events: list[tuple[int, dict]] = []
     unreadable_lines = 0
 
     for position, raw_line in enumerate(lines):
@@ -413,12 +417,12 @@ def fold(lines: Iterable[str], live_digest: str | Callable[[], str]) -> LedgerSt
             # terminal from a submission that was since superseded".
             terminal_by_id[event["submissionId"]] = (position, event)
             if kind == "returned":
-                returned_events.append(event)
+                returned_events.append((position, event))
         # Any other kind parses cleanly and is simply one this fold does not
         # act on yet — forward-compatible, not corrupted.
 
     verdicts: dict[str, str] = {}
-    for event in returned_events:
+    for position, event in returned_events:
         submission = by_id.get(event["submissionId"])
         if submission is None:
             # A returned event naming a submission this log never recorded
@@ -426,7 +430,27 @@ def fold(lines: Iterable[str], live_digest: str | Callable[[], str]) -> LedgerSt
             # this fold's) — the line parsed cleanly, so it is not counted
             # as unreadable. It simply contributes no verdict.
             continue
-        verdicts[event["submissionId"]] = currency_verdict(submission, latest, live)
+        verdict = currency_verdict(submission, latest, live)
+        if verdict == "current":
+            # currency_verdict()'s id-equality half is structurally inert on
+            # an identity-stable backend (Part C2): `submission` came from
+            # `by_id`, which is last-write-wins (Part C1), so `submission`
+            # is already the SAME record `latest[key]` holds and the id
+            # comparison inside currency_verdict can never disagree with
+            # itself. That half's guarding duty — catching a `returned`
+            # event that settles an EARLIER submission than the one now on
+            # record — relocates here: THIS event's own append position,
+            # compared against the latest `submitted` position recorded for
+            # its (entrypoint, worker) pair, is the fact that still tells
+            # "settles the latest submission" apart from "stale result from
+            # a submission since superseded". Applying it only when
+            # currency_verdict already said "current" leaves a digest-moved
+            # verdict (the OTHER, backend-independent half) untouched — this
+            # is an additional check, not a replacement for that one.
+            key = (submission["entrypoint"], submission["worker"])
+            if position < latest_position[key]:
+                verdict = "fromStaleSubmission"
+        verdicts[event["submissionId"]] = verdict
 
     entrypoints: dict[tuple[str, str], EntrypointState] = {}
     for key, submission in latest.items():
@@ -494,9 +518,21 @@ def currency_verdict(
       submission` can never be true — pinned by
       `test_retry_at_unchanged_digest_under_a_stable_id_reads_current`. Its
       guarding duty does not vanish there; it relocates to `fold()`'s
-      append-position check (`ledger.py`'s `entrypoints`-settle loop, Part
-      B) — proved by `test_positional_guard_catches_what_id_equality_
-      would_catch_on_a_fresh_id_backend`.
+      append-position checks — BOTH of them, not just one: the
+      `entrypoints`-settle loop (Part B) protects `pending_for()`/the
+      packer clamp, and a SEPARATE positional check in the verdicts loop
+      (immediately after this function is called, guarding only its
+      `"current"` answers) protects `LedgerState.verdicts` and
+      `from_stale_submission` — the field `remote_cli.py` surfaces
+      directly as the CLI's `"quarantined"` output. An earlier version of
+      this docstring named only the `entrypoints` relocation; that
+      understated the claim; verify report `sdd/the-id-that-repeats-
+      by-construction/verify-report` (engram #1134) traced the gap to a
+      consumer this docstring had not accounted for. Both relocations are
+      proved by the SAME test,
+      `test_positional_guard_catches_what_id_equality_
+      would_catch_on_a_fresh_id_backend`, which asserts on
+      `entrypoints`, `verdicts`, AND `from_stale_submission` together.
     - `sourceMoved` (digest-equality) catches the opposite: the same
       submission is still the latest one on record — no resubmission
       happened — yet the source has moved again since it was submitted.

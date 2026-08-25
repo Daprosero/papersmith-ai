@@ -865,6 +865,17 @@ class ByIdAndCurrencyVerdictPartCTests(unittest.TestCase):
         `state.entrypoints[...].state`, the field Part B's guard itself
         computes, not merely on some other value that happens to differ
         from "returned" for an unrelated reason.
+
+        The relocation must ALSO cover `state.verdicts` and
+        `state.from_stale_submission` — not only `entrypoints`. Spec
+        #1129's own scenario for this exact fixture ("early return goes
+        stale after resubmission") requires the pos-1 `returned` event's
+        verdict to be `fromStaleSubmission` AND the entrypoint to appear
+        in `from_stale_submission`. `remote_cli.py` surfaces
+        `from_stale_submission` directly as the CLI's user-facing
+        `"quarantined"` field, so a narrower proof that stopped at
+        `entrypoints` would leave that consumer misled by the exact
+        defect this change exists to remove.
         """
         submit_1 = LEDGER.submitted_event(
             entrypoint="Notebooks/a.ipynb",
@@ -908,6 +919,17 @@ class ByIdAndCurrencyVerdictPartCTests(unittest.TestCase):
         # answer: the entrypoint reads pending, not returned, even though
         # a `returned` event for "w1/a" exists in the log.
         self.assertEqual(state.entrypoints[("Notebooks/a.ipynb", "w1")].state, "pending")
+
+        # The SAME positional fact must also reach `verdicts` and
+        # `from_stale_submission` — the consumer `remote_cli.py:1135`
+        # surfaces directly as the CLI's `"quarantined"` field. Asserting
+        # only on `entrypoints` (above) proves the narrower claim that
+        # `pending_for()`/the packer clamp are protected; it does not
+        # prove the id half's guarding duty relocated for THIS consumer
+        # too, which spec #1129's own "early return goes stale after
+        # resubmission" scenario requires.
+        self.assertEqual(state.verdicts["w1/a"], "fromStaleSubmission")
+        self.assertIn("Notebooks/a.ipynb", state.from_stale_submission)
 
 
 class FakeAdapter(ADAPTER.Adapter):
