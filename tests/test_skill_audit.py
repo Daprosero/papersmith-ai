@@ -2279,6 +2279,161 @@ class RemedyVerdictTests(BoxMixin, unittest.TestCase):
             f"must still refuse '- Remedy:'; must name F1: {violations}")
 
 
+#: A second, smaller Move-6 fixture carrying only two of the three remedy
+#: verdicts, so its `- Undecided:` roster renders `(none)` -- the precedent
+#: `- Exclude: (none)` in `## Frozen` already established for an empty
+#: declared set.
+REMEDY_REPORT_ONE_BUCKET_BODY = f"""# Audit: a subject, two remedy verdicts
+
+## Frozen
+
+- Digest: {VALID_REPORT_DIGEST}
+- Subject: a subject, two remedy verdicts
+- Exclude: (none)
+
+{move_outcomes_block(VALID_REPORT_MOVE_OVERRIDES)}
+{stage_outcomes_block(VALID_REPORT_STAGE_OVERRIDES)}
+## Ranked findings
+
+## Not adjudicable
+
+- Delete: F2
+- Update: F3
+- Undecided: (none)
+
+### F2. A guarded fact confirmed gone
+
+- Move: 6
+- Evidence: CONFIRMED by execution
+- Found by: one
+- Adjudication: not adjudicable
+- Digest: {VALID_REPORT_DIGEST}
+- Code side: `engine/legacy.ts:10`
+- Doctrine side: `SKILL.md:99`
+- Detail: the guarded fact no longer exists anywhere in the running code.
+- Remedy: delete
+
+### F3. A guarded fact that moved
+
+- Move: 6
+- Evidence: CONFIRMED by execution
+- Found by: one
+- Adjudication: not adjudicable
+- Digest: {VALID_REPORT_DIGEST}
+- Code side: `engine/relocated.ts:12`
+- Doctrine side: `SKILL.md:99`
+- Detail: the guarded fact exists, but at a different site than the test measures.
+- Remedy: update
+
+## Undecidable
+
+{UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}
+## Computed-value provenance
+
+## Disputed severity
+
+## Clean, stated as results
+
+- Nothing else was checked in this fixture.
+
+## Unchecked
+
+- Everything outside these two planted findings.
+
+## Falsifier
+
+Removing or changing a derived roster line would change the verdict this fixture states.
+
+## Changed-line forecast
+
+| Remedy | Changed lines |
+| --- | --- |
+| Delete F2, rewrite F3 | 0 |
+
+## Repair units
+
+| Unit | Findings | Changed lines |
+| --- | --- | --- |
+| Delete the obsolete guard | F2 | 0 |
+| Rewrite the relocated guard | F3 | 0 |
+"""
+
+REMEDY_REPORT_ONE_BUCKET = report_with_integrity(REMEDY_REPORT_ONE_BUCKET_BODY)
+
+
+class RemedyRosterTests(BoxMixin, unittest.TestCase):
+    """`## Not adjudicable` opens with `- Delete:`, `- Update:`,
+    `- Undecided:`, cross-checked against the section's own Move-6
+    findings -- required iff at least one exists, forbidden otherwise.
+    """
+
+    def check(self, text, name="report.md"):
+        box = getattr(self, "_box", None) or self.make_box("remedy-roster")
+        self._box = box
+        path = self.write(box, name, resign(text))
+        result = run_cli("check-report", str(path))
+        return result, json.loads(result.stdout)
+
+    def test_rosters_matching_all_three_buckets_are_accepted(self):
+        result, payload = self.check(REMEDY_REPORT)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["violations"], [])
+
+    def test_an_empty_bucket_renders_none_and_is_accepted(self):
+        result, payload = self.check(
+            REMEDY_REPORT_ONE_BUCKET, name="one-bucket.md")
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["violations"], [])
+
+    def test_a_roster_omitting_a_labeled_finding_is_rejected(self):
+        broken = REMEDY_REPORT.replace("- Undecided: F4\n", "", 1)
+        self.assertNotEqual(broken, REMEDY_REPORT, "the graft must land")
+        result, payload = self.check(broken, name="roster-omits-f4.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "remedy"]
+        self.assertTrue(
+            any("Undecided" in v["detail"] for v in violations),
+            f"omitting the '- Undecided:' line entirely, while F4 still "
+            f"carries that remedy, must be rejected: {violations}")
+
+    def test_a_finding_named_under_the_wrong_roster_is_rejected(self):
+        broken = REMEDY_REPORT.replace("- Update: F3\n", "- Update: (none)\n", 1)
+        broken = broken.replace("- Delete: F2\n", "- Delete: F2, F3\n", 1)
+        result, payload = self.check(broken, name="roster-wrong-bucket.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "remedy"]
+        self.assertTrue(
+            any("F3" in v["detail"] for v in violations),
+            f"F3 (an `update` remedy) listed under '- Delete:' instead of "
+            f"'- Update:' must be rejected and must name F3: {violations}")
+
+    def test_rosters_present_with_no_move_six_finding_is_rejected(self):
+        broken = VALID_REPORT.replace(
+            "## Not adjudicable\n\n",
+            "## Not adjudicable\n\n"
+            "- Delete: F2\n- Update: (none)\n- Undecided: (none)\n\n", 1)
+        self.assertNotEqual(broken, VALID_REPORT, "the graft must land")
+        result, payload = self.check(broken, name="rosters-no-move-six.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "remedy"]
+        self.assertTrue(
+            violations,
+            f"rosters on a report with only a Move-0 not-adjudicable "
+            f"finding must be rejected: {violations}")
+
+    def test_rosters_absent_while_a_move_six_finding_exists_is_rejected(self):
+        broken = REMEDY_REPORT.replace(
+            "- Delete: F2\n- Update: F3\n- Undecided: F4\n\n", "", 1)
+        self.assertNotEqual(broken, REMEDY_REPORT, "the graft must land")
+        result, payload = self.check(broken, name="rosters-absent.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "remedy"]
+        self.assertTrue(
+            violations,
+            f"a Move-6 not-adjudicable finding with no rosters at all "
+            f"must be rejected: {violations}")
+
+
 class CheckReportSubjectTests(BoxMixin, unittest.TestCase):
     """`check-report --subject` re-derives `## Frozen`'s digest from disk.
 

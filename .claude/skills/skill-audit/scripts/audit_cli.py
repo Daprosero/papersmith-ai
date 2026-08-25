@@ -2629,6 +2629,56 @@ def disputed_severity_positions(lines):
     return has_content, positions
 
 
+#: `- Delete:`, `- Update:`, `- Undecided:` -- the three rosters
+#: `## Not adjudicable` derives from its own Move-6 findings. Required at
+#: the top of the section, before the first `### F` block: `report_findings`
+#: closes a finding's own text at the next `## ` line, so a line placed
+#: after the first finding would be swallowed into that finding's text
+#: rather than read as the section's own roster.
+REMEDY_ROSTER_LINE = re.compile(r"^-\s*(Delete|Update|Undecided):\s*(.+?)\s*$")
+
+
+def not_adjudicable_roster_lines(lines):
+    """The `- Delete:`, `- Update:`, `- Undecided:` lines under `## Not
+    adjudicable`, read only between that heading and the section's first
+    `### F` block -- modelled on `frozen_section_fields` and
+    `disputed_severity_positions`'s own "read only inside this section"
+    discipline, narrowed further to stop at the first finding rather than
+    the next `## ` heading, matching exactly where these lines are
+    required to sit.
+
+    Returns `{"delete": raw, "update": raw, "undecided": raw}` for every
+    roster line actually present; a bucket the report carries no line for
+    is simply absent from the dict, never a default empty string -- an
+    absent line and an explicit `(none)` must read differently.
+    """
+    rosters = {}
+    in_section = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "## Not adjudicable":
+            in_section = True
+            continue
+        if not in_section:
+            continue
+        if stripped.startswith("## ") or re.match(r"^### F\d+\.", stripped):
+            break
+        match = REMEDY_ROSTER_LINE.match(stripped)
+        if match:
+            rosters[match.group(1).lower()] = match.group(2)
+    return rosters
+
+
+def roster_labels(raw):
+    """A roster line's raw value, back into a sorted list of finding
+    labels -- `(none)` becomes the empty list, mirroring
+    `parse_exclude_field`'s own `(none)` idiom for an empty declared set.
+    """
+    if raw is None or raw == "(none)":
+        return []
+    return sorted(part.strip() for part in raw.split(",") if part.strip())
+
+
 def parse_exclude_field(value):
     """`- Exclude:`'s rendered value, back into the tuple `frozen_digest`
     accepts. `(none)` -- the shape `## Frozen` renders when the list is
@@ -3268,6 +3318,36 @@ def run_check_report(args):
                  "target; that drive never ran the skill's own machinery "
                  "and cannot make a claim with the subject as its target",
                  where)
+
+    # The three derived rosters, cross-checked against `remedy_by_bucket`
+    # (populated above, per finding): required, matching exactly, iff at
+    # least one Move-6 not-adjudicable finding exists; forbidden otherwise.
+    # Reuses the `"remedy"` violation item -- mirrors how `"not-adjudicable"`
+    # already covers both directions of its own cross-section rule, rather
+    # than inventing a second item id for the same capability.
+    rosters = not_adjudicable_roster_lines(lines)
+    has_move6_findings = any(remedy_by_bucket.values())
+    if has_move6_findings:
+        for bucket in ("delete", "update", "undecided"):
+            raw = rosters.get(bucket)
+            expected = sorted(remedy_by_bucket[bucket])
+            if raw is None:
+                fail("remedy",
+                     f"'## Not adjudicable' carries a Move-6 finding but no "
+                     f"'- {bucket.capitalize()}:' roster line; expected "
+                     f"{expected!r}", f"{path}:1")
+                continue
+            actual = roster_labels(raw)
+            if actual != expected:
+                fail("remedy",
+                     f"'- {bucket.capitalize()}:' names {actual!r}, but the "
+                     f"matching Move-6 findings are {expected!r}",
+                     f"{path}:1")
+    elif rosters:
+        fail("remedy",
+             "'## Not adjudicable' carries a Delete/Update/Undecided "
+             "roster line but no Move-6 not-adjudicable finding to "
+             "justify it", f"{path}:1")
 
     if findings and not confirmed:
         head = [line for line in lines[:6] if line.strip()]
