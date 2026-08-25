@@ -14663,12 +14663,17 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
             self.assertIn(REMOTE_CLI.LEDGER_FILENAME, message)
             self.assertIn(REMOTE_CLI.SMOKE_LEDGER_FILENAME, message)
 
-    def test_resolve_submission_ledger_refuses_when_id_is_recorded_in_both_files(
+    def test_resolve_submission_ledger_refuses_when_the_two_records_disagree(
         self,
     ) -> None:
-        """Defensive: an id is only ever supposed to land in ONE file. If
-        it somehow reached both, guessing which one is authoritative would
-        hide a corruption instead of surfacing it.
+        """A shared id is the EXPECTED case on this backend: a Kaggle id is
+        `f"{worker}/{slug}"` (`adapters/kaggle.py:860`), so a legitimate
+        rehearse-then-launch pair reuses the identical id by construction
+        and agrees on `entrypoint`/`worker` by construction too. What is
+        still corruption is two `submitted` records for the same id that
+        DISAGREE on `entrypoint` or `worker` -- one record lies about what
+        was actually submitted, and picking either to fetch from would be
+        guessing.
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
@@ -14689,14 +14694,243 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
             )
             _append_pending_submission(
                 smoke_ledger_path, entrypoint="Notebooks/a.ipynb",
-                submission_id="dup-1", worker="w1", source_digest="d" * 64,
+                submission_id="dup-1", worker="w2", source_digest="d" * 64,
             )
 
             with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
                 REMOTE_CLI.resolve_submission_ledger(
                     target.resolve(), "MIL-CREDA", "dup-1", "d" * 64,
                 )
-            self.assertIn("both", str(ctx.exception))
+            message = str(ctx.exception)
+            self.assertIn("worker", message)
+            self.assertIn("'w1'", message)
+            self.assertIn("'w2'", message)
+
+    def test_resolve_submission_ledger_refuses_when_the_two_records_disagree_on_entrypoint(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            (notebooks / "a.ipynb").write_text("{}", encoding="utf-8")
+            (notebooks / "b.ipynb").write_text("{}", encoding="utf-8")
+
+            main_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.LEDGER_FILENAME
+            )
+            smoke_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.SMOKE_LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                main_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="dup-2", worker="w1", source_digest="d" * 64,
+            )
+            _append_pending_submission(
+                smoke_ledger_path, entrypoint="Notebooks/b.ipynb",
+                submission_id="dup-2", worker="w1", source_digest="d" * 64,
+            )
+
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
+                REMOTE_CLI.resolve_submission_ledger(
+                    target.resolve(), "MIL-CREDA", "dup-2", "d" * 64,
+                )
+            message = str(ctx.exception)
+            self.assertIn("entrypoint", message)
+            self.assertIn("Notebooks/a.ipynb", message)
+            self.assertIn("Notebooks/b.ipynb", message)
+
+    def test_resolve_submission_ledger_resolves_to_main_when_the_two_records_agree(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            (notebooks / "a.ipynb").write_text("{}", encoding="utf-8")
+
+            main_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.LEDGER_FILENAME
+            )
+            smoke_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.SMOKE_LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                main_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="agree-1", worker="w1", source_digest="d" * 64,
+            )
+            _append_pending_submission(
+                smoke_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="agree-1", worker="w1", source_digest="d" * 64,
+            )
+
+            path, state, note = REMOTE_CLI.resolve_submission_ledger(
+                target.resolve(), "MIL-CREDA", "agree-1", "d" * 64,
+            )
+
+            self.assertEqual(path, main_ledger_path)
+            self.assertEqual(state.by_id["agree-1"]["submissionId"], "agree-1")
+            expected_note = (
+                f"submission 'agree-1' is recorded in both {main_ledger_path} "
+                f"and {smoke_ledger_path} with agreeing entrypoint/worker; "
+                f"resolved to the main ledger {main_ledger_path}"
+            )
+            self.assertEqual(note, expected_note)
+
+    def test_resolve_submission_ledger_smoke_override_resolves_to_smoke_when_the_two_records_agree(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            (notebooks / "a.ipynb").write_text("{}", encoding="utf-8")
+
+            main_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.LEDGER_FILENAME
+            )
+            smoke_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.SMOKE_LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                main_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="agree-2", worker="w1", source_digest="d" * 64,
+            )
+            _append_pending_submission(
+                smoke_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="agree-2", worker="w1", source_digest="d" * 64,
+            )
+
+            path, state, note = REMOTE_CLI.resolve_submission_ledger(
+                target.resolve(), "MIL-CREDA", "agree-2", "d" * 64, smoke=True,
+            )
+
+            self.assertEqual(path, smoke_ledger_path)
+            self.assertIsNone(note)
+
+    def test_resolve_submission_ledger_smoke_override_does_not_suppress_the_disagreement_refusal(
+        self,
+    ) -> None:
+        """`--smoke` overrides precedence, never coherence: it selects a
+        file, it does not suppress the disagreement refusal. If the flag's
+        presence or absence fully disambiguated, the guard would be deleted
+        rather than corrected.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            (notebooks / "a.ipynb").write_text("{}", encoding="utf-8")
+
+            main_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.LEDGER_FILENAME
+            )
+            smoke_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.SMOKE_LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                main_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="dup-3", worker="w1", source_digest="d" * 64,
+            )
+            _append_pending_submission(
+                smoke_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="dup-3", worker="w2", source_digest="d" * 64,
+            )
+
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
+                REMOTE_CLI.resolve_submission_ledger(
+                    target.resolve(), "MIL-CREDA", "dup-3", "d" * 64, smoke=True,
+                )
+            self.assertIn("worker", str(ctx.exception))
+
+    def test_reconcile_resolve_appends_only_to_main_ledger_when_the_two_records_agree(
+        self,
+    ) -> None:
+        """A rehearse-then-launch pair reusing the same id is the ordinary
+        case, not corruption: `--resolve` must write the orphan's `errored`
+        event to exactly one file -- the main ledger, since the records
+        agree -- and leave `smoke.jsonl` byte-identical.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            main_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.LEDGER_FILENAME
+            )
+            smoke_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.SMOKE_LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                main_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="shared-1", worker="w1", source_digest="d" * 64,
+            )
+            _append_pending_submission(
+                smoke_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="shared-1", worker="w1", source_digest="d" * 64,
+            )
+            smoke_bytes_before = smoke_ledger_path.read_bytes()
+
+            adapter = ScriptedListActiveAdapter(worker_id="w1", active=())
+            result = REMOTE_CLI.cmd_reconcile(
+                target=target, entrypoint=notebook, worker="w1", adapter=adapter,
+                resolve=True, source_digest=lambda t, n: "d" * 64,
+            )
+
+            self.assertEqual(result["orphanLocal"], ("shared-1",))
+            self.assertEqual(len(result["resolved"]), 1)
+
+            main_lines = main_ledger_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(main_lines), 2)  # submitted + errored
+            self.assertEqual(json.loads(main_lines[-1])["kind"], "errored")
+            self.assertEqual(smoke_ledger_path.read_bytes(), smoke_bytes_before)
+
+    def test_reconcile_resolve_refuses_and_writes_nothing_when_the_two_records_disagree(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+            (notebooks / "b.ipynb").write_text("{}", encoding="utf-8")
+
+            main_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.LEDGER_FILENAME
+            )
+            smoke_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.SMOKE_LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                main_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id="shared-2", worker="w1", source_digest="d" * 64,
+            )
+            _append_pending_submission(
+                smoke_ledger_path, entrypoint="Notebooks/b.ipynb",
+                submission_id="shared-2", worker="w1", source_digest="d" * 64,
+            )
+            main_bytes_before = main_ledger_path.read_bytes()
+            smoke_bytes_before = smoke_ledger_path.read_bytes()
+
+            adapter = ScriptedListActiveAdapter(worker_id="w1", active=())
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError):
+                REMOTE_CLI.cmd_reconcile(
+                    target=target, entrypoint=notebook, worker="w1", adapter=adapter,
+                    resolve=True, source_digest=lambda t, n: "d" * 64,
+                )
+
+            self.assertEqual(main_ledger_path.read_bytes(), main_bytes_before)
+            self.assertEqual(smoke_ledger_path.read_bytes(), smoke_bytes_before)
 
     def test_reconcile_does_not_misreport_a_still_active_smoke_submission(
         self,

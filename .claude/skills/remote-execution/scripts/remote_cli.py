@@ -1277,6 +1277,7 @@ def cmd_fetch(
     adapter: "ADAPTER.Adapter",
     source_digest: Callable[[Path, str], str] | None = None,
     force: bool = False,
+    smoke: bool = False,
 ) -> dict:
     """Materialize one submission's result, quarantining it structurally
     when it is not judged current — never discarding it, and never merging
@@ -1382,7 +1383,9 @@ def cmd_fetch(
     # recorded by `submit --smoke` into `smoke.jsonl` — this used to hardcode
     # `LEDGER_FILENAME` and could never find one, at all, no matter how
     # complete the artifact it was asked to fetch.
-    ledger_path, state = resolve_submission_ledger(target, product, submission_id, live)
+    ledger_path, state, arbitration = resolve_submission_ledger(
+        target, product, submission_id, live, smoke=smoke
+    )
     submission = state.by_id[submission_id]
 
     verdict = LEDGER.currency_verdict(submission, state.latest, live)
@@ -1431,6 +1434,7 @@ def cmd_fetch(
             "path": partial_dest,
             "event": None,
             "staleness": staleness,
+            "arbitration": arbitration,
         }
 
     final_dest.parent.mkdir(parents=True, exist_ok=True)
@@ -1449,6 +1453,7 @@ def cmd_fetch(
         "path": final_dest,
         "event": event,
         "staleness": staleness,
+        "arbitration": arbitration,
     }
 
 
@@ -1460,6 +1465,7 @@ def cmd_reconcile(
     adapter: "ADAPTER.Adapter",
     resolve: bool = False,
     source_digest: Callable[[Path, str], str] | None = None,
+    smoke: bool = False,
 ) -> dict:
     """Compare the ledger's pending submissions for `worker` against what
     `adapter.list_active(worker)` reports right now, in both directions,
@@ -1535,11 +1541,14 @@ def cmd_reconcile(
     orphan_local = tuple(sorted(local_pending - remote_active))
 
     resolved_events: list[dict] = []
+    arbitrations: list[str] = []
     if resolve:
         for submission_id in orphan_local:
-            orphan_ledger_path, _ = resolve_submission_ledger(
-                target, product, submission_id, live
+            orphan_ledger_path, _, arbitration = resolve_submission_ledger(
+                target, product, submission_id, live, smoke=smoke
             )
+            if arbitration is not None:
+                arbitrations.append(arbitration)
             event = LEDGER.errored_event(
                 submission_id=submission_id, reason="not-found-at-service"
             )
@@ -1551,6 +1560,7 @@ def cmd_reconcile(
         "orphanLocal": orphan_local,
         "resolved": tuple(resolved_events),
         "staleness": _job_folder_staleness(Path(entrypoint).resolve()),
+        "arbitration": tuple(arbitrations),
     }
 
 
@@ -1582,7 +1592,8 @@ def _read_ledger_lines(path: Path) -> list[str]:
 
 def resolve_submission_ledger(
     target: Path, product: str, submission_id: str, live_digest: str,
-) -> tuple[Path, "LEDGER.LedgerState"]:
+    *, smoke: bool = False,
+) -> tuple[Path, "LEDGER.LedgerState", str | None]:
     """The one place in this module that answers "which ledger holds THIS
     submission id" — `ledger.jsonl` or `smoke.jsonl` — for every command
     that needs to act on one specific submission afterward (`cmd_fetch`,
@@ -1609,13 +1620,33 @@ def resolve_submission_ledger(
     remember which one goes with which.
 
     A submission id absent from BOTH files is refused: there is nothing on
-    record for it anywhere this module looks. A submission id present in
-    BOTH is also refused, defensively — an id is only ever supposed to be
-    issued once, by one `adapter.submit()` call, into one file (`cmd_submit`
-    picks exactly one destination per call, never both); a submission id
-    that somehow reached both logs is a corruption this function has no
-    safe basis to arbitrate, and guessing which file is authoritative would
-    hide that corruption instead of surfacing it.
+    record for it anywhere this module looks.
+
+    A submission id present in BOTH is NOT, on its own, refused. A backend
+    is free to mint an id deterministically from a worker/entrypoint pair,
+    so a legitimate rehearse-then-launch pair — `submit --smoke` followed
+    by a real `submit` of the identical job — can reuse the identical id BY
+    CONSTRUCTION. A shared id is an expected condition on such a backend,
+    not corruption. Only the two `submitted` records' recorded `entrypoint`
+    and `worker` fields are compared (never the id string itself —
+    `adapter.py` permits the ledger exactly equality and dict-key use on an
+    id, and forbids splitting, parsing, or pattern-matching any part of
+    it):
+
+    - DISAGREE on `entrypoint` or `worker` → still refused, unconditionally
+      (even under `smoke=True`): one record lies about what was actually
+      submitted, and picking either file to act on would be guessing. This
+      is the genuine corruption case — a hand-edited ledger line, a ledger
+      file copied across targets, or an adapter whose id no longer encodes
+      worker/entrypoint.
+    - AGREE → resolves to the main ledger by default, with a returned
+      arbitration note (the caller decides whether/where to surface it —
+      this function never writes to stderr; every `file=sys.stderr` call
+      in this module lives in `main()`). `smoke=True` (mirroring `submit
+      --smoke`) overrides that precedence and resolves to the smoke ledger
+      instead, with no note. `smoke` overrides PRECEDENCE only, never
+      COHERENCE: the disagreement refusal above still fires regardless of
+      `smoke`.
     """
     main_path = _main_ledger_path(target, product)
     smoke_path = _smoke_ledger_path(target, product)
@@ -1626,16 +1657,38 @@ def resolve_submission_ledger(
     in_smoke = submission_id in smoke_state.by_id
 
     if in_main and in_smoke:
-        raise RemoteCLIError(
+        main_record = main_state.by_id[submission_id]
+        smoke_record = smoke_state.by_id[submission_id]
+        if main_record["entrypoint"] != smoke_record["entrypoint"]:
+            raise RemoteCLIError(
+                f"submission {submission_id!r} is recorded in both "
+                f"{main_path} and {smoke_path}, and the two records "
+                f"disagree on entrypoint ({main_record['entrypoint']!r} vs "
+                f"{smoke_record['entrypoint']!r}); refusing to guess which "
+                "one is authoritative"
+            )
+        if main_record["worker"] != smoke_record["worker"]:
+            raise RemoteCLIError(
+                f"submission {submission_id!r} is recorded in both "
+                f"{main_path} and {smoke_path}, and the two records "
+                f"disagree on worker ({main_record['worker']!r} vs "
+                f"{smoke_record['worker']!r}); refusing to guess which one "
+                "is authoritative"
+            )
+        if smoke:
+            return (smoke_path, smoke_state, None)
+        note = (
             f"submission {submission_id!r} is recorded in both {main_path} "
-            f"and {smoke_path}; refusing to guess which one is authoritative"
+            f"and {smoke_path} with agreeing entrypoint/worker; resolved to "
+            f"the main ledger {main_path}"
         )
+        return (main_path, main_state, note)
     if not in_main and not in_smoke:
         raise RemoteCLIError(
             f"no submitted event on record for submission {submission_id!r} "
             f"in {main_path} or {smoke_path}"
         )
-    return (main_path, main_state) if in_main else (smoke_path, smoke_state)
+    return (main_path, main_state, None) if in_main else (smoke_path, smoke_state, None)
 
 
 def cmd_smoke_record(
@@ -2053,6 +2106,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--credential-dir", type=Path, default=None,
         help="override: use this directory instead of lazily materializing one by worker id",
     )
+    fetch.add_argument(
+        "--smoke", action="store_true",
+        help="when the submission id is recorded in both ledgers with "
+        "agreeing entrypoint/worker, resolve to smoke.jsonl instead of the "
+        "default main ledger.jsonl; does not suppress the refusal when the "
+        "two records disagree",
+    )
 
     reconcile = subparsers.add_parser(
         "reconcile",
@@ -2079,6 +2139,13 @@ def _build_parser() -> argparse.ArgumentParser:
     reconcile.add_argument(
         "--credential-dir", type=Path, default=None,
         help="override: use this directory instead of lazily materializing one by worker id",
+    )
+    reconcile.add_argument(
+        "--smoke", action="store_true",
+        help="within --resolve: when an orphan's submission id is recorded "
+        "in both ledgers with agreeing entrypoint/worker, resolve it to "
+        "smoke.jsonl instead of the default main ledger.jsonl; does not "
+        "suppress the refusal when the two records disagree",
     )
 
     generate_job = subparsers.add_parser(
@@ -2334,10 +2401,15 @@ def main(argv: list[str] | None = None) -> int:
                 dest=args.dest,
                 adapter=_construct_adapter(adapter_cls, provider),
                 force=args.force,
+                smoke=args.smoke,
             )
         except (RemoteCLIError, LEDGER.LedgerError, ADAPTER.AdapterError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
+
+        arbitration = result["arbitration"]
+        if arbitration is not None:
+            print(arbitration, file=sys.stderr)
 
         print(
             json.dumps(
@@ -2371,10 +2443,15 @@ def main(argv: list[str] | None = None) -> int:
                 worker=args.worker,
                 adapter=_construct_adapter(adapter_cls, provider),
                 resolve=args.resolve,
+                smoke=args.smoke,
             )
         except (RemoteCLIError, LEDGER.LedgerError, ADAPTER.AdapterError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
+
+        arbitration = result.pop("arbitration")
+        for note in arbitration:
+            print(note, file=sys.stderr)
 
         print(json.dumps(result, sort_keys=True))
         return 0
