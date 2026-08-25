@@ -681,6 +681,32 @@ class FakeAdapter(ADAPTER.Adapter):
         return [sid for sid, state in self._states.items() if state in ("queued", "running")]
 
 
+class StableIdAdapter(FakeAdapter):
+    """A `FakeAdapter` sibling that mints the SAME id for every submission
+    of a given `(worker, entrypoint)` pair, instead of `FakeAdapter`'s own
+    counter-based unique id per call.
+
+    This is not a test convenience invented for this suite — it models a
+    real backend's own contract: Kaggle's adapter mints `id` as
+    `<worker>/<slug>` (`adapters/kaggle.py:860`), a value that depends only
+    on which worker and which entrypoint were submitted, never on how many
+    times `submit()` has been called before. Two submissions of the same
+    job to the same worker collide on the identical id there, by
+    construction, and this fixture reproduces exactly that collision for
+    the rest of the suite without touching a real service.
+
+    `FakeAdapter.submit()` (and its counter-based default id) is left
+    completely unchanged: this is a sibling subclass, not a mutation of the
+    shared default two existing tests (`test_the_smoke_id_differs_from_the_
+    full_run_id` and its neighbour) depend on for distinctness.
+    """
+
+    def submit(self, job) -> "ADAPTER.Submission":
+        submission_id = f"{job.worker}/{job.entrypoint.stem}"
+        self._states[submission_id] = "complete"
+        return ADAPTER.Submission(id=submission_id, worker=job.worker)
+
+
 class AdapterSeamTests(unittest.TestCase):
     def test_adapter_abc_rejects_direct_instantiation(self) -> None:
         with self.assertRaises(TypeError):
@@ -902,6 +928,51 @@ class AdapterSeamTests(unittest.TestCase):
             state = LEDGER.fold(lines, live_digest="digest-1")
             self.assertEqual(state.entrypoints[(str(job.entrypoint), submission.worker)].state, "returned")
             self.assertEqual(state.verdicts[submission.id], "current")
+
+
+class CollidingIdFixtureTests(unittest.TestCase):
+    """Proves `StableIdAdapter` actually mints identical ids for repeated
+    submissions of the same `(worker, entrypoint)` pair — the premise every
+    Part B/C colliding-id test in this suite depends on being genuinely
+    reachable, not merely asserted.
+    """
+
+    def test_stable_id_adapter_mints_the_same_id_for_two_submissions(self) -> None:
+        adapter = StableIdAdapter()
+        job = ADAPTER.Job(
+            entrypoint=Path("Notebooks/a.ipynb"), run_config={}, worker="w1"
+        )
+
+        first = adapter.submit(job)
+        second = adapter.submit(job)
+
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(first.id, "w1/a")
+
+    def test_stable_id_adapter_derives_id_from_worker_and_entrypoint_not_call_order(
+        self,
+    ) -> None:
+        """Triangulation: a different `(worker, entrypoint)` pair produces
+        a different id, and repeating IT collides on its own value — proves
+        the id is a function of the two recorded fields, not a hardcoded
+        constant or a disguised call counter.
+        """
+        adapter = StableIdAdapter()
+        job_a = ADAPTER.Job(
+            entrypoint=Path("Notebooks/a.ipynb"), run_config={}, worker="w1"
+        )
+        job_b = ADAPTER.Job(
+            entrypoint=Path("Notebooks/b.ipynb"), run_config={}, worker="w2"
+        )
+
+        a1 = adapter.submit(job_a)
+        b1 = adapter.submit(job_b)
+        a2 = adapter.submit(job_a)
+
+        self.assertEqual(a1.id, "w1/a")
+        self.assertEqual(b1.id, "w2/b")
+        self.assertEqual(a1.id, a2.id)
+        self.assertNotEqual(a1.id, b1.id)
 
 
 class UnreachableAdapter(FakeAdapter):
@@ -3360,6 +3431,37 @@ class KaggleAdapterTests(unittest.TestCase):
             submission = adapter.submit(job)
 
             self.assertEqual(submission.worker, "w1")
+
+    def test_submit_mints_the_same_id_for_two_submissions_of_the_same_job(self) -> None:
+        """The real `KaggleAdapter`, not a fixture standing in for it,
+        collides on id — this pins that Part D's `StableIdAdapter` models
+        actual Kaggle behaviour rather than an invented test convenience.
+
+        Legacy shape (empty `run_config`, no metadata file): `submit()`
+        (`adapters/kaggle.py:858-860`) derives the slug from
+        `_kernel_slug(job.entrypoint)`, a pure function of the entrypoint
+        path alone, so `ref = f"{job.worker}/{slug}"` is identical on both
+        calls. No network call is made — `driver_script` points at this
+        test's own fake driver, never the real `kaggle_driver.py`.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            notebooks = _make_product(tmp_path / "repo", "MIL-CREDA")
+            entrypoint = notebooks / "a.ipynb"
+            entrypoint.write_text("{}", encoding="utf-8")
+
+            driver = _write_fake_driver(tmp_path / "driver")
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="w1", token_path=token_path)
+
+            adapter = KAGGLE.KaggleAdapter(credentials={"w1": handle}, driver_script=driver)
+            job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
+
+            first = adapter.submit(job)
+            second = adapter.submit(job)
+
+            self.assertEqual(first.id, second.id)
+            self.assertEqual(first.id, "w1/a")
 
     def test_submit_completes_id_and_code_file_in_a_staged_copy_never_touching_the_job_folder(
         self,
