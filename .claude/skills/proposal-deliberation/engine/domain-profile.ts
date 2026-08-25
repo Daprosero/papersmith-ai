@@ -34,6 +34,17 @@ export type DeliberationDomainProfile = {
 	 * differently everywhere it appeared.
 	 */
 	readonly names: readonly string[];
+	/**
+	 * How this domain's documents cite their own numbered displays in prose.
+	 *
+	 * A source string rather than a RegExp, because two call sites need it with
+	 * different flags and a shared mutable RegExp carries `lastIndex` between
+	 * them. Both used to spell this pattern out separately -- `reference-index.ts`
+	 * and `math-integrity.ts` -- with two literals that agreed only by luck.
+	 */
+	readonly proseReferencePattern: string;
+	/** The same citation, written back out for an atom's display text. */
+	readonly proseReferenceText: (value: string) => string;
 };
 
 export const proposalDeliberationProfile: DeliberationDomainProfile = {
@@ -42,6 +53,10 @@ export const proposalDeliberationProfile: DeliberationDomainProfile = {
 	baseLabelLong: "fixed CREDA proposal base",
 	exampleSlug: "subject-bag-creda-integrated-r06",
 	names: ["CREDA"],
+	// These documents number with `\tag{N}` and cite as `(Ec. N)`; they do not
+	// use `\label`/`\eqref`, so this is the only citation form that resolves.
+	proseReferencePattern: "\\((?:Ec|Eq)\\.\\s*([0-9]+[a-z]?)\\)",
+	proseReferenceText: (value) => `(Ec. ${value})`,
 };
 
 /**
@@ -60,3 +75,6 @@ export const proposalDeliberationProfile: DeliberationDomainProfile = {
  * and inventing an unreachable `null` branch now would only promise otherwise.
  */
 export const DOMAIN: DeliberationDomainProfile = proposalDeliberationProfile;
+
+/** A fresh matcher for the domain's prose citations. Never shared: `matchAll` needs `g`, and a reused instance carries `lastIndex`. */
+export const proseReference = (flags: string): RegExp => new RegExp(DOMAIN.proseReferencePattern, flags);

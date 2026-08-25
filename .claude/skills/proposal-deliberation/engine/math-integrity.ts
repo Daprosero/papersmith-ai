@@ -1,4 +1,8 @@
 import { sha256 } from './types.js';
+import { DOMAIN, proseReference } from './domain-profile.js';
+
+/** The domain's prose citation, read off the profile so this module and `reference-index.ts` cannot drift apart. */
+const PROSE_REF = proseReference('gu');
 
 /**
  * Mathematical integrity: what the document must never lose in silence, and the
@@ -81,7 +85,7 @@ export function mathAtoms(source: string): Map<string, MathAtom> {
 	for (const [, body] of prose.matchAll(/(?<!\$)\$([^$\n]+)\$(?!\$)/gu)) add('inline', short(collapse(body)), collapse(body));
 	for (const [, value] of source.matchAll(/\\tag\{([^}]+)\}/gu)) add('tag', value, `\\tag{${value}}`);
 	for (const [macro] of source.matchAll(/\\[A-Za-z]+/gu)) add('macro', macro, macro);
-	for (const [, value] of source.matchAll(/\((?:Ec|Eq)\.\s*([0-9]+[a-z]?)\)/gu)) add('ref', value, `(Ec. ${value})`);
+	for (const [, value] of source.matchAll(PROSE_REF)) add('ref', value, DOMAIN.proseReferenceText(value));
 	return atoms;
 }
 
