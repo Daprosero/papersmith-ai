@@ -2787,6 +2787,32 @@ def report_integrity_fields(lines):
             "supersedes": supersedes_values[0] if supersedes_values else None}
 
 
+def schema_version_classification(schema):
+    """A companion report's own `- Schema:` value, classified as `absent`,
+    `current`, `predates`, or `postdates` -- structurally identical to the
+    version-comparison branch already inside `report_identity_gate`, but a
+    small, standalone, pure function used ONLY by the `--supersedes-report`
+    companion-check path.
+
+    `report_identity_gate` itself stays untouched: it is already
+    tamper-sensitive, already covered by `HistoricalReportRecordTests` and
+    the Q9-step-4 blanked-line lock, and this addition is purely additive --
+    touching it for a DRY gain would put untested blast radius on
+    already-hardened code for no requirement this domain has. A ~6-line
+    duplication of the numeric-comparison logic against the gate's own
+    inline branch is the accepted, smaller, reversible cost.
+    """
+    if schema is None:
+        return "absent"
+    current = f"skill-audit-report/{REPORT_SCHEMA_VERSION}"
+    if schema == current:
+        return "current"
+    match = re.match(r"skill-audit-report/(\d+)$", schema)
+    if match and int(match.group(1)) < REPORT_SCHEMA_VERSION:
+        return "predates"
+    return "postdates"
+
+
 def report_identity_gate(text, lines):
     """The RECONCILED three-way classification (spec's
     `report-tamper-evidence` domain, reconciled against the design's
@@ -2968,18 +2994,78 @@ def run_check_report(args):
     # already its own violation above; this block never layers a second,
     # confusing verdict on top of one (G2's ordering: inability and
     # mismatch never share an outcome with an already-broken claim).
+    #
+    # Ordering inside this branch, load-bearing: inability to look always
+    # precedes an ordinary violation, consistent with this skill's own
+    # standing rule that "could not look" never shares an outcome with
+    # "looked and found wrong" -- (1) the flag names a report that carries
+    # no claim at all is its own violation, checked first, with no
+    # companion read attempted; then, once a companion read is attempted,
+    # (2) unreadable, (3) schema predates/postdates, (4) either side's
+    # `- Subject:` absent are each `Unprobeable`, before (5) a digest
+    # mismatch or (6) a subject mismatch are ever considered as ordinary
+    # violations, with (7) verified only once every earlier check agrees.
     supersedes_report_path = getattr(args, "supersedes_report", None)
-    if supersedes_report_path and supersedes_claim_ok:
-        companion_text = Path(supersedes_report_path).read_text(encoding="utf-8")
-        companion_self_digest = report_self_digest(companion_text)
-        if companion_self_digest != supersedes_claim:
+    if supersedes_report_path:
+        if supersedes_claim is None:
             fail("supersedes",
-                 f"the named companion at {supersedes_report_path!r} "
-                 f"re-derives to {companion_self_digest}, which disagrees "
-                 f"with the declared '- Supersedes: {supersedes_claim}'",
-                 f"{path}:1")
-        else:
-            supersession = "verified"
+                 f"'--supersedes-report {supersedes_report_path}' was "
+                 "supplied, but the report carries no '- Supersedes:' "
+                 "claim to check", f"{path}:1")
+        elif supersedes_claim_ok:
+            try:
+                companion_text = Path(supersedes_report_path).read_text(
+                    encoding="utf-8")
+            except OSError as error:
+                raise Unprobeable(
+                    f"the named companion at {supersedes_report_path!r} "
+                    f"could not be read: {error}")
+
+            companion_lines = companion_text.splitlines()
+            companion_fields = report_integrity_fields(companion_lines)
+            companion_schema = (
+                companion_fields.get("schema") if companion_fields else None)
+            classification = schema_version_classification(companion_schema)
+            if classification in ("absent", "predates"):
+                raise Unprobeable(
+                    f"the named companion at {supersedes_report_path!r} "
+                    "predates the schema (no current '## Report integrity' "
+                    "section); its self-digest cannot be judged")
+            if classification == "postdates":
+                current = f"skill-audit-report/{REPORT_SCHEMA_VERSION}"
+                raise Unprobeable(
+                    f"the named companion at {supersedes_report_path!r} "
+                    f"declares schema {companion_schema!r}, which postdates "
+                    f"the schema this tool ships ({current!r}); its "
+                    "self-digest cannot be judged")
+
+            this_frozen = frozen_section_fields(lines)
+            companion_frozen = frozen_section_fields(companion_lines)
+            this_subject = this_frozen.get("subject")
+            companion_subject = companion_frozen.get("subject")
+            if not this_subject or not companion_subject:
+                absent_side = ("this report" if not this_subject
+                              else "the named companion")
+                raise Unprobeable(
+                    f"{absent_side}'s '## Frozen' carries no '- Subject:' "
+                    "line; comparability cannot be judged without it")
+
+            companion_self_digest = report_self_digest(companion_text)
+            if companion_self_digest != supersedes_claim:
+                fail("supersedes",
+                     f"the named companion at {supersedes_report_path!r} "
+                     f"re-derives to {companion_self_digest}, which "
+                     f"disagrees with the declared '- Supersedes: "
+                     f"{supersedes_claim}'", f"{path}:1")
+            elif this_subject != companion_subject:
+                fail("supersedes",
+                     f"the named companion's '- Subject: "
+                     f"{companion_subject}' disagrees with this report's "
+                     f"own '- Subject: {this_subject}'; a re-validation "
+                     "must be of the same subject, never merely of the "
+                     "same self-digest match", f"{path}:1")
+            else:
+                supersession = "verified"
 
     # `## Report integrity` must be the report's first `## ` section: the
     # schema marker governs every later judgment, so a validator that must

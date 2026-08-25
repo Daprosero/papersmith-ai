@@ -2551,6 +2551,113 @@ class ReportSupersessionTests(BoxMixin, unittest.TestCase):
         self.assertIn(wrong_digest, violation["detail"])
         self.assertIn(companion_self_digest, violation["detail"])
 
+    # -- comparability and the inabilities -----------------------------------
+
+    def test_flag_without_claim_in_report_is_a_violation(self):
+        box = self.make_box("supersession")
+        self._box = box
+        companion_path = self.write(box, "companion.md", VALID_REPORT)
+        result, payload = self.check(
+            VALID_REPORT, name="flag-without-claim.md",
+            extra_argv=("--supersedes-report", str(companion_path)))
+        self.assertEqual(result.returncode, 1, payload)
+        self.assertEqual(payload["supersession"], "not-claimed")
+        violation = next(v for v in payload["violations"] if v["item"] == "supersedes")
+        self.assertIn("no", violation["detail"].lower())
+
+    def test_unreadable_companion_is_unprobeable(self):
+        box = self.make_box("supersession")
+        self._box = box
+        missing_path = box / "does-not-exist.md"
+        text = self._with_supersedes("sha256:" + "a" * 64)
+        result, payload = self.check(
+            text, name="unreadable-companion.md",
+            extra_argv=("--supersedes-report", str(missing_path)))
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertEqual(payload["status"], "unprobeable")
+        self.assertIn("could not be read", payload["error"])
+
+    def test_companion_predating_the_schema_is_unprobeable(self):
+        box = self.make_box("supersession")
+        self._box = box
+        companion_path = self.write(box, "companion.md", VALID_REPORT_BODY)
+        text = self._with_supersedes("sha256:" + "a" * 64)
+        result, payload = self.check(
+            text, name="predates-companion.md",
+            extra_argv=("--supersedes-report", str(companion_path)))
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertEqual(payload["status"], "unprobeable")
+        self.assertIn("predates", payload["error"].lower())
+
+    def test_companion_postdating_the_schema_is_unprobeable(self):
+        companion = report_with_integrity(VALID_REPORT_BODY, schema=999)
+        box = self.make_box("supersession")
+        self._box = box
+        companion_path = self.write(box, "companion.md", companion)
+        text = self._with_supersedes("sha256:" + "a" * 64)
+        result, payload = self.check(
+            text, name="postdates-companion.md",
+            extra_argv=("--supersedes-report", str(companion_path)))
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertEqual(payload["status"], "unprobeable")
+        self.assertIn("postdates", payload["error"].lower())
+
+    def test_subject_absent_on_this_report_is_unprobeable(self):
+        companion = self._companion_report()
+        box = self.make_box("supersession")
+        self._box = box
+        companion_path = self.write(box, "companion.md", companion)
+        body = VALID_REPORT_BODY.replace(
+            "- Subject: a subject, one surface\n", "", 1)
+        self.assertNotEqual(body, VALID_REPORT_BODY)
+        text = self._with_supersedes("sha256:" + "a" * 64, body=body)
+        result, payload = self.check(
+            text, name="subject-absent-this.md",
+            extra_argv=("--supersedes-report", str(companion_path)))
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertEqual(payload["status"], "unprobeable")
+        self.assertIn("this report", payload["error"].lower())
+
+    def test_subject_absent_on_companion_is_unprobeable(self):
+        companion_digest = "sha256:" + "b" * 64
+        companion_body = VALID_REPORT_BODY.replace(VALID_REPORT_DIGEST, companion_digest)
+        companion_body = companion_body.replace(
+            "- Subject: a subject, one surface\n", "", 1)
+        self.assertNotEqual(companion_body, VALID_REPORT_BODY)
+        companion = report_with_integrity(companion_body)
+        box = self.make_box("supersession")
+        self._box = box
+        companion_path = self.write(box, "companion.md", companion)
+        text = self._with_supersedes("sha256:" + "a" * 64)
+        result, payload = self.check(
+            text, name="subject-absent-companion.md",
+            extra_argv=("--supersedes-report", str(companion_path)))
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertEqual(payload["status"], "unprobeable")
+        self.assertIn("companion", payload["error"].lower())
+
+    def test_reworded_subject_fails_closed_as_non_comparable(self):
+        cli = audit_cli_module()
+        companion_digest = "sha256:" + "b" * 64
+        companion_body = VALID_REPORT_BODY.replace(VALID_REPORT_DIGEST, companion_digest)
+        companion_body = companion_body.replace(
+            "- Subject: a subject, one surface\n",
+            "- Subject: a subject, one surface, reworded\n", 1)
+        self.assertNotEqual(companion_body, VALID_REPORT_BODY)
+        companion = report_with_integrity(companion_body)
+        companion_self_digest = cli.report_self_digest(companion)
+        box = self.make_box("supersession")
+        self._box = box
+        companion_path = self.write(box, "companion.md", companion)
+        text = self._with_supersedes(companion_self_digest)
+        result, payload = self.check(
+            text, name="reworded-subject.md",
+            extra_argv=("--supersedes-report", str(companion_path)))
+        self.assertEqual(result.returncode, 1, payload)
+        violation = next(v for v in payload["violations"] if v["item"] == "supersedes")
+        self.assertIn("a subject, one surface", violation["detail"])
+        self.assertIn("reworded", violation["detail"])
+
     # -- three digests kept mechanically unmistakable ------------------------
 
     def test_supersedes_line_never_matches_self_digest_line(self):
