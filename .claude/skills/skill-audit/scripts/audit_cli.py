@@ -2128,6 +2128,7 @@ REPORT_SHAPE = {
     "not-adjudicable": "## Not adjudicable",
     "ranked-findings": "## Ranked findings",
     "reading-diff": "## Reading diff",
+    "remedy": "- Remedy:",
     "repair-units": "## Repair units",
     "report-integrity": "## Report integrity",
     "stage-outcomes": "## Stage outcomes",
@@ -2489,6 +2490,17 @@ ADJUDICATIONS = ("doctrine wrong", "artefact wrong", "not adjudicable")
 #: `- Evidence:`: a missing marker is never read as `one`, any more than a
 #: missing evidence marker is read as confirmed.
 FOUND_BY_VALUES = ("both", "one", "not-compared")
+
+#: `- Remedy:`'s closed set, required on -- and only on -- a finding that
+#: carries both `- Move: 6` and `- Adjudication: not adjudicable`: Move 6
+#: finds a guarded fact whose mutation left the suite green, and that
+#: single bucket hides two different jobs. `delete` names a fact that no
+#: longer exists; `update` names a fact that exists but moved, or that the
+#: test measures wrongly. Neither AST existence-checking nor any other
+#: mechanical test can always resolve the split, so `undecided` is a third,
+#: legitimate value, never an omission -- and there is no default: a
+#: missing marker is never read as any of the three.
+REMEDY_VALUES = ("delete", "update", "undecided")
 
 NO_CONFIRMED_DECLARATION = "No finding in this report is CONFIRMED by execution"
 
@@ -3128,6 +3140,12 @@ def run_check_report(args):
              f"{path}:1")
 
     confirmed = False
+    # Populated by the per-finding `remedy` check below, keyed by vocabulary
+    # token; consumed after the loop by the derived-roster cross-check
+    # (Commit 2). Declared here, unconditionally, so a report with zero
+    # Move-6 not-adjudicable findings correctly derives three empty buckets
+    # rather than a missing name.
+    remedy_by_bucket = {"delete": [], "update": [], "undecided": []}
     for finding in findings:
         where = f"{path}:{finding['line']} {finding['label']}"
         body = "\n".join(finding["text"])
@@ -3172,6 +3190,53 @@ def run_check_report(args):
                  f"{finding['section']!r}; a `not adjudicable` finding "
                  "belongs under '## Not adjudicable' and nowhere else",
                  where)
+
+        # Move 6's own occasion, scoped tightly: `- Remedy:` is required iff
+        # a finding carries both `- Move: 6` and `- Adjudication: not
+        # adjudicable`, and refused everywhere else -- bidirectional,
+        # mirroring the `not-adjudicable` cross-section rule right above.
+        # `remedy_by_bucket` accumulates the in-scope labels this loop finds,
+        # by vocabulary token, for the derived-roster cross-check after the
+        # loop; grouping ignores an `undecided` finding's own reason text.
+        remedy = re.search(r"^- Remedy:\s*(.+?)\s*$", body, re.MULTILINE)
+        remedy_in_scope = (
+            move is not None and move.group(1) == "6"
+            and verdict is not None and verdict.group(1) == "not adjudicable")
+        if remedy_in_scope:
+            if not remedy:
+                fail("remedy",
+                     f"finding {finding['label']} carries '- Move: 6' and "
+                     "'- Adjudication: not adjudicable' but no "
+                     "'- Remedy:' line; the field is required in exactly "
+                     "this scope", where)
+            else:
+                value = remedy.group(1)
+                if value in ("delete", "update"):
+                    remedy_by_bucket[value].append(finding["label"])
+                elif value == "undecided" or value.startswith("undecided:"):
+                    reason = value.split(":", 1)[1].strip() \
+                        if ":" in value else ""
+                    if reason:
+                        remedy_by_bucket["undecided"].append(finding["label"])
+                    else:
+                        fail("remedy",
+                             f"finding {finding['label']}'s "
+                             "'- Remedy: undecided' carries no reason; a "
+                             "bare `undecided` is refused, matching this "
+                             "repo's own idiom for every other escape "
+                             "hatch (`Unprobeable`, `no-closed-roster`, "
+                             "'## Unchecked')", where)
+                else:
+                    fail("remedy",
+                         f"finding {finding['label']}'s "
+                         f"'- Remedy: {value}' is outside the vocabulary "
+                         "delete | update | undecided: <reason>", where)
+        elif remedy:
+            fail("remedy",
+                 f"finding {finding['label']} carries "
+                 f"'- Remedy: {remedy.group(1)}' outside its exact scope "
+                 "('- Move: 6' and '- Adjudication: not adjudicable'); "
+                 "the field is refused on any other finding", where)
 
         citations = {c for c in CITATION.findall(body)}
         if len(citations) < 2:

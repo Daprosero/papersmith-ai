@@ -2071,6 +2071,214 @@ class RepairUnitsTests(BoxMixin, unittest.TestCase):
             f"a unit naming an unknown finding must be rejected: {violations}")
 
 
+#: A dedicated Move-6 not-adjudicable fixture, built the same way
+#: `VALID_REPORT_BODY` is -- through the shipped block-rendering helpers,
+#: never a hand-typed `## Move outcomes` or `## Stage outcomes` block --
+#: carrying three Move-6 `not adjudicable` findings, one per remedy
+#: vocabulary token, plus the three derived roster lines the roster
+#: cross-check requires. Built with valid roster content from the start,
+#: even though nothing here parses those lines yet: a report this fixture's
+#: own tests accept must stay accepted once the roster cross-check lands
+#: alongside it, since both sets of tests run together in the same
+#: full-suite pass.
+REMEDY_REPORT_BODY = f"""# Audit: a subject, three remedy verdicts
+
+## Frozen
+
+- Digest: {VALID_REPORT_DIGEST}
+- Subject: a subject, three remedy verdicts
+- Exclude: (none)
+
+{move_outcomes_block(VALID_REPORT_MOVE_OVERRIDES)}
+{stage_outcomes_block(VALID_REPORT_STAGE_OVERRIDES)}
+## Ranked findings
+
+## Not adjudicable
+
+- Delete: F2
+- Update: F3
+- Undecided: F4
+
+### F2. A guarded fact confirmed gone
+
+- Move: 6
+- Evidence: CONFIRMED by execution
+- Found by: one
+- Adjudication: not adjudicable
+- Digest: {VALID_REPORT_DIGEST}
+- Code side: `engine/legacy.ts:10`
+- Doctrine side: `SKILL.md:99`
+- Detail: the guarded fact no longer exists anywhere in the running code.
+- Remedy: delete
+
+### F3. A guarded fact that moved
+
+- Move: 6
+- Evidence: CONFIRMED by execution
+- Found by: one
+- Adjudication: not adjudicable
+- Digest: {VALID_REPORT_DIGEST}
+- Code side: `engine/relocated.ts:12`
+- Doctrine side: `SKILL.md:99`
+- Detail: the guarded fact exists, but at a different site than the test measures.
+- Remedy: update
+
+### F4. A guarded fact this tool cannot classify
+
+- Move: 6
+- Evidence: CONFIRMED by execution
+- Found by: one
+- Adjudication: not adjudicable
+- Digest: {VALID_REPORT_DIGEST}
+- Code side: `engine/ambiguous.ts:7`
+- Doctrine side: `SKILL.md:99`
+- Detail: the guarded fact is a config literal, not a named symbol.
+- Remedy: undecided: the guarded fact is a config literal, not a named symbol
+
+## Undecidable
+
+{UNDECIDABLE_NO_CLOSED_ROSTER_ENTRY}
+## Computed-value provenance
+
+## Disputed severity
+
+## Clean, stated as results
+
+- Nothing else was checked in this fixture.
+
+## Unchecked
+
+- Everything outside these three planted findings.
+
+## Falsifier
+
+Removing or changing a `- Remedy:` line, or a derived roster line, would change the verdict this fixture states.
+
+## Changed-line forecast
+
+| Remedy | Changed lines |
+| --- | --- |
+| Delete F2, rewrite F3, decide F4 later | 0 |
+
+## Repair units
+
+| Unit | Findings | Changed lines |
+| --- | --- | --- |
+| Delete the obsolete guard | F2 | 0 |
+| Rewrite the relocated guard | F3 | 0 |
+| Undecided pending a human call | F4 | 0 |
+"""
+
+#: `REMEDY_REPORT_BODY`, with `## Report integrity` prepended and a real,
+#: freshly-computed self-digest -- mirrors `VALID_REPORT`'s own construction
+#: exactly. Every test below that mutates this text must route the result
+#: through `resign()` first.
+REMEDY_REPORT = report_with_integrity(REMEDY_REPORT_BODY)
+
+
+class RemedyVerdictTests(BoxMixin, unittest.TestCase):
+    """A finding MUST carry `- Remedy: delete | update | undecided: <reason>`
+    iff it carries both `- Move: 6` and `- Adjudication: not adjudicable`,
+    and the field is refused everywhere else -- bidirectional, mirroring the
+    existing `not-adjudicable` cross-section rule.
+    """
+
+    def check(self, text, name="report.md"):
+        box = getattr(self, "_box", None) or self.make_box("remedy")
+        self._box = box
+        path = self.write(box, name, resign(text))
+        result = run_cli("check-report", str(path))
+        return result, json.loads(result.stdout)
+
+    def test_all_three_remedy_values_are_accepted(self):
+        result, payload = self.check(REMEDY_REPORT)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["violations"], [])
+
+    def test_remedy_absent_in_scope_is_rejected(self):
+        broken = REMEDY_REPORT.replace("- Remedy: delete\n", "", 1)
+        self.assertNotEqual(broken, REMEDY_REPORT, "the graft must land")
+        result, payload = self.check(broken, name="remedy-absent.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "remedy"]
+        self.assertTrue(
+            any("F2" in v["detail"] for v in violations),
+            f"F2 losing its required '- Remedy:' line must be rejected and "
+            f"must name F2: {violations}")
+
+    def test_remedy_value_outside_vocabulary_is_rejected(self):
+        broken = REMEDY_REPORT.replace(
+            "- Remedy: delete\n", "- Remedy: rewrite\n", 1)
+        result, payload = self.check(broken, name="remedy-outside-vocabulary.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "remedy"]
+        self.assertTrue(
+            any("F2" in v["detail"] and "rewrite" in v["detail"]
+                for v in violations),
+            f"a value outside delete/update/undecided must be rejected and "
+            f"must name F2 and the offending value: {violations}")
+
+    def test_bare_undecided_with_no_reason_is_rejected(self):
+        broken = REMEDY_REPORT.replace(
+            "- Remedy: undecided: the guarded fact is a config literal, "
+            "not a named symbol\n",
+            "- Remedy: undecided\n", 1)
+        self.assertNotEqual(broken, REMEDY_REPORT, "the graft must land")
+        result, payload = self.check(broken, name="remedy-bare-undecided.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "remedy"]
+        self.assertTrue(
+            any("F4" in v["detail"] for v in violations),
+            f"a bare 'undecided' with no reason must be rejected and must "
+            f"name F4: {violations}")
+
+    def test_remedy_present_on_move_zero_not_adjudicable_finding_is_rejected(self):
+        broken = VALID_REPORT.replace(
+            "- Adjudication: not adjudicable\n",
+            "- Adjudication: not adjudicable\n- Remedy: delete\n", 1)
+        self.assertNotEqual(broken, VALID_REPORT, "the graft must land")
+        result, payload = self.check(broken, name="remedy-on-move-zero.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "remedy"]
+        self.assertTrue(
+            any("F2" in v["detail"] for v in violations),
+            f"a Move-0 not-adjudicable finding carrying '- Remedy:' must be "
+            f"rejected and must name F2: {violations}")
+
+    def test_remedy_present_on_doctrine_wrong_finding_is_rejected(self):
+        broken = VALID_REPORT.replace(
+            "- Adjudication: doctrine wrong\n",
+            "- Adjudication: doctrine wrong\n- Remedy: delete\n", 1)
+        self.assertNotEqual(broken, VALID_REPORT, "the graft must land")
+        result, payload = self.check(broken, name="remedy-on-doctrine-wrong.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "remedy"]
+        self.assertTrue(
+            any("F1" in v["detail"] for v in violations),
+            f"a `doctrine wrong` finding carrying '- Remedy:' must be "
+            f"rejected and must name F1: {violations}")
+
+    def test_remedy_present_on_move_six_with_other_adjudication_is_rejected(self):
+        """The AND-condition, proven both halves at once: `- Move: 6` alone
+        is not scope; a finding needs `- Adjudication: not adjudicable` too.
+        """
+        broken = VALID_REPORT.replace(
+            "### F1. A set restated in more places than it is derived\n\n"
+            "- Move: 0\n", "### F1. A set restated in more places than it "
+            "is derived\n\n- Move: 6\n", 1)
+        broken = broken.replace(
+            "- Adjudication: doctrine wrong\n",
+            "- Adjudication: doctrine wrong\n- Remedy: delete\n", 1)
+        result, payload = self.check(
+            broken, name="remedy-move-six-wrong-adjudication.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "remedy"]
+        self.assertTrue(
+            any("F1" in v["detail"] for v in violations),
+            f"a Move-6 finding whose adjudication is not `not adjudicable` "
+            f"must still refuse '- Remedy:'; must name F1: {violations}")
+
+
 class CheckReportSubjectTests(BoxMixin, unittest.TestCase):
     """`check-report --subject` re-derives `## Frozen`'s digest from disk.
 

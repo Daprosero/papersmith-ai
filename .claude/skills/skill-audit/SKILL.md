@@ -397,6 +397,7 @@ restated as a second literal.
 | `reading-diff` | `## Reading diff`, demanded when stage 3 is `ran` | Absent while stage 3's row reads `ran` |
 | `drives` | `## Drives`, demanded when stage 4 is `ran`; no finding may attribute itself to the skill-less drive while naming the subject as its own target | Absent while stage 4's row reads `ran`, or a finding commits that category error |
 | `not-adjudicable` | `## Not adjudicable`, bare heading; when non-empty, each entry names the absent half, its `- Evidence:`, and the `## Repair units` unit it belongs to | The heading is absent, or a finding whose `- Adjudication:` reads `not adjudicable` sits under `## Ranked findings` instead |
+| `remedy` | Per finding with `- Move: 6` and `- Adjudication: not adjudicable`, `- Remedy:` one of `delete`, `update`, or `undecided: <reason>` | The field is absent in that exact scope; carries a value outside the vocabulary; a bare `undecided` with no reason; or is present on any finding outside that exact scope |
 | `computed-value-provenance` | `## Computed-value provenance`, bare heading, unconditional -- like `## Not adjudicable` and `## Disputed severity`, demanded whether or not Move 10 ran; when Move 10 ran, transcribes `sensitivity`'s own emitted payload: the producer, the control outcome, the inputs varied and the total declared, the range swept, and the full matrix -- published even when no cell crosses the finding threshold | The heading is absent |
 
 Every `check-report` run additionally reports `"supersession"`, a closed
