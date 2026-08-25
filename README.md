@@ -619,7 +619,7 @@ distinto en cada uno de los dos flujos**. Vale la pena verla entera antes que na
 **De deliberación hacia acá, tres cosas distintas entran:**
 
 1. **Cuál es la revisión vigente.** Paso 1 de **los dos** flujos, sin excepción:
-   `node .claude/skills/proposal-deliberation/engine/cli.mjs '{ "operation": "STATUS" }'`
+   `node .claude/skills/proposal-deliberation/cli.mjs '{ "operation": "STATUS" }'`
    → se toma `latest`. La skill **nunca adivina la base y nunca mira `proposals/` a
    ojo**.
 2. **El texto de la revisión.** El motor sí lee el archivo: `revision_source()` lo

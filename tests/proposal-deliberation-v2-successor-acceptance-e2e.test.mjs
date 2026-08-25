@@ -14,8 +14,8 @@ const jiti = createJiti(import.meta.url, { alias: {
  '@earendil-works/pi-ai': path.join(aiRoot, 'index.js'),
  typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const workspace = await jiti.import(path.join(root, '.claude/skills/proposal-deliberation/engine/proposal-workspace.ts'));
-const v2 = await jiti.import(path.join(root, '.claude/skills/proposal-deliberation/engine/exports.ts'));
+const workspace = await jiti.import(path.join(root, '.claude/skills/_core/deliberation/engine/proposal-workspace.ts'));
+const v2 = await jiti.import(path.join(root, '.claude/skills/_core/deliberation/engine/exports.ts'));
 
 const sourceContent = `# 1 Introduction\n\nPrefix bytes remain untouched.\n\n# 2 Framing\n\nOld framing.\n\n## 2.1 Framing average\n\nOld average.\n\n## 2.2 Setup\n\nOld setup.\n\n## 2.3 Method\n\nOld method.\n\n## 2.4 Consequences\n\nOld consequences.\n\n# 3 Results\n\nOld results.\n\n## 3.1 Analysis\n\nOld analysis.\n\n## 3.2 Validation\n\nOld validation.\n\n## 3.3 Discussion\n\nOld discussion.\n\n# 4 Conclusion\n\nSuffix bytes remain untouched.\n`;
 

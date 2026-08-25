@@ -3,7 +3,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { createJiti } from 'jiti';
 const jiti=createJiti(import.meta.url);
-const engine=path.resolve('.claude/skills/proposal-deliberation/engine');
+const engine=path.resolve('.claude/skills/_core/deliberation/engine');
 const {PROSE_REFERENCE,buildReferenceIndex}=await jiti.import(path.join(engine,'reference-index.ts'));
 const {mathAtoms,mathDelta}=await jiti.import(path.join(engine,'math-integrity.ts'));
 const {buildStructuralIndex}=await jiti.import(path.join(engine,'document-index.ts'));

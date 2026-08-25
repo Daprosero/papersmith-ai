@@ -34,7 +34,7 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const v2 = await jiti.import(path.join(root, '.claude/skills/proposal-deliberation/engine/exports.ts'));
+const v2 = await jiti.import(path.join(root, '.claude/skills/_core/deliberation/engine/exports.ts'));
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');

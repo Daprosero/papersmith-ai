@@ -456,7 +456,7 @@ date. Drift is Flow B's fourth step, not a reason to start over.
 
 ## Flow A — first pass
 
-1. `node .claude/skills/proposal-deliberation/engine/cli.mjs '{ "operation": "STATUS" }'` → take `latest`.
+1. `node .claude/skills/proposal-deliberation/cli.mjs '{ "operation": "STATUS" }'` → take `latest`.
 2. **Ask for the repository URL** and clone it:
    `GIT_LFS_SKIP_SMUDGE=1 git clone <url> implementations/<repo>` (or `git init`), pin the
    LFS skip in the clone's local config (see `references/usage.md`), then `env`.

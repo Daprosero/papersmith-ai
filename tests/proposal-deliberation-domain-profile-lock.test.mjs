@@ -2,21 +2,23 @@ import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
-const engineDir=path.resolve('.claude/skills/proposal-deliberation/engine');
-const PROFILE='domain-profile.ts';
-const profile=await readFile(path.join(engineDir,PROFILE),'utf8');
-// Whatever this domain calls itself, it says so once. The lock reads those values
-// back out of the profile rather than naming a project here, so a later domain is
-// held to the same rule without this file being edited to know about it.
+const coreDir=path.resolve('.claude/skills/_core/deliberation/engine');
+const PROFILE=path.resolve('.claude/skills/proposal-deliberation/profile.ts');
+const profile=await readFile(PROFILE,'utf8');
+// The profile now lives with the skill, not inside the engine, so the core needs
+// no exemption: NO file under `_core/` may name a domain, this one included.
+// Whatever a domain calls itself, it says so once, and the lock reads those values
+// back out rather than naming a project here -- a later domain is held to the same
+// rule without this file being edited to know about it.
 const declared=[...profile.matchAll(/^\t(?:deriveBase|baseLabel|baseLabelLong|exampleSlug): "([^"]+)",$/gm)].map(m=>m[1]);
 const names=[...(profile.match(/^\tnames: \[([^\]]*)\],$/m)?.[1]??'').matchAll(/"([^"]+)"/g)].map(m=>m[1]);
-const engineFiles=(await readdir(engineDir,{recursive:true,withFileTypes:true}))
-	.filter(e=>e.isFile()&&e.name.endsWith('.ts')&&e.name!==PROFILE)
+const coreFiles=(await readdir(coreDir,{recursive:true,withFileTypes:true}))
+	.filter(e=>e.isFile()&&(e.name.endsWith('.ts')||e.name.endsWith('.mjs')))
 	.map(e=>path.join(e.parentPath??e.path,e.name));
-const sources=await Promise.all(engineFiles.map(async file=>[path.relative(engineDir,file),await readFile(file,'utf8')]));
+const sources=await Promise.all(coreFiles.map(async file=>[path.relative(coreDir,file),await readFile(file,'utf8')]));
 test('the profile declares its values and the names behind them',()=>{assert.equal(declared.length,4,`expected 4 declared values, found ${declared.length}`);assert.ok(names.length>0,'the profile declares no domain name, so the lock below would pass vacuously');for(const value of[...declared,...names])assert.notEqual(value.trim(),'');});
 test('every declared name really is this domain speaking',()=>{const unused=names.filter(n=>!declared.some(v=>v.toLowerCase().includes(n.toLowerCase()))&&!profile.toLowerCase().includes(n.toLowerCase()));assert.deepEqual(unused,[],'a name no profile value contains is not this domain naming itself');});
-test('no engine file outside the profile names the domain',()=>{
+test('no file in the shared core names a domain',()=>{
 	assert.ok(sources.length>40,`expected the whole engine, scanned ${sources.length}`);
 	const leaks=[];
 	for(const[rel,source]of sources){const lower=source.toLowerCase();
@@ -25,5 +27,23 @@ test('no engine file outside the profile names the domain',()=>{
 		// sweep of this engine left a residue behind.
 		for(const value of declared)if(source.includes(value))leaks.push(`${rel} spells ${JSON.stringify(value)}`);
 		for(const name of names)if(lower.includes(name.toLowerCase()))leaks.push(`${rel} names ${JSON.stringify(name)}`);}
-	assert.deepEqual([...new Set(leaks)],[],'the engine must read these off the profile, never spell them');
+	assert.deepEqual([...new Set(leaks)],[],'the core must read these off the host-chosen profile, never spell them');
+});
+test('no document tells a reader to run the bare core',async()=>{
+	// The core fails closed without a profile, so an instruction to invoke its
+	// cli.mjs directly is an instruction that errors. Every documented entry point
+	// must be a skill's own launcher, which supplies the profile. This nearly
+	// shipped: the path rewrite that moved the engine updated these commands to the
+	// new location and left them pointing at an engine that now refuses.
+	const docs=['.claude/skills/proposal-deliberation/SKILL.md','.claude/skills/proposal-deliberation/references/usage.md','.claude/skills/proposal-implementation/SKILL.md','.claude/skills/proposal-implementation/references/usage.md','README.md'];
+	for(const doc of docs){
+		const text=await readFile(path.resolve(doc),'utf8').catch(()=>null);
+		if(text===null) continue;
+		assert.equal(/_core\/deliberation\/engine\/cli\.mjs/.test(text),false,`${doc} invokes the core directly, which refuses without a profile`);
+	}
+});
+test('the core refuses to serve a domain it was not given',async()=>{
+	const resolver=await readFile(path.join(coreDir,'domain-profile.ts'),'utf8');
+	assert.match(resolver,/DELIBERATION_DOMAIN_PROFILE_REQUIRED/,'no profile must be a refusal, not a default');
+	assert.equal(/proposalDeliberationProfile|matematica_propuesta/.test(resolver),false,'the resolver must carry no domain of its own');
 });

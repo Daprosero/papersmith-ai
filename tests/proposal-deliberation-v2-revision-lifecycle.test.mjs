@@ -9,7 +9,7 @@ const repositoryRoot=path.resolve('.');
 const piRoot='/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
 const {createJiti}=await import(pathToFileURL(path.join(piRoot,'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti=createJiti(import.meta.url,{alias:{'@earendil-works/pi-coding-agent':path.join(piRoot,'dist/index.js'),'@earendil-works/pi-ai/compat':path.join(piRoot,'node_modules/@earendil-works/pi-ai/dist/compat.js'),'@earendil-works/pi-ai':path.join(piRoot,'node_modules/@earendil-works/pi-ai/dist/index.js'),typebox:path.join(piRoot,'node_modules/typebox/build/index.mjs')}});
-const v2=await jiti.import(path.resolve('.claude/skills/proposal-deliberation/engine/exports.ts'));
+const v2=await jiti.import(path.resolve('.claude/skills/_core/deliberation/engine/exports.ts'));
 const marker='<!-- proposal-workspace:artifact:v1 -->\n';
 const r01='research-concept-r01.md';
 const r02='research-concept-r02.md';
@@ -44,8 +44,8 @@ async function fixture(options={}) {
 }
 async function productiveTool(root) {
  await mkdir(path.join(root,'.pi'),{recursive:true});
- await cp(path.join(repositoryRoot,'.claude/skills/proposal-deliberation/engine'),path.join(root,'.claude/skills/proposal-deliberation/engine'),{recursive:true});
- const workspace=await jiti.import(path.join(root,'.claude/skills/proposal-deliberation/engine/proposal-workspace.ts'));
+ await cp(path.join(repositoryRoot,'.claude/skills/_core/deliberation/engine'),path.join(root,'.claude/skills/_core/deliberation/engine'),{recursive:true});
+ const workspace=await jiti.import(path.join(root,'.claude/skills/_core/deliberation/engine/proposal-workspace.ts'));
  const tools=[];
  workspace.default({registerTool:tool=>tools.push(tool),on:()=>{}});
  const tool=tools.find(candidate=>candidate.name==='proposal_deliberation_execute');

@@ -1,13 +1,13 @@
 # Proposal Deliberation — examples and help
 
-See [SKILL.md](../SKILL.md) for the full tutor-role conditioning and workflow discipline. This page is worked examples only: checking `STATUS` before deciding a base, creating the first managed version, resolving a locus, building `resolvedDecisions`, and the preview → accept → publish cycle. Every call below is a real, verified invocation of `node .claude/skills/proposal-deliberation/engine/cli.mjs` — none of it requires `ANTHROPIC_API_KEY` or any model configuration.
+See [SKILL.md](../SKILL.md) for the full tutor-role conditioning and workflow discipline. This page is worked examples only: checking `STATUS` before deciding a base, creating the first managed version, resolving a locus, building `resolvedDecisions`, and the preview → accept → publish cycle. Every call below is a real, verified invocation of `node .claude/skills/proposal-deliberation/cli.mjs` — none of it requires `ANTHROPIC_API_KEY` or any model configuration.
 
 ## Checking `STATUS` before deciding a base
 
 Before running the decision tree in [SKILL.md's "Resolving the base version"](../SKILL.md#resolving-the-base-version), call `STATUS` — read-only, keyless, no model call:
 
 ```bash
-node .claude/skills/proposal-deliberation/engine/cli.mjs '{ "operation": "STATUS" }'
+node .claude/skills/proposal-deliberation/cli.mjs '{ "operation": "STATUS" }'
 ```
 
 Against a `proposals/` directory holding a managed `r01`/`r02` pair, one managed-looking-but-unmarked `r03` (missing the `<!-- proposal-workspace:artifact:v1 -->` marker, so it does NOT count as managed), and an unrelated `initial-idea.md`:
@@ -30,7 +30,7 @@ Against a `proposals/` directory holding a managed `r01`/`r02` pair, one managed
 Pass `sourceFilename` to classify one candidate base against that same inventory in the same call:
 
 ```bash
-node .claude/skills/proposal-deliberation/engine/cli.mjs '{ "operation": "STATUS", "sourceFilename": "research-concept-r01.md" }'
+node .claude/skills/proposal-deliberation/cli.mjs '{ "operation": "STATUS", "sourceFilename": "research-concept-r01.md" }'
 ```
 
 ```json
@@ -38,7 +38,7 @@ node .claude/skills/proposal-deliberation/engine/cli.mjs '{ "operation": "STATUS
 ```
 
 ```bash
-node .claude/skills/proposal-deliberation/engine/cli.mjs '{ "operation": "STATUS", "sourceFilename": "initial-idea.md" }'
+node .claude/skills/proposal-deliberation/cli.mjs '{ "operation": "STATUS", "sourceFilename": "initial-idea.md" }'
 ```
 
 ```json
@@ -52,7 +52,7 @@ node .claude/skills/proposal-deliberation/engine/cli.mjs '{ "operation": "STATUS
 When no managed proposal exists yet, call the engine with `operation: CREATE_INITIAL_REVISION` and the idea as `instruction`:
 
 ```bash
-node .claude/skills/proposal-deliberation/engine/cli.mjs '{
+node .claude/skills/proposal-deliberation/cli.mjs '{
   "operation": "CREATE_INITIAL_REVISION",
   "instruction": "A paper proposing a distribution-free calibration test for conformal prediction sets under covariate shift."
 }'
@@ -65,7 +65,7 @@ This is explicit and user-triggered only: it never runs automatically, and it is
 The engine host's own cold start (jiti compiling its TS sources) is paid once per spawned process. A single version already needs at least three calls — resolve, preview, accept — so start ONE persistent process and keep it open for the whole deliberation instead of spawning a fresh `cli.mjs` invocation per call:
 
 ```bash
-node .claude/skills/proposal-deliberation/engine/cli.mjs --serve
+node .claude/skills/proposal-deliberation/cli.mjs --serve
 ```
 
 Every example below is a JSON line sent to that same process's stdin, in order.
@@ -104,7 +104,7 @@ Do this once per independent locus in the batch you are about to apply. To resol
 ### Replace (the common case: rewrite a paragraph, definition, or block)
 
 ```bash
-node .claude/skills/proposal-deliberation/engine/cli.mjs '{
+node .claude/skills/proposal-deliberation/cli.mjs '{
   "operation": "CREATE_SUCCESSOR",
   "sourceFilename": "research-concept-r05.md",
   "instruction": "Tighten the definition of stationarity to require strict, not weak, stationarity.",
@@ -282,7 +282,7 @@ operation is a public change and must edit that test too.
 To withdraw an eligible managed revision:
 
 ```bash
-node .claude/skills/proposal-deliberation/engine/cli.mjs '{
+node .claude/skills/proposal-deliberation/cli.mjs '{
   "operation": "WITHDRAW_REVISION",
   "sourceFilename": "research-concept-r05.md",
   "withdrawalReason": "superseded by a cleaner formulation"
@@ -292,7 +292,7 @@ node .claude/skills/proposal-deliberation/engine/cli.mjs '{
 Omit `withdrawalOperationId` — the engine generates and returns it along with the audited backup location. To restore:
 
 ```bash
-node .claude/skills/proposal-deliberation/engine/cli.mjs '{
+node .claude/skills/proposal-deliberation/cli.mjs '{
   "operation": "RESTORE_WITHDRAWN_REVISION",
   "sourceFilename": "research-concept-r05.md"
 }'

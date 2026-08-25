@@ -16,7 +16,7 @@ const jiti = createJiti(import.meta.url, {
 		typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 	},
 });
-const v2 = await jiti.import(path.join(repositoryRoot, '.claude/skills/proposal-deliberation/engine/exports.ts'));
+const v2 = await jiti.import(path.join(repositoryRoot, '.claude/skills/_core/deliberation/engine/exports.ts'));
 
 const marker = '<!-- proposal-workspace:artifact:v1 -->\n';
 

@@ -1,19 +1,19 @@
-/**
- * The one place a deliberation domain names itself.
- *
- * The engine is domain-neutral: it manages revisions of a Markdown document,
- * indexes it, patches it byte-exactly, and transacts the result. None of that is
- * mathematics. What IS domain-specific is a thin rim -- which file a first
- * revision derives from, and what that file is called when the engine has to
- * name it in a refusal. Both used to be spelled inline in `proposal-workspace.ts`,
- * 35 times, with one research project's name baked into each, so every skill
- * derived from this engine inherited a target it has nothing to do with.
- *
- * The values below are byte-identical to what the engine hardcoded, so this file
- * changes no behavior: the messages it composes are the exact messages the
- * existing tests already assert on.
- */
+import { isAbsolute } from "node:path";
 
+/**
+ * The contract a deliberation domain fills in, and the resolver that finds it.
+ *
+ * This engine is shared. It manages revisions of a Markdown document, indexes it,
+ * patches it byte-exactly and transacts the result -- none of which is specific to
+ * what the document argues about. What IS specific lives in a profile the HOST
+ * chooses, never here: the engine that names a domain is an engine only one skill
+ * can use.
+ *
+ * There is deliberately no default. A default would have to name one domain, which
+ * is the exact coupling this file exists to remove, and a silent fallback is worse
+ * than a refusal: the caller would get a working engine quietly answering for the
+ * wrong document. Each skill ships a launcher that sets the variable.
+ */
 export type DeliberationDomainProfile = {
 	/** The single file `derive` and `derive_revision` accept as a source. */
 	readonly deriveBase: string;
@@ -74,44 +74,34 @@ export type DeliberationDomainProfile = {
 	};
 };
 
-export const proposalDeliberationProfile: DeliberationDomainProfile = {
-	deriveBase: "matematica_propuesta_CREDA.md",
-	baseLabel: "fixed CREDA base",
-	baseLabelLong: "fixed CREDA proposal base",
-	exampleSlug: "subject-bag-creda-integrated-r06",
-	names: ["CREDA"],
-	// These documents number with `\tag{N}` and cite as `(Ec. N)`; they do not
-	// use `\label`/`\eqref`, so this is the only citation form that resolves.
-	proseReferencePattern: "\\((?:Ec|Eq)\\.\\s*([0-9]+[a-z]?)\\)",
-	proseReferenceText: (value) => `(Ec. ${value})`,
-	vocabulary: {
-		conceptualTerms: ["regularización", "motivación matemática", "múltiples dominios", "semi-supervisado"],
-		expertPattern: "matem|ecuaci|regularización|semi-supervisado|teórico",
-		displayNounPattern: "ecuaci[oó]n",
-		displayNounStripPattern: "\\becuaci[oó]n(?:es)?\\b",
-		subjectPattern: "one[- ]?hot|codificaci[oó]n|etiqueta|clase",
-		subjectTerms: ["one-hot", "one hot"],
-		subjectLocusDescription: "ecuación relacionada con one-hot",
-		subjectEvidenceLabel: "nearby one-hot/coding definition",
-	},
-};
+const configured = process.env.DELIBERATION_DOMAIN_PROFILE;
+if (!configured)
+	throw new Error(
+		"DELIBERATION_DOMAIN_PROFILE_REQUIRED: this engine serves no domain of its own. " +
+		"Set DELIBERATION_DOMAIN_PROFILE to a module exporting `profile`, or launch " +
+		"through a skill's own cli.mjs, which sets it.",
+	);
 
-/**
- * The profile this engine checkout serves.
- *
- * Static on purpose, and honestly so: the TypeBox schemas in
- * `proposal-workspace.ts` are built at module scope, so the profile has to
- * resolve at import time. Making it injectable per call means moving those
- * schema constructions into a factory -- a real change to a 5,687-line file, and
- * a separate one from this. Until then one checkout serves one domain, and this
- * constant is where that choice is written down instead of scattered.
- *
- * `deriveBase` is required because this host requires it. A domain whose first
- * revision is composed from several upstream sources rather than derived from a
- * single file cannot be expressed here yet; that needs the same factory change,
- * and inventing an unreachable `null` branch now would only promise otherwise.
- */
-export const DOMAIN: DeliberationDomainProfile = proposalDeliberationProfile;
+const REQUIRED = ["deriveBase", "baseLabel", "baseLabelLong", "exampleSlug", "names", "proseReferencePattern", "proseReferenceText", "vocabulary"] as const;
+
+// Absolute, and refused otherwise. A relative path resolves against the working
+// directory, and the engine does not control that: a CLI child process launched
+// with its cwd inside the engine turned `.claude/skills/.../profile.ts` into
+// `<engine>/.claude/skills/.../profile.ts` and died on a path nobody wrote. The
+// launchers that set this variable all know an absolute path already.
+if (!isAbsolute(configured))
+	throw new Error(
+		`DELIBERATION_DOMAIN_PROFILE_NOT_ABSOLUTE: ${configured} is relative, and the ` +
+		"working directory a host or child process runs in is not the engine's to assume.",
+	);
+
+const loaded = (await import(configured)) as { profile?: DeliberationDomainProfile };
+if (!loaded.profile) throw new Error(`DELIBERATION_DOMAIN_PROFILE_INVALID: ${configured} exports no \`profile\`.`);
+const missing = REQUIRED.filter((key) => loaded.profile![key] === undefined);
+if (missing.length) throw new Error(`DELIBERATION_DOMAIN_PROFILE_INCOMPLETE: ${configured} is missing ${missing.join(", ")}.`);
+
+/** The profile this process serves. Chosen by the host, never by the engine. */
+export const DOMAIN: DeliberationDomainProfile = loaded.profile;
 
 /** A fresh matcher for the domain's prose citations. Never shared: `matchAll` needs `g`, and a reused instance carries `lastIndex`. */
 export const proseReference = (flags: string): RegExp => new RegExp(DOMAIN.proseReferencePattern, flags);

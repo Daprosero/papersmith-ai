@@ -22,7 +22,7 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(piRoot, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const v2 = await jiti.import(path.resolve('.claude/skills/proposal-deliberation/engine/exports.ts'));
+const v2 = await jiti.import(path.resolve('.claude/skills/_core/deliberation/engine/exports.ts'));
 
 test('barrel exposes the growth-threshold advisory functions', () => {
 	assert.equal(typeof v2.evaluateSuccessorGrowthThreshold, 'function');

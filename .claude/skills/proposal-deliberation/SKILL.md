@@ -104,7 +104,7 @@ When the user approves one or more changes, you resolve them into `EditAction` d
 Before resolving anything, start a single long-lived process and keep it open for resolve, preview, accept, and every further version in this deliberation — one JSON request per line over the same stdin:
 
 ```bash
-node .claude/skills/proposal-deliberation/engine/cli.mjs --serve
+node .claude/skills/proposal-deliberation/cli.mjs --serve
 ```
 
 The engine host itself cold-starts in well under a second (compiling its TS sources once via jiti), but that cost is paid **once per process**, not once per call. Resolving a locus, previewing, and accepting are three separate calls — send all three (and any later version's calls) down this SAME stdin instead of spawning a fresh `cli.mjs` invocation for each one; only the `acceptSuccessor` step strictly requires this (the acceptance token lives only in that process's memory), but doing it for every call is what actually amortizes the cold start across the whole deliberation.
@@ -204,7 +204,7 @@ The call above only **previews**: it returns `status: "awaiting_acceptance"`, an
 To publish, send the identical request with `acceptSuccessor: true` and `successorAcceptanceToken: "<the returned acceptanceToken>"` as the next line on the SAME `--serve` stdin — the acceptance token is short-lived, single-use, and held in that process's memory only. So by this point one `--serve` process (opened in step 0) has already carried the resolve line, the preview line, and now the accept line:
 
 ```
-node .claude/skills/proposal-deliberation/engine/cli.mjs --serve
+node .claude/skills/proposal-deliberation/cli.mjs --serve
 ```
 
 ```
@@ -257,5 +257,5 @@ None of this is negotiable and none of it is something you should work around �
 - `CREATE_INITIAL_REVISION` is the only way to create a managed proposal, and only when none exists yet.
 - If more than one active managed revision resolves, the engine reports `MULTIPLE_ACTIVE_REVISIONS` with the full candidate list — never silently pick one; ask the user for the exact `sourceFilename`.
 - A multi-locus `CREATE_SUCCESSOR` batch may mix `replace`/`insert`/`delete`/`move`/`copy` freely; a conceptual (non-literal, reasoning-bound) revision beyond a single resolved replacement is not supported through this ambient path — treat it as a deliberation to resolve into concrete, resolvable edits first.
-- Use only `node .claude/skills/proposal-deliberation/engine/cli.mjs` for execution. Do not modify engine infrastructure, tests, or this skill during normal proposal work.
+- Use only `node .claude/skills/proposal-deliberation/cli.mjs` for execution. Do not modify engine infrastructure, tests, or this skill during normal proposal work.
 - Do not expose or ask the user to supply internal patch, offset, hash, or publication mechanics — those are entirely the engine's concern; only the resolved entry ID (step 1 above) ever crosses the boundary, and only because the engine itself produced it.

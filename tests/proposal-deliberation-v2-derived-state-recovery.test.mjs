@@ -15,7 +15,7 @@ const jiti = createJiti(import.meta.url, {
     typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
   },
 });
-const v2 = await jiti.import(path.resolve('.claude/skills/proposal-deliberation/engine/exports.ts'));
+const v2 = await jiti.import(path.resolve('.claude/skills/_core/deliberation/engine/exports.ts'));
 
 const document = '# Título α\n\nTexto Unicode y referencia \\eqref{eq:uno}.\n\n$$\nx = 1\n\\label{eq:uno}\n\\tag{1}\n$$\n\n## Resultados\n\nSímbolo z ∈ R.\n';
 

@@ -14,7 +14,7 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(aiRoot, 'index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const workspace = await jiti.import(path.join(root, '.claude/skills/proposal-deliberation/engine/proposal-workspace.ts'));
+const workspace = await jiti.import(path.join(root, '.claude/skills/_core/deliberation/engine/proposal-workspace.ts'));
 
 const MARKER = '<!-- proposal-workspace:artifact:v1 -->\n';
 

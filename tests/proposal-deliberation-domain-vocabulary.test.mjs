@@ -4,7 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { createJiti } from 'jiti';
 const jiti=createJiti(import.meta.url);
-const engineDir=path.resolve('.claude/skills/proposal-deliberation/engine');
+const engineDir=path.resolve('.claude/skills/_core/deliberation/engine');
 const {DOMAIN}=await jiti.import(path.join(engineDir,'domain-profile.ts'));
 const {resolveIntent}=await jiti.import(path.join(engineDir,'intent-resolver.ts'));
 const read=(name)=>readFile(path.join(engineDir,name),'utf8');

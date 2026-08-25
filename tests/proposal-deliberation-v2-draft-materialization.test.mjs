@@ -14,8 +14,8 @@ const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-ai': path.join(aiRoot, 'index.js'),
 	typebox: path.join(piRoot, 'node_modules/typebox/build/index.mjs'),
 } });
-const workspace = await jiti.import(path.join(root, '.claude/skills/proposal-deliberation/engine/proposal-workspace.ts'));
-const v2 = await jiti.import(path.join(root, '.claude/skills/proposal-deliberation/engine/exports.ts'));
+const workspace = await jiti.import(path.join(root, '.claude/skills/_core/deliberation/engine/proposal-workspace.ts'));
+const v2 = await jiti.import(path.join(root, '.claude/skills/_core/deliberation/engine/exports.ts'));
 
 async function serviceFixture(overrides = {}) {
 	const projectRoot = await mkdtemp(path.join(tmpdir(), 'proposal-deliberation-draft-'));

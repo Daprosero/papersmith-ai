@@ -5447,9 +5447,12 @@ export function resolveGlobalRoute(input: GlobalRouteInput): GlobalRoute {
 }
 
 const extensionPath = fileURLToPath(import.meta.url);
-// Host lives at <root>/.claude/skills/proposal-deliberation/engine/proposal-workspace.ts,
-// so the installed project root is four directories up from here.
-const installedProjectRoot = resolve(dirname(extensionPath), '..', '..', '..', '..');
+// Host lives at <root>/.claude/skills/_core/deliberation/engine/proposal-workspace.ts,
+// so the installed project root is five directories up from here. It was four
+// while the engine sat inside the one skill that used it; moving it into `_core`
+// added a level, and nothing in the suite would have caught that -- every test
+// passes `projectRoot` explicitly, so this constant is only reached in real use.
+const installedProjectRoot = resolve(dirname(extensionPath), '..', '..', '..', '..', '..');
 
 const errorCategory=(result:any)=>result.category??(/MODEL|PLANNER/.test(result.reason??'')?'model':/PUBLISH|DERIVED/.test(result.reason??'')?'publication':result.status==='ambiguous'||result.status==='needs-clarification'?'validation':'recovery');
 const WITHDRAWAL_OPERATION_ID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
