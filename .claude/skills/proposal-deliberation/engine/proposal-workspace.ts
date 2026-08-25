@@ -20,6 +20,7 @@ import {
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Static, Type } from "typebox";
+import { DOMAIN } from "./domain-profile.js";
 
 const GUIDE_DIRECTORY = "guidance/paper-guide";
 const PROPOSAL_DIRECTORY = "proposals";
@@ -46,7 +47,7 @@ const MAX_CONTINUITY_BLOCK_BYTES = 64 * 1024;
 const MAX_CONTINUITY_TOTAL_BYTES = 128 * 1024;
 const MAX_FIXED_INVENTORY_PAGE = 32;
 const MAX_FIXED_BASE_SECTIONS = 512;
-const FIXED_DERIVE_BASE = "matematica_propuesta_CREDA.md";
+const FIXED_DERIVE_BASE = DOMAIN.deriveBase;
 const CAPABILITY_LENGTH = 43;
 const ARTIFACT_MARKER = "<!-- proposal-workspace:artifact:v1 -->\n";
 const ARTIFACT_MARKER_NAMESPACE = "proposal-workspace:artifact";
@@ -73,7 +74,7 @@ const equationBlockAnchorSchema = Type.Object(
 	{
 		equationLabel: Type.Optional(
 			Type.String({
-				description: "Exact LaTeX equation label from the fixed CREDA base, such as eq:ksc.",
+				description: `Exact LaTeX equation label from the ${DOMAIN.baseLabel}, such as eq:ksc.`,
 				minLength: 1,
 				maxLength: 128,
 				pattern: "^[A-Za-z][A-Za-z0-9:._-]{0,127}$",
@@ -81,7 +82,7 @@ const equationBlockAnchorSchema = Type.Object(
 		),
 		numberedTag: Type.Optional(
 			Type.Integer({
-				description: "Positive integer selecting an exact numbered \\tag{...} in the fixed CREDA base.",
+				description: `Positive integer selecting an exact numbered \\tag{...} in the ${DOMAIN.baseLabel}.`,
 				minimum: 1,
 				maximum: MAX_NUMBERED_TAG,
 			}),
@@ -94,7 +95,7 @@ const displayBlockAuthorizationSchema = Type.Object(
 	{
 		equationLabel: Type.Optional(
 			Type.String({
-				description: "Exact LaTeX equation label from the fixed CREDA base, such as eq:ksc.",
+				description: `Exact LaTeX equation label from the ${DOMAIN.baseLabel}, such as eq:ksc.`,
 				minLength: 1,
 				maxLength: 128,
 				pattern: "^[A-Za-z][A-Za-z0-9:._-]{0,127}$",
@@ -102,7 +103,7 @@ const displayBlockAuthorizationSchema = Type.Object(
 		),
 		numberedTag: Type.Optional(
 			Type.Integer({
-				description: "Positive integer selecting an exact numbered \\tag{...} in the fixed CREDA base.",
+				description: `Positive integer selecting an exact numbered \\tag{...} in the ${DOMAIN.baseLabel}.`,
 				minimum: 1,
 				maximum: MAX_NUMBERED_TAG,
 			}),
@@ -150,7 +151,7 @@ const authorizedSectionRemovalSchema = Type.Object(
 	{
 		sectionId: Type.String({
 			description:
-				"Stable whole-section ID returned by inventory/sections for the fixed CREDA base.",
+				`Stable whole-section ID returned by inventory/sections for the ${DOMAIN.baseLabel}.`,
 			minLength: 1,
 			maxLength: 104,
 			pattern: "^section-sha256-[a-f0-9]{64}-occurrence-[1-9][0-9]{0,5}$",
@@ -171,7 +172,7 @@ const deriveInsertionSchema = Type.Object(
 			Type.Union(
 				[
 					Type.String({
-						description: "Exact unique text or section marker copied from the fixed CREDA base.",
+						description: `Exact unique text or section marker copied from the ${DOMAIN.baseLabel}.`,
 						minLength: 1,
 						maxLength: MAX_DERIVE_ANCHOR_BYTES,
 					}),
@@ -206,7 +207,7 @@ const deriveReplacementSchema = Type.Object(
 		}),
 		oldText: Type.Optional(
 			Type.String({
-				description: "Exact unique bounded span of complete Markdown blocks copied from the fixed CREDA base. It may contain adjacent prose plus complete selected displays. Omit only when exactly one authorizedEquations displayId selects the complete replacement block.",
+				description: `Exact unique bounded span of complete Markdown blocks copied from the ${DOMAIN.baseLabel}. It may contain adjacent prose plus complete selected displays. Omit only when exactly one authorizedEquations displayId selects the complete replacement block.`,
 				minLength: 1,
 				maxLength: MAX_DERIVE_REPLACEMENT_BYTES,
 			}),
@@ -378,7 +379,7 @@ const proposalWorkspaceSchema = Type.Object(
 			["guides", "bases", "displays", "sections", "guide", "base", "display", "managed_target", "proposal"] as const,
 			{
 				description:
-					"inventory: guides|bases|displays|sections; read: guide|base|display|managed_target; authorize_overwrite/write/append/derive/derive_revision: proposal. displays/display and sections always target the fixed CREDA base.",
+					`inventory: guides|bases|displays|sections; read: guide|base|display|managed_target; authorize_overwrite/write/append/derive/derive_revision: proposal. displays/display and sections always target the ${DOMAIN.baseLabel}.`,
 			},
 		),
 		name: Type.Optional(
@@ -1552,13 +1553,13 @@ function displayMathBlocks(source: string, requireAtLeastOne = true): SourceSpan
 	}
 	if (opening !== undefined) {
 		throw blocked(
-			"the fixed CREDA base has an unclosed display-math block.",
+			`the ${DOMAIN.baseLabel} has an unclosed display-math block.`,
 			"Restore the complete selected base before deriving a proposal.",
 		);
 	}
 	if (requireAtLeastOne && blocks.length === 0) {
 		throw blocked(
-			"the fixed CREDA base is missing its display-math blocks.",
+			`the ${DOMAIN.baseLabel} is missing its display-math blocks.`,
 			"Restore the selected base before deriving a proposal.",
 		);
 	}
@@ -1634,7 +1635,7 @@ function fixedSectionDescriptors(
 			});
 			if (headings.length > MAX_FIXED_BASE_SECTIONS) {
 				throw blocked(
-					`the fixed CREDA base exceeds the ${MAX_FIXED_BASE_SECTIONS}-section inventory limit.`,
+					`the ${DOMAIN.baseLabel} exceeds the ${MAX_FIXED_BASE_SECTIONS}-section inventory limit.`,
 					"Reduce the heading count before inventorying or deriving section removals.",
 				);
 			}
@@ -1643,7 +1644,7 @@ function fixedSectionDescriptors(
 	}
 	if (fence) {
 		throw blocked(
-			"the fixed CREDA base has an unclosed fenced code block.",
+			`the ${DOMAIN.baseLabel} has an unclosed fenced code block.`,
 			"Restore the complete selected base before inventorying or removing Markdown sections.",
 		);
 	}
@@ -1691,13 +1692,13 @@ function sectionDescriptorForId(
 	const matches = descriptors.filter((descriptor) => descriptor.sectionId === sectionId);
 	if (matches.length === 0) {
 		throw blocked(
-			`sectionId ${JSON.stringify(sectionId)} for ${JSON.stringify(operationId)} is unknown in the current fixed CREDA base.`,
+			`sectionId ${JSON.stringify(sectionId)} for ${JSON.stringify(operationId)} is unknown in the current ${DOMAIN.baseLabel}.`,
 			"Inventory sections again and use an ID from the current parsed fixed base.",
 		);
 	}
 	if (matches.length !== 1) {
 		throw blocked(
-			`sectionId ${JSON.stringify(sectionId)} for ${JSON.stringify(operationId)} is ambiguous in the current fixed CREDA base.`,
+			`sectionId ${JSON.stringify(sectionId)} for ${JSON.stringify(operationId)} is ambiguous in the current ${DOMAIN.baseLabel}.`,
 			"Repair the base section inventory before retrying.",
 		);
 	}
@@ -1838,13 +1839,13 @@ function displayDescriptorForId(
 	);
 	if (matches.length === 0) {
 		throw blocked(
-			`displayId ${JSON.stringify(displayId)} for ${JSON.stringify(operationId)} is unknown in the current fixed CREDA base.`,
+			`displayId ${JSON.stringify(displayId)} for ${JSON.stringify(operationId)} is unknown in the current ${DOMAIN.baseLabel}.`,
 			"Inventory displays again and use an ID from the current parsed fixed base.",
 		);
 	}
 	if (matches.length !== 1) {
 		throw blocked(
-			`displayId ${JSON.stringify(displayId)} for ${JSON.stringify(operationId)} is ambiguous in the current fixed CREDA base.`,
+			`displayId ${JSON.stringify(displayId)} for ${JSON.stringify(operationId)} is ambiguous in the current ${DOMAIN.baseLabel}.`,
 			"Repair the base display inventory before retrying.",
 		);
 	}
@@ -1884,7 +1885,7 @@ function validateEquationBlockAnchor(anchor: unknown, insertionId: string): Equa
 	) {
 		throw blocked(
 			`equation anchor for insertion ${JSON.stringify(insertionId)} has an invalid equation label.`,
-			"Use the exact bounded LaTeX label from the fixed CREDA base, such as eq:ksc.",
+			`Use the exact bounded LaTeX label from the ${DOMAIN.baseLabel}, such as eq:ksc.`,
 		);
 	}
 	if (
@@ -1916,20 +1917,20 @@ function equationBlockForAnchor(
 	const selectorKind = isLabel ? "equation label" : "numbered tag";
 	if (matches.length === 0) {
 		throw blocked(
-			`${selectorKind} ${JSON.stringify(selector)} for ${JSON.stringify(operationId)} is unknown in the fixed CREDA base.`,
+			`${selectorKind} ${JSON.stringify(selector)} for ${JSON.stringify(operationId)} is unknown in the ${DOMAIN.baseLabel}.`,
 			"Use a unique label or numbered tag parsed from that base only.",
 		);
 	}
 	if (matches.length > 1) {
 		throw blocked(
-			`${selectorKind} ${JSON.stringify(selector)} for ${JSON.stringify(operationId)} is duplicate or ambiguous in the fixed CREDA base.`,
+			`${selectorKind} ${JSON.stringify(selector)} for ${JSON.stringify(operationId)} is duplicate or ambiguous in the ${DOMAIN.baseLabel}.`,
 			"Repair the base so the selector identifies exactly one display equation.",
 		);
 	}
 	const displayBlock = displayBlockForOccurrence(matches[0], displayBlocks);
 	if (!displayBlock) {
 		throw blocked(
-			`${selectorKind} ${JSON.stringify(selector)} for ${JSON.stringify(operationId)} is not within display math in the fixed CREDA base.`,
+			`${selectorKind} ${JSON.stringify(selector)} for ${JSON.stringify(operationId)} is not within display math in the ${DOMAIN.baseLabel}.`,
 			"Use a label or numbered tag contained by one complete parsed base display block.",
 		);
 	}
@@ -1945,7 +1946,7 @@ function exactDisplayBlockForAuthorization(
 	const matches = displayBlocks.filter((block) => block.text === selector);
 	if (matches.length > 1) {
 		throw blocked(
-			`displayBlock authorization for replacement ${JSON.stringify(replacementId)} is duplicate or ambiguous in the fixed CREDA base.`,
+			`displayBlock authorization for replacement ${JSON.stringify(replacementId)} is duplicate or ambiguous in the ${DOMAIN.baseLabel}.`,
 			"Use the exact complete bytes of a display block that occurs once in that base.",
 		);
 	}
@@ -1971,12 +1972,12 @@ function exactDisplayBlockForAuthorization(
 	}
 	if (foundInSource) {
 		throw blocked(
-			`displayBlock authorization for replacement ${JSON.stringify(replacementId)} selects non-display text in the fixed CREDA base.`,
+			`displayBlock authorization for replacement ${JSON.stringify(replacementId)} selects non-display text in the ${DOMAIN.baseLabel}.`,
 			"Use only the exact complete bytes of one parsed $$...$$ display block.",
 		);
 	}
 	throw blocked(
-		`displayBlock authorization for replacement ${JSON.stringify(replacementId)} is missing from the fixed CREDA base.`,
+		`displayBlock authorization for replacement ${JSON.stringify(replacementId)} is missing from the ${DOMAIN.baseLabel}.`,
 		"Copy the exact complete parsed base display block and retry.",
 	);
 }
@@ -2024,7 +2025,7 @@ function validateDisplayBlockAuthorization(
 		) {
 			throw blocked(
 				`displayBlock authorization for replacement ${JSON.stringify(replacementId)} is invalid.`,
-				"Copy one bounded, non-empty complete display block from the fixed CREDA base.",
+				`Copy one bounded, non-empty complete display block from the ${DOMAIN.baseLabel}.`,
 			);
 		}
 		return record as DisplayBlockAuthorization;
@@ -2076,7 +2077,7 @@ function validateDeriveSlug(slug: string | undefined): string {
 	if (!SAFE_DERIVE_SLUG.test(safeSlug)) {
 		throw blocked(
 			"derive and derive_revision require a revision slug ending in -rNN with exactly two digits.",
-			"Use a new slug such as subject-bag-creda-integrated-r06.",
+			`Use a new slug such as ${DOMAIN.exampleSlug}.`,
 		);
 	}
 	return safeSlug;
@@ -2471,7 +2472,7 @@ function resolveRevisionSelection(
 	) {
 		throw blocked(
 			`replacement ${JSON.stringify(replacementId)} has invalid oldText.`,
-			"Copy one bounded non-empty exact complete block from the fixed CREDA base.",
+			`Copy one bounded non-empty exact complete block from the ${DOMAIN.baseLabel}.`,
 		);
 	}
 	if (displayIdAuthorizations.length > 0 && authorizations.length === 1) {
@@ -2488,13 +2489,13 @@ function resolveRevisionSelection(
 	const duplicate = start === -1 ? -1 : source.indexOf(suppliedOldText, start + 1);
 	if (start === -1) {
 		throw blocked(
-			`oldText for replacement ${JSON.stringify(replacementId)} is missing from the fixed CREDA base.`,
+			`oldText for replacement ${JSON.stringify(replacementId)} is missing from the ${DOMAIN.baseLabel}.`,
 			"Copy the exact complete base block and retry.",
 		);
 	}
 	if (duplicate !== -1) {
 		throw blocked(
-			`oldText for replacement ${JSON.stringify(replacementId)} is not unique in the fixed CREDA base.`,
+			`oldText for replacement ${JSON.stringify(replacementId)} is not unique in the ${DOMAIN.baseLabel}.`,
 			"Use a larger complete block that occurs exactly once, or select one parsed display by displayId.",
 		);
 	}
@@ -3820,7 +3821,7 @@ async function readFixedDeriveBase(
 	signal?: AbortSignal,
 ): Promise<{ path: string; source: string }> {
 	const directory = await canonicalDirectory(projectRoot, PROPOSAL_DIRECTORY);
-	const path = await canonicalRegularFile(directory, FIXED_DERIVE_BASE, "fixed CREDA proposal base");
+	const path = await canonicalRegularFile(directory, FIXED_DERIVE_BASE, `${DOMAIN.baseLabelLong}`);
 	return withFileMutationQueue(path, async () => {
 		throwIfAborted(signal);
 		const handle = await open(path, constants.O_RDONLY | noFollowFlag());
@@ -3838,13 +3839,13 @@ async function readFixedDeriveBase(
 				(await realpath(path)) !== path
 			) {
 				throw blocked(
-					"the fixed CREDA base changed, is linked, or is not a standalone regular file.",
+					`the ${DOMAIN.baseLabel} changed, is linked, or is not a standalone regular file.`,
 					"Restore the real selected base and retry.",
 				);
 			}
 			if (before.size > MAX_WRITE_BYTES) {
 				throw blocked(
-					`the fixed CREDA base exceeds the ${MAX_WRITE_BYTES}-byte derive limit.`,
+					`the ${DOMAIN.baseLabel} exceeds the ${MAX_WRITE_BYTES}-byte derive limit.`,
 					"Reduce or restore the selected base before deriving.",
 				);
 			}
@@ -3859,7 +3860,7 @@ async function readFixedDeriveBase(
 				bytes.length !== before.size
 			) {
 				throw blocked(
-					"the fixed CREDA base changed while it was being read.",
+					`the ${DOMAIN.baseLabel} changed while it was being read.`,
 					"Retry only after the base is stable.",
 				);
 			}
@@ -3870,7 +3871,7 @@ async function readFixedDeriveBase(
 				source.includes(ARTIFACT_MARKER_NAMESPACE)
 			) {
 				throw blocked(
-					"the fixed CREDA base contains invalid UTF-8, a NUL byte, or a reserved artifact marker.",
+					`the ${DOMAIN.baseLabel} contains invalid UTF-8, a NUL byte, or a reserved artifact marker.`,
 					"Restore the valid unmarked Markdown base.",
 				);
 			}
@@ -5176,7 +5177,7 @@ export function createProposalWorkspaceTool(
 					"Use proposal_workspace exclusively for proposal-deliberation filesystem access; if it blocks or is unavailable, stop and report the failure.",
 					"Use proposal_workspace read/managed_target with the exact generated filename to resume or migrate an existing marker-owned draft; never use it for bases or manual proposals.",
 					"When a latest managed proposal exists, use derive_successor with its exact terminal-rNN filename, complete-file SHA-256, and only disjoint researcher-authorized exact replace or narrowly anchored insert patches. Root research-concept-r01.md advances only with slug r02; explicit lineages retain the greater same-lineage terminal-rNN rule, and root/explicit transitions are forbidden.",
-					"Use legacy derive only for initial fixed-base creation or backward-compatible flows: matematica_propuesta_CREDA.md, a new slug ending -rNN, and bounded additive insertions anchored to exact unique base text or anchor={equationLabel} / anchor={numberedTag} with position=after.",
+					`Use legacy derive only for initial fixed-base creation or backward-compatible flows: ${DOMAIN.deriveBase}, a new slug ending -rNN, and bounded additive insertions anchored to exact unique base text or anchor={equationLabel} / anchor={numberedTag} with position=after.`,
 					"Use inventory/displays with bounded offset/limit and read/display with a returned displayId to inspect parser-exact fixed-base display blocks; IDs are deterministic for exact block bytes and duplicate occurrence, and stale IDs fail closed.",
 					"Use inventory/sections with bounded offset/limit to obtain stable fixed-base sectionId selectors, heading text/level, byte extents, and inherited display counts; a section extends from its ATX heading through the next heading of the same or higher level.",
 					"Use proposal_workspace derive_revision only for an explicitly researcher-authorized correction: select bounded exact complete base blocks and/or authorizedSectionRemovals by current sectionId, provide one numberedTag, equationLabel, displayBlock, or displayId authorization for each removed or altered inherited display, and use authorizedDisplayRelocations source/destination ids for every explicit move group.",
