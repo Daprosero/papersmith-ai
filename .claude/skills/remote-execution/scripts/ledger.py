@@ -352,11 +352,12 @@ def fold(lines: Iterable[str], live_digest: str | Callable[[], str]) -> LedgerSt
 
     by_id: dict[str, dict] = {}
     latest: dict[str, dict] = {}
-    terminal_by_id: dict[str, dict] = {}
+    latest_position: dict[tuple[str, str], int] = {}
+    terminal_by_id: dict[str, tuple[int, dict]] = {}
     returned_events: list[dict] = []
     unreadable_lines = 0
 
-    for raw_line in lines:
+    for position, raw_line in enumerate(lines):
         line = raw_line.strip()
         if not line:
             continue
@@ -387,9 +388,20 @@ def fold(lines: Iterable[str], live_digest: str | Callable[[], str]) -> LedgerSt
             # are five independent "latest" facts, one per worker, not one
             # fact where the fourth and fifth submissions read as
             # superseding the first three.
-            latest[(event["entrypoint"], event["worker"])] = event
+            latest_key = (event["entrypoint"], event["worker"])
+            latest[latest_key] = event
+            latest_position[latest_key] = position
         elif kind in _TERMINAL_KINDS:
-            terminal_by_id[event["submissionId"]] = event
+            # Position travels WITH the event in one tuple so the two can
+            # never diverge (Part B): an identity-stable backend (Kaggle)
+            # mints the SAME submissionId across repeated submissions of
+            # one (entrypoint, worker) pair, so a terminal event recorded
+            # here can belong to an EARLIER submission than the one
+            # `latest` now holds for that pair. The entrypoints-settle loop
+            # below compares this position against `latest_position` to
+            # tell "settles the latest submission" apart from "stale
+            # terminal from a submission that was since superseded".
+            terminal_by_id[event["submissionId"]] = (position, event)
             if kind == "returned":
                 returned_events.append(event)
         # Any other kind parses cleanly and is simply one this fold does not
@@ -408,10 +420,17 @@ def fold(lines: Iterable[str], live_digest: str | Callable[[], str]) -> LedgerSt
 
     entrypoints: dict[tuple[str, str], EntrypointState] = {}
     for key, submission in latest.items():
-        terminal = terminal_by_id.get(submission["submissionId"])
-        if terminal is None:
+        entry = terminal_by_id.get(submission["submissionId"])
+        # A terminal event whose append position precedes this pair's
+        # latest `submitted` event settled an EARLIER submission that has
+        # since been superseded — it never gets to promote this entrypoint
+        # out of "pending", even though `terminal_by_id` is keyed by the
+        # (colliding) submissionId alone. Without this check, an
+        # identity-stable backend's stale terminal would misread as
+        # settling the resubmission it precedes.
+        if entry is None or entry[0] < latest_position[key]:
             state = "pending"
-        elif terminal["kind"] == "returned":
+        elif entry[1]["kind"] == "returned":
             state = "returned"
         else:
             state = "errored"

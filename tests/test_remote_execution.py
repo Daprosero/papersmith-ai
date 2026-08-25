@@ -643,6 +643,99 @@ class FoldCurrencyTests(unittest.TestCase):
         self.assertEqual(state.verdicts["s1"], "fromStaleSubmission")
 
 
+class FoldPositionalStalenessTests(unittest.TestCase):
+    """Part B: on an identity-stable backend, every submission of the same
+    (entrypoint, worker) pair carries the SAME `submissionId` — so
+    `terminal_by_id` alone cannot tell an early, now-stale terminal event
+    apart from one that actually settles the latest submission. These tests
+    pin that the fold uses append POSITION to make that distinction.
+    """
+
+    @staticmethod
+    def _lines(*events: dict) -> list[str]:
+        return [json.dumps(event, sort_keys=True) for event in events]
+
+    def test_resubmission_after_a_stale_return_reads_pending(self) -> None:
+        """submitted(X) pos 0, returned(X) pos 1, submitted(X) pos 2 — same
+        entrypoint/worker, id repeats by construction. The pos-1 `returned`
+        event precedes the pos-2 resubmission it did not settle, so the
+        entrypoint must read `pending`, not `returned`.
+        """
+        submit_1 = LEDGER.submitted_event(
+            entrypoint="Notebooks/a.ipynb",
+            source_digest="digest-1",
+            submission_id="w1/a",
+            worker="w1",
+            requested_capacity=1,
+            granted_capacity=1,
+            ts="2026-08-17T00:00:00Z",
+        )
+        early_return = LEDGER.returned_event(
+            submission_id="w1/a",
+            artifact_path="/out/w1-a-early",
+            observed_concurrency=1,
+            ts="2026-08-17T00:05:00Z",
+        )
+        submit_2 = LEDGER.submitted_event(
+            entrypoint="Notebooks/a.ipynb",
+            source_digest="digest-1",
+            submission_id="w1/a",
+            worker="w1",
+            requested_capacity=1,
+            granted_capacity=1,
+            ts="2026-08-17T00:10:00Z",
+        )
+
+        state = LEDGER.fold(
+            self._lines(submit_1, early_return, submit_2), live_digest="digest-1"
+        )
+
+        self.assertEqual(state.entrypoints[("Notebooks/a.ipynb", "w1")].state, "pending")
+
+    def test_resubmission_then_return_reads_returned(self) -> None:
+        """Same setup, plus a genuine returned(X) at pos 3 — now the
+        terminal event DOES follow the pos-2 resubmission, so the
+        entrypoint reads `returned`.
+        """
+        submit_1 = LEDGER.submitted_event(
+            entrypoint="Notebooks/a.ipynb",
+            source_digest="digest-1",
+            submission_id="w1/a",
+            worker="w1",
+            requested_capacity=1,
+            granted_capacity=1,
+            ts="2026-08-17T00:00:00Z",
+        )
+        early_return = LEDGER.returned_event(
+            submission_id="w1/a",
+            artifact_path="/out/w1-a-early",
+            observed_concurrency=1,
+            ts="2026-08-17T00:05:00Z",
+        )
+        submit_2 = LEDGER.submitted_event(
+            entrypoint="Notebooks/a.ipynb",
+            source_digest="digest-1",
+            submission_id="w1/a",
+            worker="w1",
+            requested_capacity=1,
+            granted_capacity=1,
+            ts="2026-08-17T00:10:00Z",
+        )
+        later_return = LEDGER.returned_event(
+            submission_id="w1/a",
+            artifact_path="/out/w1-a-later",
+            observed_concurrency=1,
+            ts="2026-08-17T00:15:00Z",
+        )
+
+        state = LEDGER.fold(
+            self._lines(submit_1, early_return, submit_2, later_return),
+            live_digest="digest-1",
+        )
+
+        self.assertEqual(state.entrypoints[("Notebooks/a.ipynb", "w1")].state, "returned")
+
+
 class FakeAdapter(ADAPTER.Adapter):
     """A complete, in-memory stand-in for a real backend adapter.
 
