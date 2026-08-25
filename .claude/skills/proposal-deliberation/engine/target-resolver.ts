@@ -1,4 +1,8 @@
 import { buildStructuralIndex } from './document-index.js';
+import { DOMAIN } from './domain-profile.js';
+/** How this domain names a numbered display, and what its documents are about. Both stateless (no `g`), so one instance each is safe; the stripping form below needs `g` and is built per call. */
+const DISPLAY_NOUN=new RegExp(DOMAIN.vocabulary.displayNounPattern,'i');
+const SUBJECT=new RegExp(DOMAIN.vocabulary.subjectPattern,'i');
 import { sha256,type CompositeTarget,type DocumentState,type SectionReplacementContract,type StructuralEntry,type TargetCandidate } from './types.js';
 
 export type TargetResolutionOptions={allowInterEntryWhitespaceFallback?:boolean};
@@ -166,7 +170,7 @@ export function resolveSectionRange(state:DocumentState,raw:string):SectionRange
  return {candidate,entryIds};
 }
 
-function successorSelectionQuery(query:string){const selected=/(?:\bsecci[oó]n|\bsubsecci[oó]n|\bsection|\bsubsection|\bapartado)\s+(?:de(?:l|\s+la)?\s+)?(.+?)(?=[,;:.]|\b(?:para|pero|donde|que|conserva|preserva|mant(?:é|e)n|keep)\b|$)/iu.exec(query)?.[1];return dropStopwords((selected??query).replace(/\becuaci[oó]n(?:es)?\b/giu,' ').trim());}
+function successorSelectionQuery(query:string){const selected=/(?:\bsecci[oó]n|\bsubsecci[oó]n|\bsection|\bsubsection|\bapartado)\s+(?:de(?:l|\s+la)?\s+)?(.+?)(?=[,;:.]|\b(?:para|pero|donde|que|conserva|preserva|mant(?:é|e)n|keep)\b|$)/iu.exec(query)?.[1];return dropStopwords((selected??query).replace(new RegExp(DOMAIN.vocabulary.displayNounStripPattern,'giu'),' ').trim());}
 function collapseNestedSuccessorCandidates(candidates:TargetCandidate[]){return candidates.filter(candidate=>!candidates.some(other=>other.entryId!==candidate.entryId&&other.composite!.startByte>=candidate.composite!.startByte&&other.composite!.endByte<=candidate.composite!.endByte&&(other.composite!.startByte!==candidate.composite!.startByte||other.composite!.endByte!==candidate.composite!.endByte)));}
 
 /**
@@ -238,7 +242,7 @@ export function resolveTargets(state:DocumentState,query:string,options:TargetRe
  if(composite.length||query.includes('$$'))return composite;
  const direct=state.structuralIndex.byId[query]??state.structuralIndex.entries.find(e=>e.labels.includes(query)||e.tags.includes(query));
  if(direct&&direct.type!=='document')return [{entryId:direct.entryId,type:direct.type,headingPath:direct.headingPath,matchedTerms:[],matchedLabels:direct.labels,matchedTags:direct.tags,matchedSymbols:[],score:100,confidence:1,shortPreview:entryText(state,direct.entryId).slice(0,180),evidence:['explicit selection']}];
- const terms=words(query); const equationRequested=/ecuaci[oó]n/i.test(query); const oneHot=/one[- ]?hot|codificaci[oó]n|etiqueta|clase/i.test(query);
+ const terms=words(query); const equationRequested=DISPLAY_NOUN.test(query); const oneHot=SUBJECT.test(query);
  const entries=(equationRequested?state.structuralIndex.entries.filter(e=>e.type==='display_equation'):state.structuralIndex.entries).filter(e=>e.type!=='document');
  // Ownership is resolved over EVERY entry, not the filtered set: an equation
  // still declares its tag even when the filter above has excluded its ancestors.
@@ -248,9 +252,9 @@ export function resolveTargets(state:DocumentState,query:string,options:TargetRe
   const matchedTerms=terms.filter(t=>nearby.includes(t)||e.lexicalTerms.includes(t)||e.deterministicAliases.some(a=>a.includes(t)));
   const matchedLabels=e.labels.filter(x=>isolatedInQuery(query,x)&&labelOwner.get(x)?.id===e.entryId); const matchedTags=e.tags.filter(x=>isolatedInQuery(query,x)&&tagOwner.get(x)?.id===e.entryId);
   const symbols=equationSymbols(own); const matchedSymbols=symbols.filter(symbol=>Object.values(state.symbolIndex.symbols).some(x=>x.normalized===symbol.replace(/^\\/,'').toLowerCase()||x.uses.includes(e.entryId)));
-  const semanticEvidence=oneHot&&/one[- ]?hot|codificaci[oó]n|etiqueta|clase/i.test(neighbors)?4:0;
-  const oneHotMatch=/one[- ]?hot|codificaci[oó]n|etiqueta|clase/i.test(own)||semanticEvidence>0;const score=matchedTerms.length*3+matchedLabels.length*8+matchedTags.length*8+semanticEvidence+(equationRequested&&e.type==='display_equation'&&(!oneHot||oneHotMatch)?3:0);
-  return {entryId:e.entryId,type:e.type,headingPath:e.headingPath,matchedTerms,matchedLabels,matchedTags,matchedSymbols,score,confidence:Math.min(1,score/12),shortPreview:own.slice(0,180),evidence:[...matchedTerms,...matchedLabels,...matchedTags,...(semanticEvidence?['nearby one-hot/coding definition']:[])]};
+  const semanticEvidence=oneHot&&SUBJECT.test(neighbors)?4:0;
+  const oneHotMatch=SUBJECT.test(own)||semanticEvidence>0;const score=matchedTerms.length*3+matchedLabels.length*8+matchedTags.length*8+semanticEvidence+(equationRequested&&e.type==='display_equation'&&(!oneHot||oneHotMatch)?3:0);
+  return {entryId:e.entryId,type:e.type,headingPath:e.headingPath,matchedTerms,matchedLabels,matchedTags,matchedSymbols,score,confidence:Math.min(1,score/12),shortPreview:own.slice(0,180),evidence:[...matchedTerms,...matchedLabels,...matchedTags,...(semanticEvidence?[DOMAIN.vocabulary.subjectEvidenceLabel]:[])]};
  }).filter(c=>c.score>0).sort((a,b)=>b.score-a.score||a.entryId.localeCompare(b.entryId)).slice(0,8);
 }
 

@@ -45,6 +45,33 @@ export type DeliberationDomainProfile = {
 	readonly proseReferencePattern: string;
 	/** The same citation, written back out for an atom's display text. */
 	readonly proseReferenceText: (value: string) => string;
+	/**
+	 * What this domain's instructions are ABOUT.
+	 *
+	 * The engine's intent matching is Spanish, and that part is shared: every
+	 * deliberation domain says "mueve", "copia", "agrega". What is not shared is
+	 * the subject -- one document argues about regularisation and one-hot
+	 * encoding, another about baselines and ablations -- and that subject was
+	 * spelled directly into intent resolution, locus scoring and the tutor gate.
+	 */
+	readonly vocabulary: {
+		/** Subject words that make an instruction this domain's own conceptual work. */
+		readonly conceptualTerms: readonly string[];
+		/** Requires the domain expert before a conceptual plan is built. */
+		readonly expertPattern: string;
+		/** How a locus query names one of this domain's numbered displays. */
+		readonly displayNounPattern: string;
+		/** The same noun with its inflections, stripped out of a successor query. */
+		readonly displayNounStripPattern: string;
+		/** What this document is about, used to bias locus scoring. */
+		readonly subjectPattern: string;
+		/** Terms naming that subject directly in an instruction. */
+		readonly subjectTerms: readonly string[];
+		/** The locus description used when an instruction names the subject. */
+		readonly subjectLocusDescription: string;
+		/** How scoring reports that a neighbouring entry defines the subject. */
+		readonly subjectEvidenceLabel: string;
+	};
 };
 
 export const proposalDeliberationProfile: DeliberationDomainProfile = {
@@ -57,6 +84,16 @@ export const proposalDeliberationProfile: DeliberationDomainProfile = {
 	// use `\label`/`\eqref`, so this is the only citation form that resolves.
 	proseReferencePattern: "\\((?:Ec|Eq)\\.\\s*([0-9]+[a-z]?)\\)",
 	proseReferenceText: (value) => `(Ec. ${value})`,
+	vocabulary: {
+		conceptualTerms: ["regularización", "motivación matemática", "múltiples dominios", "semi-supervisado"],
+		expertPattern: "matem|ecuaci|regularización|semi-supervisado|teórico",
+		displayNounPattern: "ecuaci[oó]n",
+		displayNounStripPattern: "\\becuaci[oó]n(?:es)?\\b",
+		subjectPattern: "one[- ]?hot|codificaci[oó]n|etiqueta|clase",
+		subjectTerms: ["one-hot", "one hot"],
+		subjectLocusDescription: "ecuación relacionada con one-hot",
+		subjectEvidenceLabel: "nearby one-hot/coding definition",
+	},
 };
 
 /**

@@ -1,4 +1,5 @@
 import { sha256,type FidelityConstraints,type Position,type ResolvedIntent } from './types.js';
+import { DOMAIN } from './domain-profile.js';
 const MANAGED_FILENAME=/\bresearch-concept-(?:[a-z0-9]+(?:-[a-z0-9]+)*-)?r\d{2,}\.md\b/i;
 const REVISION_REFERENCE=/(?:\brevisi[oó]n\s+(?:administrada\s+)?(?:[a-z0-9-]+\s+)?r\d{2,}\b|\br\d{2,}\b)/i;
 const OPERATION_ID=/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i;
@@ -35,7 +36,7 @@ export function resolveIntent(instruction:string):ResolvedIntent {
   else if(has('agrega','inserta','añade'))intent='INSERT';
   else if(has('analiza','propón alternativas','no la cambies','delibera','explica'))intent='DELIBERATE';
   else if(has('revisa críticamente','review explícito','revisión independiente'))intent='REVIEW';
-  else if(has('adapta','regularización','motivación matemática','múltiples dominios','reorganiza el argumento','semi-supervisado','conceptual'))intent='CONCEPTUAL_REVISION';
+  else if(has('adapta','reorganiza el argumento','conceptual',...DOMAIN.vocabulary.conceptualTerms))intent='CONCEPTUAL_REVISION';
   else if(has('cambia','modifica','reemplaza','corrige','aplica','aplicar'))intent='MODIFY';
  }
  const adaptive=has('adapta la transición','ajusta al nuevo contexto','reformula para que encaje');
@@ -46,7 +47,7 @@ export function resolveIntent(instruction:string):ResolvedIntent {
  const semanticCleanup=has('elimina los remanentes','quita redundancias','adapta la transición','deja coherente','elimina lo repetido','limpia el texto residual','quita el texto residual');
  const cleanupLevel:ResolvedIntent['cleanupLevel']=semanticCleanup?'SEMANTIC':(has('cleanup estructural','limpia separadores')?'STRUCTURAL':'NONE');
  const semanticChange=intent==='MODIFY'||intent==='CONCEPTUAL_REVISION'||adaptive;
- const targetDescription=has('one-hot','one hot')?'ecuación relacionada con one-hot':fidelity.targetBlock??instruction;
+ const targetDescription=has(...DOMAIN.vocabulary.subjectTerms)?DOMAIN.vocabulary.subjectLocusDescription:fidelity.targetBlock??instruction;
  const ambiguous=intent==='AMBIGUOUS'||(intent==='DELETE'&&!destructive)||(has('reorganiza')&&!moveCopy&&intent!=='CONCEPTUAL_REVISION');
  const pendingQuestions=ambiguous?['Indicá el fragmento o alcance exacto.']:[];
  const constraints:string[]=[];
