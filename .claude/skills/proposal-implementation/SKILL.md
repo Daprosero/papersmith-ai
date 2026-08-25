@@ -25,6 +25,13 @@ proposal itself — that is `proposal-deliberation`.
 
 ## Hard Rules
 
+- **Reply in the language the user is writing in.** Every artifact stays English --
+  code, comments, commit messages, reports, every file written. The conversation
+  does not. This rule is stated here, first, because it is broken by drift rather
+  than by decision: this file is two thousand lines of English procedure, and
+  reading it is not an instruction to speak it. It is also restated under `## How a
+  gate is asked`, where it reads as being about gate questions; it is not. It
+  governs every reply.
 - Bind to the revision `proposal-deliberation`'s `STATUS` reports as `latest`. Never
   guess the base and never read `proposals/` by hand.
 - Never write implementation code before the user approves the mapping from
