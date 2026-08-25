@@ -736,6 +736,180 @@ class FoldPositionalStalenessTests(unittest.TestCase):
         self.assertEqual(state.entrypoints[("Notebooks/a.ipynb", "w1")].state, "returned")
 
 
+class ByIdAndCurrencyVerdictPartCTests(unittest.TestCase):
+    """Part C: `by_id`'s last-write-wins index and `currency_verdict`'s
+    id-equality half, re-examined under a colliding (identity-stable) id.
+
+    C1 keeps last-write-wins as the correct model of a mutable remote
+    object — no mechanism change, a lock pinning the existing behavior.
+    C2 keeps `currency_verdict`'s mechanism unchanged too, but narrows what
+    its docstring claims: the id half is inert on a stable-id backend
+    (3.5), and task 3.6 is the proof that its guarding duty relocated to
+    Part B's positional check rather than simply vanishing.
+    """
+
+    @staticmethod
+    def _lines(*events: dict) -> list[str]:
+        return [json.dumps(event, sort_keys=True) for event in events]
+
+    def test_by_id_holds_the_last_appended_record_for_a_repeated_id(self) -> None:
+        """Three `submitted` events for the SAME id, same entrypoint/worker
+        (a stable-id backend resubmitting three times) — `by_id["w1/a"]`
+        must be the third (last-appended) record, not the first or second.
+        """
+        submit_1 = LEDGER.submitted_event(
+            entrypoint="Notebooks/a.ipynb",
+            source_digest="digest-1",
+            submission_id="w1/a",
+            worker="w1",
+            requested_capacity=1,
+            granted_capacity=1,
+            ts="2026-08-17T00:00:00Z",
+        )
+        submit_2 = LEDGER.submitted_event(
+            entrypoint="Notebooks/a.ipynb",
+            source_digest="digest-2",
+            submission_id="w1/a",
+            worker="w1",
+            requested_capacity=1,
+            granted_capacity=1,
+            ts="2026-08-17T00:05:00Z",
+        )
+        submit_3 = LEDGER.submitted_event(
+            entrypoint="Notebooks/a.ipynb",
+            source_digest="digest-3",
+            submission_id="w1/a",
+            worker="w1",
+            requested_capacity=1,
+            granted_capacity=1,
+            ts="2026-08-17T00:10:00Z",
+        )
+
+        state = LEDGER.fold(self._lines(submit_1, submit_2, submit_3), live_digest="digest-3")
+
+        self.assertEqual(state.by_id["w1/a"]["sourceDigest"], "digest-3")
+        self.assertEqual(state.by_id["w1/a"], submit_3)
+
+    def test_retry_at_unchanged_digest_under_a_stable_id_reads_current(self) -> None:
+        """C2 inertness pin: under a stable-id backend, resubmitting at an
+        UNCHANGED digest (a retry after a service failure, not a source
+        edit) must still verdict `current` — `by_id[id]` and
+        `latest[(entrypoint, worker)]` are the SAME event object once ids
+        repeat, so the id-equality half of `superseded` can never fire
+        here. This pins that a future reader must not "fix" that inertness
+        into quarantining every legitimate retry: Part B's positional
+        guard (proven in `FoldPositionalStalenessTests` and task 3.6) is
+        what still catches a genuinely stale terminal event on this
+        backend, not this half.
+        """
+        submit_1 = LEDGER.submitted_event(
+            entrypoint="Notebooks/a.ipynb",
+            source_digest="digest-1",
+            submission_id="w1/a",
+            worker="w1",
+            requested_capacity=1,
+            granted_capacity=1,
+            ts="2026-08-17T00:00:00Z",
+        )
+        failed = LEDGER.errored_event(
+            submission_id="w1/a", reason="service failure", ts="2026-08-17T00:05:00Z"
+        )
+        submit_2_retry = LEDGER.submitted_event(  # same digest — a retry, not an edit
+            entrypoint="Notebooks/a.ipynb",
+            source_digest="digest-1",
+            submission_id="w1/a",
+            worker="w1",
+            requested_capacity=1,
+            granted_capacity=1,
+            ts="2026-08-17T00:10:00Z",
+        )
+        retry_returned = LEDGER.returned_event(
+            submission_id="w1/a",
+            artifact_path="/out/w1-a-retry",
+            observed_concurrency=1,
+            ts="2026-08-17T00:15:00Z",
+        )
+
+        state = LEDGER.fold(
+            self._lines(submit_1, failed, submit_2_retry, retry_returned),
+            live_digest="digest-1",
+        )
+
+        self.assertEqual(state.verdicts["w1/a"], "current")
+        self.assertEqual(state.entrypoints[("Notebooks/a.ipynb", "w1")].state, "returned")
+
+    def test_positional_guard_catches_what_id_equality_would_catch_on_a_fresh_id_backend(
+        self,
+    ) -> None:
+        """THE load-bearing proof for Part C's 'no mechanism change'
+        conclusion: on a fresh-id backend, `currency_verdict`'s id half
+        (`superseded = latest_for_key["submissionId"] != submission[
+        "submissionId"]`) is what catches an early `returned` event that
+        belongs to a submission a LATER resubmission has since superseded
+        — the id comparison fails because the two submissions carry
+        DIFFERENT ids there.
+
+        On a stable-id (Kaggle-shaped) backend, `submitted(X)` pos 0,
+        `returned(X)` pos 1 (an early, now-stale result), `submitted(X)`
+        pos 2 (a resubmission that reuses X) is the SAME scenario — but
+        the id half is structurally inert here (3.5): `by_id["X"]` is the
+        pos-2 record by the time `returned` is judged, so `latest_for_key`
+        and `submission` are literally the same object and `superseded`'s
+        id clause can never be true.
+
+        The claim under test is that Part B's positional guard is what
+        catches this case INSTEAD: it must mark the entrypoint `pending`
+        — refusing to let the pos-1 `returned` event read as settling the
+        pos-2 submission — which is exactly the outcome the id half would
+        have produced on a fresh-id backend. This is asserted on
+        `state.entrypoints[...].state`, the field Part B's guard itself
+        computes, not merely on some other value that happens to differ
+        from "returned" for an unrelated reason.
+        """
+        submit_1 = LEDGER.submitted_event(
+            entrypoint="Notebooks/a.ipynb",
+            source_digest="digest-1",
+            submission_id="w1/a",
+            worker="w1",
+            requested_capacity=1,
+            granted_capacity=1,
+            ts="2026-08-17T00:00:00Z",
+        )
+        early_return = LEDGER.returned_event(
+            submission_id="w1/a",
+            artifact_path="/out/w1-a-early",
+            observed_concurrency=1,
+            ts="2026-08-17T00:05:00Z",
+        )
+        submit_2 = LEDGER.submitted_event(
+            entrypoint="Notebooks/a.ipynb",
+            source_digest="digest-1",
+            submission_id="w1/a",
+            worker="w1",
+            requested_capacity=1,
+            granted_capacity=1,
+            ts="2026-08-17T00:10:00Z",
+        )
+
+        state = LEDGER.fold(
+            self._lines(submit_1, early_return, submit_2), live_digest="digest-1"
+        )
+
+        # The id half is structurally inert: prove it, don't just assume
+        # it. by_id["w1/a"] must already equal submit_2 (last-write-wins,
+        # C1) — `fold()` re-parses each JSON line into a fresh dict, so
+        # this is a value-equality check, not an object-identity one — so
+        # `latest_for_key is submission` inside `currency_verdict` (same
+        # by_id[id] record on both sides of that call) is meaningful
+        # rather than coincidental.
+        self.assertEqual(state.by_id["w1/a"], submit_2)
+
+        # Part B's positional guard is what must have produced this
+        # answer: the entrypoint reads pending, not returned, even though
+        # a `returned` event for "w1/a" exists in the log.
+        self.assertEqual(state.entrypoints[("Notebooks/a.ipynb", "w1")].state, "pending")
+
+
 class FakeAdapter(ADAPTER.Adapter):
     """A complete, in-memory stand-in for a real backend adapter.
 

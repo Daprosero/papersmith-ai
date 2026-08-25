@@ -378,6 +378,16 @@ def fold(lines: Iterable[str], live_digest: str | Callable[[], str]) -> LedgerSt
 
         kind = event.get("kind")
         if kind == "submitted":
+            # Last-write-wins by submissionId is intentional, not a defect
+            # (Part C1): on an identity-stable backend `by_id[id]` means
+            # "the most recent submission under this id", which models a
+            # mutable remote object (a Kaggle kernel gets overwritten in
+            # place by each resubmission) rather than one execution per id.
+            # `cmd_fetch` fetches BY id, and the service's current output
+            # belongs to its newest run under that id — so resolving to the
+            # last record read is correct here; append position (Part B)
+            # is what the fold's ENTRYPOINT-keyed state needs instead, and
+            # is threaded separately via `latest_position`.
             by_id[event["submissionId"]] = event
             # Overwritten every time a submitted event for this EXACT
             # (entrypoint, worker) pair is seen, in the order this loop
@@ -466,20 +476,34 @@ def currency_verdict(
     rule, not a second reimplementation of it that could quietly drift from
     this one.
 
-    Both halves below are load-bearing ON THEIR OWN, not redundant with each
-    other:
+    Both halves below are load-bearing, but not for every backend equally
+    (Part C2) — each covers a different class:
 
     - `superseded` (id-equality) catches a resubmission at an UNCHANGED
       digest — a retry after a service failure, where the source never
       moved but an older submission id is no longer the one that matters.
       Digest-equality alone would miss this: the old submission's recorded
       digest still equals the live one, so a digest-only check would call
-      its result current.
+      its result current. This half is load-bearing for a FRESH-ID-PER-CALL
+      backend (every `submit()` mints a new, distinct id) — proved
+      reachable by `test_resubmission_at_unchanged_digest_still_marks_
+      earlier_result_stale`. On an IDENTITY-STABLE backend (Kaggle-shaped:
+      the same `(worker, entrypoint)` always mints the same id), this half
+      is structurally INERT: `by_id[id]` and `latest[(entrypoint, worker)]`
+      resolve to the SAME record once ids repeat, so `latest_for_key !=
+      submission` can never be true — pinned by
+      `test_retry_at_unchanged_digest_under_a_stable_id_reads_current`. Its
+      guarding duty does not vanish there; it relocates to `fold()`'s
+      append-position check (`ledger.py`'s `entrypoints`-settle loop, Part
+      B) — proved by `test_positional_guard_catches_what_id_equality_
+      would_catch_on_a_fresh_id_backend`.
     - `sourceMoved` (digest-equality) catches the opposite: the same
       submission is still the latest one on record — no resubmission
       happened — yet the source has moved again since it was submitted.
       Id-equality alone would miss this: the id still matches the latest
-      one, so an id-only check would call this result current too.
+      one, so an id-only check would call this result current too. This
+      half is load-bearing for BOTH backend classes: it is orthogonal to
+      how ids are minted.
 
     `latest` is keyed by `(entrypoint, worker)` (Decision 6): this reads
     only the SAME worker's own latest submission for this entrypoint, so a
