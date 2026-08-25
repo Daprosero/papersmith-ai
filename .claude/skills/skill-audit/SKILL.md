@@ -377,6 +377,7 @@ restated as a second literal.
 | Item | Required content | Rejected when |
 | --- | --- | --- |
 | `report-integrity` | `## Report integrity`, the report's first `## ` section, carrying `- Schema: skill-audit-report/N` and `- Self-digest:` — a canonical-content digest over the report's own text with that one line excluded, reusing the existing `sha256:` spelling and canonical-string-then-hash idiom `frozen_digest` already uses | Both fields absent together means the report predates this shape and is not judged (a separate outcome, never `1`); exactly one of the two present is `tampered`, never read as predating; a present digest that disagrees with recomputation is `tampered`; the section is present but is not the report's first `## ` heading |
+| `supersedes` | Optional `- Supersedes: sha256:<hex>` inside `## Report integrity`, naming the OTHER report's own self-digest, never this report's own — checked with `check-report --supersedes-report <path>`, which recomputes the named companion's self-digest and compares `## Frozen`'s `- Subject:` values, never `- Digest:` (a genuine re-validation is expected to change the subject digest) | The value is not shaped `sha256:<hex>`; the value equals this report's own `- Self-digest:` (a report cannot supersede itself); the flag is supplied but the report carries no `- Supersedes:` line; the named companion is unreadable, predates, or postdates the schema, or either side's `- Subject:` is absent; the recomputed companion digest disagrees with the declared value; the two `- Subject:` values disagree |
 | `ranked-findings` | Findings, ordered, each naming **both halves** at `file:line` | A finding cites a single `file:line`; that is a candidate, not a finding |
 | `move-number` | The move that found each finding | A finding names no move |
 | `move-outcomes` | `## Move outcomes`, one row per move named in the moves table above, each `ran` or `skipped: <reason>` | A move has no row, or a `skipped` row carries no reason |
@@ -397,6 +398,17 @@ restated as a second literal.
 | `drives` | `## Drives`, demanded when stage 4 is `ran`; no finding may attribute itself to the skill-less drive while naming the subject as its own target | Absent while stage 4's row reads `ran`, or a finding commits that category error |
 | `not-adjudicable` | `## Not adjudicable`, bare heading; when non-empty, each entry names the absent half, its `- Evidence:`, and the `## Repair units` unit it belongs to | The heading is absent, or a finding whose `- Adjudication:` reads `not adjudicable` sits under `## Ranked findings` instead |
 | `computed-value-provenance` | `## Computed-value provenance`, bare heading, unconditional -- like `## Not adjudicable` and `## Disputed severity`, demanded whether or not Move 10 ran; when Move 10 ran, transcribes `sensitivity`'s own emitted payload: the producer, the control outcome, the inputs varied and the total declared, the range swept, and the full matrix -- published even when no cell crosses the finding threshold | The heading is absent |
+
+Every `check-report` run additionally reports `"supersession"`, a closed
+three-value roster: `not-claimed` when the report carries no `- Supersedes:`
+line, `unverified` when a claim is present but has not been checked against a
+named companion (including a claim that is itself malformed or
+self-referential), or `verified` once `--supersedes-report <path>` recomputes
+the named companion's own self-digest and it agrees with the declared value,
+and the two reports' `- Subject:` values also agree. Never a boolean:
+collapsing "nobody claimed a supersession" into "a claim exists that nobody
+checked" is the exact defect this field exists to remove — an unsuperseded
+report announces itself, unprompted, on every single run.
 
 A report in which **no** finding is marked `CONFIRMED by execution` must say so
 in its **first line**. A clean surface still gets the full report shape,

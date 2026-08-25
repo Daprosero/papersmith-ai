@@ -2423,6 +2423,106 @@ class ReportIntegrityGateTests(BoxMixin, unittest.TestCase):
         self.assertEqual(payload["violations"], [])
 
 
+class ReportSupersessionTests(BoxMixin, unittest.TestCase):
+    """A report may declare, and a validator may check, which prior report
+    it re-validates -- so a finding that was fixed and a finding that was
+    never reached stop producing identical, silent reports.
+
+    `"supersession"` is a closed three-value roster (`not-claimed` /
+    `unverified` / `verified`), never a boolean -- a boolean would collapse
+    "nobody claimed a supersession" into "a claim exists that nobody
+    checked", the exact defect this domain exists to remove.
+    """
+
+    def check(self, text, name="report.md", extra_argv=()):
+        """Resigns first: every test here except self-supersession is about
+        the supersession field itself, not about tamper detection, so a
+        fixture must reach `check-report` with an otherwise-agreeing
+        self-digest.
+        """
+        box = getattr(self, "_box", None) or self.make_box("supersession")
+        self._box = box
+        path = self.write(box, name, resign(text))
+        result = run_cli("check-report", str(path), *extra_argv)
+        return result, json.loads(result.stdout)
+
+    def check_raw(self, text, name="report.md", extra_argv=()):
+        """Never resigns: self-supersession is checked against the raw
+        recorded fields, deliberately before the report is ever judged
+        valid or tampered. Resigning would recompute the self-digest over
+        content that now includes the '- Supersedes:' line, which would
+        silently erase the exact self-reference under test -- a
+        cryptographic hash has no fixed point a fixture could construct.
+        """
+        box = getattr(self, "_box", None) or self.make_box("supersession")
+        self._box = box
+        path = self.write(box, name, text)
+        result = run_cli("check-report", str(path), *extra_argv)
+        return result, json.loads(result.stdout)
+
+    def _with_supersedes(self, value, body=None):
+        """A freshly-signed draft with `- Supersedes: <value>` inserted
+        immediately before its own `- Self-digest:` line -- built through
+        `report_with_integrity`, never a hand-typed digest.
+        """
+        draft = report_with_integrity(VALID_REPORT_BODY if body is None else body)
+        return draft.replace(
+            "- Self-digest: ", f"- Supersedes: {value}\n- Self-digest: ", 1)
+
+    # -- the roster ---------------------------------------------------------
+
+    def test_no_claim_reports_not_claimed(self):
+        result, payload = self.check(VALID_REPORT, name="not-claimed.md")
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["supersession"], "not-claimed")
+
+    def test_well_formed_claim_without_flag_reports_unverified(self):
+        text = self._with_supersedes("sha256:" + "a" * 64)
+        result, payload = self.check(text, name="unverified.md")
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["supersession"], "unverified")
+        self.assertEqual(payload["violations"], [])
+
+    # -- malformed and self-referential claims -------------------------------
+
+    def test_malformed_supersedes_value_is_a_violation(self):
+        text = self._with_supersedes("not-a-digest")
+        result, payload = self.check(text, name="malformed.md")
+        self.assertEqual(result.returncode, 1, payload)
+        self.assertEqual(payload["supersession"], "unverified")
+        violation = next(v for v in payload["violations"] if v["item"] == "supersedes")
+        self.assertIn("sha256:", violation["detail"])
+
+    def test_self_supersession_is_refused(self):
+        draft = report_with_integrity(VALID_REPORT_BODY)
+        self_digest = re.search(
+            r"^-\s*Self-digest:\s*(\S+)\s*$", draft, re.MULTILINE).group(1)
+        text = self._with_supersedes(self_digest)
+        result, payload = self.check_raw(text, name="self-supersession.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violation = next(v for v in payload["violations"] if v["item"] == "supersedes")
+        self.assertIn("cannot supersede itself", violation["detail"])
+
+    # -- three digests kept mechanically unmistakable ------------------------
+
+    def test_supersedes_line_never_matches_self_digest_line(self):
+        cli = audit_cli_module()
+        self.assertIsNone(cli.REPORT_SUPERSEDES_LINE.match(
+            "- Self-digest: sha256:" + "a" * 64))
+
+    def test_self_digest_line_never_matches_supersedes_line(self):
+        cli = audit_cli_module()
+        self.assertIsNone(cli.REPORT_INTEGRITY_SELF_DIGEST_LINE.match(
+            "- Supersedes: sha256:" + "a" * 64))
+
+    def test_frozen_field_row_never_matches_either_integrity_line(self):
+        cli = audit_cli_module()
+        self.assertIsNone(cli.FROZEN_FIELD_ROW.match(
+            "- Self-digest: sha256:" + "a" * 64))
+        self.assertIsNone(cli.FROZEN_FIELD_ROW.match(
+            "- Supersedes: sha256:" + "a" * 64))
+
+
 class SchemaVersionDerivationTests(unittest.TestCase):
     """`SKILL.md` states the current schema version once, in prose; a lock
     holds `REPORT_SCHEMA_VERSION` to that exact sentence -- the same

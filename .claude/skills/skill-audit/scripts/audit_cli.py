@@ -2123,6 +2123,7 @@ REPORT_SHAPE = {
     "repair-units": "## Repair units",
     "report-integrity": "## Report integrity",
     "stage-outcomes": "## Stage outcomes",
+    "supersedes": "- Supersedes:",
     "unchecked-section": "## Unchecked",
     "undecidable": "## Undecidable",
     "user-drive": "## User drive",
@@ -2643,6 +2644,19 @@ REPORT_INTEGRITY_HEADING = "## Report integrity"
 REPORT_INTEGRITY_SCHEMA_LINE = re.compile(r"^-\s*Schema:\s*(\S+)\s*$")
 REPORT_INTEGRITY_SELF_DIGEST_LINE = re.compile(r"^-\s*Self-digest:\s*(\S+)\s*$")
 
+#: `- Supersedes: sha256:<hex>` inside `## Report integrity`: an optional
+#: claim naming the OTHER report's own self-digest -- never this report's.
+#: Captures the raw value; well-formedness is judged separately, by
+#: `SUPERSEDES_VALUE_SHAPE` below, so a malformed value is an ordinary-sweep
+#: violation, never a parse failure at this stage.
+REPORT_SUPERSEDES_LINE = re.compile(r"^-\s*Supersedes:\s*(\S+)\s*$")
+
+#: Well-formedness for a `- Supersedes:` value: `sha256:` followed by one or
+#: more hex digits. Deliberately not length-anchored to 64 hex chars -- no
+#: other digest field in this codebase validates hex length, only content
+#: equality.
+SUPERSEDES_VALUE_SHAPE = re.compile(r"^sha256:[0-9a-f]+$")
+
 
 def _top_level_section_span(lines, heading):
     """The `[start, end)` line-index span of one top-level `## ` section,
@@ -2727,18 +2741,20 @@ def report_self_digest(text):
 
 
 def report_integrity_fields(lines):
-    """The `- Schema:` and `- Self-digest:` values under `## Report
-    integrity`, read only inside that section -- exactly like
-    `frozen_section_fields`. `None` for either key the section does not
-    carry. Raises `Unprobeable` when either field appears twice: the same
+    """The `- Schema:`, `- Self-digest:`, and `- Supersedes:` values under
+    `## Report integrity`, read only inside that section -- exactly like
+    `frozen_section_fields`. `None` for any key the section does not carry
+    (including `- Supersedes:`, which is optional and never required).
+    Raises `Unprobeable` when any of the three appears twice: the same
     "which line is the claim" inability `report_self_digest` raises for a
-    duplicated `- Self-digest:`, extended to `- Schema:` for symmetry.
+    duplicated `- Self-digest:`, extended to `- Schema:` and `- Supersedes:`
+    for symmetry.
     """
     span = _top_level_section_span(lines, REPORT_INTEGRITY_HEADING)
     if span is None:
         return None
     start, end = span
-    schema_values, self_values = [], []
+    schema_values, self_values, supersedes_values = [], [], []
     for index in range(start, end):
         stripped = lines[index].strip()
         match = REPORT_INTEGRITY_SCHEMA_LINE.match(stripped)
@@ -2748,14 +2764,19 @@ def report_integrity_fields(lines):
         match = REPORT_INTEGRITY_SELF_DIGEST_LINE.match(stripped)
         if match:
             self_values.append(match.group(1))
-    if len(schema_values) >= 2 or len(self_values) >= 2:
+            continue
+        match = REPORT_SUPERSEDES_LINE.match(stripped)
+        if match:
+            supersedes_values.append(match.group(1))
+    if len(schema_values) >= 2 or len(self_values) >= 2 or len(supersedes_values) >= 2:
         raise Unprobeable(
             "the report's '## Report integrity' section carries more than "
-            "one '- Schema:' or '- Self-digest:' line; the tool cannot tell "
-            "which one is the claim, and choosing would be a verdict with "
-            "nothing behind it")
+            "one '- Schema:', '- Self-digest:', or '- Supersedes:' line; "
+            "the tool cannot tell which one is the claim, and choosing "
+            "would be a verdict with nothing behind it")
     return {"schema": schema_values[0] if schema_values else None,
-            "selfDigest": self_values[0] if self_values else None}
+            "selfDigest": self_values[0] if self_values else None,
+            "supersedes": supersedes_values[0] if supersedes_values else None}
 
 
 def report_identity_gate(text, lines):
@@ -2873,6 +2894,28 @@ def run_check_report(args):
     def fail(item, detail, where):
         violations.append({"detail": detail, "item": item, "where": where})
 
+    # Self-supersession is checked against the RAW recorded fields, before
+    # the identity gate below ever runs -- deliberately, not merely for
+    # convenience. `- Supersedes:` is itself part of what `report_self_
+    # digest` hashes (only `- Self-digest:` is ever excluded), so a report
+    # can never be constructed whose CORRECT self-digest equals a value
+    # that is itself an input to that same digest -- a cryptographic hash
+    # has no fixed point a fixture could ever build. Checking the raw
+    # strings first, ahead of the gate's own recompute step, is what makes
+    # this violation reachable at all; `report_identity_gate` itself is
+    # untouched -- this is a new, independent check, not a change to its
+    # three-way classification.
+    integrity_fields = report_integrity_fields(lines)
+    early_supersedes_claim = integrity_fields.get("supersedes") if integrity_fields else None
+    if (early_supersedes_claim is not None
+            and integrity_fields.get("selfDigest") == early_supersedes_claim):
+        emit({"rederived": False, "supersession": "unverified", "violations": [{
+            "detail": (
+                "the report's '- Supersedes:' value equals its own "
+                "'- Self-digest:' value; a report cannot supersede itself"),
+            "item": "supersedes", "where": f"{path}:1"}]})
+        return 1
+
     # The identity gate runs before everything else in this function --
     # nothing else is computed for a report that will not be judged. A
     # `predates-the-schema` (or `postdates-the-schema`) verdict emits a
@@ -2885,6 +2928,29 @@ def run_check_report(args):
         exit_code, payload = gate
         emit(payload)
         return exit_code
+
+    # `- Supersedes:` is optional and purely additive: reaching this point
+    # means the report is already known non-tampered (the gate above
+    # returned `None`), so `integrity_fields.get("selfDigest")` is the
+    # report's genuine, recomputation-agreeing self-digest, and a forged
+    # `- Supersedes:` would already have been caught upstream as `tampered`
+    # -- it is automatically covered by `report_self_digest`'s hashing,
+    # since only `- Self-digest:` itself is ever excluded. `"supersession"`
+    # is a closed three-value roster -- `not-claimed`, `unverified`, or
+    # `verified` -- never a boolean: a boolean would collapse "nobody
+    # claimed a supersession" into "a claim exists that nobody checked",
+    # the exact defect this field exists to remove.
+    supersedes_claim = integrity_fields.get("supersedes")
+    supersession = "not-claimed"
+    supersedes_claim_ok = False
+    if supersedes_claim is not None:
+        supersession = "unverified"
+        if not SUPERSEDES_VALUE_SHAPE.match(supersedes_claim):
+            fail("supersedes",
+                 f"'- Supersedes: {supersedes_claim}' is not shaped "
+                 "'sha256:<hex>'", f"{path}:1")
+        else:
+            supersedes_claim_ok = True
 
     # `## Report integrity` must be the report's first `## ` section: the
     # schema marker governs every later judgment, so a validator that must
@@ -3268,7 +3334,7 @@ def run_check_report(args):
                 continue
             fail(item, detail, f"{path}:{index}")
 
-    emit({"rederived": rederived, "violations": sorted(
+    emit({"rederived": rederived, "supersession": supersession, "violations": sorted(
         violations, key=lambda v: (v["item"], v["where"]))})
     return 1 if violations else 0
 
