@@ -2396,6 +2396,137 @@ class SearchRecordScaleAgreementTests(unittest.TestCase):
         self.assertIsNone(state["scaleSatisfied"])
 
 
+class SearchRecordScaleNestedFieldShapedRecordTests(unittest.TestCase):
+    """The declaration declares axis *names*; it never declared a depth.
+
+    A record written by a real run groups its result by whatever the run was
+    comparing — one group per family — and puts the scale axes inside each
+    group. Read only at the top level, such a record answers none of the
+    declared axes and `scaleSatisfied` goes `null`: a search that ran at full
+    declared scale is reported back as one that has not run.
+
+    The fixture below is field-shaped, not reader-shaped: its keys are the
+    keys of a `ceilings.json` left behind by a completed 74-minute GPU run,
+    including the ones this reader has no use for. Tests that write the
+    fixture the reader expects never cross the seam that this defect lived
+    in.
+    """
+
+    COMPLETE = {
+        "what": "el techo del coeficiente de adaptación, por familia",
+        "requiredScale": {"epochs": 20, "seeds": 3},
+        "role": "valid",
+        "tieRule": "el techo más chico entre los empatados",
+        "record": "Results/ceilings.json",
+    }
+
+    @staticmethod
+    def _field_group(epochs=20, seeds=(0, 1, 2)):
+        """One family's entry, carrying every key the real record carries.
+
+        The scale axes sit among fifteen others that mean nothing to this
+        reader — which is the point: the reader must find `epochs` and
+        `seeds` in there without being told where to look.
+        """
+        return {
+            "arm": "full",
+            "ceiling": 0.62,
+            "criterion": "target accuracy at the ceiling",
+            "grid": [0.25, 0.5, 0.75, 1.0],
+            "tied": False,
+            "decidedByTieBreak": False,
+            "tieRule": "el techo más chico entre los empatados",
+            "comparison": {"baseline": 0.51},
+            "perSeedPick": {"0": 0.62, "1": 0.62, "2": 0.62},
+            "seedsAgree": True,
+            "role": "valid",
+            "epochs": epochs,
+            "seeds": list(seeds),
+            "atRequiredScale": True,
+            "requiredScale": {"epochs": 20, "seeds": 3},
+            "transfers": ["U-S", "S-M"],
+            "neutral": 1.0,
+        }
+
+    def _state(self, record_payload):
+        with tempfile.TemporaryDirectory() as raw:
+            product = Path(raw) / "Method"
+            results = product / "Results"
+            results.mkdir(parents=True, exist_ok=True)
+            (results / "ceilings.json").write_text(
+                json.dumps(record_payload), encoding="utf-8")
+            return impl.search_state({"search": self.COMPLETE},
+                                     ["Results/ceilings.json"], product)
+
+    def test_a_flat_record_still_reads_exactly_as_it_did(self):
+        """The regression lock on today's path. Accepting a second shape may
+        not change what the first one answers, or every existing record
+        starts reading differently to buy a shape none of them use."""
+        state = self._state({"epochs": 20, "seeds": [0, 1, 2]})
+        self.assertEqual(state["recordScale"], {"epochs": 20, "seeds": [0, 1, 2]})
+        self.assertIs(state["scaleSatisfied"], True)
+
+    def test_the_field_shaped_record_of_a_completed_run_reads_its_axes(self):
+        """The defect, reproduced from the shape that exposed it: two family
+        groups, the declared axes inside each. Read at the top level this
+        record answers nothing; read uniformly it answers everything, and a
+        search that ran at full declared scale stops reporting as unrun."""
+        state = self._state({"creda": self._field_group(),
+                             "milcreda": self._field_group()})
+        self.assertEqual(state["recordScale"],
+                         {"epochs": 20, "seeds": [0, 1, 2]})
+        self.assertIs(state["scaleSatisfied"], True)
+
+    def test_groups_disagreeing_on_an_axis_report_the_weakest_of_each(self):
+        """A record satisfies a requirement only if every part of it does, so
+        the minimum is the honest reading — taken per axis, not per group.
+        The two groups here are each weaker than the other on a different
+        axis, so an implementation picking the first group, the last group,
+        or the weakest group wholesale reports something else."""
+        state = self._state({
+            "creda": self._field_group(epochs=20, seeds=(0, 1)),
+            "milcreda": self._field_group(epochs=12, seeds=(0, 1, 2, 3)),
+        })
+        self.assertEqual(state["recordScale"],
+                         {"epochs": 12, "seeds": [0, 1]})
+        self.assertIs(state["scaleSatisfied"], False)
+
+    def test_an_axis_no_scale_can_be_read_from_is_weaker_than_one_that_can(self):
+        """Weakest includes unmeasurable. A group naming `epochs` as prose
+        proves nothing about how large that group ran, so reporting the
+        sibling's number instead would hand `_scale_satisfied` a figure no
+        group vouched for and let half a record answer for the whole."""
+        state = self._state({
+            "creda": self._field_group(epochs="veinte"),
+            "milcreda": self._field_group(epochs=20),
+        })
+        self.assertEqual(state["recordScale"],
+                         {"epochs": "veinte", "seeds": [0, 1, 2]})
+        self.assertIs(state["scaleSatisfied"], False)
+
+    def test_a_group_missing_one_declared_axis_answers_nothing(self):
+        """Not every axis in every group is not a uniform nesting, and a
+        reader that filled the gap from the group that has it would be
+        guessing at what the silent group ran. `{}` and `null`: unprovable,
+        the same answer a record naming no axis at all gets."""
+        partial = self._field_group()
+        del partial["seeds"]
+        state = self._state({"creda": self._field_group(), "milcreda": partial})
+        self.assertEqual(state["recordScale"], {})
+        self.assertIsNone(state["scaleSatisfied"])
+
+    def test_a_top_level_value_that_is_not_a_group_answers_nothing(self):
+        """The nesting is accepted only when it is structurally unambiguous.
+        One scalar beside the groups and there is no longer a rule that says
+        which level the record is written at, so the reader declines rather
+        than picking one."""
+        state = self._state({"creda": self._field_group(),
+                             "milcreda": self._field_group(),
+                             "generatedAt": "2026-08-24T03:44:00Z"})
+        self.assertEqual(state["recordScale"], {})
+        self.assertIsNone(state["scaleSatisfied"])
+
+
 class UndeclaredRecordsTests(unittest.TestCase):
     """Lo que la corrida deja escrito donde viven sus registros, o está declarado
     o se reporta.

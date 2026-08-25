@@ -323,12 +323,36 @@ def declared_required_scale(search: dict) -> dict:
 
 def _record_scale(expected: Path | None, axes: dict) -> dict:
     """The record's own reported scale, read only under the axis names
-    `requiredScale` itself declares.
+    `requiredScale` itself declares, at either of two shapes.
 
     No axis vocabulary is forge-known: whichever names `requiredScale`
     declares are exactly the names looked up here, so a record naming its
     scale under any other key is read as answering none of them — never
     guessed at, never learned from one target and applied to the next.
+
+    What the declaration declares is the axis *names*; it never declared a
+    depth, and reading only the top level assumed one. A record written by a
+    run comparing several things groups its result by whatever it compared —
+    one group per family — and the declared axes sit inside each group, so
+    the top-level read finds nothing and a search that ran at full declared
+    scale reports back as one that has not run. So the flat shape is tried
+    first and answers exactly as it always did; only when it answers nothing
+    is the record read as groups, and only when that nesting is structurally
+    unambiguous: every top-level value a mapping, and every one of those
+    carrying every declared axis. One value that is not a mapping, one group
+    silent on one axis, an empty record — all `{}`, as before.
+
+    This learns no target's vocabulary. The rule is structural and identical
+    for every target: it names nothing, recognises nothing, and asks only
+    whether the record is uniformly grouped, which either holds or does not.
+    The alternative — a declaration field naming where the axes live — would
+    make every record already on disk unreadable until its own repository
+    was edited, and this forge does not reach into those.
+
+    Where groups disagree on an axis the weakest is what is reported: a
+    record satisfies a requirement only if every part of it does, so the
+    minimum is the honest reading — taken per axis, never per group, and
+    never averaged into a number no group ran at.
     """
     if expected is None or not axes or not expected.is_file():
         return {}
@@ -338,7 +362,29 @@ def _record_scale(expected: Path | None, axes: dict) -> dict:
         return {}
     if not isinstance(payload, dict):
         return {}
-    return {axis: payload[axis] for axis in axes if axis in payload}
+    flat = {axis: payload[axis] for axis in axes if axis in payload}
+    if flat:
+        return flat
+    groups = list(payload.values())
+    if not groups or not all(isinstance(group, dict) for group in groups):
+        return {}
+    if not all(axis in group for group in groups for axis in axes):
+        return {}
+    return {axis: min((group[axis] for group in groups), key=_scale_rank)
+            for axis in axes}
+
+
+def _scale_rank(value: object) -> tuple[int, int]:
+    """How weak a scale reads, ordered so the weakest sorts first.
+
+    A value `_scale_of` cannot measure at all is weaker than any it can: it
+    proves nothing about how large the run was, and reporting the measurable
+    sibling instead would hand `_scale_satisfied` a number no group vouched
+    for. Below that, smaller is weaker, which is what `_scale_of` already
+    means.
+    """
+    scale = _scale_of(value)
+    return (0, 0) if scale is None else (1, scale)
 
 
 def _scale_satisfied(record_scale: dict, required_scale: dict) -> bool | None:
