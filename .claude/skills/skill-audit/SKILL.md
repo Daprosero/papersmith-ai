@@ -123,10 +123,22 @@ comparison around it: flipping `==` to `!=` only changes which subset is
 excluded and yields a different wrong answer, never the absence of the fact.
 
 A guarded fact whose mutation leaves the suite green is an obsolete guard:
-adjudicated `not adjudicable`, remedy build-or-delete, its own `## Repair
-units` row with a changed-line forecast. **The auditor never deletes a
-test.** It reports, and the finding routes into `## Repair units` so the
-next change picks it up as a work item.
+adjudicated `not adjudicable`, sitting under `## Not adjudicable` with the
+rest of that verdict's findings. Its own remedy is a three-way verdict,
+never build-or-delete: `- Remedy: delete` when the guarded fact no longer
+exists; `- Remedy: update` when the fact exists but moved, or the test
+measures it wrongly; `- Remedy: undecided: <reason>` when the split itself
+cannot be made. The distinguishing procedure: when the guarded fact names a
+Python symbol, existence-checking by AST -- the approach `check_citations.py`'s
+`symbols_in`/`repo_symbols` already takes, scoped to `--subject`'s own tree,
+never imported or vendored -- decides delete-versus-update mechanically. When
+the guarded fact is not a named symbol (a config literal, an error string, a
+count), the split is a semantic judgment this tool cannot make, and
+`undecided` with a stated reason is the honest report. **The auditor still
+never deletes a test.** It reports, in the three rosters at the top of
+`## Not adjudicable`, and the finding still gets its own `## Repair units`
+row with a changed-line forecast, so the next change picks it up as a work
+item.
 
 ### Move 8, in detail
 
@@ -336,7 +348,7 @@ Every finding carries exactly one adjudication, and there is no default.
 | --- | --- | --- |
 | `doctrine wrong` | The documentation states something the running code does not do | Correct the document |
 | `artefact wrong` | The running code does something its own documentation forbids or omits | Correct the code |
-| `not adjudicable` | Enumeration found no consumer at all | See below |
+| `not adjudicable` | Enumeration found no consumer at all, or Move 6 found a guarded fact whose mutation left the suite green | See below |
 
 ### Not adjudicable
 
@@ -346,6 +358,12 @@ value declared and enumerated with nothing anywhere reading it or branching on
 it. Its remedy is build-or-delete, a user decision with real cost, and that is
 the structural reason report-then-fix is the correct ordering: an auditor that
 repaired what it found would have to guess this one.
+
+A guarded fact whose mutation leaves the suite green is a distinct occasion
+for the same verdict, never the no-consumer case above: not the absence of a
+consumer, but a lock that no longer discriminates. Move 6's own remedy names
+which job follows -- delete, update, or undecided with a stated reason --
+never build-or-delete.
 
 These findings get their **own report section**, distinct from the ranked
 findings, so a reader can see at a glance which findings are defects and which

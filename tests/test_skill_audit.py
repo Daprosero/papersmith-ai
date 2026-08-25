@@ -40,6 +40,7 @@ MOVES_HEADER = "| Move | Ships as | Lock |"
 SUBCOMMAND_HEADER = "| Subcommand | Derives | Emits |"
 REPORT_HEADER = "| Item | Required content | Rejected when |"
 STAGES_HEADER = "| Stage | Models | Demands |"
+ADJUDICATION_HEADER = "| Adjudication | Means | Remedy |"
 
 #: Words a target owns that the forge is forbidden to borrow — the floor the
 #: derived guard stands on. Being a fixed list, it can only ever hold leaks
@@ -3102,6 +3103,100 @@ class NetworkClauseDerivationTests(unittest.TestCase):
 
     def test_audit_cli_network_clause_matches_the_derived_condition(self):
         self._assert_site(audit_cli_module().__doc__, "audit_cli.py")
+
+
+def paragraph_starting_with(text, prefix):
+    """The single blank-line-bounded paragraph in `text` whose whitespace-
+    normalized content starts with `prefix`, or `None` if no such paragraph
+    exists.
+
+    Captures the WHOLE paragraph, never a fixed-length substring: a suffix
+    added anywhere inside the paragraph changes the captured text and
+    breaks equality against a pinned literal, which a short `assertIn`
+    substring lock would not catch -- the exact failure this repository hit
+    earlier the same day, when a renamed value still *contained* the old
+    one and an `assertIn` lock read it as unchanged.
+    """
+    for block in re.split(r"\n\s*\n", text):
+        normalized = re.sub(r"\s+", " ", block).strip()
+        if normalized.startswith(prefix):
+            return normalized
+    return None
+
+
+#: The three no-consumer "build-or-delete" sites this change must never
+#: touch, pinned as full anchored units -- a whole paragraph, a whole table
+#: row, a whole line -- never a short substring. Only Move 6's own
+#: occurrence (its own paragraph, inserted after this one) widens.
+NOT_ADJUDICABLE_PROSE_PARAGRAPH = (
+    "`not adjudicable` is not a softer verdict; it is a different question. "
+    "The question is not which half is wrong but that **this half has no "
+    "other half** — a value declared and enumerated with nothing anywhere "
+    "reading it or branching on it. Its remedy is build-or-delete, a user "
+    "decision with real cost, and that is the structural reason "
+    "report-then-fix is the correct ordering: an auditor that repaired what "
+    "it found would have to guess this one.")
+
+DECISION_GATES_NO_CONSUMER_ROW = (
+    "| Enumeration found no consumer at all | Mark it `not adjudicable`; "
+    "put it in its own section; name build-or-delete |")
+
+VALID_REPORT_DETAIL_LINE = (
+    "- Detail: build-or-delete, and the choice costs something either way.")
+
+
+class NoConsumerBuildOrDeleteLockTests(unittest.TestCase):
+    """The three no-consumer "build-or-delete" sites stay byte-identical
+    while Move 6's own occurrence widens into a three-way remedy. Anchored
+    full-paragraph/row/line equality throughout, never `assertIn`: a
+    substring lock can survive a suffix rename because the renamed value
+    still *contains* the original text.
+    """
+
+    def test_not_adjudicable_prose_paragraph_is_byte_identical(self):
+        paragraph = paragraph_starting_with(
+            doctrine_text(), "`not adjudicable` is not a softer verdict")
+        self.assertEqual(
+            paragraph, NOT_ADJUDICABLE_PROSE_PARAGRAPH,
+            "the '### Not adjudicable' no-consumer paragraph must stay "
+            "byte-identical; Move 6's own doctrine widens in a separate, "
+            "later paragraph, never this one")
+
+    def test_decision_gates_no_consumer_row_is_byte_identical(self):
+        rows = [line.strip() for line in doctrine_text().splitlines()
+                if line.strip() == DECISION_GATES_NO_CONSUMER_ROW]
+        self.assertTrue(
+            rows,
+            "the Decision Gates 'no consumer at all' row must stay "
+            "byte-identical; it is not one of the rows this change widens")
+
+    def test_valid_report_body_detail_line_is_byte_identical(self):
+        lines = [line for line in VALID_REPORT_BODY.splitlines()
+                if line == VALID_REPORT_DETAIL_LINE]
+        self.assertTrue(
+            lines,
+            "VALID_REPORT_BODY's own '- Detail:' string must stay "
+            "byte-identical; F2 there is a Move-0 not-adjudicable finding, "
+            "the no-consumer case, never Move 6's")
+
+    def test_adjudication_table_widened_to_name_move_six(self):
+        """The positive pairing to the three locks above: the `not
+        adjudicable` row in `## Adjudication` (a *different* occurrence
+        from the Decision Gates row, even though both once read
+        identically) now names Move 6's occasion too.
+        """
+        tables = markdown_table_rows(doctrine_text(), ADJUDICATION_HEADER)
+        self.assertEqual(len(tables), 1, "one '## Adjudication' table, exactly")
+        row = next((r for r in tables[0] if r[0].strip("`") == "not adjudicable"),
+                   None)
+        self.assertIsNotNone(row, "no 'not adjudicable' row in the table")
+        self.assertIn(
+            "Move 6", row[1],
+            f"the widened row must name Move 6's own occasion: {row[1]!r}")
+        self.assertIn(
+            "no consumer at all", row[1],
+            f"the widened row must still name the original no-consumer "
+            f"case too: {row[1]!r}")
 
 
 class HistoricalReportRecordTests(unittest.TestCase):
