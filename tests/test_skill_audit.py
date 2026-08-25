@@ -2469,6 +2469,19 @@ class ReportSupersessionTests(BoxMixin, unittest.TestCase):
         return draft.replace(
             "- Self-digest: ", f"- Supersedes: {value}\n- Self-digest: ", 1)
 
+    def _companion_report(self, fill="b"):
+        """A companion report at the SAME subject but a DIFFERENT '## Frozen'
+        digest -- built by substituting `VALID_REPORT_DIGEST` throughout a
+        fresh copy of `VALID_REPORT_BODY`, never hand-typed, then signed
+        through `report_with_integrity`. Its own '- Subject:' is untouched
+        (`VALID_REPORT_BODY`'s own "a subject, one surface"), so a genuine
+        re-validation of the same subject is exactly what this represents.
+        """
+        companion_digest = "sha256:" + fill * 64
+        self.assertNotEqual(companion_digest, VALID_REPORT_DIGEST)
+        companion_body = VALID_REPORT_BODY.replace(VALID_REPORT_DIGEST, companion_digest)
+        return report_with_integrity(companion_body)
+
     # -- the roster ---------------------------------------------------------
 
     def test_no_claim_reports_not_claimed(self):
@@ -2502,6 +2515,41 @@ class ReportSupersessionTests(BoxMixin, unittest.TestCase):
         self.assertEqual(result.returncode, 1, payload)
         violation = next(v for v in payload["violations"] if v["item"] == "supersedes")
         self.assertIn("cannot supersede itself", violation["detail"])
+
+    # -- `--supersedes-report`: recompute and compare ------------------------
+
+    def test_verified_when_companion_self_digest_matches_declared_value(self):
+        cli = audit_cli_module()
+        companion = self._companion_report()
+        companion_self_digest = cli.report_self_digest(companion)
+        box = self.make_box("supersession")
+        self._box = box
+        companion_path = self.write(box, "companion.md", companion)
+        text = self._with_supersedes(companion_self_digest)
+        result, payload = self.check(
+            text, name="verified.md",
+            extra_argv=("--supersedes-report", str(companion_path)))
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["supersession"], "verified")
+        self.assertEqual(payload["violations"], [])
+
+    def test_digest_mismatch_names_both_values_and_is_a_violation(self):
+        cli = audit_cli_module()
+        companion = self._companion_report()
+        box = self.make_box("supersession")
+        self._box = box
+        companion_path = self.write(box, "companion.md", companion)
+        companion_self_digest = cli.report_self_digest(companion)
+        wrong_digest = "sha256:" + "c" * 64
+        self.assertNotEqual(wrong_digest, companion_self_digest)
+        text = self._with_supersedes(wrong_digest)
+        result, payload = self.check(
+            text, name="digest-mismatch.md",
+            extra_argv=("--supersedes-report", str(companion_path)))
+        self.assertEqual(result.returncode, 1, payload)
+        violation = next(v for v in payload["violations"] if v["item"] == "supersedes")
+        self.assertIn(wrong_digest, violation["detail"])
+        self.assertIn(companion_self_digest, violation["detail"])
 
     # -- three digests kept mechanically unmistakable ------------------------
 

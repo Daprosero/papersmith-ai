@@ -982,6 +982,14 @@ def build_parser():
         help="re-derive the '## Frozen' digest from this path and compare "
              "it; without it the payload carries rederived: false and only "
              "finding-vs-'## Frozen' consistency is checked")
+    report.add_argument(
+        "--supersedes-report", default=None,
+        help="a companion report file this report's own '- Supersedes:' "
+             "claim names; re-derives the companion's self-digest via the "
+             "same mechanism this tool signs its own reports with, and "
+             "compares it (and the two reports' '## Frozen' '- Subject:' "
+             "values) to the declared claim -- without it a well-formed "
+             "claim reports 'unverified', honestly unchecked")
 
     structure = commands.add_parser(
         "structure",
@@ -2951,6 +2959,27 @@ def run_check_report(args):
                  "'sha256:<hex>'", f"{path}:1")
         else:
             supersedes_claim_ok = True
+
+    # `--supersedes-report <path>` checks a well-formed, non-self-referential
+    # claim against a NAMED companion report: re-derive the companion's own
+    # self-digest via the exact same `report_self_digest` this tool signs
+    # its own reports with -- no second digest convention -- and compare it
+    # to the declared value. A malformed or self-referential claim is
+    # already its own violation above; this block never layers a second,
+    # confusing verdict on top of one (G2's ordering: inability and
+    # mismatch never share an outcome with an already-broken claim).
+    supersedes_report_path = getattr(args, "supersedes_report", None)
+    if supersedes_report_path and supersedes_claim_ok:
+        companion_text = Path(supersedes_report_path).read_text(encoding="utf-8")
+        companion_self_digest = report_self_digest(companion_text)
+        if companion_self_digest != supersedes_claim:
+            fail("supersedes",
+                 f"the named companion at {supersedes_report_path!r} "
+                 f"re-derives to {companion_self_digest}, which disagrees "
+                 f"with the declared '- Supersedes: {supersedes_claim}'",
+                 f"{path}:1")
+        else:
+            supersession = "verified"
 
     # `## Report integrity` must be the report's first `## ` section: the
     # schema marker governs every later judgment, so a validator that must
