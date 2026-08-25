@@ -2636,6 +2636,39 @@ class ReportIntegrityGateTests(BoxMixin, unittest.TestCase):
         self.assertIn("superseded", detail)
         self.assertIn("do not", detail)
 
+    def test_post_issuance_supersedes_edit_is_caught_as_tampered(self):
+        """`- Supersedes:` sits inside what `report_self_digest` hashes, so
+        it cannot be edited after issuance without this gate noticing.
+
+        Correct by construction since the field existed -- the digest covers
+        every line but `- Self-digest:` itself -- and that is exactly why it
+        needed naming. Every other tamper fixture here mutates body prose, so
+        nothing would fail if the field were later moved outside the hashed
+        span, and the supersession suite cannot cover it either: its own
+        `check` resigns first, by design, which erases this mutation.
+        """
+        claimed = "sha256:" + "a" * 64
+        signed = resign(report_with_integrity(VALID_REPORT_BODY).replace(
+            "- Self-digest: ", f"- Supersedes: {claimed}\n- Self-digest: ", 1))
+
+        # Without this the mutation below could "pass" over a fixture that was
+        # never valid to begin with -- a green proving nothing.
+        intact, before = self.check(signed, name="supersedes-signed.md")
+        self.assertEqual(intact.returncode, 0, before)
+        self.assertEqual(before["violations"], [], before)
+
+        forged = "sha256:" + "b" * 64
+        self.assertNotEqual(forged, claimed)
+        broken = signed.replace(claimed, forged, 1)
+        self.assertNotEqual(broken, signed, "the mutation must land")
+
+        result, payload = self.check(broken, name="supersedes-forged.md")
+        self.assertEqual(result.returncode, 1, payload)
+        self.assertNotIn("status", payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "report-integrity"]
+        self.assertTrue(violations, payload)
+
     def test_schema_present_self_digest_absent_is_tampered_not_predates(self):
         """The reconciliation's load-bearing case: deleting only the
         `- Self-digest:` line must not buy escape into the unjudged
