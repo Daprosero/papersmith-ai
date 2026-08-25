@@ -392,6 +392,18 @@ see `report-integrity` below — and this sentence is the one place the
 version is stated; `REPORT_SCHEMA_VERSION` is held to it by a lock, never
 restated as a second literal.
 
+That version is **not** a compatibility escape, and this is the one place
+that says so. Every item in the table below is judged against every report
+carrying `## Report integrity`, including a report signed before that item
+existed; the only unjudged report is one with no `## Report integrity`
+section at all. So `remedy`, which arrived after the first reports were
+signed, retroactively invalidates a previously-valid report whose `## Not
+adjudicable` carries a `- Move: 6` finding -- `check-report` exits `1`
+naming that finding, and no version bump exempts it. The remedy is to re-run
+the audit and issue a new report, never to hand-edit the old one into
+agreement: an audit report is a record of what was true when it was written,
+and `- Self-digest:` exists to make editing one visible.
+
 | Item | Required content | Rejected when |
 | --- | --- | --- |
 | `report-integrity` | `## Report integrity`, the report's first `## ` section, carrying `- Schema: skill-audit-report/N` and `- Self-digest:` — a canonical-content digest over the report's own text with that one line excluded, reusing the existing `sha256:` spelling and canonical-string-then-hash idiom `frozen_digest` already uses | Both fields absent together means the report predates this shape and is not judged (a separate outcome, never `1`); exactly one of the two present is `tampered`, never read as predating; a present digest that disagrees with recomputation is `tampered`; the section is present but is not the report's first `## ` heading |
@@ -406,7 +418,7 @@ restated as a second literal.
 | `unchecked-section` | `## Unchecked`, naming what was not enumerated | A surface that was never enumerated is absent, or is reported as clean |
 | `falsifier` | The observation that would overturn this report | Absent |
 | `changed-line-forecast` | The size of the fix that would follow, in changed lines | Absent |
-| `frozen` | `## Frozen`, naming the digest every finding's own `- Digest:` must agree with | A report carries no `## Frozen`, or a finding's digest disagrees with it |
+| `frozen` | `## Frozen`, naming the digest every finding's own `- Digest:` must agree with. The section also carries `- Subject:` and `- Exclude:`, neither demanded by this item -- but `- Subject:` is load-bearing beyond its own report: `supersedes` above compares it across two reports, so a report omitting it can neither supersede nor be superseded, and one whose `- Subject:` drifts silently stops being comparable to its own predecessors | A report carries no `## Frozen`, or a finding's digest disagrees with it |
 | `repair-units` | `## Repair units`, a table naming each unit's findings and its own changed-line forecast, a grouping distinct from move or adjudication | A finding belongs to no unit or to more than one, or a forecast cell is not an integer |
 | `disputed-severity` | `## Disputed severity`, bare heading; when non-empty, exactly two `- Position:` lines per dispute, each citing `file:line`, recorded verbatim, with no ranking | The heading is absent, or a dispute's positions are unpaired, or a position carries no citation |
 | `stage-outcomes` | `## Stage outcomes`, one row per stage named in the stages table above, each `ran` or `skipped: <reason>` | A stage has no row, or a `skipped` row carries no reason |
