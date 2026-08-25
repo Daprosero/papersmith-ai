@@ -3421,7 +3421,14 @@ class NothingWasRepairedTests(unittest.TestCase):
 
     def test_a_full_audit_leaves_the_subject_byte_identical(self):
         before = tree_digest(PD)
-        self.assertGreater(len(before), 10, "the subject tree looks empty")
+        # A file count used to stand in for "this is really the subject", back when
+        # the subject carried the whole deliberation engine. That engine now lives in
+        # `_core/` and is shared, so the subject is four files and any threshold that
+        # still passes would no longer catch a mis-pathed one. Name what the subject
+        # IS instead: its doctrine, its launcher, and the profile that tells the shared
+        # engine which domain it is serving.
+        for entry in ("SKILL.md", "cli.mjs", "profile.ts"):
+            self.assertIn(entry, before, f"the subject tree is missing {entry}")
         roster_json(PD_SPEC, PD)
         run_cli("check-report", str(REPORT))
         after = tree_digest(PD)

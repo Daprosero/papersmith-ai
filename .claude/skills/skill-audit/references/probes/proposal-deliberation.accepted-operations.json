@@ -1,7 +1,7 @@
 {
   "surface": "accepted-operations",
   "probe": "refusal",
-  "argv": ["node", "engine/cli.mjs", "{\"operation\":\"__AUDIT_NONCE__\",\"instruction\":\"probe\"}"],
+  "argv": ["node", "cli.mjs", "{\"operation\":\"__AUDIT_NONCE__\",\"instruction\":\"probe\"}"],
   "cwd": ".",
   "stream": "stdout",
   "exit": 1,

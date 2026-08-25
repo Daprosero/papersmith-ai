@@ -7543,7 +7543,7 @@ class RevisionDiscoveryMarkerTests(unittest.TestCase):
     was, which is what keeps every hand-authored family working.
     """
 
-    STORE = (FORGE / ".claude/skills/proposal-deliberation"
+    STORE = (FORGE / ".claude/skills/_core/deliberation"
              / "engine/revision-lifecycle-store.ts")
 
     DECLARATION = (
