@@ -139,7 +139,29 @@ DEFAULT_ACCOUNTS_CLI = (
 DEFAULT_KAGGLE_DRIVER = Path(__file__).resolve().parent / "kaggle_driver.py"
 
 KAGGLE_EXECUTABLE = "kaggle"
+
+# The CONTROL-PLANE budget: worker listing, `submit`'s own push, `poll`,
+# and `capacity`. Every one of those is a small request whose answer the
+# service produces immediately, so two minutes is already generous and
+# failing fast is the correct behaviour — a control call that has not
+# answered in that long is not slow, it is wrong, and this adapter would
+# rather refuse than let a caller sit on an unanswered status.
 SUBPROCESS_TIMEOUT_SECONDS = 120.0
+
+# The FETCH budget, deliberately separate. `fetch()` is not a fast-fail
+# path: it is a bulk transfer whose SIZE IS DECIDED BY THE REMOTE JOB, not
+# by anything this process can see before the call, and the observed link
+# throughput between this machine and the service varies by more than an
+# order of magnitude — 2.1 MB/s in one measurement, 0.06 MB/s in another.
+# Under the shared 120s budget above, that combination does not merely
+# fail slowly; it MISDIAGNOSES. A 12.4 MiB probe once took 209s and 27s
+# the same day, and the refusal read as the probe's fault rather than the
+# link's; a 256 MB artifact from a completed 75-minute GPU run was killed
+# at 120s and read as a broken fetch. 1800s is generous enough that a
+# working transfer at the slow end of that range finishes, while still
+# BOUNDED — a genuinely hung child process must still die rather than
+# hold this process open forever.
+KAGGLE_FETCH_TIMEOUT_SECONDS = 1800.0
 
 # `kaggle_driver.py`'s own `EXIT_UNAUTHORIZED`, duplicated here rather than
 # imported — this module never imports the driver, the same reason
@@ -498,12 +520,18 @@ class KaggleAdapter(ADAPTER.Adapter):
         accounts_cli: Path | str | None = None,
         kaggle_executable: str = KAGGLE_EXECUTABLE,
         timeout: float = SUBPROCESS_TIMEOUT_SECONDS,
+        fetch_timeout: float = KAGGLE_FETCH_TIMEOUT_SECONDS,
         driver_script: Path | str | None = None,
     ) -> None:
         self._credential_provider = self._normalize_credentials(credentials)
         self._accounts_cli = Path(accounts_cli) if accounts_cli else DEFAULT_ACCOUNTS_CLI
         self._kaggle_executable = kaggle_executable
         self._timeout = timeout
+        # Held separately from `self._timeout`, never derived from it: the
+        # two budgets answer different questions (see the two module
+        # constants), and collapsing them is exactly the defect this
+        # attribute exists to prevent.
+        self._fetch_timeout = fetch_timeout
         self._driver_script = Path(driver_script) if driver_script else DEFAULT_KAGGLE_DRIVER
 
     @staticmethod
@@ -603,19 +631,40 @@ class KaggleAdapter(ADAPTER.Adapter):
                 )
         return env
 
-    def _run(self, argv: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    def _run(
+        self,
+        argv: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> subprocess.CompletedProcess:
+        """One subprocess boundary for every child this adapter starts.
+
+        `timeout=None` — what every caller but `fetch()` passes, by simply
+        not passing it — means `self._timeout`, the control-plane budget,
+        so those call sites behave exactly as they did before this
+        parameter existed. `fetch()` passes `self._fetch_timeout`
+        explicitly because its child is a bulk transfer, not a control
+        call; see the module constants for why one number cannot serve
+        both.
+        """
+        effective_timeout = self._timeout if timeout is None else timeout
         try:
             return subprocess.run(
                 argv,
                 shell=False,
                 capture_output=True,
                 text=True,
-                timeout=self._timeout,
+                timeout=effective_timeout,
                 env=env,
             )
         except subprocess.TimeoutExpired as exc:
+            # Names the budget that ACTUALLY expired, never `self._timeout`
+            # unconditionally: a fetch killed at 1800s reported as "timed
+            # out after 120.0s" would send the reader hunting for a limit
+            # that was not the one enforced.
             raise KaggleAdapterError(
-                f"{argv[0]} timed out after {self._timeout}s: refusing to guess "
+                f"{argv[0]} timed out after {effective_timeout}s: refusing to guess "
                 "at a status or a completion this process never confirmed"
             ) from exc
         except OSError as exc:
@@ -973,7 +1022,13 @@ class KaggleAdapter(ADAPTER.Adapter):
         handle = self._credential_for(worker)
         into.mkdir(parents=True, exist_ok=True)
         argv = [sys.executable, str(self._driver_script), "fetch", submission_id, str(into)]
-        result = self._run(argv, env=self._env_for(handle))
+        # The ONE call site in this module that does not run under the
+        # control-plane budget. Everything else this adapter shells out to
+        # asks the service a question; this one moves however many bytes
+        # the remote job decided to produce.
+        result = self._run(
+            argv, env=self._env_for(handle), timeout=self._fetch_timeout
+        )
         self._parse_driver_result(result, action=f"fetch for {submission_id}")
         files = tuple(sorted(p.name for p in into.iterdir() if p.is_file()))
         return ADAPTER.Fetched(path=into, complete=True, files=files)

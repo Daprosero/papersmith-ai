@@ -297,7 +297,30 @@ Three modules exist so far, each service-blind and stdlib-only:
   env built from an allowlist (`PATH` plus, when a credential is involved,
   `KAGGLE_API_TOKEN`), and an explicit timeout on every call; a non-zero
   exit or an expired timeout is a refusal (`KaggleAdapterError`), never a
-  fabricated `Status`, `Submission` or `Fetched`. `poll()` translates the
+  fabricated `Status`, `Submission` or `Fetched`.
+
+  **`fetch()` owns its own time budget, `KAGGLE_FETCH_TIMEOUT_SECONDS`
+  (1800s) — a SEPARATE constant from `SUBPROCESS_TIMEOUT_SECONDS` (120s),
+  never the same one reused.** This is the same finding as
+  `jobfolder.py`'s `PIN_PUBLISHED_TIMEOUT_SECONDS` above, in a second
+  place. The 120s constant times the control plane — worker listing, the
+  submit push, `poll`, `capacity` — where every call is a small request the
+  service answers immediately and failing fast is exactly right. `fetch()`
+  is the one call that moves bulk bytes, and its SIZE IS DECIDED BY THE
+  REMOTE JOB, not by anything this process can see beforehand; measured
+  link throughput against this service varies by more than an order of
+  magnitude (2.1 MB/s in one measurement, 0.06 MB/s in another). Under the
+  shared budget that combination does not merely fail slowly, it
+  MISDIAGNOSES: a 256 MB artifact from a completed 75-minute GPU run was
+  killed at 120s and read as a broken fetch, exactly as the pin probe's
+  slow run once read as an unpublished commit. 1800s is generous at the
+  slow end of that range and still BOUNDED — a hung child must still die.
+  The refusal names whichever budget actually expired, never the other, or
+  the message sends the reader hunting for a limit that was not enforced.
+  Both are constructor parameters (`timeout=`, `fetch_timeout=`) so a test
+  can inject small values.
+
+  `poll()` translates the
   driver's own reported `KernelWorkerStatus` member name into the seam's
   five-value vocabulary and never passes it through; the raw name goes in
   `Status.detail` only. `CredentialHandle(worker_id, token_path)` is

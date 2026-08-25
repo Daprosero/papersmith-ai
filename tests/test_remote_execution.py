@@ -6027,6 +6027,115 @@ class PollFetchDriverTests(unittest.TestCase):
                 with self.assertRaises(KAGGLE.KaggleAdapterError):
                     adapter.fetch("acct-1/kernel-1", Path(into_tmp) / "out")
 
+    # ---- Adapter-level: fetch() runs on its own budget, not the control one ----
+    #
+    # One number used to govern both planes. A control call that has not
+    # answered in two minutes is wrong and should die; a fetch is a bulk
+    # transfer whose size the REMOTE job decides, and killing it at the
+    # control budget does not merely fail slowly -- it misdiagnoses, which
+    # is what these three locks exist to prevent. Each injects tiny
+    # budgets so the fake driver blocks deterministically for a fraction
+    # of a second rather than for anything resembling the real numbers.
+
+    def test_fetch_survives_a_child_that_outlives_the_control_plane_budget(self) -> None:
+        """The defect, stated as a lock.
+
+        The driver here blocks for longer than the control-plane budget
+        and far less than the fetch budget. Under one shared number this
+        fetch is killed and reported as a failed transfer; under two, it
+        completes and returns its files. Point `fetch()` back at the
+        shared constant and this test is the one that fails.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            driver = _write_fake_driver(
+                tmp_path / "driver",
+                fetch_files={"metrics.json": "{}"},
+                sleep_seconds=0.8,
+            )
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
+
+            adapter = KAGGLE.KaggleAdapter(
+                credentials={"acct-1": handle},
+                driver_script=driver,
+                timeout=0.2,
+                fetch_timeout=10.0,
+            )
+            with tempfile.TemporaryDirectory() as into_tmp:
+                fetched = adapter.fetch("acct-1/kernel-1", Path(into_tmp) / "out")
+
+            self.assertTrue(fetched.complete)
+            self.assertEqual(fetched.files, ("metrics.json",))
+
+    def test_control_plane_calls_still_die_at_the_control_budget_not_the_fetch_one(
+        self,
+    ) -> None:
+        """The other half of the same fact, and the reason the fix is two
+        constants rather than a bigger one.
+
+        This is the SAME adapter configuration the test above proves a
+        fetch survives -- a generous fetch budget alongside a tiny control
+        one. `poll()` must still refuse at its own budget. Widening the
+        shared constant to rescue fetch would blunt exactly this, and this
+        test would be the one that fails.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            driver = _write_fake_driver(tmp_path / "driver", sleep_seconds=0.8)
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
+
+            adapter = KAGGLE.KaggleAdapter(
+                credentials={"acct-1": handle},
+                driver_script=driver,
+                timeout=0.2,
+                fetch_timeout=10.0,
+            )
+            with self.assertRaises(KAGGLE.KaggleAdapterError):
+                adapter.poll("acct-1/kernel-1")
+
+    def test_a_timed_out_fetch_names_the_budget_that_actually_expired(self) -> None:
+        """A refusal that reports the wrong number sends the reader
+        hunting for a limit that was never enforced -- the same class of
+        wrong diagnosis the split budget exists to end. Here the fetch
+        budget is the small one and the control budget the large one, so a
+        message built from `self._timeout` names a number that did not
+        expire.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            driver = _write_fake_driver(tmp_path / "driver", sleep_seconds=0.8)
+            token_path = _write_fake_token(tmp_path / "creds")
+            handle = KAGGLE.CredentialHandle(worker_id="acct-1", token_path=token_path)
+
+            adapter = KAGGLE.KaggleAdapter(
+                credentials={"acct-1": handle},
+                driver_script=driver,
+                timeout=99.0,
+                fetch_timeout=0.2,
+            )
+            with tempfile.TemporaryDirectory() as into_tmp:
+                with self.assertRaises(KAGGLE.KaggleAdapterError) as caught:
+                    adapter.fetch("acct-1/kernel-1", Path(into_tmp) / "out")
+
+            message = str(caught.exception)
+            self.assertIn("0.2", message)
+            self.assertNotIn("99.0", message)
+
+    def test_the_control_plane_budget_was_not_widened_to_rescue_fetch(self) -> None:
+        """The two module constants are distinct, and the control-plane one
+        is still the fast-fail number it was. Fixing the shared-deadline
+        defect by raising `SUBPROCESS_TIMEOUT_SECONDS` would leave a poll
+        or a capacity call hanging for half an hour; that is not the fix.
+        """
+        self.assertEqual(KAGGLE.SUBPROCESS_TIMEOUT_SECONDS, 120.0)
+        self.assertGreater(
+            KAGGLE.KAGGLE_FETCH_TIMEOUT_SECONDS, KAGGLE.SUBPROCESS_TIMEOUT_SECONDS
+        )
+        # Bounded, not absent: a hung child must still die.
+        self.assertLess(KAGGLE.KAGGLE_FETCH_TIMEOUT_SECONDS, float("inf"))
+
     # ---- Driver-level: cmd_fetch (INNER interception) ----
 
     def test_driver_cmd_fetch_writes_a_nested_name_and_the_log_survives_a_failure(self) -> None:
