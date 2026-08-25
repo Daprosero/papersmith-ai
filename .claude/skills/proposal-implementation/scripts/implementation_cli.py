@@ -30,10 +30,25 @@ import sys
 import venv
 from pathlib import Path
 
-# The forge root: <root>/.claude/skills/proposal-implementations/scripts/implementation_cli.py
-FORGE_ROOT = Path(__file__).resolve().parents[4]
 SKILL_ROOT = Path(__file__).resolve().parents[1]
-WORKSPACE = FORGE_ROOT / "implementations"
+
+# The shared implementation core.
+#
+# Everything under `_core/implementation/` is what every implementation skill
+# needs and none of them owns: the guards that refuse a target outside the
+# workspace or a dirty worktree, the git and LFS readers, name normalisation,
+# and the reference remapping a migration depends on. None of it knows what is
+# being implemented, which is why a sibling skill can import it rather than copy
+# it. What IS specific -- product directories, source roots, what survives at the
+# root -- stays below in this file and is handed to the core where it is needed.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_core" / "implementation"))
+from impl_layout import FORGE_ROOT, WORKSPACE, IGNORED_DIRS, LFS_POINTER_PREFIX, TEXT_EXT  # noqa: E402
+from impl_refusals import NameRefused, Refused  # noqa: E402
+from impl_gitops import git, lfs_state, present_files, read_text, text_files, tracked_files  # noqa: E402
+from impl_guards import require_clean_worktree, require_non_forge_interpreter, resolve_target  # noqa: E402
+from impl_naming import normalize_name, package_name, validate_name  # noqa: E402
+from impl_references import (is_nesting, prefix_mappings, reference_pattern,  # noqa: E402
+                             scan_reference_updates, scan_stale_references)
 
 # The three files this module is allowed to path-import from the forge's
 # `remote-execution` skill. `remote_execution_state()` reads `ledger.py`
@@ -95,11 +110,6 @@ SOURCE_ROOTS = ("src/", "tests/", "tools/")
 # the inside of a file and can be wrong on its own — and those are counted.
 LARGE_PLAN_DECISIONS = 15
 
-IGNORED_DIRS = {
-    ".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".ipynb_checkpoints",
-    ".mypy_cache", ".ruff_cache", ".idea", ".vscode", "node_modules", ".codegraph",
-}
-
 ROOT_KEEP = {
     "README.md", "README.rst", "README.txt", "LICENSE", "LICENSE.md", "NOTICE",
     ".gitignore", ".gitattributes", ".python-version", "pyproject.toml",
@@ -115,37 +125,12 @@ MODEL_EXT = {".pkl", ".pt", ".pth", ".joblib", ".onnx", ".ckpt", ".safetensors",
 RESULT_EXT = {".png", ".jpg", ".jpeg", ".svg", ".eps"}
 
 
-class Refused(Exception):
-    """A guard refused to run. Nothing was modified."""
-
-    def __init__(self, code: str, detail: str) -> None:
-        super().__init__(detail)
-        self.code = code
-        self.detail = detail
-
 
 # --------------------------------------------------------------------------
 # git helpers
 # --------------------------------------------------------------------------
 
-def git(target: Path, *args: str, check: bool = True) -> str:
-    proc = subprocess.run(
-        ["git", *args], cwd=target, capture_output=True, text=True,
-    )
-    if check and proc.returncode != 0:
-        raise Refused("GIT_FAILED", f"git {' '.join(args)}: {proc.stderr.strip()}")
-    return proc.stdout
 
-
-def tracked_files(target: Path) -> list[str]:
-    out = git(target, "ls-files", "-z")
-    return [p for p in out.split("\0") if p]
-
-
-#: The first bytes of a Git LFS pointer. A pointer is a few hundred bytes of text
-#: standing where a large file is declared to be; anything that opens it as data
-#: gets a parse error that names the format it expected and not the reason.
-LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/"
 
 
 #: The agreements of every gate live in the product folder, so they travel with
@@ -1116,171 +1101,15 @@ def prior_work_state(target: Path, package: str) -> dict:
     }
 
 
-def lfs_state(target: Path) -> dict:
-    """Which files are placeholders, and what fetching them would cost.
 
-    Cloning with the smudge filter skipped is already the rule — pointers are enough
-    to reorganize a repository, and materializing gigabytes to move them around burns
-    a quota that does not come back. What was missing is saying so. A four-kilobyte
-    text file sitting where a model checkpoint is expected fails at load time with an
-    error about the file format, and the reason is nowhere near the symptom.
-
-    Nothing here fetches anything. The quota is the user's, spending it is their
-    decision, and the command that would do it is reported rather than run.
-    """
-    attributes = target / ".gitattributes"
-    if not attributes.exists():
-        return {"status": "none", "patterns": []}
-
-    patterns = [line.split()[0] for line in attributes.read_text(
-        encoding="utf-8", errors="replace").splitlines()
-        if "filter=lfs" in line and line.split()]
-    if not patterns:
-        return {"status": "none", "patterns": []}
-
-    pointers, materialized = [], 0
-    for path in target.rglob("*"):
-        if not path.is_file() or ".git" in path.parts:
-            continue
-        relative = str(path.relative_to(target))
-        if not any(fnmatch.fnmatch(relative, p) or fnmatch.fnmatch(path.name, p)
-                   for p in patterns):
-            continue
-        try:
-            head = path.open("rb").read(256)
-        except OSError:
-            continue
-        if head.startswith(LFS_POINTER_PREFIX):
-            # The pointer states the real file's size. Reading it is what turns
-            # "some files are missing" into a number the user can weigh.
-            declared = 0
-            for line in head.decode("utf-8", "replace").splitlines():
-                if line.startswith("size "):
-                    declared = int(line.split()[1]) if line.split()[1].isdigit() else 0
-            pointers.append({"path": relative, "bytes": declared})
-        else:
-            materialized += 1
-
-    total = sum(p["bytes"] for p in pointers)
-    return {
-        "status": "pointers" if pointers else "materialized",
-        "patterns": patterns,
-        "pointerCount": len(pointers),
-        "materializedCount": materialized,
-        "bytesToFetch": total,
-        "humanBytesToFetch": f"{total / 1024**3:.2f} GiB" if total else "0",
-        "pointers": sorted(pointers, key=lambda p: -p["bytes"])[:20],
-        "truncated": max(0, len(pointers) - 20),
-        # Reported, never run.
-        "fetchCommand": "git lfs pull --include=" + ",".join(f'"{p}"' for p in patterns),
-        "note": ("These files are placeholders of a few hundred bytes. Anything that "
-                 "opens one as data fails with an error about its format rather than "
-                 "about its absence, so treat them as missing material: the flow reads "
-                 "none of them."),
-        # The tempting workaround does not exist, and believing it does is worse than
-        # knowing the cost. GitHub counts every download against the repository
-        # owner's bandwidth — the command below, the browser's download button, even a
-        # source archive that happens to contain LFS objects. The free allowance is
-        # 1 GiB a month. There is no route that avoids it.
-        "quota": ("Every download counts against the repository owner's LFS bandwidth, "
-                  "by any route: the command below, the web interface's download "
-                  "button, or a source archive containing these objects. Clicking "
-                  "download in a browser costs exactly the same as fetching them here."),
-        # Where the material might come from instead — read from the repository's own
-        # code, not guessed. Weights fetched from a drive, unpacked from an archive or
-        # produced by training do not touch the quota at all.
-        "insteadOfFetching": ("Before spending it, check what `probe` reports under "
-                              "`acquisition`: material this repository downloads, "
-                              "clones or unpacks by itself costs nothing, and anything "
-                              "training produced can be produced again."),
-    }
-
-
-def present_files(target: Path) -> list[str]:
-    """What the repository actually holds, minus what it deliberately ignores.
-
-    The index is the wrong enumerator for an inspection. A file that exists, is not
-    ignored and is doing real work stays invisible until somebody commits it — so a
-    misplaced module is reported after it has entered the history rather than before,
-    which is the opposite of useful.
-
-    Two questions were being answered by one list, and they are different: *does this
-    exist* is answered by the disk, and *is this part of the record* is answered by
-    the ignore rules. Both are local; nothing here reaches a remote.
-    """
-    candidates = [
-        path for path in sorted(target.rglob("*"))
-        if path.is_file() and not any(part in IGNORED_DIRS or part == ".git"
-                                      for part in path.relative_to(target).parts)
-    ]
-    if not candidates:
-        return []
-    relative = [str(path.relative_to(target)) for path in candidates]
-    # One call rather than one per file; `check-ignore` reads the same rules git
-    # itself does, including any nested .gitignore.
-    proc = subprocess.run(
-        ["git", "check-ignore", "--stdin", "-z"], cwd=target,
-        input="\0".join(relative), capture_output=True, text=True,
-    )
-    ignored = {p for p in proc.stdout.split("\0") if p}
-    return [p for p in relative if p not in ignored]
-
-
-def require_clean_worktree(target: Path) -> None:
-    if git(target, "status", "--porcelain").strip():
-        raise Refused(
-            "DIRTY_WORKTREE",
-            "The target working tree has uncommitted or untracked changes. "
-            "Commit or stash them first; this skill never mutates a dirty repository.",
-        )
 
 
 # --------------------------------------------------------------------------
 # guards
 # --------------------------------------------------------------------------
 
-def resolve_target(raw: str) -> Path:
-    target = Path(raw).expanduser().resolve()
-    try:
-        target.relative_to(WORKSPACE.resolve())
-    except ValueError:
-        raise Refused(
-            "OUTSIDE_WORKSPACE",
-            f"Target must live under {WORKSPACE}. Clone the repository there first — "
-            "the forge's own environment is never a workspace for generated code.",
-        )
-    if not (target / ".git").exists():
-        raise Refused("NOT_A_GIT_REPO", f"{target} is not a git repository.")
-    return target
 
 
-def require_non_forge_interpreter() -> None:
-    prefix = Path(sys.prefix).resolve()
-    try:
-        prefix.relative_to((FORGE_ROOT / ".claude").resolve())
-    except ValueError:
-        return
-    raise Refused(
-        "FORGE_INTERPRETER",
-        "This process is running inside one of the forge's own virtualenvs. "
-        "Re-run with a system interpreter so the target venv never inherits it.",
-    )
-
-
-def validate_name(name: str) -> str:
-    if not name or not name.replace("_", "").replace("-", "").isalnum():
-        raise Refused("INVALID_NAME", f"Name {name!r} must be alphanumeric (- and _ allowed).")
-    return name
-
-
-def package_name(name: str) -> str:
-    """The importable form of the name.
-
-    A hyphen is legal in a directory but not in a Python identifier, so
-    `Example-Method/` pairs with `src/Example_Method/`. The correspondence the layout
-    exists to make visible survives; `import Example-Method` would not.
-    """
-    return name.replace("-", "_")
 
 
 # --------------------------------------------------------------------------
@@ -1316,9 +1145,6 @@ def detect_product_dir(target: Path, name: str, paths: list[str]) -> str | None:
     return candidates.pop() if len(candidates) == 1 else None
 
 
-TEXT_EXT = {".py", ".ipynb", ".md", ".rst", ".txt", ".toml", ".cfg", ".ini",
-            ".yaml", ".yml", ".json", ".sh"}
-
 # `<folder>/<Category>` written inside source, notebooks or docs. Anchored so a
 # longer path segment (`.../Images/Results`) does not match on its tail.
 REFERENCE_RE = re.compile(
@@ -1337,130 +1163,11 @@ PATH_CHAIN_RE = re.compile(
 )
 
 
-def text_files(target: Path, paths: list[str]) -> list[str]:
-    return [p for p in paths if Path(p).suffix.lower() in TEXT_EXT]
 
 
-def read_text(target: Path, rel: str) -> str | None:
-    try:
-        return (target / rel).read_text(encoding="utf-8")
-    except (UnicodeDecodeError, OSError):
-        return None
 
 
-def prefix_mappings(renames: list[dict], moves: list[dict]) -> list[tuple[str, str]]:
-    """Every `old prefix -> new prefix` a migration implies.
 
-    A rename gives one directly. Moves give one too, and forgetting them breaks
-    exactly as much: after `Alpha/Results/x.csv -> <Name>/Results/x.csv`, code
-    addressing `Alpha/Results` points nowhere. The prefix is derived by
-    stripping the longest common suffix, so a move that only nests a folder
-    deeper yields `Results -> <Name>/Results`, not a bare rename.
-    """
-    mappings: dict[str, set[str]] = {}
-    for rename in renames:
-        mappings.setdefault(rename["from"], set()).add(rename["to"])
-
-    for move in moves:
-        source, dest = Path(move["from"]).parts, Path(move["to"]).parts
-        common = 0
-        while (common < min(len(source), len(dest))
-               and source[-1 - common] == dest[-1 - common]):
-            common += 1
-        keep = max(1, len(source) - common)
-        mappings.setdefault("/".join(source[:keep]), set()).add(
-            "/".join(dest[:len(dest) - len(source) + keep])
-        )
-
-    # An ambiguous prefix (two destinations) is left alone: rewriting it would
-    # have to guess, and a wrong rewrite is worse than a reported one.
-    return sorted((old, next(iter(new))) for old, new in mappings.items() if len(new) == 1)
-
-
-def reference_pattern(needle: str, kind: str, anchored: bool) -> re.Pattern:
-    """Match `needle`, anchored to a path boundary only when nesting demands it.
-
-    Two mappings behave differently. A pure rename (`Images -> <Name>`) is safe
-    to replace anywhere: the new value cannot contain the old one, so a nested
-    occurrence such as a URL `.../blob/main/Images/Notebooks/` is a genuine hit
-    and must be rewritten. A nesting mapping (`Results -> <Name>/Results`) must
-    be anchored, or `Images/Results/` becomes `Images/<Name>/Results/`.
-    """
-    if kind == "path prefix" and anchored:
-        return re.compile(r"(?<![\w./-])" + re.escape(needle))
-    return re.compile(re.escape(needle))
-
-
-def is_nesting(old: str, new: str) -> bool:
-    """True when the new prefix merely nests the old one deeper."""
-    return new.endswith(f"/{old}")
-
-
-def scan_reference_updates(target: Path, mappings: list[tuple[str, str]],
-                           paths: list[str]) -> list[dict]:
-    """Files naming an old path that the migration is about to invalidate."""
-    updates: list[dict] = []
-    for old, new in mappings:
-        if old == new:
-            continue
-        patterns = [(f"{old}/", f"{new}/", "path prefix")]
-        # Only a pure one-segment rename is safe to rewrite in quoted form;
-        # substituting a multi-segment path into a quoted literal would match
-        # unrelated strings.
-        if "/" not in old and "/" not in new:
-            patterns += [(f'"{old}"', f'"{new}"', "quoted path segment"),
-                         (f"'{old}'", f"'{new}'", "quoted path segment")]
-        for rel in text_files(target, paths):
-            content = read_text(target, rel)
-            if not content:
-                continue
-            for needle, replacement, kind in patterns:
-                anchored = is_nesting(old, new)
-                hits = len(reference_pattern(needle, kind, anchored).findall(content))
-                if hits:
-                    updates.append({
-                        "file": rel,
-                        "occurrences": hits,
-                        "kind": kind,
-                        "anchored": anchored,
-                        "replace": needle,
-                        "with": replacement,
-                    })
-    return updates
-
-
-def scan_stale_references(target: Path, name: str, paths: list[str]) -> list[dict]:
-    """Textual `<folder>/<Category>` paths under a parent that does not exist.
-
-    Deliberately narrow. A quoted single segment (`root / "data"`) is NOT
-    flagged: fallback probes for optional dataset roots are legitimately absent,
-    so treating every missing directory as breakage buries the real finding.
-    That form is still rewritten during a rename, where the exact old name is
-    known and the user approves the list first.
-    """
-    def resolves(folder: str, category: str) -> bool:
-        """An empty directory is not a destination: the content it named is gone.
-
-        `git mv` leaves the old parents behind as empty shells, so existence
-        alone would report a broken path as healthy.
-        """
-        directory = target / folder / category
-        if not directory.is_dir():
-            return False
-        return any(entry.name != ".gitkeep" for entry in directory.iterdir())
-
-    stale: list[dict] = []
-    for rel in text_files(target, paths):
-        content = read_text(target, rel)
-        if not content:
-            continue
-        pairs = {(m.group(1), m.group(2)) for m in REFERENCE_RE.finditer(content)}
-        pairs |= {(m.group(1), m.group(2)) for m in PATH_CHAIN_RE.finditer(content)}
-        broken = sorted(f"{folder}/{category}" for folder, category in pairs
-                        if folder != name and not resolves(folder, category))
-        if broken:
-            stale.append({"file": rel, "references": broken})
-    return stale
 
 
 def classify(path: str, name: str, product_dir: str | None = None) -> tuple[str | None, str]:
@@ -2292,37 +1999,6 @@ def cmd_probe(args) -> dict:
     }
 
 
-class NameRefused(Exception):
-    """The name the user typed cannot become a directory and a package."""
-
-
-def normalize_name(raw: str) -> dict:
-    """Turn whatever the user typed into the `<Name>/` + `src/<Package>/` pair.
-
-    The user types `deep set`, `DEEP-SET` or `deepSet` and means the same thing.
-    Splitting happens on any separator and on a lower-to-upper boundary; an all-caps
-    token of two or more letters is an acronym and survives untouched, because
-    lowercasing an acronym renames the method rather than tidying the folder.
-    """
-    text = (raw or "").strip()
-    if not text:
-        raise NameRefused("NAME_EMPTY")
-    # Split first on explicit separators, then inside each piece on camel boundaries.
-    tokens: list[str] = []
-    for piece in re.split(r"[\s\-_]+", text):
-        if not piece:
-            continue
-        tokens.extend(re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+", piece))
-    if not tokens:
-        raise NameRefused("NAME_HAS_NO_WORDS")
-    for token in tokens:
-        if not token.isalnum():
-            raise NameRefused(f"NAME_NOT_ALPHANUMERIC:{token}")
-    if tokens[0][0].isdigit():
-        raise NameRefused("NAME_STARTS_WITH_DIGIT")
-    parts = [token if token.isupper() and len(token) >= 2 else token.capitalize()
-             for token in tokens]
-    return {"input": raw, "directory": "-".join(parts), "package": "_".join(parts)}
 
 
 def cmd_name(args) -> dict:
@@ -5394,7 +5070,8 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     ]
     # Static check, nothing is executed: does anything still address a product
     # folder that no longer exists?
-    stale_refs = scan_stale_references(target, name, paths)
+    stale_refs = scan_stale_references(target, name, paths,
+                                       (REFERENCE_RE, PATH_CHAIN_RE))
     # Gating, not merely reported. A file under `tests/` that cannot be parsed
     # cannot be collected, and `structure.status: "ok"` printed beside it is the
     # same silence as a headline reading `ok` beside a benchmark it had just
