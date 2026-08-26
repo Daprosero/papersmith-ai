@@ -2324,7 +2324,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
-        print(json.dumps({**result, "ledgerPath": str(result["ledgerPath"])}, sort_keys=True))
+        # `default=str` rather than naming each `Path` key by hand: the
+        # hand-named form stringified the top-level `ledgerPath` and left
+        # `smoke.ledgerPath` a `Path`, so this command could never print at
+        # all. Naming keys one at a time is what made a nested one
+        # unreachable; naming none makes the next one harmless.
+        print(json.dumps(result, sort_keys=True, default=str))
         return 0
 
     if args.command == "distribute":

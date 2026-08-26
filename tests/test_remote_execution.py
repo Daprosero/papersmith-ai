@@ -2480,6 +2480,47 @@ class StatusTests(unittest.TestCase):
             # trusted to follow.
             self.assertNotIn("adapter", inspect.signature(REMOTE_CLI.cmd_status).parameters)
 
+    def test_the_status_command_prints_what_the_function_only_returned(self) -> None:
+        """The test above drives `cmd_status` -- the function. Nothing drove
+        `main(["status", ...])` -- the command.
+
+        The serialization lives in `main()`, so every assertion on the
+        returned dict passed while the command itself raised
+        `TypeError: Object of type PosixPath is not JSON serializable`:
+        `main()` stringified the top-level `ledgerPath` and never reached
+        the nested `smoke.ledgerPath`, still a `Path`. Coverage sat on one
+        side of the seam and the defect on the other, and `status`, whose
+        only job is to print, could not print at all.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+            ledger_path = (
+                target.resolve() / "MIL-CREDA"
+                / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+            )
+            _append_pending_submission(
+                ledger_path,
+                entrypoint="Notebooks/a.ipynb",
+                submission_id="s1",
+                worker="w1",
+                source_digest="digest-old",
+            )
+
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                code = REMOTE_CLI.main(
+                    ["status", "--target", str(target), "--entrypoint", str(notebook)]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(buffer.getvalue())
+            # Both paths, not just the one `main()` happened to name.
+            self.assertIsInstance(payload["ledgerPath"], str)
+            self.assertIsInstance(payload["smoke"]["ledgerPath"], str)
+
     def test_status_nests_multiple_workers_under_one_entrypoint(self) -> None:
         """F4's whole point, rendered: five accounts submitting the same
         entrypoint used to fold into ONE flat entry where four of the five
