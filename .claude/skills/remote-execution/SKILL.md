@@ -14,6 +14,30 @@ service — that is a concrete adapter, still to come — but the CLI a user
 would invoke directly (`submit`, `status`, `poll`, `fetch`, `reconcile`) is
 in place today, exercised against a `FakeAdapter` only.
 
+## What this skill cannot see
+
+**It does not know how much time budget a worker has left, and it has no way
+to find out.** The adapter seam exposes `capacity` -- how many submissions may
+run at once -- and `list_active`. Neither is a time budget. `distribute` plans
+in concurrency slots, so its answer is "how many can run simultaneously",
+never "how many hours remain this week".
+
+**Any plan that reasons in weekly hours takes that number from the operator.**
+Ask; do not assume, and never read one out of this repository.
+
+This is stated first because getting it wrong is not hypothetical. A comment
+in `adapters/kaggle.py` once recorded one rehearsal's cost as `75s of a
+21600s/week (6h) per-account quota`. No constant held that figure, no code
+read it, no test covered it -- an aside wearing the shape of a documented
+service property. Two sessions built arithmetic on it and produced a two-week
+schedule for work that fits in an afternoon; the operator's real figure was
+four to five times larger.
+
+**The tell was available the whole time.** Before believing a number that
+governs spending, look for the constant that holds it, the code that reads it,
+and the test that covers it. A number nothing enforces is a sentence, not a
+limit.
+
 ## Current Scope
 
 Three modules exist so far, each service-blind and stdlib-only:

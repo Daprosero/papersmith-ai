@@ -243,7 +243,9 @@ KAGGLE_ACCELERATOR_ARCHITECTURES = ("sm_75",)
 # `{"capability": "sm_75", "device": {"kind": "cuda", "name": "Tesla T4"}}`,
 # matching `KAGGLE_ACCELERATOR_ARCHITECTURES[0]` below. Five earlier
 # submissions using bare `enable_gpu` alone all reported `failed` at 35-38s
-# on a drawn P100. Cost: 75s of a 21600s/week (6h) per-account quota.
+# on a drawn P100. Cost: 75s of GPU time, stated absolutely. This skill
+# cannot see a worker's remaining time budget -- see `## What this skill
+# cannot see` in SKILL.md -- so a cost here is never a fraction of one.
 KAGGLE_MACHINE_SHAPES = {"NvidiaTeslaT4": "sm_75", "NvidiaTeslaP100": "sm_60"}
 KAGGLE_MACHINE_SHAPE = "NvidiaTeslaT4"
 
