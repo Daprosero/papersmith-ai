@@ -1368,7 +1368,7 @@ class NumeralCheckTests(BoxMixin, unittest.TestCase):
             FORGE / ".claude" / "skills" / "remote-execution" / "SKILL.md")
         self.assertEqual(len(found), 1, found)
         finding = found[0]
-        self.assertEqual(finding["numeralLine"], 19)
+        self.assertEqual(finding["numeralLine"], 43)
         self.assertEqual(finding["stated"], 3)
         self.assertGreater(
             finding["counted"], finding["stated"],
