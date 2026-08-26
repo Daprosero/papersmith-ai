@@ -11783,7 +11783,9 @@ class UndeclaredReadDetectionTests(unittest.TestCase):
 
     def test_non_vacuity_no_read_call_sites_both_lists_stay_empty(self) -> None:
         """No `open`/`read_text`/`json.load`-shaped call site anywhere
-        reachable from the entry module — both new lists must stay empty,
+        reachable from the entry module — all three new lists must stay
+        empty (the third key arrived with the produced-read split and this
+        assertion did not grow with it),
         and no new refusal fires. A folder tuned to always find something
         would pass every other test here and still be wrong; this is what
         rules that out.
@@ -11804,6 +11806,7 @@ class UndeclaredReadDetectionTests(unittest.TestCase):
             )
 
             self.assertEqual(result["computedReadsNotDeclared"], [])
+            self.assertEqual(result["producedReadsNotDeclared"], [])
             self.assertEqual(result["unresolvedReads"], [])
 
     # -- Test 5 -------------------------------------------------------
@@ -12085,6 +12088,20 @@ class UndeclaredReadDetectionTests(unittest.TestCase):
                     run_module="pkg_l.harness",
                     run_function="resume_on_record",
                     accept_unresolved_reads=True,
+                )
+            self.assertIn("accept-produced-reads", str(ctx.exception))
+
+            # --accept-unresolved ALONE never covers it either. This is the
+            # THIRD pairwise independence claim, and until now it lived only
+            # in the CLI help and a docstring -- prose, in a change whose
+            # whole subject is claims nothing guards.
+            with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                self._generate(
+                    tmp, target,
+                    clone_paths=["src/pkg_l"],
+                    run_module="pkg_l.harness",
+                    run_function="resume_on_record",
+                    accept_unresolved=True,
                 )
             self.assertIn("accept-produced-reads", str(ctx.exception))
 
