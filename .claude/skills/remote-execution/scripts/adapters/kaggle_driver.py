@@ -46,10 +46,18 @@ Run with the interpreter that has this package installed — measured on
 this machine to be the interpreter the CommandLineTools ship,
 `sys.executable` in the invoking (adapter) process, since that is the one
 process the whole call chain already inherits from. `selftest` is the
-first thing a caller should run: it reports whether `kagglesdk` imports
-under the exact interpreter running this file, and if it does not, the
-refusal names that interpreter and the install command by which it becomes
-true, rather than a bare traceback.
+first thing a caller should run: it reports whether the interpreter
+running this file has a `kagglesdk` that both imports AND can name an
+accelerator, and if either is untrue, the refusal names that interpreter
+and the install command by which it becomes true, rather than a bare
+traceback.
+
+Both halves of that question are asked at module level, not in the
+`selftest` branch, so `submit`, `poll`, `fetch` and `capacity` are refused
+under a bad interpreter too — `selftest` is the recommended first call,
+never the only gate. See `_accelerator_capability_error()` for why the
+second half is a `hasattr` against the real request class rather than a
+version comparison.
 """
 from __future__ import annotations
 
@@ -80,6 +88,65 @@ except ImportError as exc:  # exercised by running this file under an
     # `test_driver_selftest_imports_kagglesdk`'s failure half.
     requests = None  # type: ignore[assignment]
     _IMPORT_ERROR = exc
+
+
+def _accelerator_capability_error() -> str | None:
+    """Whether the `kagglesdk` that just imported can actually ASK for a
+    card, answered against the real class rather than a version string.
+
+    Importing is necessary and not sufficient. Two distributions both
+    satisfy the block above and only one knows `machine_shape`, the single
+    field by which a job requests the T4 (sm_75): the standalone
+    `kagglesdk==0.1.37` this skill pins carries it; the copy vendored
+    inside the retired `kaggle==1.7.4.5` — measured on this machine under a
+    3.9 user site — imports cleanly and does not. An interpreter admitted
+    on the import axis alone can therefore be one whose every submission
+    silently draws whatever accelerator the scheduler hands out, and a P100
+    kills these runs in seconds.
+
+    Asked as `hasattr` against a real `ApiSaveKernelRequest`, deliberately,
+    never as a comparison against `__version__`: this module's own
+    docstring rejects "a version stated here and enforced nowhere", and a
+    distribution is free to carry the pinned version string and not the
+    field. The field is the capability; the version is a rumor about it.
+
+    Fails CLOSED. A probe that cannot complete has not established the
+    capability, and the failure this guards against is silent — the whole
+    point is that an unproven accelerator request is refused loudly and
+    locally rather than discovered from a run that came back on the wrong
+    card.
+    """
+    if _IMPORT_ERROR is not None:
+        return None
+    try:
+        if hasattr(ApiSaveKernelRequest(), "machine_shape"):
+            return None
+        return (
+            "the importable kagglesdk cannot request an accelerator: its "
+            "ApiSaveKernelRequest has no `machine_shape` field, so a job "
+            "cannot name the T4 and would run on whatever card the "
+            "scheduler draws"
+        )
+    except Exception as exc:  # fail closed: unproven is not proven
+        return (
+            "the importable kagglesdk could not be checked for the "
+            f"`machine_shape` field a job needs to name the T4: {exc}"
+        )
+
+
+_CAPABILITY_ERROR: str | None = _accelerator_capability_error()
+
+# The one reason `main()` refuses to do anything at all, whichever axis
+# produced it. Kept as a single value, checked at a single site, because
+# these two failures need the SAME remedy sentence: the pinned
+# distribution, installed for THIS interpreter. Two refusal sites would
+# also invite the capability check to drift into the `selftest` branch,
+# where a caller that skipped `selftest` would sail straight past it.
+_UNUSABLE_SDK: str | None = (
+    f"kagglesdk is not importable: {_IMPORT_ERROR}"
+    if _IMPORT_ERROR is not None
+    else _CAPABILITY_ERROR
+)
 
 
 EXIT_OK = 0
@@ -384,13 +451,16 @@ def _print_result(payload: dict) -> None:
 
 
 def main(argv: list[str]) -> int:
-    if _IMPORT_ERROR is not None:
+    # Checked before the operation is even read, exactly as the import
+    # refusal always was: an unusable SDK is unusable for `submit`, `poll`,
+    # `fetch` and `capacity` alike, and a check that lived in the `selftest`
+    # branch would be skipped by every caller that never runs `selftest`.
+    if _UNUSABLE_SDK is not None:
         _print_result(
             {
                 "ok": False,
                 "error": (
-                    f"kagglesdk is not importable under {sys.executable}: "
-                    f"{_IMPORT_ERROR}; install it with "
+                    f"under {sys.executable}, {_UNUSABLE_SDK}; install it with "
                     f"`{sys.executable} -m pip install --user kagglesdk==0.1.37`"
                 ),
             }

@@ -5502,6 +5502,107 @@ def _write_driver_staging_dir(
     return staging
 
 
+# Every attribute name `adapters/kaggle_driver.py`'s own module-level import
+# block reaches for, so a shim built from this list satisfies that block
+# exactly and the driver gets all the way to `main()` under it.
+_SHIM_MODULES = {
+    "kagglesdk/__init__.py": "",
+    "kagglesdk/kaggle_http_client.py": "class KaggleHttpClient:\n"
+    "    def __init__(self, *args, **kwargs):\n"
+    "        pass\n",
+    "kagglesdk/kernels/__init__.py": "",
+    "kagglesdk/kernels/services/__init__.py": "",
+    "kagglesdk/kernels/services/kernels_api_service.py": "class KernelsApiClient:\n"
+    "    def __init__(self, *args, **kwargs):\n"
+    "        pass\n",
+    "kagglesdk/kernels/types/__init__.py": "",
+    "kagglesdk/kernels/types/kernels_enums.py": "class KernelsListSortType:\n"
+    "    DATE_CREATED = 1\n"
+    "\n"
+    "\n"
+    "class KernelsListViewType:\n"
+    "    PROFILE = 1\n",
+}
+
+# The ONE line that separates the two shims. Everything else about them is
+# byte-identical, so a refusal that fires under one and not the other is
+# attributable to this field and nothing else.
+_SHIM_MACHINE_SHAPE_LINE = "        self.machine_shape = ''\n"
+
+
+def _write_kagglesdk_shim(root: Path, *, machine_shape: bool) -> Path:
+    """Build a minimal importable `kagglesdk` on disk whose
+    `ApiSaveKernelRequest` either does or does not carry `machine_shape`.
+
+    This exists because the DEFECT's own witness — an interpreter whose
+    `kagglesdk` imports but cannot name an accelerator — is a per-machine
+    accident (here, the copy vendored inside the retired `kaggle==1.7.4.5`
+    under a 3.9 user site). A test that could only be written on a machine
+    that happens to have such a distribution would skip everywhere else,
+    and a skipped lock guards nothing. The shim reproduces the exact
+    property that matters, deterministically, on any machine, and is
+    written under a caller-owned temp dir — never into any `site-packages`.
+
+    Returned path is meant for `PYTHONPATH`, where it shadows the real
+    distribution for one child process only; `requests` and the stdlib
+    still resolve normally behind it.
+    """
+    request_source = (
+        "class _Request:\n"
+        "    def __init__(self):\n"
+        "        self.id = 0\n"
+        "        self.slug = ''\n"
+        "        self.text = ''\n"
+        "        self.language = ''\n"
+        "        self.kernel_type = ''\n"
+        "        self.is_private = False\n"
+        "        self.enable_gpu = False\n"
+        "        self.enable_internet = False\n"
+        + (_SHIM_MACHINE_SHAPE_LINE if machine_shape else "")
+        + "\n"
+        "\n"
+        "class ApiSaveKernelRequest(_Request):\n"
+        "    pass\n"
+        "\n"
+        "\n"
+        "class ApiGetKernelSessionStatusRequest(_Request):\n"
+        "    pass\n"
+        "\n"
+        "\n"
+        "class ApiListKernelSessionOutputRequest(_Request):\n"
+        "    pass\n"
+        "\n"
+        "\n"
+        "class ApiListKernelsRequest(_Request):\n"
+        "    pass\n"
+    )
+    sources = dict(_SHIM_MODULES)
+    sources["kagglesdk/kernels/types/kernels_api_service.py"] = request_source
+    for relative, source in sources.items():
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(source, encoding="utf-8")
+    return root
+
+
+def _run_driver_under_shim(root: Path, argv: list[str]) -> subprocess.CompletedProcess:
+    """Drive the real driver script as a real child process with the shim
+    ahead of the real distribution, and bytecode writing off — a stale
+    `.pyc` validated by mtime-seconds plus size has already produced one
+    false reading in this repository.
+    """
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(root)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return subprocess.run(
+        [sys.executable, str(KAGGLE_DRIVER_SCRIPT), *argv],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+
+
 class DriverInterceptionTests(unittest.TestCase):
     """Commit 1: `adapters/kaggle_driver.py` — the one file in this skill
     permitted to import `kagglesdk` — and its own request-observing
@@ -5715,6 +5816,155 @@ class DriverInterceptionTests(unittest.TestCase):
         self.assertIn(foreign_executable, refused_payload["error"])
         self.assertIn("pip install", refused_payload["error"])
         self.assertIn("kaggle", refused_payload["error"])
+
+    def test_driver_refuses_a_kagglesdk_that_cannot_name_an_accelerator(self) -> None:
+        """The regression lock for the defect `test_driver_selftest_imports_kagglesdk`
+        cannot see. That test's axis is IMPORT: does `kagglesdk` resolve at
+        all. Two different distributions both resolve, and only one of them
+        knows `machine_shape` — the single field by which a job asks for the
+        T4 (sm_75). An interpreter admitted on the import axis alone can
+        therefore be one that cannot request the card, and the driver used to
+        answer `{"ok": true}` for it. Measured on this machine, and the reason
+        this test exists: the standalone `kagglesdk==0.1.37` in this
+        repository's venv knows the field, while the copy vendored inside the
+        retired `kaggle==1.7.4.5` under a 3.9 user site imports and does not.
+        It cost a real submission, which died locally with `Unknown field for
+        ApiSaveKernelRequest: machine_shape`.
+
+        RED half: a `kagglesdk` that IMPORTS CLEANLY and lacks only
+        `machine_shape` must be refused, naming the interpreter and the
+        install command. Deliberately NOT "an interpreter with no
+        `kagglesdk`" — that is the existing test's RED half, it passes
+        against the defect, and copying its shape would reproduce the bug.
+
+        GREEN control, and the half that makes the RED attributable: a shim
+        identical down to the byte except that it carries `machine_shape` is
+        ACCEPTED. Without it, a refusal under the shim would prove only that
+        a shimmed `kagglesdk` is unusual, not that the missing field is what
+        the driver actually asks about.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            incapable = _write_kagglesdk_shim(Path(tmp) / "without", machine_shape=False)
+            capable = _write_kagglesdk_shim(Path(tmp) / "with", machine_shape=True)
+
+            refused = _run_driver_under_shim(incapable, ["selftest"])
+            self.assertNotEqual(
+                refused.returncode,
+                0,
+                "a kagglesdk that cannot name an accelerator was admitted: "
+                + refused.stdout
+                + refused.stderr,
+            )
+            payload = json.loads(refused.stdout)
+            self.assertFalse(payload["ok"], payload)
+            self.assertIn("machine_shape", payload["error"])
+            self.assertIn(sys.executable, payload["error"])
+            self.assertIn("pip install", payload["error"])
+            self.assertIn("kagglesdk==0.1.37", payload["error"])
+
+            accepted = _run_driver_under_shim(capable, ["selftest"])
+            self.assertEqual(
+                accepted.returncode,
+                0,
+                "the control shim, which DOES carry machine_shape, was refused "
+                "-- the refusal is not attributable to that field: "
+                + accepted.stdout
+                + accepted.stderr,
+            )
+            self.assertTrue(json.loads(accepted.stdout)["ok"], accepted.stdout)
+
+    def test_accelerator_capability_refusal_fires_on_every_operation(self) -> None:
+        """The refusal has to live where `_IMPORT_ERROR`'s does — module
+        level, checked at the top of `main()` — and not in the `selftest`
+        branch, or a caller that skipped `selftest` still reaches the service
+        under a distribution that cannot ask for the card. That is not a
+        hypothetical concern in this skill: commit `2f23340` ("submit reaches
+        the driver, and a submit that skipped it fails") is the same defect
+        class on the import axis.
+
+        `submit` is the operation that actually spends the card, but `poll`,
+        `fetch` and `capacity` are asserted too: the point is that NO
+        operation is reachable, so the check cannot be argued back into a
+        single branch later. Argument values here are deliberately junk —
+        the refusal must land before argv is even parsed, and certainly
+        before `_build_client()` opens a socket.
+        """
+        operations = [
+            ["selftest"],
+            ["submit", "/nonexistent/staging"],
+            ["poll", "owner/slug"],
+            ["fetch", "owner/slug", "/nonexistent/destination"],
+            ["capacity"],
+            [],
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            incapable = _write_kagglesdk_shim(Path(tmp), machine_shape=False)
+            for argv in operations:
+                with self.subTest(operation=argv):
+                    result = _run_driver_under_shim(incapable, argv)
+                    self.assertNotEqual(
+                        result.returncode,
+                        0,
+                        result.stdout + result.stderr,
+                    )
+                    payload = json.loads(result.stdout)
+                    self.assertFalse(payload["ok"], payload)
+                    self.assertIn("machine_shape", payload["error"])
+
+    def test_the_real_vendored_distribution_on_this_machine_is_refused(self) -> None:
+        """The shim proves the rule; this proves the rule matches the actual
+        thing that broke. Measured: `/usr/bin/python3` on this machine
+        resolves `kagglesdk` out of `~/Library/Python/3.9/`, the copy
+        vendored inside the retired `kaggle==1.7.4.5`, and that copy's
+        `ApiSaveKernelRequest` has no `machine_shape`.
+
+        Skipped, not failed, where no such interpreter exists: which
+        distributions a machine happens to carry is a fact about the machine,
+        not about the driver. The lock that must hold everywhere is the shim
+        test above. This one is left non-repairing on purpose — that user-site
+        distribution is the user's, and the test's job is to DESCRIBE it, not
+        to fix it.
+        """
+        probe = (
+            "import sys\n"
+            "from kagglesdk.kernels.types.kernels_api_service import "
+            "ApiSaveKernelRequest\n"
+            "print(sys.executable)\n"
+            "print(hasattr(ApiSaveKernelRequest(), 'machine_shape'))\n"
+        )
+        for candidate in ("/usr/bin/python3", "python3.9"):
+            resolved = shutil.which(candidate) or candidate
+            if not Path(resolved).exists():
+                continue
+            probed = subprocess.run(
+                [resolved, "-c", probe], capture_output=True, text=True, timeout=30
+            )
+            if probed.returncode != 0:
+                continue
+            executable, _, has_field = probed.stdout.partition("\n")
+            if has_field.strip() != "False":
+                continue
+
+            refused = subprocess.run(
+                [resolved, str(KAGGLE_DRIVER_SCRIPT), "selftest"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            )
+            self.assertNotEqual(
+                refused.returncode, 0, refused.stdout + refused.stderr
+            )
+            payload = json.loads(refused.stdout)
+            self.assertFalse(payload["ok"], payload)
+            self.assertIn("machine_shape", payload["error"])
+            self.assertIn(executable.strip(), payload["error"])
+            self.assertIn("pip install", payload["error"])
+            return
+
+        self.skipTest(
+            "no interpreter on this machine imports kagglesdk without machine_shape"
+        )
 
     def test_wire_bearer_header_carries_token_value(self) -> None:
         """The request that first proves this skill's stored credential
