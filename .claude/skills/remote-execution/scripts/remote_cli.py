@@ -2198,6 +2198,16 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     generate_job.add_argument(
+        "--accept-unresolved-reads", action="store_true",
+        help=(
+            "record uncertain reads found by resolve_clone_paths() in "
+            "run-config.json's unresolvedReads instead of refusing; a "
+            "SEPARATE flag from --accept-unresolved — neither waives the "
+            "other's refusal, and this never bypasses a "
+            "computedReadsNotDeclared refusal"
+        ),
+    )
+    generate_job.add_argument(
         "--accelerator-kind", dest="accelerator_kind", default=None,
         help="override: the expected accelerator kind (e.g. 'cuda'). Omitted "
         "together with --accelerator-architecture, the service adapter's own "
@@ -2489,6 +2499,7 @@ def main(argv: list[str] | None = None) -> int:
                 smoke_required_evidence=args.smoke_required_evidence or None,
                 regenerate=args.regenerate,
                 accept_unresolved=args.accept_unresolved,
+                accept_unresolved_reads=args.accept_unresolved_reads,
                 accelerator_kind=args.accelerator_kind,
                 accelerator_architectures=args.accelerator_architectures,
                 environment_requirements=args.environment_requirements,

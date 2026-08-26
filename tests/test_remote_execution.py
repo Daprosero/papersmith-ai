@@ -11585,6 +11585,426 @@ class ResolveClonePathsTests(unittest.TestCase):
         self.assertEqual(JOBFOLDER.validate_clone_paths(["src/A"]), ("src/A",))
 
 
+class UndeclaredReadDetectionTests(unittest.TestCase):
+    """`jobfolder.resolve_clone_paths()`'s two new keys, `computedReadsNotDeclared`
+    and `unresolvedReads` (Unit 1, same-file undeclared-read detection).
+    Reuses the SAME parsed AST tree `ResolveClonePathsTests` already exercises
+    for import classification — no new file traversal, only two new node
+    families read from it (`ast.Assign` for module-level constants,
+    `ast.Call`/`ast.Attribute` for read call sites).
+
+    Every test in this class has a reachable red: before this task,
+    `resolve_clone_paths()`'s returned dict held only `{declared, computed,
+    computedNotDeclared, unresolved}` — no `computedReadsNotDeclared` or
+    `unresolvedReads` key at all, so every assertion against either key
+    fails with `KeyError` on the very first call.
+
+    Fixture module/package names deliberately avoid every string in
+    `TargetVocabularyLeakTests.TARGET_LITERALS`
+    (`creda`/`mnist`/`usps`/`svhn`) — `pkg_a` through `pkg_i` instead.
+    Expected values are written as the literal relative-posix string an
+    operator would type into `--clone-path`, never recomputed by
+    re-invoking `resolve_clone_paths()` on itself.
+    """
+
+    FAKE_SERVICE = "undeclared-read-fake-service"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        ADAPTER.register_metadata(
+            cls.FAKE_SERVICE,
+            lambda run_config: ("fake-metadata.json", json.dumps({"ok": True})),
+        )
+
+    def setUp(self) -> None:
+        # Same seam `GenerateJobTests` uses: the two generate_job()-based
+        # tests here (`test_unfoldable_read_...`, `test_accept_unresolved_...`)
+        # are not exercising pin preconditions, so stubbing the one shared
+        # `verify_pin_preconditions()` seam keeps them offline and
+        # deterministic without needing a real git repository.
+        patcher = unittest.mock.patch.object(
+            JOBFOLDER, "verify_pin_preconditions", return_value=None
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write(self, root: Path, relative: str, text: str) -> Path:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def _fixture_assets(self, tmp: str) -> tuple[Path, Path]:
+        bootstrap = Path(tmp) / "fixture_bootstrap.py"
+        invoke = Path(tmp) / "fixture_invoke.py"
+        bootstrap.write_text("# fixture bootstrap cell\nprint('cell-0')\n", encoding="utf-8")
+        invoke.write_text("# fixture invoke cell\nprint('cell-1')\n", encoding="utf-8")
+        return bootstrap, invoke
+
+    def _generate(self, tmp: str, target: Path, **overrides) -> Path:
+        bootstrap, invoke = self._fixture_assets(tmp)
+        kwargs = dict(
+            target=target,
+            service=self.FAKE_SERVICE,
+            job_name="read-job",
+            product="fake-product",
+            commit="a" * 40,
+            repo_url="https://example.invalid/repo.git",
+            repo_ref="main",
+            bootstrap_asset=bootstrap,
+            invoke_asset=invoke,
+        )
+        kwargs.update(overrides)
+        return JOBFOLDER.generate_job(**kwargs)
+
+    # -- Test 1 -----------------------------------------------------------
+
+    def test_undeclared_four_link_chain_read_refuses_naming_the_resolved_path(
+        self,
+    ) -> None:
+        """Transcribed from the real, cited target shape
+        (`implementations/Domain_Adaptation/src/MIL_CREDA_Benchmark/config.py`
+        lines 459-469, read-only): `REPOSITORY = Path(__file__).resolve()
+        .parents[2]`, then `PRODUCT`, `RESULTS`, and finally the record
+        constant, each one a `Name` lookup into the constant folded just
+        above it, with a `.read_text()` call inside a function body
+        (mirrors `config.py`'s `ceilings_on_record()`). Only `src/pkg_a` is
+        declared; the resolved record path lands OUTSIDE `src/` entirely
+        (a sibling of it, exactly like the real `MIL-CREDA/Results/
+        Benchmark/ceilings.json` sitting beside `src/`), so it is a real,
+        contained, undeclared read.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(
+                target, "src/pkg_a/settings.py",
+                "from pathlib import Path\n\n"
+                "REPOSITORY = Path(__file__).resolve().parents[2]\n"
+                'PRODUCT = REPOSITORY / "product-out"\n'
+                'RESULTS = PRODUCT / "Results" / "Stage"\n'
+                'RECORD = RESULTS / "ledger.json"\n\n\n'
+                "def ledger_on_record():\n"
+                "    if not RECORD.exists():\n"
+                "        return {}\n"
+                "    return RECORD.read_text(encoding='utf-8')\n",
+            )
+
+            result = JOBFOLDER.resolve_clone_paths(
+                target, ["pkg_a.settings"], ["src/pkg_a"]
+            )
+
+            self.assertEqual(
+                result["computedReadsNotDeclared"],
+                ["product-out/Results/Stage/ledger.json"],
+            )
+            self.assertEqual(result["unresolvedReads"], [])
+
+            # And the refusal actually reaches generate_job() (task 3.1).
+            with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                self._generate(
+                    tmp, target,
+                    clone_paths=["src/pkg_a"],
+                    run_module="pkg_a.settings",
+                    run_function="ledger_on_record",
+                )
+            self.assertIn("product-out/Results/Stage/ledger.json", str(ctx.exception))
+
+    # -- Test 2 -------------------------------------------------------
+
+    def test_same_chain_and_read_declared_is_silent(self) -> None:
+        """The distinguishing pair with the previous test: identical chain
+        and read call, but the resolved path is now covered by a declared
+        clone path — no refusal, `computedReadsNotDeclared` empty. Proves
+        the check DISTINGUISHES rather than merely fires.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(
+                target, "src/pkg_a/settings.py",
+                "from pathlib import Path\n\n"
+                "REPOSITORY = Path(__file__).resolve().parents[2]\n"
+                'PRODUCT = REPOSITORY / "product-out"\n'
+                'RESULTS = PRODUCT / "Results" / "Stage"\n'
+                'RECORD = RESULTS / "ledger.json"\n\n\n'
+                "def ledger_on_record():\n"
+                "    if not RECORD.exists():\n"
+                "        return {}\n"
+                "    return RECORD.read_text(encoding='utf-8')\n",
+            )
+
+            result = JOBFOLDER.resolve_clone_paths(
+                target, ["pkg_a.settings"], ["src/pkg_a", "product-out"]
+            )
+
+            self.assertEqual(result["computedReadsNotDeclared"], [])
+            self.assertEqual(result["unresolvedReads"], [])
+
+    # -- Test 3 -------------------------------------------------------
+
+    def test_idiom_divergent_fixture_still_resolves_and_refuses(self) -> None:
+        """A DIFFERENT idiom than the previous two tests were templated
+        from: `.parents[4]` instead of `.parents[2]`, `.joinpath("a", "b")`
+        instead of chained `/`, and a builtin `open(P)` call inside a
+        `with` statement instead of `.read_text()`. Parsing one idiom is
+        not sufficient to pass — this must resolve and refuse too.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(
+                target, "src/pkg_b/inner/deep/loader.py",
+                "from pathlib import Path\n\n"
+                "ROOT = Path(__file__).resolve().parents[4]\n"
+                'DATA_DIR = ROOT.joinpath("assets", "cache")\n'
+                'RECORD = DATA_DIR / "manifest.json"\n\n\n'
+                "def load():\n"
+                "    with open(RECORD) as fh:\n"
+                "        return fh.read()\n",
+            )
+
+            result = JOBFOLDER.resolve_clone_paths(
+                target, ["pkg_b.inner.deep.loader"], ["src/pkg_b"]
+            )
+
+            self.assertEqual(
+                result["computedReadsNotDeclared"], ["assets/cache/manifest.json"]
+            )
+            self.assertEqual(result["unresolvedReads"], [])
+
+    # -- Test 4 -------------------------------------------------------
+
+    def test_non_vacuity_no_read_call_sites_both_lists_stay_empty(self) -> None:
+        """No `open`/`read_text`/`json.load`-shaped call site anywhere
+        reachable from the entry module — both new lists must stay empty,
+        and no new refusal fires. A folder tuned to always find something
+        would pass every other test here and still be wrong; this is what
+        rules that out.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(
+                target, "src/pkg_c/entry.py",
+                "from pathlib import Path\n\n"
+                "ROOT = Path(__file__).resolve().parent\n"
+                'CONFIG_DIR = ROOT / "config"\n\n\n'
+                "def describe():\n"
+                "    return str(CONFIG_DIR)\n",
+            )
+
+            result = JOBFOLDER.resolve_clone_paths(
+                target, ["pkg_c.entry"], ["src/pkg_c"]
+            )
+
+            self.assertEqual(result["computedReadsNotDeclared"], [])
+            self.assertEqual(result["unresolvedReads"], [])
+
+    # -- Test 5 -------------------------------------------------------
+
+    def test_absolute_path_read_is_never_proposed_in_either_list(self) -> None:
+        """Shaped like `harness.py`'s real battery probe
+        (`Path("/sys/class/power_supply/AC/online")`, `harness.py:167-169`):
+        a read on an absolute path outside `target` must never be
+        proposed as an undeclared read AND never recorded as an
+        uncertainty — Decision 4's containment filter DROPS it, it does
+        not accuse. Inlined directly (rather than through the real code's
+        local intermediate variable) to stay within the documented,
+        closed grammar `_fold_module_constants()` folds (module-level
+        constants only) — the containment DROP this test proves is
+        exactly the same regardless of which name, if any, holds the
+        `Path` between construction and the read.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(
+                target, "src/pkg_d/probe.py",
+                "from pathlib import Path\n\n\n"
+                "def battery_status():\n"
+                '    if Path("/sys/class/power_supply/AC/online").exists():\n'
+                "        return Path(\"/sys/class/power_supply/AC/online\")"
+                ".read_text().strip()\n"
+                "    return 'unknown'\n",
+            )
+
+            result = JOBFOLDER.resolve_clone_paths(
+                target, ["pkg_d.probe"], ["src/pkg_d"]
+            )
+
+            self.assertEqual(result["computedReadsNotDeclared"], [])
+            self.assertEqual(result["unresolvedReads"], [])
+
+    # -- Test 6 -------------------------------------------------------
+
+    def test_unfoldable_read_refuses_by_default_and_is_recorded_when_accepted(
+        self,
+    ) -> None:
+        """An f-string-built path is outside `_fold_path_expr()`'s closed
+        grammar (`ast.JoinedStr`, never admitted). The read call site
+        itself is unmistakably read-shaped (`.read_text()`), so it becomes
+        an `unresolvedReads` entry and refuses generation by default;
+        passing `--accept-unresolved-reads` (here, the `accept_unresolved_reads`
+        kwarg `generate_job()` now exposes) proceeds and records the
+        finding VERBATIM in `run-config.json`'s `unresolvedReads`.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(
+                target, "src/pkg_e/loader.py",
+                "from pathlib import Path\n\n\n"
+                "def load(run_id):\n"
+                '    return Path(f"/data/{run_id}/manifest.json")'
+                ".read_text(encoding='utf-8')\n",
+            )
+
+            result = JOBFOLDER.resolve_clone_paths(
+                target, ["pkg_e.loader"], ["src/pkg_e"]
+            )
+            self.assertEqual(len(result["unresolvedReads"]), 1)
+            self.assertIn("read call", result["unresolvedReads"][0])
+            self.assertEqual(result["computedReadsNotDeclared"], [])
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                self._generate(
+                    tmp, target,
+                    clone_paths=["src/pkg_e"],
+                    run_module="pkg_e.loader",
+                    run_function="load",
+                )
+            self.assertIn("accept-unresolved-reads", str(ctx.exception))
+
+            job_dir = self._generate(
+                tmp, target,
+                job_name="read-job-accepted",
+                clone_paths=["src/pkg_e"],
+                run_module="pkg_e.loader",
+                run_function="load",
+                accept_unresolved_reads=True,
+            )
+            run_config = json.loads((job_dir / "run-config.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(run_config["unresolvedReads"]), 1)
+            self.assertEqual(run_config["unresolvedReads"], result["unresolvedReads"])
+
+    # -- Test 7 -------------------------------------------------------
+
+    def test_folded_contained_path_as_bare_argument_is_never_silent(self) -> None:
+        """The library-loader shape (`some_loader(RECORD)`,
+        `pd.read_csv(DATA)`): a folded, target-contained path passed as a
+        bare argument into a call this walk cannot classify. Silence is
+        the wrong default here — the defect this whole change exists to
+        catch is a missing input nobody reported.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(
+                target, "src/pkg_f/loader.py",
+                "from pathlib import Path\n\n"
+                "ROOT = Path(__file__).resolve().parent\n"
+                'DATA = ROOT / "cache" / "table.csv"\n\n\n'
+                "def load_frame():\n"
+                "    return read_frame(DATA)\n\n\n"
+                "def read_frame(path):\n"
+                "    return path\n",
+            )
+
+            result = JOBFOLDER.resolve_clone_paths(
+                target, ["pkg_f.loader"], ["src/pkg_f"]
+            )
+
+            self.assertEqual(len(result["unresolvedReads"]), 1)
+            self.assertIn("bare argument", result["unresolvedReads"][0])
+            self.assertEqual(result["computedReadsNotDeclared"], [])
+
+    # -- Test 8 -------------------------------------------------------
+
+    def test_write_only_fixture_both_lists_stay_empty(self) -> None:
+        """Mirrors `harness.py`'s real resume-record write site
+        (`config.CEILINGS_RECORD.parent.mkdir(parents=True,
+        exist_ok=True)` then `.write_text(...)`, `harness.py:1019-1020`),
+        transcribed same-file: a folded, target-contained path is
+        `mkdir`'d and `write_text`'d, never read. Both lists must stay
+        empty — proving Decision 5 directly: a write call site is never a
+        candidate, and this is NOT because the path happens to be
+        unfoldable (it folds here, cleanly) — a write call site is simply
+        never a read call site, full stop, with no separate "run-produced
+        output" exclusion layered on top.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(
+                target, "src/pkg_g/resume.py",
+                "from pathlib import Path\n\n"
+                "ROOT = Path(__file__).resolve().parent\n"
+                'OUT_DIR = ROOT / "out"\n'
+                'RECORD = OUT_DIR / "ledger.json"\n\n\n'
+                "def resume():\n"
+                "    RECORD.parent.mkdir(parents=True, exist_ok=True)\n"
+                "    RECORD.write_text('{}', encoding='utf-8')\n",
+            )
+
+            result = JOBFOLDER.resolve_clone_paths(
+                target, ["pkg_g.resume"], ["src/pkg_g"]
+            )
+
+            self.assertEqual(result["computedReadsNotDeclared"], [])
+            self.assertEqual(result["unresolvedReads"], [])
+
+    # -- Test 9 -------------------------------------------------------
+
+    def test_local_parameter_shadowing_a_module_constant_is_never_folded(
+        self,
+    ) -> None:
+        """`RECORD` is both a module-level `Path` constant AND a function
+        PARAMETER name on `load()`. The shadowed name must never resolve
+        through `_fold_module_constants()`'s table — it lands in
+        `unresolvedReads`, never silently resolved to the module
+        constant's value it happens to share a spelling with.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(
+                target, "src/pkg_h/load_mod.py",
+                "from pathlib import Path\n\n"
+                'RECORD = Path(__file__).resolve().parent / "record.json"\n\n\n'
+                "def load(RECORD):\n"
+                "    return RECORD.read_text(encoding='utf-8')\n",
+            )
+
+            result = JOBFOLDER.resolve_clone_paths(
+                target, ["pkg_h.load_mod"], ["src/pkg_h"]
+            )
+
+            self.assertEqual(len(result["unresolvedReads"]), 1)
+            self.assertIn("read call", result["unresolvedReads"][0])
+            self.assertEqual(result["computedReadsNotDeclared"], [])
+
+    # -- Test 10 ------------------------------------------------------
+
+    def test_accept_unresolved_flag_alone_never_covers_reads(self) -> None:
+        """The reachability proof for the two-flag decision: an unfoldable
+        read call site, no unresolved imports at all, generated with
+        `--accept-unresolved` (imports) alone — still refuses for the
+        read. If this ever passed, `--accept-unresolved-reads`'s own
+        refusal-by-default would be silently unreachable.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(
+                target, "src/pkg_e/loader.py",
+                "from pathlib import Path\n\n\n"
+                "def load(run_id):\n"
+                '    return Path(f"/data/{run_id}/manifest.json")'
+                ".read_text(encoding='utf-8')\n",
+            )
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                self._generate(
+                    tmp, target,
+                    clone_paths=["src/pkg_e"],
+                    run_module="pkg_e.loader",
+                    run_function="load",
+                    accept_unresolved=True,
+                )
+            self.assertIn("uncertain reads", str(ctx.exception))
+
+
 class StalenessTests(unittest.TestCase):
     """`jobfolder.read()` — design #744 section 4: there is no `is_stale()`
     a caller can forget, because staleness is computed INSIDE the one

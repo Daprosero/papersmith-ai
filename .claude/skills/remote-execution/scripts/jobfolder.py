@@ -366,6 +366,401 @@ def _is_sys_path_mutation(node: ast.AST) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Undeclared-read detection (Unit 1, same-file) — reuses the AST tree
+# resolve_clone_paths() already parses for import classification; no new
+# file traversal.
+# ---------------------------------------------------------------------------
+
+
+def _shadowed_names(tree: ast.Module) -> set[str]:
+    """Every name bound anywhere in a non-module scope — a function or
+    lambda parameter, or an assignment/`for`/`with`/comprehension/`except`
+    target inside a function or class body. Any such name must never
+    resolve through `_fold_module_constants()`'s table, even at a module
+    scope occurrence of the same spelling, because a read call site using
+    that name cannot be told apart from the local it might actually name
+    without full scope resolution — which this walk deliberately does not
+    do. Conservative by construction: over-collecting only pushes more
+    cases into `unresolvedReads`, never the reverse.
+    """
+    shadowed: set[str] = set()
+
+    def add_target(target: ast.AST) -> None:
+        if isinstance(target, ast.Name):
+            shadowed.add(target.id)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for elt in target.elts:
+                add_target(elt)
+        elif isinstance(target, ast.Starred):
+            add_target(target.value)
+
+    def add_args(args: ast.arguments) -> None:
+        for arg in list(args.posonlyargs) + list(args.args) + list(args.kwonlyargs):
+            shadowed.add(arg.arg)
+        if args.vararg:
+            shadowed.add(args.vararg.arg)
+        if args.kwarg:
+            shadowed.add(args.kwarg.arg)
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            add_args(node.args)
+            body = node.body if isinstance(node.body, list) else [node.body]
+            for stmt in body:
+                for sub in ast.walk(stmt):
+                    if isinstance(sub, ast.Assign):
+                        for t in sub.targets:
+                            add_target(t)
+                    elif isinstance(sub, (ast.AugAssign, ast.AnnAssign)):
+                        add_target(sub.target)
+                    elif isinstance(sub, (ast.For, ast.AsyncFor)):
+                        add_target(sub.target)
+                    elif isinstance(sub, (ast.With, ast.AsyncWith)):
+                        for item in sub.items:
+                            if item.optional_vars is not None:
+                                add_target(item.optional_vars)
+                    elif isinstance(sub, ast.comprehension):
+                        add_target(sub.target)
+                    elif isinstance(sub, ast.ExceptHandler) and sub.name:
+                        shadowed.add(sub.name)
+    return shadowed
+
+
+def _fold_module_constants(tree: ast.Module, file: Path) -> dict[str, Path]:
+    """Scan module-level `ast.Assign` statements only (`tree.body`, never a
+    nested function or class body) and fold each single-name target's
+    right-hand side through `_fold_path_expr()`, building each constant on
+    top of the ones already folded above it in the same file — exactly the
+    real shape this exists to catch (`REPOSITORY` -> `PRODUCT` -> `RESULTS`
+    -> `RECORD`, each one a `Name` lookup into the constants already
+    folded).
+
+    A name assigned twice at module level is dropped from the table
+    entirely, never last-wins: a second assignment means the first fold
+    cannot be trusted as the name's one true value. A name bound anywhere
+    in a non-module scope (`_shadowed_names()`) is never added at all, for
+    the same reason — see that function's docstring.
+    """
+    shadowed = _shadowed_names(tree)
+    table: dict[str, Path] = {}
+    assigned_twice: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            continue
+        name = node.targets[0].id
+        if name in assigned_twice:
+            continue
+        if name in table:
+            del table[name]
+            assigned_twice.add(name)
+            continue
+        if name in shadowed:
+            continue
+        folded = _fold_path_expr(node.value, table, file)
+        if folded is not None:
+            table[name] = folded
+    return table
+
+
+def _fold_path_expr(node: ast.AST, table: dict[str, Path], file: Path) -> Path | None:
+    """Fold one AST expression into a concrete `Path`, admitting only a
+    closed grammar (design decision 3):
+
+    - `Path(__file__)`, and `.resolve()` / `.parent` chains off it
+    - `Path(__file__).resolve().parents[N]`, `N` a non-negative int literal
+    - `Path("<string literal>")`
+    - a bare `Name` already present in `table`
+    - `BinOp(Div)` with a string-literal right operand, chained
+      (`X / "a" / "b"`)
+    - `.joinpath("a", "b", ...)` with every argument a string literal
+
+    Everything else returns `None`, never a guess — this is the CLOSED,
+    documented grammar (see `SKILL.md`'s undeclared-read-detection
+    doctrine for the same list, kept in sync by hand): f-strings,
+    `%`/`+`/`str.format` string building, `os.path.join(...)`,
+    `os.environ[...]`, `sys.argv[...]`, `.with_name(...)`/
+    `.with_suffix(...)`/`.stem`/`.glob(...)`, `Path(x)` for any `x` other
+    than `__file__` or a string literal, a ternary (`ast.IfExp`),
+    `AugAssign`, a tuple-unpack assignment target, and `.parents[N]` with a
+    non-literal index. An evaluator whose limits are undocumented is a
+    detector that implies completeness — everything outside this roster
+    becomes an `unresolvedReads` entry instead, carrying the file, line,
+    and `ast.unparse()` of the expression.
+    """
+    if isinstance(node, ast.Name):
+        return table.get(node.id)
+
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Path":
+        if len(node.args) == 1 and not node.keywords:
+            arg = node.args[0]
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                return Path(arg.value)
+            if isinstance(arg, ast.Name) and arg.id == "__file__":
+                return file
+        return None
+
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        if node.func.attr == "resolve" and not node.args and not node.keywords:
+            base = _fold_path_expr(node.func.value, table, file)
+            return base.resolve() if base is not None else None
+        if (
+            node.func.attr == "joinpath"
+            and node.args
+            and not node.keywords
+            and all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in node.args)
+        ):
+            base = _fold_path_expr(node.func.value, table, file)
+            if base is None:
+                return None
+            for arg in node.args:
+                base = base / arg.value
+            return base
+        return None
+
+    if isinstance(node, ast.Attribute) and node.attr == "parent":
+        base = _fold_path_expr(node.value, table, file)
+        return base.parent if base is not None else None
+
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Attribute)
+        and node.value.attr == "parents"
+    ):
+        index = node.slice
+        if not (isinstance(index, ast.Constant) and isinstance(index.value, int)
+                and not isinstance(index.value, bool) and index.value >= 0):
+            return None
+        base = _fold_path_expr(node.value.value, table, file)
+        if base is None:
+            return None
+        parents = list(base.parents)
+        if index.value >= len(parents):
+            return None
+        return parents[index.value]
+
+    if (
+        isinstance(node, ast.BinOp)
+        and isinstance(node.op, ast.Div)
+        and isinstance(node.right, ast.Constant)
+        and isinstance(node.right.value, str)
+    ):
+        base = _fold_path_expr(node.left, table, file)
+        return (base / node.right.value) if base is not None else None
+
+    return None
+
+
+def _read_candidate(folded: Path, resolved_target: Path) -> Path | None:
+    """Containment FILTERS, it never accuses (design decision 4): `folded`
+    is resolved and tested against `resolved_target`. Outside the target,
+    it is dropped entirely — not a candidate and not an uncertainty, the
+    same posture `_classify_import()`'s `external` branch gives an import
+    that names nothing under `<target>/src`, and the same absolute-path
+    refusal `validate_clone_paths()` already applies to a declared clone
+    path. A battery probe like `/sys/class/power_supply/AC/online` is
+    exactly this case: real, resolvable, and none of this repository's
+    business.
+    """
+    resolved = folded.resolve()
+    try:
+        resolved.relative_to(resolved_target)
+    except ValueError:
+        return None
+    return resolved
+
+
+# The read/write/neutral call-site roster (design decision 6). `open`
+# (both the builtin and the `Path.open()` method) is handled separately
+# below since its read/write verdict depends on its own `mode` argument,
+# not on its method name alone.
+_READ_METHODS = frozenset({"read_text", "read_bytes"})
+_WRITE_METHODS = frozenset({
+    "write_text", "write_bytes", "mkdir", "touch", "unlink", "rename",
+})
+_NEUTRAL_METHODS = frozenset({
+    "exists", "is_file", "is_dir", "parent", "parents", "name", "stem",
+    "suffix", "resolve", "as_posix", "with_name", "with_suffix",
+})
+_WRITE_MODE_CHARS = frozenset({"w", "a", "x", "+"})
+
+
+def _mode_is_write(mode_node: ast.AST | None) -> bool:
+    """`None` (mode omitted) and any non-literal mode are both treated as
+    NOT a write — never guessed towards silence. A literal mode is a
+    write only when it contains one of `w`/`a`/`x`/`+`.
+    """
+    if isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str):
+        return any(ch in mode_node.value for ch in _WRITE_MODE_CHARS)
+    return False
+
+
+def _keyword_value(keywords: list, name: str) -> ast.AST | None:
+    for kw in keywords:
+        if kw.arg == name:
+            return kw.value
+    return None
+
+
+def _unresolved_entry(file: Path, node: ast.AST, why: str) -> str:
+    try:
+        expr = ast.unparse(node)
+    except Exception:
+        expr = "<unparsable expression>"
+    line = getattr(node, "lineno", "?")
+    return f"{file}:{line}: {expr} — {why}"
+
+
+def _scan_read_call_sites(
+    tree: ast.Module,
+    table: dict[str, Path],
+    file: Path,
+    resolved_target: Path,
+) -> tuple[set[Path], list[str]]:
+    """Walk every `ast.Call` in `tree` once, classifying each one against
+    the read/write/neutral roster (design decision 6):
+
+    - the call is itself part of `_fold_path_expr()`'s own grammar
+      (`Path(...)`, `.resolve()`, `.joinpath(...)`) -> pure path
+      construction, never an I/O action, skipped;
+    - an `Attribute` call whose receiver folds to a contained path:
+      `.read_text`/`.read_bytes`/a non-write `.open(...)` -> a read
+      candidate; a write or neutral method -> silent; anything else ->
+      `unresolvedReads` ("anything else on a folded, contained path" is
+      never silence);
+    - an `Attribute` call whose receiver does NOT fold, but whose method
+      name is unmistakably read-shaped (`.read_text`/`.read_bytes`/a
+      non-write `.open(...)`) -> `unresolvedReads` (the f-string case);
+    - the builtin `open(path, mode=...)` -> the same read/write verdict,
+      by its first positional argument instead of a receiver;
+    - the builtin `str(path)` -> silent (the one bare-call NEUTRAL roster
+      member; every other bare call is scanned below instead);
+    - any other call (a folded, contained path passed as a bare argument
+      into a call this walk cannot otherwise classify, e.g.
+      `some_loader(RECORD)`, `pd.read_csv(DATA)`) -> `unresolvedReads`.
+
+    Returns `(read_candidates, unresolved)`: `read_candidates` are
+    resolved, target-relative `Path`s; `unresolved` is a list of
+    `"<file>:<line>: <expr> — <why>"` strings.
+    """
+    read_candidates: set[Path] = set()
+    unresolved: list[str] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if _fold_path_expr(node, table, file) is not None:
+            continue  # pure path construction, not an I/O action
+
+        if isinstance(node.func, ast.Attribute):
+            method = node.func.attr
+            receiver = _fold_path_expr(node.func.value, table, file)
+            if receiver is not None:
+                contained = _read_candidate(receiver, resolved_target)
+                if contained is None:
+                    continue  # outside target: dropped, never flagged
+                if method == "open":
+                    mode_node = _keyword_value(node.keywords, "mode")
+                    if mode_node is None and node.args:
+                        mode_node = node.args[0]
+                    if not _mode_is_write(mode_node):
+                        read_candidates.add(contained)
+                elif method in _READ_METHODS:
+                    read_candidates.add(contained)
+                elif method in _WRITE_METHODS or method in _NEUTRAL_METHODS:
+                    pass
+                else:
+                    unresolved.append(_unresolved_entry(
+                        file, node,
+                        "unclassified call on a folded, target-contained path",
+                    ))
+                continue
+            # Receiver did not fold. Still flag an unmistakably
+            # read-shaped call by its own method name — the path could
+            # not be resolved, but the call site's own shape says "read".
+            is_read_shaped = method in _READ_METHODS
+            if method == "open":
+                mode_node = _keyword_value(node.keywords, "mode")
+                if mode_node is None and node.args:
+                    mode_node = node.args[0]
+                is_read_shaped = not _mode_is_write(mode_node)
+            if is_read_shaped:
+                unresolved.append(_unresolved_entry(
+                    file, node, "read call on a path that could not be resolved",
+                ))
+                continue
+            # Not a recognized read shape either — fall through to the
+            # generic bare-argument scan below, in case a folded,
+            # contained path was passed as an argument instead.
+
+        elif isinstance(node.func, ast.Name) and node.func.id == "open" and node.args:
+            path_arg = node.args[0]
+            mode_node = _keyword_value(node.keywords, "mode")
+            if mode_node is None and len(node.args) >= 2:
+                mode_node = node.args[1]
+            folded = _fold_path_expr(path_arg, table, file)
+            if folded is not None:
+                contained = _read_candidate(folded, resolved_target)
+                if contained is None:
+                    continue  # outside target: dropped, never flagged
+                if not _mode_is_write(mode_node):
+                    read_candidates.add(contained)
+                continue
+            if not _mode_is_write(mode_node):
+                unresolved.append(_unresolved_entry(
+                    file, node, "open() call on a path that could not be resolved",
+                ))
+            continue
+
+        elif (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "str"
+            and len(node.args) == 1
+            and not node.keywords
+        ):
+            # `str()` is the one bare-call NEUTRAL roster member (design
+            # decision 6) — a folded path passed to it is never a read,
+            # never an uncertainty, unlike every other bare call.
+            continue
+
+        # Generic fallback: any folded, target-contained path passed as a
+        # bare argument into a call this walk cannot otherwise classify —
+        # the library-loader shape (`some_loader(RECORD)`,
+        # `pd.read_csv(DATA)`). Never silence.
+        for arg in node.args:
+            folded = _fold_path_expr(arg, table, file)
+            if folded is None:
+                continue
+            contained = _read_candidate(folded, resolved_target)
+            if contained is None:
+                continue
+            unresolved.append(_unresolved_entry(
+                file, node,
+                "a folded, target-contained path passed as a bare argument "
+                "into an unclassified call",
+            ))
+            break
+
+    return read_candidates, unresolved
+
+
+def _covered_by_declared(candidate: str, declared: Sequence[str]) -> bool:
+    """A computed read path is covered when it EQUALS or is nested under a
+    declared clone path — never exact-match-only, since a resolved data
+    file (`src/A/data.json`) legitimately sits under a declared directory
+    (`src/A`) rather than naming it exactly, unlike the import check's
+    granularity-rule clone paths.
+    """
+    cand_path = Path(candidate)
+    for decl in declared:
+        decl_path = Path(decl)
+        if cand_path == decl_path or decl_path in cand_path.parents:
+            return True
+    return False
+
+
 def resolve_clone_paths(
     target: Path,
     entry_modules: Sequence[str],
@@ -405,7 +800,8 @@ def resolve_clone_paths(
     repository's own code (its top-level segment names nothing under
     `<target>/src` at all) is filtered and never becomes a clone path.
 
-    Returns `{"declared", "computed", "computedNotDeclared", "unresolved"}`:
+    Returns `{"declared", "computed", "computedNotDeclared", "unresolved",
+    "computedReadsNotDeclared", "unresolvedReads"}`:
     `declared` is `declared_clone_paths` re-validated through the SAME
     `validate_clone_paths()` `generate_job()` already uses (structural,
     plus the symlink-escape check now that `target` is known) — never a
@@ -418,6 +814,27 @@ def resolve_clone_paths(
     on disk. A non-empty `unresolved` refuses generation unless the caller
     passes `--accept-unresolved`, which records it in `run-config.json`'s
     `unresolvedImports` instead of guessing.
+
+    `computedReadsNotDeclared` and `unresolvedReads` (Unit 1,
+    undeclared-read detection) are built from the SAME parsed `tree` this
+    walk already holds for every transitively-reached file — no new file
+    traversal. `_fold_module_constants()` builds each file's own
+    constant->`Path` table; `_scan_read_call_sites()` classifies every
+    call site against the read/write/neutral roster. A folded,
+    target-contained read whose resolved path is not covered by a
+    declared clone path (`Path.is_relative_to`, never exact-match-only)
+    becomes a `computedReadsNotDeclared` entry — always a refusal, never a
+    warning, exactly like `computedNotDeclared`. A read call site whose
+    path could not be folded, or a folded, target-contained path used in
+    a call this walk cannot classify, becomes an `unresolvedReads` entry
+    instead — refused unless the caller passes
+    `--accept-unresolved-reads`, a SEPARATE flag from `--accept-unresolved`
+    that never waives the other's refusal (severity asymmetry: an
+    accepted uncertain import dies loudly in the kernel minutes later; an
+    accepted uncertain read is reported by nobody). A path outside
+    `target` is dropped from candidacy entirely, never flagged — the same
+    `external` posture `_classify_import()` gives a non-local import.
+    Both new keys are always present, even when empty (never absent).
     """
     resolved_target = target.resolve()
     source = resolved_target / "src"
@@ -425,6 +842,8 @@ def resolve_clone_paths(
 
     computed: set[str] = set()
     unresolved: list[str] = []
+    computed_reads: set[str] = set()
+    unresolved_reads: list[str] = []
     visited: set[Path] = set()
     queued: set[str] = set(entry_modules)
     queue: list[tuple[str, bool]] = [(name, True) for name in entry_modules]
@@ -459,6 +878,17 @@ def resolve_clone_paths(
         except SyntaxError as exc:
             unresolved.append(f"{file}: unparsable ({exc})")
             continue
+
+        # Undeclared-read detection (Unit 1, same-file): the SAME parsed
+        # `tree`, no new file traversal. `file` is already resolved
+        # (derived from `source = resolved_target / "src"`).
+        read_table = _fold_module_constants(tree, file)
+        read_candidates, read_unresolved = _scan_read_call_sites(
+            tree, read_table, file, resolved_target
+        )
+        for candidate in read_candidates:
+            computed_reads.add(candidate.relative_to(resolved_target).as_posix())
+        unresolved_reads.extend(read_unresolved)
 
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module:
@@ -508,6 +938,10 @@ def resolve_clone_paths(
         "computed": sorted(computed),
         "computedNotDeclared": sorted(computed - set(declared)),
         "unresolved": unresolved,
+        "computedReadsNotDeclared": sorted(
+            r for r in computed_reads if not _covered_by_declared(r, declared)
+        ),
+        "unresolvedReads": unresolved_reads,
     }
 
 
@@ -597,6 +1031,7 @@ def build_run_config(
     bootstrap_asset: Path,
     invoke_asset: Path,
     unresolved_imports: Sequence[str] | None = None,
+    unresolved_reads: Sequence[str] | None = None,
     smoke_required_evidence: Sequence[str] | None = None,
     accelerator_kind: str | None = None,
     accelerator_architectures: Sequence[str] | None = None,
@@ -612,6 +1047,14 @@ def build_run_config(
     `unresolved_imports`, when non-empty, is recorded verbatim as
     `unresolvedImports` — the `--accept-unresolved` escape hatch turning a
     silence into a recorded, reportable decision (design #744 section 3).
+
+    `unresolved_reads`, when non-empty, is recorded verbatim as
+    `unresolvedReads` — the SAME omit-when-empty convention as
+    `unresolvedImports`, but gated by the SEPARATE `--accept-unresolved-reads`
+    flag (Unit 1, undeclared-read detection). A job folder generated
+    before this field existed simply omits it; `validate_run_config()`
+    checks required fields with no key allowlist, so absence never
+    invalidates an existing job folder.
 
     `smoke_required_evidence`, when given, is recorded verbatim as
     `run.smoke.requiredEvidence` — the dot-separated field paths
@@ -709,6 +1152,8 @@ def build_run_config(
     }
     if unresolved_imports:
         run_config["unresolvedImports"] = list(unresolved_imports)
+    if unresolved_reads:
+        run_config["unresolvedReads"] = list(unresolved_reads)
     if has_accelerator:
         run_config["accelerator"] = {
             "kind": accelerator_kind,
@@ -797,6 +1242,7 @@ def generate_job(
     bootstrap_asset: str | Path | None = None,
     invoke_asset: str | Path | None = None,
     accept_unresolved: bool = False,
+    accept_unresolved_reads: bool = False,
     accelerator_kind: str | None = None,
     accelerator_architectures: Sequence[str] | None = None,
     environment_requirements: Sequence[str] | None = None,
@@ -889,6 +1335,20 @@ def generate_job(
             "--accept-unresolved to record and proceed instead of refusing): "
             f"{clone_resolution['unresolved']}"
         )
+    if clone_resolution["computedReadsNotDeclared"]:
+        raise JobFolderError(
+            "generation refuses: these reads resolve to paths not declared "
+            "in --clone-path: "
+            f"{clone_resolution['computedReadsNotDeclared']}"
+        )
+    if clone_resolution["unresolvedReads"] and not accept_unresolved_reads:
+        raise JobFolderError(
+            "generation refuses: uncertain reads found (pass "
+            "--accept-unresolved-reads to record and proceed instead of "
+            "refusing; this is a SEPARATE flag from --accept-unresolved, "
+            "which never waives this refusal): "
+            f"{clone_resolution['unresolvedReads']}"
+        )
 
     resolved_bootstrap = Path(bootstrap_asset) if bootstrap_asset else DEFAULT_BOOTSTRAP_ASSET
     resolved_invoke = Path(invoke_asset) if invoke_asset else DEFAULT_INVOKE_ASSET
@@ -920,6 +1380,9 @@ def generate_job(
         bootstrap_asset=resolved_bootstrap,
         invoke_asset=resolved_invoke,
         unresolved_imports=clone_resolution["unresolved"] if accept_unresolved else None,
+        unresolved_reads=(
+            clone_resolution["unresolvedReads"] if accept_unresolved_reads else None
+        ),
         smoke_required_evidence=smoke_required_evidence,
         accelerator_kind=accelerator_kind,
         accelerator_architectures=accelerator_architectures,

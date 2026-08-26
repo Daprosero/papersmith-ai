@@ -748,6 +748,112 @@ executable — no test in this suite reaches the network or a real account).
   recorded, reportable decision. `--accept-unresolved` never bypasses a
   `computedNotDeclared` refusal — only `unresolved`.
 
+  **Undeclared-read detection (Unit 1, same-file).** The field incident this
+  exists to catch: a job declared its imports correctly and still failed,
+  because a module-level `Path` constant chain it never imported anything
+  about was READ from at runtime — a resume record, a cached result file —
+  and nothing checked whether that resolved path was covered by a declared
+  clone path at all. `resolve_clone_paths()` now reuses the SAME parsed
+  `ast.Module` tree its import walk already holds for every transitively-
+  reached file (no new file traversal) and reads two more node families off
+  it: module-level `ast.Assign` (`_fold_module_constants()`, building a
+  constant -> `Path` table per file, each constant folded on top of the ones
+  already folded above it in the same file) and `ast.Call`/`ast.Attribute`
+  (`_scan_read_call_sites()`, classifying every call site against a closed
+  read/write/neutral roster).
+
+  The returned dict gains two keys: `computedReadsNotDeclared` (a folded,
+  target-contained read whose resolved path is not covered by a declared
+  clone path — `Path.is_relative_to`, never exact-match-only, since a data
+  file legitimately nests under a declared directory rather than naming it
+  exactly) and `unresolvedReads` (a read call site whose path could not be
+  folded, or a folded, target-contained path used in a call this walk
+  cannot classify). Both are always present, even empty — never absent.
+  `computedReadsNotDeclared` non-empty always refuses generation
+  unconditionally, exactly like `computedNotDeclared` — never a warning.
+  `unresolvedReads` non-empty refuses generation unless the caller passes
+  **`--accept-unresolved-reads`, a SEPARATE flag from `--accept-unresolved`**
+  — passing one never waives the other's refusal. The severity asymmetry
+  that makes this a separate flag rather than a shared one: an accepted
+  uncertain IMPORT dies loudly in the kernel minutes later
+  (`_refuse_absent_clone_paths`); an accepted uncertain READ is reported by
+  nobody — the field incident ran green. A shared flag would let the loud
+  hatch cover the quiet one. Accepted, it is recorded verbatim in
+  `run-config.json`'s `unresolvedReads`, mirroring `unresolvedImports`'s
+  own omit-when-empty convention exactly — a job folder generated before
+  this field existed simply omits it, and `validate_run_config()` checks
+  required fields with no key allowlist, so an existing job folder stays a
+  valid, readable job folder regardless. There is no declared `reads`
+  field: `_refuse_absent_clone_paths` already verifies every declared path
+  at the pin, data file or module alike, so only the INFERENCE side was
+  missing.
+
+  Containment FILTERS, it never accuses: a path outside `target`
+  (`.resolve()` + `relative_to`) is dropped entirely — not a candidate and
+  not an uncertainty — the same `external` posture `_classify_import()`
+  gives a non-local import, and the same absolute-path refusal
+  `validate_clone_paths()` already applies to a declared clone path. An
+  absolute system path (a battery probe reading
+  `/sys/class/power_supply/AC/online`) is exactly this case: real,
+  resolvable, and none of this repository's business. A write call site
+  (`.write_text`/`.write_bytes`/a write-mode `.open`/`.mkdir`/`.touch`/
+  `.unlink`/`.rename`) is never a read candidate — the roster IS the
+  exclusion, and there is deliberately NO separate "run-produced output"
+  exclusion layered on top of it. That exclusion was proposed and
+  REJECTED on measurement: a real target's own resume-artifact record is
+  built under a directory the same run also `mkdir`s and writes on a later
+  invocation — the same walked file set both writes AND reads that
+  constant, so excluding "a path the run creates" would have suppressed
+  the exact read this detector exists to catch. The accepted consequence:
+  that resume-artifact read is unfoldable (its path is built across a
+  cross-module boundary this Unit does not yet resolve) and becomes an
+  `unresolvedReads` entry that refuses by default, rather than being
+  silently excused.
+
+  The admitted grammar `_fold_path_expr()` folds is CLOSED and documented,
+  never implied complete: `Path(__file__)` and `.resolve()`/`.parent`
+  chains off it; `Path(__file__).resolve().parents[N]` with `N` a
+  non-negative int literal; `Path("<string literal>")`; a bare `Name`
+  already folded earlier in the same file's table; `BinOp(Div)` with a
+  string-literal right operand, chained (`X / "a" / "b"`); and
+  `.joinpath("a", "b", ...)` with every argument a string literal.
+  Everything outside this roster returns `None` from `_fold_path_expr()`,
+  never a guess, and is documented here as the same list the helper's own
+  docstring carries: f-strings, `%`/`+`/`str.format` string building,
+  `os.path.join(...)`, `os.environ[...]`, `sys.argv[...]`,
+  `.with_name(...)`/`.with_suffix(...)`/`.stem`/`.glob(...)`, `Path(x)` for
+  any `x` other than `__file__` or a string literal, a ternary
+  (`ast.IfExp`), `AugAssign`, a tuple-unpack assignment target, and
+  `.parents[N]` with a non-literal index. A name assigned twice at module
+  level is dropped from the table entirely, never last-wins. A name bound
+  ANYWHERE in a non-module scope (a function/lambda parameter, or a local
+  assignment/`for`/`with`/comprehension/`except` target) is never folded
+  through the table at all, even at its module-scope occurrence of the
+  same spelling — a shadowed name lands in `unresolvedReads`, never
+  silently resolved to a module constant it happens to share a spelling
+  with. An evaluator whose limits are undocumented is a detector that
+  implies completeness.
+
+  **The limitation, measured — not a proof about every target.** This check
+  finds a read whose path folds from module-level constants. It does not
+  find a read of a pinned repository input whose path is built from a
+  runtime parameter. Measured on one target: every runtime-parameterized
+  path there was a run-produced output, so at that instance the
+  unresolvable class and the defect class did not overlap. That is one
+  target, not a proof about all targets. Do not inherit a scarier caveat
+  than this. All five of one real target's `shard_paths()` consumers are
+  write-first: `write_shard_stamp` writes; `seal_shard_stamp` reads back
+  what it just wrote; `_partial_path` takes the static branch;
+  `search_ceilings` reads a resume artifact a prior run of the same shard
+  wrote (this one becomes an `unresolvedReads` entry, not a silent miss);
+  `campaign`/`smoke` `mkdir` then open for writing.
+
+  Cross-module attribute reads (`sibling.CONSTANT.read_text()`, a constant
+  folded in a DIFFERENT file than the one doing the read) are Unit 2's own
+  scope, not this Unit's — a same-file-only limitation, separate from the
+  grammar limitation above, and covered by its own doctrine addition once
+  that unit lands.
+
   `validate_clone_paths()` gained an optional `target` argument: when
   given, each clone path is also resolved against it and refused if that
   resolution escapes `target` (the symlink-escape case a purely textual
