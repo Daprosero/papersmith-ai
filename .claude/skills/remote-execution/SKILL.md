@@ -762,57 +762,112 @@ executable — no test in this suite reaches the network or a real account).
   (`_scan_read_call_sites()`, classifying every call site against a closed
   read/write/neutral roster).
 
-  The returned dict gains two keys: `computedReadsNotDeclared` (a folded,
-  target-contained read whose resolved path is not covered by a declared
-  clone path — `Path.is_relative_to`, never exact-match-only, since a data
-  file legitimately nests under a declared directory rather than naming it
-  exactly) and `unresolvedReads` (a read call site whose path could not be
-  folded, or a folded, target-contained path used in a call this walk
-  cannot classify). Both are always present, even empty — never absent.
+  The returned dict gains three keys (the corrective batch below added the
+  third): `computedReadsNotDeclared` (a folded, target-contained read whose
+  resolved path is not covered by a declared clone path — `Path.
+  is_relative_to`, never exact-match-only, since a data file legitimately
+  nests under a declared directory rather than naming it exactly, AND
+  which nothing in the same walked file set writes — see the
+  reclassification below), `producedReadsNotDeclared` (the SAME
+  containment/coverage test, but the resolved path IS also targeted by a
+  WRITE call site somewhere in the same walked file set), and
+  `unresolvedReads` (a read call site whose path could not be folded, or a
+  folded, target-contained path used in a call this walk cannot classify).
+  All three are always present, even empty — never absent.
   `computedReadsNotDeclared` non-empty always refuses generation
   unconditionally, exactly like `computedNotDeclared` — never a warning.
-  `unresolvedReads` non-empty refuses generation unless the caller passes
-  **`--accept-unresolved-reads`, a SEPARATE flag from `--accept-unresolved`**
-  — passing one never waives the other's refusal. The severity asymmetry
-  that makes this a separate flag rather than a shared one: an accepted
-  uncertain IMPORT dies loudly in the kernel minutes later
-  (`_refuse_absent_clone_paths`); an accepted uncertain READ is reported by
-  nobody — the field incident ran green. A shared flag would let the loud
-  hatch cover the quiet one. Accepted, it is recorded verbatim in
-  `run-config.json`'s `unresolvedReads`, mirroring `unresolvedImports`'s
-  own omit-when-empty convention exactly — a job folder generated before
-  this field existed simply omits it, and `validate_run_config()` checks
-  required fields with no key allowlist, so an existing job folder stays a
-  valid, readable job folder regardless. There is no declared `reads`
-  field: `_refuse_absent_clone_paths` already verifies every declared path
-  at the pin, data file or module alike, so only the INFERENCE side was
-  missing.
+  `producedReadsNotDeclared` non-empty refuses generation unless the
+  caller passes **`--accept-produced-reads`**. `unresolvedReads` non-empty
+  refuses generation unless the caller passes
+  **`--accept-unresolved-reads`**. All three accept-flags
+  (`--accept-unresolved`, `--accept-unresolved-reads`,
+  `--accept-produced-reads`) are SEPARATE — passing one never waives
+  another's refusal. The severity asymmetry that makes these separate
+  flags rather than one shared flag: an accepted uncertain IMPORT dies
+  loudly in the kernel minutes later (`_refuse_absent_clone_paths`); an
+  accepted uncertain READ is reported by nobody — the field incident ran
+  green. A shared flag would let the loud hatch cover the quiet ones.
+  Each acceptance is recorded verbatim in `run-config.json`
+  (`unresolvedReads`, `acceptedProducedReads`), mirroring
+  `unresolvedImports`'s own omit-when-empty convention exactly — a job
+  folder generated before a field existed simply omits it, and
+  `validate_run_config()` checks required fields with no key allowlist, so
+  an existing job folder stays a valid, readable job folder regardless.
+  There is no declared `reads` field: `_refuse_absent_clone_paths` already
+  verifies every declared path at the pin, data file or module alike, so
+  only the INFERENCE side was missing.
+
+  **The generation-deadlock CRITICAL, and why `producedReadsNotDeclared`
+  exists.** A job whose own purpose is to PRODUCE a file it also reads
+  back (a resumable record, exactly the real target's
+  `config.CEILINGS_RECORD` shape: written by `search_record()`'s own run,
+  read back by a later one) could not be generated at all under Unit 1 +
+  Unit 2 alone: leaving the read undeclared refused unconditionally via
+  `computedReadsNotDeclared` (no hatch); declaring it as the file or its
+  parent directory instead refused via `_refuse_absent_clone_paths` (no
+  tree object at the pin, since the file has never yet been produced).
+  Declaring refused; not declaring refused; no third option existed for a
+  job's first-ever run. The fix is RECLASSIFICATION using the write
+  signal, not suppression: `_scan_read_call_sites()` also collects every
+  folded, target-contained path targeted by a WRITE call site anywhere in
+  the same walked file set. An undeclared read whose resolved path is
+  ALSO written somewhere in that same walk moves from
+  `computedReadsNotDeclared` into `producedReadsNotDeclared` — still a
+  refusal by default, but now with an escape hatch
+  (`--accept-produced-reads`) that lets the job be generated WITHOUT
+  declaring the not-yet-existent file, because an undeclared clone path is
+  never checked against the pin by `_refuse_absent_clone_paths` at all.
+  The operator is still told and still decides — nothing disappears
+  silently. This is deliberately NOT the exclusion proposed and REJECTED
+  below (Decision 5): that one would have silently dropped the read from
+  candidacy entirely, with no refusal and no record, based only on the
+  mkdir-then-write shape. Reclassification with a recorded acceptance
+  keeps the operator in the loop; silent exclusion would not have.
 
   Containment FILTERS, it never accuses: a path outside `target`
   (`.resolve()` + `relative_to`) is dropped entirely — not a candidate and
   not an uncertainty — the same `external` posture `_classify_import()`
   gives a non-local import, and the same absolute-path refusal
-  `validate_clone_paths()` already applies to a declared clone path. An
-  absolute system path (a battery probe reading
-  `/sys/class/power_supply/AC/online`) is exactly this case: real,
-  resolvable, and none of this repository's business. A write call site
-  (`.write_text`/`.write_bytes`/a write-mode `.open`/`.mkdir`/`.touch`/
-  `.unlink`/`.rename`) is never a read candidate — the roster IS the
-  exclusion, and there is deliberately NO separate "run-produced output"
-  exclusion layered on top of it. That exclusion was proposed and
-  REJECTED on measurement: a real target's own resume-artifact record is
-  built under a directory the same run also `mkdir`s and writes on a later
-  invocation — the same walked file set both writes AND reads that
-  constant, so excluding "a path the run creates" would have suppressed
-  the exact read this detector exists to catch. Under Unit 1 alone that
-  resume-artifact read was cross-module (the constant is folded in a
-  DIFFERENT file than the one calling `.read_text()` on it) and therefore
-  unfoldable, landing in `unresolvedReads` — refusing by default, never
-  silently excused, but only via the weaker of the two refusal paths.
-  Unit 2 (below) resolves exactly this cross-module shape, so that same
-  read now folds fully and lands in `computedReadsNotDeclared` instead —
-  refusing unconditionally, the stronger of the two, with no
-  `--accept-unresolved-reads` escape hatch available for it at all.
+  `validate_clone_paths()` already applies to a declared clone path. This
+  containment drop applies only to a folded MODULE-LEVEL constant: an
+  absolute path bound to a module-level constant and never re-assigned is
+  dropped silently, never proposed and never a refusal. It does NOT apply
+  the same way to a read whose absolute path is built through a LOCAL
+  variable — `_fold_module_constants()` never folds locals by design, so
+  that shape does not reach the containment test at all; it instead lands
+  in `unresolvedReads` (refuses by default, `--accept-unresolved-reads`
+  available) via the read-shaped-method-name fallback. The real target's
+  own battery probe (`harness.py:167-169`,
+  `online = Path("/sys/class/power_supply/AC/online")` then
+  `online.read_text()`) is exactly this LOCAL-variable case — it refuses
+  by default and takes the hatch, it is never silently dropped by
+  containment. (A prior revision of this doctrine and its covering test
+  claimed the two shapes were equivalent "regardless of which name holds
+  the Path" — measured false; corrected here and in the test that used to
+  make that claim.) A write call site (`.write_text`/`.write_bytes`/a
+  write-mode `.open`/`.mkdir`/`.touch`/`.unlink`/`.rename`) is never a
+  READ candidate — the roster IS that exclusion, and there is deliberately
+  NO separate "run-produced output" exclusion layered on top of THAT
+  roster (Decision 5, unchanged): a write call site collected for
+  `producedReadsNotDeclared` (above) is a completely different mechanism
+  — it never removes a read from candidacy, it only moves an already-
+  surfaced, already-refusing candidate into the hatch-bearing bucket. That
+  exclusion was proposed and REJECTED on measurement: a real target's own
+  resume-artifact record is built under a directory the same run also
+  `mkdir`s and writes on a later invocation — the same walked file set
+  both writes AND reads that constant, so excluding "a path the run
+  creates" from candidacy entirely would have suppressed the exact read
+  this detector exists to catch, with no record and no refusal at all.
+  Under Unit 1 alone that resume-artifact read was cross-module (the
+  constant is folded in a DIFFERENT file than the one calling
+  `.read_text()` on it) and therefore unfoldable, landing in
+  `unresolvedReads` — refusing by default, never silently excused, but
+  only via the weakest of the (then two, now three) refusal paths. Unit 2
+  resolves exactly this cross-module shape, so that same read now folds
+  fully; the corrective batch above is what then keeps that fully-folded
+  read generation-reachable at all, by moving it to
+  `producedReadsNotDeclared` (write-backed) instead of leaving it in the
+  hatch-less `computedReadsNotDeclared`.
 
   The admitted grammar `_fold_path_expr()` folds is CLOSED and documented,
   never implied complete: `Path(__file__)` and `.resolve()`/`.parent`

@@ -2202,9 +2202,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "record uncertain reads found by resolve_clone_paths() in "
             "run-config.json's unresolvedReads instead of refusing; a "
-            "SEPARATE flag from --accept-unresolved — neither waives the "
-            "other's refusal, and this never bypasses a "
-            "computedReadsNotDeclared refusal"
+            "SEPARATE flag from --accept-unresolved and --accept-produced-reads "
+            "— neither waives the other's refusal, and this never bypasses a "
+            "computedReadsNotDeclared or producedReadsNotDeclared refusal"
+        ),
+    )
+    generate_job.add_argument(
+        "--accept-produced-reads", action="store_true",
+        help=(
+            "record an undeclared read as an accepted produced-file "
+            "candidate in run-config.json's acceptedProducedReads instead "
+            "of refusing, for a read whose resolved path the SAME walked "
+            "file set also writes (the job may exist to produce that file "
+            "on its first run); a SEPARATE flag from --accept-unresolved "
+            "and --accept-unresolved-reads — neither waives the other's "
+            "refusal, and this never bypasses a genuine "
+            "computedReadsNotDeclared refusal (a read of a path nothing in "
+            "the walk writes)"
         ),
     )
     generate_job.add_argument(
@@ -2500,6 +2514,7 @@ def main(argv: list[str] | None = None) -> int:
                 regenerate=args.regenerate,
                 accept_unresolved=args.accept_unresolved,
                 accept_unresolved_reads=args.accept_unresolved_reads,
+                accept_produced_reads=args.accept_produced_reads,
                 accelerator_kind=args.accelerator_kind,
                 accelerator_architectures=args.accelerator_architectures,
                 environment_requirements=args.environment_requirements,

@@ -761,7 +761,7 @@ def _scan_read_call_sites(
     *,
     source: Path | None = None,
     cache: dict[Path, dict[str, Path] | None] | None = None,
-) -> tuple[set[Path], list[str]]:
+) -> tuple[set[Path], list[str], set[Path]]:
     """Walk every `ast.Call` in `tree` once, classifying each one against
     the read/write/neutral roster (design decision 6). `source`/`cache`
     (Unit 2), when given, let a receiver such as `config.CEILINGS_RECORD`
@@ -774,27 +774,46 @@ def _scan_read_call_sites(
       construction, never an I/O action, skipped;
     - an `Attribute` call whose receiver folds to a contained path:
       `.read_text`/`.read_bytes`/a non-write `.open(...)` -> a read
-      candidate; a write or neutral method -> silent; anything else ->
-      `unresolvedReads` ("anything else on a folded, contained path" is
-      never silence);
+      candidate; a WRITE method (`.write_text`/`.write_bytes`/a
+      write-mode `.open(...)`/`.mkdir`/`.touch`/`.unlink`/`.rename`) ->
+      also a WRITE candidate (corrective batch addition — see below); a
+      neutral method -> silent; anything else -> `unresolvedReads`
+      ("anything else on a folded, contained path" is never silence);
     - an `Attribute` call whose receiver does NOT fold, but whose method
       name is unmistakably read-shaped (`.read_text`/`.read_bytes`/a
       non-write `.open(...)`) -> `unresolvedReads` (the f-string case);
     - the builtin `open(path, mode=...)` -> the same read/write verdict,
-      by its first positional argument instead of a receiver;
+      by its first positional argument instead of a receiver (a write
+      mode is a WRITE candidate the same way);
     - the builtin `str(path)` -> silent (the one bare-call NEUTRAL roster
       member; every other bare call is scanned below instead);
     - any other call (a folded, contained path passed as a bare argument
       into a call this walk cannot otherwise classify, e.g.
       `some_loader(RECORD)`, `pd.read_csv(DATA)`) -> `unresolvedReads`.
 
-    Returns `(read_candidates, unresolved)`: `read_candidates` are
-    resolved, target-relative `Path`s; `unresolved` is a list of
-    `"<file>:<line>: <expr> — <why>"` strings.
+    Returns `(read_candidates, unresolved, write_candidates)`:
+    `read_candidates`/`write_candidates` are resolved, target-relative
+    `Path`s; `unresolved` is a list of `"<file>:<line>: <expr> — <why>"`
+    strings.
+
+    `write_candidates` (corrective batch, closing the generation-deadlock
+    CRITICAL): collected for exactly one reason — `resolve_clone_paths()`
+    uses it to tell "a read of a file nothing in this walk ever produces"
+    (a genuinely missing declared input, still refused unconditionally
+    via `computedReadsNotDeclared`) apart from "a read of a file THIS SAME
+    walked file set also writes" (a produced-file candidate — see
+    `producedReadsNotDeclared` on `resolve_clone_paths()`). This is
+    RECLASSIFICATION using the write signal, never silent exclusion: a
+    write call site was already never a read candidate (Decision 5,
+    unchanged); collecting it here additionally does not remove or
+    silence anything on its own — `resolve_clone_paths()` still surfaces
+    every produced-file candidate, and `generate_job()` still refuses it
+    by default, only through a different, hatch-bearing bucket.
     """
     imports = _import_alias_map(tree)
     read_candidates: set[Path] = set()
     unresolved: list[str] = []
+    write_candidates: set[Path] = set()
 
     def fold(expr: ast.AST) -> Path | None:
         return _fold_path_expr(
@@ -818,11 +837,15 @@ def _scan_read_call_sites(
                     mode_node = _keyword_value(node.keywords, "mode")
                     if mode_node is None and node.args:
                         mode_node = node.args[0]
-                    if not _mode_is_write(mode_node):
+                    if _mode_is_write(mode_node):
+                        write_candidates.add(contained)
+                    else:
                         read_candidates.add(contained)
                 elif method in _READ_METHODS:
                     read_candidates.add(contained)
-                elif method in _WRITE_METHODS or method in _NEUTRAL_METHODS:
+                elif method in _WRITE_METHODS:
+                    write_candidates.add(contained)
+                elif method in _NEUTRAL_METHODS:
                     pass
                 else:
                     unresolved.append(_unresolved_entry(
@@ -858,7 +881,9 @@ def _scan_read_call_sites(
                 contained = _read_candidate(folded, resolved_target)
                 if contained is None:
                     continue  # outside target: dropped, never flagged
-                if not _mode_is_write(mode_node):
+                if _mode_is_write(mode_node):
+                    write_candidates.add(contained)
+                else:
                     read_candidates.add(contained)
                 continue
             if not _mode_is_write(mode_node):
@@ -896,7 +921,7 @@ def _scan_read_call_sites(
             ))
             break
 
-    return read_candidates, unresolved
+    return read_candidates, unresolved, write_candidates
 
 
 def _covered_by_declared(candidate: str, declared: Sequence[str]) -> bool:
@@ -954,7 +979,8 @@ def resolve_clone_paths(
     `<target>/src` at all) is filtered and never becomes a clone path.
 
     Returns `{"declared", "computed", "computedNotDeclared", "unresolved",
-    "computedReadsNotDeclared", "unresolvedReads"}`:
+    "computedReadsNotDeclared", "producedReadsNotDeclared",
+    "unresolvedReads"}`:
     `declared` is `declared_clone_paths` re-validated through the SAME
     `validate_clone_paths()` `generate_job()` already uses (structural,
     plus the symlink-escape check now that `target` is known) — never a
@@ -968,26 +994,50 @@ def resolve_clone_paths(
     passes `--accept-unresolved`, which records it in `run-config.json`'s
     `unresolvedImports` instead of guessing.
 
-    `computedReadsNotDeclared` and `unresolvedReads` (Unit 1,
-    undeclared-read detection) are built from the SAME parsed `tree` this
-    walk already holds for every transitively-reached file — no new file
-    traversal. `_fold_module_constants()` builds each file's own
-    constant->`Path` table; `_scan_read_call_sites()` classifies every
-    call site against the read/write/neutral roster. A folded,
-    target-contained read whose resolved path is not covered by a
-    declared clone path (`Path.is_relative_to`, never exact-match-only)
-    becomes a `computedReadsNotDeclared` entry — always a refusal, never a
-    warning, exactly like `computedNotDeclared`. A read call site whose
-    path could not be folded, or a folded, target-contained path used in
-    a call this walk cannot classify, becomes an `unresolvedReads` entry
-    instead — refused unless the caller passes
-    `--accept-unresolved-reads`, a SEPARATE flag from `--accept-unresolved`
-    that never waives the other's refusal (severity asymmetry: an
+    `computedReadsNotDeclared`, `producedReadsNotDeclared`, and
+    `unresolvedReads` (Unit 1, undeclared-read detection; the corrective
+    batch adds `producedReadsNotDeclared`) are built from the SAME parsed
+    `tree` this walk already holds for every transitively-reached file —
+    no new file traversal. `_fold_module_constants()` builds each file's
+    own constant->`Path` table; `_scan_read_call_sites()` classifies every
+    call site against the read/write/neutral roster, now ALSO returning
+    every folded, target-contained path targeted by a WRITE call site
+    anywhere in the walked file set (`write_candidates`).
+
+    A folded, target-contained read whose resolved path is not covered by
+    a declared clone path (`Path.is_relative_to`, never exact-match-only)
+    is always a refusal, never a warning — but WHICH of two buckets it
+    refuses through now depends on the write signal (corrective batch,
+    reclassification, not suppression — see `SKILL.md`'s
+    "generation-deadlock" doctrine for the full account):
+
+    - not written anywhere in the same walked file set ->
+      `computedReadsNotDeclared`: a genuinely missing declared input,
+      refused UNCONDITIONALLY, no hatch, unchanged from before this
+      corrective batch;
+    - ALSO written somewhere in the same walked file set (the same
+      resolved path appears as a WRITE call-site target, e.g.
+      `RECORD.write_text(...)` beside `RECORD.read_text()`) ->
+      `producedReadsNotDeclared`: a produced-file candidate — the job may
+      exist to CREATE this file on its first run, so declaring it (as
+      `_refuse_absent_clone_paths` would then require existing at the
+      pin) is not always possible. Refused unless the caller passes
+      `--accept-produced-reads`, which records the finding VERBATIM in
+      `run-config.json`'s `acceptedProducedReads` — the operator is still
+      told and still decides; nothing disappears silently.
+
+    A read call site whose path could not be folded, or a folded,
+    target-contained path used in a call this walk cannot classify,
+    becomes an `unresolvedReads` entry instead — refused unless the
+    caller passes `--accept-unresolved-reads`, a SEPARATE flag from
+    `--accept-unresolved` (imports) and from `--accept-produced-reads`
+    that never waives either other refusal (severity asymmetry: an
     accepted uncertain import dies loudly in the kernel minutes later; an
     accepted uncertain read is reported by nobody). A path outside
     `target` is dropped from candidacy entirely, never flagged — the same
     `external` posture `_classify_import()` gives a non-local import.
-    Both new keys are always present, even when empty (never absent).
+    All three new keys are always present, even when empty (never
+    absent).
     """
     resolved_target = target.resolve()
     source = resolved_target / "src"
@@ -997,6 +1047,12 @@ def resolve_clone_paths(
     unresolved: list[str] = []
     computed_reads: set[str] = set()
     unresolved_reads: list[str] = []
+    # Corrective batch: every folded, target-contained path targeted by a
+    # WRITE call site anywhere in the walked file set — used ONLY to
+    # reclassify (never to suppress) an undeclared read of the same
+    # resolved path. See the docstring above and `producedReadsNotDeclared`
+    # below.
+    produced_paths: set[str] = set()
     # Unit 2 (cross-module resolution): memoizes each sibling file's own
     # constant table, keyed by resolved file, shared across the whole walk.
     # Populated LAZILY (on first cross-module reference, via
@@ -1048,12 +1104,14 @@ def resolve_clone_paths(
         # is idempotent regardless of which path reached `file` first.
         read_table = _fold_module_constants(tree, file, source=source, cache=constant_cache)
         constant_cache[file] = read_table
-        read_candidates, read_unresolved = _scan_read_call_sites(
+        read_candidates, read_unresolved, write_candidates = _scan_read_call_sites(
             tree, read_table, file, resolved_target, source=source, cache=constant_cache
         )
         for candidate in read_candidates:
             computed_reads.add(candidate.relative_to(resolved_target).as_posix())
         unresolved_reads.extend(read_unresolved)
+        for candidate in write_candidates:
+            produced_paths.add(candidate.relative_to(resolved_target).as_posix())
 
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module:
@@ -1098,13 +1156,19 @@ def resolve_clone_paths(
             elif _is_sys_path_mutation(node):
                 unresolved.append(f"{file}: sys.path mutation is uncertain")
 
+    uncovered_reads = [
+        r for r in computed_reads if not _covered_by_declared(r, declared)
+    ]
     return {
         "declared": list(declared),
         "computed": sorted(computed),
         "computedNotDeclared": sorted(computed - set(declared)),
         "unresolved": unresolved,
         "computedReadsNotDeclared": sorted(
-            r for r in computed_reads if not _covered_by_declared(r, declared)
+            r for r in uncovered_reads if r not in produced_paths
+        ),
+        "producedReadsNotDeclared": sorted(
+            r for r in uncovered_reads if r in produced_paths
         ),
         "unresolvedReads": unresolved_reads,
     }
@@ -1197,6 +1261,7 @@ def build_run_config(
     invoke_asset: Path,
     unresolved_imports: Sequence[str] | None = None,
     unresolved_reads: Sequence[str] | None = None,
+    accepted_produced_reads: Sequence[str] | None = None,
     smoke_required_evidence: Sequence[str] | None = None,
     accelerator_kind: str | None = None,
     accelerator_architectures: Sequence[str] | None = None,
@@ -1220,6 +1285,16 @@ def build_run_config(
     before this field existed simply omits it; `validate_run_config()`
     checks required fields with no key allowlist, so absence never
     invalidates an existing job folder.
+
+    `accepted_produced_reads`, when non-empty, is recorded verbatim as
+    `acceptedProducedReads` (corrective batch) — the SAME omit-when-empty
+    convention, gated by the SEPARATE `--accept-produced-reads` flag. A
+    produced-read finding is a read of a path the same walked file set
+    also writes (the job may exist to CREATE it on its first run); the
+    flag turns the silence into a recorded, reportable decision the same
+    way `--accept-unresolved`/`--accept-unresolved-reads` already do —
+    this is RECLASSIFICATION with a recorded acceptance, never a silent
+    exclusion: the operator is still told, and still has to decide.
 
     `smoke_required_evidence`, when given, is recorded verbatim as
     `run.smoke.requiredEvidence` — the dot-separated field paths
@@ -1319,6 +1394,8 @@ def build_run_config(
         run_config["unresolvedImports"] = list(unresolved_imports)
     if unresolved_reads:
         run_config["unresolvedReads"] = list(unresolved_reads)
+    if accepted_produced_reads:
+        run_config["acceptedProducedReads"] = list(accepted_produced_reads)
     if has_accelerator:
         run_config["accelerator"] = {
             "kind": accelerator_kind,
@@ -1408,6 +1485,7 @@ def generate_job(
     invoke_asset: str | Path | None = None,
     accept_unresolved: bool = False,
     accept_unresolved_reads: bool = False,
+    accept_produced_reads: bool = False,
     accelerator_kind: str | None = None,
     accelerator_architectures: Sequence[str] | None = None,
     environment_requirements: Sequence[str] | None = None,
@@ -1506,6 +1584,17 @@ def generate_job(
             "in --clone-path: "
             f"{clone_resolution['computedReadsNotDeclared']}"
         )
+    if clone_resolution["producedReadsNotDeclared"] and not accept_produced_reads:
+        raise JobFolderError(
+            "generation refuses: these reads resolve to paths not declared "
+            "in --clone-path, but the same walked file set also WRITES them "
+            "— this job may exist to produce the file on its first run, so "
+            "declaring it would require it to already exist at the pin "
+            "(pass --accept-produced-reads to record this decision and "
+            "proceed instead of refusing; this is a SEPARATE flag from "
+            "--accept-unresolved-reads, which never waives this refusal): "
+            f"{clone_resolution['producedReadsNotDeclared']}"
+        )
     if clone_resolution["unresolvedReads"] and not accept_unresolved_reads:
         raise JobFolderError(
             "generation refuses: uncertain reads found (pass "
@@ -1547,6 +1636,10 @@ def generate_job(
         unresolved_imports=clone_resolution["unresolved"] if accept_unresolved else None,
         unresolved_reads=(
             clone_resolution["unresolvedReads"] if accept_unresolved_reads else None
+        ),
+        accepted_produced_reads=(
+            clone_resolution["producedReadsNotDeclared"]
+            if accept_produced_reads else None
         ),
         smoke_required_evidence=smoke_required_evidence,
         accelerator_kind=accelerator_kind,

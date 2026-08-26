@@ -11601,10 +11601,19 @@ class UndeclaredReadDetectionTests(unittest.TestCase):
 
     Fixture module/package names deliberately avoid every string in
     `TargetVocabularyLeakTests.TARGET_LITERALS`
-    (`creda`/`mnist`/`usps`/`svhn`) — `pkg_a` through `pkg_i` instead.
+    (`creda`/`mnist`/`usps`/`svhn`) — `pkg_a` through `pkg_l` instead.
     Expected values are written as the literal relative-posix string an
     operator would type into `--clone-path`, never recomputed by
     re-invoking `resolve_clone_paths()` on itself.
+
+    Tests 8b/8c (corrective batch) additionally exercise
+    `producedReadsNotDeclared` and `--accept-produced-reads` — the
+    generation-deadlock fix. The class-wide `verify_pin_preconditions()`
+    stub above is exactly what hid that deadlock originally (it was never
+    exercised together with `computedReadsNotDeclared`'s refusal in any
+    test, in either unit); the SEAM test that actually crosses both
+    refusal mechanisms lives in `ClonePathExistenceTests` instead, which
+    stubs nothing and runs against a real, unmocked git repository.
     """
 
     FAKE_SERVICE = "undeclared-read-fake-service"
@@ -11799,18 +11808,32 @@ class UndeclaredReadDetectionTests(unittest.TestCase):
 
     # -- Test 5 -------------------------------------------------------
 
-    def test_absolute_path_read_is_never_proposed_in_either_list(self) -> None:
-        """Shaped like `harness.py`'s real battery probe
-        (`Path("/sys/class/power_supply/AC/online")`, `harness.py:167-169`):
-        a read on an absolute path outside `target` must never be
-        proposed as an undeclared read AND never recorded as an
+    def test_absolute_path_inline_literal_is_never_proposed_in_either_list(self) -> None:
+        """A `Path("/sys/...")` LITERAL, folded directly at the call site
+        (never through a `Name` lookup — `_fold_path_expr()` folds a
+        string-literal `Path(...)` unconditionally, module-level or not,
+        which is why this shape folds here even though it sits inside a
+        function body): a read on an absolute path outside `target` must
+        never be proposed as an undeclared read AND never recorded as an
         uncertainty — Decision 4's containment filter DROPS it, it does
-        not accuse. Inlined directly (rather than through the real code's
-        local intermediate variable) to stay within the documented,
-        closed grammar `_fold_module_constants()` folds (module-level
-        constants only) — the containment DROP this test proves is
-        exactly the same regardless of which name, if any, holds the
-        `Path` between construction and the read.
+        not accuse.
+
+        **Corrected claim (this was measured false and fixed by the
+        verifier)**: an earlier revision of this test's docstring claimed
+        the containment drop proven here holds "regardless of which name,
+        if any, holds the Path between construction and the read." That
+        is empirically false. The real cited shape
+        (`harness.py:167-169`, `online = Path("/sys/class/power_supply/
+        AC/online")` then `online.read_text()`) binds the absolute path to
+        a LOCAL variable first — `_fold_module_constants()` never folds a
+        local, so `online` is never in the table, `online.read_text()`'s
+        receiver fails to fold, and the read reaches `unresolvedReads`
+        (refuses by default) via the read-shaped-method-name fallback
+        instead of ever reaching this containment test at all. That
+        DIFFERENT, real shape is covered by
+        `test_absolute_path_bound_to_a_local_variable_is_unresolved_not_dropped`
+        below — two different code paths, two different outcomes, and
+        this test proves only the inline-literal one.
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
@@ -11830,6 +11853,48 @@ class UndeclaredReadDetectionTests(unittest.TestCase):
 
             self.assertEqual(result["computedReadsNotDeclared"], [])
             self.assertEqual(result["unresolvedReads"], [])
+
+    # -- Test 5b (WARNING closure) --------------------------------------
+
+    def test_absolute_path_bound_to_a_local_variable_is_unresolved_not_dropped(
+        self,
+    ) -> None:
+        """The REAL shape (`harness.py:167-169`, transcribed exactly): the
+        absolute path is bound to a local variable (`online = Path(...)`)
+        BEFORE the read call (`online.read_text()`), never inlined as a
+        literal receiver. `_fold_module_constants()` only scans
+        module-level `ast.Assign` statements (by design — see
+        `_shadowed_names()`), so a local variable is never in the fold
+        table regardless of whether its spelling happens to be unique in
+        the file. The receiver therefore fails to fold, and the call
+        site's own read-shaped method name (`.read_text`) routes it to
+        `unresolvedReads` instead — refusing generation by default, with
+        `--accept-unresolved-reads` as the escape hatch, exactly like any
+        other unfoldable receiver (the f-string case, Test 6). It is NEVER
+        silently dropped by the containment filter the way the
+        INLINE-LITERAL shape above is: this is precisely the distinction
+        the previous test's docstring got wrong.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(
+                target, "src/pkg_d/probe.py",
+                "from pathlib import Path\n\n\n"
+                "def battery_status():\n"
+                '    online = Path("/sys/class/power_supply/AC/online")\n'
+                "    if online.exists():\n"
+                "        return online.read_text().strip()\n"
+                "    return 'unknown'\n",
+            )
+
+            result = JOBFOLDER.resolve_clone_paths(
+                target, ["pkg_d.probe"], ["src/pkg_d"]
+            )
+
+            self.assertEqual(result["computedReadsNotDeclared"], [])
+            self.assertEqual(result["producedReadsNotDeclared"], [])
+            self.assertEqual(len(result["unresolvedReads"]), 1)
+            self.assertIn("read call", result["unresolvedReads"][0])
 
     # -- Test 6 -------------------------------------------------------
 
@@ -11944,7 +12009,159 @@ class UndeclaredReadDetectionTests(unittest.TestCase):
             )
 
             self.assertEqual(result["computedReadsNotDeclared"], [])
+            self.assertEqual(result["producedReadsNotDeclared"], [])
             self.assertEqual(result["unresolvedReads"], [])
+
+    # -- Test 8b (corrective batch: the generation-deadlock CRITICAL) ---
+
+    def test_produced_read_reclassifies_and_only_succeeds_with_accept_produced_reads_flag(
+        self,
+    ) -> None:
+        """Mirrors the real target's resumable-record shape exactly,
+        same-file (`search_record()` reading `config.CEILINGS_RECORD`
+        that a PRIOR run of `harness.py:1019-1020` wrote): `RECORD` is
+        BOTH read (`resume_on_record()`) AND written
+        (`seal_record()`, `mkdir` + `write_text`) by the same walked file
+        set. The read is undeclared and outside `src/`, same shape as
+        Test 1.
+
+        This is the decisive assertion for the CRITICAL this corrective
+        batch closes: `computedReadsNotDeclared` must be EMPTY (the read
+        moved out of the hatch-less bucket) and
+        `producedReadsNotDeclared` must be NON-EMPTY (reclassified, never
+        silently dropped — a mutation that made this candidate vanish
+        entirely, with no bucket at all and no refusal, would pass every
+        assertion below except this one). Generation must still refuse by
+        default (no flag disappears anything silently), and must succeed
+        only once `--accept-produced-reads` is given, recording the
+        finding verbatim in `run-config.json`'s `acceptedProducedReads`.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(
+                target, "src/pkg_l/harness.py",
+                "from pathlib import Path\n\n"
+                "REPOSITORY = Path(__file__).resolve().parents[2]\n"
+                'PRODUCT = REPOSITORY / "product-out"\n'
+                'RESULTS = PRODUCT / "Results" / "Stage"\n'
+                'RECORD = RESULTS / "ledger.json"\n\n\n'
+                "def resume_on_record():\n"
+                "    if not RECORD.exists():\n"
+                "        return {}\n"
+                "    return RECORD.read_text(encoding='utf-8')\n\n\n"
+                "def seal_record():\n"
+                "    RECORD.parent.mkdir(parents=True, exist_ok=True)\n"
+                "    RECORD.write_text('{}', encoding='utf-8')\n",
+            )
+
+            result = JOBFOLDER.resolve_clone_paths(
+                target, ["pkg_l.harness"], ["src/pkg_l"]
+            )
+
+            self.assertEqual(result["computedReadsNotDeclared"], [])
+            self.assertEqual(
+                result["producedReadsNotDeclared"],
+                ["product-out/Results/Stage/ledger.json"],
+            )
+            self.assertEqual(result["unresolvedReads"], [])
+
+            # No flag at all -> still refuses, naming the path and the hatch.
+            with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                self._generate(
+                    tmp, target,
+                    clone_paths=["src/pkg_l"],
+                    run_module="pkg_l.harness",
+                    run_function="resume_on_record",
+                )
+            self.assertIn("product-out/Results/Stage/ledger.json", str(ctx.exception))
+            self.assertIn("accept-produced-reads", str(ctx.exception))
+
+            # --accept-unresolved-reads ALONE never covers it (reachability
+            # proof, same posture as Test 10 for the import/read flags).
+            with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                self._generate(
+                    tmp, target,
+                    clone_paths=["src/pkg_l"],
+                    run_module="pkg_l.harness",
+                    run_function="resume_on_record",
+                    accept_unresolved_reads=True,
+                )
+            self.assertIn("accept-produced-reads", str(ctx.exception))
+
+            # --accept-produced-reads -> succeeds, recorded verbatim.
+            job_dir = self._generate(
+                tmp, target,
+                job_name="read-job-produced-accepted",
+                clone_paths=["src/pkg_l"],
+                run_module="pkg_l.harness",
+                run_function="resume_on_record",
+                accept_produced_reads=True,
+            )
+            run_config = json.loads((job_dir / "run-config.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                run_config["acceptedProducedReads"],
+                result["producedReadsNotDeclared"],
+            )
+
+    # -- Test 8c (distinguishing pair with 8b) --------------------------
+
+    def test_accept_produced_reads_never_waives_a_genuinely_missing_read(self) -> None:
+        """The distinguishing test: a SECOND constant (`OTHER`) in the SAME
+        file is read but never written anywhere in the walked set — a
+        genuinely missing declared input, not a produced-file candidate.
+        `--accept-produced-reads` must NEVER waive its refusal:
+        `computedReadsNotDeclared` still names it, unconditionally, even
+        while `RECORD` (written elsewhere in the same file, same as Test
+        8b) is correctly reclassified and accepted alongside it. Proves
+        the check DISTINGUISHES rather than blanket-accepting every
+        undeclared read once the flag is given.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(
+                target, "src/pkg_l/harness2.py",
+                "from pathlib import Path\n\n"
+                "REPOSITORY = Path(__file__).resolve().parents[2]\n"
+                'PRODUCT = REPOSITORY / "product-out"\n'
+                'RESULTS = PRODUCT / "Results" / "Stage"\n'
+                'RECORD = RESULTS / "ledger.json"\n'
+                'OTHER = RESULTS / "other.json"\n\n\n'
+                "def resume_on_record():\n"
+                "    if not RECORD.exists():\n"
+                "        return {}\n"
+                "    return RECORD.read_text(encoding='utf-8')\n\n\n"
+                "def seal_record():\n"
+                "    RECORD.parent.mkdir(parents=True, exist_ok=True)\n"
+                "    RECORD.write_text('{}', encoding='utf-8')\n\n\n"
+                "def read_other():\n"
+                "    return OTHER.read_text(encoding='utf-8')\n",
+            )
+
+            result = JOBFOLDER.resolve_clone_paths(
+                target, ["pkg_l.harness2"], ["src/pkg_l"]
+            )
+
+            self.assertEqual(
+                result["computedReadsNotDeclared"],
+                ["product-out/Results/Stage/other.json"],
+            )
+            self.assertEqual(
+                result["producedReadsNotDeclared"],
+                ["product-out/Results/Stage/ledger.json"],
+            )
+            self.assertEqual(result["unresolvedReads"], [])
+
+            # Even with the produced-reads flag, the genuinely missing
+            # read still refuses generation unconditionally.
+            with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                self._generate(
+                    tmp, target,
+                    clone_paths=["src/pkg_l"],
+                    run_module="pkg_l.harness2",
+                    run_function="resume_on_record",
+                    accept_produced_reads=True,
+                )
+            self.assertIn("product-out/Results/Stage/other.json", str(ctx.exception))
 
     # -- Test 9 -------------------------------------------------------
 
@@ -15524,6 +15741,98 @@ class ClonePathExistenceTests(unittest.TestCase):
             completed = self.generate(target, origin, "Results/ceilings.json")
             self.assertEqual(completed.returncode, 0,
                              (completed.stdout + completed.stderr).strip()[:300])
+
+    # -- Corrective batch: the generation-deadlock CRITICAL, crossing the
+    # seam that hid it --------------------------------------------------
+
+    def test_a_produced_read_refuses_by_default_then_succeeds_only_when_accepted(self):
+        """The CRITICAL this corrective batch closes, reproduced against a
+        REAL, unmocked git repository — this class stubs nothing at all,
+        unlike `UndeclaredReadDetectionTests`, whose `setUp()` stubs
+        `verify_pin_preconditions()` for every test in that class and
+        therefore never exercised this seam: `computedReadsNotDeclared`'s
+        (then-)unconditional refusal and `_refuse_absent_clone_paths`'
+        declared-path-must-exist-at-the-pin refusal, running together, in
+        one real `generate-job` invocation.
+
+        `harness.py` both READS and WRITES the same not-yet-existing file
+        (the `search_record()`/`config.CEILINGS_RECORD` resumable-record
+        shape): before this corrective batch, no invocation could ever
+        succeed for a job's first-ever run — declaring the path refused
+        via `_refuse_absent_clone_paths` (no tree object at the pin, since
+        nothing has produced the file yet); leaving it undeclared refused
+        unconditionally via `computedReadsNotDeclared` (no hatch existed
+        for that bucket at all). Declaring refused; not declaring refused;
+        no third option existed.
+
+        Case A (undeclared, no `--accept-produced-reads`): still refuses
+        by default — the read is real and reported, never silently
+        dropped — but the refusal now NAMES the escape hatch. Case B
+        (undeclared, WITH `--accept-produced-reads`): succeeds, because an
+        undeclared clone path is never checked against the pin by
+        `_refuse_absent_clone_paths` at all — this is the actual
+        resolution of the deadlock: never declare the produced file, and
+        record the acceptance instead.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            origin, target, git = self.target_with_remote(Path(raw))
+            (target / "src" / "pkg" / "harness.py").write_text(
+                "from pathlib import Path\n\n"
+                "REPOSITORY = Path(__file__).resolve().parents[2]\n"
+                'RECORD = REPOSITORY / "product-out" / "ledger.json"\n\n\n'
+                "def run():\n"
+                "    if RECORD.exists():\n"
+                "        return {'record': RECORD.read_text(encoding='utf-8')}\n"
+                "    RECORD.parent.mkdir(parents=True, exist_ok=True)\n"
+                "    RECORD.write_text('{}', encoding='utf-8')\n"
+                "    return {}\n",
+                encoding="utf-8",
+            )
+            subprocess.run([*git, "add", "-A"], check=True)
+            subprocess.run([*git, "commit", "-q", "-m", "produced-read shape"],
+                           check=True)
+            subprocess.run([*git, "push", "-q", "origin", "HEAD:refs/heads/main"],
+                           check=True)
+
+            # Case A: undeclared, no hatch -> refuses, naming both the
+            # resolved path and the escape hatch.
+            completed = self.generate(target, origin)
+            output = completed.stdout + completed.stderr
+            self.assertNotEqual(
+                completed.returncode, 0,
+                "an undeclared produced read was silently admitted: " + output[:300],
+            )
+            self.assertIn("product-out/ledger.json", output)
+            self.assertIn("accept-produced-reads", output)
+            self.assertFalse(
+                (target / "tools").exists(),
+                "a job folder was written despite the refusal",
+            )
+
+            # Case B: undeclared, WITH --accept-produced-reads -> the
+            # deadlock's actual resolution: generation succeeds without
+            # ever declaring the not-yet-existent file, and without the
+            # file needing to exist at the pin at all.
+            argv = [sys.executable, str(REMOTE_CLI_SCRIPT), "generate-job",
+                    "--target", str(target), "--service", "kaggle",
+                    "--job-name", "probe-job", "--product", "Product",
+                    "--repo-url", str(origin), "--repo-ref", "main",
+                    "--clone-path", "src/pkg",
+                    "--run-module", "pkg.harness", "--run-function", "run",
+                    "--accept-produced-reads"]
+            completed = subprocess.run(argv, capture_output=True, text=True,
+                                       cwd=str(target))
+            self.assertEqual(
+                completed.returncode, 0,
+                (completed.stdout + completed.stderr).strip()[:300],
+            )
+            job_dir = Path(json.loads(completed.stdout)["jobFolder"])
+            run_config = json.loads(
+                (job_dir / "run-config.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                run_config["acceptedProducedReads"], ["product-out/ledger.json"]
+            )
 
 
 class PublishedPinResolutionTests(unittest.TestCase):
