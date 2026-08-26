@@ -12004,6 +12004,136 @@ class UndeclaredReadDetectionTests(unittest.TestCase):
                 )
             self.assertIn("uncertain reads", str(ctx.exception))
 
+    # -- Test 11 (Unit 2, Phase 7 — order-independence) ----------------
+
+    def test_cross_module_read_resolves_regardless_of_visit_order(self) -> None:
+        """The design's own named risk, made explicit: `resolve_clone_paths()`
+        walks its queue entry-module-first (`queue = [(name, True) for name
+        in entry_modules]`), and a sibling reached only through an import
+        discovered while scanning the entry module is enqueued to the BACK
+        of that queue. `pkg_i.harness` (the entry module, and the reader) is
+        therefore visited and scanned for read call sites BEFORE
+        `pkg_i.config` (the sibling that defines the constant it reads) is
+        ever popped off the queue — by construction of this walker, not by
+        anything this fixture arranges. If cross-module resolution depended
+        on `pkg_i.config`'s constant table already existing in some shared
+        table built file-by-file in visit order, this read would be
+        unresolvable at the moment it is scanned. It must resolve anyway.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(target, "src/pkg_i/__init__.py", "")
+            self._write(
+                target, "src/pkg_i/config.py",
+                "from pathlib import Path\n\n"
+                "REPOSITORY = Path(__file__).resolve().parents[2]\n"
+                'PRODUCT = REPOSITORY / "product-out"\n'
+                'RESULTS = PRODUCT / "Results" / "Stage"\n'
+                'RECORD = RESULTS / "ceilings.json"\n',
+            )
+            self._write(
+                target, "src/pkg_i/harness.py",
+                "from pkg_i import config\n\n\n"
+                "def ceilings_on_record():\n"
+                "    if not config.RECORD.exists():\n"
+                "        return {}\n"
+                "    return config.RECORD.read_text(encoding='utf-8')\n",
+            )
+
+            result = JOBFOLDER.resolve_clone_paths(
+                target, ["pkg_i.harness"], ["src/pkg_i"]
+            )
+
+            self.assertEqual(
+                result["computedReadsNotDeclared"],
+                ["product-out/Results/Stage/ceilings.json"],
+            )
+            self.assertEqual(result["unresolvedReads"], [])
+
+    # -- Test 12 (Unit 2, Phase 8 — cross-module resolution) -----------
+
+    def test_cross_module_attribute_read_undeclared_refuses_naming_the_resolved_path(
+        self,
+    ) -> None:
+        """Mirrors `harness.py`'s real `search_record()`-shaped read of
+        `config.CEILINGS_RECORD.read_text()` (`harness.py:784`): the
+        constant folds in a DIFFERENT file (`pkg_j.config`) than the one
+        holding the read call site (`pkg_j.harness`), reached only via the
+        walk's own module->file map, reused (not duplicated) from import
+        classification. Undeclared -> refuses, naming the resolved path,
+        and the refusal reaches the full `generate_job()` round trip.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(target, "src/pkg_j/__init__.py", "")
+            self._write(
+                target, "src/pkg_j/config.py",
+                "from pathlib import Path\n\n"
+                "REPOSITORY = Path(__file__).resolve().parents[2]\n"
+                'PRODUCT = REPOSITORY / "product-out"\n'
+                'RESULTS = PRODUCT / "Results" / "Stage"\n'
+                'CEILINGS_RECORD = RESULTS / "ceilings.json"\n',
+            )
+            self._write(
+                target, "src/pkg_j/harness.py",
+                "from pkg_j import config\n\n\n"
+                "def search_record():\n"
+                "    if not config.CEILINGS_RECORD.exists():\n"
+                "        return {}\n"
+                "    return config.CEILINGS_RECORD.read_text(encoding='utf-8')\n",
+            )
+
+            result = JOBFOLDER.resolve_clone_paths(
+                target, ["pkg_j.harness"], ["src/pkg_j"]
+            )
+
+            self.assertEqual(
+                result["computedReadsNotDeclared"],
+                ["product-out/Results/Stage/ceilings.json"],
+            )
+            self.assertEqual(result["unresolvedReads"], [])
+
+            with self.assertRaises(JOBFOLDER.JobFolderError) as ctx:
+                self._generate(
+                    tmp, target,
+                    clone_paths=["src/pkg_j"],
+                    run_module="pkg_j.harness",
+                    run_function="search_record",
+                )
+            self.assertIn("product-out/Results/Stage/ceilings.json", str(ctx.exception))
+
+    # -- Test 13 (Unit 2, Phase 8 — unresolved sibling module) ---------
+
+    def test_cross_module_attribute_whose_module_did_not_resolve_is_unresolved(
+        self,
+    ) -> None:
+        """`pkg_k.missing_config` looks like this repository's own code
+        (`pkg_k` is a real package, imported the same way as the resolved
+        case above) but the specific submodule file does not exist on
+        disk — `_classify_import()` returns `"unresolved"`, exactly the
+        posture an unresolved same-package import already gets. The
+        attribute read on it must never be silently dropped: it becomes an
+        `unresolvedReads` entry, same as any other read whose receiver
+        could not fold.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            self._write(target, "src/pkg_k/__init__.py", "")
+            self._write(
+                target, "src/pkg_k/harness.py",
+                "from pkg_k import missing_config\n\n\n"
+                "def read_it():\n"
+                "    return missing_config.RECORD.read_text(encoding='utf-8')\n",
+            )
+
+            result = JOBFOLDER.resolve_clone_paths(
+                target, ["pkg_k.harness"], ["src/pkg_k"]
+            )
+
+            self.assertEqual(result["computedReadsNotDeclared"], [])
+            self.assertEqual(len(result["unresolvedReads"]), 1)
+            self.assertIn("read call", result["unresolvedReads"][0])
+
 
 class StalenessTests(unittest.TestCase):
     """`jobfolder.read()` — design #744 section 4: there is no `is_stale()`

@@ -427,7 +427,105 @@ def _shadowed_names(tree: ast.Module) -> set[str]:
     return shadowed
 
 
-def _fold_module_constants(tree: ast.Module, file: Path) -> dict[str, Path]:
+# ---------------------------------------------------------------------------
+# Cross-module attribute resolution (Unit 2) — `module.CONSTANT` reads
+# (`config.CEILINGS_RECORD.read_text()`, `harness.py:784`). Chosen as
+# LAZY-FOLD-ON-DEMAND, not two-pass: `_classify_import()` (already reused
+# unchanged) resolves a dotted module name to a file purely from the
+# filesystem, independent of anything the walk's own queue has visited —
+# there is no notion of "not visited yet" to be order-dependent about. This
+# is what makes lazy resolution correct regardless of whether the reading
+# file or the defining file is scanned first by `resolve_clone_paths()`'s
+# queue (Phase 7's named risk, test `test_cross_module_read_resolves_
+# regardless_of_visit_order`). `cache`, keyed by resolved file, memoizes
+# each sibling file's constant table so a repeatedly-read constant is
+# folded once per `resolve_clone_paths()` call, not once per reference.
+# ---------------------------------------------------------------------------
+
+
+def _import_alias_map(tree: ast.Module) -> dict[str, str]:
+    """Local name -> dotted module name, for every `ast.Import`/
+    `ast.ImportFrom` reachable anywhere in `tree` (scope is irrelevant here,
+    same as the read call sites this feeds — Task 8.1: only rebinding of
+    the name itself in a non-module scope disqualifies folding, and that is
+    `_shadowed_names()`'s job, not this map's).
+
+    `import pkg.sub as alias` -> `{"alias": "pkg.sub"}`; bare `import pkg`
+    -> `{"pkg": "pkg"}` (the bound name is always the first dotted
+    segment when no `asname` is given). `from pkg import name` -> `{"name":
+    "pkg.name"}`, mirroring a real cited target's own `from <package>
+    import bags, config, report_digest, wiring` shape (a sibling-module
+    import, not a package attribute) — `name` here is a SUBMODULE, exactly
+    what this resolution needs; `from pkg import *` is skipped, same
+    posture as the import-classification walk gives a star import (never
+    enqueued).
+    """
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                local = alias.asname or alias.name.split(".", 1)[0]
+                aliases[local] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                local = alias.asname or alias.name
+                aliases[local] = f"{node.module}.{alias.name}"
+    return aliases
+
+
+def _resolve_module_constant(
+    dotted_module: str,
+    attr: str,
+    source: Path,
+    cache: dict[Path, dict[str, Path] | None],
+) -> Path | None:
+    """Resolve `dotted_module.attr` by classifying `dotted_module` through
+    `_classify_import()` (the SAME function import classification already
+    uses, unchanged) and, only when it names this repository's own code
+    (`kind == "internal"`), folding that sibling file's own module-level
+    constants and looking up `attr` in the result.
+
+    A module that does not resolve (`"unresolved"`, e.g. it looks like this
+    repository's own package but the specific submodule file does not
+    exist) or is not this repository's own code (`"external"`) returns
+    `None` — never a guess, and never silence: the caller (`_fold_path_expr`,
+    then `_scan_read_call_sites`) treats a `None` receiver as unfoldable,
+    which becomes an `unresolvedReads` entry for a read-shaped call, same as
+    any other unfoldable receiver.
+
+    `cache` memoizes by resolved file, and doubles as a cycle guard: a file
+    is marked `None` (in progress) the instant its own fold begins, so a
+    constant chain that circularly cross-references back to a file already
+    being folded resolves that one hop to `None` instead of recursing
+    forever — an edge case no cited target exhibits, guarded defensively.
+    """
+    kind, _clone_path, file = _classify_import(dotted_module, source, is_entry=False)
+    if kind != "internal" or file is None:
+        return None
+    if file in cache:
+        table = cache[file]
+        return None if table is None else table.get(attr)
+    cache[file] = None  # in progress: guards against a circular reference
+    try:
+        text = file.read_text(encoding="utf-8")
+        sibling_tree = ast.parse(text)
+    except (OSError, UnicodeDecodeError, SyntaxError):
+        cache[file] = {}
+        return None
+    table = _fold_module_constants(sibling_tree, file, source=source, cache=cache)
+    cache[file] = table
+    return table.get(attr)
+
+
+def _fold_module_constants(
+    tree: ast.Module,
+    file: Path,
+    *,
+    source: Path | None = None,
+    cache: dict[Path, dict[str, Path] | None] | None = None,
+) -> dict[str, Path]:
     """Scan module-level `ast.Assign` statements only (`tree.body`, never a
     nested function or class body) and fold each single-name target's
     right-hand side through `_fold_path_expr()`, building each constant on
@@ -441,8 +539,15 @@ def _fold_module_constants(tree: ast.Module, file: Path) -> dict[str, Path]:
     cannot be trusted as the name's one true value. A name bound anywhere
     in a non-module scope (`_shadowed_names()`) is never added at all, for
     the same reason — see that function's docstring.
+
+    `source`/`cache`, when given (Unit 2), enable a right-hand side that is
+    itself a cross-module attribute (`module.CONSTANT`) to resolve via
+    `_resolve_module_constant()` — `imports` (`_import_alias_map()`) is
+    always computed fresh from THIS `tree`, never passed in, since it is
+    intrinsic to the file being folded, not to the caller.
     """
     shadowed = _shadowed_names(tree)
+    imports = _import_alias_map(tree)
     table: dict[str, Path] = {}
     assigned_twice: set[str] = set()
     for node in tree.body:
@@ -459,13 +564,23 @@ def _fold_module_constants(tree: ast.Module, file: Path) -> dict[str, Path]:
             continue
         if name in shadowed:
             continue
-        folded = _fold_path_expr(node.value, table, file)
+        folded = _fold_path_expr(
+            node.value, table, file, imports=imports, source=source, cache=cache
+        )
         if folded is not None:
             table[name] = folded
     return table
 
 
-def _fold_path_expr(node: ast.AST, table: dict[str, Path], file: Path) -> Path | None:
+def _fold_path_expr(
+    node: ast.AST,
+    table: dict[str, Path],
+    file: Path,
+    *,
+    imports: dict[str, str] | None = None,
+    source: Path | None = None,
+    cache: dict[Path, dict[str, Path] | None] | None = None,
+) -> Path | None:
     """Fold one AST expression into a concrete `Path`, admitting only a
     closed grammar (design decision 3):
 
@@ -476,6 +591,10 @@ def _fold_path_expr(node: ast.AST, table: dict[str, Path], file: Path) -> Path |
     - `BinOp(Div)` with a string-literal right operand, chained
       (`X / "a" / "b"`)
     - `.joinpath("a", "b", ...)` with every argument a string literal
+    - (Unit 2) `module.CONSTANT`, an `ast.Attribute` whose receiver is a
+      bare `Name` bound by an import (`imports`) to another module in this
+      repository — resolved via `_resolve_module_constant()`, ONLY when
+      `imports`/`source`/`cache` are all supplied by the caller
 
     Everything else returns `None`, never a guess — this is the CLOSED,
     documented grammar (see `SKILL.md`'s undeclared-read-detection
@@ -484,8 +603,9 @@ def _fold_path_expr(node: ast.AST, table: dict[str, Path], file: Path) -> Path |
     `os.environ[...]`, `sys.argv[...]`, `.with_name(...)`/
     `.with_suffix(...)`/`.stem`/`.glob(...)`, `Path(x)` for any `x` other
     than `__file__` or a string literal, a ternary (`ast.IfExp`),
-    `AugAssign`, a tuple-unpack assignment target, and `.parents[N]` with a
-    non-literal index. An evaluator whose limits are undocumented is a
+    `AugAssign`, a tuple-unpack assignment target, `.parents[N]` with a
+    non-literal index, and an attribute access whose receiver is not a
+    known imported module. An evaluator whose limits are undocumented is a
     detector that implies completeness — everything outside this roster
     becomes an `unresolvedReads` entry instead, carrying the file, line,
     and `ast.unparse()` of the expression.
@@ -504,7 +624,9 @@ def _fold_path_expr(node: ast.AST, table: dict[str, Path], file: Path) -> Path |
 
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
         if node.func.attr == "resolve" and not node.args and not node.keywords:
-            base = _fold_path_expr(node.func.value, table, file)
+            base = _fold_path_expr(
+                node.func.value, table, file, imports=imports, source=source, cache=cache
+            )
             return base.resolve() if base is not None else None
         if (
             node.func.attr == "joinpath"
@@ -512,7 +634,9 @@ def _fold_path_expr(node: ast.AST, table: dict[str, Path], file: Path) -> Path |
             and not node.keywords
             and all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in node.args)
         ):
-            base = _fold_path_expr(node.func.value, table, file)
+            base = _fold_path_expr(
+                node.func.value, table, file, imports=imports, source=source, cache=cache
+            )
             if base is None:
                 return None
             for arg in node.args:
@@ -521,7 +645,9 @@ def _fold_path_expr(node: ast.AST, table: dict[str, Path], file: Path) -> Path |
         return None
 
     if isinstance(node, ast.Attribute) and node.attr == "parent":
-        base = _fold_path_expr(node.value, table, file)
+        base = _fold_path_expr(
+            node.value, table, file, imports=imports, source=source, cache=cache
+        )
         return base.parent if base is not None else None
 
     if (
@@ -533,7 +659,9 @@ def _fold_path_expr(node: ast.AST, table: dict[str, Path], file: Path) -> Path |
         if not (isinstance(index, ast.Constant) and isinstance(index.value, int)
                 and not isinstance(index.value, bool) and index.value >= 0):
             return None
-        base = _fold_path_expr(node.value.value, table, file)
+        base = _fold_path_expr(
+            node.value.value, table, file, imports=imports, source=source, cache=cache
+        )
         if base is None:
             return None
         parents = list(base.parents)
@@ -547,8 +675,20 @@ def _fold_path_expr(node: ast.AST, table: dict[str, Path], file: Path) -> Path |
         and isinstance(node.right, ast.Constant)
         and isinstance(node.right.value, str)
     ):
-        base = _fold_path_expr(node.left, table, file)
+        base = _fold_path_expr(
+            node.left, table, file, imports=imports, source=source, cache=cache
+        )
         return (base / node.right.value) if base is not None else None
+
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and imports is not None
+        and source is not None
+        and cache is not None
+        and node.value.id in imports
+    ):
+        return _resolve_module_constant(imports[node.value.id], node.attr, source, cache)
 
     return None
 
@@ -618,9 +758,16 @@ def _scan_read_call_sites(
     table: dict[str, Path],
     file: Path,
     resolved_target: Path,
+    *,
+    source: Path | None = None,
+    cache: dict[Path, dict[str, Path] | None] | None = None,
 ) -> tuple[set[Path], list[str]]:
     """Walk every `ast.Call` in `tree` once, classifying each one against
-    the read/write/neutral roster (design decision 6):
+    the read/write/neutral roster (design decision 6). `source`/`cache`
+    (Unit 2), when given, let a receiver such as `config.CEILINGS_RECORD`
+    fold through `_fold_path_expr()`'s cross-module branch — `imports`
+    (`_import_alias_map()`) is computed fresh from THIS `tree`, same
+    reasoning as `_fold_module_constants()`.
 
     - the call is itself part of `_fold_path_expr()`'s own grammar
       (`Path(...)`, `.resolve()`, `.joinpath(...)`) -> pure path
@@ -645,18 +792,24 @@ def _scan_read_call_sites(
     resolved, target-relative `Path`s; `unresolved` is a list of
     `"<file>:<line>: <expr> — <why>"` strings.
     """
+    imports = _import_alias_map(tree)
     read_candidates: set[Path] = set()
     unresolved: list[str] = []
+
+    def fold(expr: ast.AST) -> Path | None:
+        return _fold_path_expr(
+            expr, table, file, imports=imports, source=source, cache=cache
+        )
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        if _fold_path_expr(node, table, file) is not None:
+        if fold(node) is not None:
             continue  # pure path construction, not an I/O action
 
         if isinstance(node.func, ast.Attribute):
             method = node.func.attr
-            receiver = _fold_path_expr(node.func.value, table, file)
+            receiver = fold(node.func.value)
             if receiver is not None:
                 contained = _read_candidate(receiver, resolved_target)
                 if contained is None:
@@ -700,7 +853,7 @@ def _scan_read_call_sites(
             mode_node = _keyword_value(node.keywords, "mode")
             if mode_node is None and len(node.args) >= 2:
                 mode_node = node.args[1]
-            folded = _fold_path_expr(path_arg, table, file)
+            folded = fold(path_arg)
             if folded is not None:
                 contained = _read_candidate(folded, resolved_target)
                 if contained is None:
@@ -730,7 +883,7 @@ def _scan_read_call_sites(
         # the library-loader shape (`some_loader(RECORD)`,
         # `pd.read_csv(DATA)`). Never silence.
         for arg in node.args:
-            folded = _fold_path_expr(arg, table, file)
+            folded = fold(arg)
             if folded is None:
                 continue
             contained = _read_candidate(folded, resolved_target)
@@ -844,6 +997,14 @@ def resolve_clone_paths(
     unresolved: list[str] = []
     computed_reads: set[str] = set()
     unresolved_reads: list[str] = []
+    # Unit 2 (cross-module resolution): memoizes each sibling file's own
+    # constant table, keyed by resolved file, shared across the whole walk.
+    # Populated LAZILY (on first cross-module reference, via
+    # `_resolve_module_constant()`) and/or directly below as each file is
+    # visited in the main walk — whichever happens first for a given file;
+    # both paths compute the identical, deterministic table, so visit
+    # order never changes the result (Phase 7).
+    constant_cache: dict[Path, dict[str, Path] | None] = {}
     visited: set[Path] = set()
     queued: set[str] = set(entry_modules)
     queue: list[tuple[str, bool]] = [(name, True) for name in entry_modules]
@@ -879,12 +1040,16 @@ def resolve_clone_paths(
             unresolved.append(f"{file}: unparsable ({exc})")
             continue
 
-        # Undeclared-read detection (Unit 1, same-file): the SAME parsed
-        # `tree`, no new file traversal. `file` is already resolved
-        # (derived from `source = resolved_target / "src"`).
-        read_table = _fold_module_constants(tree, file)
+        # Undeclared-read detection (Unit 1 same-file, Unit 2 cross-module):
+        # the SAME parsed `tree`, no new file traversal. `file` is already
+        # resolved (derived from `source = resolved_target / "src"`).
+        # `constant_cache` overwrites any lazily-computed placeholder for
+        # this file with the authoritative table — deterministic, so this
+        # is idempotent regardless of which path reached `file` first.
+        read_table = _fold_module_constants(tree, file, source=source, cache=constant_cache)
+        constant_cache[file] = read_table
         read_candidates, read_unresolved = _scan_read_call_sites(
-            tree, read_table, file, resolved_target
+            tree, read_table, file, resolved_target, source=source, cache=constant_cache
         )
         for candidate in read_candidates:
             computed_reads.add(candidate.relative_to(resolved_target).as_posix())

@@ -804,11 +804,15 @@ executable — no test in this suite reaches the network or a real account).
   built under a directory the same run also `mkdir`s and writes on a later
   invocation — the same walked file set both writes AND reads that
   constant, so excluding "a path the run creates" would have suppressed
-  the exact read this detector exists to catch. The accepted consequence:
-  that resume-artifact read is unfoldable (its path is built across a
-  cross-module boundary this Unit does not yet resolve) and becomes an
-  `unresolvedReads` entry that refuses by default, rather than being
-  silently excused.
+  the exact read this detector exists to catch. Under Unit 1 alone that
+  resume-artifact read was cross-module (the constant is folded in a
+  DIFFERENT file than the one calling `.read_text()` on it) and therefore
+  unfoldable, landing in `unresolvedReads` — refusing by default, never
+  silently excused, but only via the weaker of the two refusal paths.
+  Unit 2 (below) resolves exactly this cross-module shape, so that same
+  read now folds fully and lands in `computedReadsNotDeclared` instead —
+  refusing unconditionally, the stronger of the two, with no
+  `--accept-unresolved-reads` escape hatch available for it at all.
 
   The admitted grammar `_fold_path_expr()` folds is CLOSED and documented,
   never implied complete: `Path(__file__)` and `.resolve()`/`.parent`
@@ -848,11 +852,30 @@ executable — no test in this suite reaches the network or a real account).
   wrote (this one becomes an `unresolvedReads` entry, not a silent miss);
   `campaign`/`smoke` `mkdir` then open for writing.
 
-  Cross-module attribute reads (`sibling.CONSTANT.read_text()`, a constant
-  folded in a DIFFERENT file than the one doing the read) are Unit 2's own
-  scope, not this Unit's — a same-file-only limitation, separate from the
-  grammar limitation above, and covered by its own doctrine addition once
-  that unit lands.
+  **Cross-module attribute reads (Unit 2).** `sibling.CONSTANT.read_text()`
+  — a constant folded in a DIFFERENT file than the one doing the read
+  (the real, cited target's own `search_record()` reading
+  `config.CEILINGS_RECORD.read_text()`, the constant folded in `config.py`
+  rather than the file calling it) — now resolves too. Chosen as
+  LAZY-FOLD-ON-DEMAND, not two-pass: `_resolve_module_constant()` reuses
+  `_classify_import()` UNCHANGED (the same function import classification
+  already calls) to turn the local name an import bound (`_import_alias_
+  map()`) into a sibling file, purely from the filesystem — independent of
+  whether the main walk's own queue has visited that sibling yet. This is
+  what makes resolution correct regardless of visit order: an entry
+  module is always scanned for its own read call sites before its
+  transitively-imported siblings are ever popped off the queue, so a
+  same-file-only, visit-order-dependent design would have missed exactly
+  the shape this Unit exists to catch. A per-`resolve_clone_paths()`-call
+  cache memoizes each sibling file's folded table by resolved file path,
+  so a repeatedly-referenced constant is folded once, not once per
+  reference, and doubles as a cycle guard for a circular cross-module
+  reference (an edge case no cited target exhibits). A module that does
+  not resolve to this repository's own code (`_classify_import()`'s
+  `"unresolved"` or `"external"` postures, unchanged) folds to `None`
+  exactly like any other unfoldable receiver — the read call site still
+  reaches `unresolvedReads` by its own read-shaped method name, never
+  silently dropped.
 
   `validate_clone_paths()` gained an optional `target` argument: when
   given, each clone path is also resolved against it and refused if that
