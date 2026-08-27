@@ -5545,6 +5545,118 @@ def cmd_position(args: argparse.Namespace) -> dict:
     }
 
 
+
+def _agreement_collides(target: Path, name: str, operand: str | None) -> list[str]:
+    """Every existing checklist item, anywhere in the product folder's
+    markdown, whose text names the same operand this witness does.
+
+    Computed fresh on every call, over `AGREEMENT_LINE`/`AGREEMENTS_GLOB`
+    directly -- never through `agreements_state`, which collapses a
+    settled item down to a bare count and keeps only an open item's text.
+    A collision search needs the text of every item, settled or not, so it
+    reads the files itself rather than asking a function that already threw
+    half of them away. `agreements_state()` itself stays untouched (design's
+    own constraint, restated in its own docstring above).
+    """
+    if not operand:
+        return []
+    product = target / name
+    if not product.is_dir():
+        return []
+    collides: list[str] = []
+    for path in sorted(p for p in product.glob(AGREEMENTS_GLOB) if p.is_file()):
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            match = AGREEMENT_LINE.match(raw.rstrip())
+            if match and operand in match.group("text"):
+                collides.append(match.group("text"))
+    return collides
+
+
+def _resolve_discuss_about(raw: str, position: dict) -> dict:
+    """`--about <ordinal|witness>`: a caller names a step either by its
+    number in the current sequence, or by a bare witness spec ("kind" or
+    "kind operand") when there is no sequence item yet to number (design
+    §3.3). Never both -- a witness spec is never itself all-digits, so the
+    two are unambiguous on sight.
+    """
+    if raw.isdigit():
+        ordinal = int(raw)
+        item = next((i for i in position["sequence"] if i["ordinal"] == ordinal), None)
+        if item is None:
+            raise Refused(
+                "DISCUSS_ABOUT_NOT_FOUND",
+                f"no sequence item numbered {ordinal}; the position section "
+                f"holds {len(position['sequence'])} item(s).")
+        return {"ordinal": ordinal, "kind": item["witness"]["kind"],
+                "operand": item["witness"]["operand"]}
+    parts = raw.split(None, 1)
+    kind = parts[0]
+    operand = parts[1] if len(parts) > 1 else None
+    if kind not in impl_position.WITNESS_KINDS:
+        raise Refused(
+            "POSITION_WITNESS_UNKNOWN_KIND",
+            f"--about names unknown witness kind {kind!r}; expected one of "
+            f"{sorted(impl_position.WITNESS_KINDS)}")
+    return {"ordinal": None, "kind": kind, "operand": operand}
+
+
+def cmd_discuss(args: argparse.Namespace) -> dict:
+    """Discussion as an operation with a return value (design §3.3).
+
+    Replaces the prose at `SKILL.md`'s AGREEMENTS doctrine telling the agent
+    to name a collision with an existing agreement and wait for the user:
+    prose cannot be held to a return statement, so this makes "I asked" a
+    fact with a ledger line instead. It never gates -- there is no refusal
+    here for a question left unanswered, only a reported `status`.
+
+    `--question -` and `--answer -` both read stdin the same way
+    `cmd_compose`'s `--entry-text` already does; giving both `-` at once is
+    refused rather than silently reading one and leaving the other blank.
+    """
+    target = resolve_target(args.target)
+    name = validate_name(args.name)
+
+    if args.question == "-" and args.answer == "-":
+        raise Refused(
+            "DISCUSS_STDIN_CONFLICT",
+            "--question and --answer cannot both read stdin in one call; "
+            "pass at most one of them as -.")
+
+    evidence = _position_write_evidence(target, name)
+    position = position_state(target, name, evidence, None, None)
+    about = _resolve_discuss_about(args.about, position)
+
+    question = sys.stdin.read() if args.question == "-" else args.question
+    question = question.strip()
+    if not question:
+        raise Refused("DISCUSS_EMPTY_QUESTION",
+                      "discuss requires a non-blank question.")
+
+    answer = None
+    if args.answer is not None:
+        raw_answer = sys.stdin.read() if args.answer == "-" else args.answer
+        answer = raw_answer.strip() or None
+
+    synthetic_item = {"witness": {"kind": about["kind"], "operand": about["operand"]},
+                      "mark": " "}
+    measured = impl_position.derive([synthetic_item], evidence)[0]["derived"]
+    collides = _agreement_collides(target, name, about["operand"])
+
+    status = "answered" if answer else "open"
+    recorded_at = _now_iso8601()
+    impl_position.append_event(
+        target / name / ".implementation" / "position.jsonl",
+        {"kind": "discuss", "about": about, "asked": question,
+         "answered": answer, "status": status, "at": recorded_at})
+
+    return {
+        "command": "discuss", "target": str(target), "name": name,
+        "status": status, "about": about, "measured": measured,
+        "collides": collides, "asked": question, "answered": answer,
+        "recordedAt": recorded_at,
+    }
+
+
 def cmd_verify(args: argparse.Namespace) -> dict:
     target = resolve_target(args.target)
     name = validate_name(args.name)
@@ -5897,7 +6009,8 @@ COMMANDS = {"env": cmd_env, "name": cmd_name, "plan": cmd_plan, "apply": cmd_app
             "admit": cmd_admit, "handoff": cmd_handoff, "compose": cmd_compose,
             "probe": cmd_probe,
             "verify": cmd_verify,
-            "position": cmd_position}
+            "position": cmd_position,
+            "discuss": cmd_discuss}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -5967,6 +6080,15 @@ def main(argv: list[str] | None = None) -> int:
                                 "Existing items are matched by witness "
                                 "identity and kept untouched; only unmatched "
                                 "steps are appended")
+        if name == "discuss":
+            p.add_argument("--about", required=True,
+                           help="an ordinal in the position sequence, or a "
+                                "bare witness spec ('kind' or 'kind operand')")
+            p.add_argument("--question", required=True,
+                           help="the question text, or - to read stdin")
+            p.add_argument("--answer", default=None,
+                           help="the answer text, or - to read stdin; omit "
+                                "to leave the discussion open")
 
     args = parser.parse_args(argv)
     try:

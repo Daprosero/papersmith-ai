@@ -639,6 +639,36 @@ again: an unchanged target appends nothing and reports `"unchanged"`.
 `--sequence` and `--reconcile` together refuse `POSITION_SEQUENCE_AND_RECONCILE`
 — only one of the two may name this call's sequence.
 
+## `discuss` — a question with a return value
+
+Replaces telling the agent, in prose, to name a collision with an existing
+agreement and wait: `discuss` makes "I asked" a fact with a ledger line
+instead. It never gates — an unanswered question is a reported `status`,
+not a refusal.
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py discuss \
+  --target implementations/<repo> --name <Name> \
+  --about "rehearsal governing-search" \
+  --question "Should this job rehearse before the campaign?"
+```
+
+```json
+{ "status": "open", "about": {"ordinal": null, "kind": "rehearsal",
+                              "operand": "governing-search"},
+  "measured": null, "collides": [], "asked": "Should this job rehearse...",
+  "answered": null }
+```
+
+`--about` names the step either by its ordinal in the current position
+sequence, or by a bare witness spec (`"kind"` or `"kind operand"`) when
+there is no sequence item yet to number. `--answer` (optionally `-` to read
+stdin, like `--question`) moves `status` from `"open"` to `"answered"`; at
+most one of `--question`/`--answer` may read stdin in the same call.
+`collides` is computed fresh against every checklist item in the product
+folder's markdown that names the same operand — never remembered from an
+earlier call.
+
 ## Probe — what stands between this repository and a benchmark
 
 ```bash

@@ -2057,14 +2057,15 @@ which is prose a reader follows, not a rung the ladder computes.
 ## Command Roster
 
 `implementation_cli.py` grows a write-verb surface beyond `env`/`plan`/`apply`
-/`admit`/`handoff`/`compose`: `position` is the first of four commands that
-write into `<Name>/AGREED.md` or its ledger rather than only reporting.
-Column one is read against `COMMANDS`' own keys, so a new command fails the
-tests until it has a row here.
+/`admit`/`handoff`/`compose`: `position` and `discuss` are two of four commands
+this change adds that write into `<Name>/AGREED.md`, its ledger, or both,
+rather than only reporting. Column one is read against `COMMANDS`' own keys,
+so a new command fails the tests until it has a row here.
 
 | Command | What it writes | Refuses on |
 | --- | --- | --- |
 | `position` | No flag: re-derives the marks of the block already in `<Name>/AGREED.md`, touching nothing else about it. `--sequence -`: installs a fresh section from stdin JSON. `--reconcile`: reconstructs the sequence from what the target already has (declared record, discovered job folders, `Notebooks/*.ipynb`, and arrived shards with `--shards`), matching existing items by witness identity and appending only unmatched ones. Every real write appends one event to `.implementation/position.jsonl` | `REVISION_UNREADABLE`, `POSITION_BLOCK_EXISTS` (install over an existing block without `--replace`), `POSITION_SEQUENCE_AND_RECONCILE`, `POSITION_HOLDER_ABSENT` (nothing to append into), `POSITION_HOLDER_AMBIGUOUS`, `POSITION_BLOCK_NOT_UNIQUE`, `POSITION_BLOCK_MALFORMED`, `POSITION_ITEM_MALFORMED`, `POSITION_ITEM_WITHOUT_WITNESS`, `POSITION_WITNESS_UNKNOWN_KIND`, `POSITION_SEQUENCE_UNREADABLE`, `POSITION_SEQUENCE_EMPTY` |
+| `discuss` | One `discuss` event per call to `.implementation/position.jsonl` — the question, the computed collision list, and (once given) the answer. Never touches `<Name>/AGREED.md`. Never gates: an unanswered question is a reported `status`, not a refusal | `DISCUSS_STDIN_CONFLICT` (`--question -` and `--answer -` together), `DISCUSS_EMPTY_QUESTION`, `DISCUSS_ABOUT_NOT_FOUND` (an `--about` ordinal outside the sequence), `POSITION_WITNESS_UNKNOWN_KIND` (an `--about` witness spec naming an unknown kind) |
 
 ## References
 

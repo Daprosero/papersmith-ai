@@ -11407,3 +11407,112 @@ class PositionReconcileTests(unittest.TestCase):
             "a realistically-shaped reconciled target under the common "
             "no-`--shards` invocation -- design §11's own escalation applies: "
             "move `@shard` off the no-flag default, do not loosen this bound")
+
+class DiscussCommandTests(unittest.TestCase):
+    """`discuss` -- discussion as an operation with a return value (design §3.3).
+
+    Replaces the prose at `SKILL.md`'s AGREEMENTS doctrine telling the agent to
+    name a collision with an existing agreement and wait for the user: prose
+    cannot be held to a return statement, so this makes "I asked" a fact with
+    a ledger line instead. It never gates -- there is no refusal here for an
+    unanswered question, only a reported `status`.
+    """
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_e2e_discuss_cmd_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text("", encoding="utf-8")
+        return box
+
+    def run_cli(self, *args, stdin=None):
+        return subprocess.run([sys.executable, str(CLI), *args], input=stdin,
+                              capture_output=True, text=True, cwd=FORGE)
+
+    # --- 5.1: collides is computed fresh each call, never remembered ---
+
+    def test_discuss_computes_collides_not_remembers(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n"
+            "- [x] Read the pilot notebook, Notebooks/pilot.ipynb, into the report.\n",
+            encoding="utf-8")
+
+        first = self.run_cli("discuss", "--target", str(box), "--name", "Method",
+                             "--about", "notebook Notebooks/pilot.ipynb",
+                             "--question", "Does an agreement already name this notebook?")
+        self.assertEqual(first.returncode, 0, first.stdout)
+        first_result = json.loads(first.stdout)
+        self.assertEqual(len(first_result["collides"]), 1)
+        self.assertIn("Notebooks/pilot.ipynb", first_result["collides"][0])
+
+        # The identical call, after the collision is edited out of the file --
+        # if `collides` were remembered from the first call rather than
+        # computed fresh, it would still report one here.
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n- [x] Something unrelated.\n", encoding="utf-8")
+        second = self.run_cli("discuss", "--target", str(box), "--name", "Method",
+                              "--about", "notebook Notebooks/pilot.ipynb",
+                              "--question", "Does an agreement already name this notebook?")
+        self.assertEqual(second.returncode, 0, second.stdout)
+        self.assertEqual(json.loads(second.stdout)["collides"], [])
+
+    # --- 5.2: open, then answered -- a real status transition ---
+
+    def test_discuss_open_then_answered_status_transition(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text("# Agreed\n", encoding="utf-8")
+
+        opened = self.run_cli("discuss", "--target", str(box), "--name", "Method",
+                              "--about", "rehearsal governing-search",
+                              "--question", "Should this job rehearse before the campaign?")
+        self.assertEqual(opened.returncode, 0, opened.stdout)
+        opened_result = json.loads(opened.stdout)
+        self.assertEqual(opened_result["status"], "open")
+        self.assertIsNone(opened_result["answered"])
+
+        answered = self.run_cli("discuss", "--target", str(box), "--name", "Method",
+                                "--about", "rehearsal governing-search",
+                                "--question", "Should this job rehearse before the campaign?",
+                                "--answer", "Yes, rehearse it first.")
+        self.assertEqual(answered.returncode, 0, answered.stdout)
+        answered_result = json.loads(answered.stdout)
+        self.assertEqual(answered_result["status"], "answered")
+        self.assertEqual(answered_result["answered"], "Yes, rehearse it first.")
+
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([e["kind"] for e in events], ["discuss", "discuss"])
+        self.assertEqual([e["status"] for e in events], ["open", "answered"])
+
+    def test_discuss_about_accepts_an_ordinal_into_the_position_sequence(self):
+        """The other half of `--about <ordinal|witness>` (design §3.3): a
+        caller may name a step by its number instead of repeating its witness.
+        """
+        box = self._box()
+        header = {"revision": "r1.md", "revisionSha256": "a" * 64,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1"}
+        items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                  "witness": {"kind": "rehearsal", "operand": "job1"}}]
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+
+        proc = self.run_cli("discuss", "--target", str(box), "--name", "Method",
+                            "--about", "1", "--question", "Is job1 the right job?")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["about"], {"ordinal": 1, "kind": "rehearsal", "operand": "job1"})
+
+    def test_discuss_refuses_an_ordinal_not_in_the_sequence(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text("# Agreed\n", encoding="utf-8")
+        proc = self.run_cli("discuss", "--target", str(box), "--name", "Method",
+                            "--about", "9", "--question", "What is step 9?")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "DISCUSS_ABOUT_NOT_FOUND")
+
