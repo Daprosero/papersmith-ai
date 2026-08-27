@@ -514,6 +514,16 @@ the same change.
 | `references/probes/skill-audit.reading-a.json` | the first supplied reading of the worked `reading-diff` invocation |
 | `references/probes/skill-audit.reading-b.json` | the second supplied reading of the worked `reading-diff` invocation |
 | `references/probes/skill-audit.sensitivity.json` | the self-probe recipe for `sensitivity` |
+| `references/probes/remote-execution.accepted-operations.json` | `remote-execution`'s top-level `roster` recipe — pre-existing gap, committed without this row |
+| `references/probes/remote-execution.smoke-subcommands.json` | `remote-execution`'s nested `smoke record` `roster` recipe |
+
+`references/probes/remote-execution.accepted-operations.json` shipped one commit
+before this pair of rows was added, itself undeclared here the whole time —
+this table's own `structure` probe would have caught that gap the moment
+anyone ran it. It is the same defect class this skill exists to catch,
+committed while fixing an instance of it elsewhere in this same file: a rule
+enforced at operator cadence, not on every commit, so a gap between "a file
+landed" and "its row landed" can outlive one commit undetected.
 
 ## Decision Gates
 
