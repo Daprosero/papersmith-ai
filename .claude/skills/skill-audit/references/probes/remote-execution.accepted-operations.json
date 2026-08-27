@@ -8,7 +8,7 @@
   "extract": "choose from (?P<roster>[^)]+)",
   "split": ", ",
   "doctrineSites": [
-    {"path": "SKILL.md", "table": null}
+    {"path": "SKILL.md", "table": "| Command | What it does |", "column": 0}
   ],
   "restatementSearch": {
     "quorum": 4,
