@@ -11324,6 +11324,22 @@ class PositionReconcileTests(unittest.TestCase):
         return subprocess.run([sys.executable, str(CLI), *args],
                               capture_output=True, text=True, cwd=FORGE, env=env)
 
+    def _shards(self, stamps):
+        """A real shard directory on disk, one subdirectory per shard, each
+        holding a `shard.json` stamp -- the exact shape `shard_io.read_shards`
+        assumes, and the same shape `ShardRefusalCrossJoinTests.build_shards`
+        builds elsewhere in this file for `verify`. Duplicated here rather
+        than shared across classes because a stray cross-class dependency
+        would make this class's own fixtures harder to read in isolation.
+        """
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        for shard, stamp in stamps.items():
+            folder = root / shard
+            folder.mkdir()
+            (folder / "shard.json").write_text(json.dumps(stamp), encoding="utf-8")
+        return root
+
     # --- 4.2: the fixture's 90 items and its Reversed section survive ---
 
     def test_reconcile_appends_without_disturbing_existing_items_or_reversed_section(self):
@@ -11396,11 +11412,49 @@ class PositionReconcileTests(unittest.TestCase):
         self.assertEqual(second_result["sequence"][1]["witness"],
                          {"kind": "notebook", "operand": "Notebooks/b.ipynb"})
 
+    # --- 4.4: `--reconcile --shards` measures what it just discovered ---
+
+    def test_reconcile_measures_an_arrived_shard_it_discovers(self):
+        """RED before the fix, for the exact reason design §11 names:
+        `--reconcile --shards <dir>` discovers a `@shard` witness for every
+        arrived shard, but `position`'s own evidence
+        (`_position_write_evidence`) hardcoded `shardsArrived: None`
+        regardless of `--shards`, so the very witness this call just
+        discovered from `<dir>` read `unmeasured` instead of `True` -- the
+        arrival evidence was a function argument away and never read.
+        """
+        box = self._box(agreed_text="# Agreed\n\n- [x] Something already settled.\n")
+        shards = self._shards({"a": {"epochs": 5}})
+
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--reconcile", "--shards", str(shards),
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        shard_item = next(item for item in result["sequence"]
+                          if item["witness"] == {"kind": "shard", "operand": "a"})
+        self.assertTrue(
+            shard_item["derived"],
+            f"a shard just discovered from --shards's own directory reads "
+            f"derived={shard_item['derived']!r} instead of True; --reconcile "
+            "found it but position's own evidence never learns --shards was "
+            "given at all.")
+
     # --- 4.5: the falsifier, an assertion that runs (design §11) ---
 
     def test_unmeasured_never_outnumbers_measured_on_reconciled_target(self):
         """If this fails, the fix is design §11's own escalation — move
         `@shard` off the no-flag default — never loosening this assertion.
+
+        Ten shard directories against six other witnesses (one `@record`,
+        five `@notebook`) is not an arbitrary ratio: it is the real shape
+        measured against a MIL-CREDA-shaped target (ten shards under
+        `Results/Benchmark/shards`, five notebooks, one declared record),
+        reproduced with `position --reconcile --shards <dir>` -- the exact
+        invocation that surfaced `_position_write_evidence`'s hardcoded
+        `shardsArrived: None`. RED before that function threads `--shards`
+        through (6 measured vs 10 unmeasured); GREEN once it does.
         """
         box = self._box(agreed_text=self.FIXTURE.read_text(encoding="utf-8"))
         (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
@@ -11409,41 +11463,28 @@ class PositionReconcileTests(unittest.TestCase):
         (box / "Method" / "Results").mkdir(parents=True)
         (box / "Method" / "Results" / "record.json").write_text("{}", encoding="utf-8")
         (box / "Method" / "Notebooks").mkdir(parents=True)
-        (box / "Method" / "Notebooks" / "pilot.ipynb").write_text("{}", encoding="utf-8")
-        (box / "Method" / "Notebooks" / "campaign.ipynb").write_text("{}", encoding="utf-8")
+        for notebook in ("a", "b", "c", "d", "e"):
+            (box / "Method" / "Notebooks" / f"{notebook}.ipynb").write_text(
+                "{}", encoding="utf-8")
+        shards = self._shards({f"s{i:02d}": {"epochs": 5} for i in range(10)})
         proposals = self._proposals()
 
         reconcile = self.run_cli("position", "--target", str(box), "--name", "Method",
                                  "--revision", "r1.md", "--session", "s1",
-                                 "--reconcile", proposals=proposals)
+                                 "--reconcile", "--shards", str(shards),
+                                 proposals=proposals)
         self.assertEqual(reconcile.returncode, 0, reconcile.stdout)
-        reconciled = json.loads(reconcile.stdout)
+        position = json.loads(reconcile.stdout)
 
-        # A hand-authored `@shard` rung, the way a human actually writes the
-        # full-scale step of a sequence (design §2's own worked example) --
-        # the one witness kind this mechanism can never measure without
-        # `--shards`, and the reason this assertion exists at all.
-        next_ordinal = len(reconciled["sequence"]) + 1
-        agreed_path = box / "Method" / "AGREED.md"
-        agreed_path.write_text(
-            agreed_path.read_text(encoding="utf-8").replace(
-                "<!-- /position -->",
-                f"- [ ] {next_ordinal}. Full grid, every shard. `@shard s1`\n"
-                "<!-- /position -->"),
-            encoding="utf-8")
-
-        verify = self.run_cli("verify", "--target", str(box), "--name", "Method",
-                              "--revision", "r1.md", proposals=proposals)
-        self.assertEqual(verify.returncode, 0, verify.stdout)
-        position = json.loads(verify.stdout)["position"]
         measured = sum(1 for item in position["sequence"] if item["derived"] is not None)
         unmeasured = sum(1 for item in position["sequence"] if item["derived"] is None)
         self.assertGreaterEqual(
             measured, unmeasured,
             f"`unmeasured` ({unmeasured}) outnumbers `measured` ({measured}) on "
-            "a realistically-shaped reconciled target under the common "
-            "no-`--shards` invocation -- design §11's own escalation applies: "
-            "move `@shard` off the no-flag default, do not loosen this bound")
+            "a reconciled target shaped like a real one (10 shards, 6 other "
+            "witnesses), given the exact `--shards` directory that discovered "
+            "them -- the mechanism is decaying into the prose it replaced "
+            "(design §11's own falsifier).")
 
 
 class DiscussCommandTests(unittest.TestCase):

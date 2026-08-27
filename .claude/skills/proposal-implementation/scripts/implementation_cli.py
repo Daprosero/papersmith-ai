@@ -5213,13 +5213,23 @@ def _now_iso8601() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _position_write_evidence(target: Path, name: str) -> dict:
+def _position_write_evidence(
+        target: Path, name: str, shards_root: str | None = None) -> dict:
     """The same evidence shape `position_state` is handed through `probe`
     (2069-2075): search, its declared required scale, the notebooks, the
-    jobs' `smokeReady`, and no shard answer at all — `position`'s own
-    refresh/install take no `--shards` flag, exactly like `probe`, so
-    `@shard` reports `unmeasured` here for the identical reason (see
-    `impl_position.derive`'s own docstring).
+    jobs' `smokeReady`, and a shard answer only when `shards_root` names
+    one. `discuss`, `gate` and `close` declare no `--shards` flag at all
+    (`main()`, ~6333), so their callers always pass `shards_root=None` and
+    `@shard` reports `unmeasured` for them exactly as `probe` reports it —
+    `probe` itself takes no `--shards` either (2069-2075).
+
+    `position` is different: `main()` gives it `--shards` (~6320) for
+    exactly this reason, so a caller MUST thread `getattr(args, "shards",
+    None)` through here rather than let it fall back silently, or the flag
+    stops doing anything it wasn't already doing before it existed —
+    `@shard` would keep reading `unmeasured` even on a call that named the
+    very directory holding the arrived shard (see `impl_position.derive`'s
+    own docstring for why `None` must never become `False` instead).
 
     A second small function computing this rather than a shared one `probe`
     also calls: `cmd_probe` already needs `search`, `resolved` and `jobs` as
@@ -5235,11 +5245,16 @@ def _position_write_evidence(target: Path, name: str) -> dict:
         resolved["contract"],
         list((report.get("declared") or {}).get("records") or []),
         target / name, declaration_status=resolved["status"])
+    shards_arrived = None
+    if shards_root:
+        shard_io = _load_remote_execution_shard_io()
+        shards_arrived = [entry["shard"]
+                          for entry in shard_io.read_shards(Path(shards_root))]
     return {
         "search": search, "requiredScale": declared_required_scale(search),
         "notebooks": notebooks_state(target, name, package_name(name)),
         "smokeReady": remote_execution_jobs_state(target)["smokeReady"],
-        "shardsArrived": None,
+        "shardsArrived": shards_arrived,
     }
 
 
@@ -5486,7 +5501,7 @@ def cmd_position(args: argparse.Namespace) -> dict:
         items = impl_position.parse_items(existing_block["body"])
         target_path = existing_path
 
-    evidence = _position_write_evidence(target, name)
+    evidence = _position_write_evidence(target, name, getattr(args, "shards", None))
     derived = impl_position.derive(items, evidence)
     wrote, left, unmeasured = [], [], []
     for item, result in zip(items, derived):
@@ -6318,17 +6333,24 @@ def main(argv: list[str] | None = None) -> int:
         if name == "apply":
             p.add_argument("--plan", required=True, help="path to the approved plan JSON")
         if name in {"verify", "position"}:
-            # `admit`, `handoff` and `probe` read no shard directory, and
-            # giving them a flag they ignore would be a promise this file
-            # does not keep. `position` reads one only under `--reconcile`
-            # — a bare refresh or `--sequence` install takes no shard
-            # evidence, exactly like `probe`.
+            # `admit`, `handoff`, `discuss`, `gate` and `close` read no shard
+            # directory, and giving them a flag they ignore would be a
+            # promise this file does not keep. `probe` also takes none, so
+            # `@shard` reads `unmeasured` there for the identical reason
+            # (`_position_write_evidence`'s own docstring). `position` DOES
+            # thread `--shards` into every write mode, not only `--reconcile`
+            # — a bare refresh or `--sequence` install with `--shards` also
+            # measures any `@shard` witness already in the block, the same
+            # evidence `--reconcile` uses to both discover and measure.
             p.add_argument("--shards", default=None,
                            help="a directory of returned shards; each "
                                 "subdirectory holds a shard.json stamp. For "
                                 "verify, reports which declared-identical "
                                 "fields the shards disagree on, and which "
-                                "shards arrived. For position --reconcile, "
+                                "shards arrived. For position, measures every "
+                                "@shard witness against the same directory "
+                                "(refresh, --sequence install and --reconcile "
+                                "alike); --reconcile additionally discovers "
                                 "one @shard witness per arrived shard")
         if name in {"verify", "admit", "handoff", "probe", "position", "gate", "close"}:
             p.add_argument("--revision", default=None,

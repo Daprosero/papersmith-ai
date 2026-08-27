@@ -589,6 +589,11 @@ rebind reports `"unchanged"` and touches neither the file nor the ledger:
 writing a fresh timestamp over marks nobody re-measured would claim work that
 did not happen. `"absent"` means there is no block yet — install one first.
 
+`--shards <dir>` measures every `@shard` witness against that directory,
+whichever write mode this call uses — a bare refresh included. Without it,
+`@shard` reads `unmeasured` (never `False`): the shard may well have
+arrived, this invocation simply was not told where to look.
+
 `--sequence -` installs a fresh section instead of refreshing one, reading an
 ordered JSON array of `{text, witness: {kind, operand}}` from stdin:
 
@@ -631,7 +636,9 @@ python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py pos
 
 Builds one `@record` from the benchmark's declared search, one `@rehearsal`
 per discovered job folder, one `@notebook` per `Notebooks/*.ipynb` in name
-order, and — with `--shards` also given — one `@shard` per arrived shard.
+order, and — with `--shards` also given — one `@shard` per arrived shard,
+each measured `True` against that same directory in the same call, not left
+`unmeasured` until some later invocation happens to pass `--shards` too.
 Existing items are matched by witness identity (kind and operand) and keep
 their text and their order exactly; only a witness with no match is
 appended, its text a placeholder for a human to write over. Safe to run
