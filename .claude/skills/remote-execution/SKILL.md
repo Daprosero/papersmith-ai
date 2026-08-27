@@ -22,6 +22,18 @@ run at once -- and `list_active`. Neither is a time budget. `distribute` plans
 in concurrency slots, so its answer is "how many can run simultaneously",
 never "how many hours remain this week".
 
+**`reconcile` has no failure discipline, and it is the only caller without
+one.** It makes exactly one remote call, `adapter.list_active(worker)`, which
+reaches a zero-argument capacity op that issues one status request per ref the
+service enumerates -- with no per-ref exception handling. One refusal anywhere
+in that loop kills the command with no output. `packer.plan()` wraps the
+identical call, degrades to the ledger-derived count, and reports which source
+answered; `reconcile` does neither. The refusal also misattributes the fault: it
+says the enumeration failed structurally when the enumeration succeeded and a
+downstream per-ref call did not, and it recommends a fallback a `reconcile`
+caller does not have. Reproducing it costs a service call, so the correct per-ref
+handling is named here and not yet written.
+
 **Any plan that reasons in weekly hours takes that number from the operator.**
 Ask; do not assume, and never read one out of this repository.
 

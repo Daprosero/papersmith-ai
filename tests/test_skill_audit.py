@@ -1368,7 +1368,10 @@ class NumeralCheckTests(BoxMixin, unittest.TestCase):
             FORGE / ".claude" / "skills" / "remote-execution" / "SKILL.md")
         self.assertEqual(len(found), 1, found)
         finding = found[0]
-        self.assertEqual(finding["numeralLine"], 43)
+        # This anchor has moved twice now, both times because a section was
+        # inserted ABOVE it in the live subject. The sentence is unchanged;
+        # only its line is. Inserting above shifts every anchor below.
+        self.assertEqual(finding["numeralLine"], 55)
         self.assertEqual(finding["stated"], 3)
         self.assertGreater(
             finding["counted"], finding["stated"],

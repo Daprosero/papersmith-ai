@@ -10,6 +10,20 @@ runs, in a target repository, and then prove it: smoke, invariants, synthetic
 data. Text is not the deliverable — code with a traceable link back to the
 mathematics is.
 
+## What this skill has not written down
+
+**Its own operations are not documented as a closed set.** The CLI accepts nine
+and refuses everything else by naming them, so the running code holds a roster;
+this document does not. An audit of that surface returns `no-closed-roster` over
+all 2045 lines -- not "nothing found", but "every line read and no closed roster
+in any of them".
+
+That is the defect this forge's own auditor exists to find, standing in this
+file. The remedy is the one applied to a sibling skill: a plainly-named heading
+carrying a markdown table, late in the reference tail, that a probe can derive
+the documented side from. It is not written here yet, and until it is, a reader
+learns the operations by running the CLI and reading its refusal.
+
 ## Non-negotiable isolation
 
 Every run works inside `implementations/<repo>/` and uses **that repository's own

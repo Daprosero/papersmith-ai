@@ -13,6 +13,19 @@ is *for*. The work worth automating is not moving a file; it is answering **does
 this account actually authenticate**, which is a question only Kaggle can answer
 and one that stops being true over time.
 
+## What this skill has not written down
+
+**Its own operations are not documented as a closed set.** The CLI accepts five
+and refuses everything else by naming them, so the running code holds a roster;
+this document does not. An audit of that surface returns `no-closed-roster` over
+all 286 lines.
+
+The remedy is a plainly-named heading carrying a markdown table a probe can
+derive from. Two further things are true and worth knowing before someone tries:
+the instrument that produced this finding **cannot be declared** in the auditor's
+own doctrine, for a reason recorded there; and this skill holds live credentials,
+so any audit of it stays read-only.
+
 ## Activation Contract
 
 Invoking this skill asks **one** interactive question before doing anything:

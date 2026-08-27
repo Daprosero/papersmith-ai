@@ -30,6 +30,24 @@ themselves.
 
 ## Scope, and who chooses it
 
+**A subject whose own name carries a floor word cannot have its probe declared
+here, and therefore cannot ship one at all.** This doctrine may not spell those
+words -- `test_no_floor_word_appears_in_the_skill_itself` holds that -- and the
+shipped-files table below must stay complete. A probe file named after such a
+subject cannot satisfy both at once: naming it in the table breaks the floor,
+and omitting it breaks the table.
+
+One such subject has already been audited and returned a finding. The finding
+stands; the instrument does not ship. Recorded here rather than resolved,
+because every obvious remedy costs something real -- renaming a probe hides
+which subject it drives, exempting the table stops it being a closed set, and
+exempting the floor for filenames is a hole shaped exactly like the one the
+floor exists to close.
+
+**This is the audit's own defect class, in its own doctrine.** A closed set that
+cannot be completely stated is what every `no-closed-roster` finding names, and
+here the obstruction is a rule this skill wrote for itself.
+
 A subject larger than one closed surface is not audited in one pass. Propose a
 slicing — one closed surface per slice, each nameable in a line — and **ask**,
 through the interactive question facility. Never type a question into a reply
