@@ -516,6 +516,7 @@ the same change.
 | `references/probes/skill-audit.sensitivity.json` | the self-probe recipe for `sensitivity` |
 | `references/probes/remote-execution.accepted-operations.json` | `remote-execution`'s top-level `roster` recipe — pre-existing gap, committed without this row |
 | `references/probes/remote-execution.smoke-subcommands.json` | `remote-execution`'s nested `smoke record` `roster` recipe |
+| `references/probes/proposal-implementation.accepted-operations.json` | `proposal-implementation`'s `roster` recipe — same finding, over 2045 lines |
 
 `references/probes/remote-execution.accepted-operations.json` shipped one commit
 before this pair of rows was added, itself undeclared here the whole time —
