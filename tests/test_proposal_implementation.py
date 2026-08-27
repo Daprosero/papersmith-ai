@@ -6080,6 +6080,64 @@ class NotebookSealAgreementTests(unittest.TestCase):
         self.assertEqual(state["unstamped"], [])
         self.assertEqual(state["status"], "ok")
 
+    def test_a_report_names_what_the_digest_actually_compared(self):
+        """`stale-sources` proves the tree moved, never that this notebook's
+        own numbers are affected -- the comparison never asked.
+
+        Measured 2026-08-26: three notebooks read `stale-sources` after one
+        analysis function was added to a module no arm executes. No number had
+        changed; the remote shards' own digests still matched the tree they ran
+        on. A reader could not tell "the tree moved" from "these numbers are
+        suspect", and the recorded consequence is someone re-running a campaign
+        of hours over a module the campaign never executed.
+
+        The digest is not narrowed -- three measured failures forbid that, and
+        they are recorded beside `source_digest`. What changes is that the
+        boundary now travels WITH the status, where a reader meets it, instead
+        of living in a docstring they will not open.
+        """
+        index, _, _ = self.stamping_cell("verification.ipynb")
+        box = doctrine_scaffold(self, self.NAME, self.SEED)
+        notebook = box / self.NAME / "Notebooks" / "verification.ipynb"
+        seal = self.executed_seal(notebook, index)
+        self.stamped_as_executed(notebook, seal, index)
+
+        state = impl.notebooks_state(box, self.NAME, self.PACKAGE)
+        scope = state["reports"][0]["digestScope"]
+        self.assertIn("src/", scope,
+                      "the boundary must name what was compared")
+        self.assertIn("import", scope,
+                      "it must say the comparison is NOT this notebook's own "
+                      "import closure -- that is the half a reader needs")
+
+    def test_two_notebooks_importing_nothing_alike_report_the_same_boundary(self):
+        """The on-path/off-path case, and why it reports identically.
+
+        A digest over all of `src/` cannot distinguish a change on this
+        notebook's import path from one nowhere near it, and narrowing it to
+        find out is refused three times over. So both notebooks MUST carry the
+        same boundary text: a reader who saw them differ would infer a
+        distinction the comparison never made.
+        """
+        index, _, _ = self.stamping_cell("verification.ipynb")
+        box = doctrine_scaffold(self, self.NAME, self.SEED)
+        root = box / self.NAME / "Notebooks"
+        notebook = root / "verification.ipynb"
+        seal = self.executed_seal(notebook, index)
+        self.stamped_as_executed(notebook, seal, index)
+        # A second, unexecuted notebook: a different entry, same boundary.
+        (root / "other.ipynb").write_text(
+            json.dumps({"cells": [], "metadata": {}, "nbformat": 4,
+                        "nbformat_minor": 5}), encoding="utf-8")
+
+        state = impl.notebooks_state(box, self.NAME, self.PACKAGE)
+        scopes = {report["digestScope"] for report in state["reports"]}
+        self.assertEqual(len(state["reports"]), 2)
+        self.assertEqual(
+            len(scopes), 1,
+            "two notebooks must carry one identical boundary; differing text "
+            "would imply a per-notebook distinction the digest never computes")
+
     # -- the probe, which is not the same edit ------------------------------
 
     #: The tokens a probe carries beyond the five the scaffold answers. The

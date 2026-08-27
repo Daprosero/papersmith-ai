@@ -3611,6 +3611,21 @@ def _scale_of(value: object) -> int | None:
     return None
 
 
+#: What `source_digest` compared, carried beside every status that depends on
+#: it. `stale-sources` proves the tree moved since a notebook ran; it does NOT
+#: prove the change touched anything that notebook imports, because the
+#: comparison never asked. Two notebooks importing disjoint modules report this
+#: identically, and a reader who saw them differ would infer a distinction the
+#: digest never computes.
+DIGEST_SCOPE = (
+    "every .py under src/, never this notebook's own import closure: a "
+    "stale-sources status proves the tree moved since this notebook ran, not "
+    "that this notebook's own claims are affected. Clearing it means "
+    "re-executing the notebook -- re-running the stamp cell alone would print "
+    "a current digest over outputs that were never re-run."
+)
+
+
 def source_digest(target: Path, package: str) -> str:
     """One hash over everything a report's claims depend on.
 
@@ -3636,6 +3651,23 @@ def source_digest(target: Path, package: str) -> str:
     # being named, and for the same reason as before: it renders the tables and
     # writes the conclusions. Leaving it out let a conclusion be corrected in code
     # while the record kept asserting the old one, with everything green.
+    #
+    # Two further attempts are recorded here so a fourth is refused by reading
+    # rather than rediscovered by trying.
+    #
+    # A stamper lives in every target, not here. Eighteen copies of
+    # `report_digest.py` sit under `implementations/` -- one in the product's
+    # own `src/`, seventeen frozen inside shard clones. Changing the algorithm
+    # in the forge moves the VERIFIER and never those stampers, so every
+    # notebook of every existing product would read `stale-sources` at once:
+    # the defect under repair, in every product at once. Two locks hold that
+    # boundary -- a pinned literal digest and a whole-AST comparison against a
+    # source -- and the lock test states the mechanism itself.
+    #
+    # And `stamp()` once demanded arguments. The first notebook that did not
+    # use exactly the same names as the rest failed to stamp and was reported
+    # stale. A per-notebook digest needs the stamp to know which notebook
+    # prints it, which is that same failure wearing a new name.
     #
     # `package` no longer selects what is covered. It stays in the signature
     # because the two halves must be callable alike — see `report_digest.py` in
@@ -4028,6 +4060,9 @@ def notebooks_state(target: Path, name: str, package: str) -> dict:
         # Static, and it never gates: it names the same fact `verify` and
         # `probe` echo, nowhere close to `status` above.
         state["coupling"] = notebook_coupling(notebook, contract)
+        # The boundary travels WITH the status, where a reader meets it,
+        # rather than in a docstring they will not open.
+        state["digestScope"] = DIGEST_SCOPE
         reports.append(state)
     return {
         "sourcesDigest": current,
