@@ -15288,6 +15288,42 @@ class SmokeTests(unittest.TestCase):
             self.assertNotIn(leaked, source, leaked)
 
 
+def _subparser_children(parser):
+    """Every direct `(name, parser)` pair one `add_subparsers` level below
+    this parser. Duck-typed on `choices` rather than isinstance against a
+    private argparse class: the module is not imported here, and importing
+    it to name a private symbol would couple this lock to argparse's
+    internals for no gain.
+    """
+    children = []
+    for action in getattr(parser, "_actions", []):
+        choices = getattr(action, "choices", None)
+        if isinstance(choices, dict):
+            children.extend(choices.items())
+    return children
+
+
+def _declared_names(parser):
+    """Every subcommand name the parser accepts, at any nesting depth.
+
+    An unbounded, `id()`-deduplicated walk rather than a fixed-depth loop:
+    the rule this backs -- every accepted name is named in the frontmatter at
+    its own boundary -- is level-independent, so the collection must be too.
+    `id()` dedup survives `aliases=`, which map several keys to one parser
+    object; walking every alias is correct since each is a name a user can
+    actually type.
+    """
+    names, pending, seen = set(), [parser], {id(parser)}
+    while pending:
+        current = pending.pop()
+        for name, sub in _subparser_children(current):
+            names.add(name)
+            if id(sub) not in seen:
+                seen.add(id(sub))
+                pending.append(sub)
+    return names
+
+
 class FrontDoorRosterTests(unittest.TestCase):
     """The frontmatter claims a FULL front door, so it must name every command.
 
@@ -15305,15 +15341,7 @@ class FrontDoorRosterTests(unittest.TestCase):
 
     def test_the_description_names_every_subcommand_the_parser_declares(self):
         parser = REMOTE_CLI._build_parser()
-        declared = set()
-        for action in parser._actions:
-            # Duck-typed rather than isinstance against a private argparse
-            # class: the module is not imported here and importing it to name
-            # a private symbol would couple this lock to argparse's internals
-            # for no gain. A subparsers action is the one that carries choices.
-            choices = getattr(action, "choices", None)
-            if isinstance(choices, dict):
-                declared.update(choices)
+        declared = _declared_names(parser)
         self.assertTrue(
             declared, "no subcommand was recovered from the parser at all; "
             "this test would pass on an empty roster by accident")
@@ -15321,20 +15349,69 @@ class FrontDoorRosterTests(unittest.TestCase):
                 / ".claude/skills/remote-execution/SKILL.md").read_text(
                     encoding="utf-8")
         description = text.split("---", 2)[1]
-        # A command that owns a nested one is written the way a person types
-        # it -- `smoke record`, not `smoke` -- so the name is matched at a
-        # backtick boundary followed by either the closing tick or a space.
-        # Anchoring both ends keeps the match from passing on a longer name
-        # that merely starts the same way.
+        # Every accepted name -- at any nesting depth -- must be named at its
+        # own backtick boundary. A nested command is written the way a
+        # person types it -- `smoke record` -- but that string does not
+        # contain `record` at ITS OWN boundary, only `smoke`'s: there is no
+        # backtick immediately before "record" in "`smoke record`". A
+        # containment-style check that also accepted a trailing space (the
+        # `f"`{name} "` form this replaced) let `record` pass on exactly that
+        # string, which is precisely how it went undocumented at its own
+        # boundary. Anchoring both ends on the exact backtick-bounded token
+        # is the only form this test now accepts.
         missing = sorted(
             name for name in declared
-            if f"`{name}`" not in description
-            and f"`{name} " not in description)
+            if f"`{name}`" not in description)
         self.assertEqual(
             missing, [],
             "the frontmatter calls itself the full front door and does not "
             f"name: {missing}. A closed set stated by hand goes stale the "
             "next time it grows")
+
+    def test_the_description_names_the_nested_subcommand_at_its_own_boundary(self):
+        """`record` is `smoke`'s own nested subcommand
+        (`remote_cli.py:2253-2254`), derived from the parser rather than
+        hardcoded, so a rename at the code side is caught here too. The
+        frontmatter must name it at its own backtick boundary, independent
+        of `smoke` -- not merely as the tail of the two-word phrase
+        `smoke record`, which is the containment this change removes."""
+        parser = REMOTE_CLI._build_parser()
+        nested_names = set()
+        for _, sub in _subparser_children(parser):
+            for nested_name, _ in _subparser_children(sub):
+                nested_names.add(nested_name)
+        self.assertIn(
+            "record", nested_names,
+            "the nested subcommand this test pins ('record') was not found "
+            f"among the parser's nested names ({sorted(nested_names)}); it "
+            "may have moved or been renamed")
+        text = (REPOSITORY_ROOT
+                / ".claude/skills/remote-execution/SKILL.md").read_text(
+                    encoding="utf-8")
+        description = text.split("---", 2)[1]
+        self.assertIn(
+            "`record`", description,
+            "`record` must be named at its own backtick boundary in the "
+            "frontmatter, independent of `smoke`")
+
+    def test_the_parser_nests_exactly_one_level_below_the_top(self):
+        """The two-probe roster assumption (one probe file per nesting
+        level) is depth-bound, unlike the frontmatter-boundary rule above.
+        This watches that assumption rather than silently absorbing it: a
+        third level must fail HERE, by name, and say which nested command
+        needs its own probe file -- this suite cannot see what the probes
+        read, so it cannot enforce a level it does not know exists."""
+        parser = REMOTE_CLI._build_parser()
+        for name, sub in _subparser_children(parser):
+            for nested_name, nested_sub in _subparser_children(sub):
+                grandchildren = _subparser_children(nested_sub)
+                self.assertEqual(
+                    grandchildren, [],
+                    f"`{name} {nested_name}` carries its own nested "
+                    f"subcommands ({sorted(n for n, _ in grandchildren)}); "
+                    "the two-probe roster assumption (one probe file per "
+                    "nesting level) breaks at three levels, and "
+                    f"`{name} {nested_name}` needs its own probe file")
 
 
 class TargetVocabularyLeakTests(unittest.TestCase):
