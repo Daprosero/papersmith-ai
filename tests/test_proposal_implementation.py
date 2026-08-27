@@ -25,6 +25,10 @@ FORGE = Path(__file__).resolve().parents[1]
 CLI = FORGE / ".claude/skills/proposal-implementation/scripts/implementation_cli.py"
 sys.path.insert(0, str(CLI.parent))
 import implementation_cli as impl  # noqa: E402  (path set above)
+# `implementation_cli`'s own import of `impl_layout` etc. already put
+# `_core/implementation` on `sys.path`; this reaches the same module the CLI
+# reads its position grammar through, never a second copy.
+import impl_position  # noqa: E402
 
 SKILL_ROOT = CLI.parent.parent
 KIT = SKILL_ROOT / "assets" / "kit"
@@ -10727,3 +10731,175 @@ class ProvisionedEntryLivenessIntegrationTests(unittest.TestCase):
         self.assertEqual(direct.returncode, 0, direct.stderr)
         self.assertNotIn("refusing to run under", direct.stdout + direct.stderr)
         self.assertIn("42", direct.stdout)
+
+
+class PositionModuleTests(unittest.TestCase):
+    """`impl_position`'s pure grammar and splice, exercised directly against
+    the module — no target, no repository, no subprocess.
+
+    The two byte-preservation properties below are ported from the
+    deliberation engine's own suite
+    (`tests/proposal-deliberation-successor-byte-preservation.test.mjs:41-78`),
+    not re-derived: a replacement argument that interprets its own bytes as
+    escapes is the same bug class in a different language, and `AGREED.md`
+    already carries the payload that would expose it — `$$`, `\\tag{}`, and
+    backslashes (design lines 197-261 of a real target).
+    """
+
+    HEADER = {
+        "revision": "research-concept-r17",
+        "revisionSha256": "a" * 64,
+        "derivedAt": "2026-08-27T00:00:00Z",
+        "session": "s1",
+    }
+
+    def block_text(self, items):
+        return impl_position.render(self.HEADER, items)
+
+    # --- ported: "$$" survives, never collapsed by a replacement-pattern escape ---
+
+    def test_a_dollar_dollar_and_backslash_payload_survives_splice_byte_for_byte(self):
+        payload_text = "The identity is $$E=mc^2$$ and \\tag{39} names it."
+        items = [{"ordinal": 1, "mark": " ", "text": payload_text,
+                  "witness": {"kind": "record", "operand": None}}]
+        new_block = self.block_text(items).encode("utf-8")
+        original = "# Title\n\nSome prose already here.\n".encode("utf-8")
+
+        spliced = impl_position.splice(original, new_block, None)
+
+        self.assertIn(payload_text.encode("utf-8"), spliced)
+        self.assertTrue(spliced.startswith(original))
+        # Round-trip: locate + parse recovers the identical payload text,
+        # which is only possible if the bytes were concatenated rather than
+        # run through anything that treats "$$" or "\t" as an escape.
+        block = impl_position.locate_block(spliced)
+        parsed = impl_position.parse_items(block["body"])
+        self.assertEqual(parsed[0]["text"], payload_text)
+
+    # --- ported: only the located span changes; an identical string elsewhere stays ---
+
+    def test_replacing_the_block_leaves_an_identical_string_elsewhere_untouched(self):
+        outside = "Shared line.\n"
+        placeholder = [{"ordinal": 1, "mark": " ", "text": "placeholder",
+                        "witness": {"kind": "record", "operand": None}}]
+        old_block = self.block_text(placeholder).encode("utf-8")
+        original = ("# Doc\n\n" + outside + "\n").encode("utf-8") + old_block
+
+        block = impl_position.locate_block(original)
+        self.assertIsNotNone(block)
+
+        new_items = [{"ordinal": 1, "mark": " ", "text": "Shared line.",
+                      "witness": {"kind": "record", "operand": None}}]
+        new_block = self.block_text(new_items).encode("utf-8")
+        spliced = impl_position.splice(original, new_block, block)
+
+        # The outside occurrence, at its original byte offset, is untouched.
+        outside_at = original.index(outside.encode("utf-8"))
+        self.assertEqual(spliced[outside_at:outside_at + len(outside)],
+                          outside.encode("utf-8"))
+        # It appears exactly once outside the block and once inside the
+        # freshly spliced-in block -- never merged, never duplicated by the
+        # splice itself.
+        self.assertEqual(spliced.count(b"Shared line."), 2)
+
+    # --- location: uniqueness required, never first-occurrence-wins ---
+
+    def test_two_position_blocks_refuse_rather_than_pick_the_first(self):
+        items = [{"ordinal": 1, "mark": " ", "text": "x",
+                  "witness": {"kind": "record", "operand": None}}]
+        block = self.block_text(items).encode("utf-8")
+        doc = block + b"\n" + block
+
+        with self.assertRaises(impl.Refused) as ctx:
+            impl_position.locate_block(doc)
+        self.assertEqual(ctx.exception.code, "POSITION_BLOCK_NOT_UNIQUE")
+
+    def test_absent_block_is_a_state_not_an_error(self):
+        self.assertIsNone(impl_position.locate_block(b"# Doc\n\nNo block here.\n"))
+
+    # --- derive(): three-valued, per witness kind, never guessing on absence ---
+
+    def test_derive_record_ticks_on_found_and_required_scale_satisfied(self):
+        items = [{"ordinal": 1, "mark": " ", "text": "x",
+                  "witness": {"kind": "record", "operand": None}}]
+        self.assertIs(impl_position.derive(
+            items, {"search": {"recordFound": False}, "requiredScale": {}}
+        )[0]["derived"], False)
+        self.assertIs(impl_position.derive(
+            items, {"search": {"recordFound": True}, "requiredScale": {}}
+        )[0]["derived"], True)
+        self.assertIs(impl_position.derive(
+            items, {"search": {"recordFound": True, "scaleSatisfied": False},
+                    "requiredScale": {"seeds": 30}}
+        )[0]["derived"], False)
+        self.assertIsNone(impl_position.derive(items, {})[0]["derived"])
+
+    def test_derive_notebook_ticks_on_executed_and_sources_match(self):
+        items = [{"ordinal": 1, "mark": " ", "text": "x",
+                  "witness": {"kind": "notebook",
+                             "operand": "Notebooks/campaign.ipynb"}}]
+        evidence = {"notebooks": {"reports": [
+            {"notebook": "Method/Notebooks/campaign.ipynb",
+             "status": "executed", "sourcesMatch": True}]}}
+        self.assertIs(impl_position.derive(items, evidence)[0]["derived"], True)
+        evidence["notebooks"]["reports"][0]["sourcesMatch"] = False
+        self.assertIs(impl_position.derive(items, evidence)[0]["derived"], False)
+        self.assertIsNone(impl_position.derive(items, {})[0]["derived"])
+
+    def test_derive_rehearsal_ticks_on_smoke_ready(self):
+        items = [{"ordinal": 1, "mark": " ", "text": "x",
+                  "witness": {"kind": "rehearsal", "operand": "ceiling-search"}}]
+        self.assertIs(impl_position.derive(
+            items, {"smokeReady": {"ceiling-search": True}})[0]["derived"], True)
+        self.assertIs(impl_position.derive(
+            items, {"smokeReady": {"ceiling-search": False}})[0]["derived"], False)
+        self.assertIsNone(impl_position.derive(items, {})[0]["derived"])
+
+    def test_derive_shard_is_unmeasured_without_shard_evidence(self):
+        items = [{"ordinal": 1, "mark": " ", "text": "x",
+                  "witness": {"kind": "shard", "operand": "s3"}}]
+        self.assertIs(impl_position.derive(
+            items, {"shardsArrived": ["s3"]})[0]["derived"], True)
+        self.assertIs(impl_position.derive(
+            items, {"shardsArrived": ["s1"]})[0]["derived"], False)
+        # `probe` never supplies `shardsArrived`; `verify` without `--shards`
+        # does not either. Both leave this `None` -- never a false "did not
+        # arrive" for a shard this invocation was simply not told to check.
+        self.assertIsNone(impl_position.derive(items, {})[0]["derived"])
+
+    def test_derive_flags_disagreement_between_disk_mark_and_measurement(self):
+        items = [{"ordinal": 1, "mark": "x", "text": "x",
+                  "witness": {"kind": "rehearsal", "operand": "job"}}]
+        result = impl_position.derive(items, {"smokeReady": {"job": False}})[0]
+        self.assertIs(result["derived"], False)
+        self.assertTrue(result["disagrees"])
+
+    def test_derive_unmeasured_never_disagrees(self):
+        items = [{"ordinal": 1, "mark": "x", "text": "x",
+                  "witness": {"kind": "shard", "operand": "s3"}}]
+        result = impl_position.derive(items, {})[0]
+        self.assertIsNone(result["derived"])
+        self.assertFalse(result["disagrees"])
+
+    # --- parse_items(): malformed witness is refused, never silently accepted ---
+
+    def test_item_without_a_witness_is_refused(self):
+        with self.assertRaises(impl.Refused) as ctx:
+            impl_position.parse_items("- [ ] 1. No witness token at all.\n")
+        self.assertEqual(ctx.exception.code, "POSITION_ITEM_WITHOUT_WITNESS")
+
+    def test_item_naming_an_unknown_witness_kind_is_refused(self):
+        with self.assertRaises(impl.Refused) as ctx:
+            impl_position.parse_items("- [ ] 1. Something. `@wat`\n")
+        self.assertEqual(ctx.exception.code, "POSITION_WITNESS_UNKNOWN_KIND")
+
+    # --- ledger fold: append-only, absent file is zero events, not an error ---
+
+    def test_ledger_round_trips_and_is_empty_when_absent(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "Method" / ".implementation" / "position.jsonl"
+            self.assertEqual(impl_position.read_events(path), [])
+            impl_position.append_event(path, {"kind": "gate", "jobName": "j1"})
+            impl_position.append_event(path, {"kind": "close", "session": "s1"})
+            events = impl_position.read_events(path)
+            self.assertEqual([e["kind"] for e in events], ["gate", "close"])
