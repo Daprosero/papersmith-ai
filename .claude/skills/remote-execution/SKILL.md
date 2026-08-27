@@ -285,7 +285,8 @@ Three modules exist so far, each service-blind and stdlib-only:
     `_core/implementation/impl_position.py`, never re-derived here). A
     non-rehearsal `submit` now refuses unless the newest `gate` event
     matches this invocation's own pin, relative entrypoint, ordered unit
-    list and named worker, and carries a non-blank justification.
+    list and named worker (or its absence), and carries a non-blank
+    justification.
 
     **Readiness is the un-forgeable half.** `gate` only ever appends its
     record after `readiness` (above) reads `True` for that job at its
@@ -301,11 +302,29 @@ Three modules exist so far, each service-blind and stdlib-only:
     exempt — gating it would deadlock the very mechanism that makes
     readiness measurable. The legacy `<Name>/Notebooks/**.ipynb` shape is
     exempt — it has no job folder, so nothing ever promised a runner a
-    commit and no `@rehearsal` witness could ever name one. Campaign mode
-    (`--unit`) is exempt — `gate`'s own CLI takes no `--unit` flag, so a
+    commit and no `@rehearsal` witness could ever name one. Both exemptions
+    are structural: readiness cannot exist before a rehearsal has run, and
+    a shape with no job folder has nothing for `gate` to bind to.
+
+    **Campaign mode (`--unit`) is NOT exempt** — a design revision on top
+    of what shipped first (`the-position-nobody-holds` PR8). The original
+    reasoning here claimed `gate`'s own CLI took no `--unit` flag, so a
     campaign launch could never be matched by any `gate` record; requiring
-    one would make every campaign launch permanently unauthorizable, never
-    an adoption cost.
+    one would make it permanently unauthorizable rather than an adoption
+    cost. That premise was wrong, and the consequence inverted this whole
+    mechanism's purpose: the single send ended up gated and the campaign —
+    the full-scale, multi-worker, hours-long launch this change exists to
+    gate in the first place — did not. `gate` now takes the identical
+    repeatable `--unit` `distribute`/`submit` already declare, and binds
+    the SAME three facts `campaign_consent_token()` binds for consent: pin,
+    relative entrypoint, and the exact ordered unit list, computed from the
+    caller's own argv before `packer.distribute()` ever runs — never the
+    per-worker assignment `distribute()` computes later, which
+    `_verify_launch_authorization()` never sees at all. A campaign
+    authorization's `worker` field is always `None`, matching what a
+    campaign `submit` invocation's own binding always is (`cmd_submit`'s
+    own `--worker`/`--unit` mutual exclusivity, mirrored by `cmd_gate`'s
+    own refusal on the same conflict).
 
     Fail-closed for everything else, on purpose: a job-folder product with
     no `.implementation/position.jsonl` at all refuses exactly like one

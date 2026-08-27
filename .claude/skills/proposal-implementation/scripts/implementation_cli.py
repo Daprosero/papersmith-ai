@@ -5661,22 +5661,57 @@ def cmd_gate(args: argparse.Namespace) -> dict:
 
     Binds `smokeReady`'s already-measured pass/fail to a human-drafted,
     non-blank justification and appends the pair as one `gate` event -- the
-    record a later change's `remote_cli._verify_launch_authorization()`
-    (PR7) reads back before a non-rehearsal `submit` may run. Prints no
-    token: the whole point of this mechanism is that a caller cannot mint
-    the record by computing a digest over its own argv (design §4.1) -- it
-    can only exist because a rehearsal already ran and was recorded, read
-    back here through `remote_execution_jobs_state()`'s own `smokeReady`.
+    record `remote_cli._verify_launch_authorization()` reads back before a
+    non-rehearsal `submit` may run. Prints no token: the whole
+    point of this mechanism is that a caller cannot mint the record by
+    computing a digest over its own argv (design §4.1) -- it can only exist
+    because a rehearsal already ran and was recorded, read back here
+    through `remote_execution_jobs_state()`'s own `smokeReady`.
 
-    Checked in refusing-costs-nothing order: the justification first (pure
-    argv, no I/O at all), then the revision, then whether a position section
-    exists and is current to reach a rung in, then the un-forgeable
-    readiness measurement, then whether the rung this job's witness names
-    has actually been reached -- a launch that skips a rung is refused and
-    the hole is visible.
+    `--unit`, repeatable, authorizes a CAMPAIGN launch instead of a
+    single-send one (PR8, `the-position-nobody-holds` -- design revision:
+    PR7 exempted campaign mode entirely, on the mistaken premise that no
+    ordered unit list was knowable at gate time; it is knowable, it is the
+    exact list the caller intends to pass `submit --unit ...`, the same
+    list `distribute --unit ...` already mints its own consent token
+    against). It binds the exact ordered list a later `submit --unit ...`
+    will carry -- the SAME derivation `remote_cli.campaign_consent_token()`
+    already uses for consent, never a second one invented for this record.
+    `--worker` and `--unit` are mutually exclusive here, mirroring
+    `remote_cli.cmd_submit()`'s own rule: campaign mode has no single named
+    account for `--worker` to authorize (`packer.distribute()` spreads
+    across every healthy account instead), so a campaign record's own
+    `worker` field is always `None` -- exactly what a campaign `submit`
+    invocation's own binding always is, and what
+    `_verify_launch_authorization()` therefore matches against.
+
+    Checked in refusing-costs-nothing order: the `--worker`/`--unit`
+    conflict and the justification first (both pure argv, no I/O at all),
+    then the revision, then whether a position section exists and is
+    current to reach a rung in, then the un-forgeable readiness
+    measurement, then whether the rung this job's witness names has
+    actually been reached -- a launch that skips a rung is refused and the
+    hole is visible.
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
+
+    if args.units and args.worker is not None:
+        raise Refused(
+            "GATE_WORKER_UNIT_CONFLICT",
+            "--worker and --unit are mutually exclusive: campaign mode "
+            "(--unit) authorizes the ordered unit list a later `submit "
+            "--unit ...` will carry, and that launch names no single "
+            "account -- the same reason `submit` itself refuses --worker "
+            "together with --unit.")
+    if not args.units and args.worker is None:
+        raise Refused(
+            "GATE_WORKER_REQUIRED",
+            "gate requires --worker unless --unit authorizes a campaign: "
+            "a single-send or rehearsal launch names exactly one account, "
+            "and there is no auto-select shape for gate to authorize -- an "
+            "auto-selected submit invocation (no --worker) can never match "
+            "any gate record.")
 
     justification = sys.stdin.read() if args.justification == "-" else args.justification
     justification = justification.strip()
@@ -5760,11 +5795,30 @@ def cmd_gate(args: argparse.Namespace) -> dict:
 
     commit = run_config.get("commit")
     entrypoint = str((job_dir / rcli.JOBFOLDER.RUNNER_FILENAME).relative_to(target))
-    units = list(run_config.get("units") or [])
+    if args.units:
+        # Campaign form: the operator-declared ordered list this record
+        # authorizes, hashed IN THE GIVEN ORDER by `campaign_consent_
+        # token()` too -- never sorted, never deduplicated, never read back
+        # from `run_config`, which never carries a campaign's dynamically
+        # distributed per-worker assignment (that split is `packer.
+        # distribute()`'s own decision at dispatch time, made after consent
+        # and authorization are both already given -- not anyone's to
+        # authorize in advance).
+        units = list(args.units)
+        worker = None
+    else:
+        # Single-send / rehearsal form: a job folder's own declared,
+        # static `units` field -- unrelated to a campaign's ordered
+        # `--unit` list, and empty on every job folder this forge
+        # generates today (no job-folder schema field named `units`
+        # exists), matching the empty binding a single-send `submit`
+        # invocation always carries.
+        units = list(run_config.get("units") or [])
+        worker = args.worker
 
     recorded_at = _now_iso8601()
     event = {
-        "kind": "gate", "jobName": args.job, "worker": args.worker,
+        "kind": "gate", "jobName": args.job, "worker": worker,
         "commit": commit, "revision": args.revision,
         "revisionSha256": revision_sha256, "entrypoint": entrypoint,
         "units": units, "justification": justification,
@@ -5774,7 +5828,7 @@ def cmd_gate(args: argparse.Namespace) -> dict:
 
     return {
         "command": "gate", "target": str(target), "name": name,
-        "status": "recorded", "job": args.job, "worker": args.worker,
+        "status": "recorded", "job": args.job, "worker": worker,
         "commit": commit, "revision": args.revision,
         "revisionSha256": revision_sha256, "entrypoint": entrypoint,
         "units": units, "justification": justification,
@@ -6319,8 +6373,19 @@ def main(argv: list[str] | None = None) -> int:
         if name == "gate":
             p.add_argument("--job", required=True,
                            help="the job name a `@rehearsal` witness names")
-            p.add_argument("--worker", required=True,
-                           help="the account this launch is being authorized for")
+            p.add_argument("--worker", default=None,
+                           help="the account this launch is being authorized "
+                                "for; required unless --unit authorizes a "
+                                "campaign instead, and refused together with "
+                                "--unit -- a campaign has no single named "
+                                "account")
+            p.add_argument("--unit", dest="units", action="append", default=None,
+                           help="repeatable: authorize a CAMPAIGN launch "
+                                "instead of a single-send one, binding the "
+                                "exact ordered unit list a later `submit "
+                                "--unit ...` will carry -- the same "
+                                "derivation remote_cli's own consent token "
+                                "uses. Mutually exclusive with --worker")
             p.add_argument("--justification", required=True,
                            help="the launch justification text, or - to read "
                                 "stdin; refused if it is blank")

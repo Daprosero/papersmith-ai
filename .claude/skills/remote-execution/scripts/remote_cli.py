@@ -680,34 +680,44 @@ def _verify_launch_authorization(
       for it -- the exact "nothing here promised a runner a commit"
       discriminator `_gate_job_folder_pin()`'s own docstring already uses,
       applied to the same reason.
-    - `units` truthy (campaign mode) also returns immediately: `gate`'s own
-      CLI takes no `--unit` flag at all, and the `units` a `gate` record
-      carries is a job folder's own declared, static list -- not a
-      campaign's dynamically distributed per-worker assignment. Requiring a
-      match this precondition structurally cannot produce would make every
-      campaign launch permanently unauthorizable, the same "no equivalent
-      minting command" asymmetry `_verify_launch_consent()`'s own docstring
-      already documents for consent.
+    - Campaign mode (`units` truthy) is NOT exempt (design revision,
+      `the-position-nobody-holds` PR8 -- corrected: the original pass here
+      exempted it, reasoning that `gate`'s own CLI took no `--unit` flag to
+      bind against. That reasoning inverted this change's whole purpose: the
+      single send ended up authorized and the campaign -- the full-scale,
+      multi-worker, hours-long launch this mechanism exists to gate -- did
+      not. The premise was also simply wrong: `units`, at THIS call site, is
+      the exact ordered list `cmd_submit`'s OWN caller passed via `--unit`,
+      computed before `packer.distribute()` ever runs -- the same value
+      `campaign_consent_token()` already binds, never the per-worker
+      assignment `distribute()` computes later, which this function never
+      sees at all. `gate` now takes the identical repeatable `--unit`, so a
+      campaign authorization binds the same (pin, entrypoint, ordered unit
+      list) `campaign_consent_token()` binds, with `worker` always absent --
+      campaign mode never names one (`cmd_submit`'s own `--worker`/`--unit`
+      mutual exclusivity above), the same reason `campaign_consent_token()`
+      itself omits `worker` from its payload whenever the caller named none.
 
     For every other launch, this folds `<target>/<product>/.implementation/
     position.jsonl` and requires the NEWEST `gate` event whose `commit`,
     `entrypoint` and `units` match this invocation's own binding exactly,
     whose `worker` matches this invocation's own `worker` (which is why an
-    auto-selected launch -- no `--worker` named -- can never match a `gate`
-    record: `gate`'s own `--worker` flag is required, so a record always
-    names one account, and an invocation that has not yet chosen one has
-    nothing to match against), and whose `justification` is non-blank.
-    Fail-closed by design (§4.5): a product with no `.implementation/
-    position.jsonl` at all folds to zero events and refuses exactly like
-    one with events but no match, reproducing today's hole for NO target --
-    the one-time adoption cost this accepts on purpose, and the refusal
-    below names the exact command that pays it.
+    auto-selected single-send launch -- no `--worker` named -- can never
+    match a `gate` record: `gate`'s own `--worker` flag is required for that
+    shape, so a record always names one account, and an invocation that has
+    not yet chosen one has nothing to match against; a campaign launch's
+    `worker` is structurally always `None`, and a campaign `gate` record's
+    `worker` is `None` too, by the same mutual-exclusivity rule on both
+    sides), and whose `justification` is non-blank. Fail-closed by design
+    (§4.5): a product with no `.implementation/position.jsonl` at all folds
+    to zero events and refuses exactly like one with events but no match,
+    reproducing today's hole for NO target -- the one-time adoption cost
+    this accepts on purpose, and the refusal below names the exact command
+    that pays it.
     """
     if smoke:
         return
     if pin_commit is None:
-        return
-    if units:
         return
 
     impl_position = _load_impl_position()
@@ -730,16 +740,26 @@ def _verify_launch_authorization(
         ):
             return
 
-    worker_note = (
-        f" for worker {worker!r}" if worker is not None else " (no --worker named)"
-    )
-    worker_flag = repr(worker) if worker is not None else "<account>"
+    # A campaign refusal must hand the caller a command shaped like the
+    # record that could actually authorize it -- naming `--worker <account>`
+    # here would send the caller toward a record `gate`'s own mutual
+    # exclusivity refuses to write (a campaign record's `worker` is always
+    # `None`), so the campaign branch names `--unit` instead, never a
+    # worker flag.
+    if units:
+        worker_note = ""
+        gate_flags = " ".join(f"--unit {unit!r}" for unit in expected_units)
+    else:
+        worker_note = (
+            f" for worker {worker!r}" if worker is not None else " (no --worker named)"
+        )
+        gate_flags = f"--worker {worker!r}" if worker is not None else "--worker <account>"
     raise AuthorizationError(
         "submit refuses: no `gate` transition record authorizes this exact "
         f"launch (pin {pin_commit!r}, entrypoint {expected_entrypoint!r}, "
         f"units {expected_units!r}){worker_note}. Run `implementation_cli "
         f"gate --target <workspace-clone> --name {product} --job <jobName> "
-        f"--worker {worker_flag} --justification <text-or--> --revision "
+        f"{gate_flags} --justification <text-or--> --revision "
         "<revision> --session <id>` first, at this exact pin, then re-run "
         "this exact submit invocation -- re-running submit itself is "
         "never the approval; only that separate, recorded act is."

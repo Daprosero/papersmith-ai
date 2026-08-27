@@ -11763,6 +11763,77 @@ class GateCommandTests(unittest.TestCase):
         self.assertEqual(events[-1]["jobName"], "job1")
         self.assertEqual(events[-1]["justification"], "Rehearsal passed at the pinned commit.")
 
+    # --- 6.4: the campaign form (PR8, design revision) ------------------
+    #
+    # PR7 shipped `gate` with no way to authorize a campaign at all --
+    # `remote_cli._verify_launch_authorization()` exempted `units` truthy
+    # entirely, which left the single send authorized and the campaign
+    # (the full-scale, multi-worker launch this mechanism exists to gate)
+    # not. `--unit`, repeatable, closes that: it binds the exact ordered
+    # unit list a later `submit --unit ...` will carry, the same
+    # derivation `campaign_consent_token()` already uses for consent.
+
+    def test_gate_refuses_worker_and_unit_together(self):
+        box, _ = self._box()
+        proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            "--job", "job1", "--worker", "w1",
+                            "--unit", "u0", "--unit", "u1",
+                            "--justification", "Because it is time.",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "GATE_WORKER_UNIT_CONFLICT")
+
+    def test_gate_refuses_when_neither_worker_nor_unit_given(self):
+        box, _ = self._box()
+        proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            "--job", "job1",
+                            "--justification", "Because it is time.",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "GATE_WORKER_REQUIRED")
+
+    def test_gate_records_a_campaign_authorization_with_ordered_units_and_no_worker(
+        self,
+    ):
+        """The runtime harness for the campaign form, mirroring `test_gate_
+        records_the_authorization_after_a_passing_rehearsal` above: a real
+        rehearsal recorded through `readiness`'s own three-fact bind, then
+        `--unit` authorizes the launch with `worker: None` recorded --
+        never a named account, matching what a campaign `submit`
+        invocation's own binding always is.
+        """
+        box, commit = self._box()
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1"}
+        items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                  "witness": {"kind": "rehearsal", "operand": "job1"}}]
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+
+        proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            "--job", "job1", "--unit", "u0", "--unit", "u1",
+                            "--justification", "Rehearsal passed; launching the campaign.",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["status"], "recorded")
+        self.assertIsNone(result["worker"])
+        self.assertEqual(result["units"], ["u0", "u1"])
+
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(events[-1]["kind"], "gate")
+        self.assertIsNone(events[-1]["worker"])
+        # Order preserved, never sorted -- the same rule `campaign_consent_
+        # token()` documents for consent (Decision 5).
+        self.assertEqual(events[-1]["units"], ["u0", "u1"])
+
 
 class CloseCommandTests(unittest.TestCase):
     """`close` -- the finishing precondition (design §3.3). Writing the

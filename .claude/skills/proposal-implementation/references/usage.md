@@ -784,11 +784,29 @@ python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py gat
   --justification "Rehearsal passed at the pinned commit; launching the full grid."
 ```
 
+Repeatable `--unit`, in place of `--worker`, authorizes a CAMPAIGN launch
+instead — one that will spread across every healthy account via `submit
+--unit ...` rather than one named account. It binds the exact ordered unit
+list that later `submit --unit ...` will carry, the same derivation
+`campaign_consent_token()` already uses when minting the launch's consent
+token, and records `worker: null`: a campaign names no single account.
+`--worker` and `--unit` are mutually exclusive.
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py gate \
+  --target implementations/<repo> --name <Name> \
+  --revision research-concept-r05.md --session <your-session-id> \
+  --job governing-search --unit shard-0 --unit shard-1 --unit shard-2 \
+  --justification "Rehearsal passed at the pinned commit; launching the campaign."
+```
+
 Refuses `EMPTY_JUSTIFICATION` on blank input, `POSITION_ABSENT`/`POSITION_STALE`
 when there is nothing current to gate against, `NOT_READY` when no passing
-rehearsal is on file for this job at its current pin, and
-`SEQUENCE_NOT_REACHED` when an earlier item in the sequence is still open —
-a launch that would skip a rung is refused rather than authorized around it.
+rehearsal is on file for this job at its current pin, `SEQUENCE_NOT_REACHED`
+when an earlier item in the sequence is still open — a launch that would skip
+a rung is refused rather than authorized around it — and
+`GATE_WORKER_UNIT_CONFLICT`/`GATE_WORKER_REQUIRED` when `--worker` and
+`--unit` are both given or neither is.
 
 ## `close` — the finishing precondition
 

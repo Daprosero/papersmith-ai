@@ -44,6 +44,7 @@ import unittest.mock
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Sequence
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -1625,8 +1626,9 @@ def _mint_launch_authorization(
     product: str,
     pin_commit: str,
     relative_entrypoint: str,
-    worker: str,
+    worker: str | None,
     job_name: str = "search-a",
+    units: Sequence[str] = (),
 ) -> None:
     """Append a `gate`-shaped event directly into `.implementation/
     position.jsonl`, bypassing `implementation_cli`'s own `cmd_gate`
@@ -1641,6 +1643,13 @@ def _mint_launch_authorization(
     of the record, never `gate`'s writing of it, so a hand-appended line,
     shaped exactly like `cmd_gate`'s own event, is the right-sized fixture
     here.
+
+    `worker=None` mints a CAMPAIGN-shaped record (PR8): campaign mode never
+    names a worker (`cmd_submit`'s own `--worker`/`--unit` mutual
+    exclusivity), so a campaign authorization's `worker` field is always
+    `None` too -- the same reason `cmd_gate` itself now refuses `--worker`
+    together with `--unit`. `units` defaults to `()`, matching a single-send
+    or rehearsal launch's own empty binding.
     """
     ledger_path = (
         Path(target).resolve() / product / ".implementation" / "position.jsonl"
@@ -1650,7 +1659,7 @@ def _mint_launch_authorization(
         "kind": "gate", "jobName": job_name, "worker": worker,
         "commit": pin_commit, "revision": "fixture-revision",
         "revisionSha256": "f" * 64, "entrypoint": relative_entrypoint,
-        "units": [],
+        "units": list(units),
         "justification": "fixture authorization -- this test's subject is "
         "cmd_submit's own reading of the record, not gate's writing of it.",
         "session": "fixture-session", "at": "2020-01-01T00:00:00+00:00",
@@ -8972,11 +8981,29 @@ class AuthorizationGateTests(unittest.TestCase):
             self.assertEqual(len(adapter.submit_calls), 1)
             self.assertTrue(Path(result["ledgerPath"]).exists())
 
-    def test_campaign_mode_is_never_gated_by_this_precondition(self) -> None:
-        """Design §4.2: `gate`'s own CLI takes no `--unit` flag, so a
-        campaign submission structurally cannot ever be matched by a
-        `gate` record -- the same "no equivalent minting command" asymmetry
-        already documented for consent, applied to authorization.
+    # -- campaign mode is bound, never exempt (PR8, design revision) -----
+    #
+    # PR7 exempted `units` truthy entirely, reasoning that `gate`'s CLI had
+    # no `--unit` flag to bind against. That reasoning inverted this
+    # change's whole purpose: the single send ended up authorized and the
+    # campaign -- the full-scale, multi-worker, hours-long launch this
+    # mechanism exists to gate -- did not. `campaign_consent_token()`
+    # already proves the fix is available: `units`, at THIS call site, is
+    # the exact ordered list this invocation's own argv named, computed
+    # BEFORE `packer.distribute()` ever runs -- never the per-worker
+    # assignment `distribute()` computes later, which this function never
+    # sees. `gate` now takes the identical repeatable `--unit` and binds
+    # the same three facts consent already does.
+
+    def test_campaign_submit_with_no_matching_gate_record_still_refuses(
+        self,
+    ) -> None:
+        """The exact hole this task closes: today, before this precondition
+        binds campaign mode, this exact call proceeds and spends quota with
+        no `gate` record on file at all. RED against the unpatched function
+        (confirmed by temporarily restoring the old `if units: return`
+        exemption and re-running this test: it passes GREEN there too,
+        proving the hole -- see apply-progress for the confirmation run).
         """
         with tempfile.TemporaryDirectory() as tmp:
             target, job_dir, notebook = self._job_folder_and_notebook(tmp)
@@ -8988,6 +9015,32 @@ class AuthorizationGateTests(unittest.TestCase):
             )
             token = distribute_result["consentToken"]
 
+            with self.assertRaises(REMOTE_CLI.AuthorizationError) as caught:
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, requested=1,
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                    units=units, consent=token,
+                )
+
+            self.assertIn("gate", str(caught.exception).lower())
+            self.assertEqual(adapter.submit_calls, [], "no quota spent on refusal")
+
+    def test_a_matching_gate_record_authorizes_a_campaign_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, job_dir, notebook = self._job_folder_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 2)])
+            units = ("u0", "u1")
+            distribute_result = REMOTE_CLI.cmd_distribute(
+                target=target, entrypoint=notebook, adapter=adapter,
+                units=units, source_digest=lambda t, n: "d" * 64,
+            )
+            token = distribute_result["consentToken"]
+            _mint_launch_authorization(
+                target=target, product="MIL-CREDA", pin_commit="a" * 40,
+                relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
+                worker=None, units=units,
+            )
+
             result = REMOTE_CLI.cmd_submit(
                 target=target, entrypoint=notebook, requested=1,
                 adapter=adapter, source_digest=lambda t, n: "d" * 64,
@@ -8995,6 +9048,98 @@ class AuthorizationGateTests(unittest.TestCase):
             )
 
             self.assertIn("assignments", result)
+            self.assertTrue(any(row["submissionId"] for row in result["assignments"]))
+
+    def test_a_campaign_gate_record_for_a_different_unit_list_does_not_authorize(
+        self,
+    ) -> None:
+        """Exact binding, mirroring `test_a_gate_record_at_a_different_pin_
+        does_not_authorize` above: one approval covers the EXACT ordered
+        unit list it named, the same rule `campaign_consent_token()`
+        already enforces for consent (Decision 5).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, job_dir, notebook = self._job_folder_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 2)])
+            units = ("u0", "u1")
+            distribute_result = REMOTE_CLI.cmd_distribute(
+                target=target, entrypoint=notebook, adapter=adapter,
+                units=units, source_digest=lambda t, n: "d" * 64,
+            )
+            token = distribute_result["consentToken"]
+            # Gated against a DIFFERENT ordered unit list than this
+            # invocation's own.
+            _mint_launch_authorization(
+                target=target, product="MIL-CREDA", pin_commit="a" * 40,
+                relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
+                worker=None, units=("u0", "u2"),
+            )
+
+            with self.assertRaises(REMOTE_CLI.AuthorizationError):
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, requested=1,
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                    units=units, consent=token,
+                )
+            self.assertEqual(adapter.submit_calls, [])
+
+    def test_a_single_send_gate_record_does_not_authorize_a_campaign(self) -> None:
+        """A record minted with a named worker and no units (the single-send
+        shape) never matches a campaign invocation, and vice versa -- the
+        two shapes bind different, disjoint facts (`worker` absent for a
+        campaign, always present for a single send), never a looser "was
+        gated at all" notion of authorization.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, job_dir, notebook = self._job_folder_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 2)])
+            units = ("u0", "u1")
+            distribute_result = REMOTE_CLI.cmd_distribute(
+                target=target, entrypoint=notebook, adapter=adapter,
+                units=units, source_digest=lambda t, n: "d" * 64,
+            )
+            token = distribute_result["consentToken"]
+            _mint_launch_authorization(
+                target=target, product="MIL-CREDA", pin_commit="a" * 40,
+                relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
+                worker="w1",
+            )
+
+            with self.assertRaises(REMOTE_CLI.AuthorizationError):
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, requested=1,
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                    units=units, consent=token,
+                )
+            self.assertEqual(adapter.submit_calls, [])
+
+    def test_the_campaign_refusal_names_unit_flags_never_a_worker_flag(self) -> None:
+        """`AuthorizationError`'s refusal must hand the caller the exact
+        shape of command that could actually authorize this launch. Naming
+        `--worker <account>` for a campaign refusal would send the caller
+        toward a record that can never match (§4.2's own binding rule), so
+        the campaign branch of the message names `--unit` instead.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, job_dir, notebook = self._job_folder_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+            units = ("u0", "u1")
+            distribute_result = REMOTE_CLI.cmd_distribute(
+                target=target, entrypoint=notebook, adapter=adapter,
+                units=units, source_digest=lambda t, n: "d" * 64,
+            )
+            token = distribute_result["consentToken"]
+
+            with self.assertRaises(REMOTE_CLI.AuthorizationError) as caught:
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, requested=1,
+                    adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                    units=units, consent=token,
+                )
+
+            message = str(caught.exception)
+            self.assertIn("--unit", message)
+            self.assertNotIn("--worker <account>", message)
 
 
 class AcceleratorRequestDoctrineTests(unittest.TestCase):
