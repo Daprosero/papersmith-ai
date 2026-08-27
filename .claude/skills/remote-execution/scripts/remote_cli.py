@@ -2316,27 +2316,31 @@ def main(argv: list[str] | None = None) -> int:
             # Campaign mode's own JSON shape -- `assignments[]`/
             # `unplaced[]`/`skipped[]`, mirroring `distribute`'s own CLI
             # rendering, never the single-submission shape below.
-            print(
-                json.dumps(
-                    {**result, "ledgerPath": str(result["ledgerPath"])},
-                    sort_keys=True,
-                )
-            )
+            # `default=str` rather than naming each `Path` key by hand:
+            # naming keys one at a time is what left a nested one
+            # unreachable; naming none makes the next one harmless.
+            print(json.dumps(result, sort_keys=True, default=str))
             if not result["assignments"] and result["unplaced"]:
                 return 1
             return 0
 
+        # Same six keys as ever -- this shape is reshaped, not spread, so
+        # the reshaping stays. Only the hand-naming goes: `default=str`
+        # rather than one named `Path` key, because naming keys one at a
+        # time is what left a nested one unreachable; naming none makes the
+        # next one harmless.
         print(
             json.dumps(
                 {
                     "submissionId": result["submission"].id,
                     "worker": result["submission"].worker,
                     "granted": result["plan"].granted,
-                    "ledgerPath": str(result["ledgerPath"]),
+                    "ledgerPath": result["ledgerPath"],
                     "staleness": result["staleness"],
                     "smoke": result["smoke"],
                 },
                 sort_keys=True,
+                default=str,
             )
         )
         return 0
@@ -2440,16 +2444,21 @@ def main(argv: list[str] | None = None) -> int:
         if arbitration is not None:
             print(arbitration, file=sys.stderr)
 
+        # Same five keys as ever; only the hand-naming goes. `default=str`
+        # rather than one named `Path` key, because naming keys one at a
+        # time is what left a nested one unreachable; naming none makes the
+        # next one harmless.
         print(
             json.dumps(
                 {
                     "verdict": result["verdict"],
                     "complete": result["complete"],
-                    "path": str(result["path"]),
+                    "path": result["path"],
                     "event": result["event"],
                     "staleness": result["staleness"],
                 },
                 sort_keys=True,
+                default=str,
             )
         )
         return 0
@@ -2566,15 +2575,20 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"error: {exc}", file=sys.stderr)
                 return 1
 
+            # Same four keys as ever; only the hand-naming goes.
+            # `default=str` rather than one named `Path` key, because
+            # naming keys one at a time is what left a nested one
+            # unreachable; naming none makes the next one harmless.
             print(
                 json.dumps(
                     {
                         "result": result["result"],
                         "missing": result["missing"],
                         "requiredEvidence": result["requiredEvidence"],
-                        "smokeLedgerPath": str(result["smokeLedgerPath"]),
+                        "smokeLedgerPath": result["smokeLedgerPath"],
                     },
                     sort_keys=True,
+                    default=str,
                 )
             )
             return 0

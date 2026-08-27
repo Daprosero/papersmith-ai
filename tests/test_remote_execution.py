@@ -17053,5 +17053,191 @@ class ProductForParserDerivedRemedyTests(unittest.TestCase):
             self.assertNotIn("--product", str(ctx.exception))
 
 
+
+class NestedPathSerializationTests(unittest.TestCase):
+    """Every command's payload becomes JSON in exactly one place -- `main()`
+    -- and four of those call sites named one `Path` key by hand and assumed
+    it was the only `Path` in the payload.
+
+    That assumption already shipped a defect. `cmd_status` grew a nested
+    `smoke.ledgerPath`; `main()` stringified the top-level `ledgerPath` by
+    name, never reached the nested one, and `status` -- the command whose
+    only job is to print -- raised `TypeError: Object of type PosixPath is
+    not JSON serializable` on every invocation with empty stdout. Sixteen
+    tests drove `cmd_status()`; none drove `main(["status", ...])`, so
+    coverage sat on one side of the seam and the defect on the other.
+    `test_the_status_command_prints_what_the_function_only_returned` is that
+    command-level lock; this class is its four siblings.
+
+    Those four carry the identical shape. None of their payloads nests a
+    `Path` today -- which is exactly why all four looked fine, and why a
+    test over today's flat payload would prove nothing about the class. So
+    each test below injects a `Path` BELOW the top level, the way `status`
+    acquired its `smoke` block, and asserts the command still exits 0 with
+    that nested value rendered as a string.
+
+    Each test drives `main([...])` -- the command -- never the `cmd_*`
+    function, because the serialization under test exists nowhere else.
+    """
+
+    @contextlib.contextmanager
+    def _backend_patched(self):
+        """`main()` resolves a backend and constructs an adapter before it
+        ever reaches the `cmd_*` function these tests replace -- the same
+        three patches `test_a_job_folder_refusal_reaches_stderr_through_the_cli`
+        already uses, reused rather than reinvented.
+        """
+        with unittest.mock.patch.object(
+            REMOTE_CLI, "_load_backend_module", return_value=None
+        ), unittest.mock.patch.object(
+            REMOTE_CLI.ADAPTER, "resolve", return_value=FakeAdapter
+        ), unittest.mock.patch.object(
+            REMOTE_CLI, "_construct_adapter",
+            return_value=FakeAdapter(worker_id="w1", capacity=2),
+        ):
+            yield
+
+    def test_the_submit_command_in_campaign_mode_prints_a_nested_path(self) -> None:
+        """`submit --unit` -- campaign mode's own `assignments[]` shape.
+
+        `staleness` is `_job_folder_staleness()`'s own sub-dict: the exact
+        kind of nested mapping `status` was carrying when it broke.
+        """
+        payload = {
+            "assignments": [
+                {
+                    "worker": "w1",
+                    "granted": 1,
+                    "inFlightSource": None,
+                    "units": ["u1"],
+                    "submissionId": "s1",
+                }
+            ],
+            "unplaced": [],
+            "skipped": [],
+            "ledgerPath": Path("/tmp/nowhere/ledger.jsonl"),
+            "staleness": {"status": "stale", "jobFolder": Path("/tmp/nowhere/job")},
+            "smoke": False,
+        }
+
+        buffer = io.StringIO()
+        with self._backend_patched(), unittest.mock.patch.object(
+            REMOTE_CLI, "cmd_submit", return_value=payload
+        ), contextlib.redirect_stdout(buffer):
+            code = REMOTE_CLI.main([
+                "submit",
+                "--target", "/tmp/nowhere",
+                "--entrypoint", "/tmp/nowhere/a.ipynb",
+                "--backend", "fake",
+                "--unit", "u1",
+            ])
+
+        self.assertEqual(code, 0)
+        printed = json.loads(buffer.getvalue())
+        self.assertIsInstance(printed["ledgerPath"], str)
+        self.assertIsInstance(printed["staleness"]["jobFolder"], str)
+
+    def test_the_submit_command_for_one_submission_prints_a_nested_path(self) -> None:
+        """`submit` without `--unit` -- the single-submission shape, which
+        reshapes the payload down to six named keys. The reshaping stays;
+        only the hand-naming of the `Path` inside it goes.
+        """
+        payload = {
+            "plan": SimpleNamespace(granted=1),
+            "submission": SimpleNamespace(id="s1", worker="w1"),
+            "event": {},
+            "ledgerPath": Path("/tmp/nowhere/ledger.jsonl"),
+            "staleness": {"status": "stale", "jobFolder": Path("/tmp/nowhere/job")},
+            "smoke": False,
+        }
+
+        buffer = io.StringIO()
+        with self._backend_patched(), unittest.mock.patch.object(
+            REMOTE_CLI, "cmd_submit", return_value=payload
+        ), contextlib.redirect_stdout(buffer):
+            code = REMOTE_CLI.main([
+                "submit",
+                "--target", "/tmp/nowhere",
+                "--entrypoint", "/tmp/nowhere/a.ipynb",
+                "--backend", "fake",
+            ])
+
+        self.assertEqual(code, 0)
+        printed = json.loads(buffer.getvalue())
+        # The reshaped keys are unchanged -- `default=str` changes HOW a
+        # `Path` renders, never WHAT this command prints.
+        self.assertEqual(printed["submissionId"], "s1")
+        self.assertEqual(printed["worker"], "w1")
+        self.assertEqual(printed["granted"], 1)
+        self.assertIsInstance(printed["ledgerPath"], str)
+        self.assertIsInstance(printed["staleness"]["jobFolder"], str)
+
+    def test_the_fetch_command_prints_a_nested_path(self) -> None:
+        """`fetch` hand-named `path` and would have missed anything below
+        it, `staleness` included.
+        """
+        payload = {
+            "verdict": "current",
+            "complete": True,
+            "path": Path("/tmp/nowhere/out"),
+            "event": {"kind": "returned"},
+            "staleness": {"status": "stale", "jobFolder": Path("/tmp/nowhere/job")},
+            "arbitration": None,
+        }
+
+        buffer = io.StringIO()
+        with self._backend_patched(), unittest.mock.patch.object(
+            REMOTE_CLI, "cmd_fetch", return_value=payload
+        ), contextlib.redirect_stdout(buffer):
+            code = REMOTE_CLI.main([
+                "fetch",
+                "--target", "/tmp/nowhere",
+                "--entrypoint", "/tmp/nowhere/a.ipynb",
+                "--submission-id", "s1",
+                "--dest", "/tmp/nowhere/out",
+                "--backend", "fake",
+            ])
+
+        self.assertEqual(code, 0)
+        printed = json.loads(buffer.getvalue())
+        self.assertEqual(printed["verdict"], "current")
+        self.assertTrue(printed["complete"])
+        self.assertIsInstance(printed["path"], str)
+        self.assertIsInstance(printed["staleness"]["jobFolder"], str)
+
+    def test_the_smoke_record_command_prints_a_nested_path(self) -> None:
+        """`smoke record` hand-named `smokeLedgerPath`. A `Path` inside
+        `requiredEvidence` -- a sequence, not a mapping -- is just as far
+        below the top level, and just as unreachable by name.
+
+        This command resolves no backend, so it needs none of the adapter
+        patches the three above do.
+        """
+        payload = {
+            "result": "pass",
+            "missing": [],
+            "requiredEvidence": ["runs.jsonl", Path("/tmp/nowhere/job/shard.json")],
+            "smokeLedgerPath": Path("/tmp/nowhere/smoke.jsonl"),
+            "event": {},
+        }
+
+        buffer = io.StringIO()
+        with unittest.mock.patch.object(
+            REMOTE_CLI, "cmd_smoke_record", return_value=payload
+        ), contextlib.redirect_stdout(buffer):
+            code = REMOTE_CLI.main([
+                "smoke", "record",
+                "--job-dir", "/tmp/nowhere/job",
+                "--from-artifact", "/tmp/nowhere/a.json",
+                "--worker", "w1",
+            ])
+
+        self.assertEqual(code, 0)
+        printed = json.loads(buffer.getvalue())
+        self.assertEqual(printed["result"], "pass")
+        self.assertEqual(printed["missing"], [])
+        self.assertIsInstance(printed["smokeLedgerPath"], str)
+        self.assertIsInstance(printed["requiredEvidence"][1], str)
+
 if __name__ == "__main__":
     unittest.main()
