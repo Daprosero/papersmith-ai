@@ -52,8 +52,11 @@ _WITNESS_TOKEN_RE = re.compile(r"`@[a-z]+(?: [^`]+)?`")
 
 #: The one true witness: backticked, anchored to end-of-line so item prose is
 #: never scanned for a stray `@`. An operand may carry slashes and dots
-#: (`Notebooks/campaign.ipynb`) without needing its own escaping, because the
-#: backtick is the only character the grammar treats as a delimiter.
+#: (`some/dir/thing.ipynb`) without needing its own escaping, because the
+#: backtick is the only character the grammar treats as a delimiter. The example
+#: is deliberately not a real layout name: this module is caller-agnostic, and a
+#: comment naming one of the caller's own directories teaches the next reader
+#: that the core knows a layout it must always be handed.
 WITNESS_RE = re.compile(r"`@(?P<kind>[a-z]+)(?: (?P<operand>[^`]+))?`\s*$")
 
 
@@ -177,10 +180,11 @@ def _derive_notebook(evidence: dict, operand: str | None) -> tuple[bool | None, 
     """`@notebook <path>` ticks against `notebooks_state()`'s per-report state.
 
     `operand` is matched against `report["notebook"]` both exactly and by
-    suffix (`.../<operand>`), because `notebooks_state` stamps a
-    target-relative path (`<Name>/Notebooks/x.ipynb`) while the witness names
-    only the product-relative tail (`Notebooks/x.ipynb`) — the same pair the
-    design's grammar table declares.
+    suffix (`.../<operand>`), because `notebooks_state` stamps a path relative
+    to the target while the witness names only the tail relative to the
+    product — the same pair the design's grammar table declares. Neither
+    directory is named here: the caller owns its layout and hands it in, and a
+    core that spelled one out would be holding a fact it is supposed to receive.
     """
     measured_by = f"notebooks.reports[{operand}].sourcesMatch"
     notebooks = evidence.get("notebooks")
