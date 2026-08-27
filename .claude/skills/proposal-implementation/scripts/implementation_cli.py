@@ -5545,7 +5545,6 @@ def cmd_position(args: argparse.Namespace) -> dict:
     }
 
 
-
 def _agreement_collides(target: Path, name: str, operand: str | None) -> list[str]:
     """Every existing checklist item, anywhere in the product folder's
     markdown, whose text names the same operand this witness does.
@@ -5654,6 +5653,230 @@ def cmd_discuss(args: argparse.Namespace) -> dict:
         "status": status, "about": about, "measured": measured,
         "collides": collides, "asked": question, "answered": answer,
         "recordedAt": recorded_at,
+    }
+
+
+def cmd_gate(args: argparse.Namespace) -> dict:
+    """The launch authorization record (design §4, domain launch-authorization).
+
+    Binds `smokeReady`'s already-measured pass/fail to a human-drafted,
+    non-blank justification and appends the pair as one `gate` event -- the
+    record a later change's `remote_cli._verify_launch_authorization()`
+    (PR7) reads back before a non-rehearsal `submit` may run. Prints no
+    token: the whole point of this mechanism is that a caller cannot mint
+    the record by computing a digest over its own argv (design §4.1) -- it
+    can only exist because a rehearsal already ran and was recorded, read
+    back here through `remote_execution_jobs_state()`'s own `smokeReady`.
+
+    Checked in refusing-costs-nothing order: the justification first (pure
+    argv, no I/O at all), then the revision, then whether a position section
+    exists and is current to reach a rung in, then the un-forgeable
+    readiness measurement, then whether the rung this job's witness names
+    has actually been reached -- a launch that skips a rung is refused and
+    the hole is visible.
+    """
+    target = resolve_target(args.target)
+    name = validate_name(args.name)
+
+    justification = sys.stdin.read() if args.justification == "-" else args.justification
+    justification = justification.strip()
+    if not justification:
+        raise Refused(
+            "EMPTY_JUSTIFICATION",
+            "gate requires a non-blank justification: a human-legible reason "
+            "for this launch, recorded on the transition, never inferred "
+            "from a general 'go ahead'.")
+
+    source = revision_source(args.revision)
+    if source is None:
+        raise Refused(
+            "REVISION_UNREADABLE",
+            f"{args.revision!r} is not readable under {FORGE_ROOT / 'proposals'}; "
+            "a gate cannot be recorded against a revision that cannot be read.")
+    revision_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+    evidence = _position_write_evidence(target, name)
+    position = position_state(target, name, evidence, args.revision, source)
+    if position["status"] == "absent":
+        raise Refused(
+            "POSITION_ABSENT",
+            "no position section has been derived for this target; run "
+            "`position` (--sequence or --reconcile) before a launch can be "
+            "gated against it.")
+    if position["status"] == "stale":
+        raise Refused(
+            "POSITION_STALE",
+            "the position section is bound to a revision whose bytes no "
+            "longer match; run `position` again before gating a launch "
+            "against it.")
+
+    smoke_ready = evidence["smokeReady"]
+    if smoke_ready.get(args.job) is not True:
+        raise Refused(
+            "NOT_READY",
+            f"job {args.job!r} has no passing rehearsal recorded at its "
+            "current pin (`remote_execution_jobs_state()['smokeReady']` is "
+            "not True); a rehearsal must actually run and be recorded "
+            "before this launch can be authorized -- readiness cannot be "
+            "asserted, only measured.")
+
+    job_item = next(
+        (item for item in position["sequence"]
+         if item["witness"]["kind"] == "rehearsal"
+         and item["witness"]["operand"] == args.job),
+        None)
+    if job_item is None:
+        raise Refused(
+            "SEQUENCE_NOT_REACHED",
+            f"no sequence item names `@rehearsal {args.job}` as its witness; "
+            "gate only authorizes a launch the sequence already names.")
+    earlier_open = [item["ordinal"] for item in position["sequence"]
+                    if item["ordinal"] < job_item["ordinal"] and item["mark"] != "x"]
+    if earlier_open:
+        raise Refused(
+            "SEQUENCE_NOT_REACHED",
+            f"item {min(earlier_open)} in the sequence is not yet ticked; "
+            f"item {job_item['ordinal']} (`@rehearsal {args.job}`) cannot be "
+            "gated ahead of it -- a launch that skips a rung is refused.")
+
+    rcli = _load_remote_execution_cli()
+    job_dir = run_config = None
+    for candidate in _discovered_job_folders(target, rcli):
+        try:
+            candidate_config = rcli.JOBFOLDER.read(candidate).run_config
+        except rcli.JOBFOLDER.JobFolderError:
+            continue
+        if candidate_config.get("jobName", candidate.name) == args.job:
+            job_dir, run_config = candidate, candidate_config
+            break
+    if job_dir is None:
+        # `smoke_ready.get(args.job) is True` above already requires this job
+        # to have been discovered and read successfully -- reaching here
+        # would mean the filesystem changed between those two reads.
+        raise Refused(
+            "NOT_READY",
+            f"job {args.job!r} passed its readiness check but could no "
+            "longer be located on disk; nothing to record a launch against.")
+
+    commit = run_config.get("commit")
+    entrypoint = str((job_dir / rcli.JOBFOLDER.RUNNER_FILENAME).relative_to(target))
+    units = list(run_config.get("units") or [])
+
+    recorded_at = _now_iso8601()
+    event = {
+        "kind": "gate", "jobName": args.job, "worker": args.worker,
+        "commit": commit, "revision": args.revision,
+        "revisionSha256": revision_sha256, "entrypoint": entrypoint,
+        "units": units, "justification": justification,
+        "session": args.session, "at": recorded_at,
+    }
+    impl_position.append_event(target / name / ".implementation" / "position.jsonl", event)
+
+    return {
+        "command": "gate", "target": str(target), "name": name,
+        "status": "recorded", "job": args.job, "worker": args.worker,
+        "commit": commit, "revision": args.revision,
+        "revisionSha256": revision_sha256, "entrypoint": entrypoint,
+        "units": units, "justification": justification,
+        "session": args.session, "readiness": True, "recordedAt": recorded_at,
+    }
+
+
+def cmd_close(args: argparse.Namespace) -> dict:
+    """The finishing precondition (design §3.3): writing the position
+    becomes a precondition of finishing, not a courtesy. `close` refuses
+    while a transition has been made and not recorded -- the section never
+    generated, bound to a revision that has moved on, or contradicted by its
+    own measured evidence -- and names which one, rather than always
+    succeeding.
+
+    **Checked against the position exactly as recorded, BEFORE the refresh
+    that follows.** Refreshing first would silently correct a disagreement
+    by rewriting the very mark this refusal exists to catch, which would
+    make `POSITION_DISAGREES` unreachable by construction -- `derive()`'s
+    own three-valued rule ties every disagreement to a definite verdict a
+    refresh would flip on the spot. So the check comes first, over the file
+    exactly as it stood when this call began; the refresh that follows a
+    clean check can only ever ADD ticks for a witness that was `unmeasured`
+    and has since become measurable, never resolve one that already
+    disagreed -- "a caller can never close over marks it never re-derived".
+    """
+    target = resolve_target(args.target)
+    name = validate_name(args.name)
+    product = target / name
+
+    source = revision_source(args.revision)
+    if source is None:
+        raise Refused(
+            "REVISION_UNREADABLE",
+            f"{args.revision!r} is not readable under {FORGE_ROOT / 'proposals'}; "
+            "close cannot require a position true against a revision that "
+            "cannot be read.")
+    revision_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+    evidence = _position_write_evidence(target, name)
+    before = position_state(target, name, evidence, args.revision, source)
+    if before["status"] == "absent":
+        raise Refused(
+            "POSITION_ABSENT",
+            "no position section has ever been generated for this target; "
+            "run `position` (--sequence or --reconcile) before close can "
+            "require it true.")
+    if before["status"] == "stale":
+        raise Refused(
+            "POSITION_STALE",
+            "the position section is bound to a revision whose bytes no "
+            "longer match this one; run `position` again to rebind it "
+            "before close can require it current.")
+    if before["disagreements"]:
+        raise Refused(
+            "POSITION_DISAGREES",
+            f"{len(before['disagreements'])} item(s) disagree with their "
+            "own measured evidence; close requires the position to be "
+            "true, not merely written -- run `position` to see and correct "
+            "them, never close over a contradiction.")
+
+    # Only unmeasured witnesses can still move here (see docstring): pick up
+    # anything that became measurable since the position was last written.
+    refresh_args = argparse.Namespace(
+        target=args.target, name=args.name, revision=args.revision,
+        session=args.session, sequence=None, reconcile=False, replace=False,
+        shards=None)
+    cmd_position(refresh_args)
+
+    evidence = _position_write_evidence(target, name)
+    after = position_state(target, name, evidence, args.revision, source)
+
+    position_digest = hashlib.sha256(
+        json.dumps(after["sequence"], sort_keys=True).encode("utf-8")).hexdigest()
+    events = impl_position.read_events(product / ".implementation" / "position.jsonl")
+    prior_close = next(
+        (e for e in reversed(events)
+         if e.get("kind") == "close" and e.get("session") == args.session
+         and e.get("revisionSha256") == revision_sha256
+         and e.get("positionDigest") == position_digest),
+        None)
+    if prior_close is not None:
+        # A second close over the identical, unmoved position closes
+        # nothing -- a state, not an error, the sibling deliberation
+        # service's own semantics preserved (design §3.3).
+        return {
+            "command": "close", "status": "not_open", "session": args.session,
+            "revision": args.revision, "revisionSha256": revision_sha256,
+            "position": after, "recordedAt": prior_close["at"],
+        }
+
+    recorded_at = _now_iso8601()
+    impl_position.append_event(
+        product / ".implementation" / "position.jsonl",
+        {"kind": "close", "session": args.session, "revision": args.revision,
+         "revisionSha256": revision_sha256, "positionDigest": position_digest,
+         "at": recorded_at})
+
+    return {
+        "command": "close", "status": "closed", "session": args.session,
+        "revision": args.revision, "revisionSha256": revision_sha256,
+        "position": after, "recordedAt": recorded_at,
     }
 
 
@@ -6010,7 +6233,9 @@ COMMANDS = {"env": cmd_env, "name": cmd_name, "plan": cmd_plan, "apply": cmd_app
             "probe": cmd_probe,
             "verify": cmd_verify,
             "position": cmd_position,
-            "discuss": cmd_discuss}
+            "discuss": cmd_discuss,
+            "gate": cmd_gate,
+            "close": cmd_close}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -6051,18 +6276,20 @@ def main(argv: list[str] | None = None) -> int:
                                 "fields the shards disagree on, and which "
                                 "shards arrived. For position --reconcile, "
                                 "one @shard witness per arrived shard")
-        if name in {"verify", "admit", "handoff", "probe", "position"}:
+        if name in {"verify", "admit", "handoff", "probe", "position", "gate", "close"}:
             p.add_argument("--revision", default=None,
                            help="pin the revision to check against; "
                                 "omit it and verify discovers the newest of "
                                 "the family the bench declares. admit, "
-                                "handoff and position discover nothing and "
-                                "refuse REVISION_UNREADABLE if it is missing "
-                                "or unreadable")
-        if name == "position":
+                                "handoff, position, gate and close discover "
+                                "nothing and refuse REVISION_UNREADABLE if it "
+                                "is missing or unreadable")
+        if name in {"position", "gate", "close"}:
             p.add_argument("--session", required=True,
-                           help="identity stamped into the block's header and "
-                                "into every ledger event this call appends")
+                           help="identity stamped into the ledger event(s) "
+                                "this call appends, and into the block's "
+                                "header for position")
+        if name == "position":
             p.add_argument("--sequence", default=None,
                            help="install a fresh section: an ordered JSON "
                                 "array of {text, witness:{kind,operand}}, or "
@@ -6089,6 +6316,14 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--answer", default=None,
                            help="the answer text, or - to read stdin; omit "
                                 "to leave the discussion open")
+        if name == "gate":
+            p.add_argument("--job", required=True,
+                           help="the job name a `@rehearsal` witness names")
+            p.add_argument("--worker", required=True,
+                           help="the account this launch is being authorized for")
+            p.add_argument("--justification", required=True,
+                           help="the launch justification text, or - to read "
+                                "stdin; refused if it is blank")
 
     args = parser.parse_args(argv)
     try:

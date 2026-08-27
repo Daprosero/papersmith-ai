@@ -9337,6 +9337,15 @@ class ProbeReportedFactsRosterTests(unittest.TestCase):
         self.assertIn("staleness", situations,
                       "no gate row tells a reader to read a job pinned to a "
                       "commit the repository has moved past")
+        self.assertIn("position: \"stale\"", situations,
+                      "no gate row tells a reader the position section is "
+                      "bound to a revision that has moved on")
+        self.assertIn("position.disagreements", situations,
+                      "no gate row tells a reader a recorded mark contradicts "
+                      "its own measured evidence")
+        self.assertIn("NOT_READY", situations,
+                      "no gate row tells a reader why `gate` refused a launch "
+                      "with no passing rehearsal on file")
 
     def test_the_usage_reference_tells_a_reader_what_to_do_about_them(self):
         usage = USAGE_MD.read_text(encoding="utf-8")
@@ -11214,17 +11223,29 @@ class PositionCommandTests(unittest.TestCase):
 
 class CommandRosterTests(unittest.TestCase):
     """`COMMANDS` binds every subcommand `main()` accepts; a table in
-    `SKILL.md` is the human-facing roster of what each one writes and
-    refuses on — the same table-vs-code mechanism the `verify`/`probe`
-    rosters already apply, one level up (design §7.1).
+    `SKILL.md` is the human-facing roster of what each of the four
+    write-verbs this change adds writes and refuses on — the same
+    table-vs-code mechanism the `verify`/`probe` rosters already apply,
+    one level up (design §7.1), narrowed to the commands that write.
 
-    Started here with `position`, the first of the four write-verbs this
-    change adds. Completed once `discuss`, `gate` and `close` land beside
-    it — full coverage over every key of `COMMANDS` is that later class's
-    assertion, not this one's.
+    Full coverage over every key of `COMMANDS` (nine to thirteen, design
+    §7.1) is `test_every_command_dispatched_is_accounted_for`'s assertion:
+    the four write-verbs are held to a row here, and the remaining nine are
+    named explicitly as read-only or otherwise out of this table's own
+    scope — `env`/`name`/`plan`/`apply`/`admit`/`handoff`/`compose` predate
+    this change, and `probe`/`verify` already carry their own status/fact
+    rosters (`ProbeReportedFactsRosterTests`/`VerifyStatusRosterTests`), so
+    documenting their statuses a second time here would be the second
+    definition of one rule this file's own doctrine keeps rejecting.
     """
 
     COMMAND_TABLE_HEADER = "| Command | What it writes | Refuses on |"
+
+    #: Predates this change, or already carries its own roster elsewhere —
+    #: named explicitly rather than left as a silent gap in this table.
+    DOCUMENTED_ELSEWHERE = frozenset(
+        {"env", "name", "plan", "apply", "admit", "handoff", "compose",
+         "probe", "verify"})
 
     def command_rows(self):
         tables = markdown_table_rows(
@@ -11242,6 +11263,22 @@ class CommandRosterTests(unittest.TestCase):
         writes, refuses = rows["position"][1], rows["position"][2]
         self.assertTrue(writes.strip(), "the `position` row names nothing it writes")
         self.assertTrue(refuses.strip(), "the `position` row names nothing it refuses on")
+
+    def test_every_command_dispatched_is_accounted_for(self):
+        write_verbs = {"position", "discuss", "gate", "close"}
+        dispatched = set(impl.COMMANDS)
+        self.assertEqual(
+            dispatched, self.DOCUMENTED_ELSEWHERE | write_verbs,
+            "`COMMANDS` dispatches a command this roster neither documents "
+            "nor names as out of scope")
+
+        rows = {row[0].strip("`"): row for row in self.command_rows()}
+        for command in sorted(write_verbs):
+            self.assertIn(command, rows,
+                          f"`{command}` writes and has no row in the command roster")
+            writes, refuses = rows[command][1], rows[command][2]
+            self.assertTrue(writes.strip(), f"the `{command}` row names nothing it writes")
+            self.assertTrue(refuses.strip(), f"the `{command}` row names nothing it refuses on")
 
 
 class PositionReconcileTests(unittest.TestCase):
@@ -11408,6 +11445,7 @@ class PositionReconcileTests(unittest.TestCase):
             "no-`--shards` invocation -- design §11's own escalation applies: "
             "move `@shard` off the no-flag default, do not loosen this bound")
 
+
 class DiscussCommandTests(unittest.TestCase):
     """`discuss` -- discussion as an operation with a return value (design §3.3).
 
@@ -11516,3 +11554,368 @@ class DiscussCommandTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["code"], "DISCUSS_ABOUT_NOT_FOUND")
 
+
+class GateCommandTests(unittest.TestCase):
+    """`gate` -- the launch authorization record (design §4, domain
+    launch-authorization). Checked in refusing-costs-nothing order: the
+    justification first (pure argv), then whether a position section exists
+    to reach a rung in, then the un-forgeable readiness measurement itself,
+    then whether the rung this job's witness names has actually been
+    reached.
+    """
+
+    PROPOSAL_REVISION = "r1.md"
+    PROPOSAL_TEXT = "## 1\ntexto\n"
+    PROPOSAL_SHA256 = hashlib.sha256(PROPOSAL_TEXT.encode("utf-8")).hexdigest()
+
+    def _proposals(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / self.PROPOSAL_REVISION).write_text(self.PROPOSAL_TEXT, encoding="utf-8")
+        (root / "r2.md").write_text("## 2\notro\n", encoding="utf-8")
+        return root
+
+    def _box(self, packages=("Method",)):
+        self._box_count = getattr(self, "_box_count", 0) + 1
+        box = FORGE / "implementations" / f"_e2e_gate_cmd_{os.getpid()}_{id(self)}_{self._box_count}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        box.mkdir(parents=True)
+        env = dict(os.environ)
+        env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "gate-tests"
+        env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "gate-tests@example.invalid"
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        for package in packages:
+            (box / "src" / package).mkdir(parents=True, exist_ok=True)
+            (box / "src" / package / "__init__.py").write_text("", encoding="utf-8")
+            (box / "src" / f"{package}_Benchmark").mkdir(parents=True, exist_ok=True)
+            (box / "src" / f"{package}_Benchmark" / "__init__.py").write_text(
+                "", encoding="utf-8")
+            (box / package).mkdir(parents=True, exist_ok=True)
+        (box / "tests").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "add", "-A"], cwd=box, env=env, check=True,
+                       capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=box, env=env,
+                       check=True, capture_output=True)
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=box, env=env, check=True,
+            capture_output=True, text=True).stdout.strip()
+        return box, commit
+
+    def _write_job_folder(self, box, commit, *, service="svc", job_name="job1",
+                          product="Method", clone_paths=("src/Method",)):
+        job_dir = box / "tools" / service / job_name
+        job_dir.mkdir(parents=True, exist_ok=True)
+        run_config = {
+            "schemaVersion": 1, "product": product, "service": service,
+            "jobName": job_name, "commit": commit,
+            "repo": {"url": "https://example.invalid/repo.git", "ref": "main"},
+            "clonePaths": list(clone_paths),
+            "run": {"module": f"{product}.module", "function": "run", "kwargs": {}},
+            "runnerTemplate": [
+                {"path": "assets/runner_bootstrap.py", "sha256": "0" * 64},
+                {"path": "assets/runner_invoke.py", "sha256": "0" * 64},
+            ],
+        }
+        (job_dir / "run-config.json").write_text(json.dumps(run_config), encoding="utf-8")
+        return job_dir
+
+    def _write_smoke_pass(self, box, *, product="Method", job_name="job1",
+                          commit, worker="w1"):
+        smoke_path = box / product / ".remote-execution" / "smoke.jsonl"
+        smoke_path.parent.mkdir(parents=True, exist_ok=True)
+        event = {"kind": "smokeResult", "ts": "2026-08-27T00:00:00Z",
+                  "jobName": job_name, "result": "pass", "commit": commit,
+                  "worker": worker, "missing": []}
+        with smoke_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(event) + "\n")
+
+    def run_cli(self, *args, proposals=None):
+        env = dict(os.environ)
+        if proposals is not None:
+            env["IMPLEMENTATION_PROPOSALS"] = str(proposals)
+        return subprocess.run([sys.executable, str(CLI), *args],
+                              capture_output=True, text=True, cwd=FORGE, env=env)
+
+    # --- 6.1: no passing rehearsal on file -- refused, never asserted ---
+
+    def test_gate_refuses_not_ready_when_smoke_ready_false(self):
+        box, commit = self._box()
+        self._write_job_folder(box, commit)
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1"}
+        items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                  "witness": {"kind": "rehearsal", "operand": "job1"}}]
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+
+        proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            "--job", "job1", "--worker", "w1",
+                            "--justification", "Because it is time.",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "NOT_READY")
+
+    # --- 6.2: the rest of the refusals ---
+
+    def test_gate_refuses_empty_justification(self):
+        box, _ = self._box()
+        proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            "--job", "job1", "--worker", "w1",
+                            "--justification", "   ",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "EMPTY_JUSTIFICATION")
+
+    def test_gate_refuses_on_absent_or_stale_position(self):
+        proposals = self._proposals()
+
+        with self.subTest("absent"):
+            box, _ = self._box()
+            proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                                "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                                "--job", "job1", "--worker", "w1",
+                                "--justification", "Because it is time.",
+                                proposals=proposals)
+            self.assertEqual(proc.returncode, 2, proc.stdout)
+            self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_ABSENT")
+
+        with self.subTest("stale"):
+            box, _ = self._box()
+            header = {"revision": self.PROPOSAL_REVISION, "revisionSha256": "a" * 64,
+                      "derivedAt": "2026-08-27T00:00:00Z", "session": "s1"}
+            items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                      "witness": {"kind": "rehearsal", "operand": "job1"}}]
+            (box / "Method" / "AGREED.md").write_text(
+                impl_position.render(header, items), encoding="utf-8")
+            # Bound to r1.md's name, but "a"*64 never matches r2.md's real
+            # content -- gating against r2.md finds the header stale.
+            proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                                "--revision", "r2.md", "--session", "s1",
+                                "--job", "job1", "--worker", "w1",
+                                "--justification", "Because it is time.",
+                                proposals=proposals)
+            self.assertEqual(proc.returncode, 2, proc.stdout)
+            self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_STALE")
+
+    def test_gate_refuses_sequence_not_reached(self):
+        box, commit = self._box()
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1"}
+        items = [
+            {"ordinal": 1, "mark": " ", "text": "Read the pilot notebook.",
+             "witness": {"kind": "notebook", "operand": "Notebooks/pilot.ipynb"}},
+            {"ordinal": 2, "mark": " ", "text": "Rehearse the job.",
+             "witness": {"kind": "rehearsal", "operand": "job1"}},
+        ]
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+
+        proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            "--job", "job1", "--worker", "w1",
+                            "--justification", "Because it is time.",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SEQUENCE_NOT_REACHED")
+
+    # --- 6.3: the record itself, once every precondition is real ---
+
+    def test_gate_records_the_authorization_after_a_passing_rehearsal(self):
+        """The runtime harness this task is scored against: a rehearsal
+        actually recorded via `readiness`'s own three-fact bind (through
+        `remote_execution_jobs_state`'s `smokeReady`) on a scratch job
+        folder, then `gate` reads it back rather than trusting an assertion.
+        """
+        box, commit = self._box()
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1"}
+        items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                  "witness": {"kind": "rehearsal", "operand": "job1"}}]
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+
+        proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            "--job", "job1", "--worker", "w1",
+                            "--justification", "Rehearsal passed at the pinned commit.",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["status"], "recorded")
+        self.assertEqual(result["job"], "job1")
+        self.assertEqual(result["commit"], commit)
+        # No token: the whole point (design §4.1) is that this record cannot
+        # be minted by computing a digest over the caller's own argv.
+        self.assertNotIn("token", "".join(result.keys()).lower())
+
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(events[-1]["kind"], "gate")
+        self.assertEqual(events[-1]["jobName"], "job1")
+        self.assertEqual(events[-1]["justification"], "Rehearsal passed at the pinned commit.")
+
+
+class CloseCommandTests(unittest.TestCase):
+    """`close` -- the finishing precondition (design §3.3). Writing the
+    position becomes a precondition of finishing, not a courtesy: `close`
+    refuses while a transition has been made and not recorded, and names
+    which one, rather than always succeeding.
+
+    Checked against the position exactly as recorded, BEFORE the refresh
+    that follows (see `cmd_close`'s own docstring): refreshing first would
+    silently correct a disagreement by rewriting the very mark this refusal
+    exists to catch.
+    """
+
+    PROPOSAL_REVISION = "r1.md"
+    PROPOSAL_TEXT = "## 1\ntexto\n"
+    PROPOSAL_SHA256 = hashlib.sha256(PROPOSAL_TEXT.encode("utf-8")).hexdigest()
+
+    def _proposals(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / self.PROPOSAL_REVISION).write_text(self.PROPOSAL_TEXT, encoding="utf-8")
+        (root / "r2.md").write_text("## 2\notro\n", encoding="utf-8")
+        return root
+
+    def _box(self, packages=("Method",)):
+        self._box_count = getattr(self, "_box_count", 0) + 1
+        box = FORGE / "implementations" / f"_e2e_close_cmd_{os.getpid()}_{id(self)}_{self._box_count}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        box.mkdir(parents=True)
+        env = dict(os.environ)
+        env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "close-tests"
+        env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "close-tests@example.invalid"
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        for package in packages:
+            (box / "src" / package).mkdir(parents=True, exist_ok=True)
+            (box / "src" / package / "__init__.py").write_text("", encoding="utf-8")
+            (box / "src" / f"{package}_Benchmark").mkdir(parents=True, exist_ok=True)
+            (box / "src" / f"{package}_Benchmark" / "__init__.py").write_text(
+                "", encoding="utf-8")
+            (box / package).mkdir(parents=True, exist_ok=True)
+        (box / "tests").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "add", "-A"], cwd=box, env=env, check=True,
+                       capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=box, env=env,
+                       check=True, capture_output=True)
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=box, env=env, check=True,
+            capture_output=True, text=True).stdout.strip()
+        return box, commit
+
+    def _write_job_folder(self, box, commit, *, service="svc", job_name="job1",
+                          product="Method", clone_paths=("src/Method",)):
+        job_dir = box / "tools" / service / job_name
+        job_dir.mkdir(parents=True, exist_ok=True)
+        run_config = {
+            "schemaVersion": 1, "product": product, "service": service,
+            "jobName": job_name, "commit": commit,
+            "repo": {"url": "https://example.invalid/repo.git", "ref": "main"},
+            "clonePaths": list(clone_paths),
+            "run": {"module": f"{product}.module", "function": "run", "kwargs": {}},
+            "runnerTemplate": [
+                {"path": "assets/runner_bootstrap.py", "sha256": "0" * 64},
+                {"path": "assets/runner_invoke.py", "sha256": "0" * 64},
+            ],
+        }
+        (job_dir / "run-config.json").write_text(json.dumps(run_config), encoding="utf-8")
+        return job_dir
+
+    def run_cli(self, *args, proposals=None):
+        env = dict(os.environ)
+        if proposals is not None:
+            env["IMPLEMENTATION_PROPOSALS"] = str(proposals)
+        return subprocess.run([sys.executable, str(CLI), *args],
+                              capture_output=True, text=True, cwd=FORGE, env=env)
+
+    # --- 6.4: absent, stale, or disagreeing -- three ways "not true" ---
+
+    def test_close_refuses_absent_stale_or_disagreeing_position(self):
+        proposals = self._proposals()
+
+        with self.subTest("absent"):
+            box, _ = self._box()
+            proc = self.run_cli("close", "--target", str(box), "--name", "Method",
+                                "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                                proposals=proposals)
+            self.assertEqual(proc.returncode, 2, proc.stdout)
+            self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_ABSENT")
+
+        with self.subTest("stale"):
+            box, _ = self._box()
+            header = {"revision": self.PROPOSAL_REVISION, "revisionSha256": "a" * 64,
+                      "derivedAt": "2026-08-27T00:00:00Z", "session": "s1"}
+            items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                      "witness": {"kind": "rehearsal", "operand": "job1"}}]
+            (box / "Method" / "AGREED.md").write_text(
+                impl_position.render(header, items), encoding="utf-8")
+            proc = self.run_cli("close", "--target", str(box), "--name", "Method",
+                                "--revision", "r2.md", "--session", "s1",
+                                proposals=proposals)
+            self.assertEqual(proc.returncode, 2, proc.stdout)
+            self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_STALE")
+            # A refused close never writes: the file this refusal exists to
+            # protect is unchanged.
+            on_disk = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+            self.assertIn("revision=r1.md", on_disk)
+
+        with self.subTest("disagrees"):
+            box, commit = self._box()
+            self._write_job_folder(box, commit)
+            header = {"revision": self.PROPOSAL_REVISION,
+                      "revisionSha256": self.PROPOSAL_SHA256,
+                      "derivedAt": "2026-08-27T00:00:00Z", "session": "s1"}
+            # Falsely marked "x": job1's folder exists but never rehearsed,
+            # so `smokeReady["job1"]` measures a definite False.
+            items = [{"ordinal": 1, "mark": "x", "text": "Rehearse the job.",
+                      "witness": {"kind": "rehearsal", "operand": "job1"}}]
+            (box / "Method" / "AGREED.md").write_text(
+                impl_position.render(header, items), encoding="utf-8")
+            proc = self.run_cli("close", "--target", str(box), "--name", "Method",
+                                "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                                proposals=proposals)
+            self.assertEqual(proc.returncode, 2, proc.stdout)
+            self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_DISAGREES")
+            on_disk = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+            self.assertIn("- [x] 1. Rehearse the job.", on_disk,
+                          "a refused close must not silently correct the very "
+                          "mark its refusal exists to report")
+
+    # --- 6.4: a second close over the identical, unmoved position ---
+
+    def test_close_second_call_is_not_open_not_error(self):
+        box, _ = self._box()
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1"}
+        items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                  "witness": {"kind": "rehearsal", "operand": "job-none"}}]
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+        proposals = self._proposals()
+
+        first = self.run_cli("close", "--target", str(box), "--name", "Method",
+                             "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                             proposals=proposals)
+        self.assertEqual(first.returncode, 0, first.stdout)
+        self.assertEqual(json.loads(first.stdout)["status"], "closed")
+
+        second = self.run_cli("close", "--target", str(box), "--name", "Method",
+                              "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                              proposals=proposals)
+        self.assertEqual(second.returncode, 0, second.stdout)
+        self.assertEqual(json.loads(second.stdout)["status"], "not_open")
+
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([e["kind"] for e in events], ["close"])

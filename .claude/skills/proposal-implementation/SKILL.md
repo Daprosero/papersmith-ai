@@ -438,6 +438,9 @@ exactly what stops a launcher from being able to claim it implements anything.
 | `probe` reports a job whose `staleness` is `drift` | The repository moved past the commit that job is pinned to: regenerate the job, or say plainly that the run measures the older code, before offering a campaign |
 | `probe` reports `remoteExecution: "drift"` | The ledger and the service no longer agree, or a stale result arrived: run `remote_cli reconcile` before reading anything else out of that ledger. Waiting fixes nothing |
 | `probe` reports `remoteExecution: "unreliable"` | A line of the ledger could not be read, so nothing about what is out there is trustworthy: run `remote_cli reconcile` and report what it finds before offering a run |
+| `verify`/`probe` report `position: "stale"` | The section's header is bound to a revision whose bytes no longer match: run `position` again to rebind it before trusting any tick on it |
+| `verify`/`probe` report `position.disagreements` | A recorded mark contradicts its own measured evidence: report before gating or closing anything on it, and run `position` to correct it |
+| `gate` refuses `NOT_READY` | No passing rehearsal is on file for this job at its current pin: rehearse it first — readiness cannot be asserted, only measured |
 | `priorWork` reports `modified` | Say what changed and that correcting prior work belongs to a session of its own |
 | `priorWork` reports `reaching` | The change moves what an arm computes: the record is stale, report before any run |
 | `search` reports `incomplete` | A value is chosen by outcome and the search does not say enough about itself to be an experiment: report before quoting anything it chose |
@@ -613,6 +616,11 @@ date. Drift is Flow B's fourth step, not a reason to start over.
       arrived rather than on what the repository holds, and would leave them to
       re-invoke just to be told what comes next. `probe` is read-only and instant;
       what it reports is a question, not work, and the gate is where they stop.
+    - **Then `close`.** `close --revision <latest> --session <your-session-id>` —
+      writing the position becomes a precondition of finishing, not a courtesy.
+      It refuses `POSITION_ABSENT`, `POSITION_STALE` or `POSITION_DISAGREES` and
+      names which one, rather than ending a session with the position still only
+      in the agent's own memory.
 
 ## How a gate is asked
 
@@ -2057,15 +2065,17 @@ which is prose a reader follows, not a rung the ladder computes.
 ## Command Roster
 
 `implementation_cli.py` grows a write-verb surface beyond `env`/`plan`/`apply`
-/`admit`/`handoff`/`compose`: `position` and `discuss` are two of four commands
-this change adds that write into `<Name>/AGREED.md`, its ledger, or both,
-rather than only reporting. Column one is read against `COMMANDS`' own keys,
-so a new command fails the tests until it has a row here.
+/`admit`/`handoff`/`compose`: `position`, `discuss`, `gate` and `close` write
+into `<Name>/AGREED.md`, its ledger, or both, rather than only reporting.
+Column one is read against `COMMANDS`' own keys, so a new command fails the
+tests until it has a row here.
 
 | Command | What it writes | Refuses on |
 | --- | --- | --- |
 | `position` | No flag: re-derives the marks of the block already in `<Name>/AGREED.md`, touching nothing else about it. `--sequence -`: installs a fresh section from stdin JSON. `--reconcile`: reconstructs the sequence from what the target already has (declared record, discovered job folders, `Notebooks/*.ipynb`, and arrived shards with `--shards`), matching existing items by witness identity and appending only unmatched ones. Every real write appends one event to `.implementation/position.jsonl` | `REVISION_UNREADABLE`, `POSITION_BLOCK_EXISTS` (install over an existing block without `--replace`), `POSITION_SEQUENCE_AND_RECONCILE`, `POSITION_HOLDER_ABSENT` (nothing to append into), `POSITION_HOLDER_AMBIGUOUS`, `POSITION_BLOCK_NOT_UNIQUE`, `POSITION_BLOCK_MALFORMED`, `POSITION_ITEM_MALFORMED`, `POSITION_ITEM_WITHOUT_WITNESS`, `POSITION_WITNESS_UNKNOWN_KIND`, `POSITION_SEQUENCE_UNREADABLE`, `POSITION_SEQUENCE_EMPTY` |
 | `discuss` | One `discuss` event per call to `.implementation/position.jsonl` — the question, the computed collision list, and (once given) the answer. Never touches `<Name>/AGREED.md`. Never gates: an unanswered question is a reported `status`, not a refusal | `DISCUSS_STDIN_CONFLICT` (`--question -` and `--answer -` together), `DISCUSS_EMPTY_QUESTION`, `DISCUSS_ABOUT_NOT_FOUND` (an `--about` ordinal outside the sequence), `POSITION_WITNESS_UNKNOWN_KIND` (an `--about` witness spec naming an unknown kind) |
+| `gate` | One `gate` event to `.implementation/position.jsonl`: job, worker, commit, revision, entrypoint, units and the justification. Prints no token — nothing here can be minted from the caller's own argv | `EMPTY_JUSTIFICATION`, `REVISION_UNREADABLE`, `POSITION_ABSENT`, `POSITION_STALE`, `NOT_READY` (no passing rehearsal on file at the job's current pin), `SEQUENCE_NOT_REACHED` (an earlier item in the sequence is still open, or no item names this job at all) |
+| `close` | Refreshes the position (see `position`), then one `close` event to `.implementation/position.jsonl` binding session, revision and a digest of the resulting sequence | `REVISION_UNREADABLE`, `POSITION_ABSENT`, `POSITION_STALE`, `POSITION_DISAGREES` (checked against the position exactly as recorded, before the refresh) |
 
 ## References
 

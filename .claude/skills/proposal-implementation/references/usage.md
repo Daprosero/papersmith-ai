@@ -767,6 +767,50 @@ oversight: the fact as computed cannot tell a repository that is not ready apart
 from one that never sends work anywhere. `SKILL.md`'s Output Contract carries the
 argument and states what would change it.
 
+## `gate` — the launch authorization record
+
+The second, independent precondition a non-rehearsal `submit` reads before it
+may run (design's launch-authorization domain). Binds an un-forgeable
+readiness measurement — a rehearsal that actually ran and was recorded, read
+back through `smokeReady` — to a human-legible justification, and appends
+the pair. Prints no token: nothing here can be minted by computing a digest
+over the caller's own argv.
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py gate \
+  --target implementations/<repo> --name <Name> \
+  --revision research-concept-r05.md --session <your-session-id> \
+  --job governing-search --worker <account> \
+  --justification "Rehearsal passed at the pinned commit; launching the full grid."
+```
+
+Refuses `EMPTY_JUSTIFICATION` on blank input, `POSITION_ABSENT`/`POSITION_STALE`
+when there is nothing current to gate against, `NOT_READY` when no passing
+rehearsal is on file for this job at its current pin, and
+`SEQUENCE_NOT_REACHED` when an earlier item in the sequence is still open —
+a launch that would skip a rung is refused rather than authorized around it.
+
+## `close` — the finishing precondition
+
+Writing the position becomes a precondition of finishing, not a courtesy:
+`close` refuses while a transition has been made and not recorded, and names
+which one, rather than always succeeding.
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py close \
+  --target implementations/<repo> --name <Name> \
+  --revision research-concept-r05.md --session <your-session-id>
+```
+
+Checked against the position exactly as recorded, before the refresh that
+follows: `POSITION_ABSENT` when no section was ever generated,
+`POSITION_STALE` when it is bound to a revision that has moved on, and
+`POSITION_DISAGREES` when a recorded mark still contradicts its own measured
+evidence. Only once that check is clean does `close` refresh — picking up
+any witness that has become measurable since — and record the transition. A
+second `close` over the identical, unmoved position reports `"not_open"`
+rather than appending a second event.
+
 ## `handoff` — back to the deliberation, sized by reach
 
 ```bash
