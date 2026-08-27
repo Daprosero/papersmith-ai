@@ -163,6 +163,21 @@ SHARD_IO = importlib.util.module_from_spec(SHARD_IO_SPEC)
 sys.modules[SHARD_IO_SPEC.name] = SHARD_IO
 SHARD_IO_SPEC.loader.exec_module(SHARD_IO)
 
+# The tripwire hook (design §5, `the-position-nobody-holds`) -- an inert,
+# committed script and its tests, deliberately never wired into
+# `.claude/settings.json` by this change (that switch is the user's own to
+# throw).
+PUSH_SURFACE_HOOK_SCRIPT = (
+    REPOSITORY_ROOT / ".claude/skills/remote-execution/scripts/hooks/refuse_offpath_push.py"
+)
+PUSH_SURFACE_HOOK_SPEC = importlib.util.spec_from_file_location(
+    "remote_execution_refuse_offpath_push", PUSH_SURFACE_HOOK_SCRIPT
+)
+assert PUSH_SURFACE_HOOK_SPEC and PUSH_SURFACE_HOOK_SPEC.loader
+PUSH_SURFACE_HOOK = importlib.util.module_from_spec(PUSH_SURFACE_HOOK_SPEC)
+sys.modules[PUSH_SURFACE_HOOK_SPEC.name] = PUSH_SURFACE_HOOK
+PUSH_SURFACE_HOOK_SPEC.loader.exec_module(PUSH_SURFACE_HOOK)
+
 
 def _sample_submitted_event(**overrides: object) -> dict:
     fields = dict(
@@ -1604,6 +1619,47 @@ def _mint_launch_consent(
     )
 
 
+def _mint_launch_authorization(
+    *,
+    target: Path,
+    product: str,
+    pin_commit: str,
+    relative_entrypoint: str,
+    worker: str,
+    job_name: str = "search-a",
+) -> None:
+    """Append a `gate`-shaped event directly into `.implementation/
+    position.jsonl`, bypassing `implementation_cli`'s own `cmd_gate`
+    entirely.
+
+    `_verify_launch_authorization()` only ever FOLDS this ledger looking
+    for a record matching this invocation's own binding -- it has no
+    opinion about how that record was produced. `proposal-implementation`'s
+    own `GateCommandTests` (`tests/test_proposal_implementation.py`)
+    already exercises `cmd_gate`'s real readiness machinery end to end; the
+    fixtures that call this helper are testing `cmd_submit`'s own READING
+    of the record, never `gate`'s writing of it, so a hand-appended line,
+    shaped exactly like `cmd_gate`'s own event, is the right-sized fixture
+    here.
+    """
+    ledger_path = (
+        Path(target).resolve() / product / ".implementation" / "position.jsonl"
+    )
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    event = {
+        "kind": "gate", "jobName": job_name, "worker": worker,
+        "commit": pin_commit, "revision": "fixture-revision",
+        "revisionSha256": "f" * 64, "entrypoint": relative_entrypoint,
+        "units": [],
+        "justification": "fixture authorization -- this test's subject is "
+        "cmd_submit's own reading of the record, not gate's writing of it.",
+        "session": "fixture-session", "at": "2020-01-01T00:00:00+00:00",
+    }
+    with ledger_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event))
+        handle.write("\n")
+
+
 class PathGuardTests(unittest.TestCase):
     """`remote_cli.guard_entrypoint()` — the sole holder of file-kind policy.
 
@@ -2116,6 +2172,14 @@ class SubmitTests(unittest.TestCase):
             notebook.write_text("{}", encoding="utf-8")
             _write_job_folder_run_config(job_dir)
 
+            # PR7 (design §4): a job-folder launch also needs a matching
+            # `gate` record now -- consent alone is no longer enough.
+            _mint_launch_authorization(
+                target=target, product="MIL-CREDA", pin_commit="a" * 40,
+                relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
+                worker="w1",
+            )
+
             original_cwd = Path.cwd()
             os.chdir(tmp)
             try:
@@ -2181,6 +2245,13 @@ class SubmitTests(unittest.TestCase):
                 source_digest=fake_source_digest,
                 worker="w1",
             )
+            # PR7 (design §4): a job-folder launch also needs a matching
+            # `gate` record now -- consent alone is no longer enough.
+            _mint_launch_authorization(
+                target=target, product="MIL-CREDA", pin_commit="a" * 40,
+                relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
+                worker="w1",
+            )
             result = REMOTE_CLI.cmd_submit(
                 target=target,
                 entrypoint=notebook,
@@ -2234,6 +2305,13 @@ class SubmitTests(unittest.TestCase):
             token = _mint_launch_consent(
                 target=target, entrypoint=notebook, adapter=adapter,
                 source_digest=lambda t, n: "d" * 64, product="OverrideProduct",
+                worker="w1",
+            )
+            # PR7 (design §4): a job-folder launch also needs a matching
+            # `gate` record now -- consent alone is no longer enough.
+            _mint_launch_authorization(
+                target=target, product="OverrideProduct", pin_commit="a" * 40,
+                relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
                 worker="w1",
             )
             result = REMOTE_CLI.cmd_submit(
@@ -8620,6 +8698,305 @@ class ConsentGateTests(unittest.TestCase):
             self.assertEqual(adapter.submit_calls, ["w1"])
 
 
+class AuthorizationGateTests(unittest.TestCase):
+    """`remote_cli._verify_launch_authorization()` (design §4, PR7): the
+    SECOND, independent precondition `submit` now enforces, closing the
+    self-authorization loop `ConsentGateTests` above cannot: that class's
+    own `_mint_launch_consent()` proves consent can be minted from an
+    invocation's own argv, by design (that is what makes printing the
+    token in the refusal safe). This class proves that minting is no
+    longer enough BY ITSELF for a job-folder launch -- a `gate` record,
+    written by a separate, earlier act, is required too.
+    """
+
+    def setUp(self) -> None:
+        # Same reason `ConsentGateTests.setUp()` stubs this: this class's
+        # subject is the authorization gate itself, not the three pin
+        # conditions `SubmitPinGateTests` already drives against real git
+        # repos.
+        patcher = unittest.mock.patch.object(
+            JOBFOLDER, "verify_pin_preconditions", return_value=None
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _job_folder_and_notebook(
+        self, tmp: str, *, commit: str = "a" * 40,
+    ) -> tuple[Path, Path, Path]:
+        target = Path(tmp) / "repo"
+        (target / "MIL-CREDA").mkdir(parents=True)
+        job_dir = _make_job_folder(target, "kaggle", "search-a")
+        notebook = job_dir / "runner.ipynb"
+        notebook.write_text("{}", encoding="utf-8")
+        _write_job_folder_run_config(job_dir, commit=commit)
+        return target, job_dir, notebook
+
+    def _target_and_notebook(self, tmp: str, name: str = "MIL-CREDA") -> tuple[Path, Path]:
+        target = Path(tmp) / "repo"
+        notebooks = _make_product(target, name)
+        notebook = notebooks / "a.ipynb"
+        notebook.write_text("{}", encoding="utf-8")
+        return target, notebook
+
+    # -- no matching `gate` record: the self-authorization loop, closed ---
+
+    def test_job_folder_submit_with_valid_consent_but_no_gate_record_still_refuses(
+        self,
+    ) -> None:
+        """The exact loophole this PR closes: a valid, correctly-minted
+        consent token is no longer enough on its own for a job-folder
+        launch. Before this precondition existed, `run -> copy the printed
+        token -> re-run` was the whole story; now a `gate` record, written
+        by a separate act, is required too.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, job_dir, notebook = self._job_folder_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64, worker="w1",
+            )
+
+            with self.assertRaises(REMOTE_CLI.AuthorizationError) as caught:
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, worker="w1",
+                    requested=1, adapter=adapter,
+                    source_digest=lambda t, n: "d" * 64, consent=token,
+                )
+
+            self.assertIn("gate", str(caught.exception).lower())
+            self.assertEqual(adapter.submit_calls, [], "no quota spent on refusal")
+
+    def test_the_refusal_names_the_gate_command_never_a_token_to_copy_back(
+        self,
+    ) -> None:
+        """`ConsentError`'s single-send refusal safely prints a token
+        because printing it costs nothing (Decision 4/5's own reasoning).
+        `AuthorizationError` must never reproduce that shape: there is no
+        digest this function could print that would BE the missing
+        authorization, so its refusal names a command to run instead.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, job_dir, notebook = self._job_folder_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64, worker="w1",
+            )
+
+            with self.assertRaises(REMOTE_CLI.AuthorizationError) as caught:
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, worker="w1",
+                    requested=1, adapter=adapter,
+                    source_digest=lambda t, n: "d" * 64, consent=token,
+                )
+
+            message = str(caught.exception)
+            self.assertIn("implementation_cli", message)
+            self.assertIn("gate", message)
+            self.assertNotIn(token, message)
+
+    # -- a matching record authorizes; refusal costs no quota -------------
+
+    def test_a_matching_gate_record_authorizes_the_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, job_dir, notebook = self._job_folder_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64, worker="w1",
+            )
+            _mint_launch_authorization(
+                target=target, product="MIL-CREDA", pin_commit="a" * 40,
+                relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
+                worker="w1",
+            )
+
+            result = REMOTE_CLI.cmd_submit(
+                target=target, entrypoint=notebook, worker="w1",
+                requested=1, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64, consent=token,
+            )
+
+            self.assertEqual(len(adapter.submit_calls), 1)
+            self.assertTrue(Path(result["ledgerPath"]).exists())
+
+    def test_the_authorization_gate_runs_before_the_digest_walk(self) -> None:
+        """Refusing must cost nothing -- the same discipline
+        `SubmitPinGateTests.test_the_gate_runs_before_the_digest_walk`
+        already proves for the pin gate, exercised here for this second,
+        independent precondition.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, job_dir, notebook = self._job_folder_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64, worker="w1",
+            )
+            digest_calls: list[tuple[Path, str]] = []
+
+            with self.assertRaises(REMOTE_CLI.AuthorizationError):
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, worker="w1",
+                    requested=1, adapter=adapter,
+                    source_digest=lambda t, n: digest_calls.append((t, n)) or "d" * 64,
+                    consent=token,
+                )
+
+            self.assertEqual(digest_calls, [], "the digest walk ran before the gate")
+
+    # -- exact binding: pin, entrypoint, worker all have to match ---------
+
+    def test_a_gate_record_at_a_different_pin_does_not_authorize(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, job_dir, notebook = self._job_folder_and_notebook(
+                tmp, commit="a" * 40,
+            )
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64, worker="w1",
+            )
+            # Gated at a DIFFERENT commit than the job folder's current one.
+            _mint_launch_authorization(
+                target=target, product="MIL-CREDA", pin_commit="b" * 40,
+                relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
+                worker="w1",
+            )
+
+            with self.assertRaises(REMOTE_CLI.AuthorizationError):
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, worker="w1",
+                    requested=1, adapter=adapter,
+                    source_digest=lambda t, n: "d" * 64, consent=token,
+                )
+            self.assertEqual(adapter.submit_calls, [])
+
+    def test_a_gate_record_for_a_different_worker_does_not_authorize(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target, job_dir, notebook = self._job_folder_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 2)])
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64, worker="w1",
+            )
+            _mint_launch_authorization(
+                target=target, product="MIL-CREDA", pin_commit="a" * 40,
+                relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
+                worker="w2",
+            )
+
+            with self.assertRaises(REMOTE_CLI.AuthorizationError):
+                REMOTE_CLI.cmd_submit(
+                    target=target, entrypoint=notebook, worker="w1",
+                    requested=1, adapter=adapter,
+                    source_digest=lambda t, n: "d" * 64, consent=token,
+                )
+            self.assertEqual(adapter.submit_calls, [])
+
+    def test_re_running_the_same_submit_invocation_never_substitutes_for_a_gate(
+        self,
+    ) -> None:
+        """The honest limit stated as a fact, not merely asserted (design
+        §4.4/§4.2, spec's own "Approval is a distinct recorded act"
+        scenario): a caller who reruns the identical refused invocation,
+        any number of times, gets the identical refusal -- nothing about
+        repeating an invocation this function already refused ever mints
+        the record it is missing.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, job_dir, notebook = self._job_folder_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64, worker="w1",
+            )
+
+            for _ in range(3):
+                with self.assertRaises(REMOTE_CLI.AuthorizationError):
+                    REMOTE_CLI.cmd_submit(
+                        target=target, entrypoint=notebook, worker="w1",
+                        requested=1, adapter=adapter,
+                        source_digest=lambda t, n: "d" * 64, consent=token,
+                    )
+            self.assertEqual(adapter.submit_calls, [])
+
+    # -- scope: never blocks what `gate` structurally could not cover -----
+
+    def test_a_rehearsal_is_never_gated_by_this_precondition(self) -> None:
+        """Design §4.2: gating a rehearsal would deadlock the mechanism
+        that makes readiness measurable in the first place -- `smokeReady`
+        only ever becomes `True` because a rehearsal ran. `--smoke` still
+        needs its own consent token, minted and checked exactly as before.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, job_dir, notebook = self._job_folder_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64, worker="w1",
+            )
+
+            result = REMOTE_CLI.cmd_submit(
+                target=target, entrypoint=notebook, worker="w1", requested=1,
+                adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                smoke=True, consent=token,
+            )
+
+            self.assertEqual(len(adapter.submit_calls), 1)
+            self.assertEqual(Path(result["ledgerPath"]).name, "smoke.jsonl")
+
+    def test_a_legacy_shape_launch_is_never_gated_by_this_precondition(self) -> None:
+        """Design §4.2: the legacy `<Name>/Notebooks/**.ipynb` shape has no
+        job folder, so no `run-config.json` ever declared a pin and no
+        `@rehearsal <jobName>` witness could ever name it -- there is
+        structurally nothing for a `gate` record to bind to. Requiring one
+        here would be an unpayable, permanent refusal, never an adoption
+        cost.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook = self._target_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2)])
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64, worker="w1",
+            )
+
+            result = REMOTE_CLI.cmd_submit(
+                target=target, entrypoint=notebook, worker="w1", requested=1,
+                adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                consent=token,
+            )
+
+            self.assertEqual(len(adapter.submit_calls), 1)
+            self.assertTrue(Path(result["ledgerPath"]).exists())
+
+    def test_campaign_mode_is_never_gated_by_this_precondition(self) -> None:
+        """Design §4.2: `gate`'s own CLI takes no `--unit` flag, so a
+        campaign submission structurally cannot ever be matched by a
+        `gate` record -- the same "no equivalent minting command" asymmetry
+        already documented for consent, applied to authorization.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, job_dir, notebook = self._job_folder_and_notebook(tmp)
+            adapter = MultiWorkerFakeAdapter(workers=[("w1", 2), ("w2", 2)])
+            units = ("u0", "u1")
+            distribute_result = REMOTE_CLI.cmd_distribute(
+                target=target, entrypoint=notebook, adapter=adapter,
+                units=units, source_digest=lambda t, n: "d" * 64,
+            )
+            token = distribute_result["consentToken"]
+
+            result = REMOTE_CLI.cmd_submit(
+                target=target, entrypoint=notebook, requested=1,
+                adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                units=units, consent=token,
+            )
+
+            self.assertIn("assignments", result)
+
+
 class AcceleratorRequestDoctrineTests(unittest.TestCase):
     """`assemble_metadata` must emit the accelerator key the installed
     client actually reads — RETARGETED for Commit 1 (F7).
@@ -12940,6 +13317,14 @@ class SubmitPinGateTests(unittest.TestCase):
                     source_digest=lambda t, n: "d" * 64,
                     worker="w1",
                 )
+                # PR7 (design §4): a job-folder launch also needs a
+                # matching `gate` record now -- consent alone is no
+                # longer enough.
+                _mint_launch_authorization(
+                    target=target, product="MIL-CREDA", pin_commit=head,
+                    relative_entrypoint=f"tools/{self.FAKE_SERVICE}/search-a/runner.ipynb",
+                    worker="w1",
+                )
                 result = self._submit(
                     target, job_dir / "runner.ipynb", adapter, consent=token,
                 )
@@ -13233,6 +13618,13 @@ class StalenessRoutingTests(unittest.TestCase):
                 source_digest=lambda t, n: "d" * 64,
                 worker="w1",
             )
+            # PR7 (design §4): a job-folder launch also needs a matching
+            # `gate` record now -- consent alone is no longer enough.
+            _mint_launch_authorization(
+                target=target, product="MIL-CREDA", pin_commit=initial_commit,
+                relative_entrypoint=f"tools/{self.FAKE_SERVICE}/search-a/runner.ipynb",
+                worker="w1",
+            )
             result = REMOTE_CLI.cmd_submit(
                 target=target,
                 entrypoint=notebook,
@@ -13324,6 +13716,13 @@ class StalenessRoutingTests(unittest.TestCase):
             token = _mint_launch_consent(
                 target=target, entrypoint=notebook, adapter=adapter,
                 source_digest=lambda t, n: "d" * 64,
+                worker="w1",
+            )
+            # PR7 (design §4): a job-folder launch also needs a matching
+            # `gate` record now -- consent alone is no longer enough.
+            _mint_launch_authorization(
+                target=target, product="MIL-CREDA", pin_commit=initial_commit,
+                relative_entrypoint=f"tools/{self.FAKE_SERVICE}/search-a/runner.ipynb",
                 worker="w1",
             )
             submit_result = REMOTE_CLI.cmd_submit(
@@ -14617,6 +15016,15 @@ class SmokeTests(unittest.TestCase):
                 source_digest=lambda t, n: "d" * 64,
                 worker="w1",
             )
+            # PR7 (design §4): a job-folder FULL (non-smoke) launch also
+            # needs a matching `gate` record now -- the smoke call below
+            # stays exempt (design §4.2: gating a rehearsal would deadlock
+            # the very mechanism that makes readiness measurable).
+            _mint_launch_authorization(
+                target=target, product="MIL-CREDA", pin_commit="a" * 40,
+                relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
+                worker="w1",
+            )
             full_result = REMOTE_CLI.cmd_submit(
                 target=target, entrypoint=notebook, worker="w1", requested=1,
                 adapter=adapter, source_digest=lambda t, n: "d" * 64, consent=token,
@@ -14668,6 +15076,14 @@ class SmokeTests(unittest.TestCase):
                 target=target, entrypoint=notebook, worker="w1", requested=1,
                 adapter=adapter, source_digest=lambda t, n: "d" * 64, smoke=True,
                 consent=token,
+            )
+            # PR7 (design §4): the FULL (non-smoke) launch below also needs
+            # a matching `gate` record now -- the rehearsal above stays
+            # exempt (design §4.2).
+            _mint_launch_authorization(
+                target=target, product="MIL-CREDA", pin_commit="a" * 40,
+                relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
+                worker="w1",
             )
             full_result = REMOTE_CLI.cmd_submit(
                 target=target, entrypoint=notebook, worker="w1", requested=1,
@@ -17315,6 +17731,120 @@ class NestedPathSerializationTests(unittest.TestCase):
         self.assertEqual(printed["missing"], [])
         self.assertIsInstance(printed["smokeLedgerPath"], str)
         self.assertIsInstance(printed["requiredEvidence"][1], str)
+
+
+class PushSurfaceHookTests(unittest.TestCase):
+    """`scripts/hooks/refuse_offpath_push.py` (design §5): a tripwire, not
+    a gate. The load-bearing precondition is `_verify_launch_authorization()`
+    (`AuthorizationGateTests` above); this class exercises only the residue
+    that precondition cannot see -- a launch that never calls `submit` at
+    all -- and the script's own fail-open discipline for everything it
+    cannot parse.
+
+    Committed as an inert artifact, deliberately never wired into
+    `.claude/settings.json` by this change: turning it on is a decision
+    for a human, not this script's own existence.
+    """
+
+    def test_push_surfaces_are_read_from_the_real_adapter_not_hardcoded(self) -> None:
+        surfaces = PUSH_SURFACE_HOOK._load_push_surfaces()
+        self.assertIn("kernels_push", surfaces)
+        self.assertIn("kaggle_driver.py", surfaces)
+
+    def test_a_command_naming_kernels_push_without_remote_cli_is_flagged(self) -> None:
+        matched = PUSH_SURFACE_HOOK.offpath_push(
+            "python3 adapters/kaggle_driver.py push --dir tools/kaggle/search-a",
+            ("kaggle_driver.py", "kernels_push"),
+        )
+        self.assertEqual(matched, "kaggle_driver.py")
+
+    def test_a_command_that_also_invokes_remote_cli_is_never_flagged(self) -> None:
+        """The predicate is conjunctive, not a bare substring search: a
+        command that legitimately runs `remote_cli.py submit` may well
+        mention a push-surface token (in a comment, a log path, a
+        docstring test invocation) without that being the off-path shape
+        this hook exists to catch.
+        """
+        matched = PUSH_SURFACE_HOOK.offpath_push(
+            "python3 .claude/skills/remote-execution/scripts/remote_cli.py "
+            "submit --target x --entrypoint y # uses kernels_push internally",
+            ("kaggle_driver.py", "kernels_push"),
+        )
+        self.assertIsNone(matched)
+
+    def test_a_command_naming_neither_is_never_flagged(self) -> None:
+        matched = PUSH_SURFACE_HOOK.offpath_push(
+            "git status", ("kaggle_driver.py", "kernels_push"),
+        )
+        self.assertIsNone(matched)
+
+    # -- what it explicitly does NOT do: read a job's mode ----------------
+
+    def test_the_predicate_reads_no_job_folder_and_no_mode(self) -> None:
+        """Design §5's own recorded rejection: `mode=smoke` is a
+        `submit`-time argv flag, never a job-folder property readable
+        before submission. `offpath_push()` takes only a command string
+        and a tuple of tokens -- no target, no job directory, no mode --
+        so there is no parameter this predicate COULD read a mode from.
+        """
+        import inspect
+
+        parameters = list(inspect.signature(PUSH_SURFACE_HOOK.offpath_push).parameters)
+        self.assertEqual(parameters, ["command", "push_surfaces"])
+
+    # -- the PreToolUse contract: refuse, or stay silent -------------------
+
+    def _run_main(self, payload: object) -> tuple[int, str]:
+        stdin = io.StringIO(json.dumps(payload) if not isinstance(payload, str) else payload)
+        stderr = io.StringIO()
+        with unittest.mock.patch.object(sys, "stdin", stdin), \
+                contextlib.redirect_stderr(stderr):
+            code = PUSH_SURFACE_HOOK.main([])
+        return code, stderr.getvalue()
+
+    def test_main_refuses_an_offpath_push_command_with_exit_2(self) -> None:
+        code, stderr = self._run_main({
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "python3 adapters/kaggle_driver.py push --dir x",
+            },
+        })
+        self.assertEqual(code, 2)
+        self.assertIn("kaggle_driver.py", stderr)
+        self.assertIn("remote_cli.py", stderr)
+
+    def test_main_stays_silent_on_a_command_routed_through_submit(self) -> None:
+        code, stderr = self._run_main({
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "python3 .claude/skills/remote-execution/scripts/"
+                           "remote_cli.py submit --target x --entrypoint y",
+            },
+        })
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+
+    def test_main_stays_silent_on_an_unrelated_command(self) -> None:
+        code, stderr = self._run_main({
+            "tool_name": "Bash",
+            "tool_input": {"command": "git status"},
+        })
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+
+    def test_main_never_refuses_on_malformed_input_it_cannot_parse(self) -> None:
+        """A tripwire that cannot parse its own input refuses NOTHING --
+        it never fails closed onto a command it never actually read.
+        """
+        code, stderr = self._run_main("not valid json at all {{{")
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+
+    def test_main_stays_silent_on_a_non_bash_payload_with_no_command_key(self) -> None:
+        code, stderr = self._run_main({"tool_name": "Read", "tool_input": {"file_path": "x"}})
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+
 
 if __name__ == "__main__":
     unittest.main()

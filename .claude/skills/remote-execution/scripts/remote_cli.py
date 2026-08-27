@@ -157,6 +157,22 @@ class PathGuardError(RemoteCLIError):
     """An entrypoint failed this forge's own file-kind policy for what may run remotely."""
 
 
+class AuthorizationError(RemoteCLIError):
+    """A non-rehearsal `submit` refused for lack of a matching `gate`
+    transition record (design §4, domain launch-authorization) -- a
+    SEPARATE and INDEPENDENT precondition from `ConsentError` below, never
+    a payload this class shares with it.
+
+    `campaign_consent_token()` binds *what* is launched and is computed
+    entirely from this invocation's own argv -- which is exactly why it can
+    never be an authorization: any caller who can run `submit` can also
+    compute its own consent. This error exists for the other half:
+    *someone with standing said yes, at this readiness, for this reason* --
+    a fact that has to be recorded before, and independently of, the
+    launching invocation, never derivable from it.
+    """
+
+
 class ConsentError(RemoteCLIError):
     """ANY `submit` refused for lack of, or a mismatch in, the consent
     token this invocation needs -- campaign, single send, and rehearsal
@@ -559,6 +575,177 @@ def _verify_launch_consent(
         )
 
 
+def _load_impl_position():
+    """Path-import `_core/implementation/impl_position.py` -- the ONE fold
+    of `.implementation/position.jsonl` `_verify_launch_authorization()`
+    below is allowed to read.
+
+    Same `sys.modules`-reuse technique as every other `_load_sibling` load
+    in this module, extended one skill boundary further: `impl_position.py`
+    lives outside this skill's own `remote_cli -> packer -> ledger ->
+    adapter` chain, in neutral ground `proposal-implementation` already
+    reaches into the same way (`implementation_cli.py`'s own `import
+    impl_position`, after a `sys.path.insert` of this exact directory).
+    Reusing an already-loaded copy under the SAME `sys.modules` key that
+    caller uses is not merely an optimization here: `impl_position.py`
+    defines no class either module would need `isinstance` for, but
+    re-executing it under a second key would still leave two modules
+    disagreeing about `sys.modules["impl_position"]`, which is the one
+    piece of global state a caller elsewhere in the same process might
+    already depend on.
+
+    `_core/implementation/` is inserted onto `sys.path` before the exec,
+    because `impl_position.py` itself does `from impl_refusals import
+    Refused` with no path setup of its own -- it is written to be reached
+    the way `implementation_cli.py` reaches it, and a spec-loaded exec
+    still runs that same top-level import line, which needs
+    `impl_refusals` importable at that moment.
+
+    Loaded lazily, called only from inside `_verify_launch_authorization()`
+    -- same discipline `_load_source_digest()` documents for its own
+    cross-skill reach: every OTHER `submit` path (a rehearsal, a legacy
+    entrypoint, campaign mode -- see that function's own docstring) never
+    needs this module at all, so importing it at module load time would
+    cost every caller a `sys.path` mutation and a file read they may never
+    use.
+    """
+    module_name = "impl_position"
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+    core_dir = Path(__file__).resolve().parents[2] / "_core" / "implementation"
+    if str(core_dir) not in sys.path:
+        sys.path.insert(0, str(core_dir))
+    script = core_dir / "impl_position.py"
+    spec = importlib.util.spec_from_file_location(module_name, script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _verify_launch_authorization(
+    *,
+    smoke: bool,
+    target: Path,
+    product: str,
+    pin_commit: str | None,
+    relative_entrypoint: Path,
+    units: Sequence[str] | None,
+    worker: str | None,
+) -> None:
+    """The SECOND, independent precondition `cmd_submit` enforces (design
+    §4.2) -- separate from `_verify_launch_consent()` above, never a second
+    check bolted onto that one's payload.
+
+    The finding this repairs: `_verify_launch_consent()` refuses every
+    unauthorized launch correctly, but its refusal message prints back the
+    exact token the caller passes in on the next call -- `campaign_consent_
+    token()` is a sha256 over THIS INVOCATION'S OWN public argv, so any
+    caller who can run `submit` can also compute it. Editing that payload
+    to add readiness or a justification would not close that gap; it would
+    only give the refusal one more field to print back, and it repeats the
+    exact defect class already recorded at `_verify_launch_consent()`'s own
+    docstring (F2): three named `--worker <account>` invocations once
+    minted an identical token because a real field was left out of the
+    digest. This function is deliberately NOT that kind of change: it reads
+    a record written BEFORE and INDEPENDENTLY of this invocation, by a
+    different act -- `implementation_cli gate`, run against a REHEARSAL
+    that actually happened -- never anything this invocation's own argv
+    could have produced.
+
+    Readiness is the un-forgeable half: `gate` only ever appends its record
+    after `remote_execution_jobs_state()['smokeReady']` reads `True` for
+    that job at its CURRENT pin, and that fact can only become true by a
+    rehearsal actually running and being recorded (`cmd_readiness`'s own
+    three-fact bind) -- no caller can type it into existence. Justification
+    is legible, not verified: this function checks only that one is present
+    on the matching record, never who wrote it or whether a human read it.
+    What is enforceable, and IS enforced here, is narrower and honest: the
+    approval is a distinct recorded act, and re-running this exact launch
+    command a second time can never substitute for it -- only a `gate`
+    record, minted by a separate invocation of a separate command, can.
+
+    Scope, stated rather than left implicit:
+
+    - `smoke=True` returns immediately. A rehearsal is never gated by this
+      function -- gating it would deadlock the very mechanism that makes
+      readiness measurable (`smokeReady` becomes `True` only once a
+      rehearsal has run). `--smoke` still needs its own consent token
+      (`_verify_launch_consent` above), so a rehearsal stays deliberate.
+    - `pin_commit is None` returns immediately too: the legacy
+      `<Name>/Notebooks/**.ipynb` shape has no job folder and therefore no
+      `run-config.json` for `gate` to have read a commit from, and no
+      `@rehearsal <jobName>` witness a position sequence could ever name
+      for it -- the exact "nothing here promised a runner a commit"
+      discriminator `_gate_job_folder_pin()`'s own docstring already uses,
+      applied to the same reason.
+    - `units` truthy (campaign mode) also returns immediately: `gate`'s own
+      CLI takes no `--unit` flag at all, and the `units` a `gate` record
+      carries is a job folder's own declared, static list -- not a
+      campaign's dynamically distributed per-worker assignment. Requiring a
+      match this precondition structurally cannot produce would make every
+      campaign launch permanently unauthorizable, the same "no equivalent
+      minting command" asymmetry `_verify_launch_consent()`'s own docstring
+      already documents for consent.
+
+    For every other launch, this folds `<target>/<product>/.implementation/
+    position.jsonl` and requires the NEWEST `gate` event whose `commit`,
+    `entrypoint` and `units` match this invocation's own binding exactly,
+    whose `worker` matches this invocation's own `worker` (which is why an
+    auto-selected launch -- no `--worker` named -- can never match a `gate`
+    record: `gate`'s own `--worker` flag is required, so a record always
+    names one account, and an invocation that has not yet chosen one has
+    nothing to match against), and whose `justification` is non-blank.
+    Fail-closed by design (§4.5): a product with no `.implementation/
+    position.jsonl` at all folds to zero events and refuses exactly like
+    one with events but no match, reproducing today's hole for NO target --
+    the one-time adoption cost this accepts on purpose, and the refusal
+    below names the exact command that pays it.
+    """
+    if smoke:
+        return
+    if pin_commit is None:
+        return
+    if units:
+        return
+
+    impl_position = _load_impl_position()
+    ledger_path = (
+        Path(target).resolve() / product / ".implementation" / "position.jsonl"
+    )
+    events = impl_position.read_events(ledger_path)
+    expected_units = list(units or ())
+    expected_entrypoint = str(relative_entrypoint)
+
+    for event in reversed(events):
+        if event.get("kind") != "gate":
+            continue
+        if (
+            event.get("commit") == pin_commit
+            and event.get("entrypoint") == expected_entrypoint
+            and list(event.get("units") or []) == expected_units
+            and event.get("worker") == worker
+            and str(event.get("justification") or "").strip()
+        ):
+            return
+
+    worker_note = (
+        f" for worker {worker!r}" if worker is not None else " (no --worker named)"
+    )
+    worker_flag = repr(worker) if worker is not None else "<account>"
+    raise AuthorizationError(
+        "submit refuses: no `gate` transition record authorizes this exact "
+        f"launch (pin {pin_commit!r}, entrypoint {expected_entrypoint!r}, "
+        f"units {expected_units!r}){worker_note}. Run `implementation_cli "
+        f"gate --target <workspace-clone> --name {product} --job <jobName> "
+        f"--worker {worker_flag} --justification <text-or--> --revision "
+        "<revision> --session <id>` first, at this exact pin, then re-run "
+        "this exact submit invocation -- re-running submit itself is "
+        "never the approval; only that separate, recorded act is."
+    )
+
+
 def _gate_job_folder_pin(resolved_entrypoint: Path) -> None:
     """Put a job-folder submission's own declared pin through the same
     three conditions `generate-job` enforces — BEFORE the digest walk, the
@@ -957,8 +1144,9 @@ def cmd_submit(
     # above guarantees it is None whenever `units` is truthy, so passing
     # it straight through binds an explicit single-send worker and leaves
     # campaign/auto-select derivation untouched, in one expression.
+    pin_commit = _job_folder_commit(resolved_entrypoint)
     expected_consent = campaign_consent_token(
-        pin_commit=_job_folder_commit(resolved_entrypoint),
+        pin_commit=pin_commit,
         relative_entrypoint=relative_entrypoint,
         units=units or (),
         worker=worker,
@@ -966,6 +1154,17 @@ def cmd_submit(
     _verify_launch_consent(
         consent=consent, expected_consent=expected_consent, units=units,
         worker=worker,
+    )
+
+    # A second, INDEPENDENT precondition (design §4.2) -- never folded into
+    # the consent check above, and never sharing its payload. Runs right
+    # after consent and before the digest walk, so a refusal here costs
+    # exactly as little as a consent refusal does: no digest, no plan, no
+    # adapter call, no ledger line.
+    _verify_launch_authorization(
+        smoke=smoke, target=target, product=resolved_product,
+        pin_commit=pin_commit, relative_entrypoint=relative_entrypoint,
+        units=units, worker=worker,
     )
 
     digest_fn = source_digest or _load_source_digest()

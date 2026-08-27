@@ -264,6 +264,55 @@ Three modules exist so far, each service-blind and stdlib-only:
     already knew the exact pin and entrypoint), bound (to exactly that
     launch), and unstored (nothing here ever carries it forward to a
     later invocation).
+  - **Launch authorization, a SECOND and INDEPENDENT precondition**
+    (design §4, `the-position-nobody-holds`): the consent gate above
+    refuses correctly, but its own single-send refusal safely PRINTS the
+    token it needs — safe only because `campaign_consent_token()` is a
+    sha256 over this invocation's OWN public argv, so any caller who can
+    run `submit` can already compute it. That is not a flaw in the token;
+    it is what a public digest can never be — an authorization. Editing
+    that payload to add readiness or a justification would not close the
+    gap, it would only give the printed refusal one more field to echo
+    back, and it repeats the exact defect class already recorded above
+    (F2: a real field left out of the digest once let three different
+    accounts mint an identical token).
+
+    `_verify_launch_authorization()` reads a DIFFERENT record instead: a
+    `gate` transition, written by `implementation_cli gate` — a separate
+    command, run beforehand, by a separate invocation — into
+    `<target>/<product>/.implementation/position.jsonl`
+    (`proposal-implementation`'s own append-only ledger, folded through
+    `_core/implementation/impl_position.py`, never re-derived here). A
+    non-rehearsal `submit` now refuses unless the newest `gate` event
+    matches this invocation's own pin, relative entrypoint, ordered unit
+    list and named worker, and carries a non-blank justification.
+
+    **Readiness is the un-forgeable half.** `gate` only ever appends its
+    record after `readiness` (above) reads `True` for that job at its
+    CURRENT pin — a fact only a real rehearsal, actually run and recorded,
+    can produce; no caller can type it into existence. **Justification is
+    legible, not verified** — `gate` requires one be present, but nothing
+    here checks who wrote it or whether a human read it. What this DOES
+    make true, honestly: the approval is a distinct recorded act, and
+    re-running the identical refused `submit` invocation, any number of
+    times, never substitutes for it.
+
+    Scoped deliberately, not universally: a rehearsal (`--smoke`) is
+    exempt — gating it would deadlock the very mechanism that makes
+    readiness measurable. The legacy `<Name>/Notebooks/**.ipynb` shape is
+    exempt — it has no job folder, so nothing ever promised a runner a
+    commit and no `@rehearsal` witness could ever name one. Campaign mode
+    (`--unit`) is exempt — `gate`'s own CLI takes no `--unit` flag, so a
+    campaign launch could never be matched by any `gate` record; requiring
+    one would make every campaign launch permanently unauthorizable, never
+    an adoption cost.
+
+    Fail-closed for everything else, on purpose: a job-folder product with
+    no `.implementation/position.jsonl` at all refuses exactly like one
+    with events but no match — the one-time adoption cost this accepts
+    rather than reproduce today's hole for every target that never adopts
+    the position mechanism. The refusal names the exact `gate` invocation
+    that pays it.
   - `status` folds the ledger and reports per-entrypoint state, what is
     `staleInFlight`, what is quarantined, and `unreadableLines`. It accepts
     no `adapter` parameter at all — a structural fact, not a convention —
@@ -1116,9 +1165,23 @@ reads a timestamp — a record's usefulness expires the moment the job
 re-pins to a different commit or the worker changes, never after elapsed
 time.
 
-`probe` states the fact and submits nothing — `readiness` reports only.
-`piloted` (a `proposal-implementation` concept) is untouched, and neither
-state implies the other.
+`probe` states the fact and submits nothing — `readiness` still reports
+only and still issues nothing: its own signature takes no `adapter`
+parameter, exactly as before. What changed (design §4,
+`the-position-nobody-holds`): a non-rehearsal `submit` now READS this same
+three-fact bind — through `gate`'s own recorded transition, never through
+`readiness` directly — so a job whose `smokeReady` is not `True` cannot be
+gated, and an ungated job cannot be submitted at full scale. `piloted` (a
+`proposal-implementation` concept) remains untouched and still implies
+nothing.
+
+This is narrower than it may first read, and the distinction is
+load-bearing: `probe`'s own ECHO of `smokeReady` still gates nothing —
+that row above is unedited, and reading it is still purely informational.
+What now gates is `readiness`'s underlying THREE-FACT MEASUREMENT, reached
+only through a separately-recorded `gate` transition — permitting the
+rehearsal to unlock authorization is not the same as branching on the
+reported fact itself.
 
 ## Why append, not a status record
 

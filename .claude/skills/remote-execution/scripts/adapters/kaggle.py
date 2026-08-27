@@ -140,6 +140,20 @@ DEFAULT_KAGGLE_DRIVER = Path(__file__).resolve().parent / "kaggle_driver.py"
 
 KAGGLE_EXECUTABLE = "kaggle"
 
+# Read by `scripts/hooks/refuse_offpath_push.py` (design §5,
+# `the-position-nobody-holds`) -- the exact substrings a hand-rolled Bash
+# command would have to contain to reach THIS service's own push surface
+# without going through `remote_cli.py submit` at all: this adapter's own
+# driver script by name, and the SDK method it shells out to
+# (`kernels_push`, see `_push()` below). Declared here, never hardcoded in
+# the hook itself, because naming a service's own vocabulary belongs to
+# this file alone -- the one confinement rule this whole skill enforces
+# (see this module's own docstring above, and
+# `implementation_cli.py`'s "No service is named here" comment). A second
+# service is covered by declaring its own `PUSH_SURFACE` beside its own
+# adapter, never by editing the hook.
+PUSH_SURFACE: tuple[str, ...] = ("kaggle_driver.py", "kernels_push")
+
 # The CONTROL-PLANE budget: worker listing, `submit`'s own push, `poll`,
 # and `capacity`. Every one of those is a small request whose answer the
 # service produces immediately, so two minutes is already generous and
