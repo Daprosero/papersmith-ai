@@ -1,6 +1,6 @@
 ---
 name: remote-execution
-description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry), the packer's capacity clamp and worker auto-selection, the full `remote_cli` front door (`submit` with its path guard, optional `--worker` and `--smoke`, repeatable `--unit` for full-spread campaign mode, `status`, `poll`, `fetch` with quarantine, `reconcile`, `distribute`, `generate-job`, `smoke record`, `readiness`), and one concrete backend: `adapters/kaggle.py` — the ONLY file in this entire skill allowed to name a service. It shells out to `adapters/kaggle_driver.py`, the ONLY file in this skill permitted to import the packaged `kagglesdk` client (pinned `kagglesdk==0.1.37`, a standalone distribution since 2025-07-11 -- NOT vendored inside the `kaggle` CLI, a claim that was true of the retired `kaggle==1.7.4.5` and does not carry forward) rather than the `kaggle` CLI's own Basic-auth path, which the stored token shape cannot authenticate against at all; derives worker identity solely from kaggle-accounts' own sanctioned `list --json` command, and accepts credentials only as a `CredentialHandle(worker_id, token_path)` — read at exactly one expression, in that one file, and put on `KAGGLE_API_TOKEN` for one child process, because `kagglesdk`'s own `_try_fill_auth()` reads that variable by value with no path check at all — the CLI itself authenticates neither a path nor that variable. A rehearsal run (`smoke.jsonl`, a distinct file from the main ledger) proves readiness from evidence-completeness, never a human assertion, and never a clock. Stdlib-only except that one named driver script."
+description: "Trigger: durable record of what a repository has submitted to a remote worker, what came back, and how much to submit at once. This skill ships the append-only ledger (write path and the fold that derives per-entrypoint state), the backend-agnostic adapter seam (ABC + frozen shapes + registry), the packer's capacity clamp and worker auto-selection, the full `remote_cli` front door (`submit` with its path guard, optional `--worker` and `--smoke`, repeatable `--unit` for full-spread campaign mode, `status`, `poll`, `fetch` with quarantine, `reconcile`, `distribute`, `generate-job`, `smoke`, `record`, `readiness`), and one concrete backend: `adapters/kaggle.py` — the ONLY file in this entire skill allowed to name a service. It shells out to `adapters/kaggle_driver.py`, the ONLY file in this skill permitted to import the packaged `kagglesdk` client (pinned `kagglesdk==0.1.37`, a standalone distribution since 2025-07-11 -- NOT vendored inside the `kaggle` CLI, a claim that was true of the retired `kaggle==1.7.4.5` and does not carry forward) rather than the `kaggle` CLI's own Basic-auth path, which the stored token shape cannot authenticate against at all; derives worker identity solely from kaggle-accounts' own sanctioned `list --json` command, and accepts credentials only as a `CredentialHandle(worker_id, token_path)` — read at exactly one expression, in that one file, and put on `KAGGLE_API_TOKEN` for one child process, because `kagglesdk`'s own `_try_fill_auth()` reads that variable by value with no path check at all — the CLI itself authenticates neither a path nor that variable. A rehearsal run (`smoke.jsonl`, a distinct file from the main ledger) proves readiness from evidence-completeness, never a human assertion, and never a clock. Stdlib-only except that one named driver script."
 ---
 
 # Remote Execution
@@ -1029,9 +1029,32 @@ executable — no test in this suite reaches the network or a real account).
   slice builds it); once it does, it will route through `read()` the same
   way.
 
+## The commands
+
+`remote_cli.py` accepts exactly nine top-level subcommands; this table is the
+closed roster `skill-audit`'s `roster` move derives against, driving the CLI
+with a nonce it cannot accept and reading the accepted set out of its own
+refusal.
+
+| Command | What it does |
+| --- | --- |
+| `submit` | submit one notebook to a registered backend's worker |
+| `status` | report the fold for one product's ledger; resolves nothing |
+| `distribute` | report how opaque work units would spread across every healthy worker account right now; issues no work and records nothing |
+| `poll` | ask the adapter for one submission's status |
+| `fetch` | materialize one submission's result, quarantining it when it is not current |
+| `reconcile` | compare the ledger against the adapter's `list_active()` in both directions |
+| `generate-job` | generate a forge-owned job folder at `<target>/tools/<service>/<job-name>/` |
+| `smoke` | smoke-run bookkeeping: recording a rehearsal's evidence-derived verdict |
+| `readiness` | state whether a job is ready for a full submission on a worker; reports only, issues no submission |
+
 ## Smoke — a readiness gate, evidence-derived
 
 A smoke run is a rehearsal, not a submission whose result feeds any report.
+
+| Smoke subcommand | What it records |
+| --- | --- |
+| `record` | a `smokeResult` event: pass/fail derived from `shard_io.completeness()`, never a human assertion |
 
 **A distinct file, not a fourth ledger `kind`.**
 `<target>/<product>/.remote-execution/smoke.jsonl` lives beside
