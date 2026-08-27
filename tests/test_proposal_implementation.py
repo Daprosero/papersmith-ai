@@ -9199,7 +9199,7 @@ class VerifyStatusRosterTests(unittest.TestCase):
         usage = USAGE_MD.read_text(encoding="utf-8")
         section = usage[usage.index("## Reading `verify`"):]
         section = section[:section.index("\n## ", 1)]
-        for status in ("coupling", "lfs"):
+        for status in ("coupling", "lfs", "position"):
             self.assertIn(f"`{status}`", section)
 
     def test_the_roster_names_a_renamed_key(self):
@@ -10903,3 +10903,84 @@ class PositionModuleTests(unittest.TestCase):
             impl_position.append_event(path, {"kind": "close", "session": "s1"})
             events = impl_position.read_events(path)
             self.assertEqual([e["kind"] for e in events], ["gate", "close"])
+
+
+class PositionKeyExitStatusTests(unittest.TestCase):
+    """The `position` key is reported and never gates — the same discipline
+    `coupling` (`CouplingNeverGatesTests`) and `smokeReady`
+    (`ProbeReportedFactsRosterTests`) already carry. `position_state` is
+    exercised directly across all four statuses; one end-to-end `verify`/
+    `probe` run proves the key's mere presence never changes the process's
+    own exit status, mirroring `CouplingNeverGatesTests._run` exactly.
+    """
+
+    HEADER = {
+        "revision": "r01.md", "revisionSha256": "a" * 64,
+        "derivedAt": "2026-08-27T00:00:00Z", "session": "s1",
+    }
+
+    def write_position(self, root, mark, sha256=None):
+        (root / "Method").mkdir(parents=True, exist_ok=True)
+        items = [{"ordinal": 1, "mark": mark, "text": "Rehearse the job.",
+                  "witness": {"kind": "rehearsal", "operand": "job1"}}]
+        header = {**self.HEADER, "revisionSha256": sha256 or self.HEADER["revisionSha256"]}
+        (root / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+
+    def test_position_state_reports_all_four_statuses_without_raising(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True)
+            absent = impl.position_state(root, "Method", {}, None, None)
+            self.assertEqual(absent["status"], "absent")
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.write_position(root, " ")
+            open_state = impl.position_state(root, "Method", {}, None, None)
+            self.assertEqual(open_state["status"], "open")
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.write_position(root, "x")
+            evidence = {"smokeReady": {"job1": True}}
+            complete = impl.position_state(root, "Method", evidence, None, None)
+            self.assertEqual(complete["status"], "complete")
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.write_position(root, "x", sha256="b" * 64)
+            evidence = {"smokeReady": {"job1": True}}
+            stale = impl.position_state(root, "Method", evidence, "r01.md", "some content")
+            self.assertEqual(stale["status"], "stale")
+
+    def test_position_key_never_changes_exit_status(self):
+        box = FORGE / "implementations" / f"_e2e_position_{os.getpid()}"
+        try:
+            (box / "src" / "Method").mkdir(parents=True)
+            (box / "src" / "Method_Benchmark").mkdir(parents=True)
+            (box / "tests").mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(box)], check=True,
+                           capture_output=True)
+            (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+            (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+                _COUPLING_DECLARATION, encoding="utf-8")
+            self.write_position(box, " ")
+            verify = subprocess.run(
+                [sys.executable, str(CLI), "verify", "--target", str(box),
+                 "--name", "Method"],
+                capture_output=True, text=True, cwd=FORGE)
+            probe = subprocess.run(
+                [sys.executable, str(CLI), "probe", "--target", str(box),
+                 "--name", "Method"],
+                capture_output=True, text=True, cwd=FORGE)
+        finally:
+            shutil.rmtree(box, ignore_errors=True)
+        self.assertEqual(verify.returncode, 0, verify.stderr)
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+        verify_json = json.loads(verify.stdout or "{}")
+        probe_json = json.loads(probe.stdout or "{}")
+        self.assertIn("position", verify_json)
+        self.assertIn("position", probe_json)
+        self.assertEqual(verify_json["position"]["status"], "open")
+        self.assertEqual(probe_json["position"]["status"], "open")

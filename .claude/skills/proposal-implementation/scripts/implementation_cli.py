@@ -49,6 +49,7 @@ from impl_guards import require_clean_worktree, require_non_forge_interpreter, r
 from impl_naming import normalize_name, package_name, validate_name  # noqa: E402
 from impl_references import (is_nesting, prefix_mappings, reference_pattern,  # noqa: E402
                              scan_reference_updates, scan_stale_references)
+import impl_position  # noqa: E402
 
 # The three files this module is allowed to path-import from the forge's
 # `remote-execution` skill. `remote_execution_state()` reads `ledger.py`
@@ -233,6 +234,106 @@ def agreements_state(target: Path, name: str) -> dict:
         "open": open_items,
         "settled": settled,
         "unparsed": unparsed,
+    }
+
+
+def position_state(target: Path, name: str, evidence: dict,
+                   revision: str | None, source: str | None) -> dict:
+    """The execution sequence's current state, read from `<Name>/AGREED.md`.
+
+    Every mark reported here is derived, never read as an asserted claim —
+    see `impl_position.derive`. `evidence` is a plain dict of already-computed
+    states (the search, the notebooks, the job readiness and, when given, the
+    arrived shards), so this function reads no filesystem itself beyond
+    locating which markdown file, if any, holds the block.
+
+    Uniform key set on every branch, `absent` included: a caller that reads
+    `position["sequence"]` on a target that never reached a gate must not
+    special-case the one status where the key would otherwise be missing —
+    `returned_keys`'s agreement rule (test_proposal_implementation.py:161-164).
+
+    Reported and never gating, exactly like `agreements_state` beside it: a
+    target with items still open is a not-yet-ready state, not a failure, and
+    neither `verify` nor `probe`'s own exit status is touched by anything this
+    returns. The one exception is a malformed block — `locate_block` and
+    `parse_items` raise `Refused` for that, the same class `MALFORMED_FINDINGS`
+    already is for `read_findings` (line 2151), and `main()`'s existing
+    `except Refused` turns it into exit 2 for every command that reads one.
+    """
+    empty = {
+        "status": "absent", "holder": None, "revision": None,
+        "revisionSha256": None, "boundTo": "unknown",
+        "sequence": [], "disagreements": [], "unmeasured": [],
+        "lastGate": None, "lastClose": None,
+    }
+    product = target / name
+    if not product.is_dir():
+        return empty
+
+    # Found by shape, exactly like `agreements_state` two functions up: every
+    # markdown file at the top of the product folder is a candidate holder,
+    # never a fixed filename that would decide for the repository.
+    holders = []
+    for path in sorted(p for p in product.glob("*.md") if p.is_file()):
+        block = impl_position.locate_block(path.read_bytes())
+        if block is not None:
+            holders.append((path, block))
+
+    if not holders:
+        return empty
+    if len(holders) > 1:
+        raise Refused(
+            "POSITION_HOLDER_AMBIGUOUS",
+            "more than one markdown file under "
+            f"{product.relative_to(target)}/ carries a `<!-- position -->` "
+            "block; only one may hold the section this reads.")
+
+    path, block = holders[0]
+    items = impl_position.parse_items(block["body"])
+    derived = impl_position.derive(items, evidence)
+
+    events = impl_position.read_events(product / ".implementation" / "position.jsonl")
+    last_gate = next((e for e in reversed(events) if e.get("kind") == "gate"), None)
+    last_close = next((e for e in reversed(events) if e.get("kind") == "close"), None)
+
+    sequence, disagreements, unmeasured = [], [], []
+    for item, result in zip(items, derived):
+        entry = {
+            "ordinal": item["ordinal"], "mark": item["mark"],
+            "derived": result["derived"], "witness": item["witness"],
+            "measuredBy": result["measuredBy"], "disagrees": result["disagrees"],
+            "text": item["text"],
+        }
+        sequence.append(entry)
+        if result["disagrees"]:
+            disagreements.append(entry)
+        if result["derived"] is None:
+            unmeasured.append(entry)
+
+    # The same staleness rule `admissibility_record` already applies (line
+    # 4815-4821): a revision's *content* hash, not its name, is what a header
+    # is bound to. Neither `revision` nor `source` resolved this invocation
+    # (probe without `--revision`, most commonly) reports `unknown` rather
+    # than guessing at a hash nobody could compute.
+    if not revision or not source:
+        bound_to = "unknown"
+    else:
+        current_sha = hashlib.sha256(source.encode("utf-8")).hexdigest()
+        bound_to = "current" if block["revisionSha256"] == current_sha else "stale"
+
+    if bound_to == "stale":
+        status = "stale"
+    elif any(item["mark"] == " " for item in items) or disagreements:
+        status = "open"
+    else:
+        status = "complete"
+
+    return {
+        "status": status, "holder": str(path.relative_to(target)),
+        "revision": block["revision"], "revisionSha256": block["revisionSha256"],
+        "boundTo": bound_to, "sequence": sequence,
+        "disagreements": disagreements, "unmeasured": unmeasured,
+        "lastGate": last_gate, "lastClose": last_close,
     }
 
 
@@ -1959,6 +2060,19 @@ def cmd_probe(args) -> dict:
     # doctrine exactly but named its module something else.
     harness_status = resolve_harness_status(target, name, package_name(name))
     notebook = target / name / "Notebooks" / PROBE_NOTEBOOK
+    # Computed once and reused for the `remoteExecution` merge below, rather
+    # than called twice for the same answer.
+    jobs = remote_execution_jobs_state(target)
+    # `probe` takes no `--shards`, so the evidence carries no shard answer at
+    # all: `@shard` reports `unmeasured` here, never a false "did not arrive"
+    # (see `impl_position.derive`'s own docstring).
+    position = position_state(
+        target, name,
+        {"search": search, "requiredScale": declared_required_scale(search),
+         "notebooks": notebooks_state(target, name, package_name(name)),
+         "smokeReady": jobs["smokeReady"], "shardsArrived": None},
+        args.revision,
+        revision_source(args.revision) if args.revision else None)
     return {
         "status": "ok",
         "target": str(target),
@@ -1985,12 +2099,14 @@ def cmd_probe(args) -> dict:
         "unreachedModules": unfaithful,
         # A static fact, reported and never gating: see `notebook_coupling`.
         "coupling": coupling_state(target, name, package_name(name)),
+        # A static fact, reported and never gating: see `position_state`.
+        "position": position,
         # What went out to a remote worker (the ledger), plus what job
         # folders exist right now (the filesystem) — reported, never
         # resolved, and never a submission. See `remote_execution_jobs_state`.
         "remoteExecution": {
             **remote,
-            **remote_execution_jobs_state(target),
+            **jobs,
         },
         "nextStep": next_step,
         "wiring": proposal,
@@ -5323,6 +5439,22 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     else:
         fidelity_status = "ok"
 
+    # Computed once and reused for `"search"` below, rather than called twice
+    # for the same answer. `position_state`'s evidence is a plain dict of
+    # already-computed states (design §3.1) — nothing here is measured a
+    # second time, only handed to a reader that derives ticks from it.
+    search = search_state(
+        resolved["contract"],
+        list((report.get("declared") or {}).get("records") or []),
+        target / name, declaration_status=resolved["status"])
+    position = position_state(
+        target, name,
+        {"search": search, "requiredScale": declared_required_scale(search),
+         "notebooks": notebooks,
+         "smokeReady": remote_execution_jobs_state(target)["smokeReady"],
+         "shardsArrived": merged["shardsArrived"] if merged else None},
+        revision, target_source)
+
     return {
         "command": "verify",
         "target": str(target),
@@ -5337,14 +5469,14 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         },
         "priorWork": prior_work_state(target, package_name(name)),
         "agreements": agreements_state(target, name),
+        # A static fact, reported and never gating, exactly like `coupling`
+        # below: see `position_state`.
+        "position": position,
         # Reported whatever it says, and it drifts nothing: a historical mention
         # of an older revision is legitimate, and a configuration key quoted like
         # a symbol is not a defect. These are facts for a reader, not verdicts.
         "prose": prose_state(target, revision),
-        "search": search_state(
-            resolved["contract"],
-            list((report.get("declared") or {}).get("records") or []),
-            target / name, declaration_status=resolved["status"]),
+        "search": search,
         "distribution": distribution,
         "remoteExecution": remote_execution_state(target, name, package_name(name)),
         # A static fact, reported and never gating: see `notebook_coupling`.

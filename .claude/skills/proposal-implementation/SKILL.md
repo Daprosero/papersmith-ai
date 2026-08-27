@@ -1927,7 +1927,7 @@ have to count rows to learn the answer.
 
 Report: the bound revision, the target path, the migration commit hash (if
 any), the object → module map, the test result, and every verification status
-`verify` returns, separately. There are thirteen of them, and a list written
+`verify` returns, separately. There are fourteen of them, and a list written
 inline is a list that loses one — two of these were computed, returned and named
 in no doctrine at all, so a reader met them first in the JSON:
 
@@ -1936,6 +1936,7 @@ in no doctrine at all, so a reader met them first in the JSON:
 | `structure` | Missing directories, stray modules, unparsable tests, stale references and scaffold gaps | Yes — `drift` is a layout that no longer matches |
 | `priorWork` | That prior work is untouched | Reported whatever it says |
 | `agreements` | The state of `AGREEMENTS.md`, item by item | Yes — never report work done while an item is `open` |
+| `position` | The execution sequence's derived state, read from `<Name>/AGREED.md`'s own position section: which steps are measured done, which disagree with their disk mark, which this invocation could not measure at all | **Never** — a derived fact, reported so a human can decide about it |
 | `prose` | Historical revision mentions and symbol-shaped configuration keys | Reported whatever it says; these are facts, not verdicts |
 | `search` | Whether a declared search says enough about itself for its chosen value to mean anything | Yes |
 | `distribution` | What a run split across shards declares, and whether the shards that arrived agree | Yes |
@@ -1964,7 +1965,7 @@ never report a finding whose remedy validation did not run.
 
 ### What `probe` reports, and why none of the job facts is a gate
 
-`probe` answers `nextStep` and reports thirteen facts around it. The ladder
+`probe` answers `nextStep` and reports fourteen facts around it. The ladder
 that chooses `nextStep` reads most of them; the rest are read by a human
 before deciding what to do with the answer, and a fact nobody was told about
 is a fact nobody reads:
@@ -1978,6 +1979,7 @@ is a fact nobody reads:
 | `harnessStatus` | Where the target's own declaration says its harness module is: `undeclared`, present at `path`, or `declaredMissing` naming `declaredModule` and `searchedPath` | Reported whatever it says |
 | `nextStep` | The one thing to do next | This is the answer, not a fact feeding it |
 | `notebook` | Where the pilot notebook is, or `null` | Reported whatever it says |
+| `position` | The execution sequence's derived state, read from `<Name>/AGREED.md`'s own position section. `probe` takes no `--shards`, so every `@shard` witness reports `unmeasured` here, never a false "did not arrive" | **Never** — a derived fact, reported so a human can decide about it |
 | `remoteExecution` | The ledger's fold, plus the job folders that exist on disk right now | Yes — a submission already out is `poll-first` |
 | `report` | Whether the document a human reads agrees with the run | Yes — a document in drift is `report-first` |
 | `results` | What the last pilot measured, and at what scale | Yes — below scale is `piloted`, at scale is `already-benchmarked` |

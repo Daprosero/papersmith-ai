@@ -499,8 +499,8 @@ Two independent findings, reported separately:
   in `--revision`; `invariantsWithoutTest` are claims declared in code with no
   test enforcing them. Both need the user's decision before you touch anything.
 
-Two more are reported and neither is a finding, which is exactly why they were
-easy to leave undocumented:
+Three more are reported and none of them is a finding, which is exactly why
+they were easy to leave undocumented:
 
 - **`coupling`** — which notebook cells reach into the target's internals instead
   of going through its declared surface. It **never gates**: it is a static
@@ -511,6 +511,13 @@ easy to leave undocumented:
   still unfetched pointers. A pointer is not a missing file and not a broken
   one; it is a file nobody has paid to download yet. Read it when a run reports
   data it cannot open, because that is what it usually is.
+- **`position`** — the execution sequence's derived state, read from
+  `<Name>/AGREED.md`'s own position section. Every mark is measured, never
+  asserted: `sequence` lists each step's disk mark beside what the evidence
+  actually says, `disagreements` names a mark contradicted by measurement, and
+  `unmeasured` names a witness this invocation could not check at all (most
+  commonly `@shard` without `--shards`). It **never gates** — read it before
+  telling a human a step is done.
 
 Omit `--revision` and `fidelity.status` is `unknown`: the modules' declared
 revisions are still listed, but nothing is compared. Never report an
