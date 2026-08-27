@@ -27,6 +27,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import venv
 from pathlib import Path
 
@@ -5203,6 +5204,347 @@ def remote_execution_jobs_state(target: Path) -> dict:
     return {"jobs": jobs, "services": services, "smokeReady": smoke_ready}
 
 
+def _now_iso8601() -> str:
+    """UTC, exactly the shape `remote-execution/scripts/ledger.py`'s own
+    `_now()` already writes (`time.strftime(..., time.gmtime())`, line 117)
+    — one format for "when" across the forge, not a second one this file
+    invents beside it.
+    """
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _position_write_evidence(target: Path, name: str) -> dict:
+    """The same evidence shape `position_state` is handed through `probe`
+    (2069-2075): search, its declared required scale, the notebooks, the
+    jobs' `smokeReady`, and no shard answer at all — `position`'s own
+    refresh/install take no `--shards` flag, exactly like `probe`, so
+    `@shard` reports `unmeasured` here for the identical reason (see
+    `impl_position.derive`'s own docstring).
+
+    A second small function computing this rather than a shared one `probe`
+    also calls: `cmd_probe` already needs `search`, `resolved` and `jobs` as
+    separate named locals for other keys in its own return (`nextStep`,
+    `remoteExecution`...), so factoring a helper there would not shrink it —
+    `cmd_verify` and `cmd_probe` already each build their own `search_state()`
+    call independently for the same reason. This is that same, already-
+    tolerated duplication, not a new one.
+    """
+    resolved = resolve_benchmark_declaration(target, name)
+    report = report_state(target, name, package_name(name))
+    search = search_state(
+        resolved["contract"],
+        list((report.get("declared") or {}).get("records") or []),
+        target / name, declaration_status=resolved["status"])
+    return {
+        "search": search, "requiredScale": declared_required_scale(search),
+        "notebooks": notebooks_state(target, name, package_name(name)),
+        "smokeReady": remote_execution_jobs_state(target)["smokeReady"],
+        "shardsArrived": None,
+    }
+
+
+#: What a freshly discovered, never-agreed-on step's item text reads until a
+#: human writes the real sentence. The tool names no content for a step it
+#: only found on disk: deciding what a step MEANS is the discussion's job,
+#: never `--reconcile`'s (design §3.3, "the tool never writes a sentence
+#: about what a step means").
+POSITION_PLACEHOLDER_TEXT = "TODO: describe this step."
+
+
+def _chosen_holder(target: Path, name: str, product: Path) -> Path:
+    """Which markdown file receives a FRESH block, chosen from
+    `agreements_state`'s own already-computed `holders` — never a fixed
+    filename, and never a guess between two candidates.
+
+    Shared by `--sequence`'s fresh install and `--reconcile`'s fresh
+    reconstruction: both write into a product folder that carries no
+    position block yet, and both refuse the identical way when there is
+    nothing to append into, or more than one candidate to choose from
+    (`agreements_state`'s own doctrine that the tool never invents a
+    checklist file, 140-145).
+    """
+    holding = [target / h for h in agreements_state(target, name)["holders"]]
+    if not holding:
+        raise Refused(
+            "POSITION_HOLDER_ABSENT",
+            f"no markdown file under {product.relative_to(target)}/ holds "
+            "checklist items; the position section is never written into "
+            "a file this command invents.")
+    if len(holding) > 1:
+        raise Refused(
+            "POSITION_HOLDER_AMBIGUOUS",
+            f"{len(holding)} markdown files under {product.relative_to(target)}/ "
+            "hold checklist items and none yet carries a position block; "
+            "which one should receive it is not decidable without a human "
+            "choosing.")
+    return holding[0]
+
+
+def _reconcile_discovered_witnesses(target: Path, name: str, args: argparse.Namespace) -> list:
+    """Every witness `--reconcile` can build from what the target already
+    has, in the order design §3.3 names them: the declared `@record`, one
+    `@rehearsal` per discovered job folder, one `@notebook` per
+    `Notebooks/*.ipynb` in name order, one `@shard` per arrived shard when
+    `--shards` is given.
+
+    Every source read here is one `_position_write_evidence` (or `verify`'s
+    own `--shards` handling) already measures against, on purpose: a step
+    reconciliation discovers is a step the very next `verify` can actually
+    derive a tick for, which is what keeps a reconciled target from reading
+    mostly `unmeasured` (design §11's falsifier).
+    """
+    product = target / name
+    witnesses: list[dict] = []
+
+    resolved = resolve_benchmark_declaration(target, name)
+    if (resolved["contract"].get("search") or {}).get("record"):
+        witnesses.append({"kind": "record", "operand": None})
+
+    rcli = _load_remote_execution_cli()
+    for job_dir in _discovered_job_folders(target, rcli):
+        try:
+            job_name = rcli.JOBFOLDER.read(job_dir).run_config.get(
+                "jobName", job_dir.name)
+        except rcli.JOBFOLDER.JobFolderError:
+            job_name = job_dir.name
+        witnesses.append({"kind": "rehearsal", "operand": job_name})
+
+    notebooks_root = product / "Notebooks"
+    if notebooks_root.is_dir():
+        for notebook in sorted(notebooks_root.glob("*.ipynb")):
+            witnesses.append({"kind": "notebook",
+                              "operand": str(notebook.relative_to(product))})
+
+    shards_root = getattr(args, "shards", None)
+    if shards_root:
+        shard_io = _load_remote_execution_shard_io()
+        for entry in sorted(shard_io.read_shards(Path(shards_root)),
+                            key=lambda e: e["shard"]):
+            witnesses.append({"kind": "shard", "operand": entry["shard"]})
+
+    return witnesses
+
+
+def cmd_position(args: argparse.Namespace) -> dict:
+    """The only writer into `<Name>/AGREED.md`'s position section.
+
+    Three write modes:
+
+    **No flag — REFRESH.** The block already there has its marks re-derived
+    against current evidence and nothing else about it changes: not the
+    item text, not their order, not which witness each one names. Only
+    `mark` is ever mutated in place, so byte preservation of everything
+    else follows from never touching it, the same discipline `splice`
+    documents for the bytes around the block.
+
+    **`--sequence` — INSTALL.** A fresh, ordered sequence read from stdin
+    JSON (`- to read stdin`, the convention `cmd_compose`'s `--entry-text`
+    already uses) becomes the block. Refused as `POSITION_BLOCK_EXISTS`
+    unless `--replace` says the caller means to overwrite what is there.
+    The declared `{text, witness}` pairs are round-tripped through
+    `render()` + `parse_items()` immediately rather than trusted as typed:
+    the same grammar that validates a hand-authored block validates one
+    this command is about to write, so a malformed `--sequence` is refused
+    here rather than surfacing later at the next `verify`.
+
+    **`--reconcile` — RECONSTRUCTION.** Builds a sequence from what the
+    target already has (`_reconcile_discovered_witnesses`) and merges it
+    with whatever block already exists, **by witness identity**
+    (kind+operand): an existing item keeps its text and its order exactly,
+    and only a witness with no match among the existing items is appended,
+    with `POSITION_PLACEHOLDER_TEXT` standing in for the sentence a human
+    has not written yet. Safe to run repeatedly — a second `--reconcile`
+    against an unchanged target appends nothing (spec "Reconstruction From
+    an Existing Target").
+
+    **The holder, found by shape for a refresh or a reconcile against an
+    existing block** — exactly `position_state`'s own rule (`>1 candidate
+    carrying a block` is `POSITION_HOLDER_AMBIGUOUS`, the same code,
+    because a delimiter this module owns appearing twice is an ambiguous
+    document regardless of which command is reading it). **For a fresh
+    install or a fresh reconcile**, chosen by `_chosen_holder`.
+
+    **`status: "unchanged"` skips the write entirely.** Comparing the
+    complete item list — witness, text, mark, and count — old vs new, plus
+    `(revision, revisionSha256)`, but never `derivedAt`, which would differ
+    on every single call and defeat the comparison: a refresh that finds
+    nothing to flip and nothing to rebind, or a reconcile that discovers
+    nothing new, leaves the file and the ledger untouched. Writing a fresh
+    `derivedAt` over marks nobody re-measured would claim work happened
+    that did not; `status: "written"` is reserved for a call that actually
+    changed something. A fresh install is never `"unchanged"`: the block
+    itself is new content, not a no-op, whatever its derived marks turn
+    out to be.
+    """
+    if args.sequence is not None and args.reconcile:
+        raise Refused(
+            "POSITION_SEQUENCE_AND_RECONCILE",
+            "--sequence installs an explicit sequence and --reconcile "
+            "builds one from what the target already has; only one of the "
+            "two names this call's sequence.")
+
+    target = resolve_target(args.target)
+    name = validate_name(args.name)
+    product = target / name
+
+    source = revision_source(args.revision)
+    if source is None:
+        raise Refused(
+            "REVISION_UNREADABLE",
+            f"{args.revision!r} is not readable under {FORGE_ROOT / 'proposals'}; "
+            "the position header cannot be bound to a revision.")
+    revision_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+    # Found by shape, exactly like `agreements_state` and `position_state`:
+    # every markdown file at the top of the product folder is a candidate,
+    # never a fixed filename.
+    md_files = sorted(p for p in product.glob("*.md") if p.is_file()) \
+        if product.is_dir() else []
+    holders_with_block = [
+        (path, block) for path in md_files
+        for block in [impl_position.locate_block(path.read_bytes())]
+        if block is not None
+    ]
+    if len(holders_with_block) > 1:
+        raise Refused(
+            "POSITION_HOLDER_AMBIGUOUS",
+            f"more than one markdown file under {product.relative_to(target)}/ "
+            "carries a `<!-- position -->` block; only one may hold the "
+            "section this writes.")
+    existing_path, existing_block = (
+        holders_with_block[0] if holders_with_block else (None, None))
+
+    header = {"revision": args.revision, "revisionSha256": revision_sha256,
+              "derivedAt": _now_iso8601(), "session": args.session}
+    structure_changed = False
+
+    if args.sequence is not None:
+        if existing_block is not None and not args.replace:
+            raise Refused(
+                "POSITION_BLOCK_EXISTS",
+                f"{existing_path.relative_to(target)} already carries a "
+                "position block; pass --replace to overwrite it.")
+        raw = sys.stdin.read() if args.sequence == "-" else args.sequence
+        try:
+            declared = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise Refused("POSITION_SEQUENCE_UNREADABLE",
+                          f"--sequence is not valid JSON: {exc}") from exc
+        if not isinstance(declared, list) or not declared:
+            raise Refused("POSITION_SEQUENCE_EMPTY",
+                          "--sequence must be a non-empty JSON array of "
+                          "{text, witness} entries.")
+        items = []
+        for ordinal, entry in enumerate(declared, start=1):
+            if not isinstance(entry, dict):
+                raise Refused("POSITION_SEQUENCE_UNREADABLE",
+                              f"--sequence[{ordinal - 1}] is not a mapping "
+                              "of {text, witness}.")
+            witness = entry.get("witness") or {}
+            items.append({
+                "ordinal": ordinal, "mark": " ",
+                "text": str(entry.get("text", "")).strip(),
+                "witness": {"kind": witness.get("kind"),
+                           "operand": witness.get("operand")},
+            })
+        # See docstring: validated by the reader that already validates a
+        # hand-authored block, not by a second, parallel set of checks.
+        rendered = impl_position.render(header, items)
+        items = impl_position.parse_items(
+            impl_position.locate_block(rendered.encode("utf-8"))["body"])
+        target_path = existing_path or _chosen_holder(target, name, product)
+    elif args.reconcile:
+        existing = (impl_position.parse_items(existing_block["body"])
+                   if existing_block else [])
+        known = {(item["witness"]["kind"], item["witness"]["operand"])
+                for item in existing}
+        appended = []
+        for witness in _reconcile_discovered_witnesses(target, name, args):
+            key = (witness["kind"], witness["operand"])
+            if key in known:
+                continue
+            known.add(key)
+            appended.append({"mark": " ", "text": POSITION_PLACEHOLDER_TEXT,
+                             "witness": witness})
+        structure_changed = bool(appended)
+        items = existing + appended
+        for ordinal, item in enumerate(items, start=1):
+            item["ordinal"] = ordinal
+        target_path = existing_path or _chosen_holder(target, name, product)
+    elif existing_block is None:
+        # Nothing to refresh is a state, not a failure -- the same doctrine
+        # `agreements_state` and `position_state` already report absence
+        # with: a target whose flow never reached a gate has nothing to
+        # record, and asking it to refresh reports that rather than refusing.
+        return {
+            "command": "position", "target": str(target), "name": name,
+            "status": "absent", "holder": None, "wrote": [], "left": [],
+            "unmeasured": [], "sequence": [], "revision": args.revision,
+            "revisionSha256": revision_sha256,
+        }
+    else:
+        items = impl_position.parse_items(existing_block["body"])
+        target_path = existing_path
+
+    evidence = _position_write_evidence(target, name)
+    derived = impl_position.derive(items, evidence)
+    wrote, left, unmeasured = [], [], []
+    for item, result in zip(items, derived):
+        if result["derived"] is None:
+            unmeasured.append(item["ordinal"])
+            left.append(item["ordinal"])
+            continue
+        new_mark = "x" if result["derived"] else " "
+        if new_mark != item["mark"]:
+            wrote.append(item["ordinal"])
+        else:
+            left.append(item["ordinal"])
+        item["mark"] = new_mark
+
+    unchanged = (
+        args.sequence is None and not structure_changed
+        and existing_block is not None
+        and existing_block["revision"] == args.revision
+        and existing_block["revisionSha256"] == revision_sha256
+        and not wrote
+    )
+
+    sequence = [{
+        "ordinal": item["ordinal"], "mark": item["mark"],
+        "witness": item["witness"], "text": item["text"],
+        "derived": result["derived"], "disagrees": result["disagrees"],
+    } for item, result in zip(items, derived)]
+
+    if unchanged:
+        return {
+            "command": "position", "target": str(target), "name": name,
+            "status": "unchanged",
+            "holder": str(target_path.relative_to(target)),
+            "wrote": [], "left": left, "unmeasured": unmeasured,
+            "sequence": sequence, "revision": existing_block["revision"],
+            "revisionSha256": existing_block["revisionSha256"],
+        }
+
+    before_bytes = target_path.read_bytes() if target_path.exists() else b""
+    new_block = impl_position.render(header, items).encode("utf-8")
+    spliced = impl_position.splice(before_bytes, new_block, existing_block)
+    impl_position.write_spliced(target_path, spliced)
+    impl_position.append_event(
+        product / ".implementation" / "position.jsonl",
+        {"kind": "position", "session": args.session, "revision": args.revision,
+         "revisionSha256": revision_sha256,
+         "holder": str(target_path.relative_to(target)),
+         "wrote": wrote, "left": left, "at": header["derivedAt"]})
+
+    return {
+        "command": "position", "target": str(target), "name": name,
+        "status": "written", "holder": str(target_path.relative_to(target)),
+        "wrote": wrote, "left": left, "unmeasured": unmeasured,
+        "sequence": sequence, "revision": args.revision,
+        "revisionSha256": revision_sha256,
+    }
+
+
 def cmd_verify(args: argparse.Namespace) -> dict:
     target = resolve_target(args.target)
     name = validate_name(args.name)
@@ -5554,7 +5896,8 @@ def cmd_verify(args: argparse.Namespace) -> dict:
 COMMANDS = {"env": cmd_env, "name": cmd_name, "plan": cmd_plan, "apply": cmd_apply,
             "admit": cmd_admit, "handoff": cmd_handoff, "compose": cmd_compose,
             "probe": cmd_probe,
-            "verify": cmd_verify}
+            "verify": cmd_verify,
+            "position": cmd_position}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -5582,21 +5925,48 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--name", required=True, help="package name chosen by the user")
         if name == "apply":
             p.add_argument("--plan", required=True, help="path to the approved plan JSON")
-        if name == "verify":
-            # `verify` only. `admit`, `handoff` and `probe` read no shard
-            # directory, and giving them a flag they ignore would be a promise
-            # this file does not keep.
+        if name in {"verify", "position"}:
+            # `admit`, `handoff` and `probe` read no shard directory, and
+            # giving them a flag they ignore would be a promise this file
+            # does not keep. `position` reads one only under `--reconcile`
+            # — a bare refresh or `--sequence` install takes no shard
+            # evidence, exactly like `probe`.
             p.add_argument("--shards", default=None,
                            help="a directory of returned shards; each "
-                                "subdirectory holds a shard.json stamp. Given, "
-                                "verify reports which declared-identical "
+                                "subdirectory holds a shard.json stamp. For "
+                                "verify, reports which declared-identical "
                                 "fields the shards disagree on, and which "
-                                "shards arrived")
-        if name in {"verify", "admit", "handoff", "probe"}:
+                                "shards arrived. For position --reconcile, "
+                                "one @shard witness per arrived shard")
+        if name in {"verify", "admit", "handoff", "probe", "position"}:
             p.add_argument("--revision", default=None,
                            help="pin the revision to check against; "
                                 "omit it and verify discovers the newest of "
-                                "the family the bench declares")
+                                "the family the bench declares. admit, "
+                                "handoff and position discover nothing and "
+                                "refuse REVISION_UNREADABLE if it is missing "
+                                "or unreadable")
+        if name == "position":
+            p.add_argument("--session", required=True,
+                           help="identity stamped into the block's header and "
+                                "into every ledger event this call appends")
+            p.add_argument("--sequence", default=None,
+                           help="install a fresh section: an ordered JSON "
+                                "array of {text, witness:{kind,operand}}, or "
+                                "- to read stdin. Omitted, position refreshes "
+                                "the marks of whatever block is already there")
+            p.add_argument("--replace", action="store_true",
+                           help="with --sequence, overwrite an existing "
+                                "position block instead of refusing "
+                                "POSITION_BLOCK_EXISTS")
+            p.add_argument("--reconcile", action="store_true",
+                           help="reconstruct the sequence from what the "
+                                "target already has: the declared record, "
+                                "discovered job folders, Notebooks/*.ipynb "
+                                "and, with --shards, arrived shards. "
+                                "Existing items are matched by witness "
+                                "identity and kept untouched; only unmatched "
+                                "steps are appended")
 
     args = parser.parse_args(argv)
     try:

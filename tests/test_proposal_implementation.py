@@ -8,6 +8,7 @@ declares whether the user can still review it.
 
 import argparse
 import ast
+import hashlib
 import inspect
 import json
 import os
@@ -10984,3 +10985,425 @@ class PositionKeyExitStatusTests(unittest.TestCase):
         self.assertIn("position", probe_json)
         self.assertEqual(verify_json["position"]["status"], "open")
         self.assertEqual(probe_json["position"]["status"], "open")
+
+
+class PositionCommandTests(unittest.TestCase):
+    """`position` — the only writer into `<Name>/AGREED.md`'s section.
+
+    No flag: REFRESH — re-derive the marks of whatever block is already
+    there, and touch nothing else about it. `--sequence -`: INSTALL — a
+    fresh sequence from stdin JSON becomes the block, refused as
+    `POSITION_BLOCK_EXISTS` unless `--replace` says otherwise (design §3.3).
+
+    Every test supplies a real `--revision`, resolved against a throwaway
+    `proposals/` root: the header this command writes is bound to a
+    revision's own content hash (`impl_position.locate_block`'s
+    `sha256=` field), so there is no code path here that skips resolving
+    one, and a test that omitted it would exercise `REVISION_UNREADABLE`
+    rather than the refusal it names.
+    """
+
+    #: Fixed so a test that needs the header's `sha256=` to actually MATCH
+    #: this revision (the `unchanged`/byte-preservation tests) can compute
+    #: it once, the same way `cmd_position` itself will.
+    PROPOSAL_TEXT = "## 1\ntexto\n"
+    PROPOSAL_SHA256 = hashlib.sha256(PROPOSAL_TEXT.encode("utf-8")).hexdigest()
+
+    def _proposals(self, text=None):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / "r1.md").write_text(
+            self.PROPOSAL_TEXT if text is None else text, encoding="utf-8")
+        return root
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_e2e_position_cmd_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text("", encoding="utf-8")
+        return box
+
+    def run_cli(self, *args, stdin=None, proposals=None):
+        env = dict(os.environ)
+        if proposals is not None:
+            env["IMPLEMENTATION_PROPOSALS"] = str(proposals)
+        return subprocess.run([sys.executable, str(CLI), *args], input=stdin,
+                              capture_output=True, text=True, cwd=FORGE, env=env)
+
+    def block_text(self, body, sha256=None):
+        return (f"<!-- position revision=r1.md sha256={sha256 or 'a' * 64} "
+                "derivedAt=2026-08-27T00:00:00Z session=s0 -->\n"
+                f"{body}<!-- /position -->\n")
+
+    # --- 3.1 refusals: a malformed artifact exits 2 with a code ---
+
+    def test_refuses_when_the_existing_block_has_an_item_without_a_witness(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self.block_text("- [ ] 1. No witness token at all.\n"), encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_ITEM_WITHOUT_WITNESS")
+
+    def test_refuses_when_the_existing_block_names_an_unknown_witness_kind(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self.block_text("- [ ] 1. Something. `@wat`\n"), encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_WITNESS_UNKNOWN_KIND")
+
+    def test_refuses_installing_when_no_markdown_file_holds_anything_to_append_into(self):
+        box = self._box()
+        sequence = json.dumps([{"text": "Rehearse the job.",
+                                "witness": {"kind": "rehearsal", "operand": "job1"}}])
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--sequence", "-", stdin=sequence, proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_HOLDER_ABSENT")
+
+    def test_refuses_when_two_files_already_carry_a_position_block(self):
+        box = self._box()
+        block = self.block_text("- [ ] 1. Step. `@rehearsal job1`\n")
+        (box / "Method" / "AGREED.md").write_text(block, encoding="utf-8")
+        (box / "Method" / "SECOND.md").write_text(block, encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_HOLDER_AMBIGUOUS")
+
+    # --- 3.2 refresh: item text and order survive byte-for-byte ---
+
+    def test_refresh_leaves_item_text_and_order_untouched(self):
+        box = self._box()
+        payload = "The identity is $$E=mc^2$$ and \\tag{39} names it."
+        body = (f"- [ ] 1. {payload} `@notebook Notebooks/nope.ipynb`\n"
+                "- [ ] 2. Second step. `@rehearsal job-none`\n")
+        (box / "Method" / "AGREED.md").write_text(
+            self.block_text(body, sha256=self.PROPOSAL_SHA256), encoding="utf-8")
+        before = (box / "Method" / "AGREED.md").read_bytes()
+
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            proposals=self._proposals())
+
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["status"], "unchanged")
+        self.assertEqual([item["ordinal"] for item in result["sequence"]], [1, 2])
+        self.assertEqual(result["sequence"][0]["text"], payload)
+        self.assertEqual(result["sequence"][1]["text"], "Second step.")
+        # Neither witness is measurable in this box (no such notebook, no
+        # such job), so nothing could have flipped a mark -- and a refresh
+        # that found nothing to flip never rewrites the file at all.
+        after = (box / "Method" / "AGREED.md").read_bytes()
+        self.assertEqual(before, after)
+
+    # --- 3.3 install: writes the section and derives its marks immediately ---
+
+    def test_install_writes_a_fresh_sequence_and_derives_marks_immediately(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n- [x] 1. Something already settled.\n", encoding="utf-8")
+        sequence = json.dumps([
+            {"text": "Ceiling search.", "witness": {"kind": "record"}},
+            {"text": "Rehearse the job.",
+             "witness": {"kind": "rehearsal", "operand": "job1"}},
+        ])
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--sequence", "-", stdin=sequence, proposals=self._proposals())
+
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["status"], "written")
+        self.assertEqual(result["holder"], "Method/AGREED.md")
+        self.assertEqual([item["witness"]["kind"] for item in result["sequence"]],
+                         ["record", "rehearsal"])
+        # Neither witness is measurable in this box (no search declared, no
+        # job ever rehearsed), so install DERIVES rather than assuming every
+        # fresh item starts ticked.
+        self.assertEqual(result["unmeasured"], [1, 2])
+        on_disk = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertIn("Something already settled.", on_disk)
+        self.assertIn("<!-- position", on_disk)
+
+    def test_refuses_installing_over_an_existing_block_without_replace(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self.block_text("- [ ] 1. Old step. `@rehearsal job1`\n"), encoding="utf-8")
+        sequence = json.dumps([{"text": "New step.",
+                                "witness": {"kind": "rehearsal", "operand": "job2"}}])
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--sequence", "-", stdin=sequence, proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_BLOCK_EXISTS")
+
+    def test_replace_overwrites_the_existing_block(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self.block_text("- [ ] 1. Old step. `@rehearsal job1`\n"), encoding="utf-8")
+        sequence = json.dumps([{"text": "New step.",
+                                "witness": {"kind": "rehearsal", "operand": "job2"}}])
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--sequence", "-", "--replace", stdin=sequence,
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["status"], "written")
+        self.assertEqual([item["text"] for item in result["sequence"]], ["New step."])
+        on_disk = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertNotIn("Old step.", on_disk)
+        self.assertIn("New step.", on_disk)
+
+    # --- 3.4 the ledger: appended on a real write, never on a no-op ---
+
+    def test_refresh_flips_a_measurable_mark_and_appends_one_ledger_event(self):
+        box = self._box()
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            "__benchmark__ = {'search': {'record': 'Results/record.json'}}\n",
+            encoding="utf-8")
+        (box / "Method" / "Results").mkdir(parents=True)
+        (box / "Method" / "Results" / "record.json").write_text("{}", encoding="utf-8")
+        (box / "Method" / "AGREED.md").write_text(
+            self.block_text("- [ ] 1. Ceiling search. `@record`\n"), encoding="utf-8")
+
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            proposals=self._proposals())
+
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["status"], "written")
+        self.assertEqual(result["wrote"], [1])
+        on_disk = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertIn("- [x] 1. Ceiling search.", on_disk)
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["kind"], "position")
+
+    def test_refresh_reports_unchanged_and_appends_no_event_when_nothing_moves(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self.block_text("- [ ] 1. Step. `@rehearsal job-none`\n",
+                            sha256=self.PROPOSAL_SHA256), encoding="utf-8")
+
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            proposals=self._proposals())
+
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["status"], "unchanged")
+        self.assertFalse((box / "Method" / ".implementation" / "position.jsonl").exists())
+
+
+class CommandRosterTests(unittest.TestCase):
+    """`COMMANDS` binds every subcommand `main()` accepts; a table in
+    `SKILL.md` is the human-facing roster of what each one writes and
+    refuses on — the same table-vs-code mechanism the `verify`/`probe`
+    rosters already apply, one level up (design §7.1).
+
+    Started here with `position`, the first of the four write-verbs this
+    change adds. Completed once `discuss`, `gate` and `close` land beside
+    it — full coverage over every key of `COMMANDS` is that later class's
+    assertion, not this one's.
+    """
+
+    COMMAND_TABLE_HEADER = "| Command | What it writes | Refuses on |"
+
+    def command_rows(self):
+        tables = markdown_table_rows(
+            SKILL_MD.read_text(encoding="utf-8"), self.COMMAND_TABLE_HEADER)
+        self.assertEqual(
+            len(tables), 1,
+            "the command roster is stated in no parseable table, so nothing "
+            "holds a new command to a documented row")
+        return tables[0]
+
+    def test_position_is_registered_and_documented(self):
+        self.assertIn("position", impl.COMMANDS)
+        rows = {row[0].strip("`"): row for row in self.command_rows()}
+        self.assertIn("position", rows)
+        writes, refuses = rows["position"][1], rows["position"][2]
+        self.assertTrue(writes.strip(), "the `position` row names nothing it writes")
+        self.assertTrue(refuses.strip(), "the `position` row names nothing it refuses on")
+
+
+class PositionReconcileTests(unittest.TestCase):
+    """`--reconcile` — reconstruction from a target that already has
+    notebooks, job folders and a declared search, but no position section
+    yet (design §3.3, spec "Reconstruction From an Existing Target").
+
+    The fixture (`tests/fixtures/agreed_shape_reconcile.md`) mirrors the
+    real `implementations/Domain_Adaptation/MIL-CREDA/AGREED.md`'s *shape*
+    — ~90 checklist items across sixteen `##` sections, plus a trailing
+    no-bullet `Reversed` section — because `implementations/` is gitignored
+    and reconciliation has to be proven against a realistically dense,
+    hand-curated document, not a two-line toy nobody would mistake for a
+    stress test.
+    """
+
+    FIXTURE = Path(__file__).resolve().parent / "fixtures" / "agreed_shape_reconcile.md"
+
+    def _proposals(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / "r1.md").write_text("## 1\ntexto\n", encoding="utf-8")
+        return root
+
+    def _box(self, agreed_text=None):
+        box = FORGE / "implementations" / f"_e2e_position_reconcile_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text("", encoding="utf-8")
+        if agreed_text is not None:
+            (box / "Method" / "AGREED.md").write_text(agreed_text, encoding="utf-8")
+        return box
+
+    def run_cli(self, *args, proposals=None):
+        env = dict(os.environ)
+        if proposals is not None:
+            env["IMPLEMENTATION_PROPOSALS"] = str(proposals)
+        return subprocess.run([sys.executable, str(CLI), *args],
+                              capture_output=True, text=True, cwd=FORGE, env=env)
+
+    # --- 4.2: the fixture's 90 items and its Reversed section survive ---
+
+    def test_reconcile_appends_without_disturbing_existing_items_or_reversed_section(self):
+        fixture_text = self.FIXTURE.read_text(encoding="utf-8")
+        box = self._box(agreed_text=fixture_text)
+        (box / "Method" / "Notebooks").mkdir(parents=True)
+        (box / "Method" / "Notebooks" / "pilot.ipynb").write_text("{}", encoding="utf-8")
+
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--reconcile", proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["status"], "written")
+        self.assertEqual(result["holder"], "Method/AGREED.md")
+        self.assertGreaterEqual(len(result["sequence"]), 1)
+
+        after = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertTrue(after.startswith(fixture_text))
+        # Every one of the fixture's 90 items, verbatim, still present --
+        # not merely a prefix check, which a splice that silently truncated
+        # mid-file could still pass.
+        for line in fixture_text.splitlines():
+            if line.strip().startswith("- ["):
+                self.assertIn(line, after)
+        self.assertIn("## Reversed", after)
+        self.assertIn(
+            "This reversal was made without reading this file", after)
+        self.assertIn("<!-- position", after)
+
+    # --- 4.3: witness identity across reruns ---
+
+    def test_reconcile_preserves_witness_identity_across_reruns(self):
+        box = self._box(agreed_text="# Agreed\n\n- [x] Something already settled.\n")
+        (box / "Method" / "Notebooks").mkdir(parents=True)
+        (box / "Method" / "Notebooks" / "a.ipynb").write_text("{}", encoding="utf-8")
+        proposals = self._proposals()
+
+        first = self.run_cli("position", "--target", str(box), "--name", "Method",
+                             "--revision", "r1.md", "--session", "s1",
+                             "--reconcile", proposals=proposals)
+        self.assertEqual(first.returncode, 0, first.stdout)
+        first_result = json.loads(first.stdout)
+        self.assertEqual(len(first_result["sequence"]), 1)
+        self.assertEqual(first_result["sequence"][0]["witness"],
+                         {"kind": "notebook", "operand": "Notebooks/a.ipynb"})
+
+        # A human writes the real sentence over the placeholder.
+        agreed_path = box / "Method" / "AGREED.md"
+        agreed_path.write_text(
+            agreed_path.read_text(encoding="utf-8").replace(
+                impl.POSITION_PLACEHOLDER_TEXT,
+                "Read the pilot notebook into the report."),
+            encoding="utf-8")
+
+        # A second notebook appears before the second reconcile.
+        (box / "Method" / "Notebooks" / "b.ipynb").write_text("{}", encoding="utf-8")
+        second = self.run_cli("position", "--target", str(box), "--name", "Method",
+                              "--revision", "r1.md", "--session", "s2",
+                              "--reconcile", proposals=proposals)
+        self.assertEqual(second.returncode, 0, second.stdout)
+        second_result = json.loads(second.stdout)
+        self.assertEqual(len(second_result["sequence"]), 2)
+        self.assertEqual(second_result["sequence"][0]["ordinal"], 1)
+        self.assertEqual(second_result["sequence"][0]["text"],
+                         "Read the pilot notebook into the report.")
+        self.assertEqual(second_result["sequence"][0]["witness"],
+                         {"kind": "notebook", "operand": "Notebooks/a.ipynb"})
+        self.assertEqual(second_result["sequence"][1]["ordinal"], 2)
+        self.assertEqual(second_result["sequence"][1]["witness"],
+                         {"kind": "notebook", "operand": "Notebooks/b.ipynb"})
+
+    # --- 4.5: the falsifier, an assertion that runs (design §11) ---
+
+    def test_unmeasured_never_outnumbers_measured_on_reconciled_target(self):
+        """If this fails, the fix is design §11's own escalation — move
+        `@shard` off the no-flag default — never loosening this assertion.
+        """
+        box = self._box(agreed_text=self.FIXTURE.read_text(encoding="utf-8"))
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            "__benchmark__ = {'search': {'record': 'Results/record.json'}}\n",
+            encoding="utf-8")
+        (box / "Method" / "Results").mkdir(parents=True)
+        (box / "Method" / "Results" / "record.json").write_text("{}", encoding="utf-8")
+        (box / "Method" / "Notebooks").mkdir(parents=True)
+        (box / "Method" / "Notebooks" / "pilot.ipynb").write_text("{}", encoding="utf-8")
+        (box / "Method" / "Notebooks" / "campaign.ipynb").write_text("{}", encoding="utf-8")
+        proposals = self._proposals()
+
+        reconcile = self.run_cli("position", "--target", str(box), "--name", "Method",
+                                 "--revision", "r1.md", "--session", "s1",
+                                 "--reconcile", proposals=proposals)
+        self.assertEqual(reconcile.returncode, 0, reconcile.stdout)
+        reconciled = json.loads(reconcile.stdout)
+
+        # A hand-authored `@shard` rung, the way a human actually writes the
+        # full-scale step of a sequence (design §2's own worked example) --
+        # the one witness kind this mechanism can never measure without
+        # `--shards`, and the reason this assertion exists at all.
+        next_ordinal = len(reconciled["sequence"]) + 1
+        agreed_path = box / "Method" / "AGREED.md"
+        agreed_path.write_text(
+            agreed_path.read_text(encoding="utf-8").replace(
+                "<!-- /position -->",
+                f"- [ ] {next_ordinal}. Full grid, every shard. `@shard s1`\n"
+                "<!-- /position -->"),
+            encoding="utf-8")
+
+        verify = self.run_cli("verify", "--target", str(box), "--name", "Method",
+                              "--revision", "r1.md", proposals=proposals)
+        self.assertEqual(verify.returncode, 0, verify.stdout)
+        position = json.loads(verify.stdout)["position"]
+        measured = sum(1 for item in position["sequence"] if item["derived"] is not None)
+        unmeasured = sum(1 for item in position["sequence"] if item["derived"] is None)
+        self.assertGreaterEqual(
+            measured, unmeasured,
+            f"`unmeasured` ({unmeasured}) outnumbers `measured` ({measured}) on "
+            "a realistically-shaped reconciled target under the common "
+            "no-`--shards` invocation -- design §11's own escalation applies: "
+            "move `@shard` off the no-flag default, do not loosen this bound")

@@ -563,6 +563,82 @@ All three are reported and none of them refuses: `verify` reads, and a stray fil
 in a directory must not stop the whole check. The filter applies to discovery
 only — an explicit `--revision` is read verbatim, whether or not it is marked.
 
+## `position` — refresh and install the execution sequence
+
+`verify`/`probe` only ever *read* the position section (above). `position` is
+the one command that writes it, and the only writer into `<Name>/AGREED.md` at
+all. No flag: re-derive the marks of whatever block is already there, touching
+nothing else about it — not the item text, not the order, not which witness
+each one names.
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py position \
+  --target implementations/<repo> --name <Name> \
+  --revision research-concept-r05.md --session <your-session-id>
+```
+
+```json
+{ "status": "written", "holder": "Method/AGREED.md",
+  "wrote": [2], "left": [1], "unmeasured": [3],
+  "sequence": [ "..." ] }
+```
+
+`status` is `"written"` only when something actually moved — a mark flipped, or
+the header rebound to a different revision. Nothing to flip and nothing to
+rebind reports `"unchanged"` and touches neither the file nor the ledger:
+writing a fresh timestamp over marks nobody re-measured would claim work that
+did not happen. `"absent"` means there is no block yet — install one first.
+
+`--sequence -` installs a fresh section instead of refreshing one, reading an
+ordered JSON array of `{text, witness: {kind, operand}}` from stdin:
+
+```bash
+echo '[{"text": "Search for the governing value.",
+        "witness": {"kind": "record"}},
+       {"text": "Rehearse the campaign job.",
+        "witness": {"kind": "rehearsal", "operand": "governing-search"}}]' \
+  | python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py position \
+      --target implementations/<repo> --name <Name> \
+      --revision research-concept-r05.md --session <your-session-id> --sequence -
+```
+
+Every declared item is validated by the same grammar that reads a hand-authored
+block — a malformed witness is refused here, not left to surface at the next
+`verify`. Installing over a block that already exists refuses
+`POSITION_BLOCK_EXISTS` unless `--replace` is also given.
+
+The holder is found by shape, never by a fixed filename — the same rule
+`agreements_state` already applies. Refuses `POSITION_HOLDER_ABSENT` when no
+markdown file in the product folder holds anything to append into, and
+`POSITION_HOLDER_AMBIGUOUS` when more than one candidate exists and none is
+decidable without a human choosing. A malformed existing block —  no witness,
+an unknown witness kind, or more than one `<!-- position -->` opener — refuses
+with `POSITION_ITEM_WITHOUT_WITNESS`, `POSITION_WITNESS_UNKNOWN_KIND`,
+`POSITION_ITEM_MALFORMED`, `POSITION_BLOCK_MALFORMED` or
+`POSITION_BLOCK_NOT_UNIQUE`: the same class `MALFORMED_FINDINGS` already is
+for `read_findings`, a broken artifact rather than a not-yet-ready target.
+
+### `--reconcile` — reconstruction from what the target already has
+
+For a target that already has notebooks, job folders and a declared search
+but no position section yet:
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py position \
+  --target implementations/<repo> --name <Name> \
+  --revision research-concept-r05.md --session <your-session-id> --reconcile
+```
+
+Builds one `@record` from the benchmark's declared search, one `@rehearsal`
+per discovered job folder, one `@notebook` per `Notebooks/*.ipynb` in name
+order, and — with `--shards` also given — one `@shard` per arrived shard.
+Existing items are matched by witness identity (kind and operand) and keep
+their text and their order exactly; only a witness with no match is
+appended, its text a placeholder for a human to write over. Safe to run
+again: an unchanged target appends nothing and reports `"unchanged"`.
+`--sequence` and `--reconcile` together refuse `POSITION_SEQUENCE_AND_RECONCILE`
+— only one of the two may name this call's sequence.
+
 ## Probe — what stands between this repository and a benchmark
 
 ```bash
