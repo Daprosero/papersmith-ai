@@ -594,17 +594,48 @@ whichever write mode this call uses — a bare refresh included. Without it,
 `@shard` reads `unmeasured` (never `False`): the shard may well have
 arrived, this invocation simply was not told where to look.
 
+### `--target-level` — the rung this pass is aiming at
+
+Every write mode also takes `--target-level <level>`, the header field a
+mark is now measured against: a witness's mark means "reached the level
+this pass asks for", not a bare pass/fail, unless the witness is two-state
+(see below). `<level>` must be one of the target's own `__levels__`, a
+second top-level literal declared next to `__benchmark__` in the benchmark
+package's `__init__.py` (or `config.py`) — an ordered list, entirely in the
+target's own words, e.g. `__levels__ = ["local", "cluster"]`. Required only
+for a fresh header with nothing to inherit one from; a bare refresh reuses
+whatever the existing block already recorded when `--target-level` is
+omitted, the same way it never asks a caller to retype item text nobody
+changed. Refuses `POSITION_TARGET_LEVEL_REQUIRED` (fresh header, nothing
+given or to inherit), `POSITION_TARGET_LEVEL_UNKNOWN` (the value named is
+not one of `__levels__`'s own entries), and `POSITION_LEVELS_UNDECLARED` (a
+leveled witness exists in the sequence but `__levels__` declares no
+ladder).
+
+Each witness in the block's markdown may carry `:level` right after its
+kind — `` `@rehearsal:level governing-search` `` — to opt into being
+measured against the declared ladder instead of a plain pass/fail. Omitted
+(the default, unchanged from before this mechanism existed), a witness is
+**two-state**: satisfied or not, with no rung ever assigned to it — a step
+that only ever holds or does not (a local check with nothing in between)
+declares itself this way and is never assigned a level string, no matter
+how the evidence underneath it reads.
+
 `--sequence -` installs a fresh section instead of refreshing one, reading an
-ordered JSON array of `{text, witness: {kind, operand}}` from stdin:
+ordered JSON array of `{text, witness: {kind, operand, twostate}}` from
+stdin — `witness.twostate` defaults to `true` when omitted, the same
+default the markdown grammar itself keeps:
 
 ```bash
 echo '[{"text": "Search for the governing value.",
         "witness": {"kind": "record"}},
        {"text": "Rehearse the campaign job.",
-        "witness": {"kind": "rehearsal", "operand": "governing-search"}}]' \
+        "witness": {"kind": "rehearsal", "operand": "governing-search",
+                    "twostate": false}}]' \
   | python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py position \
       --target implementations/<repo> --name <Name> \
-      --revision research-concept-r05.md --session <your-session-id> --sequence -
+      --revision research-concept-r05.md --session <your-session-id> \
+      --target-level local --sequence -
 ```
 
 Every declared item is validated by the same grammar that reads a hand-authored
@@ -631,7 +662,8 @@ but no position section yet:
 ```bash
 python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py position \
   --target implementations/<repo> --name <Name> \
-  --revision research-concept-r05.md --session <your-session-id> --reconcile
+  --revision research-concept-r05.md --session <your-session-id> \
+  --target-level local --reconcile
 ```
 
 Builds one `@record` from the benchmark's declared search, one `@rehearsal`
@@ -639,12 +671,17 @@ per discovered job folder, one `@notebook` per `Notebooks/*.ipynb` in name
 order, and — with `--shards` also given — one `@shard` per arrived shard,
 each measured `True` against that same directory in the same call, not left
 `unmeasured` until some later invocation happens to pass `--shards` too.
+Every discovered witness is two-state — reconciliation discovers that a
+step exists, never what a human means by it, and only a human editing
+`AGREED.md` to add `:level` afterward can say a step has rungs at all.
 Existing items are matched by witness identity (kind and operand) and keep
 their text and their order exactly; only a witness with no match is
 appended, its text a placeholder for a human to write over. Safe to run
 again: an unchanged target appends nothing and reports `"unchanged"`.
 `--sequence` and `--reconcile` together refuse `POSITION_SEQUENCE_AND_RECONCILE`
-— only one of the two may name this call's sequence.
+— only one of the two may name this call's sequence. `--target-level` is
+required here too only for a fresh header; a `--reconcile` that merges into
+an existing block reuses its recorded target when omitted.
 
 ## `discuss` — a question with a return value
 

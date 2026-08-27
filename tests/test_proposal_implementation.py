@@ -10761,6 +10761,7 @@ class PositionModuleTests(unittest.TestCase):
         "revisionSha256": "a" * 64,
         "derivedAt": "2026-08-27T00:00:00Z",
         "session": "s1",
+        "target": "final",
     }
 
     def block_text(self, items):
@@ -10915,6 +10916,248 @@ class PositionModuleTests(unittest.TestCase):
             self.assertEqual([e["kind"] for e in events], ["gate", "close"])
 
 
+class PositionLevelGrammarTests(unittest.TestCase):
+    """PR10, `the-position-nobody-holds`: the boolean tick becomes an ordered
+    level, without collapsing `None` ("unmeasured") into the floor rung, and
+    without ever assigning a two-state item a rung it never declared.
+
+    The two tests immediately below are the mandated first tests: written and
+    confirmed RED for the stated reason before the production grammar in
+    `impl_position.py` existed. Levels used throughout are deliberately
+    generic (`"local"`, `"cluster"`, ...) — the ladder's own names are never
+    the forge's; see `derive`'s and `level_index`'s docstrings.
+    """
+
+    LEVELS = ["local", "staging", "cluster"]
+
+    # --- mandated test 1: a two-state item cannot be assigned a middle rung ---
+
+    def test_a_two_state_item_is_never_assigned_a_level_string(self):
+        """A `:level`-less witness stays two-state even when the evidence
+        underneath it (a record, found but short of the declared scale)
+        would otherwise resolve to a real middle rung for a leveled item —
+        proving the two-state grammar is not just "leveled with no ladder
+        declared", it actively refuses the rung.
+        """
+        items = [{"ordinal": 1, "mark": " ", "text": "x",
+                  "witness": {"kind": "record", "operand": None}}]  # no twostate key: default
+        evidence = {
+            "search": {"recordFound": True, "scaleSatisfied": False},
+            "requiredScale": {"seeds": 30},
+            "levels": self.LEVELS, "targetLevel": "cluster",
+        }
+        result = impl_position.derive(items, evidence)[0]
+        self.assertTrue(result["twostate"])
+        self.assertIn(result["derived"], (True, False, None))
+        self.assertNotIn(result["derived"], self.LEVELS)
+
+    # --- mandated test 2: unreadable evidence reports unmeasured, never the floor ---
+
+    def test_unreadable_evidence_reports_unmeasured_not_the_floor_rung(self):
+        """A leveled item whose evidence dict carries nothing to read (the
+        same shape `probe` or a flagless `verify` already hands a `@shard`
+        witness) must derive `None`, not `self.LEVELS[0]` — "we did not
+        look" and "it has not started" stay two different facts.
+        """
+        items = [{"ordinal": 1, "mark": " ", "text": "x",
+                  "witness": {"kind": "shard", "operand": "s3", "twostate": False}}]
+        result = impl_position.derive(items, {"levels": self.LEVELS})[0]
+        self.assertIsNone(result["derived"])
+        self.assertNotEqual(result["derived"], self.LEVELS[0])
+        self.assertIsNone(result["satisfied"])
+        self.assertFalse(result["disagrees"])
+
+    # --- twostate default: unmarked items behave exactly as the prior revision ---
+
+    def test_an_unmarked_witness_defaults_to_two_state_unchanged_from_before(self):
+        items = [{"ordinal": 1, "mark": " ", "text": "x",
+                  "witness": {"kind": "rehearsal", "operand": "job"}}]
+        result = impl_position.derive(items, {"smokeReady": {"job": True}})[0]
+        self.assertTrue(result["twostate"])
+        self.assertIs(result["derived"], True)
+        self.assertIs(result["satisfied"], True)
+
+    # --- :level grammar round-trips through render/parse/locate ---
+
+    def test_a_level_marked_witness_round_trips_through_render_and_parse(self):
+        header = {**PositionModuleTests.HEADER, "target": "staging"}
+        items = [{"ordinal": 1, "mark": " ", "text": "x",
+                  "witness": {"kind": "rehearsal", "operand": "job", "twostate": False}}]
+        text = impl_position.render(header, items)
+        self.assertIn("`@rehearsal:level job`", text)
+        block = impl_position.locate_block(text.encode("utf-8"))
+        self.assertEqual(block["target"], "staging")
+        parsed = impl_position.parse_items(block["body"])
+        self.assertFalse(parsed[0]["witness"]["twostate"])
+
+    def test_an_unmarked_witness_round_trips_as_two_state_with_no_suffix(self):
+        text = impl_position.render(PositionModuleTests.HEADER, [
+            {"ordinal": 1, "mark": " ", "text": "x",
+             "witness": {"kind": "notebook", "operand": "a.ipynb"}}])
+        self.assertIn("`@notebook a.ipynb`", text)
+        self.assertNotIn("`@notebook:level", text)
+        block = impl_position.locate_block(text.encode("utf-8"))
+        parsed = impl_position.parse_items(block["body"])
+        self.assertTrue(parsed[0]["witness"]["twostate"])
+
+    # --- header migration: a block written by the prior grammar is refused ---
+
+    def test_a_pre_pr10_block_with_no_target_field_is_refused_not_migrated(self):
+        old_style = (
+            "<!-- position revision=r1 sha256=" + "b" * 64 +
+            " derivedAt=2026-01-01T00:00:00Z session=s1 -->\n"
+            "- [ ] 1. Something. `@record`\n"
+            "<!-- /position -->\n"
+        ).encode("utf-8")
+        with self.assertRaises(impl.Refused) as ctx:
+            impl_position.locate_block(old_style)
+        self.assertEqual(ctx.exception.code, "POSITION_BLOCK_MALFORMED")
+
+    def test_allow_legacy_reads_a_pre_pr10_block_as_migratable(self):
+        """`position` is the one place a caller may opt into reading an old
+        block at all (`allow_legacy=True`) -- everyone else keeps refusing,
+        exercised immediately above. This is what makes migration reachable:
+        without it, `cmd_position` could never even see the block it is
+        supposed to rewrite.
+        """
+        old_style = (
+            "<!-- position revision=r1 sha256=" + "b" * 64 +
+            " derivedAt=2026-01-01T00:00:00Z session=s1 -->\n"
+            "- [ ] 1. Something. `@record`\n"
+            "<!-- /position -->\n"
+        ).encode("utf-8")
+        block = impl_position.locate_block(old_style, allow_legacy=True)
+        self.assertIsNotNone(block)
+        self.assertIsNone(block["target"])
+        self.assertTrue(block["legacy"])
+        # The item grammar itself needs no migration -- unaffected by the
+        # header's shape.
+        items = impl_position.parse_items(block["body"])
+        self.assertEqual(items[0]["witness"], {"kind": "record", "operand": None,
+                                                "twostate": True})
+
+    # --- level_index(): the whole of what the forge knows about a ladder ---
+
+    def test_level_index_reads_position_never_semantics(self):
+        self.assertEqual(impl_position.level_index(self.LEVELS, "local"), 0)
+        self.assertEqual(impl_position.level_index(self.LEVELS, "cluster"), 2)
+        self.assertIsNone(impl_position.level_index(self.LEVELS, "nonexistent"))
+        self.assertIsNone(impl_position.level_index(self.LEVELS, None))
+        self.assertIsNone(impl_position.level_index([], "local"))
+
+    # --- @record leveled: found-but-short-of-scale is a real middle rung ---
+
+    def test_record_leveled_found_short_of_declared_scale_is_the_middle_rung(self):
+        """The exact motivating defect: a record structurally present (a
+        notebook reading it would report `sourcesMatch: True`) but short of
+        the declared scale must resolve to the middle rung, not the top —
+        visible on the item itself, not something a reader has to remember.
+        """
+        items = [{"ordinal": 1, "mark": " ", "text": "x",
+                  "witness": {"kind": "record", "operand": None, "twostate": False}}]
+        evidence = {"search": {"recordFound": True, "scaleSatisfied": False},
+                    "requiredScale": {"seeds": 30}, "levels": self.LEVELS,
+                    "targetLevel": "cluster"}
+        result = impl_position.derive(items, evidence)[0]
+        self.assertEqual(result["derived"], "staging")
+        self.assertFalse(result["satisfied"])
+
+    def test_record_leveled_found_and_satisfied_is_the_top_rung(self):
+        items = [{"ordinal": 1, "mark": " ", "text": "x",
+                  "witness": {"kind": "record", "operand": None, "twostate": False}}]
+        evidence = {"search": {"recordFound": True, "scaleSatisfied": True},
+                    "requiredScale": {"seeds": 30}, "levels": self.LEVELS,
+                    "targetLevel": "cluster"}
+        result = impl_position.derive(items, evidence)[0]
+        self.assertEqual(result["derived"], "cluster")
+        self.assertTrue(result["satisfied"])
+
+    def test_record_leveled_not_found_is_the_floor_rung(self):
+        items = [{"ordinal": 1, "mark": " ", "text": "x",
+                  "witness": {"kind": "record", "operand": None, "twostate": False}}]
+        evidence = {"search": {"recordFound": False}, "requiredScale": {},
+                    "levels": self.LEVELS, "targetLevel": "local"}
+        result = impl_position.derive(items, evidence)[0]
+        self.assertEqual(result["derived"], "local")
+        self.assertTrue(result["satisfied"])
+
+    def test_record_leveled_insufficient_scale_on_a_two_rung_ladder_collapses_to_floor(self):
+        """A two-rung ladder has no honest place for "something ran, but not
+        enough of it" except the floor -- there is nowhere else to put it.
+        """
+        items = [{"ordinal": 1, "mark": " ", "text": "x",
+                  "witness": {"kind": "record", "operand": None, "twostate": False}}]
+        evidence = {"search": {"recordFound": True, "scaleSatisfied": False},
+                    "requiredScale": {"seeds": 30}, "levels": ["local", "cluster"],
+                    "targetLevel": "local"}
+        result = impl_position.derive(items, evidence)[0]
+        self.assertEqual(result["derived"], "local")
+
+    # --- @rehearsal leveled: a two-valued fact can only reach the first rung ---
+
+    def test_rehearsal_leveled_ready_reaches_the_second_rung_never_further(self):
+        items = [{"ordinal": 1, "mark": " ", "text": "x",
+                  "witness": {"kind": "rehearsal", "operand": "job", "twostate": False}}]
+        result = impl_position.derive(
+            items, {"smokeReady": {"job": True}, "levels": self.LEVELS,
+                    "targetLevel": "cluster"})[0]
+        self.assertEqual(result["derived"], "staging")
+        self.assertFalse(result["satisfied"])
+
+    def test_rehearsal_leveled_not_ready_is_the_floor_rung(self):
+        items = [{"ordinal": 1, "mark": " ", "text": "x",
+                  "witness": {"kind": "rehearsal", "operand": "job", "twostate": False}}]
+        result = impl_position.derive(
+            items, {"smokeReady": {"job": False}, "levels": self.LEVELS,
+                    "targetLevel": "local"})[0]
+        self.assertEqual(result["derived"], "local")
+
+    # --- @shard leveled: arrival is full-scale evidence in its own right ---
+
+    def test_shard_leveled_arrived_is_the_top_rung(self):
+        items = [{"ordinal": 1, "mark": " ", "text": "x",
+                  "witness": {"kind": "shard", "operand": "s3", "twostate": False}}]
+        result = impl_position.derive(
+            items, {"shardsArrived": ["s3"], "levels": self.LEVELS,
+                    "targetLevel": "cluster"})[0]
+        self.assertEqual(result["derived"], "cluster")
+        self.assertTrue(result["satisfied"])
+
+    def test_shard_leveled_not_arrived_is_the_floor_rung(self):
+        items = [{"ordinal": 1, "mark": " ", "text": "x",
+                  "witness": {"kind": "shard", "operand": "s1", "twostate": False}}]
+        result = impl_position.derive(
+            items, {"shardsArrived": ["s3"], "levels": self.LEVELS,
+                    "targetLevel": "local"})[0]
+        self.assertEqual(result["derived"], "local")
+
+    # --- @notebook leveled: a stale report cannot attribute a rung to anything ---
+
+    def test_notebook_leveled_stale_report_is_unmeasured_not_the_floor(self):
+        items = [{"ordinal": 1, "mark": " ", "text": "x",
+                  "witness": {"kind": "notebook", "operand": "a.ipynb", "twostate": False}}]
+        evidence = {"notebooks": {"reports": [
+                        {"notebook": "a.ipynb", "status": "executed",
+                         "sourcesMatch": False}]},
+                    "search": {"recordFound": True, "scaleSatisfied": True},
+                    "requiredScale": {"seeds": 30}, "levels": self.LEVELS}
+        result = impl_position.derive(items, evidence)[0]
+        self.assertIsNone(result["derived"])
+
+    def test_notebook_leveled_current_report_reads_the_record_s_own_rung(self):
+        items = [{"ordinal": 1, "mark": " ", "text": "x",
+                  "witness": {"kind": "notebook", "operand": "a.ipynb", "twostate": False}}]
+        evidence = {"notebooks": {"reports": [
+                        {"notebook": "a.ipynb", "status": "executed",
+                         "sourcesMatch": True}]},
+                    "search": {"recordFound": True, "scaleSatisfied": False},
+                    "requiredScale": {"seeds": 30}, "levels": self.LEVELS,
+                    "targetLevel": "cluster"}
+        result = impl_position.derive(items, evidence)[0]
+        self.assertEqual(result["derived"], "staging")
+        self.assertFalse(result["satisfied"])
+
+
 class PositionKeyExitStatusTests(unittest.TestCase):
     """The `position` key is reported and never gates — the same discipline
     `coupling` (`CouplingNeverGatesTests`) and `smokeReady`
@@ -10926,7 +11169,7 @@ class PositionKeyExitStatusTests(unittest.TestCase):
 
     HEADER = {
         "revision": "r01.md", "revisionSha256": "a" * 64,
-        "derivedAt": "2026-08-27T00:00:00Z", "session": "s1",
+        "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final",
     }
 
     def write_position(self, root, mark, sha256=None):
@@ -11044,9 +11287,9 @@ class PositionCommandTests(unittest.TestCase):
         return subprocess.run([sys.executable, str(CLI), *args], input=stdin,
                               capture_output=True, text=True, cwd=FORGE, env=env)
 
-    def block_text(self, body, sha256=None):
+    def block_text(self, body, sha256=None, target="final"):
         return (f"<!-- position revision=r1.md sha256={sha256 or 'a' * 64} "
-                "derivedAt=2026-08-27T00:00:00Z session=s0 -->\n"
+                f"derivedAt=2026-08-27T00:00:00Z session=s0 target={target} -->\n"
                 f"{body}<!-- /position -->\n")
 
     # --- 3.1 refusals: a malformed artifact exits 2 with a code ---
@@ -11092,6 +11335,43 @@ class PositionCommandTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_HOLDER_AMBIGUOUS")
 
+    # --- migration: a pre-PR10 block is refused for reading, migratable for writing ---
+
+    def test_a_legacy_block_refuses_verify_but_position_migrates_it(self):
+        box = self._box()
+        legacy = (
+            "<!-- position revision=r1.md sha256=" + "a" * 64 +
+            " derivedAt=2026-01-01T00:00:00Z session=s0 -->\n"
+            "- [ ] 1. Old-grammar step. `@rehearsal job1`\n"
+            "<!-- /position -->\n"
+        )
+        (box / "Method" / "AGREED.md").write_text(legacy, encoding="utf-8")
+
+        verify_proc = self.run_cli("verify", "--target", str(box), "--name", "Method",
+                                   "--revision", "r1.md", proposals=self._proposals())
+        self.assertEqual(verify_proc.returncode, 2, verify_proc.stdout)
+        self.assertEqual(json.loads(verify_proc.stdout)["code"], "POSITION_BLOCK_MALFORMED")
+
+        migrate = self.run_cli("position", "--target", str(box), "--name", "Method",
+                               "--revision", "r1.md", "--session", "s1",
+                               "--target-level", "final",
+                               proposals=self._proposals())
+        self.assertEqual(migrate.returncode, 0, migrate.stdout)
+        result = json.loads(migrate.stdout)
+        self.assertEqual(result["status"], "written")
+        self.assertEqual(result["targetLevel"], "final")
+        self.assertEqual([item["text"] for item in result["sequence"]],
+                         ["Old-grammar step."])
+
+        on_disk = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertIn("target=final", on_disk)
+
+        verify_again = self.run_cli("verify", "--target", str(box), "--name", "Method",
+                                    "--revision", "r1.md", proposals=self._proposals())
+        self.assertEqual(verify_again.returncode, 0, verify_again.stdout)
+        self.assertEqual(
+            json.loads(verify_again.stdout)["position"]["targetLevel"], "final")
+
     # --- 3.2 refresh: item text and order survive byte-for-byte ---
 
     def test_refresh_leaves_item_text_and_order_untouched(self):
@@ -11132,6 +11412,7 @@ class PositionCommandTests(unittest.TestCase):
         ])
         proc = self.run_cli("position", "--target", str(box), "--name", "Method",
                             "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "final",
                             "--sequence", "-", stdin=sequence, proposals=self._proposals())
 
         self.assertEqual(proc.returncode, 0, proc.stdout)
@@ -11349,7 +11630,7 @@ class PositionReconcileTests(unittest.TestCase):
         (box / "Method" / "Notebooks" / "pilot.ipynb").write_text("{}", encoding="utf-8")
 
         proc = self.run_cli("position", "--target", str(box), "--name", "Method",
-                            "--revision", "r1.md", "--session", "s1",
+                            "--revision", "r1.md", "--session", "s1", "--target-level", "final",
                             "--reconcile", proposals=self._proposals())
         self.assertEqual(proc.returncode, 0, proc.stdout)
         result = json.loads(proc.stdout)
@@ -11379,13 +11660,13 @@ class PositionReconcileTests(unittest.TestCase):
         proposals = self._proposals()
 
         first = self.run_cli("position", "--target", str(box), "--name", "Method",
-                             "--revision", "r1.md", "--session", "s1",
+                             "--revision", "r1.md", "--session", "s1", "--target-level", "final",
                              "--reconcile", proposals=proposals)
         self.assertEqual(first.returncode, 0, first.stdout)
         first_result = json.loads(first.stdout)
         self.assertEqual(len(first_result["sequence"]), 1)
         self.assertEqual(first_result["sequence"][0]["witness"],
-                         {"kind": "notebook", "operand": "Notebooks/a.ipynb"})
+                         {"kind": "notebook", "operand": "Notebooks/a.ipynb", "twostate": True})
 
         # A human writes the real sentence over the placeholder.
         agreed_path = box / "Method" / "AGREED.md"
@@ -11407,10 +11688,10 @@ class PositionReconcileTests(unittest.TestCase):
         self.assertEqual(second_result["sequence"][0]["text"],
                          "Read the pilot notebook into the report.")
         self.assertEqual(second_result["sequence"][0]["witness"],
-                         {"kind": "notebook", "operand": "Notebooks/a.ipynb"})
+                         {"kind": "notebook", "operand": "Notebooks/a.ipynb", "twostate": True})
         self.assertEqual(second_result["sequence"][1]["ordinal"], 2)
         self.assertEqual(second_result["sequence"][1]["witness"],
-                         {"kind": "notebook", "operand": "Notebooks/b.ipynb"})
+                         {"kind": "notebook", "operand": "Notebooks/b.ipynb", "twostate": True})
 
     # --- 4.4: `--reconcile --shards` measures what it just discovered ---
 
@@ -11427,13 +11708,13 @@ class PositionReconcileTests(unittest.TestCase):
         shards = self._shards({"a": {"epochs": 5}})
 
         proc = self.run_cli("position", "--target", str(box), "--name", "Method",
-                            "--revision", "r1.md", "--session", "s1",
+                            "--revision", "r1.md", "--session", "s1", "--target-level", "final",
                             "--reconcile", "--shards", str(shards),
                             proposals=self._proposals())
         self.assertEqual(proc.returncode, 0, proc.stdout)
         result = json.loads(proc.stdout)
         shard_item = next(item for item in result["sequence"]
-                          if item["witness"] == {"kind": "shard", "operand": "a"})
+                          if item["witness"] == {"kind": "shard", "operand": "a", "twostate": True})
         self.assertTrue(
             shard_item["derived"],
             f"a shard just discovered from --shards's own directory reads "
@@ -11470,7 +11751,7 @@ class PositionReconcileTests(unittest.TestCase):
         proposals = self._proposals()
 
         reconcile = self.run_cli("position", "--target", str(box), "--name", "Method",
-                                 "--revision", "r1.md", "--session", "s1",
+                                 "--revision", "r1.md", "--session", "s1", "--target-level", "final",
                                  "--reconcile", "--shards", str(shards),
                                  proposals=proposals)
         self.assertEqual(reconcile.returncode, 0, reconcile.stdout)
@@ -11575,7 +11856,7 @@ class DiscussCommandTests(unittest.TestCase):
         """
         box = self._box()
         header = {"revision": "r1.md", "revisionSha256": "a" * 64,
-                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1"}
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
         items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
                   "witness": {"kind": "rehearsal", "operand": "job1"}}]
         (box / "Method" / "AGREED.md").write_text(
@@ -11585,7 +11866,8 @@ class DiscussCommandTests(unittest.TestCase):
                             "--about", "1", "--question", "Is job1 the right job?")
         self.assertEqual(proc.returncode, 0, proc.stdout)
         result = json.loads(proc.stdout)
-        self.assertEqual(result["about"], {"ordinal": 1, "kind": "rehearsal", "operand": "job1"})
+        self.assertEqual(result["about"], {"ordinal": 1, "kind": "rehearsal",
+                                           "operand": "job1", "twostate": True})
 
     def test_discuss_refuses_an_ordinal_not_in_the_sequence(self):
         box = self._box()
@@ -11684,7 +11966,7 @@ class GateCommandTests(unittest.TestCase):
         self._write_job_folder(box, commit)
         header = {"revision": self.PROPOSAL_REVISION,
                   "revisionSha256": self.PROPOSAL_SHA256,
-                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1"}
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
         items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
                   "witness": {"kind": "rehearsal", "operand": "job1"}}]
         (box / "Method" / "AGREED.md").write_text(
@@ -11726,7 +12008,7 @@ class GateCommandTests(unittest.TestCase):
         with self.subTest("stale"):
             box, _ = self._box()
             header = {"revision": self.PROPOSAL_REVISION, "revisionSha256": "a" * 64,
-                      "derivedAt": "2026-08-27T00:00:00Z", "session": "s1"}
+                      "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
             items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
                       "witness": {"kind": "rehearsal", "operand": "job1"}}]
             (box / "Method" / "AGREED.md").write_text(
@@ -11747,7 +12029,7 @@ class GateCommandTests(unittest.TestCase):
         self._write_smoke_pass(box, commit=commit)
         header = {"revision": self.PROPOSAL_REVISION,
                   "revisionSha256": self.PROPOSAL_SHA256,
-                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1"}
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
         items = [
             {"ordinal": 1, "mark": " ", "text": "Read the pilot notebook.",
              "witness": {"kind": "notebook", "operand": "Notebooks/pilot.ipynb"}},
@@ -11778,7 +12060,7 @@ class GateCommandTests(unittest.TestCase):
         self._write_smoke_pass(box, commit=commit)
         header = {"revision": self.PROPOSAL_REVISION,
                   "revisionSha256": self.PROPOSAL_SHA256,
-                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1"}
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
         items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
                   "witness": {"kind": "rehearsal", "operand": "job1"}}]
         (box / "Method" / "AGREED.md").write_text(
@@ -11850,7 +12132,7 @@ class GateCommandTests(unittest.TestCase):
         self._write_smoke_pass(box, commit=commit)
         header = {"revision": self.PROPOSAL_REVISION,
                   "revisionSha256": self.PROPOSAL_SHA256,
-                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1"}
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
         items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
                   "witness": {"kind": "rehearsal", "operand": "job1"}}]
         (box / "Method" / "AGREED.md").write_text(
@@ -11966,7 +12248,7 @@ class CloseCommandTests(unittest.TestCase):
         with self.subTest("stale"):
             box, _ = self._box()
             header = {"revision": self.PROPOSAL_REVISION, "revisionSha256": "a" * 64,
-                      "derivedAt": "2026-08-27T00:00:00Z", "session": "s1"}
+                      "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
             items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
                       "witness": {"kind": "rehearsal", "operand": "job1"}}]
             (box / "Method" / "AGREED.md").write_text(
@@ -11986,7 +12268,7 @@ class CloseCommandTests(unittest.TestCase):
             self._write_job_folder(box, commit)
             header = {"revision": self.PROPOSAL_REVISION,
                       "revisionSha256": self.PROPOSAL_SHA256,
-                      "derivedAt": "2026-08-27T00:00:00Z", "session": "s1"}
+                      "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
             # Falsely marked "x": job1's folder exists but never rehearsed,
             # so `smokeReady["job1"]` measures a definite False.
             items = [{"ordinal": 1, "mark": "x", "text": "Rehearse the job.",
@@ -12009,7 +12291,7 @@ class CloseCommandTests(unittest.TestCase):
         box, _ = self._box()
         header = {"revision": self.PROPOSAL_REVISION,
                   "revisionSha256": self.PROPOSAL_SHA256,
-                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1"}
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
         items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
                   "witness": {"kind": "rehearsal", "operand": "job-none"}}]
         (box / "Method" / "AGREED.md").write_text(

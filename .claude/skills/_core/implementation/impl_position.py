@@ -25,7 +25,33 @@ _BLOCK_OPEN_MARKER = rb"<!--\s*position\b"
 #: whose start does not coincide with `_BLOCK_OPEN_MARKER`'s only hit means
 #: the opener exists but its header does not parse — a malformed artifact,
 #: not an absent one.
+#:
+#: `target` is new in the level-grammar revision (PR10, `the-position-
+#: nobody-holds`): the ordered rung this pass is aiming at, in the target's
+#: own vocabulary (see `derive`'s docstring). A block written by the prior,
+#: boolean-only grammar carries no `target=` field, so its header no longer
+#: matches this pattern at all — **refused, not migrated, not silently
+#: reinterpreted**. That is the deliberate choice: a bare byte-shift of an
+#: old block's marks onto a new tick meaning ("reached this pass's rung")
+#: would be asserting a rung nobody ever measured. The refusal is the same
+#: `POSITION_BLOCK_MALFORMED` class the opener already raised for any other
+#: unparsable header, and `position --reconcile --target-level <level>`
+#: (implementation_cli.py) is the migration path: a fresh header, sequence
+#: items preserved by witness identity, ticks re-derived from scratch under
+#: the new grammar.
 _BLOCK_OPEN_RE = re.compile(
+    rb"<!--\s*position\s+revision=(?P<revision>\S+)\s+"
+    rb"sha256=(?P<sha256>[0-9a-f]{64})\s+derivedAt=(?P<derivedAt>\S+)\s+"
+    rb"session=(?P<session>\S+)\s+target=(?P<target>\S+)\s*-->"
+)
+
+#: The exact opener the grammar's first revision wrote, kept only so
+#: `locate_block(..., allow_legacy=True)` can tell "an old block, migratable"
+#: apart from "a document neither grammar recognizes". Never matched unless
+#: the caller opts in: `cmd_position` is the one place migration happens, and
+#: `verify`/`probe`/`position_state`'s read side never passes `allow_legacy`,
+#: so an unmigrated block still exits 2 for them exactly as documented.
+_LEGACY_BLOCK_OPEN_RE = re.compile(
     rb"<!--\s*position\s+revision=(?P<revision>\S+)\s+"
     rb"sha256=(?P<sha256>[0-9a-f]{64})\s+derivedAt=(?P<derivedAt>\S+)\s+"
     rb"session=(?P<session>\S+)\s*-->"
@@ -47,8 +73,9 @@ WITNESS_KINDS = frozenset({"record", "notebook", "rehearsal", "shard"})
 #: is required per item; a prose sentence that happens to mention another
 #: backticked `@word` is exactly the false positive `BULLET_LINE` already had
 #: to guard against one file over, so the count — not a bare search — is what
-#: decides malformed.
-_WITNESS_TOKEN_RE = re.compile(r"`@[a-z]+(?: [^`]+)?`")
+#: decides malformed. `(?::level)?` mirrors `WITNESS_RE`'s own optional
+#: leveled marker so a marked token is still counted as exactly one.
+_WITNESS_TOKEN_RE = re.compile(r"`@[a-z]+(?::level)?(?: [^`]+)?`")
 
 #: The one true witness: backticked, anchored to end-of-line so item prose is
 #: never scanned for a stray `@`. An operand may carry slashes and dots
@@ -57,10 +84,25 @@ _WITNESS_TOKEN_RE = re.compile(r"`@[a-z]+(?: [^`]+)?`")
 #: is deliberately not a real layout name: this module is caller-agnostic, and a
 #: comment naming one of the caller's own directories teaches the next reader
 #: that the core knows a layout it must always be handed.
-WITNESS_RE = re.compile(r"`@(?P<kind>[a-z]+)(?: (?P<operand>[^`]+))?`\s*$")
+#:
+#: `:level` (PR10) is the grammar's way for a single item to opt INTO the
+#: ordered ladder. **Omitted, an item is two-state** — satisfied or not, with
+#: nothing in between — exactly the grammar's first revision, unchanged, so
+#: every block written before PR10's ordered-level revision keeps meaning
+#: exactly what it always meant once migrated onto the new header (see
+#: `_BLOCK_OPEN_RE`'s docstring for why the header itself still refuses an
+#: unmigrated block). Two-state is the default because that is what a
+#: witness already meant before this revision; a step earns a rung by saying
+#: so, explicitly, right where a reader already looks — never inferred from
+#: its kind, because two targets may both write a `@notebook` witness and
+#: mean different things by it (one step reads a record tied to a rung,
+#: another is a local check that only ever holds or does not). The forge
+#: does not decide which a kind means; the artifact declares it.
+WITNESS_RE = re.compile(
+    r"`@(?P<kind>[a-z]+)(?P<leveled>:level)?(?: (?P<operand>[^`]+))?`\s*$")
 
 
-def locate_block(data: bytes) -> dict | None:
+def locate_block(data: bytes, allow_legacy: bool = False) -> dict | None:
     """Find the position block's byte span in `data`, or say there is none.
 
     `None` is `absent` — a target whose flow never reached a gate has nothing
@@ -71,6 +113,15 @@ def locate_block(data: bytes) -> dict | None:
     stricter rule adopted from `proposal-workspace.ts:2488-2501` over the
     first-occurrence rule `lifecycle-service.ts:24-35` uses for text the tool
     does not own.
+
+    `allow_legacy=True` (PR10) additionally recognizes the exact header the
+    grammar's first revision wrote (no `target=` field) and returns it with
+    `"target": None, "legacy": True` instead of refusing — the one admission
+    that makes migration reachable at all: `cmd_position` has to be able to
+    *see* an old block before it can rewrite it. Every other caller (`verify`,
+    `probe`, `position_state`'s read side) passes the default `False` and
+    keeps refusing an unmigrated block exactly as documented — reading was
+    never where migration was promised to happen, only `position` was.
     """
     markers = [m.start() for m in re.finditer(_BLOCK_OPEN_MARKER, data)]
     if not markers:
@@ -82,11 +133,18 @@ def locate_block(data: bytes) -> dict | None:
             "document; a delimiter this module owns must occur exactly once.")
 
     header = _BLOCK_OPEN_RE.match(data, markers[0])
+    legacy = False
+    if header is None and allow_legacy:
+        header = _LEGACY_BLOCK_OPEN_RE.match(data, markers[0])
+        legacy = header is not None
     if header is None:
         raise Refused(
             "POSITION_BLOCK_MALFORMED",
             "the `<!-- position ... -->` opener does not carry revision, "
-            "sha256, derivedAt and session in that order.")
+            "sha256, derivedAt, session and target in that order. A block "
+            "written by the prior boolean-only grammar has no `target=` "
+            "field and is refused here, not silently reinterpreted -- see "
+            "`_BLOCK_OPEN_RE`'s docstring for the migration path.")
     close = data.find(BLOCK_CLOSE, header.end())
     if close == -1:
         raise Refused(
@@ -101,6 +159,8 @@ def locate_block(data: bytes) -> dict | None:
         "revisionSha256": header.group("sha256").decode("ascii"),
         "derivedAt": header.group("derivedAt").decode("ascii"),
         "session": header.group("session").decode("ascii"),
+        "target": None if legacy else header.group("target").decode("ascii"),
+        "legacy": legacy,
     }
 
 
@@ -150,13 +210,22 @@ def parse_items(body: str) -> list[dict]:
             "ordinal": ordinal,
             "mark": mark,
             "text": text[:witness_match.start()].rstrip(),
-            "witness": {"kind": kind, "operand": witness_match.group("operand")},
+            "witness": {
+                "kind": kind,
+                "operand": witness_match.group("operand"),
+                # See `WITNESS_RE`'s docstring: a per-item declaration, not a
+                # per-kind one. Absent the `:level` marker, an item is
+                # two-state (the default, unchanged from the grammar's first
+                # revision); marked, `derive` reports which declared rung it
+                # reaches instead of a bare pass/fail.
+                "twostate": witness_match.group("leveled") is None,
+            },
         })
     return items
 
 
 def _derive_record(evidence: dict) -> tuple[bool | None, str]:
-    """`@record` ticks against `search_state()`'s own `recordFound`/`scaleSatisfied`.
+    """`@record` (two-state, the default) ticks against `search_state()`'s own `recordFound`/`scaleSatisfied`.
 
     `evidence["search"]` is that function's return, verbatim.
     `evidence["requiredScale"]` is the caller's own `declared_required_scale(search)`
@@ -177,7 +246,7 @@ def _derive_record(evidence: dict) -> tuple[bool | None, str]:
 
 
 def _derive_notebook(evidence: dict, operand: str | None) -> tuple[bool | None, str]:
-    """`@notebook <path>` ticks against `notebooks_state()`'s per-report state.
+    """`@notebook <path>` (two-state, the default) ticks against `notebooks_state()`'s per-report state.
 
     `operand` is matched against `report["notebook"]` both exactly and by
     suffix (`.../<operand>`), because `notebooks_state` stamps a path relative
@@ -202,7 +271,7 @@ def _derive_notebook(evidence: dict, operand: str | None) -> tuple[bool | None, 
 
 
 def _derive_rehearsal(evidence: dict, operand: str | None) -> tuple[bool | None, str]:
-    """`@rehearsal <jobName>` ticks against `remote_execution_jobs_state()["smokeReady"]`.
+    """`@rehearsal <jobName>` (two-state, the default) ticks against `remote_execution_jobs_state()["smokeReady"]`.
 
     The un-forgeable half of the whole change (design §4.3): `smokeReady` is
     only ever `True` once a rehearsal actually ran and was recorded at the
@@ -217,7 +286,7 @@ def _derive_rehearsal(evidence: dict, operand: str | None) -> tuple[bool | None,
 
 
 def _derive_shard(evidence: dict, operand: str | None) -> tuple[bool | None, str]:
-    """`@shard <id>` ticks against `verify --shards`'s `shardsArrived`.
+    """`@shard <id>` (two-state, the default) ticks against `verify --shards`'s `shardsArrived`.
 
     `evidence["shardsArrived"]` is `None` whenever this invocation carries no
     shard evidence at all — `probe` always, and `verify` without `--shards` —
@@ -238,33 +307,214 @@ _DERIVERS = {
 }
 
 
+def level_index(levels: list[str], level: str | None) -> int | None:
+    """`level`'s position on the declared ladder, or `None` off it (unknown
+    or `level is None`).
+
+    This is the whole of what the forge knows about a ladder: an ordered
+    list, and how to compare two positions in it. The names on that list are
+    entirely the target's own vocabulary — this module holds none of its
+    own, the same discipline `WITNESS_KINDS` already keeps for evidence
+    classes one level up. A repository with a three-rung remote-execution
+    ladder and one with none at all (`levels == []`) both run this same
+    arithmetic; only the list differs.
+    """
+    if level is None:
+        return None
+    try:
+        return levels.index(level)
+    except ValueError:
+        return None
+
+
+def _record_scale_level(evidence: dict, levels: list[str]) -> tuple[str | None, str]:
+    """The rung a record's own scale reaches, composed from exactly the two
+    facts `search_state()` already computes — `recordFound` and, when a
+    scale is declared, `scaleSatisfied` — never a new measurement.
+
+    This is the mechanism behind PR10's motivating defect: a record found on
+    disk but short of the declared scale (sixty runs beside a declared
+    eighteen hundred) used to satisfy the same boolean `@record` witness a
+    full record did. Composed as a rung instead, it reads as the *second*
+    rung on a ladder with room for one, not the top — visible on the item
+    itself, not something a reader has to already remember to doubt.
+
+    - not found → the floor rung: nothing has run yet.
+    - found, and either no scale is declared or the declared scale is met →
+      the top rung: nothing further was asked of this record.
+    - found, short of a declared scale → one rung under the top when the
+      ladder has room for that distinction (three rungs or more); the floor
+      otherwise — a two-rung ladder has nowhere honest to place "something
+      ran, but not enough of it" except "not yet there".
+    - `scaleSatisfied` itself unmeasured (a scale is declared but nothing
+      could check it) → unmeasured, not guessed at.
+    """
+    measured_by = "search.recordFound+scaleSatisfied"
+    if not levels:
+        return None, measured_by
+    search = evidence.get("search")
+    if not isinstance(search, dict) or "recordFound" not in search:
+        return None, measured_by
+    found = search.get("recordFound")
+    if found is None:
+        return None, measured_by
+    if found is False:
+        return levels[0], measured_by
+    if not evidence.get("requiredScale") or search.get("scaleSatisfied") is True:
+        return levels[-1], measured_by
+    if search.get("scaleSatisfied") is False:
+        return levels[max(0, len(levels) - 2)], measured_by
+    return None, measured_by
+
+
+def _derive_notebook_level(
+        evidence: dict, operand: str | None, levels: list[str]) -> tuple[str | None, str]:
+    """`@notebook <path>` (leveled): the rung the record behind this report
+    reaches — but only once the report itself is honestly current.
+
+    A notebook that has not run, or whose sources no longer match, cannot
+    attribute a rung to anything it printed: unmeasured, not the floor,
+    because the fact is "we have not looked with current eyes", not "we
+    looked and it has not started" — the distinction `derive`'s own
+    docstring keeps for the same reason one level up. Once the report is
+    current, its rung is the record's own (`_record_scale_level`): a report
+    is only ever as trustworthy about scale as the record it read.
+    """
+    measured_by = f"notebooks.reports[{operand}].sourcesMatch+search.scaleSatisfied"
+    notebooks = evidence.get("notebooks")
+    if not operand or not isinstance(notebooks, dict):
+        return None, measured_by
+    report = next(
+        (r for r in notebooks.get("reports", [])
+         if r.get("notebook") == operand
+         or r.get("notebook", "").endswith(f"/{operand}")),
+        None)
+    if report is None:
+        return None, measured_by
+    if not (report.get("status") == "executed" and report.get("sourcesMatch") is True):
+        return None, measured_by
+    level, _ = _record_scale_level(evidence, levels)
+    return level, measured_by
+
+
+def _derive_rehearsal_level(
+        evidence: dict, operand: str | None, levels: list[str]) -> tuple[str | None, str]:
+    """`@rehearsal <jobName>` (leveled): `smokeReady` is itself a two-valued
+    fact (a rehearsal ran and passed, or it did not), so it can only ever
+    place a job at the floor rung or the one just above it — reaching
+    further than that is `@record`'s or `@shard`'s evidence to speak to, a
+    rehearsal never claims full scale on its own.
+    """
+    measured_by = f"remoteExecution.smokeReady[{operand}]"
+    if not levels:
+        return None, measured_by
+    smoke_ready = evidence.get("smokeReady")
+    if not operand or not isinstance(smoke_ready, dict) or operand not in smoke_ready:
+        return None, measured_by
+    if smoke_ready.get(operand) is True:
+        return levels[min(1, len(levels) - 1)], measured_by
+    return levels[0], measured_by
+
+
+def _derive_shard_level(
+        evidence: dict, operand: str | None, levels: list[str]) -> tuple[str | None, str]:
+    """`@shard <id>` (leveled): an arrived shard is full-scale evidence in
+    its own right (the same `shardsArrived` fact the two-state form reads),
+    so it places its item at the top rung; one that has not arrived, at the
+    floor — both definite, because `shardsArrived` being present at all (not
+    `None`) means this invocation was told to look.
+    """
+    measured_by = "distribution.shardsArrived"
+    if not levels:
+        return None, measured_by
+    arrived = evidence.get("shardsArrived")
+    if not operand or arrived is None:
+        return None, measured_by
+    return (levels[-1] if operand in arrived else levels[0]), measured_by
+
+
+_LEVEL_DERIVERS = {
+    "notebook": _derive_notebook_level,
+    "rehearsal": _derive_rehearsal_level,
+    "shard": _derive_shard_level,
+}
+
+
 def derive(items: list[dict], evidence: dict) -> list[dict]:
     """The measured verdict for every item's witness, and nothing else.
 
-    Three-valued per item: `True`/`False` when the evidence class actually
-    answers, `None` ("unmeasured") when this invocation's evidence dict
-    carries no answer for that witness at all. `None` is never folded into
-    `False`: a caller that writes marks back to disk (`splice`'s callers) must
-    leave an unmeasured item's byte exactly as found, because untying a step
-    that already ran only because this invocation could not check it would be
-    a false negative dressed as a measurement — the same rule `_record_scale`
-    already applies by returning `{}` rather than guessing.
+    **A level, not a bool (PR10) — except where an item declared itself
+    two-state.** Per item, `derived` is:
 
-    Pure: no I/O. `evidence` is a plain dict of already-computed states, so
-    two callers (`verify`, `probe`) hand this the same shape and get the same
-    answer without either one importing the other's read path.
+    - for a two-state item (no `:level` marker, the default): `True`/`False`
+      when the evidence class actually
+      answers, `None` ("unmeasured") when it does not — unchanged from the
+      grammar's first revision, because a two-state item has no rung to be
+      assigned and never has one invented for it.
+    - for a leveled item (the default): one of `evidence["levels"]`'s own
+      names when the evidence resolves to a rung, `None` when it does not.
+      **A leveled item is never assigned `False`; only `None` or one of the
+      declared names.** `None` is never folded into the floor rung: "we did
+      not look" and "it has not started" stay two different facts, the same
+      rule `_record_scale` already keeps by returning `{}` rather than
+      guessing.
+
+    `satisfied` is the tick-worthy verdict every caller writing a mark
+    should read, never `derived` directly: for a two-state item it is
+    `derived` itself; for a leveled item it is whether `derived`'s rung is
+    at or above `evidence["targetLevel"]` — the pass this call is deriving
+    against — computed via `level_index` and `None` whenever either side is
+    `None` or unknown. `disagrees` compares `satisfied` against the item's
+    existing mark, not `derived`, so a two-state item and a leveled item are
+    graded by the identical rule once `satisfied` exists.
+
+    Pure: no I/O. `evidence` is a plain dict of already-computed states plus
+    the declared ladder (`evidence["levels"]`, absent or `[]` for a target
+    that names none) and this pass's own target (`evidence["targetLevel"]`),
+    so two callers (`verify`, `probe`) hand this the same shape and get the
+    same answer without either one importing the other's read path.
     """
+    levels = evidence.get("levels") or []
+    target_level = evidence.get("targetLevel")
     results = []
     for item in items:
         witness = item["witness"]
         kind, operand = witness["kind"], witness["operand"]
-        if kind == "record":
-            derived, measured_by = _derive_record(evidence)
+        # Two-state is the default when a hand-built item dict carries no
+        # `twostate` key at all (`.get(..., True)`, not `.get(...)`), the
+        # same default `WITNESS_RE`'s docstring states for the markdown
+        # grammar itself -- a caller that never opted into levels keeps
+        # getting exactly the boolean derivation it always got.
+        twostate = witness.get("twostate", True)
+        if twostate:
+            if kind == "record":
+                derived, measured_by = _derive_record(evidence)
+            else:
+                derived, measured_by = _DERIVERS[kind](evidence, operand)
+            satisfied = derived
         else:
-            derived, measured_by = _DERIVERS[kind](evidence, operand)
-        disagrees = derived is not None and derived != (item["mark"] == "x")
+            if kind == "record":
+                derived, measured_by = _record_scale_level(evidence, levels)
+            else:
+                derived, measured_by = _LEVEL_DERIVERS[kind](evidence, operand, levels)
+            # `derived is None` must short-circuit straight to `satisfied =
+            # None`: an `and`-chain that starts `derived_index is not None`
+            # collapses to the bool `False` the moment that first condition
+            # is `False`, which would silently turn "unmeasured" into a
+            # definite "not satisfied" -- exactly the collapse this whole
+            # revision exists to keep from happening.
+            if derived is None:
+                satisfied = None
+            else:
+                derived_index = level_index(levels, derived)
+                target_index = level_index(levels, target_level)
+                satisfied = (None if derived_index is None or target_index is None
+                            else derived_index >= target_index)
+        disagrees = satisfied is not None and satisfied != (item["mark"] == "x")
         results.append({
             "derived": derived,
+            "twostate": twostate,
+            "satisfied": satisfied,
             "measuredBy": measured_by,
             "disagrees": disagrees,
         })
@@ -283,12 +533,14 @@ def render(header: dict, items: list[dict]) -> str:
     lines = [
         f"<!-- position revision={header['revision']} "
         f"sha256={header['revisionSha256']} derivedAt={header['derivedAt']} "
-        f"session={header['session']} -->"
+        f"session={header['session']} target={header['target']} -->"
     ]
     for item in items:
         witness = item["witness"]
         operand = witness.get("operand")
-        token = f"`@{witness['kind']} {operand}`" if operand else f"`@{witness['kind']}`"
+        suffix = "" if witness.get("twostate", True) else ":level"
+        token = (f"`@{witness['kind']}{suffix} {operand}`" if operand
+                else f"`@{witness['kind']}{suffix}`")
         lines.append(f"- [{item['mark']}] {item['ordinal']}. {item['text']} {token}")
     lines.append("<!-- /position -->")
     return "\n".join(lines) + "\n"

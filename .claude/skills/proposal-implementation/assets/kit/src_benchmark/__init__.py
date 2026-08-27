@@ -83,3 +83,19 @@ __benchmark__ = {
     #     }
     "entry": {"module": "", "function": ""},
 }
+
+# The ordered ladder of rungs a position-section step can reach, entirely in
+# this repository's own words -- the forge holds no rung name of its own,
+# only the arithmetic that compares two of these names by position (see
+# `impl_position.level_index`). A step earns a rung by naming this file's
+# own ladder explicitly on its witness (`` `@rehearsal:level <job>` `` in
+# `AGREED.md`'s position section); a step with no `:level` marker is
+# two-state and never reads this list at all. Left empty until named -- a
+# repository whose position items are entirely two-state needs no ladder
+# here, and one is never invented on its behalf. A second, independent
+# top-level literal, held apart from `__benchmark__` above: see
+# `resolve_levels_declaration`'s own docstring for why.
+#
+# Example (a repository with no remote service at all still has a ladder):
+#     __levels__ = ["local", "cluster"]
+__levels__: list = []

@@ -266,6 +266,11 @@ def position_state(target: Path, name: str, evidence: dict,
         "revisionSha256": None, "boundTo": "unknown",
         "sequence": [], "disagreements": [], "unmeasured": [],
         "lastGate": None, "lastClose": None,
+        # PR10 (the-position-nobody-holds, level grammar): the rung this
+        # pass is aiming at, read straight off the block's own header --
+        # `None` on every branch that never located a block, since there is
+        # no pass to name a target for.
+        "targetLevel": None,
     }
     product = target / name
     if not product.is_dir():
@@ -291,6 +296,10 @@ def position_state(target: Path, name: str, evidence: dict,
 
     path, block = holders[0]
     items = impl_position.parse_items(block["body"])
+    # `evidence` is copied, never mutated in place: a caller (`cmd_gate`,
+    # `cmd_discuss`) that built it once and keeps reading it after this call
+    # must not find a `targetLevel` key it never put there itself.
+    evidence = {**evidence, "targetLevel": block["target"]}
     derived = impl_position.derive(items, evidence)
 
     events = impl_position.read_events(product / ".implementation" / "position.jsonl")
@@ -301,7 +310,8 @@ def position_state(target: Path, name: str, evidence: dict,
     for item, result in zip(items, derived):
         entry = {
             "ordinal": item["ordinal"], "mark": item["mark"],
-            "derived": result["derived"], "witness": item["witness"],
+            "derived": result["derived"], "twostate": result["twostate"],
+            "satisfied": result["satisfied"], "witness": item["witness"],
             "measuredBy": result["measuredBy"], "disagrees": result["disagrees"],
             "text": item["text"],
         }
@@ -335,6 +345,7 @@ def position_state(target: Path, name: str, evidence: dict,
         "boundTo": bound_to, "sequence": sequence,
         "disagreements": disagreements, "unmeasured": unmeasured,
         "lastGate": last_gate, "lastClose": last_close,
+        "targetLevel": block["target"],
     }
 
 
@@ -2071,7 +2082,8 @@ def cmd_probe(args) -> dict:
         target, name,
         {"search": search, "requiredScale": declared_required_scale(search),
          "notebooks": notebooks_state(target, name, package_name(name)),
-         "smokeReady": jobs["smokeReady"], "shardsArrived": None},
+         "smokeReady": jobs["smokeReady"], "shardsArrived": None,
+         "levels": resolve_levels_declaration(target, name)},
         args.revision,
         revision_source(args.revision) if args.revision else None)
     return {
@@ -3633,6 +3645,55 @@ def resolve_benchmark_declaration(target: Path, name: str) -> dict:
         }
     return {"status": "declared", "path": str(found.relative_to(target)),
             "detail": None, "contract": declaration}
+
+
+#: The name PR10 (`the-position-nobody-holds`, level grammar) reads an
+#: ordered ladder from — a second, independent top-level literal beside
+#: `__benchmark__`, never a new field inside it.
+LEVELS_DECLARATION = "__levels__"
+
+
+def resolve_levels_declaration(target: Path, name: str) -> list[str]:
+    """The ordered rung ladder `__levels__` names, or `[]` when nothing does.
+
+    Read the same way `resolve_benchmark_declaration` reads `__benchmark__`
+    (`__init__.py` first, then `config.py`), but held apart from it rather
+    than added as an eighth block: `_declaration_is_blank`'s "seven blocks"
+    is `__benchmark__`'s own invariant, and a target may name its ladder long
+    before it answers a single one of those seven — or never answer any of
+    them at all, on a repository whose position items are entirely two-state
+    and therefore need no ladder read here at all. Held apart for the same
+    reason `search`'s `requiredScale` is declared apart from the scale it is
+    running at (`SEARCH_DECLARATION`'s own docstring): folding the two
+    together would let one silently gate the other.
+
+    Exists for generality, not to avoid naming a service:
+    `remote-execution/SKILL.md`'s own containment rule (only one named
+    adapter file may name a remote service) is about *where* a service name
+    may be written, not whether the forge may know one exists at all — a
+    fixed forge-owned rung vocabulary would not by itself violate that rule.
+    This module still declares no rung name of its own, because a repository
+    that never sends work anywhere still has a ladder (its own, possibly a
+    single rung), and one fixed forge-wide vocabulary would not fit it — the
+    same generality `SEARCH_DECLARATION` and `WITNESS_KINDS` already keep for
+    their own vocabularies. See `level_index`'s own docstring in
+    `impl_position.py` for the arithmetic this ladder feeds.
+
+    A value of any shape other than a list is read as nothing declared
+    (`[]`), the same silent-rather-than-crashing rule `declared_dimension_names`
+    already applies to a `DIMENSIONS` bound to something other than a dict.
+    """
+    package = package_name(name)
+    bench_root = target / "src" / f"{package}_Benchmark"
+    if not bench_root.is_dir():
+        return []
+    for candidate in ("__init__.py", "config.py"):
+        result = read_declaration(bench_root / candidate, LEVELS_DECLARATION)
+        if isinstance(result, list):
+            return [str(level) for level in result]
+        if result is not None:
+            return []
+    return []
 
 
 def declared_dimension_names(target: Path, package: str) -> list[str] | None:
@@ -5255,6 +5316,7 @@ def _position_write_evidence(
         "notebooks": notebooks_state(target, name, package_name(name)),
         "smokeReady": remote_execution_jobs_state(target)["smokeReady"],
         "shardsArrived": shards_arrived,
+        "levels": resolve_levels_declaration(target, name),
     }
 
 
@@ -5307,13 +5369,21 @@ def _reconcile_discovered_witnesses(target: Path, name: str, args: argparse.Name
     reconciliation discovers is a step the very next `verify` can actually
     derive a tick for, which is what keeps a reconciled target from reading
     mostly `unmeasured` (design §11's falsifier).
+
+    Every discovered witness is two-state (`"twostate": True`), the same
+    default the markdown grammar itself keeps: reconciliation discovers
+    *that a step exists*, never what a human means by it, and a leveled
+    reading is a decision only a human declaring `:level` on the item text
+    afterward can make (design §3.3, "the tool never writes a sentence
+    about what a step means" -- the same restraint extended to whether a
+    step has rungs at all).
     """
     product = target / name
     witnesses: list[dict] = []
 
     resolved = resolve_benchmark_declaration(target, name)
     if (resolved["contract"].get("search") or {}).get("record"):
-        witnesses.append({"kind": "record", "operand": None})
+        witnesses.append({"kind": "record", "operand": None, "twostate": True})
 
     rcli = _load_remote_execution_cli()
     for job_dir in _discovered_job_folders(target, rcli):
@@ -5322,20 +5392,21 @@ def _reconcile_discovered_witnesses(target: Path, name: str, args: argparse.Name
                 "jobName", job_dir.name)
         except rcli.JOBFOLDER.JobFolderError:
             job_name = job_dir.name
-        witnesses.append({"kind": "rehearsal", "operand": job_name})
+        witnesses.append({"kind": "rehearsal", "operand": job_name, "twostate": True})
 
     notebooks_root = product / "Notebooks"
     if notebooks_root.is_dir():
         for notebook in sorted(notebooks_root.glob("*.ipynb")):
             witnesses.append({"kind": "notebook",
-                              "operand": str(notebook.relative_to(product))})
+                              "operand": str(notebook.relative_to(product)),
+                              "twostate": True})
 
     shards_root = getattr(args, "shards", None)
     if shards_root:
         shard_io = _load_remote_execution_shard_io()
         for entry in sorted(shard_io.read_shards(Path(shards_root)),
                             key=lambda e: e["shard"]):
-            witnesses.append({"kind": "shard", "operand": entry["shard"]})
+            witnesses.append({"kind": "shard", "operand": entry["shard"], "twostate": True})
 
     return witnesses
 
@@ -5381,15 +5452,28 @@ def cmd_position(args: argparse.Namespace) -> dict:
 
     **`status: "unchanged"` skips the write entirely.** Comparing the
     complete item list — witness, text, mark, and count — old vs new, plus
-    `(revision, revisionSha256)`, but never `derivedAt`, which would differ
-    on every single call and defeat the comparison: a refresh that finds
-    nothing to flip and nothing to rebind, or a reconcile that discovers
-    nothing new, leaves the file and the ledger untouched. Writing a fresh
-    `derivedAt` over marks nobody re-measured would claim work happened
-    that did not; `status: "written"` is reserved for a call that actually
-    changed something. A fresh install is never `"unchanged"`: the block
-    itself is new content, not a no-op, whatever its derived marks turn
-    out to be.
+    `(revision, revisionSha256, targetLevel)`, but never `derivedAt`, which
+    would differ on every single call and defeat the comparison: a refresh
+    that finds nothing to flip and nothing to rebind, or a reconcile that
+    discovers nothing new, leaves the file and the ledger untouched. Writing
+    a fresh `derivedAt` over marks nobody re-measured would claim work
+    happened that did not; `status: "written"` is reserved for a call that
+    actually changed something. A fresh install is never `"unchanged"`: the
+    block itself is new content, not a no-op, whatever its derived marks
+    turn out to be.
+
+    **`--target-level` (PR10, level grammar): the rung this pass is aiming
+    at, sticky across a refresh.** Required only when there is no existing
+    block to inherit one from; otherwise a caller that never restates it
+    keeps whatever a prior write already recorded, the same way a bare
+    refresh never asks a caller to retype item text nobody changed. Refused
+    `POSITION_TARGET_LEVEL_UNKNOWN` when the target names something
+    `__levels__` never declared, and `POSITION_LEVELS_UNDECLARED` when the
+    sequence carries a `:level`-marked (leveled) witness but no ladder is
+    declared at all. A mark then means "reached the
+    level this pass asks for", read from `satisfied`, never `derived`
+    directly — see `impl_position.derive`'s own docstring for the two-state
+    vs leveled distinction a witness's `:level` marker declares.
     """
     if args.sequence is not None and args.reconcile:
         raise Refused(
@@ -5415,9 +5499,13 @@ def cmd_position(args: argparse.Namespace) -> dict:
     # never a fixed filename.
     md_files = sorted(p for p in product.glob("*.md") if p.is_file()) \
         if product.is_dir() else []
+    # `allow_legacy=True`: `position` is the one place a block written by
+    # the prior boolean-only grammar can be seen at all, so it can be
+    # rewritten -- see `locate_block`'s own docstring. `verify`/`probe`/
+    # `position_state`'s read side pass no such flag and keep refusing.
     holders_with_block = [
         (path, block) for path in md_files
-        for block in [impl_position.locate_block(path.read_bytes())]
+        for block in [impl_position.locate_block(path.read_bytes(), allow_legacy=True)]
         if block is not None
     ]
     if len(holders_with_block) > 1:
@@ -5429,8 +5517,17 @@ def cmd_position(args: argparse.Namespace) -> dict:
     existing_path, existing_block = (
         holders_with_block[0] if holders_with_block else (None, None))
 
+    # `target` is filled in below, once every branch has produced `items` and
+    # the section is confirmed actually about to be measured or written (the
+    # `existing_block is None` "nothing to refresh" branch returns before
+    # ever needing one). `"__pending__"` here is a placeholder for the
+    # `--sequence` branch's own round-trip validation `render()` call only,
+    # which checks witness/item grammar, never a rung's legitimacy -- its
+    # output is parsed straight back into `items` and the header itself is
+    # discarded and rebuilt below with the real value.
     header = {"revision": args.revision, "revisionSha256": revision_sha256,
-              "derivedAt": _now_iso8601(), "session": args.session}
+              "derivedAt": _now_iso8601(), "session": args.session,
+              "target": "__pending__"}
     structure_changed = False
 
     if args.sequence is not None:
@@ -5460,7 +5557,11 @@ def cmd_position(args: argparse.Namespace) -> dict:
                 "ordinal": ordinal, "mark": " ",
                 "text": str(entry.get("text", "")).strip(),
                 "witness": {"kind": witness.get("kind"),
-                           "operand": witness.get("operand")},
+                           "operand": witness.get("operand"),
+                           # Two-state unless the declared entry opts in --
+                           # the same default the markdown grammar itself
+                           # keeps (`WITNESS_RE`'s own docstring).
+                           "twostate": bool(witness.get("twostate", True))},
             })
         # See docstring: validated by the reader that already validates a
         # hand-authored block, not by a second, parallel set of checks.
@@ -5495,13 +5596,45 @@ def cmd_position(args: argparse.Namespace) -> dict:
             "command": "position", "target": str(target), "name": name,
             "status": "absent", "holder": None, "wrote": [], "left": [],
             "unmeasured": [], "sequence": [], "revision": args.revision,
-            "revisionSha256": revision_sha256,
+            "revisionSha256": revision_sha256, "targetLevel": None,
         }
     else:
         items = impl_position.parse_items(existing_block["body"])
         target_path = existing_path
 
+    # PR10 (the-position-nobody-holds, level grammar): the rung this pass is
+    # aiming at. `--target-level` is optional and sticky -- refreshing an
+    # existing block reuses its own recorded target unless a caller
+    # explicitly names a new one, the same way `--revision` is required on
+    # every call but a bare refresh does not otherwise ask a caller to
+    # restate facts a prior write already recorded. Only a genuinely fresh
+    # header (no existing block to inherit one from) requires it explicitly.
+    declared_levels = resolve_levels_declaration(target, name)
+    target_level = getattr(args, "target_level", None) or (
+        existing_block["target"] if existing_block is not None else None)
+    if target_level is None:
+        raise Refused(
+            "POSITION_TARGET_LEVEL_REQUIRED",
+            "no --target-level was given and no existing block's header "
+            "names one to reuse; a fresh position header cannot be written "
+            "without stating which rung this pass is aiming at.")
+    if declared_levels and target_level not in declared_levels:
+        raise Refused(
+            "POSITION_TARGET_LEVEL_UNKNOWN",
+            f"--target-level {target_level!r} is not one of this target's "
+            f"own declared levels ({declared_levels!r}); __levels__ names "
+            "the only vocabulary a header's target may use.")
+    if not declared_levels and any(
+            not item["witness"].get("twostate", True) for item in items):
+        raise Refused(
+            "POSITION_LEVELS_UNDECLARED",
+            "a leveled (non-two-state) witness exists in this sequence but "
+            "__levels__ declares no ladder; a rung cannot be reached "
+            "against a ladder nobody named.")
+    header["target"] = target_level
+
     evidence = _position_write_evidence(target, name, getattr(args, "shards", None))
+    evidence["targetLevel"] = target_level
     derived = impl_position.derive(items, evidence)
     wrote, left, unmeasured = [], [], []
     for item, result in zip(items, derived):
@@ -5509,7 +5642,12 @@ def cmd_position(args: argparse.Namespace) -> dict:
             unmeasured.append(item["ordinal"])
             left.append(item["ordinal"])
             continue
-        new_mark = "x" if result["derived"] else " "
+        # Tick decisions read `satisfied`, never `derived` directly: for a
+        # two-state item the two are the same value, but for a leveled item
+        # `derived` is the rung reached (a string) and `satisfied` is
+        # whether that rung is at or above this pass's own target -- the
+        # value that actually means "reached the level this pass asks for".
+        new_mark = "x" if result["satisfied"] else " "
         if new_mark != item["mark"]:
             wrote.append(item["ordinal"])
         else:
@@ -5521,13 +5659,15 @@ def cmd_position(args: argparse.Namespace) -> dict:
         and existing_block is not None
         and existing_block["revision"] == args.revision
         and existing_block["revisionSha256"] == revision_sha256
+        and existing_block["target"] == target_level
         and not wrote
     )
 
     sequence = [{
         "ordinal": item["ordinal"], "mark": item["mark"],
         "witness": item["witness"], "text": item["text"],
-        "derived": result["derived"], "disagrees": result["disagrees"],
+        "derived": result["derived"], "twostate": result["twostate"],
+        "satisfied": result["satisfied"], "disagrees": result["disagrees"],
     } for item, result in zip(items, derived)]
 
     if unchanged:
@@ -5538,6 +5678,7 @@ def cmd_position(args: argparse.Namespace) -> dict:
             "wrote": [], "left": left, "unmeasured": unmeasured,
             "sequence": sequence, "revision": existing_block["revision"],
             "revisionSha256": existing_block["revisionSha256"],
+            "targetLevel": target_level,
         }
 
     before_bytes = target_path.read_bytes() if target_path.exists() else b""
@@ -5547,7 +5688,7 @@ def cmd_position(args: argparse.Namespace) -> dict:
     impl_position.append_event(
         product / ".implementation" / "position.jsonl",
         {"kind": "position", "session": args.session, "revision": args.revision,
-         "revisionSha256": revision_sha256,
+         "revisionSha256": revision_sha256, "targetLevel": target_level,
          "holder": str(target_path.relative_to(target)),
          "wrote": wrote, "left": left, "at": header["derivedAt"]})
 
@@ -5556,7 +5697,7 @@ def cmd_position(args: argparse.Namespace) -> dict:
         "status": "written", "holder": str(target_path.relative_to(target)),
         "wrote": wrote, "left": left, "unmeasured": unmeasured,
         "sequence": sequence, "revision": args.revision,
-        "revisionSha256": revision_sha256,
+        "revisionSha256": revision_sha256, "targetLevel": target_level,
     }
 
 
@@ -5602,7 +5743,8 @@ def _resolve_discuss_about(raw: str, position: dict) -> dict:
                 f"no sequence item numbered {ordinal}; the position section "
                 f"holds {len(position['sequence'])} item(s).")
         return {"ordinal": ordinal, "kind": item["witness"]["kind"],
-                "operand": item["witness"]["operand"]}
+                "operand": item["witness"]["operand"],
+                "twostate": item["witness"].get("twostate", True)}
     parts = raw.split(None, 1)
     kind = parts[0]
     operand = parts[1] if len(parts) > 1 else None
@@ -5611,7 +5753,10 @@ def _resolve_discuss_about(raw: str, position: dict) -> dict:
             "POSITION_WITNESS_UNKNOWN_KIND",
             f"--about names unknown witness kind {kind!r}; expected one of "
             f"{sorted(impl_position.WITNESS_KINDS)}")
-    return {"ordinal": None, "kind": kind, "operand": operand}
+    # A bare witness spec (no existing sequence item to read a marker off
+    # of) carries no `:level` information of its own; two-state is the same
+    # default the grammar itself keeps for an unmarked witness.
+    return {"ordinal": None, "kind": kind, "operand": operand, "twostate": True}
 
 
 def cmd_discuss(args: argparse.Namespace) -> dict:
@@ -5651,8 +5796,13 @@ def cmd_discuss(args: argparse.Namespace) -> dict:
         raw_answer = sys.stdin.read() if args.answer == "-" else args.answer
         answer = raw_answer.strip() or None
 
-    synthetic_item = {"witness": {"kind": about["kind"], "operand": about["operand"]},
+    synthetic_item = {"witness": {"kind": about["kind"], "operand": about["operand"],
+                                  "twostate": about["twostate"]},
                       "mark": " "}
+    # `position` already located the block (if any) and knows this pass's own
+    # target; `evidence` itself was built before that, so `targetLevel` is
+    # threaded in here rather than recomputed a second way.
+    evidence = {**evidence, "targetLevel": position.get("targetLevel")}
     measured = impl_position.derive([synthetic_item], evidence)[0]["derived"]
     collides = _agreement_collides(target, name, about["operand"])
 
@@ -5910,7 +6060,7 @@ def cmd_close(args: argparse.Namespace) -> dict:
     refresh_args = argparse.Namespace(
         target=args.target, name=args.name, revision=args.revision,
         session=args.session, sequence=None, reconcile=False, replace=False,
-        shards=None)
+        shards=None, target_level=None)
     cmd_position(refresh_args)
 
     evidence = _position_write_evidence(target, name)
@@ -6198,7 +6348,8 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         {"search": search, "requiredScale": declared_required_scale(search),
          "notebooks": notebooks,
          "smokeReady": remote_execution_jobs_state(target)["smokeReady"],
-         "shardsArrived": merged["shardsArrived"] if merged else None},
+         "shardsArrived": merged["shardsArrived"] if merged else None,
+         "levels": resolve_levels_declaration(target, name)},
         revision, target_source)
 
     return {
@@ -6368,9 +6519,13 @@ def main(argv: list[str] | None = None) -> int:
         if name == "position":
             p.add_argument("--sequence", default=None,
                            help="install a fresh section: an ordered JSON "
-                                "array of {text, witness:{kind,operand}}, or "
-                                "- to read stdin. Omitted, position refreshes "
-                                "the marks of whatever block is already there")
+                                "array of {text, witness:{kind,operand,"
+                                "twostate}}, or - to read stdin. witness."
+                                "twostate defaults to true (two-state) when "
+                                "omitted -- pass false to opt a witness into "
+                                "the declared level ladder. Omitted, "
+                                "position refreshes the marks of whatever "
+                                "block is already there")
             p.add_argument("--replace", action="store_true",
                            help="with --sequence, overwrite an existing "
                                 "position block instead of refusing "
@@ -6383,6 +6538,19 @@ def main(argv: list[str] | None = None) -> int:
                                 "Existing items are matched by witness "
                                 "identity and kept untouched; only unmatched "
                                 "steps are appended")
+            p.add_argument("--target-level", default=None,
+                           help="the rung this pass is aiming at, one of "
+                                "this target's own __levels__ (see the "
+                                "benchmark package's __init__.py/config.py). "
+                                "Required only for a fresh header with no "
+                                "existing block to inherit one from; a "
+                                "refresh reuses the existing block's own "
+                                "target when this is omitted. A mark then "
+                                "means \"reached the level this pass asks "
+                                "for\" for a leveled (`:level`-marked) "
+                                "witness; a two-state witness ignores it "
+                                "entirely and is satisfied or not on its "
+                                "own")
         if name == "discuss":
             p.add_argument("--about", required=True,
                            help="an ordinal in the position sequence, or a "
