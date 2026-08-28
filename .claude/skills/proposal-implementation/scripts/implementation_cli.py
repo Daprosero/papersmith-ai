@@ -6483,14 +6483,32 @@ def _offer_launch_action(target, name, args, rcli, position, evidence, job_dir):
     workers, per_worker = capacity
 
     entrypoint = str((job_dir / rcli.JOBFOLDER.RUNNER_FILENAME).relative_to(target))
-    units = list(run_config.get("units") or [])
+    # Operator-declared, never engine-substituted (design decision 3,
+    # "operator-declared unit list is preserved"): `--unit` at `offer` is
+    # the SAME ordered list a later `gate --unit ...` and `submit --unit
+    # ...` will carry, so the token minted for this binding covers exactly
+    # that list. Falling back to the job folder's own static `units` field
+    # (unrelated to a campaign, empty on every job folder this forge
+    # generates) only when the operator declares none, which keeps the
+    # single-send shape this action has always published. `gate_flags`
+    # mirrors `remote_cli.py`'s own campaign-vs-single-send command text
+    # (`campaign_consent_token()`'s caller) so a caller who declares a
+    # campaign here is handed a command shaped like the record that will
+    # actually authorize it, never `--worker <account>`, which `gate`'s own
+    # mutual exclusivity would refuse for a campaign.
+    if args.units:
+        units = list(args.units)
+        gate_flags = " ".join(f"--unit {unit!r}" for unit in units)
+    else:
+        units = list(run_config.get("units") or [])
+        gate_flags = "--worker <account>"
 
     return {
         "id": "launch",
         "command": (
             "implementation_cli.py gate "
             f"--target {target} --name {name} --revision {args.revision} "
-            f"--session {args.session} --job {job_name} --worker <account> "
+            f"--session {args.session} --job {job_name} {gate_flags} "
             "--justification -"
         ),
         "establishes": f"records launch authorization for job {job_name!r}",
@@ -6501,6 +6519,80 @@ def _offer_launch_action(target, name, args, rcli, position, evidence, job_dir):
             "units": units, "rung": verdict["facts"]["jobOrdinal"],
         },
     }
+
+
+def _authorization_binding(action: dict, revision_sha256: str, position_status: str) -> dict:
+    """The identity two mints of the SAME upcoming launch must agree on
+    (design decision 3, "mint-if-absent") -- everything the engine itself
+    re-derives about what is about to be launched, and nothing an agent's
+    own argv could vary independently.
+
+    `worker` is deliberately absent. `_offer_launch_action`'s published
+    command names `--worker <account>` as a placeholder because the engine
+    cannot derive which account a single-send `submit` will actually name
+    at publish time -- binding it here would require guessing an account or
+    minting one token per account, and this mechanism does neither. The
+    account is bound later, by the `gate` event itself, which
+    `remote_cli._verify_launch_authorization()` already matches against
+    separately -- this token does not authorize a particular account, only
+    the job/pin/entrypoint/units/rung/revision/position shape of the launch.
+    `justification` is likewise absent: it is authored at gate time from
+    argv, and digesting it would make the token partly argv-derivable --
+    the exact defect class this mechanism exists to close.
+    """
+    binding = action["binding"]
+    return {
+        "jobName": binding["job"], "commit": binding["commit"],
+        "entrypoint": binding["entrypoint"], "units": list(binding["units"]),
+        "rung": binding["rung"], "revisionSha256": revision_sha256,
+        "positionStatus": position_status,
+    }
+
+
+def _find_or_mint_authorization(ledger_path: Path, events: list, binding: dict,
+                                session: str, at: str) -> str:
+    """The authorization token for `binding`: an existing unconsumed one if
+    the ledger already carries one, or a freshly minted one appended now
+    (design decision 3, "mint-if-absent, not mint-on-every-publish" -- the
+    same discipline `cmd_close`'s own `prior_close` lookup already uses. A
+    repeat `offer` publish over unchanged state therefore appends no second
+    `authorization` event, matching the roster's narrowed "no second
+    *offer* event" prose).
+
+    The token is `sha256(json.dumps(payload, sort_keys=True))` over
+    `binding` plus `session` and `at` -- the same canonical digest form
+    `cmd_close` already uses for `positionDigest`. It is a digest, never a
+    secret: `offer` and `gate` run as separate one-shot processes, so
+    nothing stored in a file an agent reads could be kept secret from that
+    same agent. What a later `gate --authorization <token>` checks is
+    publication -- does an engine-authored ledger event exist that binds
+    THIS exact re-derived state -- never knowledge of a value; forging the
+    digest is free and useless without the matching event.
+
+    `session`/`at` are mint discriminators baked into the digest, never
+    compared against a clock: they are what lets a SECOND, distinct
+    authorization exist for an otherwise-unchanged binding once the first
+    has been consumed (`kind: "authorization-consumed"`, appended by a
+    later `gate`, out of this slice's scope) -- excluded here so a stale
+    but still-unconsumed mint is found and reused rather than duplicated.
+    """
+    consumed = {e["token"] for e in events if e.get("kind") == "authorization-consumed"}
+    existing = next(
+        (e for e in reversed(events)
+         if e.get("kind") == "authorization" and e.get("token") not in consumed
+         and all(e.get(key) == value for key, value in binding.items())),
+        None)
+    if existing is not None:
+        return existing["token"]
+
+    token = hashlib.sha256(
+        json.dumps({**binding, "session": session, "at": at},
+                   sort_keys=True).encode("utf-8")).hexdigest()
+    event = {"kind": "authorization", "token": token, **binding,
+             "session": session, "at": at}
+    impl_position.append_event(ledger_path, event)
+    events.append(event)
+    return token
 
 
 def cmd_offer(args: argparse.Namespace) -> dict:
@@ -6541,6 +6633,19 @@ def cmd_offer(args: argparse.Namespace) -> dict:
     language, and name no specific experiment, notebook or run: which
     ones run and in what order is this proposal's own decision, never
     this command's to narrate.
+
+    **Every published `launch` action carries a minted authorization**
+    (design decision 3), a `binding.authorization` digest computed from the
+    engine's own re-derived binding facts, never from this call's argv
+    alone. Minting is mint-if-absent, not mint-on-every-publish: it runs on
+    EVERY call -- `actions` is rebuilt on every call regardless of the
+    answer-dedup status above -- but appends a fresh `kind: "authorization"`
+    event only when the ledger holds no unconsumed one for that exact
+    binding already; a repeat publish over unchanged state therefore mints
+    nothing new and republishes the same token. `--unit` (repeatable) is
+    the operator-declared ordered list that binding covers for a campaign
+    launch instead of a single-send one; the engine never substitutes one
+    of its own.
     """
     if args.answer is not None and args.answer not in {"yes", "no"}:
         raise Refused(
@@ -6609,6 +6714,21 @@ def cmd_offer(args: argparse.Namespace) -> dict:
         })
 
     recorded_at = _now_iso8601()
+
+    # Mint-if-absent (design decision 3): every published `launch` action's
+    # binding gets the authorization token that covers it -- minted now
+    # only when no unconsumed one already exists for that exact binding.
+    # Runs on every call, independent of the answer-dedup status below:
+    # `actions` (and therefore what needs an authorization) is rebuilt
+    # every time `offer` is called, not only when the answer changes.
+    for action in actions:
+        if action["id"] != "launch":
+            continue
+        binding = _authorization_binding(action, revision_sha256, position["status"])
+        token = _find_or_mint_authorization(
+            ledger_path, events, binding, args.session, recorded_at)
+        action["binding"]["authorization"] = token
+
     if existing is not None and (args.answer is None or args.answer == existing.get("answer")):
         status = "unchanged"
     else:
@@ -7364,6 +7484,16 @@ def main(argv: list[str] | None = None) -> int:
                                 "action set against whatever answer is "
                                 "already on record -- required only the "
                                 "first time, when none is")
+            p.add_argument("--unit", dest="units", action="append", default=None,
+                           help="repeatable: the ordered unit list a `launch` "
+                                "action is about to authorize a CAMPAIGN for "
+                                "instead of a single-send one -- the SAME "
+                                "list a later `gate --unit ...` and `submit "
+                                "--unit ...` will carry. Every published "
+                                "`launch` action's binding is minted against "
+                                "exactly this operator-declared list; the "
+                                "engine never substitutes one of its own. "
+                                "Omit it for a single-send launch")
         if name == "step":
             p.add_argument("--step", required=True,
                            help="the declared __steps__ entry to run; no "

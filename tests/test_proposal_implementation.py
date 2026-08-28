@@ -12453,11 +12453,16 @@ class OfferCommandTests(unittest.TestCase):
         return rcli
 
     def _offer_args(self, box, *, answer=None, session="s1",
-                    revision=None):
+                    revision=None, units=None):
         return argparse.Namespace(
             target=str(box), name="Method",
             revision=revision or self.PROPOSAL_REVISION, session=session,
-            answer=answer)
+            answer=answer, units=units)
+
+    def _authorization_events(self, box):
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        return [e for e in impl_position.read_events(ledger)
+                if e.get("kind") == "authorization"]
 
     # --- refusal shape and pre-answer behavior ----------------------------
 
@@ -12927,6 +12932,151 @@ class OfferCommandTests(unittest.TestCase):
 
         result = impl.cmd_offer(self._offer_args(box, answer="yes"))
         self.assertNotIn("launch", {a["id"] for a in result["actions"]})
+
+    # --- Phase 4 (Slice 2A): minted launch authorization ----------------
+
+    def test_offer_unit_mints_an_authorization_bound_to_the_operator_declared_list(self):
+        """`offer --unit` (design decision 3, "operator-declared unit list
+        is preserved"): the published `launch` action switches to campaign
+        form, its binding carries exactly the operator's ordered list --
+        never `run_config`'s own (empty) `units` field -- and the minted
+        authorization on the ledger binds that same list.
+        """
+        box, commit = self._box()
+        self._register_fixture_reporter(box, "offer-fixture-svc")
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                                  "witness": {"kind": "rehearsal", "operand": "job1"}}])
+
+        result = impl.cmd_offer(self._offer_args(box, answer="yes", units=["u2", "u1"]))
+        launch = next(a for a in result["actions"] if a["id"] == "launch")
+        self.assertEqual(launch["binding"]["units"], ["u2", "u1"])
+        self.assertNotIn("--worker", launch["command"])
+        self.assertIn("--unit 'u2' --unit 'u1'", launch["command"])
+
+        events = self._authorization_events(box)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["token"], launch["binding"]["authorization"])
+        self.assertEqual(events[0]["units"], ["u2", "u1"])
+        self.assertEqual(events[0]["jobName"], "job1")
+
+    def test_a_repeat_offer_over_unchanged_state_mints_no_second_authorization(self):
+        """Mint-if-absent (design decision 3): a second `offer` publish over
+        an unmoved binding must not append a second `authorization` event,
+        and must republish the SAME token -- the identical discipline
+        `cmd_close`'s own `prior_close` lookup already uses for its event.
+
+        Mutation-proven: removing the "already covered, skip" short-circuit
+        in `_find_or_mint_authorization` (forcing an unconditional mint)
+        turns this red -- verified below, then reverted.
+        """
+        box, commit = self._box()
+        self._register_fixture_reporter(box, "offer-fixture-svc")
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                                  "witness": {"kind": "rehearsal", "operand": "job1"}}])
+
+        first = impl.cmd_offer(self._offer_args(box, answer="yes"))
+        second = impl.cmd_offer(self._offer_args(box))
+        first_launch = next(a for a in first["actions"] if a["id"] == "launch")
+        second_launch = next(a for a in second["actions"] if a["id"] == "launch")
+        self.assertEqual(first_launch["binding"]["authorization"],
+                         second_launch["binding"]["authorization"])
+        self.assertEqual(len(self._authorization_events(box)), 1)
+
+    def test_the_minted_authorization_never_binds_a_worker(self):
+        """Decision 3: `worker` is deliberately absent from the digest --
+        the engine cannot derive which account a single-send `submit` will
+        eventually name at publish time, and the `gate` event binds it
+        later.
+
+        Mutation-proven: adding a `"worker": None` key into
+        `_authorization_binding`'s returned dict turns this red -- verified
+        below, then reverted.
+        """
+        box, commit = self._box()
+        self._register_fixture_reporter(box, "offer-fixture-svc")
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                                  "witness": {"kind": "rehearsal", "operand": "job1"}}])
+
+        impl.cmd_offer(self._offer_args(box, answer="yes"))
+        events = self._authorization_events(box)
+        self.assertEqual(len(events), 1)
+        self.assertNotIn("worker", events[0])
+        self.assertNotIn("justification", events[0])
+
+    def test_a_consumed_authorization_is_not_reused_for_a_fresh_mint(self):
+        """Forward-compatible with the not-yet-built `gate --authorization`
+        consumer (Slice 2B, out of this apply's scope): manually appending
+        the exact `authorization-consumed` event that consumer will one day
+        append proves `_find_or_mint_authorization` already excludes a
+        consumed token from its "already covered" match, even though
+        nothing in this slice produces one yet.
+
+        Mutation-proven: dropping the `consumed` exclusion in
+        `_find_or_mint_authorization` turns this red (the stale, consumed
+        token would be found and reused instead of a fresh one being
+        minted) -- verified below, then reverted.
+        """
+        box, commit = self._box()
+        self._register_fixture_reporter(box, "offer-fixture-svc")
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                                  "witness": {"kind": "rehearsal", "operand": "job1"}}])
+
+        first = impl.cmd_offer(self._offer_args(box, answer="yes", session="s1"))
+        first_token = next(
+            a for a in first["actions"] if a["id"] == "launch")["binding"]["authorization"]
+
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        impl_position.append_event(ledger, {
+            "kind": "authorization-consumed", "token": first_token,
+            "session": "s1", "at": "2026-08-28T00:00:00Z"})
+
+        # A different session guarantees a different digest regardless of
+        # whether this call lands in the same wall-clock second as the
+        # first -- `session`/`at` are discriminators baked into the token,
+        # so an identical pair would otherwise recompute the identical
+        # token even though it is being minted fresh.
+        second = impl.cmd_offer(self._offer_args(box, session="s2"))
+        second_token = next(
+            a for a in second["actions"] if a["id"] == "launch")["binding"]["authorization"]
+
+        self.assertNotEqual(first_token, second_token)
+        tokens = {e["token"] for e in self._authorization_events(box)}
+        self.assertEqual(len(tokens), 2)
+
+    def test_the_minted_token_is_a_reproducible_digest_not_a_random_secret(self):
+        """Decision 3: the token is `sha256(json.dumps(payload,
+        sort_keys=True))` over the event's own recorded fields -- publicly
+        recomputable, never a random secret only the minting process knew.
+
+        Mutation-proven: replacing the digest computation with
+        `secrets.token_hex(32)` turns this red (a random value will not
+        equal the value recomputed here) -- verified below, then reverted.
+        """
+        box, commit = self._box()
+        self._register_fixture_reporter(box, "offer-fixture-svc")
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                                  "witness": {"kind": "rehearsal", "operand": "job1"}}])
+
+        impl.cmd_offer(self._offer_args(box, answer="yes"))
+        events = self._authorization_events(box)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        payload = {k: v for k, v in event.items() if k not in {"kind", "token"}}
+        expected = hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+        self.assertEqual(event["token"], expected)
+        self.assertEqual(len(event["token"]), 64)
+        int(event["token"], 16)  # raises ValueError if any character is not hex
 
 
 class CloseCommandTests(unittest.TestCase):
