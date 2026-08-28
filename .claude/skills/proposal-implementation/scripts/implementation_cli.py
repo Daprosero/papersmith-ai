@@ -6524,6 +6524,42 @@ def cmd_step(args: argparse.Namespace) -> dict:
             f"__steps__[{args.step!r}] does not carry both 'module' and "
             f"'function': {entry!r}")
 
+    # A step that says which rung it advances cannot be run ahead of that
+    # rung. The same refusal `cmd_gate` already applies to a launch, applied
+    # to local work for the same reason: an ordering that lives only in prose
+    # is an ordering nobody is stopped from skipping. Measured -- a pilot
+    # search ran through a hand-rolled invocation while the discussion that
+    # was supposed to precede every stage had never been held, and nothing in
+    # this command had anything to say about it.
+    #
+    # `advances` is the TARGET's word: this repository names which of its own
+    # position items a step produces evidence for, and the forge only compares
+    # ordinals. A step that declares none runs ungated, exactly as before --
+    # an ordering nobody declared is not one this command invents.
+    advances = entry.get("advances")
+    if advances is not None:
+        if not isinstance(advances, int):
+            raise Refused(
+                "STEP_MALFORMED",
+                f"__steps__[{args.step!r}]['advances'] must be a sequence "
+                f"ordinal, not {advances!r}.")
+        evidence = _position_write_evidence(target, name)
+        position = position_state(target, name, evidence, None, None)
+        if position["status"] == "absent":
+            raise Refused(
+                "POSITION_ABSENT",
+                f"{args.step!r} declares it advances item {advances}, but no "
+                "position section has been derived for this target; run "
+                "`position` first.")
+        earlier_open = [item["ordinal"] for item in position["sequence"]
+                        if item["ordinal"] < advances and item["mark"] != "x"]
+        if earlier_open:
+            raise Refused(
+                "STEP_SEQUENCE_NOT_REACHED",
+                f"item {min(earlier_open)} in the sequence is not yet ticked; "
+                f"{args.step!r} advances item {advances} and cannot run ahead "
+                "of it -- a step that skips a rung is refused.")
+
     interpreter = target_interpreter(target)
     if not interpreter.exists():
         raise Refused(

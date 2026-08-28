@@ -8471,6 +8471,9 @@ FORGE_LEXICON: dict[str, str] = {
               "contract has declared `records` since before any target did",
     "report": "the central noun of the report contract this skill exists to "
               "check, appearing in doctrine on nearly every page",
+    "steps": "the forge's own declaration surface and its command: a target "
+             "declares `__steps__`, `impl_steps.py` runs one, and `step` is "
+             "the subcommand -- named by this skill, never by a repository",
     "shard": "the forge's own distribution vocabulary: a declaration says which "
              "fields must be identical across shards and verify reads it",
     "shards": "the plural of the same distribution vocabulary, in the same "
@@ -13780,3 +13783,93 @@ class NotebookInterpreterTests(unittest.TestCase):
         self.assertTrue(
             seen, "no shipped asset mentions running a notebook at all, so "
                   "this test proves nothing about the ones that do")
+
+
+class StepSequenceOrderTests(unittest.TestCase):
+    """A step that says which rung it advances cannot run ahead of that rung.
+
+    An ordering that lives only in prose is an ordering nobody is stopped from
+    skipping, and this repository skipped one: a pilot search ran through a
+    hand-rolled invocation while the step it belonged to sat behind an unticked
+    predecessor, and nothing in `step` had anything to say about it.
+
+    `advances` is the TARGET's word. The forge compares ordinals and knows
+    nothing about what any rung means -- the same division `gate` already
+    keeps when it refuses `SEQUENCE_NOT_REACHED` for a launch.
+    """
+
+    _box = StepCommandTests._box
+    _commit = StepCommandTests._commit
+    run_cli = StepCommandTests.run_cli
+
+    def _position(self, box, marks):
+        """An AGREED.md whose position block carries `marks`, in order.
+
+        Rendered by `impl_position.render` rather than hand-written: a
+        fixture that spells the grammar a second time is a fixture that can
+        drift away from the parser it is meant to feed, and the first version
+        of this one did exactly that -- it produced `POSITION_BLOCK_MALFORMED`
+        and proved nothing about ordering.
+        """
+        # A real 64-hex digest: `_BLOCK_OPEN_RE` requires exactly that width,
+        # and a short stand-in is refused as a malformed opener -- which is
+        # what the first version of this fixture produced.
+        header = {"revision": "r01.md", "revisionSha256": "a" * 64,
+                  "derivedAt": "2026-01-01T00:00:00Z", "session": "t",
+                  "target": "pilot"}
+        items = [{"mark": mark, "ordinal": n, "text": f"rung {n}",
+                  "witness": {"kind": "record", "operand": None,
+                              "twostate": True}}
+                 for n, mark in enumerate(marks, start=1)]
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+
+    def _declare(self, box, advances):
+        (box / "src" / "Method_Benchmark").mkdir(parents=True, exist_ok=True)
+        (box / "src" / "Method_Benchmark" / "work.py").write_text(
+            "def run():\n    return 'ran'\n", encoding="utf-8")
+        entry = {"module": "Method_Benchmark.work", "function": "run"}
+        if advances is not None:
+            entry["advances"] = advances
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            f"__steps__ = {{'later': {entry!r}}}\n", encoding="utf-8")
+
+    def _run(self, box):
+        return self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "t", "--step", "later")
+
+    def test_an_earlier_open_rung_refuses_the_step(self):
+        box = self._box("behind")
+        self._declare(box, advances=3)
+        self._position(box, ["x", " ", " "])
+        self._commit(box)
+        result = self._run(box)
+        body = json.loads(result.stdout)
+        self.assertEqual(body["code"], "STEP_SEQUENCE_NOT_REACHED", result.stdout)
+        self.assertIn("item 2", body["detail"])
+
+    def test_every_earlier_rung_ticked_lets_the_step_run(self):
+        box = self._box("ahead")
+        self._declare(box, advances=3)
+        self._position(box, ["x", "x", " "])
+        self._commit(box)
+        body = json.loads(self._run(box).stdout)
+        self.assertEqual(body.get("outcome"), "returned", body)
+
+    def test_a_step_declaring_no_rung_runs_exactly_as_before(self):
+        """A target that never opted into ordering must not change behaviour."""
+        box = self._box("unbound")
+        self._declare(box, advances=None)
+        self._position(box, [" ", " ", " "])
+        self._commit(box)
+        body = json.loads(self._run(box).stdout)
+        self.assertEqual(body.get("outcome"), "returned", body)
+
+    def test_a_non_integer_rung_is_refused_rather_than_coerced(self):
+        box = self._box("bogus")
+        self._declare(box, advances="third")
+        self._position(box, ["x", "x", " "])
+        self._commit(box)
+        body = json.loads(self._run(box).stdout)
+        self.assertEqual(body["code"], "STEP_MALFORMED", body)
