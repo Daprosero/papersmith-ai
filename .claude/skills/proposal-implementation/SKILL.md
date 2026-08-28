@@ -942,6 +942,19 @@ design decisions.
      match an older proposal.
    - **They did not** → the code has drifted. Correct it and re-run the validations,
      bounded by the same three passes as Flow A step 16.
+6. **A target declaring `__steps__` can run one of them, isolated, under its own
+   venv:** `step --target <repo> --name <Name> --step <name> --session <your-session-id>`.
+   This is the executor for the isolation rule stated at the top of this file
+   ("Non-negotiable isolation") — a `PATH` prefixed by the target's own `.venv/bin`
+   so a notebook's kernelspec resolves the right interpreter rather than a bare
+   `python` off whatever launched it. Refuses `DIRTY_WORKTREE` before anything
+   runs (a step mutates the target, same as `plan`/`apply`), `STEPS_UNDECLARED`/
+   `STEP_UNKNOWN`/`STEP_MALFORMED` when the name does not resolve statically, and
+   `STEP_MODULE_MISSING`/`STEP_FUNCTION_MISSING`/`STEP_NOT_CALLABLE`/
+   `INTERPRETER_ABSENT` when it does not resolve inside the venv. Every resolved
+   run — pass or fail — appends one `kind: "step"` event; it never sequences,
+   never dispatches `probe`'s `nextStep`, and it neither reads nor writes a
+   `gate` event.
 ## Conversion, then benchmark
 
 Run `probe --revision <latest>` and follow its `nextStep`. The order it reports is
@@ -2118,8 +2131,9 @@ which is prose a reader follows, not a rung the ladder computes.
 ## Command Roster
 
 `implementation_cli.py` grows a write-verb surface beyond `env`/`plan`/`apply`
-/`admit`/`handoff`/`compose`: `position`, `discuss`, `gate` and `close` write
-into `<Name>/AGREED.md`, its ledger, or both, rather than only reporting.
+/`admit`/`handoff`/`compose`: `position`, `discuss`, `gate`, `close` and
+`step` write into `<Name>/AGREED.md`, its ledger, or both, rather than only
+reporting.
 Column one is read against `COMMANDS`' own keys, so a new command fails the
 tests until it has a row here.
 
@@ -2129,6 +2143,7 @@ tests until it has a row here.
 | `discuss` | One `discuss` event per call to `.implementation/position.jsonl` — the question, the computed collision list, and (once given) the answer. Never touches `<Name>/AGREED.md`. Never gates: an unanswered question is a reported `status`, not a refusal | `DISCUSS_STDIN_CONFLICT` (`--question -` and `--answer -` together), `DISCUSS_EMPTY_QUESTION`, `DISCUSS_ABOUT_NOT_FOUND` (an `--about` ordinal outside the sequence), `POSITION_WITNESS_UNKNOWN_KIND` (an `--about` witness spec naming an unknown kind) |
 | `gate` | One `gate` event to `.implementation/position.jsonl`: job, worker, commit, revision, entrypoint, units and the justification. Prints no token — nothing here can be minted from the caller's own argv. `--worker <account>` authorizes a single-send or rehearsal launch for exactly that account; repeatable `--unit` authorizes a CAMPAIGN launch instead, binding the exact ordered unit list a later `submit --unit ...` will carry — the same derivation `campaign_consent_token()` uses for consent — and records `worker: null`, since a campaign names no single account. The two flags are mutually exclusive | `EMPTY_JUSTIFICATION`, `REVISION_UNREADABLE`, `POSITION_ABSENT`, `POSITION_STALE`, `POSITION_UNBACKED` (a sequence item is ticked and its witness was never measured — a blank box claims nothing, a ticked one asserts a step was reached, and no launch is authorized against an assertion nobody checked), `NOT_READY` (no passing rehearsal on file at the job's current pin), `SEQUENCE_NOT_REACHED` (an earlier item in the sequence is still open, or no item names this job at all), `GATE_WORKER_UNIT_CONFLICT` (`--worker` and `--unit` both given), `GATE_WORKER_REQUIRED` (neither given — there is no auto-select shape for `gate` to authorize) |
 | `close` | Refreshes the position (see `position`), then one `close` event to `.implementation/position.jsonl` binding session, revision and a digest of the resulting sequence | `REVISION_UNREADABLE`, `POSITION_ABSENT`, `POSITION_STALE`, `POSITION_DISAGREES` (checked against the position exactly as recorded, before the refresh) |
+| `step` | Runs exactly one declared `__steps__` entry as a subprocess under the target's own `.venv/bin/python`, `PATH` prefixed by that interpreter's own directory — see [Non-negotiable isolation](#non-negotiable-isolation). One `step` event to `.implementation/position.jsonl` on every RESOLVED run, pass or fail: name, dotted callable, interpreter, outcome, exit status, error (when raised). No digest field. Never appends, reads or alters a `gate` event, and calls none of the remote-execution loaders — there is no call path from here to a launch | `DIRTY_WORKTREE` (before any subprocess spawns), `STEPS_UNDECLARED`, `STEP_UNKNOWN`, `STEP_MALFORMED` (declared entry missing `module` or `function`), `INTERPRETER_ABSENT`, `STEP_MODULE_MISSING`, `STEP_FUNCTION_MISSING`, `STEP_NOT_CALLABLE`, `STEP_RUNNER_SILENT` (the process exited without ever writing a verdict) |
 
 ## References
 

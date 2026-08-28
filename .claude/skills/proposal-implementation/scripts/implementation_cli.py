@@ -51,6 +51,7 @@ from impl_naming import normalize_name, package_name, validate_name  # noqa: E40
 from impl_references import (is_nesting, prefix_mappings, reference_pattern,  # noqa: E402
                              scan_reference_updates, scan_stale_references)
 import impl_position  # noqa: E402
+import impl_steps  # noqa: E402
 
 # The three files this module is allowed to path-import from the forge's
 # `remote-execution` skill. `remote_execution_state()` reads `ledger.py`
@@ -3900,6 +3901,50 @@ def resolve_levels_declaration(target: Path, name: str) -> list[str]:
     return []
 
 
+#: A third top-level literal, held apart from `__benchmark__` for the same
+#: reason `LEVELS_DECLARATION` is: `step` names a callable to RUN, not
+#: something `resolve_benchmark_declaration`'s seven-block "declared"/
+#: "undeclared" verdict is about, and `_declaration_is_blank` must never
+#: learn an eighth shape to compare against.
+STEPS_DECLARATION = "__steps__"
+
+
+def resolve_steps_declaration(target: Path, name: str) -> dict:
+    """The `{name: {module, function}}` map `__steps__` names, or `{}` when
+    nothing does.
+
+    Read exactly the way `resolve_levels_declaration` reads `__levels__`
+    (`__init__.py` first, then `config.py`, `ast`-only, no import) and held
+    just as apart from `__benchmark__`: a target may declare a step long
+    before it has answered a single one of `__benchmark__`'s seven blocks,
+    or never answer any of them at all on a repository whose only work is
+    local. Each entry carries the same `{module, function}` shape
+    `__benchmark__["entry"]` already uses — mirrored on purpose, not shared,
+    because a step and the harness entry are resolved by two different
+    processes (this one, statically, for the name; the target's own
+    interpreter, dynamically, for the callable) and a single shared literal
+    would blur that split.
+
+    A value of any shape other than a dict is read as nothing declared
+    (`{}`), the same silent-rather-than-crashing rule
+    `resolve_levels_declaration` already applies to a non-list `__levels__`.
+    `cmd_step` is the only reader that ever inspects one entry's own shape
+    (missing `module`/`function` is `STEP_MALFORMED`); this function only
+    ever answers "declared, or not", never validates what it found.
+    """
+    package = package_name(name)
+    bench_root = target / "src" / f"{package}_Benchmark"
+    if not bench_root.is_dir():
+        return {}
+    for candidate in ("__init__.py", "config.py"):
+        result = read_declaration(bench_root / candidate, STEPS_DECLARATION)
+        if isinstance(result, dict):
+            return result
+        if result is not None:
+            return {}
+    return {}
+
+
 def declared_dimension_names(target: Path, package: str) -> list[str] | None:
     """The shard-level dimension names a target declares, read without importing.
 
@@ -6413,6 +6458,102 @@ def cmd_close(args: argparse.Namespace) -> dict:
     }
 
 
+def cmd_step(args: argparse.Namespace) -> dict:
+    """Run one declared local step, isolated, under the target's own venv.
+
+    Closes the gap between the isolation rule ("executing a notebook needs
+    `PATH`") and any executor for it — before this, that rule was prose a
+    target's own steps.py had to obey correctly on its own, with nothing
+    checking. `impl_steps.run_step` supplies the isolation (the child's
+    `PATH` prefixed by the target's own `.venv/bin`, so a kernelspec's bare
+    `python` resolves the right interpreter — the measured motivation:
+    297/297 notebooks execute standalone, 15 fail when a bare `python`
+    resolves off the wrong environment); the target supplies the callable.
+
+    Runs EXACTLY one named step per invocation. There is no batch or
+    sequence flag, and this never consults `probe`'s `nextStep` — a step is
+    a unit of isolated execution, not a scheduler.
+
+    Refused in refusing-costs-nothing order, forge-side before target-side:
+    `DIRTY_WORKTREE` before anything spawns (a step mutates the target —
+    execution counts, cell outputs — so the same guard `plan`/`apply`
+    already call applies here, unscoped to migration alone); then
+    `STEPS_UNDECLARED` (nothing names any step at all) or `STEP_UNKNOWN`
+    (steps exist and this is not one of them) or `STEP_MALFORMED` (the named
+    entry is missing `module` or `function`) — all three read statically,
+    no import, no subprocess; then `INTERPRETER_ABSENT` (cf.
+    `target_interpreter`'s own callers) once a real subprocess is about to
+    be spawned. Only past all of those does `impl_steps.run_step` ever run,
+    and its own three target-side refusals (`STEP_MODULE_MISSING`/
+    `STEP_FUNCTION_MISSING`/`STEP_NOT_CALLABLE`) and `STEP_RUNNER_SILENT`
+    propagate unchanged — see its docstring for the full five-row verdict
+    state machine.
+
+    Every RESOLVED run — pass or fail — appends exactly one `kind: "step"`
+    event to `.implementation/position.jsonl`; an unresolvable step appends
+    nothing, because nothing ran. No digest field: `notebooks_state`
+    already recomputes `source_digest` fresh against a notebook's own
+    `DIGEST_MARKER` output, so a ledger-carried copy would be redundant and
+    could drift the moment the notebook is re-run outside this command.
+
+    This never touches `gate`: it calls none of `_load_remote_execution_cli`
+    or its two siblings, appends a `kind` no `gate` reader ever selects on,
+    and reads no `gate` event either. A step's ledger line is invisible to
+    `_verify_launch_authorization` by construction, not by convention.
+    """
+    target = resolve_target(args.target)
+    name = validate_name(args.name)
+    require_clean_worktree(target)
+
+    steps = resolve_steps_declaration(target, name)
+    if not steps:
+        raise Refused(
+            "STEPS_UNDECLARED",
+            f"{name} declares no __steps__ at all; nothing here names a "
+            "callable this command could run.")
+    entry = steps.get(args.step)
+    if entry is None:
+        raise Refused(
+            "STEP_UNKNOWN",
+            f"{args.step!r} is not among this target's declared steps "
+            f"({sorted(steps)!r}).")
+    if (not isinstance(entry, dict)
+            or not entry.get("module") or not entry.get("function")):
+        raise Refused(
+            "STEP_MALFORMED",
+            f"__steps__[{args.step!r}] does not carry both 'module' and "
+            f"'function': {entry!r}")
+
+    interpreter = target_interpreter(target)
+    if not interpreter.exists():
+        raise Refused(
+            "INTERPRETER_ABSENT",
+            f"no interpreter at {interpreter}: run `env` first.")
+
+    result = impl_steps.run_step(
+        interpreter, entry["module"], entry["function"],
+        cwd=target, pythonpath=target / "src")
+
+    recorded_at = _now_iso8601()
+    event = {
+        "kind": "step", "step": args.step,
+        "callable": f"{entry['module']}.{entry['function']}",
+        "interpreter": str(interpreter),
+        "outcome": result["outcome"], "exitStatus": result["exitStatus"],
+        "error": result["error"], "session": args.session, "at": recorded_at,
+    }
+    impl_position.append_event(
+        target / name / ".implementation" / "position.jsonl", event)
+
+    return {
+        "command": "step", "target": str(target), "name": name,
+        "step": args.step, "callable": event["callable"],
+        "interpreter": event["interpreter"], "outcome": result["outcome"],
+        "exitStatus": result["exitStatus"], "error": result["error"],
+        "session": args.session, "recordedAt": recorded_at,
+    }
+
+
 def cmd_verify(args: argparse.Namespace) -> dict:
     target = resolve_target(args.target)
     name = validate_name(args.name)
@@ -6781,7 +6922,8 @@ COMMANDS = {"env": cmd_env, "name": cmd_name, "plan": cmd_plan, "apply": cmd_app
             "position": cmd_position,
             "discuss": cmd_discuss,
             "gate": cmd_gate,
-            "close": cmd_close}
+            "close": cmd_close,
+            "step": cmd_step}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -6837,7 +6979,7 @@ def main(argv: list[str] | None = None) -> int:
                                 "handoff, position, gate and close discover "
                                 "nothing and refuse REVISION_UNREADABLE if it "
                                 "is missing or unreadable")
-        if name in {"position", "gate", "close"}:
+        if name in {"position", "gate", "close", "step"}:
             p.add_argument("--session", required=True,
                            help="identity stamped into the ledger event(s) "
                                 "this call appends, and into the block's "
@@ -6905,6 +7047,10 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--justification", required=True,
                            help="the launch justification text, or - to read "
                                 "stdin; refused if it is blank")
+        if name == "step":
+            p.add_argument("--step", required=True,
+                           help="the declared __steps__ entry to run; no "
+                                "flag runs more than one")
 
     args = parser.parse_args(argv)
     try:

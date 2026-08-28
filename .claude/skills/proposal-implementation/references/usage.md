@@ -876,6 +876,46 @@ any witness that has become measurable since — and record the transition. A
 second `close` over the identical, unmoved position reports `"not_open"`
 rather than appending a second event.
 
+## `step` — run one declared local step, isolated
+
+The executor for the isolation rule stated at the very top of `SKILL.md`
+("Executing a notebook needs `PATH`, not just the right `python`"): a target
+names one callable in its own `__steps__`, and this runs exactly that one,
+as a subprocess under the target's own `.venv/bin/python`, `PATH` prefixed
+by that interpreter's own directory so a notebook's kernelspec resolves it
+rather than whatever `python` happens to be first on the inherited `PATH`.
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py step \
+  --target implementations/<repo> --name <Name> --session <your-session-id> \
+  --step verification
+```
+
+Runs exactly one step per call — no flag sequences or dispatches more than
+one, and this never consults `probe`'s `nextStep`. Refuses `DIRTY_WORKTREE`
+before any subprocess spawns (a step mutates the target, same guard
+`plan`/`apply` already call); `STEPS_UNDECLARED` when the target's
+`__steps__` names nothing at all, `STEP_UNKNOWN` when it names something and
+`--step` is not one of them, `STEP_MALFORMED` when the named entry is
+missing `module` or `function`; `INTERPRETER_ABSENT` when the target has no
+`.venv` yet (`env` first); and, once the subprocess itself has run,
+`STEP_MODULE_MISSING` / `STEP_FUNCTION_MISSING` / `STEP_NOT_CALLABLE` when
+the declared callable does not resolve inside the venv, or
+`STEP_RUNNER_SILENT` when the process exited without ever writing a verdict
+— died before resolution even began, so nothing here can say whether the
+step ran.
+
+Every RESOLVED run — pass or fail — appends exactly one `kind: "step"` event
+to `.implementation/position.jsonl`: the step's name, its dotted callable,
+the interpreter path, `outcome` (`returned`/`raised`/`unknown`), exit
+status, and `error` (the raised exception, formatted once inside the
+subprocess itself, since the step's own stdout/stderr are inherited live
+rather than captured). No digest field — `notebooks_state` already
+recomputes that fresh against the notebook's own `DIGEST_MARKER` output.
+This never touches `gate`: it calls none of the remote-execution loaders,
+and a `kind: "step"` line is invisible to `_verify_launch_authorization`,
+which selects on the exact string `"gate"`.
+
 ## `handoff` — back to the deliberation, sized by reach
 
 ```bash

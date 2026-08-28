@@ -30,6 +30,7 @@ import implementation_cli as impl  # noqa: E402  (path set above)
 # `_core/implementation` on `sys.path`; this reaches the same module the CLI
 # reads its position grammar through, never a second copy.
 import impl_position  # noqa: E402
+import impl_steps  # noqa: E402
 
 SKILL_ROOT = CLI.parent.parent
 KIT = SKILL_ROOT / "assets" / "kit"
@@ -9610,6 +9611,18 @@ class WorkedInvocationRosterTests(unittest.TestCase):
         self.assertEqual(json.loads(proc.stdout or "{}").get("status"),
                          "refused", proc.stderr)
 
+    def test_the_step_invocation_uses_flags_the_real_parser_accepts(self):
+        argv = self.worked_block("step")
+        self.assertIn("--target", argv)
+        self.assertIn("--name", argv)
+        self.assertIn("--step", argv)
+        proc = subprocess.run(
+            [sys.executable, str(CLI), *argv], capture_output=True, text=True,
+            cwd=FORGE)
+        self.assertNotIn("unrecognized arguments", proc.stderr)
+        self.assertEqual(json.loads(proc.stdout or "{}").get("status"),
+                         "refused", proc.stderr)
+
     def test_the_reference_shows_what_probe_answers(self):
         """An invocation with no output beside it teaches a reader to run the
         command and nothing about how to read what comes back. `nextStep` is
@@ -11641,7 +11654,7 @@ class CommandRosterTests(unittest.TestCase):
         self.assertTrue(refuses.strip(), "the `position` row names nothing it refuses on")
 
     def test_every_command_dispatched_is_accounted_for(self):
-        write_verbs = {"position", "discuss", "gate", "close"}
+        write_verbs = {"position", "discuss", "gate", "close", "step"}
         dispatched = set(impl.COMMANDS)
         self.assertEqual(
             dispatched, self.DOCUMENTED_ELSEWHERE | write_verbs,
@@ -12408,6 +12421,603 @@ class CloseCommandTests(unittest.TestCase):
         ledger = box / "Method" / ".implementation" / "position.jsonl"
         events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
         self.assertEqual([e["kind"] for e in events], ["close"])
+
+
+class ResolveStepsDeclarationTests(unittest.TestCase):
+    """`__steps__` -- read exactly the way `resolve_levels_declaration` reads
+    `__levels__` (design "Execute a Declared Local Step" — decision "entries
+    carry {module, function}, no kwargs"; spec "`__steps__` declaration
+    surface"), held apart from `__benchmark__` for the identical reason.
+    """
+
+    def bench(self, root: Path) -> Path:
+        path = root / "src" / "Method_Benchmark"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def test_no_benchmark_directory_is_empty(self):
+        with tempfile.TemporaryDirectory() as raw:
+            self.assertEqual(
+                impl.resolve_steps_declaration(Path(raw), "Method"), {})
+
+    def test_directory_with_no_declaration_is_empty(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.bench(root)
+            self.assertEqual(impl.resolve_steps_declaration(root, "Method"), {})
+
+    def test_declared_in_init_py_is_found(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (self.bench(root) / "__init__.py").write_text(
+                "__steps__ = {'verification': {'module': 'Method_Benchmark.steps', "
+                "'function': 'run_verification'}}\n", encoding="utf-8")
+            resolved = impl.resolve_steps_declaration(root, "Method")
+        self.assertEqual(resolved, {"verification": {
+            "module": "Method_Benchmark.steps", "function": "run_verification"}})
+
+    def test_declared_in_config_py_alone_is_found(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (self.bench(root) / "config.py").write_text(
+                "__steps__ = {'a': {'module': 'm', 'function': 'f'}}\n",
+                encoding="utf-8")
+            resolved = impl.resolve_steps_declaration(root, "Method")
+        self.assertEqual(resolved, {"a": {"module": "m", "function": "f"}})
+
+    def test_a_non_dict_value_reads_as_nothing_declared(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (self.bench(root) / "__init__.py").write_text(
+                "__steps__ = ['verification']\n", encoding="utf-8")
+            self.assertEqual(impl.resolve_steps_declaration(root, "Method"), {})
+
+    def test_the_annotated_form_is_read(self):
+        """The kit's own scaffold writes `__steps__: dict = {}` -- an
+        `ast.AnnAssign`, not an `ast.Assign` -- so a reader that only walked
+        the plain form would never see the scaffold's own shape."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (self.bench(root) / "__init__.py").write_text(
+                "__steps__: dict = {'a': {'module': 'm', 'function': 'f'}}\n",
+                encoding="utf-8")
+            resolved = impl.resolve_steps_declaration(root, "Method")
+        self.assertEqual(resolved, {"a": {"module": "m", "function": "f"}})
+
+    def test_resolves_without_reading_or_mutating_the_benchmark_declaration(self):
+        """Spec scenario 'Declared step resolves'."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (self.bench(root) / "__init__.py").write_text(
+                "__benchmark__ = {'revision': 'r01.md'}\n"
+                "__steps__ = {'a': {'module': 'm', 'function': 'f'}}\n",
+                encoding="utf-8")
+            steps = impl.resolve_steps_declaration(root, "Method")
+            benchmark = impl.resolve_benchmark_declaration(root, "Method")
+        self.assertEqual(steps, {"a": {"module": "m", "function": "f"}})
+        self.assertEqual(benchmark["contract"], {"revision": "r01.md"})
+
+    def test_steps_never_flips_the_benchmark_verdict_when_every_block_is_blank(self):
+        """Spec scenario '`__steps__` never flips the benchmark verdict':
+        `_declaration_is_blank` checks only `BENCHMARK_BLOCKS`, so a target
+        declaring `__steps__` while every `__benchmark__` block sits at its
+        scaffold-empty value still reads `undeclared`."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (self.bench(root) / "__init__.py").write_text(
+                "__benchmark__ = {'revision': '', 'premises': {}, 'arms': {}, "
+                "'search': {}, 'report': {}, 'distribution': {}, "
+                "'entry': {'module': '', 'function': ''}}\n"
+                "__steps__ = {'a': {'module': 'm', 'function': 'f'}}\n",
+                encoding="utf-8")
+            steps = impl.resolve_steps_declaration(root, "Method")
+            benchmark = impl.resolve_benchmark_declaration(root, "Method")
+        self.assertEqual(steps, {"a": {"module": "m", "function": "f"}})
+        self.assertEqual(benchmark["status"], "undeclared")
+
+
+class ImplStepsVerdictStateMachineTests(unittest.TestCase):
+    """`impl_steps._verdict_result` -- the five-row state machine `RUNNER`'s
+    own docstring names, proven by handing it hand-written verdict dicts
+    directly, one call per row, rather than only ever reaching a row by
+    making a real subprocess die at exactly the right instant.
+    """
+
+    def test_no_verdict_file_is_runner_silent(self):
+        with self.assertRaises(impl_steps.Refused) as ctx:
+            impl_steps._verdict_result(None, 137, "m", "f")
+        self.assertEqual(ctx.exception.code, "STEP_RUNNER_SILENT")
+
+    def test_unresolvable_module_reads_as_step_module_missing(self):
+        with self.assertRaises(impl_steps.Refused) as ctx:
+            impl_steps._verdict_result(
+                {"outcome": "unresolvable", "reason": "module",
+                 "detail": "No module named 'nope'"}, 1, "nope", "f")
+        self.assertEqual(ctx.exception.code, "STEP_MODULE_MISSING")
+        self.assertIn("nope", ctx.exception.detail)
+
+    def test_unresolvable_function_reads_as_step_function_missing(self):
+        with self.assertRaises(impl_steps.Refused) as ctx:
+            impl_steps._verdict_result(
+                {"outcome": "unresolvable", "reason": "function",
+                 "detail": "'m' has no attribute 'nope'"}, 1, "m", "nope")
+        self.assertEqual(ctx.exception.code, "STEP_FUNCTION_MISSING")
+
+    def test_unresolvable_notcallable_reads_as_step_not_callable(self):
+        with self.assertRaises(impl_steps.Refused) as ctx:
+            impl_steps._verdict_result(
+                {"outcome": "unresolvable", "reason": "notcallable",
+                 "detail": "not callable"}, 1, "m", "f")
+        self.assertEqual(ctx.exception.code, "STEP_NOT_CALLABLE")
+
+    def test_resolved_only_reads_as_unknown_never_a_pass(self):
+        """Entered the callable, then the process vanished before the
+        second write -- `os._exit`, a `SIGKILL`. A missing second write is
+        reported as an inability to tell, never guessed at as a pass."""
+        result = impl_steps._verdict_result({"outcome": "resolved"}, 137, "m", "f")
+        self.assertEqual(
+            result, {"outcome": "unknown", "exitStatus": 137, "error": None})
+
+    def test_returned_is_recorded_with_the_real_exit_status(self):
+        result = impl_steps._verdict_result({"outcome": "returned"}, 0, "m", "f")
+        self.assertEqual(
+            result, {"outcome": "returned", "exitStatus": 0, "error": None})
+
+    def test_raised_carries_the_error_string_verbatim(self):
+        result = impl_steps._verdict_result(
+            {"outcome": "raised", "error": "ValueError: boom"}, 1, "m", "f")
+        self.assertEqual(
+            result,
+            {"outcome": "raised", "exitStatus": 1, "error": "ValueError: boom"})
+
+
+class StepEnvironmentTests(unittest.TestCase):
+    """`impl_steps.step_environment` -- `PATH` prefixed, never replaced."""
+
+    def test_path_is_prefixed_and_the_inherited_path_survives(self):
+        env = impl_steps.step_environment(Path("/venv/bin"), Path("/target/src"))
+        self.assertEqual(
+            env["PATH"],
+            f"/venv/bin{os.pathsep}{os.environ.get('PATH', '')}")
+        self.assertEqual(env["PYTHONPATH"], "/target/src")
+
+    def test_every_other_inherited_variable_passes_through_unchanged(self):
+        env = impl_steps.step_environment(Path("/venv/bin"), Path("/target/src"))
+        for key, value in os.environ.items():
+            if key in ("PATH", "PYTHONPATH"):
+                continue
+            self.assertEqual(env.get(key), value)
+
+
+class StepCommandTests(unittest.TestCase):
+    """`step` -- run one declared local step, isolated (design "Execute a
+    Declared Local Step"; spec "Local Step Execution"). Proves the whole
+    chain end to end: the CLI wiring, the forge-side static refusals, and
+    the isolation `impl_steps.run_step` supplies.
+    """
+
+    def _box(self, suffix):
+        box = FORGE / "implementations" / f"_e2e_step_{suffix}_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        write_fixture_interpreter(
+            box / ".venv" / ("Scripts" if os.name == "nt" else "bin"))
+        return box
+
+    def _commit(self, box):
+        git = ["git", "-c", "user.email=forge@example.invalid",
+               "-c", "user.name=forge", "-C", str(box)]
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        subprocess.run(git + ["add", "-A"], check=True, capture_output=True)
+        subprocess.run(git + ["commit", "-qm", "toy"], check=True, capture_output=True)
+        head = subprocess.run(git + ["rev-parse", "HEAD"], check=True,
+                              capture_output=True, text=True).stdout.strip()
+        return head
+
+    def _declare(self, box, steps):
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            f"__steps__ = {steps!r}\n", encoding="utf-8")
+
+    def run_cli(self, *args, env=None):
+        full_env = dict(os.environ)
+        if env is not None:
+            full_env = env
+        return subprocess.run([sys.executable, str(CLI), *args],
+                              capture_output=True, text=True, cwd=FORGE, env=full_env)
+
+    def ledger_events(self, box):
+        path = box / "Method" / ".implementation" / "position.jsonl"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+    # --- Spec "Record a `step` ledger event" ---
+
+    def test_a_passing_step_is_recorded_with_exit_zero_and_no_digest_field(self):
+        box = self._box("pass")
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "def run_ok():\n    return None\n", encoding="utf-8")
+        self._declare(box, {"verification": {"module": "Method_Benchmark.steps",
+                                              "function": "run_ok"}})
+        self._commit(box)
+
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["outcome"], "returned")
+        self.assertEqual(result["exitStatus"], 0)
+        self.assertIsNone(result["error"])
+
+        events = self.ledger_events(box)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["kind"], "step")
+        self.assertEqual(event["step"], "verification")
+        self.assertEqual(event["callable"], "Method_Benchmark.steps.run_ok")
+        self.assertEqual(event["exitStatus"], 0)
+        self.assertEqual(event["session"], "s1")
+        self.assertEqual(
+            [key for key in event if "digest" in key.lower()], [],
+            "the step ledger event carries a digest field; the spec's own "
+            "scenario requires none -- notebooks_state recomputes it fresh")
+
+    def test_a_raising_step_is_still_recorded_with_a_nonzero_exit(self):
+        box = self._box("raise")
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "def run_bad():\n    raise ValueError('boom')\n", encoding="utf-8")
+        self._declare(box, {"verification": {"module": "Method_Benchmark.steps",
+                                              "function": "run_bad"}})
+        self._commit(box)
+
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["outcome"], "raised")
+        self.assertNotEqual(result["exitStatus"], 0)
+        self.assertIn("boom", result["error"])
+
+        events = self.ledger_events(box)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["outcome"], "raised")
+        self.assertNotEqual(events[0]["exitStatus"], 0)
+
+    def test_a_step_that_hard_exits_mid_call_is_recorded_as_unknown_not_silent(self):
+        """`RUNNER` writes the verdict file TWICE -- the instant resolution
+        succeeds, before the call, and again once the call returns or
+        raises. `os._exit` inside the callable simulates a process dying
+        hard mid-call (a `SIGKILL`, a segfault): the pre-call write is the
+        only thing standing between this and `STEP_RUNNER_SILENT`, which
+        would wrongly report a step that never even entered its callable.
+        """
+        box = self._box("hardexit")
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "import os\ndef run_ok():\n    os._exit(9)\n", encoding="utf-8")
+        self._declare(box, {"verification": {"module": "Method_Benchmark.steps",
+                                              "function": "run_ok"}})
+        self._commit(box)
+
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["outcome"], "unknown")
+        self.assertEqual(result["exitStatus"], 9)
+
+        events = self.ledger_events(box)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["outcome"], "unknown")
+
+    # --- Spec "Refuse an unresolvable step" ---
+
+    def test_undeclared_target_refuses_steps_undeclared(self):
+        box = self._box("undeclared")
+        self._commit(box)
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(json.loads(proc.stdout)["code"], "STEPS_UNDECLARED")
+        self.assertEqual(self.ledger_events(box), [])
+
+    def test_unknown_step_name_refuses_step_unknown_naming_it(self):
+        box = self._box("unknown")
+        self._declare(box, {"other": {"module": "m", "function": "f"}})
+        self._commit(box)
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 2)
+        body = json.loads(proc.stdout)
+        self.assertEqual(body["code"], "STEP_UNKNOWN")
+        self.assertIn("verification", body["detail"])
+        self.assertEqual(self.ledger_events(box), [])
+
+    def test_a_declared_entry_missing_function_refuses_step_malformed(self):
+        box = self._box("malformed")
+        self._declare(box, {"verification": {"module": "Method_Benchmark.steps"}})
+        self._commit(box)
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(json.loads(proc.stdout)["code"], "STEP_MALFORMED")
+        self.assertEqual(self.ledger_events(box), [])
+
+    def test_no_venv_refuses_interpreter_absent(self):
+        box = FORGE / "implementations" / f"_e2e_step_novenv_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            "__steps__ = {'verification': {'module': 'Method_Benchmark.steps', "
+            "'function': 'run'}}\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        git = ["git", "-c", "user.email=forge@example.invalid",
+               "-c", "user.name=forge", "-C", str(box)]
+        subprocess.run(git + ["add", "-A"], check=True, capture_output=True)
+        subprocess.run(git + ["commit", "-qm", "toy"], check=True, capture_output=True)
+
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(json.loads(proc.stdout)["code"], "INTERPRETER_ABSENT")
+
+    def test_missing_module_refuses_step_module_missing(self):
+        box = self._box("modmissing")
+        self._declare(box, {"verification": {"module": "Method_Benchmark.nope",
+                                              "function": "run"}})
+        self._commit(box)
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(json.loads(proc.stdout)["code"], "STEP_MODULE_MISSING")
+        self.assertEqual(self.ledger_events(box), [])
+
+    def test_missing_function_refuses_step_function_missing(self):
+        box = self._box("funcmissing")
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text("", encoding="utf-8")
+        self._declare(box, {"verification": {"module": "Method_Benchmark.steps",
+                                              "function": "nope"}})
+        self._commit(box)
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(json.loads(proc.stdout)["code"], "STEP_FUNCTION_MISSING")
+        self.assertEqual(self.ledger_events(box), [])
+
+    def test_a_non_callable_attribute_refuses_step_not_callable(self):
+        box = self._box("notcallable")
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "run = 1\n", encoding="utf-8")
+        self._declare(box, {"verification": {"module": "Method_Benchmark.steps",
+                                              "function": "run"}})
+        self._commit(box)
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(json.loads(proc.stdout)["code"], "STEP_NOT_CALLABLE")
+        self.assertEqual(self.ledger_events(box), [])
+
+    # --- Spec "Refuse on a dirty target worktree" ---
+
+    def test_a_staged_change_refuses_before_any_subprocess_or_event(self):
+        box = self._box("dirtystaged")
+        marker = box / "src" / "Method_Benchmark" / "ran.marker"
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            f"def run_ok():\n    open({str(marker)!r}, 'w').write('yes')\n",
+            encoding="utf-8")
+        self._declare(box, {"verification": {"module": "Method_Benchmark.steps",
+                                              "function": "run_ok"}})
+        self._commit(box)
+        (box / "src" / "Method" / "extra.py").write_text("x = 1\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(box), "add", "src/Method/extra.py"],
+                       check=True, capture_output=True)
+
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(json.loads(proc.stdout)["code"], "DIRTY_WORKTREE")
+        self.assertFalse(
+            marker.exists(),
+            "the step's own callable ran despite a staged, uncommitted "
+            "change -- the dirty-worktree guard must refuse before any "
+            "subprocess spawns")
+        self.assertEqual(self.ledger_events(box), [])
+
+    def test_an_untracked_file_refuses_before_any_subprocess_or_event(self):
+        box = self._box("dirtyuntracked")
+        marker = box / "src" / "Method_Benchmark" / "ran.marker"
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            f"def run_ok():\n    open({str(marker)!r}, 'w').write('yes')\n",
+            encoding="utf-8")
+        self._declare(box, {"verification": {"module": "Method_Benchmark.steps",
+                                              "function": "run_ok"}})
+        self._commit(box)
+        (box / "src" / "Method" / "untracked.py").write_text("x = 1\n", encoding="utf-8")
+
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(json.loads(proc.stdout)["code"], "DIRTY_WORKTREE")
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.ledger_events(box), [])
+
+    # --- Spec "Notebook step runs under the right interpreter" (design §4b) ---
+
+    def test_path_is_prefixed_pythonpath_and_cwd_are_correct(self):
+        box = self._box("envdump")
+        dump_path = box / "env_dump.json"
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "import json, os\n"
+            "def dump():\n"
+            f"    with open({str(dump_path)!r}, 'w', encoding='utf-8') as fh:\n"
+            "        json.dump({'path': os.environ.get('PATH', ''),\n"
+            "                   'pythonpath': os.environ.get('PYTHONPATH', ''),\n"
+            "                   'cwd': os.getcwd(),\n"
+            "                   'virtualEnv': os.environ.get('VIRTUAL_ENV')}, fh)\n",
+            encoding="utf-8")
+        self._declare(box, {"dump": {"module": "Method_Benchmark.steps",
+                                     "function": "dump"}})
+        self._commit(box)
+
+        # Task 4f's own measurement: `VIRTUAL_ENV` is deliberately left
+        # unset in the process running the CLI itself, so nothing here could
+        # be inheriting a value by accident -- the step still has to resolve
+        # and run to completion on `pyvenv.cfg` and the absolute interpreter
+        # path alone.
+        env = dict(os.environ)
+        env.pop("VIRTUAL_ENV", None)
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "dump", env=env)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+        dumped = json.loads(dump_path.read_text(encoding="utf-8"))
+        venv_bin = str(box / ".venv" / ("Scripts" if os.name == "nt" else "bin"))
+        path_entries = dumped["path"].split(os.pathsep)
+        self.assertEqual(
+            path_entries[0], venv_bin,
+            "PATH's first element must be the target venv's own bin dir")
+        for inherited in env.get("PATH", "").split(os.pathsep):
+            self.assertIn(
+                inherited, path_entries,
+                "the inherited PATH must survive after the venv prefix")
+        self.assertEqual(dumped["pythonpath"], str(box / "src"))
+        self.assertEqual(Path(dumped["cwd"]).resolve(), box.resolve())
+        # Recorded as a measurement, never asserted as a mechanism this
+        # module owns (design's own open question, settled by task 4f):
+        # the step resolved and ran with `VIRTUAL_ENV` absent throughout.
+        self.assertIsNone(dumped["virtualEnv"])
+
+        events = self.ledger_events(box)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["outcome"], "returned")
+
+    # --- Threat matrix "Argument composition" (added row) ---
+
+    def test_a_hostile_function_name_never_reaches_a_shell(self):
+        box = self._box("hostile")
+        marker_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, marker_dir, ignore_errors=True)
+        marker = marker_dir / "pwned"
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "def run():\n    pass\n", encoding="utf-8")
+        self._declare(box, {"verification": {
+            "module": "Method_Benchmark.steps",
+            "function": f"run; touch {marker}"}})
+        self._commit(box)
+
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 2)
+        body = json.loads(proc.stdout)
+        self.assertEqual(body["code"], "STEP_FUNCTION_MISSING")
+        self.assertFalse(
+            marker.exists(),
+            "a hostile function-name string reached a shell and created a "
+            "marker file; argv must never be interpolated into a command "
+            "line (list argv, shell=False)")
+        self.assertEqual(self.ledger_events(box), [])
+
+    # --- Spec "Remote launch stays structurally unreachable" ---
+
+    def test_running_a_step_never_touches_gate_authorization(self):
+        box = self._box("nonreach")
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "def run_ok():\n    return None\n"
+            "def run_bad():\n    raise ValueError('boom')\n",
+            encoding="utf-8")
+        self._declare(box, {
+            "ok": {"module": "Method_Benchmark.steps", "function": "run_ok"},
+            "bad": {"module": "Method_Benchmark.steps", "function": "run_bad"},
+        })
+        self._commit(box)
+
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        gate_event = {
+            "kind": "gate", "jobName": "job", "worker": "acct",
+            "commit": "0" * 40, "revision": "r1.md",
+            "revisionSha256": "0" * 64, "entrypoint": "tools/service/job/run.py",
+            "units": [], "justification": "measured, rehearsed, launching",
+            "session": "s0", "at": "2026-08-27T00:00:00Z",
+        }
+        impl_position.append_event(ledger, gate_event)
+        gate_line_before = ledger.read_text(encoding="utf-8").splitlines()[0]
+        # A second commit so the seeded ledger itself is not what `step`'s
+        # own `require_clean_worktree` refuses on -- this test is about
+        # what running a step does to an ALREADY-recorded gate, not about
+        # the dirty-worktree guard (covered on its own above).
+        self._commit(box)
+
+        rcli = impl._load_remote_execution_cli()
+
+        def assert_still_authorized():
+            rcli._verify_launch_authorization(
+                smoke=False, target=box, product="Method",
+                pin_commit=gate_event["commit"],
+                relative_entrypoint=Path(gate_event["entrypoint"]),
+                units=None, worker=gate_event["worker"])
+
+        assert_still_authorized()  # accepted before any step ever ran
+
+        for step_name in ("ok", "bad"):
+            proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                                "--session", "s1", "--step", step_name)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            # `step` itself just modified the tracked ledger (and running
+            # under the fixture interpreter leaves an untracked
+            # `__pycache__` behind) -- committed so the NEXT step call in
+            # this loop meets `require_clean_worktree` too. The property
+            # under test is what a step does to the recorded GATE, never
+            # about the dirty-worktree guard (covered on its own above).
+            self._commit(box)
+
+        lines = ledger.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(
+            lines[0], gate_line_before,
+            "the recorded gate event's own bytes moved after a step ran")
+        self.assertEqual(
+            [json.loads(line)["kind"] for line in lines[1:]], ["step", "step"])
+        assert_still_authorized()  # still accepted after two steps ran
+
+    def test_cmd_step_calls_none_of_the_remote_execution_loaders(self):
+        """Design mechanism 1 ('No door'): the three lazy loaders are the
+        only path to `remote_cli`/`shard_io`/`ledger`, and `cmd_step` calls
+        none of them. Checked over the AST's `Call` nodes, not the raw
+        source text -- `cmd_step`'s own docstring names these loaders in
+        prose (explaining exactly why it never reaches them), and a plain
+        substring check would trip over the very sentence proving the
+        property.
+        """
+        tree = ast.parse(inspect.getsource(impl.cmd_step))
+        called = {
+            node.func.id for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        loaders = {"_load_remote_execution_cli", "_load_remote_execution_shard_io",
+                   "_load_remote_execution_ledger"}
+        self.assertEqual(
+            called & loaders, set(),
+            "cmd_step calls a loader that is a door to remote launch this "
+            "command must never have")
+
+    def test_no_reader_anywhere_selects_kind_equals_step(self):
+        """Design mechanism 2: every gate consumer selects on the exact
+        string "gate"; nothing anywhere selects on "step" -- a step line is
+        invisible to every existing ledger reader by construction, not by
+        convention."""
+        sources = [
+            (CLI.parent / "implementation_cli.py").read_text(encoding="utf-8"),
+            (FORGE / ".claude" / "skills" / "remote-execution" / "scripts"
+             / "remote_cli.py").read_text(encoding="utf-8"),
+            Path(impl_position.__file__).read_text(encoding="utf-8"),
+        ]
+        pattern = re.compile(r'kind[\'"]?\s*\)?\s*==\s*[\'"]step[\'"]')
+        for source in sources:
+            self.assertIsNone(pattern.search(source))
 
 
 class AnnotatedDeclarationReaderTests(unittest.TestCase):

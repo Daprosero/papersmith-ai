@@ -111,3 +111,21 @@ __benchmark__ = {
 # Example (a repository with no remote service at all still has a ladder):
 #     __levels__ = ["local", "cluster"]
 __levels__: list = []
+
+# A callable this repository's own code can run, isolated, under this
+# repository's own venv -- named and resolved statically by the forge
+# (module + function, never imported here), then imported and called inside
+# the target's own interpreter, never the forge's. A second, independent
+# top-level literal, held apart from `__benchmark__` for the identical
+# reason `__levels__` is: see `resolve_steps_declaration`'s own docstring.
+# Left empty until a step exists -- a repository with nothing local to run
+# in isolation needs none, and one is never invented on its behalf.
+#
+# Example:
+#     __steps__ = {
+#         "verification": {
+#             "module": "Example_Method_Benchmark.steps",
+#             "function": "run_verification",
+#         },
+#     }
+__steps__: dict = {}
