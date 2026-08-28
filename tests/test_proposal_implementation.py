@@ -13117,3 +13117,39 @@ class NotebookInterpreterTests(unittest.TestCase):
         self.doCleanups()
         leftover = list((FORGE / "implementations").glob("_nbinterp_*"))
         self.assertEqual(leftover, [], leftover)
+
+    def test_the_shipped_scaffold_obeys_the_doctrine_it_ships_with(self):
+        """The doctrine is checked one file away from the file that breaks it.
+
+        `test_the_isolation_section_carries_the_safe_invocation` above reads
+        `SKILL.md` and passes when the rule is written down. It stayed green
+        while `assets/kit/nb/verification.ipynb` -- the notebook every
+        scaffolded target receives -- printed the re-run command WITHOUT the
+        `PATH` prefix, which is the exact shape that same section calls "reads
+        as isolated and is not". Doctrine that only its own page is held to is
+        doctrine the forge ships past.
+
+        Every `nbconvert` invocation in a shipped notebook, not just the one
+        that was wrong on the day this was written: a second scaffold notebook
+        acquiring the same instruction must inherit the same rule, and a check
+        naming one file would not notice.
+        """
+        kit = Path(impl.SKILL_ROOT) / "assets/kit/nb"
+        notebooks = sorted(kit.glob("*.ipynb"))
+        self.assertTrue(notebooks, f"no shipped notebooks under {kit}")
+        seen = 0
+        for path in notebooks:
+            source = "".join(
+                "".join(cell["source"])
+                for cell in json.loads(path.read_text(encoding="utf-8"))["cells"])
+            for line in source.splitlines():
+                if "nbconvert" not in line:
+                    continue
+                seen += 1
+                self.assertIn(
+                    'PATH="$PWD/.venv/bin:$PATH"', line,
+                    f"{path.name} tells a reader to run nbconvert without the "
+                    f"PATH prefix the isolation doctrine requires: {line!r}")
+        self.assertTrue(
+            seen, "no shipped notebook prints an nbconvert command at all, so "
+                  "this test proves nothing about the ones that do")
