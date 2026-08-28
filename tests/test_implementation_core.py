@@ -24,6 +24,7 @@ sys.path.insert(0, str(CORE))
 import impl_gitops  # noqa: E402
 import impl_guards  # noqa: E402
 import impl_layout  # noqa: E402
+import impl_position  # noqa: E402
 import impl_references  # noqa: E402
 import impl_refusals  # noqa: E402
 
@@ -155,6 +156,148 @@ class CoreNamesNoDomainTests(unittest.TestCase):
         self.assertTrue((impl_layout.FORGE_ROOT / ".claude").is_dir())
         self.assertEqual(impl_layout.WORKSPACE,
                          REPOSITORY_ROOT / "implementations")
+
+
+class UnbackedTickTests(unittest.TestCase):
+    """A tick nobody measured is an assertion; a blank box nobody measured is
+    not. `derive()` could not tell them apart.
+
+    Measured before this key existed: an item with `mark="x"` and a witness
+    this invocation carries no evidence for produced `derived=None,
+    satisfied=None, disagrees=False` -- byte for byte the same result as the
+    identical item with `mark=" "`. Every reader downstream therefore read the
+    unbacked claim and the honest silence as one state.
+
+    `disagrees` cannot be the place this is caught, and deliberately is not:
+    it compares a mark against a measurement, and the whole defect is that
+    there is no measurement to compare against.
+    """
+
+    def _one(self, mark, evidence):
+        items = [{"ordinal": 1, "mark": mark, "text": "step",
+                  "witness": {"kind": "shard", "operand": "s0"}}]
+        return impl_position.derive(items, evidence)[0]
+
+    def test_an_unmeasured_tick_and_an_unmeasured_blank_are_no_longer_identical(self):
+        """The finding, stated as the comparison that produced it."""
+        ticked = self._one("x", {})
+        blank = self._one(" ", {})
+
+        self.assertIsNone(ticked["satisfied"])
+        self.assertIsNone(blank["satisfied"])
+        self.assertTrue(ticked["unbacked"])
+        self.assertFalse(blank["unbacked"])
+        self.assertNotEqual(ticked, blank)
+
+    def test_an_unbacked_tick_is_not_reported_as_a_disagreement(self):
+        """An `x` over nothing contradicts no measurement -- there is none to
+        contradict. Folding this into `disagrees` would claim evidence that
+        says otherwise, which is a different and untrue statement."""
+        self.assertFalse(self._one("x", {})["disagrees"])
+
+    def test_a_measured_tick_is_never_unbacked_whichever_way_it_reads(self):
+        """The pole. Without it `unbacked` could be firing on every ticked
+        item and nothing here would notice."""
+        agreeing = self._one("x", {"shardsArrived": ["s0"]})
+        self.assertIs(agreeing["satisfied"], True)
+        self.assertFalse(agreeing["unbacked"])
+        self.assertFalse(agreeing["disagrees"])
+
+        contradicted = self._one("x", {"shardsArrived": ["other"]})
+        self.assertIs(contradicted["satisfied"], False)
+        self.assertFalse(contradicted["unbacked"],
+                         "a measurement that says otherwise is a disagreement, "
+                         "not an unbacked assertion")
+        self.assertTrue(contradicted["disagrees"])
+
+    def test_a_leveled_item_off_the_ladder_is_unbacked_too(self):
+        """`satisfied is None` reaches a leveled item by a second route -- a
+        rung was derived but this pass's target names none -- and a tick over
+        that is exactly as unbacked as a tick over no evidence at all."""
+        items = [{"ordinal": 1, "mark": "x", "text": "step",
+                  "witness": {"kind": "shard", "operand": "s0",
+                              "twostate": False}}]
+        result = impl_position.derive(
+            items, {"shardsArrived": ["s0"], "levels": ["one", "two"]})[0]
+
+        self.assertEqual(result["derived"], "two")
+        self.assertIsNone(result["satisfied"], "no targetLevel to compare against")
+        self.assertTrue(result["unbacked"])
+
+
+class ShardCurrencyTests(unittest.TestCase):
+    """An arrived shard was trusted without asking what code produced it.
+
+    Measured before this: `evidence={"shardsArrived": ["s00"]}` placed a
+    leveled `@shard` item on the TOP rung, on the strength of a folder
+    existing. `_derive_notebook_level` beside it already refuses to attribute
+    a rung until the report says it read current sources -- "we have not
+    looked with current eyes" -- and the two were asymmetric with nothing to
+    justify it.
+
+    `shardsCurrent` is the caller's answer to the same question for shards.
+    The forge never learns which stamp field carries a shard's code identity;
+    the repository names it and the caller does the comparing, so everything
+    here is a list of names this module was handed.
+    """
+
+    LEVELS = ["one", "two", "three"]
+
+    def _item(self, twostate):
+        return [{"ordinal": 1, "mark": " ", "text": "step",
+                 "witness": {"kind": "shard", "operand": "s0",
+                             "twostate": twostate}}]
+
+    def _derive(self, twostate, evidence):
+        return impl_position.derive(
+            self._item(twostate), {"levels": self.LEVELS,
+                                   "targetLevel": "three", **evidence})[0]
+
+    def test_no_currency_declared_leaves_arrival_deciding_exactly_as_before(self):
+        """The compatibility half, and the one that must not move: a target
+        that never named a stamp field has said nothing this could check, and
+        an absent `shardsCurrent` therefore has to read exactly as it did
+        before the key existed."""
+        two_state = self._derive(True, {"shardsArrived": ["s0"]})
+        self.assertIs(two_state["derived"], True)
+
+        leveled = self._derive(False, {"shardsArrived": ["s0"]})
+        self.assertEqual(leveled["derived"], "three")
+
+    def test_an_arrived_and_current_shard_reads_as_it_always_did(self):
+        """The pole for the two tests below: declaring the field changes
+        nothing at all for a shard that answers it."""
+        evidence = {"shardsArrived": ["s0"], "shardsCurrent": ["s0"]}
+        self.assertIs(self._derive(True, evidence)["derived"], True)
+        self.assertEqual(self._derive(False, evidence)["derived"], "three")
+
+    def test_an_arrived_but_stale_shard_is_unmeasured_and_never_the_floor(self):
+        """The finding. `None` and the floor rung are different facts: the
+        floor says a step has not started, and this shard demonstrably ran --
+        we simply cannot say it ran this code."""
+        evidence = {"shardsArrived": ["s0"], "shardsCurrent": []}
+        self.assertIsNone(self._derive(True, evidence)["derived"])
+
+        leveled = self._derive(False, evidence)
+        self.assertIsNone(leveled["derived"])
+        self.assertNotEqual(leveled["derived"], self.LEVELS[0])
+
+    def test_a_shard_that_never_arrived_is_still_definitely_not_there(self):
+        """Currency answers a question about a shard that came back. One that
+        never came back is answered by arrival alone, as before -- `False`
+        two-state, the floor rung leveled, both definite."""
+        evidence = {"shardsArrived": ["other"], "shardsCurrent": ["other"]}
+        self.assertIs(self._derive(True, evidence)["derived"], False)
+        self.assertEqual(self._derive(False, evidence)["derived"], self.LEVELS[0])
+
+    def test_the_currency_it_used_is_named_in_measured_by(self):
+        """A verdict a reader cannot trace back to what produced it is a
+        verdict they have to take on faith."""
+        with_currency = self._derive(
+            True, {"shardsArrived": ["s0"], "shardsCurrent": ["s0"]})
+        self.assertIn("shardsCurrent", with_currency["measuredBy"])
+        without = self._derive(True, {"shardsArrived": ["s0"]})
+        self.assertNotIn("shardsCurrent", without["measuredBy"])
 
 
 if __name__ == "__main__":

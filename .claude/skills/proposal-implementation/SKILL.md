@@ -31,6 +31,38 @@ Every run works inside `implementations/<repo>/` and uses **that repository's ow
 `implementations/` is gitignored; the CLI refuses any target outside it, and refuses to
 create a venv from a forge interpreter.
 
+### Executing a notebook needs `PATH`, not just the right `python`
+
+```bash
+cd implementations/<repo>
+PATH="$PWD/.venv/bin:$PATH" .venv/bin/python -m jupyter nbconvert \
+  --to notebook --execute --inplace <Name>/Notebooks/<notebook>.ipynb
+```
+
+The `PATH` prefix is the whole point of that line, and dropping it is the
+obvious mistake. A notebook does not name an interpreter; it names a
+**kernelspec**, and a kernelspec is resolved when the kernel starts. The
+ordinary `python3` kernelspec's `argv` begins with a bare `"python"` — no
+absolute path — so the kernel launches whatever `python` is first on `PATH` at
+that moment. Which interpreter launched `jupyter` has nothing to do with it.
+So `.venv/bin/python -m jupyter nbconvert --execute` reads as isolated and is
+not: the cells run under whatever the shell would have run, commonly a system
+Python several minor versions back.
+
+It fails as badly as it can: measured on a real target, a suite passing 297/297
+standalone produced fifteen failures inside the notebook, and **not one line of
+the failure text named an interpreter**. The reader is handed fifteen defects
+that do not exist.
+
+`verify` reports the fact rather than leaving it to prose: `validation.notebooks`
+carries `interpreterVersion` (the target venv's own, read from `pyvenv.cfg`) and
+per notebook `executedBy` with `interpreterMatch`, plus `foreignInterpreter`
+naming every executed notebook that ran under something else. `interpreterMatch:
+null` means unmeasured — no venv to compare against, or a notebook whose
+metadata records no version — never a pass. It reports and never gates: a
+foreign interpreter is not a wrong number, it is a reason to distrust the
+numbers, and folding the two into one status destroys the distinction.
+
 ## Activation Contract
 
 Activate when the user asks to implement, code, scaffold, reorganize or verify
@@ -584,7 +616,13 @@ date. Drift is Flow B's fourth step, not a reason to start over.
     builds the replacement, and `CREATE_SUCCESSOR` publishes the next revision.
     See `references/usage.md`. Publishing advances the user's real lineage, so it
     happens only behind this gate.
-15. Run the suite with the target interpreter, then execute the notebook.
+15. Run the suite with the target interpreter, then execute the notebook —
+    with the target venv's `bin` prepended to `PATH`, not merely as the
+    interpreter that launches jupyter. See "Executing a notebook needs
+    `PATH`, not just the right `python`" under Non-negotiable isolation:
+    the kernelspec resolves a bare `python` off `PATH` at kernel start, so
+    the obvious invocation runs the cells under a foreign interpreter and
+    says nothing about having done so.
 16. **Final check.** `verify --revision <latest>` → report `structure`, `fidelity`,
     `audit` and `validation`.
     - `--revision` is optional and pins the check. Omitted, `verify` discovers the
@@ -1363,8 +1401,10 @@ parameter count, and writes `<Name>/Results/Probe_results.json`.
 **[GATE]** ask before running: it is quick by design, but it is still the user's
 machine, and it downloads a dataset.
 
-Execute the notebook with the target repository's own interpreter, as with the suite.
-`benchmark.py` refuses under any other and says which one to use — for this file that
+Execute the notebook with the target repository's own interpreter, as with the suite —
+and with that venv's `bin` on `PATH`, for the reason the isolation section gives:
+the kernel resolves its own interpreter off `PATH`, never off whatever launched
+jupyter. `benchmark.py` refuses under any other and says which one to use — for this file that
 is not a hygiene rule but the measurement itself: wall time and peak memory describe
 whichever environment ran them, so a foreign interpreter produces a correct
 measurement of the wrong thing and the summary would attribute it to this repository.
@@ -1737,6 +1777,19 @@ apart, and each is cheap enough that skipping it is never the economical choice.
   exactly like a merge nobody objected to, and that is what this flag exists to
   separate.
 
+  **Arrival is not evidence that a shard reports on the code you are running.**
+  A shard folder is a file left behind by whatever ran; its presence says
+  nothing about which code wrote it, and ticking a step because a directory
+  exists is an attribution nobody measured. The declaration may name where a
+  shard records its own code identity — `currentWhen`, an optional dotted path
+  into the `shard.json` stamp, e.g. `"currentWhen": "evidence.sourcesDigest"` —
+  and then a shard counts only while the value there still matches the code as
+  it stands; one that arrived from code the repository has moved past reads as
+  unmeasured, never as a step reached and never as a step that never started.
+  Declare nothing and arrival alone decides, exactly as before. Which field
+  holds that identity is the repository's to say: the forge only compares, the
+  same division `identicalAcrossShards` already keeps.
+
   **What refuses here and what averages is a division of labour, not an
   oversight.** This skill refuses and stops. It never averages, pools or merges
   a shard result, because a refusal is general — it needs only the fields the
@@ -2074,7 +2127,7 @@ tests until it has a row here.
 | --- | --- | --- |
 | `position` | No flag: re-derives the marks of the block already in `<Name>/AGREED.md`, touching nothing else about it. `--sequence -`: installs a fresh section from stdin JSON (each entry's `witness.twostate` defaults to `true` when omitted). `--reconcile`: reconstructs the sequence from what the target already has (declared record, discovered job folders, `Notebooks/*.ipynb`, and one `@shard` per arrived shard with `--shards`), matching existing items by witness identity and appending only unmatched ones — every discovered witness is two-state. `--shards <dir>` also measures every `@shard` witness against that directory in every write mode, not `--reconcile` alone — without it `@shard` reads `unmeasured`, never `False`. `--target-level <level>` names the rung this pass is aiming at (one of the target's own `__levels__`, read from the benchmark package's `__init__.py`/`config.py`); required only for a fresh header, sticky (reused) across a bare refresh. A mark means "reached the level this pass asks for" for a leveled (`:level`-marked) witness, or a plain pass/fail for a two-state (unmarked, the default) one — see `impl_position.derive`'s own docstring. Every real write appends one event to `.implementation/position.jsonl` | `REVISION_UNREADABLE`, `POSITION_BLOCK_EXISTS` (install over an existing block without `--replace`), `POSITION_SEQUENCE_AND_RECONCILE`, `POSITION_HOLDER_ABSENT` (nothing to append into), `POSITION_HOLDER_AMBIGUOUS`, `POSITION_BLOCK_NOT_UNIQUE`, `POSITION_BLOCK_MALFORMED` (also raised for a block written by the pre-level-grammar revision, which carries no `target=` field and is never silently migrated), `POSITION_ITEM_MALFORMED`, `POSITION_ITEM_WITHOUT_WITNESS`, `POSITION_WITNESS_UNKNOWN_KIND`, `POSITION_SEQUENCE_UNREADABLE`, `POSITION_SEQUENCE_EMPTY`, `POSITION_TARGET_LEVEL_REQUIRED` (a fresh header with no `--target-level` and no existing block to inherit one from), `POSITION_TARGET_LEVEL_UNKNOWN` (`--target-level` names something `__levels__` never declared), `POSITION_LEVELS_UNDECLARED` (a `:level`-marked witness exists but `__levels__` declares no ladder) |
 | `discuss` | One `discuss` event per call to `.implementation/position.jsonl` — the question, the computed collision list, and (once given) the answer. Never touches `<Name>/AGREED.md`. Never gates: an unanswered question is a reported `status`, not a refusal | `DISCUSS_STDIN_CONFLICT` (`--question -` and `--answer -` together), `DISCUSS_EMPTY_QUESTION`, `DISCUSS_ABOUT_NOT_FOUND` (an `--about` ordinal outside the sequence), `POSITION_WITNESS_UNKNOWN_KIND` (an `--about` witness spec naming an unknown kind) |
-| `gate` | One `gate` event to `.implementation/position.jsonl`: job, worker, commit, revision, entrypoint, units and the justification. Prints no token — nothing here can be minted from the caller's own argv. `--worker <account>` authorizes a single-send or rehearsal launch for exactly that account; repeatable `--unit` authorizes a CAMPAIGN launch instead, binding the exact ordered unit list a later `submit --unit ...` will carry — the same derivation `campaign_consent_token()` uses for consent — and records `worker: null`, since a campaign names no single account. The two flags are mutually exclusive | `EMPTY_JUSTIFICATION`, `REVISION_UNREADABLE`, `POSITION_ABSENT`, `POSITION_STALE`, `NOT_READY` (no passing rehearsal on file at the job's current pin), `SEQUENCE_NOT_REACHED` (an earlier item in the sequence is still open, or no item names this job at all), `GATE_WORKER_UNIT_CONFLICT` (`--worker` and `--unit` both given), `GATE_WORKER_REQUIRED` (neither given — there is no auto-select shape for `gate` to authorize) |
+| `gate` | One `gate` event to `.implementation/position.jsonl`: job, worker, commit, revision, entrypoint, units and the justification. Prints no token — nothing here can be minted from the caller's own argv. `--worker <account>` authorizes a single-send or rehearsal launch for exactly that account; repeatable `--unit` authorizes a CAMPAIGN launch instead, binding the exact ordered unit list a later `submit --unit ...` will carry — the same derivation `campaign_consent_token()` uses for consent — and records `worker: null`, since a campaign names no single account. The two flags are mutually exclusive | `EMPTY_JUSTIFICATION`, `REVISION_UNREADABLE`, `POSITION_ABSENT`, `POSITION_STALE`, `POSITION_UNBACKED` (a sequence item is ticked and its witness was never measured — a blank box claims nothing, a ticked one asserts a step was reached, and no launch is authorized against an assertion nobody checked), `NOT_READY` (no passing rehearsal on file at the job's current pin), `SEQUENCE_NOT_REACHED` (an earlier item in the sequence is still open, or no item names this job at all), `GATE_WORKER_UNIT_CONFLICT` (`--worker` and `--unit` both given), `GATE_WORKER_REQUIRED` (neither given — there is no auto-select shape for `gate` to authorize) |
 | `close` | Refreshes the position (see `position`), then one `close` event to `.implementation/position.jsonl` binding session, revision and a digest of the resulting sequence | `REVISION_UNREADABLE`, `POSITION_ABSENT`, `POSITION_STALE`, `POSITION_DISAGREES` (checked against the position exactly as recorded, before the refresh) |
 
 ## References

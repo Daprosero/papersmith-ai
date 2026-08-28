@@ -292,12 +292,35 @@ def _derive_shard(evidence: dict, operand: str | None) -> tuple[bool | None, str
     shard evidence at all — `probe` always, and `verify` without `--shards` —
     and `None` here means `unmeasured`, never `False`: the shard may well have
     arrived, this invocation simply was not told to look.
+
+    **Arrival alone is not evidence that a shard reports on the code running
+    now.** A shard folder is a file left behind by whatever ran; nothing about
+    its presence says which code produced it, and reading a rung off it is the
+    same unbacked attribution `_derive_notebook_level` already refuses ("we
+    have not looked with current eyes"). `evidence["shardsCurrent"]` is the
+    subset of arrived shards whose own stamp says otherwise — measured by the
+    caller, which is the only layer that knows both the stamp field a target
+    declared and the digest of the code as it stands. An arrived shard that is
+    NOT in that subset reads `None` (unmeasured), never `False`: the shard
+    exists, we simply cannot say it speaks for this code.
+
+    **`shardsCurrent is None` restores the behaviour that predates it, exactly.**
+    A target that never declared which stamp field carries its code identity
+    has said nothing this could check, and inventing a field name on its behalf
+    is the one thing the forge must not do — so arrival alone decides, as it
+    always did, and no target that never opted in changes verdict.
     """
-    measured_by = "distribution.shardsArrived"
     arrived = evidence.get("shardsArrived")
+    current = evidence.get("shardsCurrent")
+    measured_by = ("distribution.shardsArrived" if current is None
+                   else "distribution.shardsArrived+shardsCurrent")
     if not operand or arrived is None:
         return None, measured_by
-    return operand in arrived, measured_by
+    if operand not in arrived:
+        return False, measured_by
+    if current is not None and operand not in current:
+        return None, measured_by
+    return True, measured_by
 
 
 _DERIVERS = {
@@ -418,19 +441,33 @@ def _derive_rehearsal_level(
 
 def _derive_shard_level(
         evidence: dict, operand: str | None, levels: list[str]) -> tuple[str | None, str]:
-    """`@shard <id>` (leveled): an arrived shard is full-scale evidence in
-    its own right (the same `shardsArrived` fact the two-state form reads),
-    so it places its item at the top rung; one that has not arrived, at the
-    floor — both definite, because `shardsArrived` being present at all (not
-    `None`) means this invocation was told to look.
+    """`@shard <id>` (leveled): an arrived shard that reports on the code
+    running now is full-scale evidence in its own right, so it places its
+    item at the top rung; one that has not arrived, at the floor — both
+    definite, because `shardsArrived` being present at all (not `None`)
+    means this invocation was told to look.
+
+    A shard that arrived but is not `evidence["shardsCurrent"]` reads
+    `None` (unmeasured), never the floor, for the identical reason
+    `_derive_notebook_level` gives: the fact is "we have not looked with
+    current eyes", not "it has not started". And `shardsCurrent is None`
+    — the target declared no way to tell — leaves arrival alone deciding,
+    exactly as it did before that key existed. See `_derive_shard`'s own
+    docstring for both halves in full.
     """
-    measured_by = "distribution.shardsArrived"
+    arrived = evidence.get("shardsArrived")
+    current = evidence.get("shardsCurrent")
+    measured_by = ("distribution.shardsArrived" if current is None
+                   else "distribution.shardsArrived+shardsCurrent")
     if not levels:
         return None, measured_by
-    arrived = evidence.get("shardsArrived")
     if not operand or arrived is None:
         return None, measured_by
-    return (levels[-1] if operand in arrived else levels[0]), measured_by
+    if operand not in arrived:
+        return levels[0], measured_by
+    if current is not None and operand not in current:
+        return None, measured_by
+    return levels[-1], measured_by
 
 
 _LEVEL_DERIVERS = {
@@ -458,6 +495,20 @@ def derive(items: list[dict], evidence: dict) -> list[dict]:
       not look" and "it has not started" stay two different facts, the same
       rule `_record_scale` already keeps by returning `{}` rather than
       guessing.
+
+    `unbacked` is the one asymmetry a blank box and a ticked box do not
+    share. `disagrees` compares a mark against a measurement, so it is
+    necessarily silent when there is no measurement — an `x` over an
+    unmeasured witness contradicts nothing, because nothing was said. But
+    the two marks are not equally honest there: a blank box over an
+    unmeasured witness claims nothing and is exactly right to; a ticked one
+    asserts a step was reached while the only thing that could confirm it
+    was never looked at. Without this key those two items are byte-identical
+    in every report the position produces, so the assertion nobody measured
+    reads as the settled fact everybody did. `unbacked` is that, and only
+    that: `satisfied is None and mark == "x"`. It is deliberately NOT folded
+    into `disagrees` — a disagreement names a measurement that says
+    otherwise, and there is none here to name.
 
     `satisfied` is the tick-worthy verdict every caller writing a mark
     should read, never `derived` directly: for a two-state item it is
@@ -511,12 +562,17 @@ def derive(items: list[dict], evidence: dict) -> list[dict]:
                 satisfied = (None if derived_index is None or target_index is None
                             else derived_index >= target_index)
         disagrees = satisfied is not None and satisfied != (item["mark"] == "x")
+        # See the docstring: a tick over a witness nothing measured is an
+        # assertion, and it has to be told apart from the blank box beside
+        # it, which asserts nothing and is honest for it.
+        unbacked = satisfied is None and item["mark"] == "x"
         results.append({
             "derived": derived,
             "twostate": twostate,
             "satisfied": satisfied,
             "measuredBy": measured_by,
             "disagrees": disagrees,
+            "unbacked": unbacked,
         })
     return results
 

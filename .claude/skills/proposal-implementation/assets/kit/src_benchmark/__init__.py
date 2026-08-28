@@ -70,6 +70,18 @@ __benchmark__ = {
     #         "perRun": [],
     #         "identicalAcrossShards": ["datasetSize"],
     #     }
+    #
+    # One further key is OPTIONAL and asked of nobody: `currentWhen`, a
+    # dotted path into a shard's own `shard.json` stamp naming where that
+    # shard wrote down the identity of the code that produced it, e.g.:
+    #     "currentWhen": "evidence.sourcesDigest"
+    # Declare it and a returned shard only counts as evidence while the
+    # value there still matches the code as it stands; a shard that arrived
+    # from code this repository has moved past reads as unmeasured rather
+    # than as a step reached. Leave it out -- the default -- and a shard is
+    # trusted on arrival alone, exactly as before this key existed. The
+    # forge never guesses the field, the same way it never guesses which
+    # measurements are poolable: you name it, and it only compares.
     "distribution": {},
 
     # The dotted module and function that actually pull the target's runtime

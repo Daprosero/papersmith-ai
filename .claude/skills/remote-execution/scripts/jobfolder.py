@@ -526,13 +526,22 @@ def _fold_module_constants(
     source: Path | None = None,
     cache: dict[Path, dict[str, Path] | None] | None = None,
 ) -> dict[str, Path]:
-    """Scan module-level `ast.Assign` statements only (`tree.body`, never a
-    nested function or class body) and fold each single-name target's
-    right-hand side through `_fold_path_expr()`, building each constant on
-    top of the ones already folded above it in the same file — exactly the
-    real shape this exists to catch (`REPOSITORY` -> `PRODUCT` -> `RESULTS`
-    -> `RECORD`, each one a `Name` lookup into the constants already
-    folded).
+    """Scan module-level assignments only (`tree.body`, never a nested
+    function or class body) and fold each single-name target's right-hand
+    side through `_fold_path_expr()`, building each constant on top of the
+    ones already folded above it in the same file — exactly the real shape
+    this exists to catch (`REPOSITORY` -> `PRODUCT` -> `RESULTS` ->
+    `RECORD`, each one a `Name` lookup into the constants already folded).
+
+    Both `ast.Assign` (`NAME = value`) and `ast.AnnAssign` (`NAME: type =
+    value`) count. An annotation changes nothing about what a constant is
+    worth, and reading only the first form silently dropped an annotated
+    link out of the middle of a chain: every constant built on top of it
+    then failed to fold too, and the reads through them left the path table
+    entirely — reported as unresolved, or not reported at all. A bare
+    `NAME: type` with no value (`node.value is None`) binds nothing and is
+    skipped; it is not a name assigned twice either, since it was never
+    assigned once.
 
     A name assigned twice at module level is dropped from the table
     entirely, never last-wins: a second assignment means the first fold
@@ -551,11 +560,21 @@ def _fold_module_constants(
     table: dict[str, Path] = {}
     assigned_twice: set[str] = set()
     for node in tree.body:
-        if not isinstance(node, ast.Assign):
+        if isinstance(node, ast.Assign):
+            if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+                continue
+            name = node.targets[0].id
+            value = node.value
+        elif isinstance(node, ast.AnnAssign):
+            # An `ast.AnnAssign` has exactly one target by construction, so
+            # the single-`Name` discipline above reduces to the `isinstance`
+            # half of it -- no count to check, nothing relaxed.
+            if node.value is None or not isinstance(node.target, ast.Name):
+                continue
+            name = node.target.id
+            value = node.value
+        else:
             continue
-        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
-            continue
-        name = node.targets[0].id
         if name in assigned_twice:
             continue
         if name in table:
@@ -565,7 +584,7 @@ def _fold_module_constants(
         if name in shadowed:
             continue
         folded = _fold_path_expr(
-            node.value, table, file, imports=imports, source=source, cache=cache
+            value, table, file, imports=imports, source=source, cache=cache
         )
         if folded is not None:
             table[name] = folded

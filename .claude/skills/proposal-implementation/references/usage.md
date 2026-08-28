@@ -845,7 +845,10 @@ python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py gat
 ```
 
 Refuses `EMPTY_JUSTIFICATION` on blank input, `POSITION_ABSENT`/`POSITION_STALE`
-when there is nothing current to gate against, `NOT_READY` when no passing
+when there is nothing current to gate against, `POSITION_UNBACKED` when a step
+is ticked and its witness was never measured — a blank box claims nothing and
+is honest for it, a ticked one asserts a step was reached, and a launch is not
+authorized against an assertion nobody checked — `NOT_READY` when no passing
 rehearsal is on file for this job at its current pin, `SEQUENCE_NOT_REACHED`
 when an earlier item in the sequence is still open — a launch that would skip
 a rung is refused rather than authorized around it — and

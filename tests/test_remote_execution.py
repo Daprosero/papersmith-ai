@@ -17991,5 +17991,106 @@ class PushSurfaceHookTests(unittest.TestCase):
         self.assertEqual(stderr, "")
 
 
+class AnnotatedModuleConstantFoldTests(unittest.TestCase):
+    """`NAME: type = value` is `ast.AnnAssign`, and `_fold_module_constants()`
+    walked only `ast.Assign`.
+
+    An annotation changes nothing about what a constant is worth, so a chain
+    with one annotated link in it has to fold to exactly what the same chain
+    spelled flat folds to. It did not: the annotated link never entered the
+    table, every constant built on top of it then failed to fold as well, and
+    the read through them left the path table entirely -- so an undeclared
+    read that the flat spelling refuses generation over went unreported.
+
+    Both forms are exercised in every test here and asserted to AGREE. Pinning
+    only the annotated one would pass just as well against a reader that had
+    stopped reading the flat one.
+    """
+
+    CHAIN = (
+        "from pathlib import Path\n\n"
+        "{repository}\n"
+        '{product}\n'
+        'RECORD = PRODUCT / "Results" / "ledger.json"\n\n\n'
+        "def ledger_on_record():\n"
+        "    return RECORD.read_text(encoding='utf-8')\n"
+    )
+
+    FLAT_REPOSITORY = "REPOSITORY = Path(__file__).resolve().parents[2]"
+    ANNOTATED_REPOSITORY = "REPOSITORY: Path = Path(__file__).resolve().parents[2]"
+    FLAT_PRODUCT = 'PRODUCT = REPOSITORY / "product-out"'
+    ANNOTATED_PRODUCT = 'PRODUCT: Path = REPOSITORY / "product-out"'
+
+    def _resolve(self, repository, product):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            path = target / "src" / "pkg_z" / "settings.py"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                self.CHAIN.format(repository=repository, product=product),
+                encoding="utf-8",
+            )
+            return JOBFOLDER.resolve_clone_paths(
+                target, ["pkg_z.settings"], ["src/pkg_z"]
+            )
+
+    def test_an_annotated_link_folds_to_what_the_flat_chain_folds_to(self):
+        """The finding: one annotated link in the middle used to drop the
+        whole resolved path off the report, and an undeclared read with it."""
+        flat = self._resolve(self.FLAT_REPOSITORY, self.FLAT_PRODUCT)
+        annotated = self._resolve(self.ANNOTATED_REPOSITORY, self.ANNOTATED_PRODUCT)
+
+        self.assertEqual(
+            flat["computedReadsNotDeclared"],
+            ["product-out/Results/ledger.json"],
+        )
+        self.assertEqual(annotated["computedReadsNotDeclared"],
+                         flat["computedReadsNotDeclared"])
+        self.assertEqual(annotated["unresolvedReads"], flat["unresolvedReads"])
+
+    def test_a_single_annotated_link_is_enough_to_break_the_chain(self):
+        """Isolates the mechanism: only `REPOSITORY` is annotated, and both
+        constants built on top of it are spelled exactly as the flat chain
+        spells them. Everything downstream of one unread link is unread."""
+        mixed = self._resolve(self.ANNOTATED_REPOSITORY, self.FLAT_PRODUCT)
+        self.assertEqual(
+            mixed["computedReadsNotDeclared"],
+            ["product-out/Results/ledger.json"],
+        )
+
+    def test_a_bare_annotation_binds_nothing_and_is_not_a_second_assignment(self):
+        """`NAME: Path` with no value assigns nothing, so it must neither
+        enter the table nor evict the real assignment beside it -- a name
+        assigned twice is dropped, and this was never assigned once.
+
+        The bare annotation is written AFTER the real assignment on purpose:
+        before it, a reader that mishandled it would still recover, and the
+        test would pass over an implementation that treats the annotation as
+        an assignment. After it, mishandling costs the whole chain.
+        """
+        result = self._resolve(
+            self.FLAT_REPOSITORY + "\nREPOSITORY: Path", self.FLAT_PRODUCT)
+        self.assertEqual(
+            result["computedReadsNotDeclared"],
+            ["product-out/Results/ledger.json"],
+        )
+
+    def test_an_annotated_name_assigned_twice_is_still_dropped(self):
+        """The existing discipline, held across the new form: two assignments
+        mean the first fold cannot be trusted as the name's one true value,
+        and admitting annotations must not open a way around that.
+
+        The second assignment resolves somewhere else that is still INSIDE the
+        target, so last-wins would report a different path rather than no path
+        -- an empty result here means the name was dropped, not that the read
+        fell outside the repository and was filtered away.
+        """
+        result = self._resolve(
+            self.ANNOTATED_REPOSITORY
+            + "\nREPOSITORY = Path(__file__).resolve().parents[1]",
+            self.FLAT_PRODUCT)
+        self.assertEqual(result["computedReadsNotDeclared"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -265,6 +265,12 @@ def position_state(target: Path, name: str, evidence: dict,
         "status": "absent", "holder": None, "revision": None,
         "revisionSha256": None, "boundTo": "unknown",
         "sequence": [], "disagreements": [], "unmeasured": [],
+        # Every item whose box is ticked and whose witness nothing measured
+        # -- an assertion, not a reading. Its own list beside `disagreements`
+        # rather than folded into it, because a disagreement names a
+        # measurement that says otherwise and this one has none to name; see
+        # `impl_position.derive`'s docstring.
+        "unbacked": [],
         "lastGate": None, "lastClose": None,
         # PR10 (the-position-nobody-holds, level grammar): the rung this
         # pass is aiming at, read straight off the block's own header --
@@ -306,13 +312,14 @@ def position_state(target: Path, name: str, evidence: dict,
     last_gate = next((e for e in reversed(events) if e.get("kind") == "gate"), None)
     last_close = next((e for e in reversed(events) if e.get("kind") == "close"), None)
 
-    sequence, disagreements, unmeasured = [], [], []
+    sequence, disagreements, unmeasured, unbacked = [], [], [], []
     for item, result in zip(items, derived):
         entry = {
             "ordinal": item["ordinal"], "mark": item["mark"],
             "derived": result["derived"], "twostate": result["twostate"],
             "satisfied": result["satisfied"], "witness": item["witness"],
             "measuredBy": result["measuredBy"], "disagrees": result["disagrees"],
+            "unbacked": result["unbacked"],
             "text": item["text"],
         }
         sequence.append(entry)
@@ -320,6 +327,13 @@ def position_state(target: Path, name: str, evidence: dict,
             disagreements.append(entry)
         if result["derived"] is None:
             unmeasured.append(entry)
+        # An item can be both unmeasured and unbacked -- it is unbacked only
+        # BECAUSE it is unmeasured -- so it appears in both lists rather than
+        # in whichever one is tested first. `unmeasured` answers "what could
+        # not be read"; `unbacked` answers "what was claimed anyway", and a
+        # reader looking for the second must not have to know the first.
+        if result["unbacked"]:
+            unbacked.append(entry)
 
     # The same staleness rule `admissibility_record` already applies (line
     # 4815-4821): a revision's *content* hash, not its name, is what a header
@@ -344,6 +358,7 @@ def position_state(target: Path, name: str, evidence: dict,
         "revision": block["revision"], "revisionSha256": block["revisionSha256"],
         "boundTo": bound_to, "sequence": sequence,
         "disagreements": disagreements, "unmeasured": unmeasured,
+        "unbacked": unbacked,
         "lastGate": last_gate, "lastClose": last_close,
         "targetLevel": block["target"],
     }
@@ -682,16 +697,42 @@ DISTRIBUTION_DECLARATION = {
 }
 
 
-#: The declared shape of each `distribution` field. A container answers by
-#: existing, even empty; a scalar answers only non-blank. Neither branch is
-#: trusted until the value's own type is confirmed first — that confirmation
-#: is what keeps a malformed value from being read as either.
+#: What a distributed run MAY say about itself, and is never asked to. Held
+#: apart from `DISTRIBUTION_DECLARATION` above rather than mixed into it,
+#: because that dict is the required set: every field in it that goes
+#: unanswered is reported `missing` and the whole block reads `incomplete`.
+#: A key added there would declare every existing target incomplete for
+#: never having answered a question nobody had asked them yet, which is a
+#: worse lie than the silence it replaces.
+#:
+#: Optional, and still schema: a value of the wrong shape is `malformed`
+#: here exactly as it is above, because a target that DID answer deserves to
+#: be told its answer is unreadable rather than have it quietly ignored.
+DISTRIBUTION_OPTIONAL = {
+    "currentWhen": "a dotted path into a shard's own stamp naming where that "
+                   "shard recorded the identity of the code that produced it. "
+                   "Arrival says a shard folder exists, never which code wrote "
+                   "it, so without this a returned shard is trusted on the "
+                   "strength of being present. The forge never guesses the "
+                   "field: the repository names it and the forge only compares "
+                   "the value there against the digest of the code as it "
+                   "stands, the same division `identicalAcrossShards` already "
+                   "keeps",
+}
+
+
+#: The declared shape of each `distribution` field, required and optional
+#: alike. A container answers by existing, even empty; a scalar answers only
+#: non-blank. Neither branch is trusted until the value's own type is
+#: confirmed first — that confirmation is what keeps a malformed value from
+#: being read as either.
 DISTRIBUTION_SHAPE = {
     "axis": str,
     "poolable": list,
     "perEnvironment": list,
     "perRun": list,
     "identicalAcrossShards": list,
+    "currentWhen": str,
 }
 
 
@@ -730,6 +771,62 @@ def _distribution_list(dist: dict, field: str) -> list:
     """
     value = dist.get(field)
     return list(value) if isinstance(value, list) else []
+
+
+#: Returned by `_stamp_at` for a path the stamp does not hold, so that a
+#: stamp carrying a literal `null` there is never confused with one that
+#: carries nothing. A private sentinel rather than `None`, because the whole
+#: point of the lookup is telling those two apart.
+_STAMP_ABSENT = object()
+
+
+def _stamp_at(stamp: dict, dotted: str):
+    """The value a shard's own stamp holds at a dotted path, or `_STAMP_ABSENT`.
+
+    Dotted because a stamp is a document a repository shaped, not a flat
+    table: whatever it keeps its code identity under may well sit one level
+    down beside the rest of what that run recorded. Every segment must
+    resolve through a mapping — a path that runs into a list, a scalar or a
+    missing key answers absent rather than raising, since a stamp this
+    cannot read is a stamp that did not answer, which is a state and not a
+    crash.
+    """
+    current = stamp
+    for segment in dotted.split("."):
+        if not isinstance(current, dict) or segment not in current:
+            return _STAMP_ABSENT
+        current = current[segment]
+    return current
+
+
+def _shards_current(shards: list, dist: dict | None, digest: str) -> list | None:
+    """Which arrived shards say they were produced by the code as it stands.
+
+    `None` — not `[]` — when the repository declared no `currentWhen`. The
+    two are opposite answers: `[]` says every shard was asked and none of
+    them speaks for this code, while `None` says nobody was asked, because
+    the forge holds no name for the field that would answer and inventing
+    one on a repository's behalf is the one thing it must not do (see
+    `DISTRIBUTION_OPTIONAL`). `impl_position` reads that difference directly:
+    `None` leaves arrival alone deciding, exactly as it did before this key
+    existed.
+
+    A shard whose stamp carries nothing at the declared path is left out. It
+    is tempting to read a silent stamp as "probably fine" — it is the same
+    temptation as reading an unstamped notebook as current, and
+    `notebooks_state` already refuses it for the same reason: a stamp that
+    cannot answer the question is not evidence that the answer is yes.
+
+    `digest` is the caller's already-computed current source digest — the
+    identical value `notebooks_state` compares a report's own stamp against
+    (`source_digest`), never a second one derived here, or a shard and a
+    notebook could disagree about what "current" means in one report.
+    """
+    declared = (dist or {}).get("currentWhen")
+    if not isinstance(declared, str) or not declared:
+        return None
+    return [entry["shard"] for entry in shards
+            if _stamp_at(entry.get("stamp") or {}, declared) == digest]
 
 
 def _projected_cost(reduction: dict, target_scale: dict) -> dict | None:
@@ -828,9 +925,12 @@ def distribution_state(contract: dict, dimensions: dict,
                if not _distribution_answered(dist, field)
                and not _distribution_malformed(dist, field)]
 
+    # The optional field is scanned for shape and never for presence: a
+    # target that answered it badly hears about it, and one that never
+    # answered it at all is not `missing` anything.
     malformed = [{"field": field, "expected": DISTRIBUTION_SHAPE[field].__name__,
                  "found": type(dist[field]).__name__}
-                for field in DISTRIBUTION_DECLARATION
+                for field in (*DISTRIBUTION_DECLARATION, *DISTRIBUTION_OPTIONAL)
                 if _distribution_malformed(dist, field)]
 
     # The only axis this refuses, and it refuses it by name because the name is
@@ -2083,6 +2183,7 @@ def cmd_probe(args) -> dict:
         {"search": search, "requiredScale": declared_required_scale(search),
          "notebooks": notebooks_state(target, name, package_name(name)),
          "smokeReady": jobs["smokeReady"], "shardsArrived": None,
+         "shardsCurrent": None,
          "levels": resolve_levels_declaration(target, name)},
         args.revision,
         revision_source(args.revision) if args.revision else None)
@@ -2278,7 +2379,18 @@ def well_formed(declared: object) -> list[dict]:
 
 
 def read_findings(target: Path) -> list[dict]:
-    """The declared audit findings, read statically from tests/findings.py."""
+    """The declared audit findings, read statically from tests/findings.py.
+
+    Both assignment forms, for the reason `read_declaration` states in full:
+    `FINDINGS: list[dict] = [...]` is `ast.AnnAssign`, and a reader walking
+    only `ast.Assign` sees nothing there. The consequence is worse here than
+    anywhere else this class appears — the comment below already says why an
+    empty list is the wrong answer for an unparsable file, and an annotated
+    declaration produced exactly that answer, silently, for a repository
+    whose findings were sitting in the file the whole time. A bare `FINDINGS:
+    list[dict]` with no value declares nothing and is skipped, never read as
+    an audit that found nothing.
+    """
     path = target / "tests" / "findings.py"
     if not path.exists():
         return []
@@ -2294,13 +2406,22 @@ def read_findings(target: Path) -> list[dict]:
         if isinstance(node, ast.Assign) and any(
             isinstance(t, ast.Name) and t.id == "FINDINGS" for t in node.targets
         ):
-            try:
-                declared = ast.literal_eval(node.value)
-            except ValueError as exc:
-                raise Refused("MALFORMED_FINDINGS",
-                              "FINDINGS is not a literal, so it cannot be read without "
-                              "executing the target's code.") from exc
-            return well_formed(declared)
+            value = node.value
+        elif (isinstance(node, ast.AnnAssign)
+              and isinstance(node.target, ast.Name)
+              and node.target.id == "FINDINGS"):
+            if node.value is None:
+                continue
+            value = node.value
+        else:
+            continue
+        try:
+            declared = ast.literal_eval(value)
+        except ValueError as exc:
+            raise Refused("MALFORMED_FINDINGS",
+                          "FINDINGS is not a literal, so it cannot be read without "
+                          "executing the target's code.") from exc
+        return well_formed(declared)
     return []
 
 
@@ -2354,6 +2475,15 @@ def scaffold_gaps(target: Path, name: str) -> list[str]:
 # --------------------------------------------------------------------------
 
 def read_provenance(path: Path) -> dict | None:
+    """The module's own `__provenance__`, read without importing it.
+
+    Both assignment forms, for the reason `read_declaration` states in full:
+    `__provenance__: dict = {...}` is `ast.AnnAssign`, and a reader walking
+    only `ast.Assign` answers `None` for it — which every caller here reads
+    as "this module declares no provenance at all", the exact opposite of
+    what the file says. A bare `__provenance__: dict` with no value declares
+    nothing and is skipped rather than reported as absent-with-an-error.
+    """
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     except (SyntaxError, UnicodeDecodeError) as exc:
@@ -2362,10 +2492,19 @@ def read_provenance(path: Path) -> dict | None:
         if isinstance(node, ast.Assign) and any(
             isinstance(t, ast.Name) and t.id == "__provenance__" for t in node.targets
         ):
-            try:
-                return ast.literal_eval(node.value)
-            except ValueError:
-                return {"__error__": "__provenance__ is not a literal"}
+            value = node.value
+        elif (isinstance(node, ast.AnnAssign)
+              and isinstance(node.target, ast.Name)
+              and node.target.id == "__provenance__"):
+            if node.value is None:
+                continue
+            value = node.value
+        else:
+            continue
+        try:
+            return ast.literal_eval(value)
+        except ValueError:
+            return {"__error__": "__provenance__ is not a literal"}
     return None
 
 
@@ -2982,6 +3121,54 @@ def resolve_harness_status(target: Path, name: str, package: str) -> dict:
             "path": None, "searchedPath": str(searched.relative_to(target))}
 
 
+def target_interpreter(target: Path) -> Path:
+    """The target repository's own interpreter — the only one this skill's
+    isolation rule permits target code to run under.
+
+    One spelling, because three call sites needed it and a path spelled three
+    times is a path that eventually differs in one of them. `introspect` runs
+    it, `env` builds it, and `target_python_version` reads what it is; the
+    Windows branch is here rather than repeated at each.
+    """
+    bin_dir = "Scripts" if os.name == "nt" else "bin"
+    return target / ".venv" / bin_dir / ("python.exe" if os.name == "nt"
+                                         else "python")
+
+
+def target_python_version(target: Path) -> str | None:
+    """What version that interpreter is, read off `pyvenv.cfg` rather than run.
+
+    Static, like every other reading in this file: `notebooks_state` is called
+    three times inside one `verify`, and spawning an interpreter each time to
+    ask it a question its own config file already answers would be paying a
+    process for a string. `pyvenv.cfg`'s `version` is written by `venv` at
+    creation and is the same three-component string the interpreter reports as
+    `sys.version.split()[0]` — which is what a kernel stamps into a notebook.
+
+    `version_info` is read as a fallback because newer CPythons write that key
+    (`3.12.13.final.0`) beside or instead of `version`; only its first three
+    components are kept, so the two spellings compare as one.
+
+    `None` when there is no venv, no config, or nothing parsable in it. Never a
+    guess: a comparison against a version nobody could read is not a comparison.
+    """
+    config = target / ".venv" / "pyvenv.cfg"
+    if not config.exists():
+        return None
+    values: dict[str, str] = {}
+    for line in config.read_text(encoding="utf-8", errors="replace").splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            values[key.strip()] = value.strip()
+    for key in ("version", "version_info"):
+        raw = values.get(key)
+        if raw:
+            parts = raw.split(".")
+            if len(parts) >= 3 and all(p.isdigit() for p in parts[:3]):
+                return ".".join(parts[:3])
+    return None
+
+
 def introspect(target: Path, package: str, record: Path | None,
                entry_module: str = "") -> dict:
     """Run the two live checks inside the target's interpreter, or say why not.
@@ -3008,9 +3195,7 @@ def introspect(target: Path, package: str, record: Path | None,
                           "so there is nothing to import; declare it and this "
                           "becomes a reading about the interpreter"}
 
-    bin_dir = "Scripts" if os.name == "nt" else "bin"
-    interpreter = target / ".venv" / bin_dir / ("python.exe" if os.name == "nt"
-                                                else "python")
+    interpreter = target_interpreter(target)
     if not interpreter.exists():
         return {"status": "unavailable",
                 "detail": f"no hay intérprete en {interpreter}: corré `env` primero"}
@@ -3738,6 +3923,13 @@ def declared_dimension_names(target: Path, package: str) -> list[str] | None:
     declares zero dimensions" — trivially exhaustive, and a name bound to a
     call or a list is not a declaration of zero dimensions, it is a
     declaration this reading cannot make sense of.
+
+    Both assignment forms are read, for the reason `read_declaration` states
+    in full: `DIMENSIONS: dict = {...}` is `ast.AnnAssign`, and a reader
+    walking only `ast.Assign` answered `None` for it — "the universe could
+    not be determined" over a file that determines it on the line being
+    looked at. A bare `DIMENSIONS: dict` with no value binds nothing and is
+    skipped.
     """
     bench_root = target / "src" / f"{package}_Benchmark"
     for candidate in ("config.py", "benchmark.py"):
@@ -3749,13 +3941,21 @@ def declared_dimension_names(target: Path, package: str) -> list[str] | None:
         except (SyntaxError, UnicodeDecodeError):
             continue
         for node in tree.body:
-            if not (isinstance(node, ast.Assign) and any(
+            if isinstance(node, ast.Assign) and any(
                 isinstance(t, ast.Name) and t.id == "DIMENSIONS" for t in node.targets
-            )):
+            ):
+                value = node.value
+            elif (isinstance(node, ast.AnnAssign)
+                  and isinstance(node.target, ast.Name)
+                  and node.target.id == "DIMENSIONS"):
+                if node.value is None:
+                    continue
+                value = node.value
+            else:
                 continue
-            if not isinstance(node.value, ast.Dict):
+            if not isinstance(value, ast.Dict):
                 continue
-            return [key.value for key in node.value.keys
+            return [key.value for key in value.keys
                     if isinstance(key, ast.Constant) and isinstance(key.value, str)]
     return None
 
@@ -3889,12 +4089,14 @@ def notebook_execution(path: Path) -> dict:
     anything, and answering it is the difference between a report and a claim.
     """
     if not path.exists():
-        return {"status": "missing", "codeCells": 0, "unexecuted": [], "errors": []}
+        return {"status": "missing", "codeCells": 0, "unexecuted": [],
+                "errors": [], "executedBy": None}
     try:
         notebook = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         return {"status": "unreadable", "detail": str(exc)[:160],
-                "codeCells": 0, "unexecuted": [], "errors": []}
+                "codeCells": 0, "unexecuted": [], "errors": [],
+                "executedBy": None}
 
     # `or []` rather than a default: nbformat writes an explicit null for an
     # absent list often enough, and a crash here would answer nothing at all
@@ -3922,6 +4124,21 @@ def notebook_execution(path: Path) -> dict:
             if DIGEST_MARKER in text:
                 recorded = text.split(DIGEST_MARKER, 1)[1].strip().split()[0]
 
+    # Which interpreter actually ran this, in the notebook's own words.
+    # `metadata.language_info.version` is written by the kernel on execution
+    # and reflects the process that ran the cells -- NOT the kernelspec the
+    # file names, which is a label the launcher resolves at start time and
+    # which routinely resolves somewhere else entirely (see
+    # `notebooks_state`'s `interpreterMatch`). Measured by executing one
+    # notebook twice through the same `jupyter nbconvert` and varying only
+    # PATH: the field came back 3.12.13 and 3.9.6.
+    language_info = (notebook.get("metadata") or {}).get("language_info")
+    executed_by = None
+    if isinstance(language_info, dict):
+        version = language_info.get("version")
+        if isinstance(version, str) and version.strip():
+            executed_by = version.strip()
+
     if not code_cells:
         status = "empty"
     elif errors:
@@ -3931,7 +4148,8 @@ def notebook_execution(path: Path) -> dict:
     else:
         status = "executed"
     return {"status": status, "codeCells": len(code_cells),
-            "unexecuted": unexecuted, "errors": errors, "recordedDigest": recorded}
+            "unexecuted": unexecuted, "errors": errors, "recordedDigest": recorded,
+            "executedBy": executed_by}
 
 
 def _module_scope_statements(tree: ast.Module):
@@ -4242,9 +4460,30 @@ def notebooks_state(target: Path, name: str, package: str) -> dict:
     they could be unexecuted, or full of errors, and the validation would still
     report `ok`. And `executed` alone answers the wrong question — it says a cell
     ran once, not that it ran against this code.
+
+    `sourcesMatch` and `interpreterMatch` are two different questions and both
+    have to be asked. The first is whether the notebook ran against this code;
+    the second is whether it ran under the interpreter this skill's isolation
+    rule requires — and the obvious way to execute a notebook gets the second
+    one wrong silently. A kernelspec is a NAME the launcher resolves when the
+    kernel starts, and the ordinary `python3` kernelspec's `argv` begins with a
+    bare `python`, resolved off `PATH`. So running `<target>/.venv/bin/python
+    -m jupyter nbconvert --execute` does not put that venv's `bin` on `PATH`
+    and the cells run under whatever `python` was already first there. Measured
+    on a real target: a suite passing 297/297 standalone produced fifteen
+    failures inside the notebook, and nothing in the failure text named an
+    interpreter. `interpreterMatch` is what makes that visible.
+
+    It is REPORTED and never drifts `status` on its own. A wrong interpreter is
+    not a wrong number — it is a reason to distrust the numbers, and which one
+    of those a reader is looking at is exactly what a folded status destroys.
+    `None` is unmeasured throughout: a notebook whose metadata names no version,
+    or a target with no venv to compare against, has not been checked and never
+    reads as checked.
     """
     root = target / name / "Notebooks"
     current = source_digest(target, package)
+    interpreter_version = target_python_version(target)
     contract = report_contract(target, name)
     reports = []
     for notebook in sorted(root.glob("*.ipynb")) if root.is_dir() else []:
@@ -4254,6 +4493,9 @@ def notebooks_state(target: Path, name: str, package: str) -> dict:
             state["status"] = "stale-sources"
         state["notebook"] = str(notebook.relative_to(target))
         state["sourcesMatch"] = None if not recorded else recorded == current
+        state["interpreterMatch"] = (
+            None if not interpreter_version or not state.get("executedBy")
+            else state["executedBy"] == interpreter_version)
         # Static, and it never gates: it names the same fact `verify` and
         # `probe` echo, nowhere close to `status` above.
         state["coupling"] = notebook_coupling(notebook, contract)
@@ -4263,7 +4505,19 @@ def notebooks_state(target: Path, name: str, package: str) -> dict:
         reports.append(state)
     return {
         "sourcesDigest": current,
+        # What the target's own interpreter is, beside the digest of its own
+        # sources: the two facts every report below is measured against, said
+        # once where a reader meets them rather than inferred from the
+        # per-report verdicts.
+        "interpreterVersion": interpreter_version,
         "reports": reports,
+        # An executed report that ran under something other than the target's
+        # own interpreter. Named for the same reason `unstamped` is: the
+        # skill's isolation rule is the one rule nothing could check, so a
+        # notebook that broke it looked exactly like one that kept it.
+        # Reported, never gating -- see the docstring.
+        "foreignInterpreter": [r["notebook"] for r in reports
+                               if r["interpreterMatch"] is False],
         # An executed report that never stamped what it ran against cannot be told
         # apart from a relic, so it is named — and it counts. Naming it and then
         # reporting `ok` anyway said the quiet part twice: the skill knows the
@@ -4475,9 +4729,8 @@ def cmd_env(args: argparse.Namespace) -> dict:
     target = resolve_target(args.target)
     venv_dir = target / ".venv"
     floor, floor_source = _python_floor(target)
-    bin_dir = "Scripts" if os.name == "nt" else "bin"
-    interpreter = venv_dir / bin_dir / ("python.exe" if os.name == "nt" else "python")
-    pip = venv_dir / bin_dir / ("pip.exe" if os.name == "nt" else "pip")
+    interpreter = target_interpreter(target)
+    pip = interpreter.parent / ("pip.exe" if os.name == "nt" else "pip")
     created = False
     if not (venv_dir / "pyvenv.cfg").exists():
         # Check site 1: BEFORE spending the work of building a venv from an
@@ -5325,16 +5578,26 @@ def _position_write_evidence(
         resolved["contract"],
         list((report.get("declared") or {}).get("records") or []),
         target / name, declaration_status=resolved["status"])
-    shards_arrived = None
+    shards_arrived = shards_current = None
     if shards_root:
         shard_io = _load_remote_execution_shard_io()
-        shards_arrived = [entry["shard"]
-                          for entry in shard_io.read_shards(Path(shards_root))]
+        shards = shard_io.read_shards(Path(shards_root))
+        shards_arrived = [entry["shard"] for entry in shards]
+        # The same currency read `verify --shards` makes, computed the same
+        # way from the same two inputs. A writer that skipped it would tick
+        # a `@shard` witness on a shard that arrived from code the
+        # repository has since moved past -- and `position` is the one
+        # command that writes those marks down, so the reader would then be
+        # trusting a mark the writer had never checked.
+        shards_current = _shards_current(
+            shards, (resolved["contract"] or {}).get("distribution") or {},
+            source_digest(target, package_name(name)))
     return {
         "search": search, "requiredScale": declared_required_scale(search),
         "notebooks": notebooks_state(target, name, package_name(name)),
         "smokeReady": remote_execution_jobs_state(target)["smokeReady"],
         "shardsArrived": shards_arrived,
+        "shardsCurrent": shards_current,
         "levels": resolve_levels_declaration(target, name),
     }
 
@@ -5614,7 +5877,8 @@ def cmd_position(args: argparse.Namespace) -> dict:
         return {
             "command": "position", "target": str(target), "name": name,
             "status": "absent", "holder": None, "wrote": [], "left": [],
-            "unmeasured": [], "sequence": [], "revision": args.revision,
+            "unmeasured": [], "unbacked": [], "sequence": [],
+            "revision": args.revision,
             "revisionSha256": revision_sha256, "targetLevel": None,
         }
     else:
@@ -5655,8 +5919,16 @@ def cmd_position(args: argparse.Namespace) -> dict:
     evidence = _position_write_evidence(target, name, getattr(args, "shards", None))
     evidence["targetLevel"] = target_level
     derived = impl_position.derive(items, evidence)
-    wrote, left, unmeasured = [], [], []
+    wrote, left, unmeasured, unbacked = [], [], [], []
     for item, result in zip(items, derived):
+        # Read off the mark as it stood on disk, BEFORE the loop below can
+        # rewrite it. It never can, for exactly these items -- an unmeasured
+        # witness is `continue`d over and its mark survives the refresh
+        # untouched -- which is precisely why a tick here has to be named:
+        # a refresh corrects a contradicted mark and leaves an unbacked one
+        # exactly where it was.
+        if result["unbacked"]:
+            unbacked.append(item["ordinal"])
         if result["derived"] is None:
             unmeasured.append(item["ordinal"])
             left.append(item["ordinal"])
@@ -5687,6 +5959,7 @@ def cmd_position(args: argparse.Namespace) -> dict:
         "witness": item["witness"], "text": item["text"],
         "derived": result["derived"], "twostate": result["twostate"],
         "satisfied": result["satisfied"], "disagrees": result["disagrees"],
+        "unbacked": result["unbacked"],
     } for item, result in zip(items, derived)]
 
     if unchanged:
@@ -5695,6 +5968,7 @@ def cmd_position(args: argparse.Namespace) -> dict:
             "status": "unchanged",
             "holder": str(target_path.relative_to(target)),
             "wrote": [], "left": left, "unmeasured": unmeasured,
+            "unbacked": unbacked,
             "sequence": sequence, "revision": existing_block["revision"],
             "revisionSha256": existing_block["revisionSha256"],
             "targetLevel": target_level,
@@ -5715,6 +5989,7 @@ def cmd_position(args: argparse.Namespace) -> dict:
         "command": "position", "target": str(target), "name": name,
         "status": "written", "holder": str(target_path.relative_to(target)),
         "wrote": wrote, "left": left, "unmeasured": unmeasured,
+        "unbacked": unbacked,
         "sequence": sequence, "revision": args.revision,
         "revisionSha256": revision_sha256, "targetLevel": target_level,
     }
@@ -5872,10 +6147,11 @@ def cmd_gate(args: argparse.Namespace) -> dict:
     Checked in refusing-costs-nothing order: the `--worker`/`--unit`
     conflict and the justification first (both pure argv, no I/O at all),
     then the revision, then whether a position section exists and is
-    current to reach a rung in, then the un-forgeable readiness
-    measurement, then whether the rung this job's witness names has
-    actually been reached -- a launch that skips a rung is refused and the
-    hole is visible.
+    current to reach a rung in, then whether every tick already in it was
+    derived rather than asserted (`POSITION_UNBACKED`), then the
+    un-forgeable readiness measurement, then whether the rung this job's
+    witness names has actually been reached -- a launch that skips a rung
+    is refused and the hole is visible.
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
@@ -5928,6 +6204,25 @@ def cmd_gate(args: argparse.Namespace) -> dict:
             "the position section is bound to a revision whose bytes no "
             "longer match; run `position` again before gating a launch "
             "against it.")
+    if position["unbacked"]:
+        # Ordered after stale/absent and before `NOT_READY` on purpose. The
+        # two above are about whether there is a position to read at all;
+        # this one is about whether the position that IS there says only
+        # what somebody measured. A gate whose entire premise is that the
+        # recorded sequence is honest cannot pass over a step asserted by a
+        # hand-typed `x` whose witness nothing has ever looked at -- that is
+        # the same forgery `NOT_READY` exists to refuse one rung further
+        # down, and refusing it here costs nothing but a list this call
+        # already computed.
+        raise Refused(
+            "POSITION_UNBACKED",
+            "item(s) "
+            f"{', '.join(str(item['ordinal']) for item in position['unbacked'])} "
+            "in the position section are ticked and their witnesses were "
+            "never measured; a launch is not authorized against an assertion "
+            "nobody checked. Run `position` (with `--shards` if a shard "
+            "witness needs it) so every tick is derived, or blank the mark "
+            "until its evidence exists.")
 
     smoke_ready = evidence["smokeReady"]
     if smoke_ready.get(args.job) is not True:
@@ -6308,10 +6603,21 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     if shards_root:
         shard_io = _load_remote_execution_shard_io()
         shards = shard_io.read_shards(Path(shards_root))
-        fields = list(((resolved["contract"] or {}).get("distribution") or {})
-                      .get("identicalAcrossShards") or [])
+        distribution_declaration = (
+            (resolved["contract"] or {}).get("distribution") or {})
+        fields = list(distribution_declaration.get("identicalAcrossShards") or [])
+        # Each shard's own stamp, kept rather than thrown away with the rest
+        # of the entry. `read_shards` already returns it, and it is the only
+        # thing that can say which code a shard reports on -- arrival says a
+        # folder exists. `source_digest` is reused verbatim, not recomputed:
+        # `notebooks_state` compares a report's stamp against that exact
+        # value, and two answers to "what is current" inside one `verify`
+        # would be worse than none.
         merged = {"disagreements": shard_io.disagreements(shards, fields),
-                  "shardsArrived": [entry["shard"] for entry in shards]}
+                  "shardsArrived": [entry["shard"] for entry in shards],
+                  "shardsCurrent": _shards_current(
+                      shards, distribution_declaration,
+                      source_digest(target, package_name(name)))}
     distribution = distribution_state(
         resolved["contract"],
         dimension_names if dimension_names is not None else {},
@@ -6368,6 +6674,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
          "notebooks": notebooks,
          "smokeReady": remote_execution_jobs_state(target)["smokeReady"],
          "shardsArrived": merged["shardsArrived"] if merged else None,
+         "shardsCurrent": merged["shardsCurrent"] if merged else None,
          "levels": resolve_levels_declaration(target, name)},
         revision, target_source)
 

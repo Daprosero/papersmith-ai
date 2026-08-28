@@ -8465,6 +8465,9 @@ FORGE_LEXICON: dict[str, str] = {
                  "trying to optimize, and ordinary English besides",
     "pipeline": "ordinary English for a sequence of steps, used twice in "
                 "doctrine prose about how a construction arranges itself",
+    "record": "the forge's own evidence vocabulary: `@record` is one of the "
+              "four witness kinds `impl_position` recognizes, and the report "
+              "contract has declared `records` since before any target did",
     "report": "the central noun of the report contract this skill exists to "
               "check, appearing in doctrine on nearly every page",
     "shard": "the forge's own distribution vocabulary: a declaration says which "
@@ -12405,3 +12408,712 @@ class CloseCommandTests(unittest.TestCase):
         ledger = box / "Method" / ".implementation" / "position.jsonl"
         events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
         self.assertEqual([e["kind"] for e in events], ["close"])
+
+
+class AnnotatedDeclarationReaderTests(unittest.TestCase):
+    """`NAME: type = value` is `ast.AnnAssign`, and a reader walking only
+    `ast.Assign` sees nothing there at all.
+
+    Not hypothetical: the forge's own kit ships `__levels__: list = []`, and
+    `read_declaration` was already repaired for exactly this. Three further
+    readers were still walking one node family, and each one answered its
+    caller's question with the word for "nobody declared anything" over a file
+    that declares it on the line being looked at.
+
+    Every test here exercises BOTH forms and asserts they agree, because the
+    claim is not "the annotated form works" -- it is that an annotation does
+    not change what a declaration says. A test that only pinned the annotated
+    form would pass just as well against a reader that had stopped reading the
+    flat one.
+    """
+
+    def _module(self, text: str) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        path = root / "module.py"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def _findings_target(self, text: str) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / "tests").mkdir()
+        (root / "tests" / "findings.py").write_text(text, encoding="utf-8")
+        return root
+
+    def _dimensions_target(self, text: str) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        bench = root / "src" / "Method_Benchmark"
+        bench.mkdir(parents=True)
+        (bench / "config.py").write_text(text, encoding="utf-8")
+        return root
+
+    # --- read_provenance ------------------------------------------------
+
+    PROVENANCE = "{'sections': ['3.1'], 'equations': ['12']}"
+
+    def test_read_provenance_agrees_across_both_assignment_forms(self):
+        """Measured before this: the annotated form answered `None`, which
+        every caller reads as "this module declares no provenance" -- the
+        opposite of what the file says, and the input to `missingProvenance`."""
+        annotated = impl.read_provenance(self._module(
+            f"__provenance__: dict = {self.PROVENANCE}\n"))
+        flat = impl.read_provenance(self._module(
+            f"__provenance__ = {self.PROVENANCE}\n"))
+
+        self.assertEqual(annotated, flat)
+        self.assertEqual(annotated, {"sections": ["3.1"], "equations": ["12"]})
+
+    def test_a_bare_provenance_annotation_declares_nothing(self):
+        """`__provenance__: dict` with no value binds nothing. Absent is the
+        honest answer; an error would claim the file said something wrong."""
+        self.assertIsNone(impl.read_provenance(
+            self._module("__provenance__: dict\n")))
+
+    # --- read_findings --------------------------------------------------
+
+    FINDINGS = ("[{'id': 'F1', 'kind': 'defect', 'status': 'open', "
+                "'equations': ['12']}]")
+
+    def test_read_findings_agrees_across_both_assignment_forms(self):
+        """The worst instance of the class. `read_findings`'s own comment says
+        an empty list is "indistinguishable from a repository that has been
+        audited and found nothing" -- and returning `[]` over an annotated
+        declaration is precisely that, with the findings sitting in the file."""
+        annotated = impl.read_findings(self._findings_target(
+            f"FINDINGS: list[dict] = {self.FINDINGS}\n"))
+        flat = impl.read_findings(self._findings_target(
+            f"FINDINGS = {self.FINDINGS}\n"))
+
+        self.assertEqual(annotated, flat)
+        self.assertEqual([f["id"] for f in annotated], ["F1"])
+
+    def test_an_annotated_findings_list_that_is_not_a_literal_still_refuses(self):
+        """The refusal must reach the annotated form too, or admitting it
+        would have opened a second, quieter way past the same guard."""
+        with self.assertRaises(impl.Refused) as ctx:
+            impl.read_findings(self._findings_target(
+                "def build():\n    return []\n\nFINDINGS: list = build()\n"))
+        self.assertEqual(ctx.exception.code, "MALFORMED_FINDINGS")
+
+    def test_a_bare_findings_annotation_is_an_unaudited_repository(self):
+        """`FINDINGS: list[dict]` with no value declares nothing, which is
+        what an empty list already means here -- no findings were written."""
+        self.assertEqual(
+            impl.read_findings(self._findings_target("FINDINGS: list[dict]\n")),
+            [])
+
+    # --- declared_dimension_names ---------------------------------------
+
+    DIMENSIONS = "{'accuracy': HIGHER, 'seconds': LOWER}"
+    DIRECTIONS = "HIGHER = 'higher'\nLOWER = 'lower'\n\n"
+
+    def test_declared_dimension_names_agrees_across_both_assignment_forms(self):
+        """Measured before this: the annotated form answered `None`, which
+        `verify` reports as "the universe could not be determined" and which
+        makes an empty `unpartitioned` no evidence of anything."""
+        annotated = impl.declared_dimension_names(
+            self._dimensions_target(
+                f"{self.DIRECTIONS}DIMENSIONS: dict = {self.DIMENSIONS}\n"),
+            "Method")
+        flat = impl.declared_dimension_names(
+            self._dimensions_target(
+                f"{self.DIRECTIONS}DIMENSIONS = {self.DIMENSIONS}\n"),
+            "Method")
+
+        self.assertEqual(annotated, flat)
+        self.assertEqual(annotated, ["accuracy", "seconds"])
+
+    def test_an_annotated_dimensions_bound_to_a_call_is_still_undeterminable(self):
+        """`None` rather than `[]` for a binding this reading cannot make
+        sense of -- unchanged, and now unchanged for both forms."""
+        self.assertIsNone(impl.declared_dimension_names(
+            self._dimensions_target(
+                "def build():\n    return {}\n\nDIMENSIONS: dict = build()\n"),
+            "Method"))
+
+    def test_a_bare_dimensions_annotation_determines_no_universe(self):
+        self.assertIsNone(impl.declared_dimension_names(
+            self._dimensions_target("DIMENSIONS: dict\n"), "Method"))
+
+    # --- the boundary of the class --------------------------------------
+
+    def test_an_import_based_reader_is_not_an_instance_of_this_class(self):
+        """Stated as a test so the next sweep stops where this one did.
+
+        `refuse_offpath_push.py` reads an annotated `PUSH_SURFACE` through
+        `getattr` on an imported module, where an annotation is invisible by
+        construction. AST readers are the vulnerable ones; import-based
+        readers are not, and widening the repair to them would be repairing
+        something that was never broken.
+        """
+        hook = (FORGE / ".claude/skills/remote-execution/scripts/hooks"
+                / "refuse_offpath_push.py")
+        text = hook.read_text(encoding="utf-8")
+        self.assertIn("getattr", text)
+        self.assertNotIn("ast.Assign", text)
+
+
+class ShardCurrencyDeclarationTests(unittest.TestCase):
+    """A shard folder is a file left behind by whatever ran. Arrival says it
+    exists; it never says which code produced it.
+
+    Measured before this: `verify --shards` built its merge from
+    `[entry["shard"] for entry in shards]` and threw each shard's stamp away,
+    so a `@shard` witness ticked on arrival alone -- including for shards
+    returned by code the repository has long since moved past.
+
+    The forge is not allowed to know which stamp field carries that identity:
+    it is the repository's vocabulary, not the forge's. So the declaration
+    grows one OPTIONAL key, `currentWhen`, naming a dotted path into the
+    shard's own stamp -- the same division `identicalAcrossShards` already
+    keeps, where the target names the field and the forge only compares.
+    """
+
+    def _declaration(self, current_when=None):
+        extra = (f"\n                     'currentWhen': {current_when!r},"
+                 if current_when is not None else "")
+        return ("__benchmark__ = {\n"
+                "    'revision': 'r01.md',\n"
+                "    'arms': {'floor': {'sections': ['3']}},\n"
+                "    'distribution': {'axis': 'repetition',\n"
+                "                     'poolable': ['score'],\n"
+                "                     'perEnvironment': [],\n"
+                "                     'perRun': [],\n"
+                f"                     'identicalAcrossShards': [],{extra}\n"
+                "                     },\n"
+                "}\n")
+
+    def build_target(self, suffix, current_when=None):
+        box = FORGE / "implementations" / f"_shardcurrent_{suffix}_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "src/Method_Benchmark", "Method"):
+            (box / directory).mkdir(parents=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            self._declaration(current_when), encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        header = {"revision": "r01.md", "revisionSha256": "a" * 64,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1",
+                  "target": "final"}
+        items = [{"ordinal": 1, "mark": " ", "text": "Collect the shard.",
+                  "witness": {"kind": "shard", "operand": "s0"}}]
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+        return box
+
+    def build_shards(self, stamps):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        for shard, stamp in stamps.items():
+            (root / shard).mkdir()
+            (root / shard / "shard.json").write_text(
+                json.dumps(stamp), encoding="utf-8")
+        return root
+
+    def derived(self, box, shards):
+        """What `verify --shards` derives for the one `@shard` item, read off
+        the command's own stdout rather than off a function call: the claim is
+        about what `verify` reports, and every layer between the flag and the
+        report is part of it."""
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box),
+             "--name", "Method", "--shards", str(shards)],
+            capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(proc.stdout)["position"]["sequence"][0]["derived"]
+
+    def digest(self, box):
+        """The current source digest, taken from the production function that
+        computes it rather than restated -- `notebooks_state` compares a
+        report's own stamp against this exact value, and a second definition
+        of "current" here would test a comparison the forge never makes."""
+        return impl.source_digest(box, "Method")
+
+    # --- case 1: nothing declared -- behaviour is unchanged, byte for byte --
+
+    def test_a_target_declaring_no_currency_still_ticks_on_arrival(self):
+        box = self.build_target("undeclared")
+        shards = self.build_shards({"s0": {"evidence": {"codeDigest": "stale"}}})
+        self.assertIs(self.derived(box, shards), True)
+
+    # --- case 2: declared, and the shard answers with the current digest ---
+
+    def test_a_declared_shard_that_is_current_reads_as_it_always_did(self):
+        box = self.build_target("current", current_when="evidence.codeDigest")
+        shards = self.build_shards(
+            {"s0": {"evidence": {"codeDigest": self.digest(box)}}})
+        self.assertIs(self.derived(box, shards), True)
+
+    # --- case 3: declared, and the shard answers with something else -------
+
+    def test_a_declared_shard_that_is_stale_is_unmeasured_not_absent(self):
+        """`None`, never `False`. The shard demonstrably ran; what cannot be
+        said is that it ran this code -- the same distinction
+        `_derive_notebook_level` keeps for a report whose sources moved."""
+        box = self.build_target("stale", current_when="evidence.codeDigest")
+        shards = self.build_shards(
+            {"s0": {"evidence": {"codeDigest": "some other code entirely"}}})
+        self.assertIsNone(self.derived(box, shards))
+
+    # --- case 4: declared, and the stamp cannot answer at all --------------
+
+    def test_a_stamp_that_cannot_answer_is_not_evidence_that_it_is_current(self):
+        """The decision this case forces, written down: a stamp holding
+        nothing at the declared path has not said the shard is current, and
+        reading silence as agreement is the same move as reading an unstamped
+        notebook as executed against current sources. Unmeasured."""
+        box = self.build_target("silent", current_when="evidence.codeDigest")
+        shards = self.build_shards({"s0": {"epochs": 5}})
+        self.assertIsNone(self.derived(box, shards))
+
+    # --- the comparison itself, at the unit that performs it ---------------
+
+    def test_the_subset_is_none_when_nobody_declared_the_field(self):
+        """`None` and `[]` are opposite answers: `[]` says every shard was
+        asked and none of them speaks for this code, `None` says nobody was
+        asked. `impl_position` reads that difference directly."""
+        shards = [{"shard": "s0", "stamp": {"d": "x"}}]
+        self.assertIsNone(impl._shards_current(shards, {}, "x"))
+        self.assertEqual(impl._shards_current(shards, {"currentWhen": "d"}, "x"),
+                         ["s0"])
+        self.assertEqual(impl._shards_current(shards, {"currentWhen": "d"}, "y"),
+                         [])
+
+    def test_a_dotted_path_walks_the_stamp_and_never_guesses_past_a_gap(self):
+        stamp = {"evidence": {"codeDigest": "abc"}}
+        self.assertEqual(impl._stamp_at(stamp, "evidence.codeDigest"), "abc")
+        self.assertIs(impl._stamp_at(stamp, "evidence.missing"), impl._STAMP_ABSENT)
+        self.assertIs(impl._stamp_at(stamp, "evidence.codeDigest.deeper"),
+                      impl._STAMP_ABSENT)
+        self.assertIs(impl._stamp_at({}, "evidence"), impl._STAMP_ABSENT)
+
+    def test_the_optional_key_is_never_reported_missing(self):
+        """It is optional, and a required key added to `DISTRIBUTION_
+        DECLARATION` would declare every existing target incomplete for never
+        having answered a question nobody had asked them yet."""
+        self.assertNotIn("currentWhen", impl.DISTRIBUTION_DECLARATION)
+        self.assertIn("currentWhen", impl.DISTRIBUTION_OPTIONAL)
+        self.assertIn("currentWhen", impl.DISTRIBUTION_SHAPE)
+
+        state = impl.distribution_state(
+            {"distribution": {"axis": "repetition", "poolable": [],
+                              "perEnvironment": [], "perRun": [],
+                              "identicalAcrossShards": []}}, {})
+        self.assertEqual([f["field"] for f in state["missing"]], [])
+
+    def test_a_currency_declaration_of_the_wrong_shape_is_malformed(self):
+        """Optional, and still schema: a target that answered badly hears
+        about it rather than having its answer quietly ignored."""
+        state = impl.distribution_state(
+            {"distribution": {"axis": "repetition", "poolable": [],
+                              "perEnvironment": [], "perRun": [],
+                              "identicalAcrossShards": [],
+                              "currentWhen": ["evidence", "codeDigest"]}}, {})
+        self.assertEqual([f["field"] for f in state["malformed"]], ["currentWhen"])
+
+    def test_the_kit_documents_the_optional_key_and_prefills_nothing(self):
+        kit = KIT / "src_benchmark" / "__init__.py"
+        text = kit.read_text(encoding="utf-8")
+        self.assertIn("currentWhen", text)
+        for line in text.splitlines():
+            if "currentWhen" in line:
+                self.assertTrue(line.strip().startswith("#"),
+                                f"the kit prefills a value: {line!r}")
+
+    def test_the_toy_targets_left_nothing_behind(self):
+        self.build_target("cleanup")
+        self.doCleanups()
+        leftover = list((FORGE / "implementations").glob("_shardcurrent_*"))
+        self.assertEqual(leftover, [], leftover)
+
+
+class UnbackedPositionSurfaceTests(unittest.TestCase):
+    """A ticked box nobody measured, wherever the position is already reported.
+
+    `disagrees` is surfaced by `position_state`, by `verify`, by `probe` and by
+    `position` itself, and `unbacked` is the same kind of fact about the same
+    item: a reader who is told which marks contradict their evidence, and not
+    which marks have none, has been told the honest half.
+
+    And `gate` refuses on one. A record whose whole purpose is that the
+    recorded sequence is honest cannot be minted over a step asserted by a
+    hand-typed `x` whose witness nothing ever looked at.
+    """
+
+    PROPOSAL_REVISION = "r1.md"
+    PROPOSAL_TEXT = "## 1\nprose\n"
+    PROPOSAL_SHA256 = hashlib.sha256(PROPOSAL_TEXT.encode("utf-8")).hexdigest()
+
+    def _proposals(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / self.PROPOSAL_REVISION).write_text(self.PROPOSAL_TEXT,
+                                                   encoding="utf-8")
+        return root
+
+    def _box(self, suffix, *, mark):
+        """A target whose one sequence item names a `@shard` witness -- the
+        witness no invocation here supplies evidence for, so `satisfied` is
+        `None` and only the mark decides whether that is honest."""
+        box = FORGE / "implementations" / f"_unbacked_{suffix}_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "src/Method_Benchmark", "Method", "tests"):
+            (box / directory).mkdir(parents=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            "__benchmark__ = {'revision': 'r1.md'}\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1",
+                  "target": "final"}
+        items = [{"ordinal": 1, "mark": mark, "text": "Collect the shard.",
+                  "witness": {"kind": "shard", "operand": "s0"}}]
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+        return box
+
+    def run_cli(self, *args, proposals=None):
+        env = dict(os.environ)
+        if proposals is not None:
+            env["IMPLEMENTATION_PROPOSALS"] = str(proposals)
+        return subprocess.run([sys.executable, str(CLI), *args],
+                              capture_output=True, text=True, cwd=FORGE, env=env)
+
+    def position_block(self, command, box, *extra, proposals=None):
+        proc = self.run_cli(command, "--target", str(box), "--name", "Method",
+                            *extra, proposals=proposals)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return json.loads(proc.stdout)["position"]
+
+    def test_verify_names_the_unbacked_tick_and_leaves_the_blank_box_alone(self):
+        """Both halves in one test, because the claim is a distinction: a
+        reporter that named every unmeasured item would be as useless as one
+        that named none."""
+        ticked = self.position_block("verify", self._box("verify_x", mark="x"))
+        blank = self.position_block("verify", self._box("verify_blank", mark=" "))
+
+        self.assertEqual([e["ordinal"] for e in ticked["unbacked"]], [1])
+        self.assertEqual(blank["unbacked"], [])
+        # Both are unmeasured -- that was never the question.
+        self.assertEqual([e["ordinal"] for e in ticked["unmeasured"]], [1])
+        self.assertEqual([e["ordinal"] for e in blank["unmeasured"]], [1])
+        # And neither is a disagreement: there is no measurement to contradict.
+        self.assertEqual(ticked["disagreements"], [])
+        self.assertTrue(ticked["sequence"][0]["unbacked"])
+        self.assertFalse(blank["sequence"][0]["unbacked"])
+
+    def test_probe_reports_it_too(self):
+        """`probe` reads the same position through the same function; a key
+        surfaced in one reader and not the other is a key a reader cannot
+        rely on."""
+        block = self.position_block("probe", self._box("probe", mark="x"))
+        self.assertEqual([e["ordinal"] for e in block["unbacked"]], [1])
+
+    def test_position_reports_the_tick_its_own_refresh_cannot_correct(self):
+        """The sharpest of the three. A refresh rewrites a contradicted mark
+        on the spot -- but an unmeasured item is skipped and its mark survives
+        untouched, so `position` is exactly the command whose silence left the
+        assertion standing."""
+        box = self._box("position", mark="x")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION,
+                            "--session", "s1", proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        result = json.loads(proc.stdout)
+
+        self.assertEqual(result["unbacked"], [1])
+        self.assertEqual(result["unmeasured"], [1])
+        self.assertTrue(result["sequence"][0]["unbacked"])
+        # And the mark really did survive: this is not a report about a
+        # correction that happened.
+        self.assertEqual(result["sequence"][0]["mark"], "x")
+
+    def test_an_absent_position_reports_the_key_rather_than_omitting_it(self):
+        """The uniform-key-set rule `position_state` already documents: a key
+        that appears on some branches and not others vanishes for exactly the
+        callers that took the early ones."""
+        box = FORGE / "implementations" / f"_unbacked_absent_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src/Method").mkdir(parents=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+
+        block = self.position_block("verify", box)
+        self.assertEqual(block["status"], "absent")
+        self.assertEqual(block["unbacked"], [])
+
+    def test_gate_refuses_a_launch_authorized_over_an_unbacked_tick(self):
+        box = self._box("gate", mark="x")
+        proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            "--job", "job1", "--worker", "w1",
+                            "--justification", "Because it is time.",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_UNBACKED")
+
+    def test_the_same_gate_over_a_blank_box_reaches_the_readiness_check(self):
+        """The pole, and the ordering proof in one: with the mark blanked and
+        nothing else changed, the refusal moves on to `NOT_READY` -- so this
+        check sits before that one and fires on the tick, not on the target."""
+        box = self._box("gate_blank", mark=" ")
+        proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            "--job", "job1", "--worker", "w1",
+                            "--justification", "Because it is time.",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "NOT_READY")
+
+    def test_absent_and_stale_still_refuse_first(self):
+        """Ordered AFTER the two checks about whether there is a position to
+        read at all: an unbacked list computed from a section bound to a
+        revision that has moved on would be naming ticks against the wrong
+        evidence entirely."""
+        box = FORGE / "implementations" / f"_unbacked_order_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src/Method").mkdir(parents=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        (box / "Method").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        proposals = self._proposals()
+
+        absent = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                              "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                              "--job", "job1", "--worker", "w1",
+                              "--justification", "Because it is time.",
+                              proposals=proposals)
+        self.assertEqual(json.loads(absent.stdout)["code"], "POSITION_ABSENT")
+
+        header = {"revision": self.PROPOSAL_REVISION, "revisionSha256": "b" * 64,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1",
+                  "target": "final"}
+        items = [{"ordinal": 1, "mark": "x", "text": "Collect the shard.",
+                  "witness": {"kind": "shard", "operand": "s0"}}]
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+        stale = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                             "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                             "--job", "job1", "--worker", "w1",
+                             "--justification", "Because it is time.",
+                             proposals=proposals)
+        self.assertEqual(json.loads(stale.stdout)["code"], "POSITION_STALE")
+
+    def test_the_doctrine_names_the_refusal(self):
+        """A refusal a reader meets for the first time in a terminal is a
+        refusal nobody designed for."""
+        self.assertIn("POSITION_UNBACKED", SKILL_MD.read_text(encoding="utf-8"))
+        self.assertIn("POSITION_UNBACKED", USAGE_MD.read_text(encoding="utf-8"))
+
+    def test_the_toy_targets_left_nothing_behind(self):
+        self._box("cleanup", mark=" ")
+        self.doCleanups()
+        leftover = list((FORGE / "implementations").glob("_unbacked_*"))
+        self.assertEqual(leftover, [], leftover)
+
+
+class NotebookInterpreterTests(unittest.TestCase):
+    """The isolation rule was the one rule nothing could check.
+
+    The skill's own first section says target code runs under the target
+    repository's `.venv` and never under system Python. A notebook obeys no
+    such thing on its own: it names a KERNELSPEC, and the ordinary `python3`
+    kernelspec's `argv` starts with a bare `"python"` resolved off `PATH` when
+    the kernel starts. So `<target>/.venv/bin/python -m jupyter nbconvert
+    --execute` -- the obvious invocation, and the one that reads as isolated --
+    runs the cells under whatever `python` was already first on `PATH`.
+
+    Measured on a real target: a suite passing 297/297 standalone produced
+    fifteen failures inside the notebook, and no line of the failure text named
+    an interpreter.
+
+    The signal was measured before anything was built on it. One notebook was
+    executed twice through the identical `.venv/bin/python -m jupyter nbconvert
+    --to notebook --execute --inplace`, varying only which directory came first
+    on `PATH`; `metadata.language_info.version` came back `3.12.13` and `3.9.6`
+    respectively, overwriting a value seeded into the file beforehand. It tracks
+    the process that ran the cells, not the kernelspec the file names, and that
+    is what these fixtures reproduce.
+    """
+
+    def _target(self, suffix, *, venv_version=None):
+        box = FORGE / "implementations" / f"_nbinterp_{suffix}_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "Method" / "Notebooks").mkdir(parents=True)
+        if venv_version is not None:
+            (box / ".venv").mkdir()
+            (box / ".venv" / "pyvenv.cfg").write_text(
+                "home = /somewhere/bin\n"
+                "include-system-site-packages = false\n"
+                f"version = {venv_version}\n", encoding="utf-8")
+        return box
+
+    def _notebook(self, box, name, *, version, executed=True):
+        """A notebook in the exact shape `nbconvert` leaves behind: a
+        kernelspec naming `python3` -- the label that resolves off `PATH` and
+        says nothing -- and a `language_info.version` written by whichever
+        kernel actually ran."""
+        metadata = {"kernelspec": {"display_name": "Python 3",
+                                    "language": "python", "name": "python3"}}
+        if version is not None:
+            metadata["language_info"] = {"name": "python", "version": version}
+        notebook = {
+            "cells": [{"cell_type": "code",
+                       "execution_count": 1 if executed else None,
+                       "metadata": {}, "outputs": [],
+                       "source": "print('measured')\n"}],
+            "metadata": metadata, "nbformat": 4, "nbformat_minor": 5,
+        }
+        path = box / "Method" / "Notebooks" / name
+        path.write_text(json.dumps(notebook), encoding="utf-8")
+        return path
+
+    # --- what the venv says it is, read and never run ---------------------
+
+    def test_the_target_version_is_read_from_the_venv_config(self):
+        box = self._target("version", venv_version="3.12.13")
+        self.assertEqual(impl.target_python_version(box), "3.12.13")
+
+    def test_a_four_component_version_info_reads_as_three(self):
+        """Newer CPythons write `version_info = 3.12.13.final.0`. Two
+        spellings of one fact have to compare as one, or the check would
+        report every notebook foreign on exactly those machines."""
+        box = self._target("info")
+        (box / ".venv").mkdir()
+        (box / ".venv" / "pyvenv.cfg").write_text(
+            "version_info = 3.12.13.final.0\n", encoding="utf-8")
+        self.assertEqual(impl.target_python_version(box), "3.12.13")
+
+    def test_no_venv_is_unmeasured_and_never_a_default(self):
+        """A comparison against a version nobody could read is not a
+        comparison, and answering one would be inventing the baseline."""
+        self.assertIsNone(impl.target_python_version(self._target("novenv")))
+
+    def test_one_spelling_of_the_target_interpreter_path(self):
+        """`introspect` runs it, `env` builds it, this reads it. Three
+        spellings of one path is how one of them eventually differs."""
+        box = self._target("path")
+        self.assertEqual(impl.target_interpreter(box).parent.parent,
+                         box / ".venv")
+        source = inspect.getsource(impl)
+        self.assertEqual(
+            source.count('target / ".venv" / bin_dir'), 1,
+            "the venv interpreter path is spelled more than once")
+
+    # --- what the notebook says ran it ------------------------------------
+
+    def test_the_notebook_reports_the_version_that_executed_it(self):
+        box = self._target("executedby", venv_version="3.12.13")
+        state = impl.notebook_execution(
+            self._notebook(box, "one.ipynb", version="3.9.6"))
+        self.assertEqual(state["executedBy"], "3.9.6")
+
+    def test_a_notebook_with_no_language_info_reports_nothing_rather_than_a_guess(self):
+        box = self._target("nolang", venv_version="3.12.13")
+        state = impl.notebook_execution(
+            self._notebook(box, "one.ipynb", version=None))
+        self.assertIsNone(state["executedBy"])
+
+    # --- the join: the two questions, asked separately ---------------------
+
+    def test_a_foreign_interpreter_is_named_and_a_matching_one_is_not(self):
+        """Both halves in one test, because the claim is a distinction. The
+        kernelspec is identical in both files -- it is the label that lies --
+        and only the version the kernel wrote differs."""
+        box = self._target("join", venv_version="3.12.13")
+        self._notebook(box, "own.ipynb", version="3.12.13")
+        self._notebook(box, "foreign.ipynb", version="3.9.6")
+
+        state = impl.notebooks_state(box, "Method", "Method")
+        by_name = {r["notebook"]: r for r in state["reports"]}
+
+        self.assertEqual(state["interpreterVersion"], "3.12.13")
+        self.assertIs(by_name["Method/Notebooks/own.ipynb"]["interpreterMatch"], True)
+        self.assertIs(by_name["Method/Notebooks/foreign.ipynb"]["interpreterMatch"], False)
+        self.assertEqual(state["foreignInterpreter"],
+                         ["Method/Notebooks/foreign.ipynb"])
+
+    def test_an_unmeasurable_interpreter_is_none_and_never_a_pass(self):
+        """Two ways to be unmeasured -- the notebook records no version, or
+        there is no venv to compare against -- and neither reads as agreement.
+        Silence is not a pass here for the same reason an unstamped notebook
+        is not current."""
+        silent = self._target("silent", venv_version="3.12.13")
+        self._notebook(silent, "one.ipynb", version=None)
+        self.assertIsNone(impl.notebooks_state(silent, "Method", "Method")
+                          ["reports"][0]["interpreterMatch"])
+
+        nobaseline = self._target("nobaseline")
+        self._notebook(nobaseline, "one.ipynb", version="3.9.6")
+        state = impl.notebooks_state(nobaseline, "Method", "Method")
+        self.assertIsNone(state["interpreterVersion"])
+        self.assertIsNone(state["reports"][0]["interpreterMatch"])
+        self.assertEqual(state["foreignInterpreter"], [],
+                         "unmeasured must never be reported as foreign")
+
+    def test_a_foreign_interpreter_does_not_drift_the_status_on_its_own(self):
+        """A wrong interpreter is not a wrong number: it is a reason to
+        distrust the numbers, and one status cannot say which a reader is
+        looking at. Held explicitly, because folding it in is the tempting
+        move and it would destroy the distinction the key exists to draw."""
+        box = self._target("nodrift", venv_version="3.12.13")
+        notebook = self._notebook(box, "one.ipynb", version="3.9.6")
+        stamped = json.loads(notebook.read_text(encoding="utf-8"))
+        stamped["cells"][0]["outputs"] = [{
+            "output_type": "stream", "name": "stdout",
+            "text": [f"{impl.DIGEST_MARKER} {impl.source_digest(box, 'Method')}\n"]}]
+        notebook.write_text(json.dumps(stamped), encoding="utf-8")
+
+        state = impl.notebooks_state(box, "Method", "Method")
+        self.assertEqual(state["status"], "ok")
+        self.assertEqual(state["reports"][0]["status"], "executed")
+        self.assertIs(state["reports"][0]["sourcesMatch"], True)
+        self.assertIs(state["reports"][0]["interpreterMatch"], False)
+        self.assertEqual(state["foreignInterpreter"], ["Method/Notebooks/one.ipynb"])
+
+    def test_verify_carries_the_fact_all_the_way_to_the_reader(self):
+        """A key computed and never surfaced is a key nobody reads."""
+        box = self._target("verify", venv_version="3.12.13")
+        self._notebook(box, "one.ipynb", version="3.9.6")
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box),
+             "--name", "Method"], capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        notebooks = json.loads(proc.stdout)["validation"]["notebooks"]
+        self.assertEqual(notebooks["foreignInterpreter"],
+                         ["Method/Notebooks/one.ipynb"])
+        self.assertEqual(notebooks["interpreterVersion"], "3.12.13")
+
+    # --- the doctrine, where a reader meets it -----------------------------
+
+    def test_the_doctrine_gives_the_safe_invocation_and_says_why(self):
+        """Prose nobody executes is the defect class this whole change is
+        about, so the mechanism above is the real repair -- but a reader about
+        to type the command still has to be told, in the section that states
+        the rule the command breaks."""
+        text = SKILL_MD.read_text(encoding="utf-8")
+        section = text[text.index("## Non-negotiable isolation"):]
+        section = section[:section.index("\n## ", 1)]
+        self.assertIn('PATH="$PWD/.venv/bin:$PATH"', section,
+                      "the safe invocation is not written down")
+        self.assertIn("kernelspec", section,
+                      "nothing says WHY the obvious invocation is wrong")
+        self.assertIn("interpreterMatch", section,
+                      "the doctrine never names the fact `verify` reports")
+
+    def test_the_toy_targets_left_nothing_behind(self):
+        self._target("cleanup")
+        self.doCleanups()
+        leftover = list((FORGE / "implementations").glob("_nbinterp_*"))
+        self.assertEqual(leftover, [], leftover)
