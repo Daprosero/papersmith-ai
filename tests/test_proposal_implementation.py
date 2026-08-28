@@ -11158,6 +11158,98 @@ class PositionLevelGrammarTests(unittest.TestCase):
         self.assertFalse(result["satisfied"])
 
 
+class KitScaffoldLevelsDeclarationJoinTests(unittest.TestCase):
+    """PR11, a defect found in PR10: the kit ships `__levels__` as an
+    *annotated* assignment (`__levels__: list = [...]`, `ast.AnnAssign`), but
+    `read_declaration` walked only `ast.Assign`. A target that uses the
+    scaffold the skill itself ships therefore declared a ladder the skill
+    could not read — the writer (`assets/kit/src_benchmark/__init__.py`) and
+    the reader (`read_declaration`, and everything built on it) are in the
+    same work unit and were never crossed until this test.
+
+    Not "an annotated assignment parses" in the abstract: this reads the
+    exact file the kit ships, unmodified, through the exact reader every
+    caller uses.
+    """
+
+    KIT_INIT = (FORGE / ".claude/skills/proposal-implementation"
+                / "assets/kit/src_benchmark/__init__.py")
+
+    def test_the_shipped_scaffold_s_annotated_levels_literal_is_readable(self):
+        """The kit's own `__levels__: list = []` -- an `ast.AnnAssign`, not
+        an `ast.Assign` -- must be read as an empty list declared, not as
+        nothing declared. Before the fix this fails: `read_declaration`
+        returns `None` for a file that plainly declares `__levels__`.
+        """
+        result = impl.read_declaration(self.KIT_INIT, "__levels__")
+        self.assertIsNotNone(
+            result, "read_declaration saw no __levels__ in the kit's own "
+            "scaffold, which declares one as `__levels__: list = []`")
+        self.assertEqual(result, [])
+
+    def test_a_filled_in_annotated_levels_literal_is_readable_end_to_end(self):
+        """The realistic case: a target copies the scaffold and fills the
+        ladder in, keeping the annotation exactly as shipped. Exercises the
+        full join through `resolve_levels_declaration`, the function every
+        caller actually uses -- not `read_declaration` in isolation.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bench = root / "src" / "Method_Benchmark"
+            bench.mkdir(parents=True)
+            source = self.KIT_INIT.read_text(encoding="utf-8").replace(
+                "__levels__: list = []",
+                '__levels__: list = ["local", "cluster"]')
+            self.assertIn('__levels__: list = ["local", "cluster"]', source)
+            (bench / "__init__.py").write_text(source, encoding="utf-8")
+            levels = impl.resolve_levels_declaration(root, "Method")
+        self.assertEqual(levels, ["local", "cluster"])
+
+    def test_an_annotation_with_no_value_declares_nothing_not_a_crash(self):
+        """`x: list` alone (no `=`) is a bare annotation -- `ast.AnnAssign.value`
+        is `None` -- and must read as nothing declared, never raise inside
+        `read_declaration` and never be mistaken for a declared empty list.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "__init__.py"
+            path.write_text("__levels__: list\n", encoding="utf-8")
+            result = impl.read_declaration(path, "__levels__")
+        self.assertIsNone(result)
+
+    # --- sweep: every other declaration this reader (or its siblings) is
+    # --- asked for, checked against what the kit actually ships ---
+
+    def test_the_shipped_scaffold_s_benchmark_literal_is_also_readable(self):
+        """Sweep result: `__benchmark__` goes through the same
+        `read_declaration` reader. It is a plain `ast.Assign` in the shipped
+        kit, not annotated -- unaffected by the `AnnAssign` hole, confirmed
+        directly against the shipped file rather than assumed.
+        """
+        result = impl.read_declaration(self.KIT_INIT, "__benchmark__")
+        self.assertIsNotNone(result)
+        self.assertIn("revision", result)
+
+    def test_the_shipped_scaffold_s_dimensions_literal_is_also_unaffected(self):
+        """Sweep result: `DIMENSIONS` is read by a separate, bespoke AST walk
+        in `declared_dimension_names` (never `read_declaration`), with the
+        identical `isinstance(node, ast.Assign)` restriction -- the same hole
+        class, in a different function. The kit's own template
+        (`assets/kit/nb/benchmark.py`) ships it unannotated, so this reader
+        is not exercised by the PR10 defect today; confirmed directly against
+        the shipped file rather than assumed, not left as a guess.
+        """
+        kit_benchmark = (FORGE / ".claude/skills/proposal-implementation"
+                          / "assets/kit/nb/benchmark.py")
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bench = root / "src" / "Method_Benchmark"
+            bench.mkdir(parents=True)
+            (bench / "benchmark.py").write_text(
+                kit_benchmark.read_text(encoding="utf-8"), encoding="utf-8")
+            names = impl.declared_dimension_names(root, "Method")
+        self.assertEqual(names, ["accuracy", "seconds", "peakMiB", "parameters"])
+
+
 class PositionKeyExitStatusTests(unittest.TestCase):
     """The `position` key is reported and never gates — the same discipline
     `coupling` (`CouplingNeverGatesTests`) and `smokeReady`

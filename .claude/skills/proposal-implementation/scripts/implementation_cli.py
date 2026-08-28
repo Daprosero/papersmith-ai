@@ -3516,7 +3516,18 @@ def report_state(target: Path, name: str, package: str) -> dict:
 
 
 def read_declaration(path: Path, name: str) -> dict | None:
-    """A module-level literal, read without importing anything."""
+    """A module-level literal, read without importing anything.
+
+    Accepts both a plain assignment (`NAME = value`, `ast.Assign`) and an
+    annotated one (`NAME: type = value`, `ast.AnnAssign`) — a type annotation
+    does not change what a declaration says. The kit's own scaffold writes
+    `__levels__` in the annotated form (`assets/kit/src_benchmark/__init__.py`),
+    and a reader that only recognized `ast.Assign` never saw it: a target
+    using the scaffold the skill itself ships declared a ladder the skill
+    could not read. A bare annotation with no value (`NAME: type`, no `=`) has
+    `node.value is None` under `ast.AnnAssign` and declares nothing — read as
+    absent, never as an error or an empty literal.
+    """
     if not path.exists():
         return None
     try:
@@ -3527,10 +3538,18 @@ def read_declaration(path: Path, name: str) -> dict | None:
         if isinstance(node, ast.Assign) and any(
             isinstance(t, ast.Name) and t.id == name for t in node.targets
         ):
-            try:
-                return ast.literal_eval(node.value)
-            except ValueError:
-                return {"__error__": f"{name} is not a literal"}
+            value = node.value
+        elif (isinstance(node, ast.AnnAssign)
+              and isinstance(node.target, ast.Name) and node.target.id == name):
+            if node.value is None:
+                continue
+            value = node.value
+        else:
+            continue
+        try:
+            return ast.literal_eval(value)
+        except ValueError:
+            return {"__error__": f"{name} is not a literal"}
     return None
 
 
