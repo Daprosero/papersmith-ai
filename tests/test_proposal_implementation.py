@@ -13123,33 +13123,50 @@ class NotebookInterpreterTests(unittest.TestCase):
 
         `test_the_isolation_section_carries_the_safe_invocation` above reads
         `SKILL.md` and passes when the rule is written down. It stayed green
-        while `assets/kit/nb/verification.ipynb` -- the notebook every
-        scaffolded target receives -- printed the re-run command WITHOUT the
-        `PATH` prefix, which is the exact shape that same section calls "reads
-        as isolated and is not". Doctrine that only its own page is held to is
-        doctrine the forge ships past.
+        while the shipped scaffold told a reader to run a notebook the way that
+        same section calls "reads as isolated and is not". Doctrine only its own
+        page is held to is doctrine the forge ships past.
 
-        Every `nbconvert` invocation in a shipped notebook, not just the one
-        that was wrong on the day this was written: a second scaffold notebook
-        acquiring the same instruction must inherit the same rule, and a check
-        naming one file would not notice.
+        Two spellings, because the first version of this test caught one and
+        walked past the other. `nbconvert` is the command form. "run the
+        notebook" is the prose form -- `benchmark.py`'s refusal named an
+        interpreter without the prefix and never said `nbconvert` at all, so a
+        check keyed on the command alone reported the scaffold clean while the
+        message a reader sees AT the isolation failure prescribed the remedy
+        that does not fix it.
+
+        Every shipped asset, `.py` and `.ipynb` alike, not the one file that
+        was wrong on the day this was written.
         """
-        kit = Path(impl.SKILL_ROOT) / "assets/kit/nb"
-        notebooks = sorted(kit.glob("*.ipynb"))
-        self.assertTrue(notebooks, f"no shipped notebooks under {kit}")
-        seen = 0
-        for path in notebooks:
-            source = "".join(
-                "".join(cell["source"])
-                for cell in json.loads(path.read_text(encoding="utf-8"))["cells"])
-            for line in source.splitlines():
-                if "nbconvert" not in line:
+        kit = Path(impl.SKILL_ROOT) / "assets" / "kit"
+        assets = sorted(path for path in kit.rglob("*")
+                        if path.suffix in (".py", ".ipynb")
+                        and "__pycache__" not in path.parts)
+        self.assertTrue(assets, f"no shipped assets under {kit}")
+        prefix = '.venv/bin:$PATH'
+        seen, offenders = 0, []
+        for path in assets:
+            if path.suffix == ".ipynb":
+                text = "".join(
+                    "".join(cell["source"])
+                    for cell in json.loads(
+                        path.read_text(encoding="utf-8"))["cells"])
+            else:
+                text = path.read_text(encoding="utf-8")
+            lines = text.splitlines()
+            for n, line in enumerate(lines):
+                if "nbconvert" not in line and "run the notebook" not in line:
                     continue
                 seen += 1
-                self.assertIn(
-                    'PATH="$PWD/.venv/bin:$PATH"', line,
-                    f"{path.name} tells a reader to run nbconvert without the "
-                    f"PATH prefix the isolation doctrine requires: {line!r}")
+                # The prefix may sit on a neighbouring line: a shell command
+                # wrapped for width, or a refusal built from several f-strings.
+                window = "\n".join(lines[max(0, n - 2):n + 6])
+                if prefix not in window:
+                    offenders.append(f"{path.name}:{n + 1}: {line.strip()}")
+        self.assertEqual(
+            offenders, [],
+            "shipped assets tell a reader to run a notebook without the PATH "
+            "prefix the isolation doctrine requires")
         self.assertTrue(
-            seen, "no shipped notebook prints an nbconvert command at all, so "
+            seen, "no shipped asset mentions running a notebook at all, so "
                   "this test proves nothing about the ones that do")

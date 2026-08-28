@@ -280,8 +280,14 @@ def environment() -> dict:
             f"  this benchmark must use {repository}'s own virtualenv, because wall "
             f"time and peak memory are the measurement: another interpreter would "
             f"measure a different environment correctly and report it as this one.\n"
-            f"  run the notebook with {repository}/.venv/bin/python, or invoke this "
-            f"file with it directly."
+            f"  invoke this file with {repository}/.venv/bin/python directly, or\n"
+            f"  run the notebook with\n"
+            f'    PATH="{repository}/.venv/bin:$PATH" {repository}/.venv/bin/python -m jupyter \\\n'
+            f"      nbconvert --to notebook --execute --inplace <notebook>\n"
+            f"  The PATH prefix is not optional and is the reason you are seeing "
+            f"this: a kernelspec launches a bare `python` resolved off PATH, so "
+            f"naming the interpreter without also putting it first still hands the "
+            f"cells to whichever one was already there."
         )
     return {
         "repository": str(repository),
