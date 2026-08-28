@@ -95,6 +95,87 @@ class DirtyWorktreeGuardTests(unittest.TestCase):
             impl_guards.require_clean_worktree(self.repo)
         self.assertEqual(caught.exception.code, "DIRTY_WORKTREE")
 
+    # ---------------------------------------------------------------- ledger
+    # The guard exists so the skill never clobbers somebody else's uncommitted
+    # work. Its OWN append-only ledger is not that, and counting it deadlocked
+    # the commands: every ledger-appending command left the tree dirty, so the
+    # next clean-requiring one refused. Measured on a scratch target -- one
+    # step ran, the second refused with the ledger as the only porcelain entry.
+
+    def _ledger(self, product="Prod"):
+        path = self.repo / product / ".implementation" / "position.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def test_an_appended_ledger_alone_does_not_make_the_tree_dirty(self):
+        ledger = self._ledger()
+        ledger.write_text('{"kind": "step"}\n')
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-qm", "ledger")
+        ledger.write_text('{"kind": "step"}\n{"kind": "step"}\n')
+        self.assertIsNone(impl_guards.require_clean_worktree(self.repo))
+
+    def test_an_untracked_ledger_does_not_make_the_tree_dirty_either(self):
+        """Whether the ledger is committed is a separate, open question. The
+        guard must answer the same way under both, or a repository that
+        ignores it and one that commits it would disagree about whether a
+        command may run.
+
+        The product directory is committed first on purpose. Git collapses an
+        untracked tree to its topmost new directory, so a product that exists
+        only as this ledger reports `?? Prod/` and never names the ledger at
+        all -- see the test below, which locks that case deliberately.
+        """
+        product = self.repo / "Prod"
+        product.mkdir()
+        (product / "kept.txt").write_text("real\n")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-qm", "product")
+        self._ledger().write_text('{"kind": "step"}\n')
+        self.assertIsNone(impl_guards.require_clean_worktree(self.repo))
+
+    def test_a_wholly_untracked_product_directory_is_still_refused(self):
+        """Measured, not assumed: git reports `?? Prod/` when nothing under
+        the product is tracked yet, so the ledger is never named. Refusing is
+        the right answer -- an entire new directory is real uncommitted work,
+        whatever it happens to contain.
+        """
+        self._ledger().write_text('{"kind": "step"}\n')
+        with self.assertRaises(impl_refusals.Refused) as caught:
+            impl_guards.require_clean_worktree(self.repo)
+        self.assertEqual(caught.exception.code, "DIRTY_WORKTREE")
+
+    def test_real_work_beside_a_dirty_ledger_is_still_refused(self):
+        self._ledger().write_text('{"kind": "step"}\n')
+        (self.repo / "a.txt").write_text("two\n")
+        with self.assertRaises(impl_refusals.Refused) as caught:
+            impl_guards.require_clean_worktree(self.repo)
+        self.assertEqual(caught.exception.code, "DIRTY_WORKTREE")
+
+    def test_a_path_merely_starting_with_the_ledger_name_is_not_excused(self):
+        """Component match, never substring: `.implementationX/` is somebody
+        else's directory that happens to share a prefix.
+        """
+        sibling = self.repo / ".implementationX"
+        sibling.mkdir()
+        (sibling / "note.txt").write_text("mine\n")
+        with self.assertRaises(impl_refusals.Refused) as caught:
+            impl_guards.require_clean_worktree(self.repo)
+        self.assertEqual(caught.exception.code, "DIRTY_WORKTREE")
+
+    def test_a_rename_out_of_the_ledger_directory_is_not_excused(self):
+        """Both sides, because a half-matched rename moves real work."""
+        ledger = self._ledger()
+        ledger.write_text('{"kind": "step"}\n')
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-qm", "ledger")
+        moved = self.repo / "escaped.jsonl"
+        ledger.rename(moved)
+        _git(self.repo, "add", "-A")
+        with self.assertRaises(impl_refusals.Refused) as caught:
+            impl_guards.require_clean_worktree(self.repo)
+        self.assertEqual(caught.exception.code, "DIRTY_WORKTREE")
+
 
 class PrefixMappingTests(unittest.TestCase):
     """Moves break paths exactly as renames do, and the mapping is what fixes them."""
