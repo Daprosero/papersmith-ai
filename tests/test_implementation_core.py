@@ -10,6 +10,7 @@ reach every skill that imports them rather than just the one that wrote them.
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib.util
 import shutil
 import subprocess
@@ -400,8 +401,8 @@ class LaunchAvailableTests(unittest.TestCase):
     ]
 
     def _call(self, **overrides):
-        facts = {"status": "complete", "unbacked": [], "sequence": self.SEQUENCE,
-                 "ready": True, "job": "job-a"}
+        facts = {"status": "complete", "unbacked": [], "disagreements": [],
+                 "sequence": self.SEQUENCE, "ready": True, "job": "job-a"}
         facts.update(overrides)
         return impl_availability.launch_available(**facts)
 
@@ -418,6 +419,25 @@ class LaunchAvailableTests(unittest.TestCase):
         verdict = self._call(unbacked=[{"ordinal": 1}])
         self.assertEqual(verdict["code"], "POSITION_UNBACKED")
         self.assertEqual(verdict["facts"]["unbackedOrdinals"], [1])
+
+    def test_a_disagreeing_item_refuses_position_disagrees(self):
+        """The reproduced incident: a ticked item whose `derive()` verdict
+        disagrees with the mark must refuse, not pass through as reached.
+        """
+        verdict = self._call(disagreements=[{"ordinal": 2}])
+        self.assertFalse(verdict["available"])
+        self.assertEqual(verdict["code"], "POSITION_DISAGREES")
+        self.assertEqual(verdict["facts"]["disagreeingOrdinals"], [2])
+
+    def test_omitting_disagreements_raises_typeerror(self):
+        """A caller that forgets to pass `disagreements` must fail loudly at
+        the call, never silently treat every item as agreeing. Calling the
+        module function directly, bypassing `_call`'s own base facts.
+        """
+        facts = {"status": "complete", "unbacked": [], "sequence": self.SEQUENCE,
+                 "ready": True, "job": "job-a"}
+        with self.assertRaises(TypeError):
+            impl_availability.launch_available(**facts)
 
     def test_readiness_never_measured_refuses_not_ready(self):
         """The row a tri-state mutation would silently drop: `ready=None`
@@ -478,6 +498,67 @@ class LaunchAvailableNoUpwardImportsTests(unittest.TestCase):
             roots.isdisjoint(self.FORBIDDEN_ROOTS),
             f"impl_availability.py imports {roots & self.FORBIDDEN_ROOTS}, "
             "naming a caller's own layout from inside the shared core")
+
+
+class DigestBytesTests(unittest.TestCase):
+    """`impl_position.digest_bytes` is the one primitive the holder
+    document's compare-and-swap builds on (design decision 2); it has no
+    caller-specific behavior of its own, so it is exercised directly here.
+    """
+
+    def test_identical_bytes_digest_identically(self):
+        self.assertEqual(
+            impl_position.digest_bytes(b"same content"),
+            impl_position.digest_bytes(b"same content"))
+
+    def test_different_bytes_digest_differently(self):
+        self.assertNotEqual(
+            impl_position.digest_bytes(b"one"),
+            impl_position.digest_bytes(b"two"))
+
+    def test_absent_path_digests_as_empty_bytes(self):
+        """A candidate holder that does not exist on disk is treated as
+        empty, never as a distinct "absent" sentinel -- the same shape
+        `write_spliced` itself falls back to when `path` does not exist.
+        """
+        self.assertEqual(impl_position.digest_bytes(b""),
+                         hashlib.sha256(b"").hexdigest())
+
+
+class WriteSplicedCasTests(unittest.TestCase):
+    """`write_spliced`'s compare-and-swap (design decision 2): a required
+    `expect_digest` re-checked against `path`'s own current bytes,
+    immediately before anything is written.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.path = self.tmp / "AGREED.md"
+        self.path.write_bytes(b"original content\n")
+
+    def test_matching_pre_image_writes_normally(self):
+        digest = impl_position.digest_bytes(self.path.read_bytes())
+        impl_position.write_spliced(self.path, b"new content\n", expect_digest=digest)
+        self.assertEqual(self.path.read_bytes(), b"new content\n")
+
+    def test_omitting_expect_digest_raises_typeerror(self):
+        with self.assertRaises(TypeError):
+            impl_position.write_spliced(self.path, b"new content\n")
+
+    def test_a_changed_pre_image_refuses_and_leaves_the_file_untouched(self):
+        """Mutation A (design decision 2, "a file changed between reads"):
+        the digest captured at location time no longer matches what is on
+        disk at write time. Refuses `POSITION_HOLDER_MOVED`; the on-disk
+        bytes are byte-identical before and after the refused call.
+        """
+        stale_digest = impl_position.digest_bytes(b"stale pre-image, never on disk")
+        before = self.path.read_bytes()
+        with self.assertRaises(impl_refusals.Refused) as ctx:
+            impl_position.write_spliced(self.path, b"new content\n",
+                                        expect_digest=stale_digest)
+        self.assertEqual(ctx.exception.code, "POSITION_HOLDER_MOVED")
+        self.assertEqual(self.path.read_bytes(), before)
 
 
 if __name__ == "__main__":

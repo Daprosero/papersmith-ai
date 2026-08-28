@@ -26,25 +26,39 @@ one level up, in the command that has a directory to walk.
 from __future__ import annotations
 
 
-def launch_available(*, status: str, unbacked: list, sequence: list,
-                     ready: bool | None, job: str) -> dict:
+def launch_available(*, status: str, unbacked: list, disagreements: list,
+                     sequence: list, ready: bool | None, job: str) -> dict:
     """Whether a launch may proceed for `job`, and why not when it may not.
 
-    `status`, `unbacked` and `sequence` are a position read's own three
-    fields, passed through unchanged by whichever caller already computed
-    them once. `ready` is that same caller's own readiness measurement for
-    `job` -- `True`, `False`, or `None` when nothing has measured it yet;
-    only `True` counts as ready, so a caller that forgets to distinguish
-    "measured and failing" from "never measured at all" cannot accidentally
-    widen this rule by passing a `False` where a `None` belongs.
+    `status`, `unbacked`, `disagreements` and `sequence` are a position
+    read's own fields, passed through unchanged by whichever caller already
+    computed them once. `ready` is that same caller's own readiness
+    measurement for `job` -- `True`, `False`, or `None` when nothing has
+    measured it yet; only `True` counts as ready, so a caller that forgets
+    to distinguish "measured and failing" from "never measured at all"
+    cannot accidentally widen this rule by passing a `False` where a `None`
+    belongs.
+
+    `disagreements` names every item whose recorded mark contradicts its
+    own fresh re-measurement -- ticked but not actually reached, or the
+    reverse. It carries no default: a caller that forgets to pass it fails
+    the call itself, loudly, rather than being read as an empty list and
+    letting a contradicted item through as if it agreed. Two callers ask
+    this one rule the identical question over the identical facts, and a
+    forgotten keyword is exactly the kind of drift this module exists to
+    make impossible between them.
 
     Returns `{"available": bool, "code": str | None, "facts": dict}`.
     `code` is one of `POSITION_ABSENT`, `POSITION_STALE`,
-    `POSITION_UNBACKED`, `NOT_READY`, `SEQUENCE_NOT_REACHED`, checked in
-    that order -- the same order one caller's own refusal ladder already
-    checked them in before this rule existed, preserved here so neither
-    caller's answer moves. `facts` carries whichever ordinals a caller's
-    own message needs to quote; it is empty wherever no caller needs one.
+    `POSITION_UNBACKED`, `POSITION_DISAGREES`, `NOT_READY`,
+    `SEQUENCE_NOT_REACHED`, checked in that order -- the same order one
+    caller's own refusal ladder already checked the first five in before
+    this rule existed, preserved here so neither caller's answer moves.
+    `POSITION_DISAGREES` is inserted immediately after `POSITION_UNBACKED`:
+    both are honesty checks over what was recorded, and neither moves any
+    other code's relative order. `facts` carries whichever ordinals a
+    caller's own message needs to quote; it is empty wherever no caller
+    needs one.
     """
     if status == "absent":
         return {"available": False, "code": "POSITION_ABSENT", "facts": {}}
@@ -54,6 +68,11 @@ def launch_available(*, status: str, unbacked: list, sequence: list,
         return {
             "available": False, "code": "POSITION_UNBACKED",
             "facts": {"unbackedOrdinals": [item["ordinal"] for item in unbacked]},
+        }
+    if disagreements:
+        return {
+            "available": False, "code": "POSITION_DISAGREES",
+            "facts": {"disagreeingOrdinals": [item["ordinal"] for item in disagreements]},
         }
     if ready is not True:
         return {"available": False, "code": "NOT_READY", "facts": {}}

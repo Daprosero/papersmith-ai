@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -629,14 +630,51 @@ def splice(data: bytes, new_block: bytes, block: dict | None) -> bytes:
     return data[:block["start"]] + new_block + data[block["end"]:]
 
 
-def write_spliced(path: Path, data: bytes) -> None:
-    """Write `data` to `path` by temp file + `os.replace`, same directory.
+def digest_bytes(data: bytes) -> str:
+    """The sha256 hex digest of `data`, pure and side-effect-free.
 
-    Same-directory temp file so the replace is one filesystem rename rather
-    than a cross-device copy, and so a crash mid-write never leaves the
-    original truncated: the old file stays exactly as it was until the new
-    one is fully written and renamed over it.
+    The one primitive a pre-image capture and `write_spliced`'s own
+    re-check both need, so the two sides of a comparison call the
+    identical function rather than each computing a hash its own way and
+    risking a mismatch that means nothing about the bytes themselves.
     """
+    return hashlib.sha256(data).hexdigest()
+
+
+def write_spliced(path: Path, data: bytes, *, expect_digest: str) -> None:
+    """Write `data` to `path` by temp file + `os.replace`, same directory --
+    but only once `path`'s CURRENT bytes still digest to `expect_digest`.
+
+    `expect_digest` is the pre-image's own digest, captured by the caller
+    at the exact read that located whatever offsets `data` was spliced
+    against (design decision 2, compare-and-swap on the holder document).
+    Keyword-only and carries no default, the identical loud-omission shape
+    `impl_availability.launch_available`'s own required argument keeps: a
+    caller that forgets to pass one fails the call itself, rather than
+    quietly writing over bytes nobody re-checked.
+
+    Re-reads `path` (or treats an absent one as `digest_bytes(b"")`)
+    immediately before writing anything at all. On a mismatch, raises
+    `Refused("POSITION_HOLDER_MOVED", ...)` and writes nothing -- not even
+    a temp file -- so the on-disk bytes are untouched down to the last
+    one. A mismatch means the document changed between the read that
+    located a section's offsets and this write; the offsets computed
+    against the earlier read are never applied to bytes they were not
+    actually located against.
+
+    Same-directory temp file so the eventual replace is one filesystem
+    rename rather than a cross-device copy, and so a crash mid-write never
+    leaves the original truncated: the old file stays exactly as it was
+    until the new one is fully written and renamed over it.
+    """
+    current = path.read_bytes() if path.exists() else b""
+    if digest_bytes(current) != expect_digest:
+        raise Refused(
+            "POSITION_HOLDER_MOVED",
+            f"{path} changed between the read that located its section and "
+            "this write; refusing rather than splicing offsets computed "
+            "against bytes that are no longer there. Measure the section "
+            "again and retry -- never assume the earlier read still holds.")
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
     try:
         with os.fdopen(fd, "wb") as handle:

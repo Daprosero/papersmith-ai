@@ -5827,15 +5827,28 @@ def cmd_position(args: argparse.Namespace) -> dict:
     # never a fixed filename.
     md_files = sorted(p for p in product.glob("*.md") if p.is_file()) \
         if product.is_dir() else []
+    # Explicit loop, not a comprehension over a fresh `path.read_bytes()`
+    # per branch (design decision 2, "Capture"): `data` is bound exactly
+    # once per candidate and BOTH the block search and the pre-image
+    # digest read it back, so "the bytes a block's offsets were located
+    # against" is literally the same object `holder_digests` records a
+    # hash of -- never a second, later read that could already disagree.
+    # A candidate that carries no block yet still gets a digest: a fresh
+    # `--sequence`/`--reconcile` install may choose exactly such a file
+    # below (`_chosen_holder`), and `write_spliced`'s own re-check needs a
+    # pre-image for that path too.
     # `allow_legacy=True`: `position` is the one place a block written by
     # the prior boolean-only grammar can be seen at all, so it can be
     # rewritten -- see `locate_block`'s own docstring. `verify`/`probe`/
     # `position_state`'s read side pass no such flag and keep refusing.
-    holders_with_block = [
-        (path, block) for path in md_files
-        for block in [impl_position.locate_block(path.read_bytes(), allow_legacy=True)]
-        if block is not None
-    ]
+    holder_digests: dict[Path, str] = {}
+    holders_with_block = []
+    for path in md_files:
+        data = path.read_bytes()
+        holder_digests[path] = impl_position.digest_bytes(data)
+        block = impl_position.locate_block(data, allow_legacy=True)
+        if block is not None:
+            holders_with_block.append((path, block))
     if len(holders_with_block) > 1:
         raise Refused(
             "POSITION_HOLDER_AMBIGUOUS",
@@ -6023,7 +6036,16 @@ def cmd_position(args: argparse.Namespace) -> dict:
     before_bytes = target_path.read_bytes() if target_path.exists() else b""
     new_block = impl_position.render(header, items).encode("utf-8")
     spliced = impl_position.splice(before_bytes, new_block, existing_block)
-    impl_position.write_spliced(target_path, spliced)
+    # The pre-image digest captured at the SAME read that located
+    # `existing_block`'s own offsets above -- never a digest of
+    # `before_bytes`, which is itself a second, later read and exactly
+    # the read a stale-offset corruption would have already used. A
+    # candidate `write_spliced` never saw during the holder search (a
+    # brand-new file `_chosen_holder` could in principle name) falls back
+    # to the empty digest, matching `write_spliced`'s own absent-path rule.
+    impl_position.write_spliced(
+        target_path, spliced,
+        expect_digest=holder_digests.get(target_path, impl_position.digest_bytes(b"")))
     impl_position.append_event(
         product / ".implementation" / "position.jsonl",
         {"kind": "position", "session": args.session, "revision": args.revision,
@@ -6172,6 +6194,32 @@ def cmd_discuss(args: argparse.Namespace) -> dict:
 ACTION_IDS = frozenset({"launch", "pilot-all", "expand-contract"})
 
 
+def _launch_disagreements(position: dict) -> list:
+    """Which of `position["disagreements"]` are a false claim a launch may
+    not proceed against -- never the ones that are merely unreconciled.
+
+    `impl_position.derive()`'s `disagrees` fact is bidirectional
+    (`satisfied is not None and satisfied != (mark == "x")`), so it fires
+    on two measured shapes that are not equally dishonest:
+
+        blank box,  measurement says yes -> satisfied=True   disagrees=True
+        ticked box, measurement says no  -> satisfied=False  disagrees=True
+
+    Only the second is a false claim: a box ticked ahead of what its own
+    witness actually measured -- the same incident `unbacked` exists to
+    catch on the other side of one principle (a tick nothing measured, a
+    tick something measured against). The first is work already done whose
+    mark has not yet been reconciled (a later `position --reconcile` run
+    will tick it) -- a blank box asserts nothing, so it cannot be a false
+    assertion, and refusing a launch over it would refuse honesty itself.
+    `cmd_gate` and `_offer_launch_action` both call this, once, so neither
+    can compute a different answer to the identical question -- the same
+    single-shared-rule discipline `impl_availability.launch_available`
+    itself exists to enforce one layer down.
+    """
+    return [item for item in position["disagreements"] if item["mark"] == "x"]
+
+
 def cmd_gate(args: argparse.Namespace) -> dict:
     """The launch authorization record (design §4, domain launch-authorization).
 
@@ -6252,6 +6300,7 @@ def cmd_gate(args: argparse.Namespace) -> dict:
     smoke_ready = evidence["smokeReady"]
     verdict = impl_availability.launch_available(
         status=position["status"], unbacked=position["unbacked"],
+        disagreements=_launch_disagreements(position),
         sequence=position["sequence"], ready=smoke_ready.get(args.job),
         job=args.job)
     if not verdict["available"]:
@@ -6287,6 +6336,22 @@ def cmd_gate(args: argparse.Namespace) -> dict:
                 "nobody checked. Run `position` (with `--shards` if a shard "
                 "witness needs it) so every tick is derived, or blank the mark "
                 "until its evidence exists.")
+        if code == "POSITION_DISAGREES":
+            # Ordered immediately after `POSITION_UNBACKED`, same rationale:
+            # both are honesty checks over what the sequence records, not
+            # over whether the world is ready. A ticked item whose own
+            # witness disagrees with the mark is not "reached", regardless
+            # of what its box says -- the reproduced incident this refusal
+            # closes (`mark=x`, `derive()` verdict `disagrees=True`) reached
+            # `available: True` before this check existed.
+            raise Refused(
+                "POSITION_DISAGREES",
+                "item(s) "
+                f"{', '.join(str(o) for o in facts['disagreeingOrdinals'])} "
+                "in the position section are ticked but their own witness "
+                "disagrees with the mark; a launch is not authorized against "
+                "a tick that contradicts its own measurement. Run `position` "
+                "again so the mark and the measurement agree.")
         if code == "NOT_READY":
             raise Refused(
                 "NOT_READY",
@@ -6391,6 +6456,7 @@ def _offer_launch_action(target, name, args, rcli, position, evidence, job_dir):
 
     verdict = impl_availability.launch_available(
         status=position["status"], unbacked=position["unbacked"],
+        disagreements=_launch_disagreements(position),
         sequence=position["sequence"],
         ready=evidence["smokeReady"].get(job_name), job=job_name)
     if not verdict["available"]:

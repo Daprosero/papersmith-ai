@@ -11447,6 +11447,59 @@ class PositionCommandTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_HOLDER_AMBIGUOUS")
 
+    # --- compare-and-swap: the holder moving under a write (design decision 2) ---
+
+    def test_refuses_when_the_holder_moves_between_location_and_write(self):
+        """Mutation B (design decision 2, "stale offsets"): the holder file
+        changes AFTER the read that located `existing_block`'s own offsets
+        but BEFORE the write reaches it. Proxied by patching
+        `impl_position.render` -- the last hook `cmd_position` calls before
+        `write_spliced`'s own re-check -- to write concurrently as a side
+        effect, then delegate to the real `render`. In-process (not
+        `run_cli`'s subprocess) so the patch reaches the exact module
+        object `cmd_position` itself imports.
+
+        Distinct from `WriteSplicedCasTests` in `test_implementation_core.py`
+        (which drives `write_spliced` directly with a hand-built mismatched
+        digest): this proves the WIRING -- that `cmd_position` really does
+        carry the location read's own digest all the way to the write call,
+        never a digest of the second, later read `before_bytes` itself is.
+        """
+        box = self._box()
+        holder = box / "Method" / "AGREED.md"
+        holder.write_text(
+            self.block_text("- [ ] 1. Something. `@record`\n",
+                            sha256=self.PROPOSAL_SHA256, target="final"),
+            encoding="utf-8")
+        concurrent_bytes = b"# Rewritten by something else entirely\n"
+        original_render = impl_position.render
+
+        def _rewrite_holder_then_render(header, items):
+            holder.write_bytes(concurrent_bytes)
+            return original_render(header, items)
+
+        proposals = self._proposals()
+        (proposals / "r2.md").write_text("## 2\notro texto\n", encoding="utf-8")
+        os.environ["IMPLEMENTATION_PROPOSALS"] = str(proposals)
+        self.addCleanup(os.environ.pop, "IMPLEMENTATION_PROPOSALS", None)
+
+        args = argparse.Namespace(
+            target=str(box), name="Method", sequence=None, reconcile=False,
+            # A different revision than the block's own recorded one, so
+            # this call is never `unchanged` and the write path -- and this
+            # seam -- is actually reached.
+            revision="r2.md", session="s1", replace=False)
+
+        with unittest.mock.patch.object(impl_position, "render",
+                                        side_effect=_rewrite_holder_then_render):
+            with self.assertRaises(impl.Refused) as ctx:
+                impl.cmd_position(args)
+        self.assertEqual(ctx.exception.code, "POSITION_HOLDER_MOVED")
+        # The offsets `existing_block` located are never applied to
+        # `concurrent_bytes` -- the file holds exactly what the concurrent
+        # write put there, untouched by the refused splice.
+        self.assertEqual(holder.read_bytes(), concurrent_bytes)
+
     # --- migration: a pre-PR10 block is refused for reading, migratable for writing ---
 
     def test_a_legacy_block_refuses_verify_but_position_migrates_it(self):
@@ -12358,6 +12411,22 @@ class OfferCommandTests(unittest.TestCase):
         with smoke_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(event) + "\n")
 
+    def _write_smoke_fail(self, box, *, product="Method", job_name="job1",
+                          commit, worker="w1"):
+        """A recorded, matching-commit smoke result whose own `result` is
+        `"fail"` -- so `smokeReady`/`derive()` measure `False`, not
+        `None`. Distinct from never running one at all: an unmeasured
+        witness is `unbacked`, a measured-and-failing one that is ticked
+        anyway is `disagrees`, and only the latter is this helper's job.
+        """
+        smoke_path = box / product / ".remote-execution" / "smoke.jsonl"
+        smoke_path.parent.mkdir(parents=True, exist_ok=True)
+        event = {"kind": "smokeResult", "ts": "2026-08-27T00:00:00Z",
+                  "jobName": job_name, "result": "fail", "commit": commit,
+                  "worker": worker, "missing": []}
+        with smoke_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(event) + "\n")
+
     def _write_agreed(self, box, items):
         header = {"revision": self.PROPOSAL_REVISION,
                   "revisionSha256": self.PROPOSAL_SHA256,
@@ -12561,9 +12630,9 @@ class OfferCommandTests(unittest.TestCase):
             "cmd_gate and cmd_offer (through _offer_launch_action) must "
             "each call the shared rule exactly once")
 
-    def test_gate_and_offer_agree_on_every_one_of_the_five_refusal_codes(self):
+    def test_gate_and_offer_agree_on_every_one_of_the_six_refusal_codes(self):
         """Cross-join (spec "No drift between callers"): for each of the
-        five state codes, `gate` refuses with that code and `offer` omits
+        six state codes, `gate` refuses with that code and `offer` omits
         that job's launch action, over identical target/job/revision facts.
         """
         proposals = self._proposals()
@@ -12609,6 +12678,25 @@ class OfferCommandTests(unittest.TestCase):
                                 "--justification", "Because it is time.",
                                 proposals=proposals)
             self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_STALE")
+            offer_omits_job1(box)
+
+        # POSITION_DISAGREES -- the reproduced incident: a rehearsal item
+        # ticked `x` whose own witness measured `fail`, so `derive()`
+        # verdicts `satisfied=False, disagrees=True, unbacked=False`.
+        # Before this refusal existed, this exact shape reached
+        # `available: True`.
+        with self.subTest("POSITION_DISAGREES"):
+            box, commit = self._box()
+            self._write_job_folder(box, commit)
+            self._write_smoke_fail(box, commit=commit)
+            self._write_agreed(box, [{"ordinal": 1, "mark": "x", "text": "Rehearse the job.",
+                                      "witness": {"kind": "rehearsal", "operand": "job1"}}])
+            proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                                "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                                "--job", "job1", "--worker", "w1",
+                                "--justification", "Because it is time.",
+                                proposals=proposals)
+            self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_DISAGREES")
             offer_omits_job1(box)
 
         # POSITION_UNBACKED
@@ -12662,6 +12750,43 @@ class OfferCommandTests(unittest.TestCase):
                                 proposals=proposals)
             self.assertEqual(json.loads(proc.stdout)["code"], "SEQUENCE_NOT_REACHED")
             offer_omits_job1(box)
+
+    def test_a_blank_unreconciled_item_never_refuses_position_disagrees(self):
+        """The filter's other pole (`_launch_disagreements`): a blank box
+        whose own witness already measures satisfied is `disagrees=True`
+        too -- `derive()`'s fact is bidirectional -- but it asserts
+        nothing, so it is not a false claim and must never refuse a
+        launch. `gate` records normally and `offer` still publishes the
+        job's launch action, over the identical shape the reproduced
+        incident above (ticked, contradicted) correctly refuses.
+
+        Mutation proving the filter matters, not merely present: removing
+        `_launch_disagreements`'s `mark == "x"` condition (passing
+        `position["disagreements"]` unfiltered again, as both call sites
+        did before this filter existed) turns this test red -- `gate`
+        would refuse `POSITION_DISAGREES` and `offer` would omit job1,
+        exactly the regression this test exists to catch.
+        """
+        proposals = self._proposals()
+        box, commit = self._box()
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                                  "witness": {"kind": "rehearsal", "operand": "job1"}}])
+
+        proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            "--job", "job1", "--worker", "w1",
+                            "--justification", "Because it is time.",
+                            proposals=proposals)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["status"], "recorded")
+
+        self._register_fixture_reporter(box, "offer-fixture-svc")
+        result = impl.cmd_offer(self._offer_args(box, answer="yes"))
+        self.assertIn(
+            "job1",
+            [a["binding"].get("job") for a in result["actions"] if a["id"] == "launch"])
 
     # --- Phase 4: two-layer no-network proof at publish time -----------
 
