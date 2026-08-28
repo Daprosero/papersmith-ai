@@ -42,7 +42,12 @@ stands; the instrument does not ship. Recorded here rather than resolved,
 because every obvious remedy costs something real -- renaming a probe hides
 which subject it drives, exempting the table stops it being a closed set, and
 exempting the floor for filenames is a hole shaped exactly like the one the
-floor exists to close.
+floor exists to close. Deferred on purpose, not overlooked: exactly one
+subject is affected, the finding is already measured and written, and choosing
+an exception under the pressure of a single case is how exceptions get made
+that nobody can take back. **The trigger is a second subject whose name carries
+a floor word** -- decide it then, with two cases in hand and evidence of which
+cost actually bites.
 
 **This is the audit's own defect class, in its own doctrine.** A closed set that
 cannot be completely stated is what every `no-closed-roster` finding names, and
