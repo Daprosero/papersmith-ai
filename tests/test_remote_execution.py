@@ -9308,6 +9308,34 @@ class AuthorizationGateTests(unittest.TestCase):
             self.assertIn("--unit", message)
             self.assertNotIn("--worker <account>", message)
 
+    # -- docstring narrowing: additive only, never widened (Slice 2B) -----
+
+    def test_the_docstring_narrows_additively_and_never_widens_the_claim(self) -> None:
+        """Spec "docstring claim narrows, never widens": the pre-existing
+        honesty sentence about justification (legible, not verified) must
+        survive byte-for-byte, and the new paragraph about `gate`'s own
+        `--authorization` mechanism must say plainly that THIS function
+        does not read that field -- the strengthening is a property of how
+        a `gate` record now comes to exist, never a property this function
+        itself checks.
+        """
+        # Normalized to a single run of whitespace so a docstring's own
+        # line-wrap indentation (real, and irrelevant here) never masks a
+        # substring check -- the same reason other prose tests in this
+        # suite normalize before comparing.
+        doc = " ".join((REMOTE_CLI._verify_launch_authorization.__doc__ or "").split())
+        # Carried verbatim -- HARD RULE: never rewritten to fit.
+        self.assertIn(
+            "Justification is legible, not verified: this function checks "
+            "only that one is present on the matching record, never who "
+            "wrote it or whether a human read it.",
+            doc)
+        # The new paragraph states the mechanism and its own real limit.
+        self.assertIn("--authorization", doc)
+        self.assertIn("does not read that token", doc)
+        self.assertIn("not migrated", doc)
+        self.assertIn("not invalidated", doc)
+
 
 class AcceleratorRequestDoctrineTests(unittest.TestCase):
     """`assemble_metadata` must emit the accelerator key the installed

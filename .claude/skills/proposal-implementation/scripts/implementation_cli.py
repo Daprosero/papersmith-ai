@@ -6220,6 +6220,102 @@ def _launch_disagreements(position: dict) -> list:
     return [item for item in position["disagreements"] if item["mark"] == "x"]
 
 
+#: The seven fields "the same upcoming launch" reduces to, independently
+#: recomputed on both sides of the mint/verify boundary (design decision 3):
+#: `_authorization_binding` (below, prospective -- computed at `offer`
+#: time) and `_verify_gate_authorization` (below, retrospective -- computed
+#: at `gate` time) each build this exact shape from their OWN freshly
+#: re-derived facts, never from each other's output and never from a value
+#: a ledger record merely repeats back. Held once here so the two
+#: derivations cannot drift on which seven keys the digest covers.
+_AUTHORIZATION_BINDING_KEYS = (
+    "jobName", "commit", "entrypoint", "units", "rung",
+    "revisionSha256", "positionStatus",
+)
+
+
+def _verify_gate_authorization(events: list, token: str, binding: dict) -> None:
+    """The full check behind `gate --authorization <token>` (design "What
+    `gate` refuses"), run once, immediately before `append_event`, over
+    `binding` -- THIS invocation's own fresh re-derivation of the seven
+    `_AUTHORIZATION_BINDING_KEYS` facts, never the minted event's own
+    recorded copy of them. Presence of `--authorization` at all is a
+    separate, earlier, pure-argv check (`GATE_AUTHORIZATION_REQUIRED`, at
+    the top of `cmd_gate`'s own ladder); by the time this runs, a token
+    string exists and this is the only place it is actually verified.
+
+    Four refusals, checked in an order that answers a narrower question
+    each time (mismatch before stale, so presenting job A's token while
+    gating job B says exactly that, rather than blaming the world for
+    having moved):
+
+    - `GATE_AUTHORIZATION_UNKNOWN`: no `authorization` event on the ledger
+      carries this exact token, OR the event that does no longer re-digests
+      to its own `token` -- edited after minting, so its binding cannot be
+      trusted even though the string still matches. Both collapse to the
+      same honest answer: nothing here vouches for this token.
+    - `GATE_AUTHORIZATION_MISMATCH`: a genuine record exists, but it names
+      a different job or a different operator-declared unit list than THIS
+      invocation's own.
+    - `GATE_AUTHORIZATION_STALE`: the record is this invocation's own job
+      and units, but the pin, entrypoint, rung, revision or position status
+      it was minted against no longer equal what this call just measured.
+      Never elapsed time -- `session`/`at` are mint discriminators baked
+      into the digest, not a clock this function reads.
+    - `GATE_AUTHORIZATION_CONSUMED`: an `authorization-consumed` event
+      already names this exact token. Single-use, and never a deletion --
+      the ledger keeps the record of what spent it, the same append-only
+      rationale `append_event`'s own docstring states.
+    """
+    record = next(
+        (e for e in events
+         if e.get("kind") == "authorization" and e.get("token") == token),
+        None)
+    if record is not None:
+        own_binding = {key: record.get(key) for key in _AUTHORIZATION_BINDING_KEYS}
+        # `mintOrdinal` is part of the digest payload `_find_or_mint_
+        # authorization` hashes (the timestamp-collision fix); it must be
+        # folded back in here too, or every genuinely minted token would
+        # fail this re-digest and be treated as tampered.
+        recomputed = hashlib.sha256(json.dumps(
+            {**own_binding, "session": record.get("session"),
+             "at": record.get("at"), "mintOrdinal": record.get("mintOrdinal")},
+            sort_keys=True).encode("utf-8")).hexdigest()
+        if recomputed != record.get("token"):
+            record = None
+    if record is None:
+        raise Refused(
+            "GATE_AUTHORIZATION_UNKNOWN",
+            f"no authorization event on this target's ledger vouches for "
+            f"token {token!r} -- either nothing minted it, or the event "
+            "that once did has been edited since and no longer re-digests "
+            "to its own token. Publish (or re-publish) with `offer` first.")
+    if (record["jobName"] != binding["jobName"]
+            or record["units"] != binding["units"]):
+        raise Refused(
+            "GATE_AUTHORIZATION_MISMATCH",
+            f"token {token!r} was minted for job {record['jobName']!r} with "
+            f"units {record['units']!r}, not this invocation's own job "
+            f"{binding['jobName']!r} with units {binding['units']!r} -- a "
+            "token authorizes one exact launch, never a different one.")
+    if any(record[key] != binding[key] for key in
+           ("commit", "entrypoint", "rung", "revisionSha256", "positionStatus")):
+        raise Refused(
+            "GATE_AUTHORIZATION_STALE",
+            f"token {token!r} was minted against a pin, entrypoint, rung, "
+            "revision or position status that no longer match what this "
+            "gate call just re-derived -- a fact this launch depends on "
+            "moved, never merely elapsed time. Publish a fresh "
+            "authorization with `offer`.")
+    if any(e.get("kind") == "authorization-consumed" and e.get("token") == token
+           for e in events):
+        raise Refused(
+            "GATE_AUTHORIZATION_CONSUMED",
+            f"token {token!r} already authorized one successful `gate` "
+            "call and cannot be reused -- single-use, and never a "
+            "deletion. Publish a fresh authorization with `offer`.")
+
+
 def cmd_gate(args: argparse.Namespace) -> dict:
     """The launch authorization record (design §4, domain launch-authorization).
 
@@ -6251,12 +6347,20 @@ def cmd_gate(args: argparse.Namespace) -> dict:
 
     Checked in refusing-costs-nothing order: the `--worker`/`--unit`
     conflict and the justification first (both pure argv, no I/O at all),
-    then the revision, then whether a position section exists and is
-    current to reach a rung in, then whether every tick already in it was
-    derived rather than asserted (`POSITION_UNBACKED`), then the
-    un-forgeable readiness measurement, then whether the rung this job's
-    witness names has actually been reached -- a launch that skips a rung
-    is refused and the hole is visible.
+    then whether `--authorization` was given at all (also pure argv --
+    `GATE_AUTHORIZATION_REQUIRED`), then the revision, then whether a
+    position section exists and is current to reach a rung in, then
+    whether every tick already in it was derived rather than asserted
+    (`POSITION_UNBACKED`), then the un-forgeable readiness measurement,
+    then whether the rung this job's witness names has actually been
+    reached -- a launch that skips a rung is refused and the hole is
+    visible. Only once every one of those stands does the PRESENTED
+    token itself get verified (`_verify_gate_authorization`, design
+    "What `gate` refuses"), immediately before the record is appended --
+    the four-code check (`GATE_AUTHORIZATION_UNKNOWN`/`_MISMATCH`/
+    `_STALE`/`_CONSUMED`) runs last because it is the only one that needs
+    the binding this call is about to record, and running it any earlier
+    would mean re-deriving that binding twice.
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
@@ -6286,6 +6390,17 @@ def cmd_gate(args: argparse.Namespace) -> dict:
             "gate requires a non-blank justification: a human-legible reason "
             "for this launch, recorded on the transition, never inferred "
             "from a general 'go ahead'.")
+
+    if args.authorization is None:
+        raise Refused(
+            "GATE_AUTHORIZATION_REQUIRED",
+            "gate requires --authorization: a token minted by a prior "
+            "`offer` publish over this exact launch's binding (job, pin, "
+            "entrypoint, units, rung, revision, position status). There is "
+            "no default and no override -- a launch is authorized by a "
+            "distinct, engine-authored, prior act, never by omission. Run "
+            "`offer` first and pass the token its `launch` action's "
+            "`binding.authorization` names.")
 
     source = revision_source(args.revision)
     if source is None:
@@ -6415,6 +6530,20 @@ def cmd_gate(args: argparse.Namespace) -> dict:
         units = list(run_config.get("units") or [])
         worker = args.worker
 
+    # The full authorization check (design "What `gate` refuses"), over
+    # THIS invocation's own fresh re-derivation -- `rung` is the identical
+    # `jobOrdinal` fact `_offer_launch_action` bound when it minted, read
+    # off the SAME verdict this call already computed above, never
+    # recomputed a second, possibly-drifting way.
+    ledger_path = target / name / ".implementation" / "position.jsonl"
+    events = impl_position.read_events(ledger_path)
+    gate_binding = {
+        "jobName": args.job, "commit": commit, "entrypoint": entrypoint,
+        "units": units, "rung": verdict["facts"]["jobOrdinal"],
+        "revisionSha256": revision_sha256, "positionStatus": position["status"],
+    }
+    _verify_gate_authorization(events, args.authorization, gate_binding)
+
     recorded_at = _now_iso8601()
     event = {
         "kind": "gate", "jobName": args.job, "worker": worker,
@@ -6423,7 +6552,16 @@ def cmd_gate(args: argparse.Namespace) -> dict:
         "units": units, "justification": justification,
         "session": args.session, "at": recorded_at,
     }
-    impl_position.append_event(target / name / ".implementation" / "position.jsonl", event)
+    impl_position.append_event(ledger_path, event)
+    # Single-use, appended alongside the `gate` event it authorizes -- never
+    # a deletion of the `authorization` event itself (`append_event`'s own
+    # append-only rationale). A LATER gate call presenting the same token
+    # will fold this event in `_verify_gate_authorization` and refuse
+    # `GATE_AUTHORIZATION_CONSUMED`.
+    impl_position.append_event(ledger_path, {
+        "kind": "authorization-consumed", "token": args.authorization,
+        "session": args.session, "at": recorded_at,
+    })
 
     return {
         "command": "gate", "target": str(target), "name": name,
@@ -6573,8 +6711,29 @@ def _find_or_mint_authorization(ledger_path: Path, events: list, binding: dict,
     compared against a clock: they are what lets a SECOND, distinct
     authorization exist for an otherwise-unchanged binding once the first
     has been consumed (`kind: "authorization-consumed"`, appended by a
-    later `gate`, out of this slice's scope) -- excluded here so a stale
-    but still-unconsumed mint is found and reused rather than duplicated.
+    later `gate`, Slice 2B) -- excluded here so a stale but still-unconsumed
+    mint is found and reused rather than duplicated.
+
+    `mintOrdinal` is a THIRD discriminator, additive to `session`/`at`
+    (Slice 2B, closing a defect Slice 2A's own apply session flagged rather
+    than fixed out of scope). `_now_iso8601()` has SECOND-level precision:
+    verified by execution, an identical `binding` + identical `session` +
+    identical wall-clock second reproduces the IDENTICAL digest. So a
+    caller who consumes a token and then re-publishes with `offer` again,
+    inside the same second and the same session, would otherwise re-mint
+    the exact token that was just consumed -- `gate` would then refuse a
+    genuinely fresh authorization as `GATE_AUTHORIZATION_CONSUMED`. Fails
+    CLOSED, not open (it can never authorize anything extra), but it is a
+    real defect, not a hypothetical one. `mintOrdinal` -- the count of
+    every PRIOR `authorization` event already on this exact ledger,
+    regardless of binding -- closes it without touching `_now_iso8601()`
+    (a pre-existing, forge-wide, shared timestamp convention this mechanism
+    does not own) and without comparing anything to a clock: each mint
+    appends exactly one `authorization` event before any later mint could
+    ever read the ledger again, so the count strictly increases across
+    mints and can never repeat. It is also deterministic and disk-derived
+    -- replaying the identical ledger from disk always reproduces the
+    identical ordinal, unlike a wall clock or a random value.
     """
     consumed = {e["token"] for e in events if e.get("kind") == "authorization-consumed"}
     existing = next(
@@ -6585,11 +6744,11 @@ def _find_or_mint_authorization(ledger_path: Path, events: list, binding: dict,
     if existing is not None:
         return existing["token"]
 
+    mint_ordinal = sum(1 for e in events if e.get("kind") == "authorization")
+    payload = {**binding, "session": session, "at": at, "mintOrdinal": mint_ordinal}
     token = hashlib.sha256(
-        json.dumps({**binding, "session": session, "at": at},
-                   sort_keys=True).encode("utf-8")).hexdigest()
-    event = {"kind": "authorization", "token": token, **binding,
-             "session": session, "at": at}
+        json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+    event = {"kind": "authorization", "token": token, **payload}
     impl_position.append_event(ledger_path, event)
     events.append(event)
     return token
@@ -6646,6 +6805,12 @@ def cmd_offer(args: argparse.Namespace) -> dict:
     the operator-declared ordered list that binding covers for a campaign
     launch instead of a single-send one; the engine never substitutes one
     of its own.
+
+    **The published `command` string now carries `--authorization
+    <token>`** (Slice 2B), appended after minting once the token is known.
+    `gate` accepts the flag as of this slice, so the command is directly
+    runnable rather than one that would refuse `GATE_AUTHORIZATION_REQUIRED`
+    on its own advice.
     """
     if args.answer is not None and args.answer not in {"yes", "no"}:
         raise Refused(
@@ -6728,6 +6893,12 @@ def cmd_offer(args: argparse.Namespace) -> dict:
         token = _find_or_mint_authorization(
             ledger_path, events, binding, args.session, recorded_at)
         action["binding"]["authorization"] = token
+        # `gate` (Slice 2B) now accepts `--authorization`, so the published
+        # command is directly runnable rather than describing one that
+        # would refuse `GATE_AUTHORIZATION_REQUIRED` on its own advice.
+        # Appended, never interpolated earlier: the token is only known
+        # once minting above has run.
+        action["command"] += f" --authorization {token!r}"
 
     if existing is not None and (args.answer is None or args.answer == existing.get("answer")):
         status = "unchanged"
@@ -7473,6 +7644,19 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--justification", required=True,
                            help="the launch justification text, or - to read "
                                 "stdin; refused if it is blank")
+            p.add_argument("--authorization", default=None,
+                           help="a token minted by a prior `offer` publish "
+                                "over this exact launch's binding (job, "
+                                "pin, entrypoint, units, rung, revision, "
+                                "position status) -- required, no default. "
+                                "Refused GATE_AUTHORIZATION_REQUIRED when "
+                                "omitted, _UNKNOWN when no ledger record "
+                                "vouches for it, _MISMATCH when it was "
+                                "minted for a different job or unit list, "
+                                "_STALE when a bound fact has since moved "
+                                "(never merely elapsed time), _CONSUMED "
+                                "when it already authorized one successful "
+                                "gate call")
         if name == "offer":
             p.add_argument("--answer", default=None,
                            help="yes or no, answering whether every declared "

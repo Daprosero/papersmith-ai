@@ -811,50 +811,6 @@ oversight: the fact as computed cannot tell a repository that is not ready apart
 from one that never sends work anywhere. `SKILL.md`'s Output Contract carries the
 argument and states what would change it.
 
-## `gate` — the launch authorization record
-
-The second, independent precondition a non-rehearsal `submit` reads before it
-may run (design's launch-authorization domain). Binds an un-forgeable
-readiness measurement — a rehearsal that actually ran and was recorded, read
-back through `smokeReady` — to a human-legible justification, and appends
-the pair. Prints no token: nothing here can be minted by computing a digest
-over the caller's own argv.
-
-```bash
-python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py gate \
-  --target implementations/<repo> --name <Name> \
-  --revision research-concept-r05.md --session <your-session-id> \
-  --job governing-search --worker <account> \
-  --justification "Rehearsal passed at the pinned commit; launching the full grid."
-```
-
-Repeatable `--unit`, in place of `--worker`, authorizes a CAMPAIGN launch
-instead — one that will spread across every healthy account via `submit
---unit ...` rather than one named account. It binds the exact ordered unit
-list that later `submit --unit ...` will carry, the same derivation
-`campaign_consent_token()` already uses when minting the launch's consent
-token, and records `worker: null`: a campaign names no single account.
-`--worker` and `--unit` are mutually exclusive.
-
-```bash
-python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py gate \
-  --target implementations/<repo> --name <Name> \
-  --revision research-concept-r05.md --session <your-session-id> \
-  --job governing-search --unit shard-0 --unit shard-1 --unit shard-2 \
-  --justification "Rehearsal passed at the pinned commit; launching the campaign."
-```
-
-Refuses `EMPTY_JUSTIFICATION` on blank input, `POSITION_ABSENT`/`POSITION_STALE`
-when there is nothing current to gate against, `POSITION_UNBACKED` when a step
-is ticked and its witness was never measured — a blank box claims nothing and
-is honest for it, a ticked one asserts a step was reached, and a launch is not
-authorized against an assertion nobody checked — `NOT_READY` when no passing
-rehearsal is on file for this job at its current pin, `SEQUENCE_NOT_REACHED`
-when an earlier item in the sequence is still open — a launch that would skip
-a rung is refused rather than authorized around it — and
-`GATE_WORKER_UNIT_CONFLICT`/`GATE_WORKER_REQUIRED` when `--worker` and
-`--unit` are both given or neither is.
-
 ## `offer` — the state-derived action menu
 
 The fifth ledger-appending command, named after its own event kind the same
@@ -883,6 +839,72 @@ reports `status: "unchanged"` without appending a second event. Refuses
 and `OFFER_UNANSWERED` when no answer is on record and none is given this
 call — a `position.jsonl` written before this event kind existed reads the
 identical way, never as an error.
+
+Every published `launch` action's `binding` carries a minted `authorization`
+token — a digest over the engine's own re-derived binding (job, commit,
+entrypoint, units, rung, revision, position status), never over this call's
+argv alone — and its own `binding.authorization` key names the same value
+already appended to the action's `command` string as `--authorization
+<token>`, so the next step is to run that command exactly as printed.
+
+## `gate` — the launch authorization record
+
+The second, independent precondition a non-rehearsal `submit` reads before it
+may run (design's launch-authorization domain). Binds an un-forgeable
+readiness measurement — a rehearsal that actually ran and was recorded, read
+back through `smokeReady` — to a human-legible justification, and appends
+the pair, plus one `authorization-consumed` event naming the token spent.
+Prints no token of its own: nothing here can be minted by computing a digest
+over the caller's own argv. `--authorization <token>` is required and must
+instead name a token an earlier `offer` publish already minted — copy it
+from that `launch` action's own `command` string or `binding.authorization`.
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py gate \
+  --target implementations/<repo> --name <Name> \
+  --revision research-concept-r05.md --session <your-session-id> \
+  --job governing-search --worker <account> \
+  --justification "Rehearsal passed at the pinned commit; launching the full grid." \
+  --authorization '3f9c...e21a'
+```
+
+Repeatable `--unit`, in place of `--worker`, authorizes a CAMPAIGN launch
+instead — one that will spread across every healthy account via `submit
+--unit ...` rather than one named account. It binds the exact ordered unit
+list that later `submit --unit ...` will carry, the same derivation
+`campaign_consent_token()` already uses when minting the launch's consent
+token, and records `worker: null`: a campaign names no single account.
+`--worker` and `--unit` are mutually exclusive.
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py gate \
+  --target implementations/<repo> --name <Name> \
+  --revision research-concept-r05.md --session <your-session-id> \
+  --job governing-search --unit shard-0 --unit shard-1 --unit shard-2 \
+  --justification "Rehearsal passed at the pinned commit; launching the campaign." \
+  --authorization '9a10...5b3c'
+```
+
+Refuses `EMPTY_JUSTIFICATION` on blank input, `POSITION_ABSENT`/`POSITION_STALE`
+when there is nothing current to gate against, `POSITION_UNBACKED` when a step
+is ticked and its witness was never measured — a blank box claims nothing and
+is honest for it, a ticked one asserts a step was reached, and a launch is not
+authorized against an assertion nobody checked — `NOT_READY` when no passing
+rehearsal is on file for this job at its current pin, `SEQUENCE_NOT_REACHED`
+when an earlier item in the sequence is still open — a launch that would skip
+a rung is refused rather than authorized around it —
+`GATE_WORKER_UNIT_CONFLICT`/`GATE_WORKER_REQUIRED` when `--worker` and
+`--unit` are both given or neither is, and five authorization codes:
+`GATE_AUTHORIZATION_REQUIRED` (`--authorization` omitted — there is no
+default), `GATE_AUTHORIZATION_UNKNOWN` (no ledger record vouches for the
+token, or it no longer re-digests to its own recorded fields),
+`GATE_AUTHORIZATION_MISMATCH` (the record names a different job or unit
+list), `GATE_AUTHORIZATION_STALE` (a bound fact — pin, entrypoint, rung,
+revision, position status — has moved since minting, never merely elapsed
+time), and `GATE_AUTHORIZATION_CONSUMED` (the token already authorized one
+successful `gate` call; single-use, never reusable). A `gate` record written
+before this mechanism existed carries no token and is neither migrated nor
+invalidated — the requirement binds the *command*, not the record.
 
 ## `close` — the finishing precondition
 

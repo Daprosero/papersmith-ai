@@ -666,6 +666,21 @@ def _verify_launch_authorization(
     command a second time can never substitute for it -- only a `gate`
     record, minted by a separate invocation of a separate command, can.
 
+    Strengthened once more, additively (Slice 2B, design decision 3): the
+    `gate` command that appends a matching record now also requires its own
+    SEPARATE `--authorization` precondition -- a token minted by a prior
+    `offer` publish, verified and consumed at gate time
+    (`implementation_cli._verify_gate_authorization`). This function does
+    not read that token, or any `authorization`/`authorization-consumed`
+    event -- it still folds only `kind: "gate"` events, exactly as before,
+    and it cannot tell a record written before that mechanism existed from
+    one written after. That is deliberate, not an oversight: the
+    strengthening is a property of how a `gate` record now comes to exist
+    (the command that writes it refuses to run without a verified token),
+    never a property this function itself checks. A `gate` record written
+    before this mechanism existed therefore authorizes exactly as it always
+    did here -- it is not migrated, and it is not invalidated.
+
     Scope, stated rather than left implicit:
 
     - `smoke=True` returns immediately. A rehearsal is never gated by this

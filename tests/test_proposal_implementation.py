@@ -12124,6 +12124,32 @@ class GateCommandTests(unittest.TestCase):
         return subprocess.run([sys.executable, str(CLI), *args],
                               capture_output=True, text=True, cwd=FORGE, env=env)
 
+    def _mint_authorization(self, box, proposals, *, job="job1", units=None,
+                            session="s1"):
+        """A REAL token, minted through the actual `cmd_offer` mint path
+        in-process (never hand-computed) -- the same mechanism `offer`
+        itself uses, so this stays correct even if the binding shape ever
+        changes, and `gate`'s own independent re-derivation is genuinely
+        being checked against something the engine minted, not a fixture's
+        guess at what it would mint. `--unit`'s service is fixed at
+        `"svc"` because every job folder `_write_job_folder` writes in
+        this class declares that service; a capacity reporter is
+        registered for it so `_offer_launch_action` does not omit the
+        launch for want of one.
+        """
+        rcli = impl._load_remote_execution_cli()
+        rcli.ADAPTER.register_declared_capacity("svc", lambda: (1, 1))
+        args = argparse.Namespace(
+            target=str(box), name="Method", revision=self.PROPOSAL_REVISION,
+            session=session, answer="yes", units=units)
+        with unittest.mock.patch.dict(
+                os.environ, {"IMPLEMENTATION_PROPOSALS": str(proposals)}):
+            result = impl.cmd_offer(args)
+        launch = next(
+            a for a in result["actions"]
+            if a["id"] == "launch" and a["binding"].get("job") == job)
+        return launch["binding"]["authorization"]
+
     # --- 6.1: no passing rehearsal on file -- refused, never asserted ---
 
     def test_gate_refuses_not_ready_when_smoke_ready_false(self):
@@ -12137,10 +12163,16 @@ class GateCommandTests(unittest.TestCase):
         (box / "Method" / "AGREED.md").write_text(
             impl_position.render(header, items), encoding="utf-8")
 
+        # A well-formed but unminted token: the presence check (pure argv,
+        # checked first) is satisfied, so this call reaches the readiness
+        # check it exists to prove -- the full authorization VERIFICATION
+        # runs only once every earlier ladder rung stands, which this
+        # invocation never reaches.
         proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
                             "--revision", self.PROPOSAL_REVISION, "--session", "s1",
                             "--job", "job1", "--worker", "w1",
                             "--justification", "Because it is time.",
+                            "--authorization", "unminted-placeholder",
                             proposals=self._proposals())
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["code"], "NOT_READY")
@@ -12166,6 +12198,7 @@ class GateCommandTests(unittest.TestCase):
                                 "--revision", self.PROPOSAL_REVISION, "--session", "s1",
                                 "--job", "job1", "--worker", "w1",
                                 "--justification", "Because it is time.",
+                                "--authorization", "unminted-placeholder",
                                 proposals=proposals)
             self.assertEqual(proc.returncode, 2, proc.stdout)
             self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_ABSENT")
@@ -12184,6 +12217,7 @@ class GateCommandTests(unittest.TestCase):
                                 "--revision", "r2.md", "--session", "s1",
                                 "--job", "job1", "--worker", "w1",
                                 "--justification", "Because it is time.",
+                                "--authorization", "unminted-placeholder",
                                 proposals=proposals)
             self.assertEqual(proc.returncode, 2, proc.stdout)
             self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_STALE")
@@ -12208,6 +12242,7 @@ class GateCommandTests(unittest.TestCase):
                             "--revision", self.PROPOSAL_REVISION, "--session", "s1",
                             "--job", "job1", "--worker", "w1",
                             "--justification", "Because it is time.",
+                            "--authorization", "unminted-placeholder",
                             proposals=self._proposals())
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["code"], "SEQUENCE_NOT_REACHED")
@@ -12231,25 +12266,35 @@ class GateCommandTests(unittest.TestCase):
         (box / "Method" / "AGREED.md").write_text(
             impl_position.render(header, items), encoding="utf-8")
 
+        proposals = self._proposals()
+        token = self._mint_authorization(box, proposals)
         proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
                             "--revision", self.PROPOSAL_REVISION, "--session", "s1",
                             "--job", "job1", "--worker", "w1",
                             "--justification", "Rehearsal passed at the pinned commit.",
-                            proposals=self._proposals())
+                            "--authorization", token,
+                            proposals=proposals)
         self.assertEqual(proc.returncode, 0, proc.stdout)
         result = json.loads(proc.stdout)
         self.assertEqual(result["status"], "recorded")
         self.assertEqual(result["job"], "job1")
         self.assertEqual(result["commit"], commit)
-        # No token: the whole point (design §4.1) is that this record cannot
-        # be minted by computing a digest over the caller's own argv.
+        # No MINTED token in the reply: the whole point (design §4.1) is
+        # that this record cannot be minted by computing a digest over the
+        # caller's own argv -- `token` itself never appears as a KEY here
+        # (the presented `--authorization` value is consumed, never echoed
+        # back as if `gate` had just invented it).
         self.assertNotIn("token", "".join(result.keys()).lower())
 
         ledger = box / "Method" / ".implementation" / "position.jsonl"
         events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
-        self.assertEqual(events[-1]["kind"], "gate")
-        self.assertEqual(events[-1]["jobName"], "job1")
-        self.assertEqual(events[-1]["justification"], "Rehearsal passed at the pinned commit.")
+        gate_event = next(e for e in events if e["kind"] == "gate")
+        self.assertEqual(gate_event["jobName"], "job1")
+        self.assertEqual(gate_event["justification"], "Rehearsal passed at the pinned commit.")
+        # Single-use: consumption is a SEPARATE appended event, never a
+        # mutation of the `authorization` event it spends.
+        self.assertEqual(events[-1]["kind"], "authorization-consumed")
+        self.assertEqual(events[-1]["token"], token)
 
     # --- 6.4: the campaign form (PR8, design revision) ------------------
     #
@@ -12303,11 +12348,14 @@ class GateCommandTests(unittest.TestCase):
         (box / "Method" / "AGREED.md").write_text(
             impl_position.render(header, items), encoding="utf-8")
 
+        proposals = self._proposals()
+        token = self._mint_authorization(box, proposals, units=["u0", "u1"])
         proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
                             "--revision", self.PROPOSAL_REVISION, "--session", "s1",
                             "--job", "job1", "--unit", "u0", "--unit", "u1",
                             "--justification", "Rehearsal passed; launching the campaign.",
-                            proposals=self._proposals())
+                            "--authorization", token,
+                            proposals=proposals)
         self.assertEqual(proc.returncode, 0, proc.stdout)
         result = json.loads(proc.stdout)
         self.assertEqual(result["status"], "recorded")
@@ -12316,11 +12364,202 @@ class GateCommandTests(unittest.TestCase):
 
         ledger = box / "Method" / ".implementation" / "position.jsonl"
         events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
-        self.assertEqual(events[-1]["kind"], "gate")
-        self.assertIsNone(events[-1]["worker"])
+        gate_event = next(e for e in events if e["kind"] == "gate")
+        self.assertIsNone(gate_event["worker"])
         # Order preserved, never sorted -- the same rule `campaign_consent_
         # token()` documents for consent (Decision 5).
-        self.assertEqual(events[-1]["units"], ["u0", "u1"])
+        self.assertEqual(gate_event["units"], ["u0", "u1"])
+        self.assertEqual(events[-1]["kind"], "authorization-consumed")
+        self.assertEqual(events[-1]["token"], token)
+
+    # --- 6.5: `--authorization` and its five refusal codes (Slice 2B) ---
+
+    def test_gate_refuses_authorization_required_when_omitted(self):
+        """Pure argv, checked before any I/O -- there is no default and no
+        way to reach a later refusal code without it.
+        """
+        box, _ = self._box()
+        proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            "--job", "job1", "--worker", "w1",
+                            "--justification", "Because it is time.",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "GATE_AUTHORIZATION_REQUIRED")
+
+    def test_gate_refuses_authorization_unknown_when_no_record_vouches_for_it(self):
+        """A syntactically fine token that names no ledger event at all --
+        the honest answer to a caller who typed a value rather than copying
+        one `offer` actually minted.
+        """
+        proposals = self._proposals()
+        box, commit = self._box()
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
+        items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                  "witness": {"kind": "rehearsal", "operand": "job1"}}]
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+
+        proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            "--job", "job1", "--worker", "w1",
+                            "--justification", "Because it is time.",
+                            "--authorization", "f" * 64,
+                            proposals=proposals)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "GATE_AUTHORIZATION_UNKNOWN")
+
+    def test_gate_refuses_authorization_mismatch_on_a_different_unit_list(self):
+        """A genuine, unconsumed record exists -- but it was minted for a
+        DIFFERENT operator-declared unit list than this invocation's own,
+        so it is refused for naming the wrong launch, not for being absent.
+        """
+        proposals = self._proposals()
+        box, commit = self._box()
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
+        items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                  "witness": {"kind": "rehearsal", "operand": "job1"}}]
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+
+        token = self._mint_authorization(box, proposals, units=["u0"])
+        proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            "--job", "job1", "--unit", "u1",
+                            "--justification", "Because it is time.",
+                            "--authorization", token,
+                            proposals=proposals)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "GATE_AUTHORIZATION_MISMATCH")
+
+    def test_gate_refuses_authorization_stale_when_the_pin_moves(self):
+        """The exact spec scenario ("moved binding goes stale"): a token
+        minted while the job's pin is P1 is refused once the job folder's
+        own declared commit becomes P2 -- a fact this launch depends on
+        moved, and this is never about elapsed time (`session`/`at` are
+        digest discriminators, not a clock this check reads).
+        """
+        proposals = self._proposals()
+        box, commit = self._box()
+        job_dir = self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
+        items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                  "witness": {"kind": "rehearsal", "operand": "job1"}}]
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+
+        token = self._mint_authorization(box, proposals)
+
+        # The pin moves: a NEW commit is declared in the job folder's own
+        # run-config.json, and a fresh rehearsal is recorded against it, so
+        # this call reaches the staleness check rather than being turned
+        # back earlier by NOT_READY.
+        new_commit = "b" * 40
+        run_config = json.loads((job_dir / "run-config.json").read_text(encoding="utf-8"))
+        run_config["commit"] = new_commit
+        (job_dir / "run-config.json").write_text(json.dumps(run_config), encoding="utf-8")
+        self._write_smoke_pass(box, commit=new_commit)
+
+        proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            "--job", "job1", "--worker", "w1",
+                            "--justification", "Because it is time.",
+                            "--authorization", token,
+                            proposals=proposals)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "GATE_AUTHORIZATION_STALE")
+
+    def test_gate_refuses_authorization_consumed_on_reuse(self):
+        """Single-use: a token that already authorized one successful
+        `gate` call is refused on a second presentation, and the ledger
+        shows an APPENDED `authorization-consumed` record, never a deleted
+        `authorization` event (`append_event`'s own append-only rationale).
+        """
+        proposals = self._proposals()
+        box, commit = self._box()
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
+        items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                  "witness": {"kind": "rehearsal", "operand": "job1"}}]
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+
+        token = self._mint_authorization(box, proposals)
+        first = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                             "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                             "--job", "job1", "--worker", "w1",
+                             "--justification", "Rehearsal passed at the pinned commit.",
+                             "--authorization", token,
+                             proposals=proposals)
+        self.assertEqual(first.returncode, 0, first.stdout)
+
+        second = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                              "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                              "--job", "job1", "--worker", "w1",
+                              "--justification", "Rehearsal passed at the pinned commit.",
+                              "--authorization", token,
+                              proposals=proposals)
+        self.assertEqual(second.returncode, 2, second.stdout)
+        self.assertEqual(json.loads(second.stdout)["code"], "GATE_AUTHORIZATION_CONSUMED")
+
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+        consumed = [e for e in events if e.get("kind") == "authorization-consumed"]
+        gate_events = [e for e in events if e.get("kind") == "gate"]
+        self.assertEqual(len(consumed), 1, "one refusal must never mint a second consumption")
+        self.assertEqual(len(gate_events), 1, "the refused second call appends no `gate` event")
+
+    # --- 6.6: backward compatibility -- a pre-change record, never migrated ---
+
+    def test_a_pre_change_gate_record_is_neither_migrated_nor_the_reason_for_refusal(self):
+        """Spec "old event, new gate call": a target whose ledger already
+        carries a tokenless `gate` event (written before this mechanism
+        existed) refuses the NEW `gate` command for lack of --authorization
+        -- the command's own new precondition -- never because the old
+        event is somehow invalid. The old event is untouched: no migration,
+        no rewrite, and this refusal appends nothing at all.
+
+        The design's own measurement found ZERO `gate` events in either
+        real ledger in this repository, so this fixture builds its own --
+        there is no local instance to discover.
+        """
+        box, commit = self._box()
+        self._write_job_folder(box, commit)
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        pre_change_event = {
+            "kind": "gate", "jobName": "job1", "worker": "w1", "commit": commit,
+            "revision": self.PROPOSAL_REVISION, "revisionSha256": self.PROPOSAL_SHA256,
+            "entrypoint": "tools/svc/job1/run.py", "units": [],
+            "justification": "prior work, before --authorization existed",
+            "session": "s0", "at": "2026-08-27T00:00:00Z",
+        }
+        impl_position.append_event(ledger, pre_change_event)
+        before = ledger.read_text(encoding="utf-8")
+
+        proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            "--job", "job1", "--worker", "w1",
+                            "--justification", "Because it is time.",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "GATE_AUTHORIZATION_REQUIRED")
+        # Untouched: the refusal appended nothing, migrated nothing, and
+        # rewrote nothing -- the pre-change event is byte-identical.
+        self.assertEqual(ledger.read_text(encoding="utf-8"), before)
 
 
 class OfferCommandTests(unittest.TestCase):
@@ -12663,6 +12902,7 @@ class OfferCommandTests(unittest.TestCase):
                                 "--revision", self.PROPOSAL_REVISION, "--session", "s1",
                                 "--job", "job1", "--worker", "w1",
                                 "--justification", "Because it is time.",
+                                "--authorization", "unminted-placeholder",
                                 proposals=proposals)
             self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_ABSENT")
             offer_omits_job1(box)
@@ -12681,6 +12921,7 @@ class OfferCommandTests(unittest.TestCase):
                                 "--revision", "r2.md", "--session", "s1",
                                 "--job", "job1", "--worker", "w1",
                                 "--justification", "Because it is time.",
+                                "--authorization", "unminted-placeholder",
                                 proposals=proposals)
             self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_STALE")
             offer_omits_job1(box)
@@ -12700,6 +12941,7 @@ class OfferCommandTests(unittest.TestCase):
                                 "--revision", self.PROPOSAL_REVISION, "--session", "s1",
                                 "--job", "job1", "--worker", "w1",
                                 "--justification", "Because it is time.",
+                                "--authorization", "unminted-placeholder",
                                 proposals=proposals)
             self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_DISAGREES")
             offer_omits_job1(box)
@@ -12719,6 +12961,7 @@ class OfferCommandTests(unittest.TestCase):
                                 "--revision", self.PROPOSAL_REVISION, "--session", "s1",
                                 "--job", "job1", "--worker", "w1",
                                 "--justification", "Because it is time.",
+                                "--authorization", "unminted-placeholder",
                                 proposals=proposals)
             self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_UNBACKED")
             offer_omits_job1(box)
@@ -12733,6 +12976,7 @@ class OfferCommandTests(unittest.TestCase):
                                 "--revision", self.PROPOSAL_REVISION, "--session", "s1",
                                 "--job", "job1", "--worker", "w1",
                                 "--justification", "Because it is time.",
+                                "--authorization", "unminted-placeholder",
                                 proposals=proposals)
             self.assertEqual(json.loads(proc.stdout)["code"], "NOT_READY")
             offer_omits_job1(box)
@@ -12752,6 +12996,7 @@ class OfferCommandTests(unittest.TestCase):
                                 "--revision", self.PROPOSAL_REVISION, "--session", "s1",
                                 "--job", "job1", "--worker", "w1",
                                 "--justification", "Because it is time.",
+                                "--authorization", "unminted-placeholder",
                                 proposals=proposals)
             self.assertEqual(json.loads(proc.stdout)["code"], "SEQUENCE_NOT_REACHED")
             offer_omits_job1(box)
@@ -12779,15 +13024,24 @@ class OfferCommandTests(unittest.TestCase):
         self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
                                   "witness": {"kind": "rehearsal", "operand": "job1"}}])
 
+        # `gate` now requires a REAL minted `--authorization`: registered
+        # before minting (not merely before the later `cmd_offer` check
+        # below), since the mint itself needs a capacity reporter to
+        # publish job1's `launch` action at all.
+        self._register_fixture_reporter(box, "offer-fixture-svc")
+        minted = impl.cmd_offer(self._offer_args(box, answer="yes"))
+        token = next(
+            a for a in minted["actions"] if a["id"] == "launch")["binding"]["authorization"]
+
         proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
                             "--revision", self.PROPOSAL_REVISION, "--session", "s1",
                             "--job", "job1", "--worker", "w1",
                             "--justification", "Because it is time.",
+                            "--authorization", token,
                             proposals=proposals)
         self.assertEqual(proc.returncode, 0, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["status"], "recorded")
 
-        self._register_fixture_reporter(box, "offer-fixture-svc")
         result = impl.cmd_offer(self._offer_args(box, answer="yes"))
         self.assertIn(
             "job1",
@@ -13077,6 +13331,60 @@ class OfferCommandTests(unittest.TestCase):
         self.assertEqual(event["token"], expected)
         self.assertEqual(len(event["token"]), 64)
         int(event["token"], 16)  # raises ValueError if any character is not hex
+
+    # --- Slice 2B: the timestamp-collision defect, closed --------------
+
+    def test_a_same_second_same_session_remint_does_not_collide_with_the_consumed_token(
+        self,
+    ):
+        """The measured defect (Slice 2A's own apply session flagged this
+        rather than fixing it out of scope): `_now_iso8601()` has
+        SECOND-level precision, so two mints sharing a `session` AND
+        landing in the identical wall-clock second, over the identical
+        binding after the first token was consumed, would otherwise digest
+        to the SAME already-consumed token -- `gate` would then wrongly
+        refuse a genuinely fresh authorization as
+        `GATE_AUTHORIZATION_CONSUMED`.
+
+        `_now_iso8601` is frozen to one exact instant AND `session` is held
+        identical across both mints here, on purpose -- the two variables
+        the defect needs to collide -- so nothing but `mintOrdinal` can be
+        doing the work of keeping the two tokens apart.
+
+        Mutation-proven: dropping `mintOrdinal` from the digest payload in
+        `_find_or_mint_authorization` (and from the matching re-digest in
+        `_verify_gate_authorization`) turns this red -- the second mint
+        reproduces the first, already-consumed token exactly -- verified
+        below, then reverted.
+        """
+        box, commit = self._box()
+        self._register_fixture_reporter(box, "offer-fixture-svc")
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                                  "witness": {"kind": "rehearsal", "operand": "job1"}}])
+
+        frozen_instant = "2026-08-28T00:00:00Z"
+        with unittest.mock.patch.object(impl, "_now_iso8601", return_value=frozen_instant):
+            first = impl.cmd_offer(self._offer_args(box, answer="yes", session="s1"))
+        first_token = next(
+            a for a in first["actions"] if a["id"] == "launch")["binding"]["authorization"]
+
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        impl_position.append_event(ledger, {
+            "kind": "authorization-consumed", "token": first_token,
+            "session": "s1", "at": frozen_instant})
+
+        with unittest.mock.patch.object(impl, "_now_iso8601", return_value=frozen_instant):
+            second = impl.cmd_offer(self._offer_args(box, answer="yes", session="s1"))
+        second_token = next(
+            a for a in second["actions"] if a["id"] == "launch")["binding"]["authorization"]
+
+        self.assertNotEqual(first_token, second_token,
+                            "same session, same second, over the identical "
+                            "binding, must never re-mint the just-consumed token")
+        tokens = {e["token"] for e in self._authorization_events(box)}
+        self.assertEqual(len(tokens), 2)
 
 
 class CloseCommandTests(unittest.TestCase):
@@ -14277,6 +14585,7 @@ class UnbackedPositionSurfaceTests(unittest.TestCase):
                             "--revision", self.PROPOSAL_REVISION, "--session", "s1",
                             "--job", "job1", "--worker", "w1",
                             "--justification", "Because it is time.",
+                            "--authorization", "unminted-placeholder",
                             proposals=self._proposals())
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_UNBACKED")
@@ -14290,6 +14599,7 @@ class UnbackedPositionSurfaceTests(unittest.TestCase):
                             "--revision", self.PROPOSAL_REVISION, "--session", "s1",
                             "--job", "job1", "--worker", "w1",
                             "--justification", "Because it is time.",
+                            "--authorization", "unminted-placeholder",
                             proposals=self._proposals())
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["code"], "NOT_READY")
@@ -14312,6 +14622,7 @@ class UnbackedPositionSurfaceTests(unittest.TestCase):
                               "--revision", self.PROPOSAL_REVISION, "--session", "s1",
                               "--job", "job1", "--worker", "w1",
                               "--justification", "Because it is time.",
+                              "--authorization", "unminted-placeholder",
                               proposals=proposals)
         self.assertEqual(json.loads(absent.stdout)["code"], "POSITION_ABSENT")
 
@@ -14326,6 +14637,7 @@ class UnbackedPositionSurfaceTests(unittest.TestCase):
                              "--revision", self.PROPOSAL_REVISION, "--session", "s1",
                              "--job", "job1", "--worker", "w1",
                              "--justification", "Because it is time.",
+                             "--authorization", "unminted-placeholder",
                              proposals=proposals)
         self.assertEqual(json.loads(stale.stdout)["code"], "POSITION_STALE")
 
