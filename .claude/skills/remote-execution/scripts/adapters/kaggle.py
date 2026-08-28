@@ -17,8 +17,8 @@ what this file's own dependency graph can even reach:
    the credential file `kaggle-accounts` keeps for itself, and it never
    constructs a path into that skill's own data directory. Worker identity
    comes from exactly one sanctioned command, run as a subprocess:
-   `python3 <kaggle-accounts>/scripts/accounts_cli.py list --json`, which
-   answers with usernames and nothing else (`cmd_list` under `--json`
+   `sys.executable <kaggle-accounts>/scripts/accounts_cli.py list --json`,
+   which answers with usernames and nothing else (`cmd_list` under `--json`
    builds a fresh dict holding only `username` per account — no other key
    can reach a caller even by accident). This module never imports that
    script; it only runs it, exactly the way a human at a terminal would.
@@ -723,8 +723,12 @@ class KaggleAdapter(ADAPTER.Adapter):
         """Usernames from the sanctioned `list --json` command, each
         stamped with THIS service's documented per-worker allowance.
 
-        Runs `python3 <accounts_cli> list --json` as a subprocess and reads
-        only its stdout; never opens, globs or otherwise touches any file
+        Runs `<this interpreter> <accounts_cli> list --json` as a subprocess
+        and reads only its stdout -- `sys.executable`, never a bare
+        `python3`, because the two coincide only by accident of `PATH`: a
+        sibling skill launched under a different interpreter answers about
+        a different installation, or fails to start at all. It never opens,
+        globs or otherwise touches any file
         `accounts_cli` itself might consult. That is what lets this method
         answer normally even when whatever file backs `accounts_cli`'s own
         answer is unreadable to THIS process directly — this process never
