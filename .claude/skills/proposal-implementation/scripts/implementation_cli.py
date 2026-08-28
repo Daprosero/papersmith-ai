@@ -50,6 +50,7 @@ from impl_guards import require_clean_worktree, require_non_forge_interpreter, r
 from impl_naming import normalize_name, package_name, validate_name  # noqa: E402
 from impl_references import (is_nesting, prefix_mappings, reference_pattern,  # noqa: E402
                              scan_reference_updates, scan_stale_references)
+import impl_availability  # noqa: E402
 import impl_position  # noqa: E402
 import impl_steps  # noqa: E402
 
@@ -6160,6 +6161,17 @@ def cmd_discuss(args: argparse.Namespace) -> dict:
     }
 
 
+#: The closed, forge-owned vocabulary an `offer` action's `id` may ever
+#: hold (spec "Action shape is closed and forge-owned"). Modelled on
+#: `impl_position.WITNESS_KINDS`, not on `probe`'s own scraped `nextStep`
+#: literals: this constant IS the roster, and `OfferCommandTests` in
+#: `tests/test_proposal_implementation.py` holds the *agreement* between
+#: this constant, the publisher's own source (every `"id"` literal it
+#: writes), and a runtime action set -- rather than carrying a second,
+#: independent copy of the list the way a scraped roster would.
+ACTION_IDS = frozenset({"launch", "pilot-all", "expand-contract"})
+
+
 def cmd_gate(args: argparse.Namespace) -> dict:
     """The launch authorization record (design §4, domain launch-authorization).
 
@@ -6237,66 +6249,64 @@ def cmd_gate(args: argparse.Namespace) -> dict:
 
     evidence = _position_write_evidence(target, name)
     position = position_state(target, name, evidence, args.revision, source)
-    if position["status"] == "absent":
-        raise Refused(
-            "POSITION_ABSENT",
-            "no position section has been derived for this target; run "
-            "`position` (--sequence or --reconcile) before a launch can be "
-            "gated against it.")
-    if position["status"] == "stale":
-        raise Refused(
-            "POSITION_STALE",
-            "the position section is bound to a revision whose bytes no "
-            "longer match; run `position` again before gating a launch "
-            "against it.")
-    if position["unbacked"]:
-        # Ordered after stale/absent and before `NOT_READY` on purpose. The
-        # two above are about whether there is a position to read at all;
-        # this one is about whether the position that IS there says only
-        # what somebody measured. A gate whose entire premise is that the
-        # recorded sequence is honest cannot pass over a step asserted by a
-        # hand-typed `x` whose witness nothing has ever looked at -- that is
-        # the same forgery `NOT_READY` exists to refuse one rung further
-        # down, and refusing it here costs nothing but a list this call
-        # already computed.
-        raise Refused(
-            "POSITION_UNBACKED",
-            "item(s) "
-            f"{', '.join(str(item['ordinal']) for item in position['unbacked'])} "
-            "in the position section are ticked and their witnesses were "
-            "never measured; a launch is not authorized against an assertion "
-            "nobody checked. Run `position` (with `--shards` if a shard "
-            "witness needs it) so every tick is derived, or blank the mark "
-            "until its evidence exists.")
-
     smoke_ready = evidence["smokeReady"]
-    if smoke_ready.get(args.job) is not True:
-        raise Refused(
-            "NOT_READY",
-            f"job {args.job!r} has no passing rehearsal recorded at its "
-            "current pin (`remote_execution_jobs_state()['smokeReady']` is "
-            "not True); a rehearsal must actually run and be recorded "
-            "before this launch can be authorized -- readiness cannot be "
-            "asserted, only measured.")
-
-    job_item = next(
-        (item for item in position["sequence"]
-         if item["witness"]["kind"] == "rehearsal"
-         and item["witness"]["operand"] == args.job),
-        None)
-    if job_item is None:
+    verdict = impl_availability.launch_available(
+        status=position["status"], unbacked=position["unbacked"],
+        sequence=position["sequence"], ready=smoke_ready.get(args.job),
+        job=args.job)
+    if not verdict["available"]:
+        code, facts = verdict["code"], verdict["facts"]
+        if code == "POSITION_ABSENT":
+            raise Refused(
+                "POSITION_ABSENT",
+                "no position section has been derived for this target; run "
+                "`position` (--sequence or --reconcile) before a launch can be "
+                "gated against it.")
+        if code == "POSITION_STALE":
+            raise Refused(
+                "POSITION_STALE",
+                "the position section is bound to a revision whose bytes no "
+                "longer match; run `position` again before gating a launch "
+                "against it.")
+        if code == "POSITION_UNBACKED":
+            # Ordered after stale/absent and before `NOT_READY` on purpose. The
+            # two above are about whether there is a position to read at all;
+            # this one is about whether the position that IS there says only
+            # what somebody measured. A gate whose entire premise is that the
+            # recorded sequence is honest cannot pass over a step asserted by a
+            # hand-typed `x` whose witness nothing has ever looked at -- that is
+            # the same forgery `NOT_READY` exists to refuse one rung further
+            # down, and refusing it here costs nothing but a list this call
+            # already computed.
+            raise Refused(
+                "POSITION_UNBACKED",
+                "item(s) "
+                f"{', '.join(str(o) for o in facts['unbackedOrdinals'])} "
+                "in the position section are ticked and their witnesses were "
+                "never measured; a launch is not authorized against an assertion "
+                "nobody checked. Run `position` (with `--shards` if a shard "
+                "witness needs it) so every tick is derived, or blank the mark "
+                "until its evidence exists.")
+        if code == "NOT_READY":
+            raise Refused(
+                "NOT_READY",
+                f"job {args.job!r} has no passing rehearsal recorded at its "
+                "current pin (`remote_execution_jobs_state()['smokeReady']` is "
+                "not True); a rehearsal must actually run and be recorded "
+                "before this launch can be authorized -- readiness cannot be "
+                "asserted, only measured.")
+        # code == "SEQUENCE_NOT_REACHED"
+        if facts["reason"] == "no_witness":
+            raise Refused(
+                "SEQUENCE_NOT_REACHED",
+                f"no sequence item names `@rehearsal {args.job}` as its witness; "
+                "gate only authorizes a launch the sequence already names.")
         raise Refused(
             "SEQUENCE_NOT_REACHED",
-            f"no sequence item names `@rehearsal {args.job}` as its witness; "
-            "gate only authorizes a launch the sequence already names.")
-    earlier_open = [item["ordinal"] for item in position["sequence"]
-                    if item["ordinal"] < job_item["ordinal"] and item["mark"] != "x"]
-    if earlier_open:
-        raise Refused(
-            "SEQUENCE_NOT_REACHED",
-            f"item {min(earlier_open)} in the sequence is not yet ticked; "
-            f"item {job_item['ordinal']} (`@rehearsal {args.job}`) cannot be "
-            "gated ahead of it -- a launch that skips a rung is refused.")
+            f"item {facts['earliestOpenOrdinal']} in the sequence is not yet "
+            f"ticked; item {facts['jobOrdinal']} (`@rehearsal {args.job}`) "
+            "cannot be gated ahead of it -- a launch that skips a rung is "
+            "refused.")
 
     rcli = _load_remote_execution_cli()
     job_dir = run_config = None
@@ -6357,6 +6367,197 @@ def cmd_gate(args: argparse.Namespace) -> dict:
         "revisionSha256": revision_sha256, "entrypoint": entrypoint,
         "units": units, "justification": justification,
         "session": args.session, "readiness": True, "recordedAt": recorded_at,
+    }
+
+
+def _offer_launch_action(target, name, args, rcli, position, evidence, job_dir):
+    """One `launch` action for `job_dir`, or `None` when it is absent.
+
+    Absence has three, unrelated causes, and none of them is an error:
+    the shared rule says this job's launch is not available yet; the job
+    folder's own `run-config.json` names no `commit` to launch against; or
+    the job names a `service` no reporter answers for (the registry was
+    never given one under that name, or the one it was given could not
+    read what is on disk right now -- see `adapter.py`'s fourth registry
+    for the contract every registered reporter keeps). Every one of the
+    three is silence, matching requirement 4: unavailable is omitted,
+    never disabled-with-a-reason.
+    """
+    try:
+        run_config = rcli.JOBFOLDER.read(job_dir).run_config
+    except rcli.JOBFOLDER.JobFolderError:
+        return None
+    job_name = run_config.get("jobName", job_dir.name)
+
+    verdict = impl_availability.launch_available(
+        status=position["status"], unbacked=position["unbacked"],
+        sequence=position["sequence"],
+        ready=evidence["smokeReady"].get(job_name), job=job_name)
+    if not verdict["available"]:
+        return None
+
+    commit = run_config.get("commit")
+    if not commit:
+        return None
+
+    service = run_config.get("service")
+    if not service:
+        return None
+    # The identical dynamic-load path every other `remote_cli` command
+    # uses to reach a backend by name (design threat matrix, "Dynamic
+    # module load driven by file content"): `_BACKEND_NAME_RE` plus
+    # `relative_to(adapters_dir)`, unchanged, never a path built here.
+    rcli._load_backend_module(service)
+    reporter = rcli.ADAPTER.resolve_declared_capacity(service)
+    if reporter is None:
+        return None
+    capacity = reporter()
+    if capacity is None:
+        return None
+    workers, per_worker = capacity
+
+    entrypoint = str((job_dir / rcli.JOBFOLDER.RUNNER_FILENAME).relative_to(target))
+    units = list(run_config.get("units") or [])
+
+    return {
+        "id": "launch",
+        "command": (
+            "implementation_cli.py gate "
+            f"--target {target} --name {name} --revision {args.revision} "
+            f"--session {args.session} --job {job_name} --worker <account> "
+            "--justification -"
+        ),
+        "establishes": f"records launch authorization for job {job_name!r}",
+        "binding": {
+            "workers": workers, "perWorker": per_worker,
+            "declaredCapacity": workers * per_worker,
+            "job": job_name, "commit": commit, "entrypoint": entrypoint,
+            "units": units, "rung": verdict["facts"]["jobOrdinal"],
+        },
+    }
+
+
+def cmd_offer(args: argparse.Namespace) -> dict:
+    """The state-derived action menu: a closed set of what may happen next,
+    published only once the run-all-pilots question has an answer on
+    record.
+
+    Records the answer as one `kind: "offer"` event -- the fifth ledger-
+    appending command, named after its own event kind the same way
+    `position`/`discuss`/`gate`/`close`/`step` already are. The answer is
+    a closed token (`yes`/`no`), never free text, and is checked as a
+    coded `Refused` rather than an argparse `choices=` list so a bad token
+    prints the identical JSON refusal shape every other refusal here
+    prints, not `argparse`'s own usage text.
+
+    **Refuses before publishing anything**, in refusing-costs-nothing
+    order: the token check first (pure argv), then the revision (I/O),
+    then whether an answer is on record at all -- `OFFER_UNANSWERED` when
+    neither this call nor any earlier one supplied one, which is also how
+    a `position.jsonl` written before this event kind existed reads:
+    absence, never an error (spec "Pre-existing ledger, written before
+    this feature existed").
+
+    **Once an answer exists, this never re-asks.** A repeat call with no
+    `--answer`, or with the SAME token already on record, publishes the
+    current action set and reports `status: "unchanged"` without
+    appending a second event. A repeat call with a DIFFERENT token
+    appends a new one -- the ledger's own latest-wins reading, the same
+    convention every reader of this ledger already applies -- and reports
+    `status: "recorded"`.
+
+    **`launch` is one per available job**, decided by the identical shared
+    rule `gate` itself calls (`impl_availability.launch_available` --
+    requirement 5, "no drift between callers": both call the same symbol,
+    so their verdicts cannot disagree by construction). `pilot-all` is
+    present iff the recorded token is `yes`; `expand-contract` iff it is
+    `no` -- the two describe only what that branch establishes, in branch
+    language, and name no specific experiment, notebook or run: which
+    ones run and in what order is this proposal's own decision, never
+    this command's to narrate.
+    """
+    if args.answer is not None and args.answer not in {"yes", "no"}:
+        raise Refused(
+            "OFFER_ANSWER_NOT_A_TOKEN",
+            f"--answer {args.answer!r} is not one of the two closed tokens "
+            "yes/no; the run-all-pilots answer is never free text.")
+
+    target = resolve_target(args.target)
+    name = validate_name(args.name)
+
+    source = revision_source(args.revision)
+    if source is None:
+        raise Refused(
+            "REVISION_UNREADABLE",
+            f"{args.revision!r} is not readable under {FORGE_ROOT / 'proposals'}; "
+            "offer cannot publish an action set against a revision that "
+            "cannot be read.")
+    revision_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+    ledger_path = target / name / ".implementation" / "position.jsonl"
+    events = impl_position.read_events(ledger_path)
+    existing = next((e for e in reversed(events) if e.get("kind") == "offer"), None)
+
+    if existing is None and args.answer is None:
+        raise Refused(
+            "OFFER_UNANSWERED",
+            "no answer to the run-all-pilots question is on record for this "
+            "target; pass --answer yes|no to record one before an action "
+            "set can be published.")
+
+    evidence = _position_write_evidence(target, name)
+    position = position_state(target, name, evidence, args.revision, source)
+    rcli = _load_remote_execution_cli()
+
+    actions = []
+    for job_dir in _discovered_job_folders(target, rcli):
+        action = _offer_launch_action(target, name, args, rcli, position, evidence, job_dir)
+        if action is not None:
+            actions.append(action)
+
+    answer = args.answer if args.answer is not None else existing["answer"]
+    if answer == "yes":
+        actions.append({
+            "id": "pilot-all",
+            "command": (
+                "implementation_cli.py step "
+                f"--target {target} --name {name} --session {args.session} "
+                "--step <pilot step id>"
+            ),
+            "establishes": "runs the next pilot on the branch that runs "
+                          "every declared pilot before a campaign may be gated",
+            "binding": {},
+        })
+    else:
+        actions.append({
+            "id": "expand-contract",
+            "command": (
+                "implementation_cli.py position "
+                f"--target {target} --name {name} --session {args.session} "
+                "--reconcile"
+            ),
+            "establishes": "reconciles the position sequence on the branch "
+                          "that expands the experiment contract before any "
+                          "campaign may be gated",
+            "binding": {},
+        })
+
+    recorded_at = _now_iso8601()
+    if existing is not None and (args.answer is None or args.answer == existing.get("answer")):
+        status = "unchanged"
+    else:
+        status = "recorded"
+        impl_position.append_event(ledger_path, {
+            "kind": "offer", "answer": answer, "revision": args.revision,
+            "revisionSha256": revision_sha256, "actions": actions,
+            "session": args.session, "at": recorded_at,
+        })
+
+    return {
+        "command": "offer", "target": str(target), "name": name,
+        "status": status, "answer": answer, "revision": args.revision,
+        "revisionSha256": revision_sha256, "actions": actions,
+        "session": args.session, "recordedAt": recorded_at,
     }
 
 
@@ -6958,6 +7159,7 @@ COMMANDS = {"env": cmd_env, "name": cmd_name, "plan": cmd_plan, "apply": cmd_app
             "position": cmd_position,
             "discuss": cmd_discuss,
             "gate": cmd_gate,
+            "offer": cmd_offer,
             "close": cmd_close,
             "step": cmd_step}
 
@@ -7007,15 +7209,17 @@ def main(argv: list[str] | None = None) -> int:
                                 "(refresh, --sequence install and --reconcile "
                                 "alike); --reconcile additionally discovers "
                                 "one @shard witness per arrived shard")
-        if name in {"verify", "admit", "handoff", "probe", "position", "gate", "close"}:
+        if name in {"verify", "admit", "handoff", "probe", "position", "gate",
+                   "offer", "close"}:
             p.add_argument("--revision", default=None,
                            help="pin the revision to check against; "
                                 "omit it and verify discovers the newest of "
                                 "the family the bench declares. admit, "
-                                "handoff, position, gate and close discover "
-                                "nothing and refuse REVISION_UNREADABLE if it "
-                                "is missing or unreadable")
-        if name in {"position", "gate", "close", "step"}:
+                                "handoff, position, gate, offer and close "
+                                "discover nothing and refuse "
+                                "REVISION_UNREADABLE if it is missing or "
+                                "unreadable")
+        if name in {"position", "gate", "offer", "close", "step"}:
             p.add_argument("--session", required=True,
                            help="identity stamped into the ledger event(s) "
                                 "this call appends, and into the block's "
@@ -7083,6 +7287,17 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--justification", required=True,
                            help="the launch justification text, or - to read "
                                 "stdin; refused if it is blank")
+        if name == "offer":
+            p.add_argument("--answer", default=None,
+                           help="yes or no, answering whether every declared "
+                                "pilot runs before a campaign is gated; "
+                                "checked as a coded refusal, never argparse "
+                                "choices, so a bad token prints the same "
+                                "JSON refusal shape every other refusal "
+                                "here does. Omit it to publish the current "
+                                "action set against whatever answer is "
+                                "already on record -- required only the "
+                                "first time, when none is")
         if name == "step":
             p.add_argument("--step", required=True,
                            help="the declared __steps__ entry to run; no "

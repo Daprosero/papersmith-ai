@@ -855,6 +855,35 @@ a rung is refused rather than authorized around it — and
 `GATE_WORKER_UNIT_CONFLICT`/`GATE_WORKER_REQUIRED` when `--worker` and
 `--unit` are both given or neither is.
 
+## `offer` — the state-derived action menu
+
+The fifth ledger-appending command, named after its own event kind the same
+way `position`/`discuss`/`gate`/`close`/`step` already are. Records the
+run-all-pilots answer as a closed token (never free text) and publishes a
+closed action set: one `launch` per job the identical shared rule `gate`
+itself reads (`impl_availability.launch_available`) already says is
+available, plus `pilot-all` when the recorded answer is `yes` or
+`expand-contract` when it is `no`. An unavailable action is omitted
+entirely — never disabled with a reason attached — and the standing
+explanation is still the position sequence and the Decision Gates table, not
+a per-action string.
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py offer \
+  --target implementations/<repo> --name <Name> \
+  --revision research-concept-r05.md --session <your-session-id> \
+  --answer yes
+```
+
+`--answer` is required only the first time; a later call with no `--answer`,
+or with the token already on record, republishes the current action set and
+reports `status: "unchanged"` without appending a second event. Refuses
+`OFFER_ANSWER_NOT_A_TOKEN` when `--answer` is given something other than
+`yes`/`no`, `REVISION_UNREADABLE` when the pinned revision cannot be read,
+and `OFFER_UNANSWERED` when no answer is on record and none is given this
+call — a `position.jsonl` written before this event kind existed reads the
+identical way, never as an error.
+
 ## `close` — the finishing precondition
 
 Writing the position becomes a precondition of finishing, not a courtesy:

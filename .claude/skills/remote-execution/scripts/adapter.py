@@ -350,3 +350,51 @@ def resolve_default_accelerator(name: str) -> DefaultAcceleratorProvider | None:
     `accelerator` block at all, not a caller mistake to refuse.
     """
     return _DEFAULT_ACCELERATOR_REGISTRY.get(name)
+
+
+# A FOURTH, separate registry — deliberately not a seventh `Adapter` ABC
+# operation, for the identical reason the metadata registry above is not:
+# the spec pins that ABC at exactly six operations
+# (`test_adapter_abc_still_exposes_exactly_six_operations`), and a
+# non-abstract seventh method would survive that count while still living
+# one attribute lookup away from `workers()` — a subclass could implement
+# it as `return self.workers()` and nothing here would notice.
+#
+# The contract this registry carries, load-bearing for every caller above
+# it: a reporter registered here answers from what is already on disk and
+# issues NO network request of its own. A backend that cannot answer that
+# way registers nothing — silence, not a guess, matching
+# `register_default_accelerator`'s own convention just above. A caller
+# composing a launch proposal reads a registry miss, or a registered
+# reporter's own runtime `None` answer, the same way: by leaving that
+# figure out of what it publishes entirely, never by falling back to
+# `Adapter.workers()`, which carries no disk-only promise for every
+# backend the way this registry's own contract does.
+DeclaredCapacityReporter = Callable[[], tuple[int, int] | None]
+
+_DECLARED_CAPACITY_REGISTRY: dict[str, DeclaredCapacityReporter] = {}
+
+
+def register_declared_capacity(name: str, fn: DeclaredCapacityReporter) -> None:
+    """Register a backend's disk-only capacity reporter under a name a
+    caller can select by.
+
+    `fn() -> (workers, per_worker) | None` — no arguments, because the
+    caller that reads this registry composes a launch proposal before any
+    worker or credential has been chosen for it. See this registry's own
+    module-level comment above for the contract every reporter registered
+    here must keep.
+    """
+    _DECLARED_CAPACITY_REGISTRY[name] = fn
+
+
+def resolve_declared_capacity(name: str) -> DeclaredCapacityReporter | None:
+    """Look up a previously registered declared-capacity reporter by name,
+    or `None` when no backend registered one under it.
+
+    A miss here is never an error, matching `resolve_default_accelerator`'s
+    own convention: a caller composing a launch proposal reads `None` as
+    "no capacity figure to publish" and leaves that whole action out
+    entirely, never as a caller mistake to refuse.
+    """
+    return _DECLARED_CAPACITY_REGISTRY.get(name)

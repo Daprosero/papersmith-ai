@@ -127,6 +127,46 @@ DEFAULT_ACCOUNTS_CLI = (
     Path(__file__).resolve().parents[3] / "kaggle-accounts" / "scripts" / "accounts_cli.py"
 )
 
+
+def _account_names_on_disk(
+    accounts_cli: Path, run: Callable[[list[str]], subprocess.CompletedProcess]
+) -> list[str]:
+    """Every account username the sanctioned `list --json` command reports
+    right now, run through `run` -- the one subprocess boundary the two
+    callers below this share, never built twice.
+
+    `run` is handed the finished argv (`sys.executable`, never a bare
+    `python3` -- the two coincide only by accident of `PATH`, and a
+    sibling skill launched under a different interpreter answers about a
+    different installation, or fails to start at all) and returns
+    a `CompletedProcess`; what happens between those two moments -- which
+    environment the child inherits, what timeout bounds it -- is entirely
+    the caller's own choice, made once by `workers()` below (an
+    authenticated instance's own `_run`) and once by `_declared_capacity()`
+    further down (a bare, credential-free call this adapter's own launch-
+    proposal reporter makes).
+
+    Raises `KaggleAdapterError` on a non-zero exit or output `json.loads`
+    cannot parse -- exactly the two failures the single call site this was
+    extracted from always raised on, in the identical wording. What a
+    caller does with that raise is its own decision; see
+    `_declared_capacity()`'s own docstring for the caller that turns it
+    into a quiet absence instead of letting it propagate.
+    """
+    result = run([sys.executable, str(accounts_cli), "list", "--json"])
+    if result.returncode != 0:
+        raise KaggleAdapterError(
+            f"{accounts_cli} list --json exited {result.returncode}: "
+            f"{result.stderr.strip()}"
+        )
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise KaggleAdapterError(
+            f"{accounts_cli} list --json did not print JSON: {exc}"
+        ) from exc
+    return [account["username"] for account in payload.get("accounts", [])]
+
 # `adapters/kaggle_driver.py`, this module's own sibling — the one file in
 # this skill permitted to import the Kaggle SDK package. `submit()`/
 # `_push()` shell out to it exactly the way this module used to shell out
@@ -724,33 +764,16 @@ class KaggleAdapter(ADAPTER.Adapter):
         stamped with THIS service's documented per-worker allowance.
 
         Runs `<this interpreter> <accounts_cli> list --json` as a subprocess
-        and reads only its stdout -- `sys.executable`, never a bare
-        `python3`, because the two coincide only by accident of `PATH`: a
-        sibling skill launched under a different interpreter answers about
-        a different installation, or fails to start at all. It never opens,
-        globs or otherwise touches any file
-        `accounts_cli` itself might consult. That is what lets this method
-        answer normally even when whatever file backs `accounts_cli`'s own
-        answer is unreadable to THIS process directly — this process never
-        tries to read it at all.
+        and reads only its stdout, through `_account_names_on_disk()` below
+        — the one place this module builds that argv and reads it back. It
+        never opens, globs or otherwise touches any file `accounts_cli`
+        itself might consult. That is what lets this method answer
+        normally even when whatever file backs `accounts_cli`'s own answer
+        is unreadable to THIS process directly — this process never tries
+        to read it at all.
         """
-        result = self._run([sys.executable, str(self._accounts_cli), "list", "--json"])
-        if result.returncode != 0:
-            raise KaggleAdapterError(
-                f"{self._accounts_cli} list --json exited {result.returncode}: "
-                f"{result.stderr.strip()}"
-            )
-        try:
-            payload = json.loads(result.stdout)
-        except json.JSONDecodeError as exc:
-            raise KaggleAdapterError(
-                f"{self._accounts_cli} list --json did not print JSON: {exc}"
-            ) from exc
-
-        return [
-            ADAPTER.Worker(id=account["username"], capacity=KAGGLE_WORKER_CAPACITY)
-            for account in payload.get("accounts", [])
-        ]
+        names = _account_names_on_disk(self._accounts_cli, self._run)
+        return [ADAPTER.Worker(id=name, capacity=KAGGLE_WORKER_CAPACITY) for name in names]
 
     def submit(self, job: "ADAPTER.Job") -> "ADAPTER.Submission":
         """Push a kernel version and report back the ref this adapter will
@@ -1142,6 +1165,45 @@ class KaggleAdapter(ADAPTER.Adapter):
         return payload
 
 
+def _run_accounts_cli_for_declared_capacity(
+    argv: list[str],
+) -> subprocess.CompletedProcess:
+    """A bare `subprocess.run`, no instance, no credential, no environment
+    override -- this reporter never authenticates as anyone and reads
+    nothing but what THIS process's own environment already carries,
+    because a launch proposal is composed before any worker or credential
+    has been chosen for it.
+    """
+    return subprocess.run(
+        argv, shell=False, capture_output=True, text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+
+
+def _declared_capacity() -> tuple[int, int] | None:
+    """`ADAPTER.register_declared_capacity("kaggle", ...)`'s own reporter
+    (see that registry's own module-level comment for the contract every
+    reporter registered there must keep): every account name on disk
+    right now, read through the identical subprocess `workers()` itself
+    calls, multiplied by this service's own pinned per-account allowance.
+
+    A subprocess that exits non-zero, or one whose stdout is not JSON, is
+    read here as "no capacity figure can be declared right now" -- caught
+    and turned into `None` rather than left to propagate, because the one
+    caller of this function (a launch proposal's own publisher) needs to
+    leave that whole action out of what it publishes, not crash publishing
+    every other action alongside it over a subprocess this reporter does
+    not control.
+    """
+    try:
+        names = _account_names_on_disk(
+            DEFAULT_ACCOUNTS_CLI, _run_accounts_cli_for_declared_capacity)
+    except (KaggleAdapterError, subprocess.TimeoutExpired, OSError):
+        return None
+    return (len(names), KAGGLE_WORKER_CAPACITY)
+
+
 ADAPTER.register("kaggle", KaggleAdapter)
 ADAPTER.register_metadata("kaggle", assemble_metadata)
 ADAPTER.register_default_accelerator("kaggle", _default_accelerator)
+ADAPTER.register_declared_capacity("kaggle", _declared_capacity)

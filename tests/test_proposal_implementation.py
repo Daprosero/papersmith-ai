@@ -20,6 +20,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+import unittest.mock
 from pathlib import Path
 
 FORGE = Path(__file__).resolve().parents[1]
@@ -11657,7 +11658,7 @@ class CommandRosterTests(unittest.TestCase):
         self.assertTrue(refuses.strip(), "the `position` row names nothing it refuses on")
 
     def test_every_command_dispatched_is_accounted_for(self):
-        write_verbs = {"position", "discuss", "gate", "close", "step"}
+        write_verbs = {"position", "discuss", "gate", "offer", "close", "step"}
         dispatched = set(impl.COMMANDS)
         self.assertEqual(
             dispatched, self.DOCUMENTED_ELSEWHERE | write_verbs,
@@ -12267,6 +12268,540 @@ class GateCommandTests(unittest.TestCase):
         # Order preserved, never sorted -- the same rule `campaign_consent_
         # token()` documents for consent (Decision 5).
         self.assertEqual(events[-1]["units"], ["u0", "u1"])
+
+
+class OfferCommandTests(unittest.TestCase):
+    """`offer` -- the state-derived action menu. Refuses to publish before
+    the run-all-pilots question has an answer on record, then publishes a
+    closed action set derived entirely from the identical facts `gate`
+    itself reads (spec "One shared availability rule for the publisher and
+    `cmd_gate`").
+    """
+
+    PROPOSAL_REVISION = "r1.md"
+    PROPOSAL_TEXT = "## 1\ntexto\n"
+    PROPOSAL_SHA256 = hashlib.sha256(PROPOSAL_TEXT.encode("utf-8")).hexdigest()
+
+    def _proposals(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / self.PROPOSAL_REVISION).write_text(self.PROPOSAL_TEXT, encoding="utf-8")
+        (root / "r2.md").write_text("## 2\notro\n", encoding="utf-8")
+        return root
+
+    def setUp(self):
+        """Every in-process `impl.cmd_offer(...)` call in this class reads
+        `revision_source()` straight off `os.environ`, in THIS process --
+        unlike `run_cli`'s own subprocess calls, which pass `proposals=`
+        as a child environment variable, an in-process call has no such
+        seam, so this class-wide fixture is set once here and every
+        `_offer_args(...)` call below relies on it being present.
+        """
+        proposals = self._proposals()
+        patcher = unittest.mock.patch.dict(
+            os.environ, {"IMPLEMENTATION_PROPOSALS": str(proposals)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _box(self, packages=("Method",)):
+        self._box_count = getattr(self, "_box_count", 0) + 1
+        box = FORGE / "implementations" / f"_e2e_offer_cmd_{os.getpid()}_{id(self)}_{self._box_count}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        box.mkdir(parents=True)
+        env = dict(os.environ)
+        env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "offer-tests"
+        env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "offer-tests@example.invalid"
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        for package in packages:
+            (box / "src" / package).mkdir(parents=True, exist_ok=True)
+            (box / "src" / package / "__init__.py").write_text("", encoding="utf-8")
+            (box / "src" / f"{package}_Benchmark").mkdir(parents=True, exist_ok=True)
+            (box / "src" / f"{package}_Benchmark" / "__init__.py").write_text(
+                "", encoding="utf-8")
+            (box / package).mkdir(parents=True, exist_ok=True)
+        (box / "tests").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "add", "-A"], cwd=box, env=env, check=True,
+                       capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=box, env=env,
+                       check=True, capture_output=True)
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=box, env=env, check=True,
+            capture_output=True, text=True).stdout.strip()
+        return box, commit
+
+    def _write_job_folder(self, box, commit, *, service="offer-fixture-svc",
+                          job_name="job1", product="Method",
+                          clone_paths=("src/Method",)):
+        job_dir = box / "tools" / service / job_name
+        job_dir.mkdir(parents=True, exist_ok=True)
+        run_config = {
+            "schemaVersion": 1, "product": product, "service": service,
+            "jobName": job_name, "commit": commit,
+            "repo": {"url": "https://example.invalid/repo.git", "ref": "main"},
+            "clonePaths": list(clone_paths),
+            "run": {"module": f"{product}.module", "function": "run", "kwargs": {}},
+            "runnerTemplate": [
+                {"path": "assets/runner_bootstrap.py", "sha256": "0" * 64},
+                {"path": "assets/runner_invoke.py", "sha256": "0" * 64},
+            ],
+        }
+        (job_dir / "run-config.json").write_text(json.dumps(run_config), encoding="utf-8")
+        return job_dir
+
+    def _write_smoke_pass(self, box, *, product="Method", job_name="job1",
+                          commit, worker="w1"):
+        smoke_path = box / product / ".remote-execution" / "smoke.jsonl"
+        smoke_path.parent.mkdir(parents=True, exist_ok=True)
+        event = {"kind": "smokeResult", "ts": "2026-08-27T00:00:00Z",
+                  "jobName": job_name, "result": "pass", "commit": commit,
+                  "worker": worker, "missing": []}
+        with smoke_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(event) + "\n")
+
+    def _write_agreed(self, box, items):
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+
+    def run_cli(self, *args, proposals=None):
+        env = dict(os.environ)
+        if proposals is not None:
+            env["IMPLEMENTATION_PROPOSALS"] = str(proposals)
+        return subprocess.run([sys.executable, str(CLI), *args],
+                              capture_output=True, text=True, cwd=FORGE, env=env)
+
+    def _register_fixture_reporter(self, box, service, capacity=(3, 2)):
+        """Registers a capacity reporter directly, bypassing the file-based
+        `_load_backend_module` mechanism -- this test runs `cmd_offer`
+        IN-PROCESS (never as a subprocess) specifically so this
+        registration, made through the exact `ADAPTER` module object
+        `cmd_offer` itself reads, is visible to it.
+        """
+        rcli = impl._load_remote_execution_cli()
+        rcli.ADAPTER.register_declared_capacity(service, lambda: capacity)
+        return rcli
+
+    def _offer_args(self, box, *, answer=None, session="s1",
+                    revision=None):
+        return argparse.Namespace(
+            target=str(box), name="Method",
+            revision=revision or self.PROPOSAL_REVISION, session=session,
+            answer=answer)
+
+    # --- refusal shape and pre-answer behavior ----------------------------
+
+    def test_offer_refuses_a_non_token_answer_with_the_same_json_refusal_shape(self):
+        box, _ = self._box()
+        proc = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            "--answer", "maybe", proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["code"], "OFFER_ANSWER_NOT_A_TOKEN")
+        # The identical key shape every other refusal prints -- proves this
+        # went through the coded `Refused` path, never argparse `choices`,
+        # which would have printed usage text on stderr and nothing
+        # JSON-shaped on stdout at all.
+        self.assertEqual(set(result), {"status", "code", "detail"})
+
+    def test_offer_refuses_before_any_answer_and_publishes_no_actions_key(self):
+        box, commit = self._box()
+        self._write_job_folder(box, commit)
+        proc = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["code"], "OFFER_UNANSWERED")
+        self.assertNotIn("actions", result)
+
+    def test_a_pre_existing_ledger_with_no_offer_event_reads_as_unanswered(self):
+        """A `position.jsonl` written before this event kind existed --
+        only `gate`/`step` events on it -- must read the same as a fresh
+        target: absence, never an error.
+        """
+        box, commit = self._box()
+        self._write_job_folder(box, commit)
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        impl_position.append_event(ledger, {
+            "kind": "gate", "jobName": "job1", "worker": "w1", "commit": commit,
+            "revision": self.PROPOSAL_REVISION, "revisionSha256": self.PROPOSAL_SHA256,
+            "entrypoint": "tools/offer-fixture-svc/job1/run.py", "units": [],
+            "justification": "prior work", "session": "s0", "at": "2026-08-27T00:00:00Z",
+        })
+        proc = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "OFFER_UNANSWERED")
+
+    def test_offer_records_the_answer_on_first_call_and_reuses_it_after(self):
+        box, commit = self._box()
+        self._write_job_folder(box, commit)
+        proposals = self._proposals()
+
+        first = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                             "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                             "--answer", "no", proposals=proposals)
+        self.assertEqual(first.returncode, 0, first.stdout)
+        self.assertEqual(json.loads(first.stdout)["status"], "recorded")
+
+        second = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                              "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                              proposals=proposals)
+        self.assertEqual(second.returncode, 0, second.stdout)
+        result = json.loads(second.stdout)
+        self.assertEqual(result["status"], "unchanged")
+        self.assertEqual(result["answer"], "no")
+
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        offer_events = [json.loads(line) for line
+                        in ledger.read_text(encoding="utf-8").splitlines()
+                        if json.loads(line).get("kind") == "offer"]
+        self.assertEqual(len(offer_events), 1,
+                         "a repeat call with no --answer must not append a "
+                         "second offer event")
+
+    # --- action shape -------------------------------------------------
+
+    def test_action_shape_is_exactly_the_four_closed_keys_and_never_carries_a_reason(self):
+        box, commit = self._box()
+        self._register_fixture_reporter(box, "offer-fixture-svc")
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                                  "witness": {"kind": "rehearsal", "operand": "job1"}}])
+
+        result = impl.cmd_offer(self._offer_args(box, answer="yes"))
+        self.assertGreaterEqual(len(result["actions"]), 2)
+        for action in result["actions"]:
+            self.assertEqual(set(action), {"id", "command", "establishes", "binding"})
+            self.assertNotIn("reason", action)
+            self.assertIn(action["id"], impl.ACTION_IDS)
+
+    def test_launch_binding_carries_declared_capacity_never_ceiling(self):
+        box, commit = self._box()
+        self._register_fixture_reporter(box, "offer-fixture-svc", capacity=(3, 2))
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                                  "witness": {"kind": "rehearsal", "operand": "job1"}}])
+
+        result = impl.cmd_offer(self._offer_args(box, answer="yes"))
+        launch = next(a for a in result["actions"] if a["id"] == "launch")
+        self.assertEqual(launch["binding"]["declaredCapacity"], 6)
+        self.assertNotIn("ceiling", launch["binding"])
+        self.assertEqual(launch["binding"]["workers"], 3)
+        self.assertEqual(launch["binding"]["perWorker"], 2)
+        self.assertEqual(launch["binding"]["job"], "job1")
+        self.assertEqual(launch["binding"]["commit"], commit)
+        self.assertEqual(launch["binding"]["units"], [])
+        self.assertEqual(launch["binding"]["rung"], 1)
+
+    def test_the_answer_token_alone_decides_pilot_all_versus_expand_contract(self):
+        box, commit = self._box()
+        proposals = self._proposals()
+
+        yes_box, _ = self._box()
+        yes = impl.cmd_offer(self._offer_args(yes_box, answer="yes"))
+        self.assertIn("pilot-all", {a["id"] for a in yes["actions"]})
+        self.assertNotIn("expand-contract", {a["id"] for a in yes["actions"]})
+
+        no_box, _ = self._box()
+        no = impl.cmd_offer(self._offer_args(no_box, answer="no"))
+        self.assertIn("expand-contract", {a["id"] for a in no["actions"]})
+        self.assertNotIn("pilot-all", {a["id"] for a in no["actions"]})
+
+    def test_branch_action_prose_names_no_specific_experiment_or_notebook(self):
+        """Decision (settled for this change): the `pilot-all`/
+        `expand-contract` prose describes only what the branch establishes
+        -- never a specific experiment, notebook or run by name, which is
+        the out-of-scope line the design itself flagged as closest.
+        """
+        yes = impl.cmd_offer(self._offer_args(self._box()[0], answer="yes"))
+        no = impl.cmd_offer(self._offer_args(self._box()[0], answer="no"))
+        pilot_all = next(a for a in yes["actions"] if a["id"] == "pilot-all")
+        expand_contract = next(a for a in no["actions"] if a["id"] == "expand-contract")
+        for action in (pilot_all, expand_contract):
+            text = (action["command"] + " " + action["establishes"]).lower()
+            for leaked in FORGE_VOCABULARY_FLOOR:
+                self.assertIsNone(re.search(rf"\b{leaked}\b", text), leaked)
+
+    # --- ACTION_IDS: pinned three ways ---------------------------------
+
+    def test_action_ids_constant_covers_every_id_literal_in_the_source_and_at_runtime(self):
+        source = CLI.read_text(encoding="utf-8")
+        literal_ids = set(re.findall(r'"id":\s*"([a-z-]+)"', source))
+        self.assertEqual(literal_ids, set(impl.ACTION_IDS))
+
+        box, commit = self._box()
+        self._register_fixture_reporter(box, "offer-fixture-svc")
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                                  "witness": {"kind": "rehearsal", "operand": "job1"}}])
+        result = impl.cmd_offer(self._offer_args(box, answer="yes"))
+        runtime_ids = {a["id"] for a in result["actions"]}
+        self.assertTrue(runtime_ids.issubset(impl.ACTION_IDS))
+
+    # --- requirement 5: no drift between gate and offer -----------------
+
+    def test_gate_and_offer_call_the_identical_shared_availability_symbol(self):
+        """Structural proof that the two callers cannot drift: both call
+        the SAME `impl_availability.launch_available` symbol -- never a
+        second, independently-written check either one could disagree
+        with.
+        """
+        source = CLI.read_text(encoding="utf-8")
+        self.assertIn("import impl_availability", source)
+        self.assertEqual(
+            source.count("impl_availability.launch_available("), 2,
+            "cmd_gate and cmd_offer (through _offer_launch_action) must "
+            "each call the shared rule exactly once")
+
+    def test_gate_and_offer_agree_on_every_one_of_the_five_refusal_codes(self):
+        """Cross-join (spec "No drift between callers"): for each of the
+        five state codes, `gate` refuses with that code and `offer` omits
+        that job's launch action, over identical target/job/revision facts.
+        """
+        proposals = self._proposals()
+
+        def offer_omits_job1(box):
+            # A reporter is registered so the ONLY thing that can suppress
+            # job1's launch action is the shared availability rule itself
+            # -- if capacity resolution failed too, the cross-join below
+            # would pass regardless of whether the availability check ran
+            # at all, proving nothing.
+            self._register_fixture_reporter(box, "offer-fixture-svc")
+            result = impl.cmd_offer(self._offer_args(box, answer="yes"))
+            self.assertNotIn(
+                "job1",
+                [a["binding"].get("job") for a in result["actions"]
+                 if a["id"] == "launch"])
+
+        # POSITION_ABSENT
+        with self.subTest("POSITION_ABSENT"):
+            box, commit = self._box()
+            self._write_job_folder(box, commit)
+            proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                                "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                                "--job", "job1", "--worker", "w1",
+                                "--justification", "Because it is time.",
+                                proposals=proposals)
+            self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_ABSENT")
+            offer_omits_job1(box)
+
+        # POSITION_STALE
+        with self.subTest("POSITION_STALE"):
+            box, commit = self._box()
+            self._write_job_folder(box, commit)
+            header = {"revision": self.PROPOSAL_REVISION, "revisionSha256": "a" * 64,
+                      "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
+            items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                      "witness": {"kind": "rehearsal", "operand": "job1"}}]
+            (box / "Method" / "AGREED.md").write_text(
+                impl_position.render(header, items), encoding="utf-8")
+            proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                                "--revision", "r2.md", "--session", "s1",
+                                "--job", "job1", "--worker", "w1",
+                                "--justification", "Because it is time.",
+                                proposals=proposals)
+            self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_STALE")
+            offer_omits_job1(box)
+
+        # POSITION_UNBACKED
+        with self.subTest("POSITION_UNBACKED"):
+            box, commit = self._box()
+            self._write_job_folder(box, commit)
+            self._write_smoke_pass(box, commit=commit)
+            self._write_agreed(box, [
+                {"ordinal": 1, "mark": "x", "text": "Collect the shard.",
+                 "witness": {"kind": "shard", "operand": "s0"}},
+                {"ordinal": 2, "mark": " ", "text": "Rehearse the job.",
+                 "witness": {"kind": "rehearsal", "operand": "job1"}},
+            ])
+            proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                                "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                                "--job", "job1", "--worker", "w1",
+                                "--justification", "Because it is time.",
+                                proposals=proposals)
+            self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_UNBACKED")
+            offer_omits_job1(box)
+
+        # NOT_READY
+        with self.subTest("NOT_READY"):
+            box, commit = self._box()
+            self._write_job_folder(box, commit)
+            self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                                      "witness": {"kind": "rehearsal", "operand": "job1"}}])
+            proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                                "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                                "--job", "job1", "--worker", "w1",
+                                "--justification", "Because it is time.",
+                                proposals=proposals)
+            self.assertEqual(json.loads(proc.stdout)["code"], "NOT_READY")
+            offer_omits_job1(box)
+
+        # SEQUENCE_NOT_REACHED
+        with self.subTest("SEQUENCE_NOT_REACHED"):
+            box, commit = self._box()
+            self._write_job_folder(box, commit)
+            self._write_smoke_pass(box, commit=commit)
+            self._write_agreed(box, [
+                {"ordinal": 1, "mark": " ", "text": "Read the pilot notebook.",
+                 "witness": {"kind": "notebook", "operand": "Notebooks/pilot.ipynb"}},
+                {"ordinal": 2, "mark": " ", "text": "Rehearse the job.",
+                 "witness": {"kind": "rehearsal", "operand": "job1"}},
+            ])
+            proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                                "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                                "--job", "job1", "--worker", "w1",
+                                "--justification", "Because it is time.",
+                                proposals=proposals)
+            self.assertEqual(json.loads(proc.stdout)["code"], "SEQUENCE_NOT_REACHED")
+            offer_omits_job1(box)
+
+    # --- Phase 4: two-layer no-network proof at publish time -----------
+
+    def test_the_publisher_never_reaches_a_live_adapter_for_capacity(self):
+        """Layer 1: a fixture adapter registered under a fixture service
+        name whose `workers`/`list_active`/`submit` all raise if called.
+        `cmd_offer` publishes `declaredCapacity: 6` without ever invoking
+        any of them -- capacity comes from the fourth registry alone,
+        never from `Adapter.workers()`.
+        """
+        box, commit = self._box()
+        rcli = impl._load_remote_execution_cli()
+        service = "offer-fixture-poisoned-adapter"
+
+        class _RaisingAdapter(rcli.ADAPTER.Adapter):
+            def workers(self):
+                raise AssertionError("cmd_offer must never call Adapter.workers()")
+
+            def submit(self, job):
+                raise AssertionError("cmd_offer must never call Adapter.submit()")
+
+            def poll(self, submission_id):
+                raise AssertionError("unreachable")
+
+            def fetch(self, submission_id, into):
+                raise AssertionError("unreachable")
+
+            def cancel(self, submission_id):
+                raise AssertionError("unreachable")
+
+            def list_active(self, worker):
+                raise AssertionError("cmd_offer must never call Adapter.list_active()")
+
+        rcli.ADAPTER.register(service, _RaisingAdapter)
+        rcli.ADAPTER.register_declared_capacity(service, lambda: (3, 2))
+
+        self._write_job_folder(box, commit, service=service)
+        self._write_smoke_pass(box, commit=commit)
+        self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                                  "witness": {"kind": "rehearsal", "operand": "job1"}}])
+
+        result = impl.cmd_offer(self._offer_args(box, answer="yes"))
+        launch = next(a for a in result["actions"] if a["id"] == "launch")
+        self.assertEqual(launch["binding"]["declaredCapacity"], 6)
+
+    def test_the_publisher_makes_no_network_read_even_with_sockets_poisoned(self):
+        """Layer 2: with the identical fixture reporter, `socket.socket`
+        and `socket.create_connection` are patched to raise. Kept as a
+        SEPARATE test/mutation from the layer-1 fixture above: the design
+        measured that each layer catches a distinct injection point the
+        other misses -- a `urlopen(...)` call placed INSIDE the fixture
+        reporter itself would never touch the fake adapter's raising
+        methods (layer 1 would not catch it), but firing this patched
+        socket would.
+        """
+        box, commit = self._box()
+        rcli = impl._load_remote_execution_cli()
+        service = "offer-fixture-poisoned-socket"
+        rcli.ADAPTER.register_declared_capacity(service, lambda: (3, 2))
+
+        self._write_job_folder(box, commit, service=service)
+        self._write_smoke_pass(box, commit=commit)
+        self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                                  "witness": {"kind": "rehearsal", "operand": "job1"}}])
+
+        import socket
+
+        def _raise(*_args, **_kwargs):
+            raise AssertionError("cmd_offer must make no network read at publish time")
+
+        with unittest.mock.patch.object(socket, "socket", side_effect=_raise), \
+             unittest.mock.patch.object(socket, "create_connection", side_effect=_raise):
+            result = impl.cmd_offer(self._offer_args(box, answer="yes"))
+        launch = next(a for a in result["actions"] if a["id"] == "launch")
+        self.assertEqual(launch["binding"]["declaredCapacity"], 6)
+
+    # --- Phase 5: dynamic-load and subprocess threat matrix ------------
+
+    def test_a_path_traversal_service_name_loads_nothing_and_omits_the_action(self):
+        box, commit = self._box()
+        self._write_job_folder(box, commit, service="offer-fixture-svc")
+        # `service` is overwritten directly on disk -- `_BACKEND_NAME_RE`
+        # would refuse this at the CLI layer for a REAL run-config, but the
+        # threat this covers is what `_load_backend_module` itself does
+        # when handed a hostile string, unconditionally.
+        job_dir = box / "tools" / "offer-fixture-svc" / "job1"
+        run_config = json.loads((job_dir / "run-config.json").read_text(encoding="utf-8"))
+        run_config["service"] = "../../evil"
+        (job_dir / "run-config.json").write_text(json.dumps(run_config), encoding="utf-8")
+        self._write_smoke_pass(box, commit=commit)
+        self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                                  "witness": {"kind": "rehearsal", "operand": "job1"}}])
+
+        result = impl.cmd_offer(self._offer_args(box, answer="yes"))
+        self.assertNotIn("launch", {a["id"] for a in result["actions"]})
+
+    def test_an_absolute_path_service_name_loads_nothing_and_omits_the_action(self):
+        box, commit = self._box()
+        self._write_job_folder(box, commit, service="offer-fixture-svc")
+        job_dir = box / "tools" / "offer-fixture-svc" / "job1"
+        run_config = json.loads((job_dir / "run-config.json").read_text(encoding="utf-8"))
+        run_config["service"] = "/etc/passwd"
+        (job_dir / "run-config.json").write_text(json.dumps(run_config), encoding="utf-8")
+        self._write_smoke_pass(box, commit=commit)
+        self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                                  "witness": {"kind": "rehearsal", "operand": "job1"}}])
+
+        result = impl.cmd_offer(self._offer_args(box, answer="yes"))
+        self.assertNotIn("launch", {a["id"] for a in result["actions"]})
+
+    def test_a_service_nothing_registers_omits_the_action_without_raising(self):
+        box, commit = self._box()
+        self._write_job_folder(box, commit, service="nonexistent-backend")
+        self._write_smoke_pass(box, commit=commit)
+        self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                                  "witness": {"kind": "rehearsal", "operand": "job1"}}])
+
+        result = impl.cmd_offer(self._offer_args(box, answer="yes"))
+        self.assertNotIn("launch", {a["id"] for a in result["actions"]})
+
+    def test_a_reporter_answering_none_omits_the_launch_action_without_raising(self):
+        """The publisher-level consequence (task 5.4/5.5) of a registered
+        reporter answering `None` -- whether the root cause is a failing
+        subprocess or unparsable stdout is already proven one layer down,
+        at `_declared_capacity()` itself (`KaggleDeclaredCapacityTests` in
+        `tests/test_remote_execution.py`); the publisher only ever sees
+        the one signal `None`, so this collapses both root causes into
+        the single consequence the publisher can actually observe.
+        """
+        box, commit = self._box()
+        rcli = impl._load_remote_execution_cli()
+        rcli.ADAPTER.register_declared_capacity(
+            "offer-fixture-none-reporter", lambda: None)
+        self._write_job_folder(box, commit, service="offer-fixture-none-reporter")
+        self._write_smoke_pass(box, commit=commit)
+        self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                                  "witness": {"kind": "rehearsal", "operand": "job1"}}])
+
+        result = impl.cmd_offer(self._offer_args(box, answer="yes"))
+        self.assertNotIn("launch", {a["id"] for a in result["actions"]})
 
 
 class CloseCommandTests(unittest.TestCase):

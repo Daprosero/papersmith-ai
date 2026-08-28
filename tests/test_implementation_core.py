@@ -9,6 +9,7 @@ reach every skill that imports them rather than just the one that wrote them.
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 import shutil
 import subprocess
@@ -21,6 +22,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CORE = REPOSITORY_ROOT / ".claude/skills/_core/implementation"
 sys.path.insert(0, str(CORE))
 
+import impl_availability  # noqa: E402
 import impl_gitops  # noqa: E402
 import impl_guards  # noqa: E402
 import impl_layout  # noqa: E402
@@ -379,6 +381,103 @@ class ShardCurrencyTests(unittest.TestCase):
         self.assertIn("shardsCurrent", with_currency["measuredBy"])
         without = self._derive(True, {"shardsArrived": ["s0"]})
         self.assertNotIn("shardsCurrent", without["measuredBy"])
+
+
+class LaunchAvailableTests(unittest.TestCase):
+    """The one rule `cmd_gate` and the state-derived action menu's publisher
+    must agree on (spec "One shared availability rule"), exercised over
+    hand-built facts rather than a real target -- the shape this module
+    itself takes as arguments, nothing more.
+    """
+
+    #: Item 1 already ticked (a record witness, unrelated to the job under
+    #: test); item 2 names the job's own rehearsal witness, reached and
+    #: ticked. Every test starts from this fully-satisfied shape and moves
+    #: exactly one fact away from it.
+    SEQUENCE = [
+        {"ordinal": 1, "mark": "x", "witness": {"kind": "record", "operand": None}},
+        {"ordinal": 2, "mark": "x", "witness": {"kind": "rehearsal", "operand": "job-a"}},
+    ]
+
+    def _call(self, **overrides):
+        facts = {"status": "complete", "unbacked": [], "sequence": self.SEQUENCE,
+                 "ready": True, "job": "job-a"}
+        facts.update(overrides)
+        return impl_availability.launch_available(**facts)
+
+    def test_an_absent_position_refuses(self):
+        verdict = self._call(status="absent")
+        self.assertFalse(verdict["available"])
+        self.assertEqual(verdict["code"], "POSITION_ABSENT")
+
+    def test_a_stale_position_refuses(self):
+        verdict = self._call(status="stale")
+        self.assertEqual(verdict["code"], "POSITION_STALE")
+
+    def test_an_unbacked_tick_refuses_and_names_its_ordinal(self):
+        verdict = self._call(unbacked=[{"ordinal": 1}])
+        self.assertEqual(verdict["code"], "POSITION_UNBACKED")
+        self.assertEqual(verdict["facts"]["unbackedOrdinals"], [1])
+
+    def test_readiness_never_measured_refuses_not_ready(self):
+        """The row a tri-state mutation would silently drop: `ready=None`
+        (never measured) must refuse exactly as `ready=False` (measured
+        and failing) does. A mutation that narrows the check to `ready is
+        False` alone would let this fall through as if it were ready --
+        the two are different facts and this rule may not conflate them.
+        """
+        verdict = self._call(ready=None)
+        self.assertEqual(verdict["code"], "NOT_READY")
+
+    def test_readiness_measured_and_failing_refuses_too(self):
+        verdict = self._call(ready=False)
+        self.assertEqual(verdict["code"], "NOT_READY")
+
+    def test_no_sequence_item_names_the_job_refuses_sequence_not_reached(self):
+        verdict = self._call(job="job-missing")
+        self.assertEqual(verdict["code"], "SEQUENCE_NOT_REACHED")
+        self.assertEqual(verdict["facts"]["reason"], "no_witness")
+
+    def test_an_earlier_open_item_refuses_sequence_not_reached(self):
+        sequence = [
+            {"ordinal": 1, "mark": " ", "witness": {"kind": "record", "operand": None}},
+            {"ordinal": 2, "mark": "x", "witness": {"kind": "rehearsal", "operand": "job-a"}},
+        ]
+        verdict = self._call(sequence=sequence)
+        self.assertEqual(verdict["code"], "SEQUENCE_NOT_REACHED")
+        self.assertEqual(verdict["facts"]["reason"], "earlier_open")
+        self.assertEqual(verdict["facts"]["earliestOpenOrdinal"], 1)
+        self.assertEqual(verdict["facts"]["jobOrdinal"], 2)
+
+    def test_every_fact_in_agreement_is_available(self):
+        verdict = self._call()
+        self.assertTrue(verdict["available"])
+        self.assertIsNone(verdict["code"])
+        self.assertEqual(verdict["facts"]["jobOrdinal"], 2)
+
+
+class LaunchAvailableNoUpwardImportsTests(unittest.TestCase):
+    """The forge names no target vocabulary in `_core/implementation/`, and
+    the same discipline applies one layer up: this module may not import
+    the caller-side modules its two callers live in either.
+    """
+
+    FORBIDDEN_ROOTS = {"proposal-implementation", "remote-execution",
+                       "kaggle-accounts", "implementation_cli", "adapter",
+                       "kaggle"}
+
+    def test_imports_no_caller_side_module(self):
+        tree = ast.parse((CORE / "impl_availability.py").read_text(encoding="utf-8"))
+        roots = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                roots.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                roots.add(node.module.split(".")[0])
+        self.assertTrue(
+            roots.isdisjoint(self.FORBIDDEN_ROOTS),
+            f"impl_availability.py imports {roots & self.FORBIDDEN_ROOTS}, "
+            "naming a caller's own layout from inside the shared core")
 
 
 if __name__ == "__main__":

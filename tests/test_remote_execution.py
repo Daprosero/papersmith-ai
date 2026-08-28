@@ -1187,6 +1187,31 @@ class AdapterSeamTests(unittest.TestCase):
         """
         self.assertEqual(len(ADAPTER.Adapter.__abstractmethods__), 6)
 
+    def test_declared_capacity_registry_round_trips(self) -> None:
+        """A FOURTH registry, the same shape as the three above it: a name
+        resolves to a callable `fn() -> (workers, per_worker) | None`, kept
+        off the `Adapter` ABC for the identical reason the metadata and
+        default-accelerator registries are -- the test right above this
+        one pins the ABC at six operations, and this never becomes a
+        seventh.
+        """
+        ADAPTER.register_declared_capacity(
+            "declared-capacity-round-trip-fake", lambda: (3, 2)
+        )
+        reporter = ADAPTER.resolve_declared_capacity("declared-capacity-round-trip-fake")
+        self.assertIsNotNone(reporter)
+        self.assertEqual(reporter(), (3, 2))
+
+    def test_declared_capacity_registry_miss_returns_none_not_a_raise(self) -> None:
+        """A miss here is a legitimate state a caller reads by leaving a
+        launch proposal's own capacity figure out of what it publishes --
+        never an error a caller must catch.
+        """
+        self.assertIsNone(
+            ADAPTER.resolve_declared_capacity(
+                "no-declared-capacity-registered-under-this-name")
+        )
+
     def test_fake_adapter_output_plugs_into_ledger_events_unchanged(self) -> None:
         """What exists today — `fold()` and the event builders — accepts a
         fake adapter's output with zero translation, proving the seam
@@ -4513,6 +4538,148 @@ class KaggleAdapterTests(unittest.TestCase):
                     self.assertNotIn(
                         sentinel, artifact.read_text(encoding="utf-8", errors="ignore")
                     )
+
+
+class KaggleDeclaredCapacityTests(unittest.TestCase):
+    """The names-free capacity reporter `adapters/kaggle.py` registers under
+    `ADAPTER.register_declared_capacity("kaggle", ...)` -- disk-only,
+    computed from the exact same account listing `workers()` already
+    reads, never from a second, independently-shelled command.
+    """
+
+    def _fake_accounts_cli(self, tmp_path: Path, usernames: list) -> Path:
+        script = tmp_path / "fake_accounts_cli.py"
+        payload = json.dumps({"accounts": [{"username": n} for n in usernames]})
+        script.write_text(f"print({payload!r})\n", encoding="utf-8")
+        return script
+
+    def test_declared_capacity_reads_names_from_disk_and_multiplies_by_the_pinned_allowance(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            script = self._fake_accounts_cli(Path(tmp), ["acct-1", "acct-2", "acct-3"])
+            with unittest.mock.patch.object(KAGGLE, "DEFAULT_ACCOUNTS_CLI", script):
+                self.assertEqual(
+                    KAGGLE._declared_capacity(), (3, KAGGLE.KAGGLE_WORKER_CAPACITY))
+
+    def test_declared_capacity_is_live_read_not_cached(self) -> None:
+        """Patching `_account_names_on_disk` directly (rather than the
+        subprocess beneath it) proves `_declared_capacity()` calls it fresh
+        on every invocation -- a cached first answer would not move when
+        the patched function's own return value does.
+        """
+        with unittest.mock.patch.object(
+            KAGGLE, "_account_names_on_disk",
+            return_value=["acct-1", "acct-2", "acct-3"],
+        ):
+            first = KAGGLE._declared_capacity()
+        with unittest.mock.patch.object(
+            KAGGLE, "_account_names_on_disk", return_value=["acct-1", "acct-2"]
+        ):
+            second = KAGGLE._declared_capacity()
+        self.assertEqual(first, (3, KAGGLE.KAGGLE_WORKER_CAPACITY))
+        self.assertEqual(second, (2, KAGGLE.KAGGLE_WORKER_CAPACITY))
+
+    def test_declared_capacity_answers_none_not_a_traceback_on_a_failing_subprocess(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "fake_accounts_cli.py"
+            script.write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
+            with unittest.mock.patch.object(KAGGLE, "DEFAULT_ACCOUNTS_CLI", script):
+                self.assertIsNone(KAGGLE._declared_capacity())
+
+    def test_declared_capacity_answers_none_not_a_traceback_on_unparsable_stdout(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "fake_accounts_cli.py"
+            script.write_text("print('not json')\n", encoding="utf-8")
+            with unittest.mock.patch.object(KAGGLE, "DEFAULT_ACCOUNTS_CLI", script):
+                self.assertIsNone(KAGGLE._declared_capacity())
+
+    def test_declared_capacity_is_registered_under_kaggle(self) -> None:
+        reporter = ADAPTER.resolve_declared_capacity("kaggle")
+        self.assertIs(reporter, KAGGLE._declared_capacity)
+
+
+class ImportTimeSafetyTripwireTests(unittest.TestCase):
+    """`_load_backend_module` execs `adapters/<service>.py` in full before
+    ANY refusal in this skill's own call path can run -- so a network read
+    or a subprocess launched from that file's own module scope (never from
+    inside a function or a method, which only runs when called) would fire
+    the moment this skill's own CLI merely discovers the file exists.
+
+    Requirement 4 (state-derived action menu) forbids a network read at
+    publish time. This is not a re-verification of `adapters/kaggle.py` as
+    it stands today -- a manual read of its module scope already confirmed
+    it clean before this task started -- it is a regression tripwire
+    against a FUTURE edit reintroducing one, restricted to true module
+    scope so a call safely tucked inside a function is never mistaken for
+    one that runs at import time.
+    """
+
+    FORBIDDEN_CALL_NAMES = ("urlopen", "run", "open", "connect")
+
+    @staticmethod
+    def _module_level_call_names(source: str) -> set:
+        tree = ast.parse(source)
+        found: set = set()
+
+        class _TopLevelCalls(ast.NodeVisitor):
+            def visit_FunctionDef(self, node):
+                return
+
+            def visit_AsyncFunctionDef(self, node):
+                return
+
+            def visit_ClassDef(self, node):
+                return
+
+            def visit_Call(self, node):
+                func = node.func
+                if isinstance(func, ast.Attribute):
+                    name = func.attr
+                elif isinstance(func, ast.Name):
+                    name = func.id
+                else:
+                    name = None
+                if name:
+                    found.add(name)
+                self.generic_visit(node)
+
+        visitor = _TopLevelCalls()
+        for stmt in tree.body:
+            visitor.visit(stmt)
+        return found
+
+    def test_adapters_kaggle_calls_none_of_the_forbidden_names_at_module_scope(
+        self,
+    ) -> None:
+        calls = self._module_level_call_names(KAGGLE_SCRIPT.read_text(encoding="utf-8"))
+        leaked = calls & set(self.FORBIDDEN_CALL_NAMES)
+        self.assertEqual(leaked, set())
+
+    def test_the_tripwire_actually_fires_on_a_module_level_network_call(self) -> None:
+        """Reachability, over a fixture module rather than mutating the
+        real file in this test's own body: a bare `urlopen(...)` at true
+        module scope must be caught, proving this checks a name that CAN
+        be found, not one that happens to appear nowhere.
+        """
+        poisoned = "import urllib.request\nurlopen('https://example.invalid')\n"
+        calls = self._module_level_call_names(poisoned)
+        self.assertIn("urlopen", calls)
+
+    def test_a_call_nested_inside_a_function_is_not_mistaken_for_module_scope(
+        self,
+    ) -> None:
+        """The boundary this walker exists to respect: this same call,
+        indented one level into a function body, must NOT be reported --
+        it only runs when the function is called, never at import time.
+        """
+        safe = "def f():\n    urlopen('https://example.invalid')\n"
+        calls = self._module_level_call_names(safe)
+        self.assertNotIn("urlopen", calls)
 
 
 class SubmitDriverWiringTests(unittest.TestCase):
