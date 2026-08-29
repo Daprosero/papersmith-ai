@@ -13026,11 +13026,11 @@ class GateCommandTests(unittest.TestCase):
 
 
 class OfferCommandTests(unittest.TestCase):
-    """`offer` -- the state-derived action menu. Refuses to publish before
-    the run-all-pilots question has an answer on record, then publishes a
-    closed action set derived entirely from the identical facts `gate`
-    itself reads (spec "One shared availability rule for the publisher and
-    `cmd_gate`").
+    """`offer` -- the state-derived action menu. Refuses to publish unless
+    `--answer` is supplied on THIS exact call -- never read back from a
+    prior `offer` event -- then publishes a closed action set derived
+    entirely from the identical facts `gate` itself reads (spec "One shared
+    availability rule for the publisher and `cmd_gate`").
     """
 
     PROPOSAL_REVISION = "r1.md"
@@ -13644,19 +13644,19 @@ class OfferCommandTests(unittest.TestCase):
         self.assertEqual(launch["binding"]["units"], [])
         self.assertEqual(launch["binding"]["rung"], 1)
 
-    def test_the_answer_token_alone_decides_pilot_all_versus_expand_contract(self):
+    def test_the_answer_token_alone_decides_run_step_versus_expand_contract(self):
         box, commit = self._box()
         proposals = self._proposals()
 
         yes_box, _ = self._box()
         yes = impl.cmd_offer(self._offer_args(yes_box, answer="yes"))
-        self.assertIn("pilot-all", {a["id"] for a in yes["actions"]})
+        self.assertIn("run-step", {a["id"] for a in yes["actions"]})
         self.assertNotIn("expand-contract", {a["id"] for a in yes["actions"]})
 
         no_box, _ = self._box()
         no = impl.cmd_offer(self._offer_args(no_box, answer="no"))
         self.assertIn("expand-contract", {a["id"] for a in no["actions"]})
-        self.assertNotIn("pilot-all", {a["id"] for a in no["actions"]})
+        self.assertNotIn("run-step", {a["id"] for a in no["actions"]})
 
     def test_branch_action_prose_names_no_specific_experiment_or_notebook(self):
         """Decision (settled for this change): the `pilot-all`/
@@ -13666,7 +13666,7 @@ class OfferCommandTests(unittest.TestCase):
         """
         yes = impl.cmd_offer(self._offer_args(self._box()[0], answer="yes"))
         no = impl.cmd_offer(self._offer_args(self._box()[0], answer="no"))
-        pilot_all = next(a for a in yes["actions"] if a["id"] == "pilot-all")
+        pilot_all = next(a for a in yes["actions"] if a["id"] == "run-step")
         expand_contract = next(a for a in no["actions"] if a["id"] == "expand-contract")
         for action in (pilot_all, expand_contract):
             text = (action["command"] + " " + action["establishes"]).lower()

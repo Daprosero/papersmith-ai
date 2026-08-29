@@ -872,10 +872,10 @@ argument and states what would change it.
 
 The fifth ledger-appending command, named after its own event kind the same
 way `position`/`discuss`/`gate`/`close`/`step` already are. Records the
-run-all-pilots answer as a closed token (never free text) and publishes a
+flow-continuation answer as a closed token (never free text) and publishes a
 closed action set: one `launch` per job the identical shared rule `gate`
 itself reads (`impl_availability.launch_available`) already says is
-available, plus `pilot-all` when the recorded answer is `yes` or
+available, plus `run-step` when the recorded answer is `yes` or
 `expand-contract` when it is `no`. An unavailable action is omitted
 entirely — never disabled with a reason attached — and the standing
 explanation is still the position sequence and the Decision Gates table, not
@@ -975,17 +975,18 @@ successful `gate` call; single-use, never reusable). A `gate` record written
 before this mechanism existed carries no token and is neither migrated nor
 invalidated — the requirement binds the *command*, not the record.
 
-A reopened `offer` question (see `offer`'s own `OFFER_ANSWER_STALE`) does
-not revoke an outstanding, unconsumed token, either. This is reasoned, not
-executed or measured: `_AUTHORIZATION_BINDING_KEYS` carries no contract
-fact, and adding one would make every token minted before this mechanism
-existed re-digest to a different value — refused as
+A later `offer` call over a changed experiment contract does not revoke an
+outstanding, unconsumed token, either — `offer` no longer recomputes or
+compares any contract digest at all (see `offer`'s own docstring). This is
+reasoned, not executed or measured: `_AUTHORIZATION_BINDING_KEYS` carries no
+contract fact, and adding one would make every token minted before this
+mechanism existed re-digest to a different value — refused as
 `GATE_AUTHORIZATION_UNKNOWN`, whose own message says the event was edited
 after minting. That would be a true refusal under a false explanation, and
 this codebase does not ship one. Only the seven facts
-`GATE_AUTHORIZATION_STALE` already names can invalidate a token; a reopen is
-not one of them, and no new `gate` refusal exists to close that gap. It is
-left open on purpose.
+`GATE_AUTHORIZATION_STALE` already names can invalidate a token; a change to
+the underlying contract is not one of them, and no new `gate` refusal exists
+to close that gap. It is left open on purpose.
 
 ## `close` — the finishing precondition
 

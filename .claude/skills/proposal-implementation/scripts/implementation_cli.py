@@ -6468,7 +6468,7 @@ def cmd_settle(args: argparse.Namespace) -> dict:
 #: this constant, the publisher's own source (every `"id"` literal it
 #: writes), and a runtime action set -- rather than carrying a second,
 #: independent copy of the list the way a scraped roster would.
-ACTION_IDS = frozenset({"launch", "pilot-all", "expand-contract"})
+ACTION_IDS = frozenset({"launch", "run-step", "expand-contract"})
 
 
 def _launch_disagreements(position: dict) -> list:
@@ -7033,8 +7033,9 @@ def _find_or_mint_authorization(ledger_path: Path, events: list, binding: dict,
 
 def cmd_offer(args: argparse.Namespace) -> dict:
     """The state-derived action menu: a closed set of what may happen next,
-    published only when THIS call supplies an answer to the run-all-pilots
-    question.
+    published only when THIS call supplies an answer to the question this
+    branch asks: continue the flow as it stands, or change the experiment
+    contract first?
 
     Records the answer as one `kind: "offer"` event -- the fifth ledger-
     appending command, named after its own event kind the same way
@@ -7063,7 +7064,7 @@ def cmd_offer(args: argparse.Namespace) -> dict:
     **`launch` is one per available job**, decided by the identical shared
     rule `gate` itself calls (`impl_availability.launch_available` --
     requirement 5, "no drift between callers": both call the same symbol,
-    so their verdicts cannot disagree by construction). `pilot-all` is
+    so their verdicts cannot disagree by construction). `run-step` is
     present iff the supplied token is `yes`; `expand-contract` iff it is
     `no` -- the two describe only what that branch establishes, in branch
     language, and name no specific experiment, notebook or run: which
@@ -7100,7 +7101,7 @@ def cmd_offer(args: argparse.Namespace) -> dict:
         raise Refused(
             "OFFER_ANSWER_NOT_A_TOKEN",
             f"--answer {args.answer!r} is not one of the two closed tokens "
-            "yes/no; the run-all-pilots answer is never free text.")
+            "yes/no; the offer answer is never free text.")
 
     target = resolve_target(args.target)
     name = validate_name(args.name)
@@ -7130,14 +7131,14 @@ def cmd_offer(args: argparse.Namespace) -> dict:
     answer = args.answer
     if answer == "yes":
         actions.append({
-            "id": "pilot-all",
+            "id": "run-step",
             "command": (
                 "implementation_cli.py step "
                 f"--target {target} --name {name} --session {args.session} "
-                "--step <pilot step id>"
+                "--step <step id>"
             ),
-            "establishes": "runs the next pilot on the branch that runs "
-                          "every declared pilot before a campaign may be gated",
+            "establishes": "runs the next declared step of the flow this "
+                          "call is continuing",
             "binding": {},
         })
     else:
