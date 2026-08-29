@@ -583,6 +583,62 @@ class LocateHeadingsTests(unittest.TestCase):
         spliced = impl_position.splice(data, b"- [ ] new item\n", span)
         self.assertEqual(spliced, b"## Heading\n\n- [ ] new item\n- item\n")
 
+    # --- prose-first sections (defect measured 2026-08-29 against the
+    # operator's real AGREED.md: 17 `## ` sections, 15 open with a bullet,
+    # 2 open with prose -- the first real `settle` landed its bullet
+    # between the heading and the paragraph that introduces the section) ---
+
+    def test_a_section_that_opens_with_prose_inserts_before_the_first_bullet(self):
+        """`heading / blank / prose / blank / bullets` is a real shape, not
+        only `heading / blank / bullets`. The insertion point must be
+        immediately before the first `- [` line, not the first non-blank
+        line -- landing ahead of the prose that explains the section is
+        the exact defect a real `settle` call produced.
+        """
+        data = (b"## The trials search\n\n"
+                b"Agreed 2026-08-26/27, while replacing the grid engine.\n\n"
+                b"- [x] first item\n"
+                b"- [x] second item\n")
+        spans = impl_position.locate_headings(data, "## The trials search")
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(data[spans[0]["start"]:],
+                         b"- [x] first item\n- [x] second item\n")
+
+    def test_a_bullets_first_section_is_unchanged_by_the_prose_skip(self):
+        """Must not regress: a section that already opens with a bullet
+        keeps landing at that first bullet, exactly as before.
+        """
+        data = b"## Heading\n\n- [ ] first item\n- [ ] second item\n"
+        spans = impl_position.locate_headings(data, "## Heading")
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(data[spans[0]["start"]:],
+                         b"- [ ] first item\n- [ ] second item\n")
+
+    def test_a_bullet_less_section_falls_back_to_the_first_non_blank_line(self):
+        """Must not regress: a section with prose and NO bullet at all --
+        bounded by the next heading -- inserts at the first non-blank
+        line, the same place it always did.
+        """
+        data = (b"## Heading\n\n"
+                b"Only prose, never a checklist item, in this section.\n\n"
+                b"## Next Heading\n\n- [ ] unrelated item\n")
+        spans = impl_position.locate_headings(data, "## Heading")
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(
+            data[spans[0]["start"]:],
+            b"Only prose, never a checklist item, in this section.\n\n"
+            b"## Next Heading\n\n- [ ] unrelated item\n")
+
+    def test_a_bullet_less_section_at_end_of_file_falls_back_the_same_way(self):
+        """The EOF half of the same must-not-regress guarantee: no bullet,
+        no following heading either -- still the first non-blank line.
+        """
+        data = b"## Heading\n\nOnly prose, and the file ends here.\n"
+        spans = impl_position.locate_headings(data, "## Heading")
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(data[spans[0]["start"]:],
+                         b"Only prose, and the file ends here.\n")
+
 
 class DigestBytesTests(unittest.TestCase):
     """`impl_position.digest_bytes` is the one primitive the holder

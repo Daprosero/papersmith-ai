@@ -193,6 +193,78 @@ def locate_block(data: bytes, allow_legacy: bool = False) -> dict | None:
     }
 
 
+#: A checklist item's own opening shape -- `-`/`*`, optional spacing, then
+#: `[`. Mirrors `AGREEMENT_LINE`'s own start (implementation_cli.py:153)
+#: without importing it: this module names no caller, so the shape is
+#: restated here rather than reached for across the boundary.
+_CHECKLIST_ITEM_START_RE = re.compile(r"^[-*]\s*\[")
+
+#: An ATX heading of any level -- the generic boundary `locate_headings`'s
+#: own prose-skip stops at when a section that opened with prose turns out
+#: to carry no checklist item at all. Deliberately not anchored to the
+#: caller's own `heading` argument: the NEXT heading, whatever its own
+#: text, is what marks "this section is over", the same way a reader's eye
+#: would stop looking.
+_ANY_ATX_HEADING_RE = re.compile(r"^#{1,6}(\s|$)")
+
+
+def _first_bullet_insertion(
+        decoded: list[str], offsets: list[int], total: int, heading_index: int) -> int:
+    """The insertion offset for one located heading occurrence at
+    `heading_index`: the first byte of the section's first checklist item,
+    skipping past any prose paragraph the heading opens with, or the
+    section's own first non-blank line when it carries no checklist item
+    at all (unchanged from before this function existed).
+
+    Measured against the operator's own `AGREED.md` (2026-08-29): of 17
+    `## ` sections, 15 open directly with a bullet and 2 open with a
+    paragraph of prose before the first one. A rule that stops at the
+    first non-blank line alone -- correct for the 15 -- wedged a fresh
+    bullet between the heading and that introductory paragraph on one of
+    the 2, ahead of the very prose that explains the section. This
+    function is the fix: it keeps stopping at the first non-blank line
+    when THAT line is already a checklist item (the 15 case, and the
+    "no checklist item anywhere" case below -- both unchanged), and only
+    when it is not does it keep looking, past blank lines and fenced
+    regions, for the first line that is.
+
+    The search for that bullet is bounded, not open-ended: it gives up at
+    the next ATX heading of any level, or at the end of the document,
+    whichever comes first, and falls back to the section's own first
+    non-blank line -- the exact position this function would have
+    returned before it existed. A prose-only section (no checklist item
+    ever) must read identically to how it always did; only a section that
+    opens with prose and THEN has a checklist item changes.
+    """
+    count = len(decoded)
+    first_content = heading_index + 1
+    while first_content < count and decoded[first_content] == "":
+        first_content += 1
+    if first_content >= count:
+        return total
+    fallback = offsets[first_content]
+    if _CHECKLIST_ITEM_START_RE.match(decoded[first_content]):
+        return fallback
+
+    fenced = False
+    cursor = first_content
+    while cursor < count:
+        line = decoded[cursor]
+        if line.startswith("```") or line.startswith("~~~"):
+            fenced = not fenced
+            cursor += 1
+            continue
+        if fenced or line == "":
+            cursor += 1
+            continue
+        if _CHECKLIST_ITEM_START_RE.match(line):
+            return offsets[cursor]
+        if _ANY_ATX_HEADING_RE.match(line):
+            break
+        cursor += 1
+    return fallback
+
+
 def locate_headings(data: bytes, heading: str) -> list[dict]:
     """Every zero-width insertion span for `heading`'s exact occurrences in
     `data`, one entry per hit, never a refusal.
@@ -215,13 +287,21 @@ def locate_headings(data: bytes, heading: str) -> list[dict]:
     late.
 
     Each returned span is `{"start": p, "end": p}` -- zero-width by
-    construction, sitting at the first byte of the first non-blank line
-    after the heading's own line, or `len(data)` when nothing follows. A
-    blank separator line between a heading and its content is skipped, not
-    counted as the insertion point itself, so a document's own
-    `heading / blank / bullets` shape survives an insertion unchanged.
-    Composing a returned span with `splice` (where `start == end`) inserts
-    one new line without replacing anything that was already there.
+    construction. A section that opens directly with a checklist item
+    lands at that item's own first byte; a section with no checklist item
+    at all lands at the first byte of its first non-blank line, or
+    `len(data)` when nothing follows the heading -- both unchanged from
+    this function's first revision. **A section that opens with a
+    paragraph of prose before its first checklist item lands at that
+    item, past the prose, not ahead of it** -- see
+    `_first_bullet_insertion`'s own docstring for the measurement that
+    made this necessary: a rule that only ever skipped blank lines
+    wedged an inserted bullet between a heading and the prose introducing
+    it, on 2 of a real document's own 17 `## ` sections. A blank separator
+    line is never itself counted as the insertion point, in any of the
+    three shapes. Composing a returned span with `splice` (where
+    `start == end`) inserts one new line without replacing anything that
+    was already there.
 
     Returns a list rather than raising, deliberately unlike `locate_block`,
     which owns a document-wide delimiter and refuses on more than one
@@ -246,20 +326,17 @@ def locate_headings(data: bytes, heading: str) -> list[dict]:
         offsets.append(running)
         running += len(line)
     total = running
+    decoded = [line.decode("utf-8").strip() for line in lines]
 
     spans: list[dict] = []
     fenced = False
-    for i, line in enumerate(lines):
-        stripped = line.decode("utf-8").strip()
+    for i, stripped in enumerate(decoded):
         if stripped.startswith("```") or stripped.startswith("~~~"):
             fenced = not fenced
             continue
         if fenced or stripped != heading:
             continue
-        following = i + 1
-        while following < count and lines[following].decode("utf-8").strip() == "":
-            following += 1
-        insertion = offsets[following] if following < count else total
+        insertion = _first_bullet_insertion(decoded, offsets, total, i)
         spans.append({"start": insertion, "end": insertion})
     return spans
 
