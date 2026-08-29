@@ -2476,7 +2476,15 @@ def read_findings(target: Path) -> list[dict]:
     return []
 
 
-IGNORE_ENTRIES = (".venv/", "__pycache__/", ".ipynb_checkpoints/")
+#: `.implementation/` joins them because this skill writes a ledger there and
+#: that ledger carries launch authorizations. Committed, an approval travels
+#: in a clone: it authorizes no different work, being bound to
+#: `(commit, entrypoint, units, worker)`, but it travels. The cost is real
+#: and is stated under "What this skill has not written down" -- the same
+#: file also carries the deliberation itself now (`discuss`, `settle`), and
+#: that half IS project history a clone would want.
+IGNORE_ENTRIES = (".venv/", "__pycache__/", ".ipynb_checkpoints/",
+                  ".implementation/")
 
 
 def ignore_gaps(target: Path) -> list[str]:

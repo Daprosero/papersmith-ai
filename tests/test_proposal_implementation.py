@@ -15838,3 +15838,33 @@ class StepSequenceOrderTests(unittest.TestCase):
         self._commit(box)
         body = json.loads(self._run(box).stdout)
         self.assertEqual(body["code"], "STEP_MALFORMED", body)
+
+
+class LedgerIsARequiredIgnoreTests(unittest.TestCase):
+    """`.implementation/` must be ignored, and the check must say so.
+
+    The ledger this skill writes carries `gate` events, and a `gate` event is a
+    launch authorization. Committed, it travels into a clone -- it authorizes no
+    different work, being bound to `(commit, entrypoint, units, worker)`, but an
+    approval arriving in a clone is an approval nobody there gave.
+
+    The cost is stated rather than hidden: the same file now also carries the
+    deliberation (`discuss`, `settle`), which IS history a clone would want, and
+    `SKILL.md`'s "What this skill has not written down" says so. This test only
+    holds the mechanism: a target without the entry is told.
+    """
+
+    def _target(self, ignore_text):
+        box = FORGE / "implementations" / f"_ign_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        box.mkdir(parents=True)
+        (box / ".gitignore").write_text(ignore_text, encoding="utf-8")
+        return box
+
+    def test_a_target_without_the_entry_is_reported(self):
+        box = self._target(".venv/\n__pycache__/\n.ipynb_checkpoints/\n")
+        self.assertIn(".implementation/", impl.ignore_gaps(box))
+
+    def test_a_target_carrying_every_entry_reports_nothing(self):
+        box = self._target("".join(f"{e}\n" for e in impl.IGNORE_ENTRIES))
+        self.assertEqual(impl.ignore_gaps(box), [])

@@ -18,6 +18,21 @@ this document does not. An audit of that surface returns `no-closed-roster` over
 all 2045 lines -- not "nothing found", but "every line read and no closed roster
 in any of them".
 
+**The ledger is ignored whole, and half of it deserves better.** `.implementation/`
+is a required `.gitignore` entry, so nothing under it reaches a clone. That is
+right for one half of what it holds: a `gate` event is a launch authorization,
+and an approval that arrives in a clone is an approval nobody in that clone
+gave. It is wrong for the other half. Since `discuss` and `settle` landed, the
+same file also carries the deliberation -- what was asked, what was answered,
+and what was placed into the record because of it. That is project history, and
+a clone gets none of it.
+
+Nothing here separates the two. A future version should: the authorizations are
+machine-local state, the deliberation is the reason the agreements say what they
+say, and one `.gitignore` line currently decides both. Recorded rather than
+resolved, because splitting a ledger is a change to what every reader of it
+already expects to find in one place.
+
 That is the defect this forge's own auditor exists to find, standing in this
 file. The remedy is the one applied to a sibling skill: a plainly-named heading
 carrying a markdown table, late in the reference tail, that a probe can derive

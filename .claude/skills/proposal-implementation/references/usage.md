@@ -120,7 +120,7 @@ python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py pla
   ],
   "conflicts": [],
   "unclassified": ["notes.docx"],
-  "scaffoldFiles": [".gitignore (.venv/, __pycache__/, .ipynb_checkpoints/)",
+  "scaffoldFiles": [".gitignore (.venv/, __pycache__/, .ipynb_checkpoints/, .implementation/)",
                     "pyproject.toml [tool.pytest.ini_options] pythonpath",
                     "src/Example_Method/__init__.py",
                     "src/Example_Method_Benchmark/__init__.py",
