@@ -12777,6 +12777,329 @@ class OfferCommandTests(unittest.TestCase):
                          "a repeat call with no --answer must not append a "
                          "second offer event")
 
+    # --- reopen on a material contract change ---------------------------
+
+    def test_a_material_contract_change_reopens_and_records_again(self):
+        """The ordering hazard, made observable (design "Data Flow"): today
+        `cmd_offer` reads `existing["answer"]` at its two sites -- the
+        answer fallback and the dedup condition -- with no notion that the
+        contract behind a standing answer could have moved. A standing
+        "yes" answered before `__steps__` names anything must NOT still
+        read as "unchanged" once `__steps__` names a step: the contract the
+        first "yes" was about no longer exists.
+
+        Reachability proof (must FAIL on 7113a33): before the fix, `offer`
+        has no `contractDigest` concept at all, so the second call's dedup
+        (`existing is not None and (args.answer is None or args.answer ==
+        existing.get("answer"))`) is satisfied regardless of what moved --
+        it reports `status == "unchanged"` and the ledger holds exactly one
+        `offer` event, never two.
+        """
+        box, commit = self._box()
+        proposals = self._proposals()
+
+        first = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                             "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                             "--answer", "yes", proposals=proposals)
+        self.assertEqual(first.returncode, 0, first.stdout)
+        self.assertEqual(json.loads(first.stdout)["status"], "recorded")
+
+        # A material contract change: `__steps__` moves from undeclared
+        # ({}) to naming one step. Nothing else about the target changes.
+        bench_init = box / "src" / "Method_Benchmark" / "__init__.py"
+        bench_init.write_text(
+            "__steps__ = {'pilot': {'module': 'Method.pilot', 'function': 'run'}}\n",
+            encoding="utf-8")
+
+        second = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                              "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                              "--answer", "yes", proposals=proposals)
+        self.assertEqual(second.returncode, 0, second.stdout)
+        self.assertEqual(
+            json.loads(second.stdout)["status"], "recorded",
+            "a same-token answer over a reopened contract must still "
+            "record, not dedup against the now-stale standing answer")
+
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        offer_events = [json.loads(line) for line
+                        in ledger.read_text(encoding="utf-8").splitlines()
+                        if json.loads(line).get("kind") == "offer"]
+        self.assertEqual(len(offer_events), 2,
+                         "a material contract change must append a second "
+                         "offer event even when the answer token repeats")
+
+    def test_cmd_offer_dedup_reads_standing_never_existing(self):
+        """Structural guard against the ordering hazard reappearing (design
+        "Data Flow", same `ast`-over-source idiom `reportable_fidelity_states`
+        already uses on `cmd_verify`). `standing` must be assigned exactly
+        once inside `cmd_offer`, and the dedup `if` -- identified by its own
+        body assigning the literal `"unchanged"` to `status`, never by a
+        line number -- must name `standing` in its test expression and must
+        never name `existing` there. Moving the assignment back to `existing`
+        is a `NameError` at runtime (design), never a silently wrong verdict;
+        this test catches the same regression statically, before either.
+        """
+        tree = ast.parse(textwrap.dedent(inspect.getsource(impl.cmd_offer)))
+
+        standing_assigns = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "standing"
+                    for t in node.targets)]
+        self.assertEqual(
+            len(standing_assigns), 1,
+            "`standing` must be assigned exactly once in cmd_offer")
+
+        def names_in(node):
+            return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+
+        dedup_ifs = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and any(isinstance(stmt, ast.Assign)
+                    and any(isinstance(t, ast.Name) and t.id == "status"
+                            for t in stmt.targets)
+                    and isinstance(stmt.value, ast.Constant)
+                    and stmt.value.value == "unchanged"
+                    for stmt in node.body)]
+        self.assertEqual(
+            len(dedup_ifs), 1,
+            "exactly one `if` in cmd_offer must assign status = "
+            "'unchanged' in its body")
+        dedup_if = dedup_ifs[0]
+
+        condition_names = names_in(dedup_if.test)
+        self.assertIn("standing", condition_names,
+                      "the dedup condition must compare against `standing`")
+        self.assertNotIn(
+            "existing", condition_names,
+            "the dedup condition must never read `existing` directly -- "
+            "when reopened, `standing` is None and there is no prior "
+            "answer for the dedup to swallow")
+
+    def test_contract_digest_determinism_and_ordering_asymmetry(self):
+        """Unit test on `_contract_digest` directly (design "Canonicalization,
+        stated so two implementations cannot disagree"): dict ordering is
+        invisible (`sort_keys=True`), `__levels__` ordering is material (the
+        ladder is ordered; `impl_position.level_index` does arithmetic on
+        it), and content no arm declares never moves the digest.
+        """
+        box, _ = self._box()
+        bench_init = box / "src" / "Method_Benchmark" / "__init__.py"
+        source = "## 1\ntexto uno\n## 2\ntexto dos\n"
+
+        bench_init.write_text(
+            "__benchmark__ = {'arms': {'a': {'sections': ['1']}}}\n"
+            "__levels__ = ['a', 'b']\n",
+            encoding="utf-8")
+        baseline = impl._contract_digest(box, "Method", source)
+
+        # Mutation A -- dict key order swapped in __init__.py. Invisible:
+        # `sort_keys=True` sorts recursively.
+        bench_init.write_text(
+            "__levels__ = ['a', 'b']\n"
+            "__benchmark__ = {'arms': {'a': {'sections': ['1']}}}\n",
+            encoding="utf-8")
+        self.assertEqual(
+            impl._contract_digest(box, "Method", source), baseline,
+            "reordering the same dict keys in __init__.py must not move "
+            "the digest")
+
+        # Mutation B -- __levels__ reordered. A list, order preserved: MUST
+        # move the digest.
+        bench_init.write_text(
+            "__benchmark__ = {'arms': {'a': {'sections': ['1']}}}\n"
+            "__levels__ = ['b', 'a']\n",
+            encoding="utf-8")
+        self.assertNotEqual(
+            impl._contract_digest(box, "Method", source), baseline,
+            "reordering __levels__ must move the digest -- it is an "
+            "ordered ladder, not a set")
+
+        # Mutation C -- an immaterial change: section 2's content changes,
+        # but no arm declares section 2. Must NOT move the digest.
+        bench_init.write_text(
+            "__benchmark__ = {'arms': {'a': {'sections': ['1']}}}\n"
+            "__levels__ = ['a', 'b']\n",
+            encoding="utf-8")
+        other_source = "## 1\ntexto uno\n## 2\notro texto completamente distinto\n"
+        self.assertEqual(
+            impl._contract_digest(box, "Method", other_source), baseline,
+            "a section no arm declares must not move the digest")
+
+    def test_an_offer_event_with_no_contract_digest_reopens_once(self):
+        """Spec "Pre-Existing Offer Events Are Not Comparable and Reopen
+        Once", the exact ledger shape the real MIL-CREDA target carries
+        (design "What Breaks", Products): a hand-written `offer` event with
+        no `contractDigest` key at all.
+        """
+        box, commit = self._box()
+        proposals = self._proposals()
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        impl_position.append_event(ledger, {
+            "kind": "offer", "answer": "no", "revision": self.PROPOSAL_REVISION,
+            "revisionSha256": self.PROPOSAL_SHA256, "actions": [],
+            "session": "s0", "at": "2026-08-27T00:00:00Z",
+        })
+
+        refused = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                               "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                               proposals=proposals)
+        self.assertEqual(refused.returncode, 2, refused.stdout)
+        self.assertEqual(json.loads(refused.stdout)["code"], "OFFER_ANSWER_STALE")
+
+        answered = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                                "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                                "--answer", "no", proposals=proposals)
+        self.assertEqual(answered.returncode, 0, answered.stdout)
+        self.assertEqual(json.loads(answered.stdout)["status"], "recorded")
+
+        unchanged = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                                 "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                                 proposals=proposals)
+        self.assertEqual(unchanged.returncode, 0, unchanged.stdout)
+        self.assertEqual(json.loads(unchanged.stdout)["status"], "unchanged")
+
+    def test_a_reopened_question_refuses_a_different_session_identically(self):
+        """Spec "A different session sees the same reopened state": the
+        newest-`offer` lookup carries no `session` term, so ANY session's
+        answer clears the refusal for every session, and a session that
+        never answered anything sees the identical reopened state -- never
+        a republished stale action set scoped to its own session.
+        """
+        box, commit = self._box()
+        proposals = self._proposals()
+
+        first = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                             "--revision", self.PROPOSAL_REVISION, "--session", "session-a",
+                             "--answer", "yes", proposals=proposals)
+        self.assertEqual(first.returncode, 0, first.stdout)
+
+        bench_init = box / "src" / "Method_Benchmark" / "__init__.py"
+        bench_init.write_text(
+            "__steps__ = {'pilot': {'module': 'Method.pilot', 'function': 'run'}}\n",
+            encoding="utf-8")
+
+        second = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                              "--revision", self.PROPOSAL_REVISION, "--session", "session-b",
+                              proposals=proposals)
+        self.assertEqual(second.returncode, 2, second.stdout)
+        result = json.loads(second.stdout)
+        self.assertEqual(result["code"], "OFFER_ANSWER_STALE")
+        self.assertNotIn("actions", result)
+
+    def test_a_reopen_and_re_answer_appends_never_rewrites(self):
+        """Spec "Reopened event is never rewritten": the original event's
+        bytes stay byte-for-byte identical on disk; a new `offer` event is
+        appended after it, never in its place -- the ledger stays
+        append-only through a reopen exactly as it does through every
+        other write path.
+        """
+        box, commit = self._box()
+        proposals = self._proposals()
+
+        first = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                             "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                             "--answer", "yes", proposals=proposals)
+        self.assertEqual(first.returncode, 0, first.stdout)
+
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        original_lines = ledger.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(original_lines), 1)
+        original_first_line = original_lines[0]
+
+        bench_init = box / "src" / "Method_Benchmark" / "__init__.py"
+        bench_init.write_text(
+            "__steps__ = {'pilot': {'module': 'Method.pilot', 'function': 'run'}}\n",
+            encoding="utf-8")
+
+        second = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                              "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                              "--answer", "no", proposals=proposals)
+        self.assertEqual(second.returncode, 0, second.stdout)
+
+        new_lines = ledger.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(
+            new_lines[0], original_first_line,
+            "the original event's bytes must be unchanged on disk after a "
+            "reopen and a re-answer")
+        offer_lines = [line for line in new_lines
+                       if json.loads(line).get("kind") == "offer"]
+        self.assertEqual(len(offer_lines), 2)
+        self.assertEqual(offer_lines[0], original_first_line)
+
+    def test_the_newest_offer_event_decides_never_an_older_digest_matching_one(self):
+        """Design "the digest is a compared field, never a lookup term":
+        the lookup for the standing answer stays `kind == "offer"`, newest
+        wins, with no digest term at all. An older event whose digest
+        happens to equal the currently-measured one must never be silently
+        preferred over a newer event that does not -- that would mean the
+        question never reopens at all.
+        """
+        box, commit = self._box()
+        proposals = self._proposals()
+        current_digest = impl._contract_digest(box, "Method", self.PROPOSAL_TEXT)
+
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        impl_position.append_event(ledger, {
+            "kind": "offer", "answer": "no", "revision": self.PROPOSAL_REVISION,
+            "revisionSha256": self.PROPOSAL_SHA256, "contractDigest": current_digest,
+            "actions": [], "session": "s0", "at": "2026-08-27T00:00:00Z",
+        })
+        impl_position.append_event(ledger, {
+            "kind": "offer", "answer": "yes", "revision": self.PROPOSAL_REVISION,
+            "revisionSha256": self.PROPOSAL_SHA256, "contractDigest": "a" * 64,
+            "actions": [], "session": "s0", "at": "2026-08-27T00:01:00Z",
+        })
+
+        proc = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            proposals=proposals)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(
+            json.loads(proc.stdout)["code"], "OFFER_ANSWER_STALE",
+            "the newest offer event decides the standing answer, never an "
+            "older one whose digest happens to still match")
+
+    def test_a_pre_reopen_authorization_still_gates_after_the_contract_reopens(self):
+        """Spec "Outstanding Authorizations Survive a Reopen (Documented
+        Gap)" / "A pre-reopen token still gates a launch": `_AUTHORIZATION_
+        BINDING_KEYS` names no contract fact, so a token minted before a
+        reopen keeps gating exactly as before -- the reopen alone never
+        refuses it.
+        """
+        box, commit = self._box()
+        self._register_fixture_reporter(box, "offer-fixture-svc")
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                                  "witness": {"kind": "rehearsal", "operand": "job1"}}])
+        proposals = self._proposals()
+
+        with unittest.mock.patch.dict(
+                os.environ, {"IMPLEMENTATION_PROPOSALS": str(proposals)}):
+            result = impl.cmd_offer(self._offer_args(box, answer="yes"))
+        launch = next(a for a in result["actions"] if a["id"] == "launch")
+        token = launch["binding"]["authorization"]
+
+        # Reopen: __steps__ moves from undeclared to naming one step. The
+        # token stays unconsumed; nothing about the launch binding it
+        # carries (job/commit/entrypoint/units/rung/revisionSha256/
+        # positionStatus) is affected by this.
+        bench_init = box / "src" / "Method_Benchmark" / "__init__.py"
+        bench_init.write_text(
+            "__steps__ = {'pilot': {'module': 'Method.pilot', 'function': 'run'}}\n",
+            encoding="utf-8")
+
+        proc = self.run_cli("gate", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            "--job", "job1", "--worker", "w1",
+                            "--justification", "Rehearsal passed at the pinned commit.",
+                            "--authorization", token,
+                            proposals=proposals)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["status"], "recorded")
+
     # --- action shape -------------------------------------------------
 
     def test_action_shape_is_exactly_the_four_closed_keys_and_never_carries_a_reason(self):

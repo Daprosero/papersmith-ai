@@ -6659,6 +6659,61 @@ def _offer_launch_action(target, name, args, rcli, position, evidence, job_dir):
     }
 
 
+def _contract_digest(target: Path, name: str, source: str | None) -> str:
+    """The engine-derived fact a standing `offer` answer binds to: a fresh
+    sha256 over exactly what the contract behind the run-all-pilots
+    question currently is, recomputed on EVERY call (never cached, never
+    stored on the target) so a caller can always ask "does the newest
+    recorded answer still describe this contract?" by simple comparison.
+
+    Four keys, closed:
+
+    - `steps`: `resolve_steps_declaration(target, name)` -- `{}` undeclared.
+    - `arms`: `resolve_benchmark_declaration(target, name)["contract"]`'s
+      own `arms` block, or `{}` when undeclared or `None`.
+    - `levels`: `resolve_levels_declaration(target, name)` -- an ORDERED
+      list, `[]` undeclared. Order is kept, deliberately: `impl_position
+      .level_index` does arithmetic on this ladder's position, so two
+      targets naming the same rungs in a different order are two different
+      contracts, not one written two ways.
+    - `sections`: `revision_sections(source)`, filtered to only the section
+      numbers at least one arm's own `sections` list names -- an arm-
+      declared section's content is part of the contract; prose nobody
+      declared is not, the same "no arm declares it" collapse
+      `unreached_mathematics` already applies. The `isinstance` guard on
+      `spec` mirrors that function's own for the identical reason: an arm
+      value that is not a dict declares nothing to filter by.
+
+    Canonicalized the same way `_find_or_mint_authorization` and
+    `cmd_close`'s `positionDigest` already are --
+    `json.dumps(payload, sort_keys=True)`, defaults otherwise, one form in
+    this file. `sort_keys=True` makes DICT ordering invisible (a reordered
+    `__init__.py` must not reopen the question), but it does not touch LIST
+    ordering -- `levels` stays exactly as declared, on purpose, per above.
+    Two implementers could reasonably resolve that asymmetry either way;
+    this is the one this module keeps, and now that it is written down, it
+    is no longer free to drift the other way by accident.
+
+    Absent and empty collapse identically here because every resolver this
+    reads already collapses them before this function ever sees a value --
+    no sentinel is added on top. The digest asks what the contract IS, not
+    how (or whether) it was spelled.
+    """
+    benchmark = resolve_benchmark_declaration(target, name)
+    arms = benchmark["contract"].get("arms", {}) or {}
+    declared = {str(section) for spec in arms.values() if isinstance(spec, dict)
+                for section in (spec.get("sections") or [])}
+    payload = {
+        "steps": resolve_steps_declaration(target, name),
+        "arms": arms,
+        "levels": resolve_levels_declaration(target, name),
+        "sections": {number: digest for number, digest in revision_sections(source).items()
+                    if number in declared},
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
 def _authorization_binding(action: dict, revision_sha256: str, position_status: str) -> dict:
     """The identity two mints of the SAME upcoming launch must agree on
     (design decision 3, "mint-if-absent") -- everything the engine itself
@@ -6775,13 +6830,33 @@ def cmd_offer(args: argparse.Namespace) -> dict:
     absence, never an error (spec "Pre-existing ledger, written before
     this feature existed").
 
-    **Once an answer exists, this never re-asks.** A repeat call with no
-    `--answer`, or with the SAME token already on record, publishes the
-    current action set and reports `status: "unchanged"` without
-    appending a second event. A repeat call with a DIFFERENT token
-    appends a new one -- the ledger's own latest-wins reading, the same
-    convention every reader of this ledger already applies -- and reports
-    `status: "recorded"`.
+    **Once an answer exists, this never re-asks -- unless the contract it
+    answered has since moved.** A repeat call with no `--answer`, or with
+    the SAME token already on record, publishes the current action set and
+    reports `status: "unchanged"` without appending a second event, ONLY
+    while the freshly recomputed `_contract_digest` still equals the
+    newest `offer` event's own `contractDigest`. A repeat call with a
+    DIFFERENT token appends a new one -- the ledger's own latest-wins
+    reading, the same convention every reader of this ledger already
+    applies -- and reports `status: "recorded"`.
+
+    **A material contract change reopens the question.** When the digest
+    moves -- `__steps__`, `__benchmark__`'s arms, `__levels__`, or an
+    arm-declared revision section changed -- or the newest `offer` event
+    predates this mechanism and carries no digest at all, the standing
+    answer stops standing: `OFFER_ANSWER_STALE` refuses a call with no
+    `--answer` (distinct from `OFFER_UNANSWERED`: stale means an answer
+    existed and its binding moved, unanswered means none ever existed),
+    and a call that DOES supply `--answer` records a new event even when
+    the token repeats the prior one -- `status: "recorded"`, never
+    `"unchanged"`, because the contract behind that repeated token is not
+    the one it was last measured against. This needs no flag and no
+    counter: the only exit from the refusal is `--answer`, and that exit
+    itself appends the event carrying the fresh digest, which is exactly
+    what makes the next read comparable again. The lookup that finds the
+    newest `offer` event stays session-blind -- no `session` term, matching
+    today's lookup exactly -- so any session's answer clears the refusal
+    for every session, never only the one that reopened it.
 
     **`launch` is one per available job**, decided by the identical shared
     rule `gate` itself calls (`impl_availability.launch_available` --
@@ -6829,16 +6904,39 @@ def cmd_offer(args: argparse.Namespace) -> dict:
             "offer cannot publish an action set against a revision that "
             "cannot be read.")
     revision_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    digest = _contract_digest(target, name, source)
 
     ledger_path = target / name / ".implementation" / "position.jsonl"
     events = impl_position.read_events(ledger_path)
     existing = next((e for e in reversed(events) if e.get("kind") == "offer"), None)
+
+    # `reopened`/`standing` (design "Data Flow"): the newest `offer` event's
+    # own `contractDigest` compared against what THIS call just measured.
+    # `.get("contractDigest")` returns `None` for a pre-existing event
+    # written before this field existed, which reads identically to a
+    # measured-and-moved digest -- both mean "not comparable now", the
+    # honest single predicate for two different histories. `standing` is
+    # `existing` narrowed to the case where it is still trustworthy, or
+    # `None` when it is not; every downstream read below goes through
+    # `standing`, never `existing`, so a reopened question has no prior
+    # answer left to fall back on.
+    reopened = existing is not None and existing.get("contractDigest") != digest
+    standing = None if reopened else existing
 
     if existing is None and args.answer is None:
         raise Refused(
             "OFFER_UNANSWERED",
             "no answer to the run-all-pilots question is on record for this "
             "target; pass --answer yes|no to record one before an action "
+            "set can be published.")
+    if standing is None and existing is not None and args.answer is None:
+        raise Refused(
+            "OFFER_ANSWER_STALE",
+            "an answer is on record, but the contract it was measured "
+            "against -- __steps__, __benchmark__'s arms, __levels__, or an "
+            "arm-declared revision section -- no longer matches what this "
+            "call just re-derived, never merely elapsed time. Pass "
+            "--answer yes|no again to record a fresh one before an action "
             "set can be published.")
 
     evidence = _position_write_evidence(target, name)
@@ -6851,7 +6949,7 @@ def cmd_offer(args: argparse.Namespace) -> dict:
         if action is not None:
             actions.append(action)
 
-    answer = args.answer if args.answer is not None else existing["answer"]
+    answer = args.answer if args.answer is not None else standing["answer"]
     if answer == "yes":
         actions.append({
             "id": "pilot-all",
@@ -6900,21 +6998,21 @@ def cmd_offer(args: argparse.Namespace) -> dict:
         # once minting above has run.
         action["command"] += f" --authorization {token!r}"
 
-    if existing is not None and (args.answer is None or args.answer == existing.get("answer")):
+    if standing is not None and (args.answer is None or args.answer == standing.get("answer")):
         status = "unchanged"
     else:
         status = "recorded"
         impl_position.append_event(ledger_path, {
             "kind": "offer", "answer": answer, "revision": args.revision,
-            "revisionSha256": revision_sha256, "actions": actions,
-            "session": args.session, "at": recorded_at,
+            "revisionSha256": revision_sha256, "contractDigest": digest,
+            "actions": actions, "session": args.session, "at": recorded_at,
         })
 
     return {
         "command": "offer", "target": str(target), "name": name,
         "status": status, "answer": answer, "revision": args.revision,
-        "revisionSha256": revision_sha256, "actions": actions,
-        "session": args.session, "recordedAt": recorded_at,
+        "revisionSha256": revision_sha256, "contractDigest": digest,
+        "actions": actions, "session": args.session, "recordedAt": recorded_at,
     }
 
 

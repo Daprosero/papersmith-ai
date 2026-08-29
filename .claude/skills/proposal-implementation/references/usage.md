@@ -833,12 +833,24 @@ python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py off
 
 `--answer` is required only the first time; a later call with no `--answer`,
 or with the token already on record, republishes the current action set and
-reports `status: "unchanged"` without appending a second event. Refuses
-`OFFER_ANSWER_NOT_A_TOKEN` when `--answer` is given something other than
-`yes`/`no`, `REVISION_UNREADABLE` when the pinned revision cannot be read,
-and `OFFER_UNANSWERED` when no answer is on record and none is given this
+reports `status: "unchanged"` without appending a second event — ONLY while
+the contract that answer was measured against (`__steps__`, `__benchmark__`'s
+arms, `__levels__`, and any arm-declared revision section) has not moved.
+Refuses `OFFER_ANSWER_NOT_A_TOKEN` when `--answer` is given something other
+than `yes`/`no`, `REVISION_UNREADABLE` when the pinned revision cannot be
+read, `OFFER_UNANSWERED` when no answer is on record and none is given this
 call — a `position.jsonl` written before this event kind existed reads the
-identical way, never as an error.
+identical way, never as an error — and `OFFER_ANSWER_STALE` when an answer
+IS on record but the contract behind it has since changed (or that record
+predates this mechanism and carries no contract fact to compare at all):
+never merely elapsed time, the same "a bound fact moved" reading
+`GATE_AUTHORIZATION_STALE`/`POSITION_STALE` already carry. The reopened
+question needs no override flag and no counter — the only exit is a fresh
+`--answer`, which itself is what makes the next read comparable again — and
+is session-blind: whichever session supplies it clears the refusal for every
+session, not only the one that hit it. It does not touch a token an earlier
+`offer` already minted; see `gate`'s own closing paragraph for that gap,
+stated in full there.
 
 Every published `launch` action's `binding` carries a minted `authorization`
 token — a digest over the engine's own re-derived binding (job, commit,
@@ -905,6 +917,18 @@ time), and `GATE_AUTHORIZATION_CONSUMED` (the token already authorized one
 successful `gate` call; single-use, never reusable). A `gate` record written
 before this mechanism existed carries no token and is neither migrated nor
 invalidated — the requirement binds the *command*, not the record.
+
+A reopened `offer` question (see `offer`'s own `OFFER_ANSWER_STALE`) does
+not revoke an outstanding, unconsumed token, either. This is reasoned, not
+executed or measured: `_AUTHORIZATION_BINDING_KEYS` carries no contract
+fact, and adding one would make every token minted before this mechanism
+existed re-digest to a different value — refused as
+`GATE_AUTHORIZATION_UNKNOWN`, whose own message says the event was edited
+after minting. That would be a true refusal under a false explanation, and
+this codebase does not ship one. Only the seven facts
+`GATE_AUTHORIZATION_STALE` already names can invalidate a token; a reopen is
+not one of them, and no new `gate` refusal exists to close that gap. It is
+left open on purpose.
 
 ## `close` — the finishing precondition
 
