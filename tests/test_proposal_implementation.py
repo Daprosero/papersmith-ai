@@ -13659,16 +13659,22 @@ class OfferCommandTests(unittest.TestCase):
         self.assertNotIn("run-step", {a["id"] for a in no["actions"]})
 
     def test_branch_action_prose_names_no_specific_experiment_or_notebook(self):
-        """Decision (settled for this change): the `pilot-all`/
+        """Decision (settled for this change): the `run-step`/
         `expand-contract` prose describes only what the branch establishes
         -- never a specific experiment, notebook or run by name, which is
         the out-of-scope line the design itself flagged as closest.
+
+        The floor this walks never held the word it was renamed away from:
+        `pilot` is not in `FORGE_VOCABULARY_FLOOR`, so this test stayed green
+        through the whole life of the `pilot-all` id and proved nothing about
+        it. What it does hold is that no TARGET's vocabulary reaches the
+        published prose, which is a different guarantee and still worth having.
         """
         yes = impl.cmd_offer(self._offer_args(self._box()[0], answer="yes"))
         no = impl.cmd_offer(self._offer_args(self._box()[0], answer="no"))
-        pilot_all = next(a for a in yes["actions"] if a["id"] == "run-step")
+        run_step = next(a for a in yes["actions"] if a["id"] == "run-step")
         expand_contract = next(a for a in no["actions"] if a["id"] == "expand-contract")
-        for action in (pilot_all, expand_contract):
+        for action in (run_step, expand_contract):
             text = (action["command"] + " " + action["establishes"]).lower()
             for leaked in FORGE_VOCABULARY_FLOOR:
                 self.assertIsNone(re.search(rf"\b{leaked}\b", text), leaked)
