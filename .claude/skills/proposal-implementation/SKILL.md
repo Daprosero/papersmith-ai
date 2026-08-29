@@ -490,7 +490,7 @@ exactly what stops a launcher from being able to claim it implements anything.
 | `gate` refuses `POSITION_DISAGREES` | A ticked sequence item disagrees with its own witness's measurement — the same fact the `position.disagreements` row above reports, refused here specifically because the tick is a launch's own premise. Remedy is identical: run `position` to correct it, then gate again. Never a blank, unreconciled item — that direction is honest, not a false claim, and does not refuse |
 | `position` refuses `POSITION_HOLDER_MOVED` | The holder document changed between the read that located its section and this write: re-run the command that measures the section fresh, never retry blind against offsets that were computed against bytes no longer on disk |
 | `gate` refuses `NOT_READY` | No passing rehearsal is on file for this job at its current pin: rehearse it first — readiness cannot be asserted, only measured |
-| `offer` refuses `OFFER_UNANSWERED` | No answer to the run-all-pilots question is on record for this target: pass `--answer yes` or `--answer no` before an action set can be published |
+| `offer` refuses `OFFER_UNANSWERED` | No `--answer` was supplied on this call — required every call, never read back from a prior one: pass `--answer yes` or `--answer no` before an action set can be published |
 | `gate` refuses `GATE_AUTHORIZATION_REQUIRED`/`_UNKNOWN`/`_MISMATCH`/`_STALE`/`_CONSUMED` | `--authorization <token>` is missing, names nothing on the ledger, was minted for a different job or unit list, was minted against a pin/entrypoint/rung/revision/position status that has since moved, or already authorized one successful `gate` call: publish (or re-publish) with `offer` first, then gate with the token its `launch` action names. A stale token means a bound fact moved, never that time passed |
 | `priorWork` reports `modified` | Say what changed and that correcting prior work belongs to a session of its own |
 | `priorWork` reports `reaching` | The change moves what an arm computes: the record is stale, report before any run |
@@ -986,13 +986,13 @@ design decisions.
    `gate` event.
 7. **Run `offer`** once the position sequence exists: `offer --target <repo>
    --name <Name> --session <your-session-id> --revision <latest> --answer
-   yes|no` the first time (answering whether every declared pilot runs before
-   a campaign is gated), and with no `--answer` on every later call. It
-   refuses `OFFER_UNANSWERED` until an answer is on record, then publishes a
-   closed action set — one `launch` per job the shared availability rule
-   already says `gate` would not refuse, plus `pilot-all` or
-   `expand-contract` depending on the recorded answer. Present it as a menu;
-   nothing here runs on its own.
+   yes|no` on EVERY call (answering whether every declared pilot runs before
+   a campaign is gated) — required every time, never read back from a prior
+   call. It refuses `OFFER_UNANSWERED` whenever `--answer` is omitted, then
+   publishes a closed action set — one `launch` per job the shared
+   availability rule already says `gate` would not refuse, plus `pilot-all`
+   or `expand-contract` depending on the answer just supplied. Present it as
+   a menu; nothing here runs on its own.
 8. **Once a `discuss` question is answered, place it — do not hand-edit
    `AGREED.md`.** `settle --target <repo> --name <Name> --session
    <your-session-id> --about <ordinal|witness> --text "<what was settled>"

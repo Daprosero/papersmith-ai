@@ -897,26 +897,17 @@ python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py off
   --answer yes
 ```
 
-`--answer` is required only the first time; a later call with no `--answer`,
-or with the token already on record, republishes the current action set and
-reports `status: "unchanged"` without appending a second event — ONLY while
-the contract that answer was measured against (`__steps__`, `__benchmark__`'s
-arms, `__levels__`, and any arm-declared revision section) has not moved.
-Refuses `OFFER_ANSWER_NOT_A_TOKEN` when `--answer` is given something other
-than `yes`/`no`, `REVISION_UNREADABLE` when the pinned revision cannot be
-read, `OFFER_UNANSWERED` when no answer is on record and none is given this
-call — a `position.jsonl` written before this event kind existed reads the
-identical way, never as an error — and `OFFER_ANSWER_STALE` when an answer
-IS on record but the contract behind it has since changed (or that record
-predates this mechanism and carries no contract fact to compare at all):
-never merely elapsed time, the same "a bound fact moved" reading
-`GATE_AUTHORIZATION_STALE`/`POSITION_STALE` already carry. The reopened
-question needs no override flag and no counter — the only exit is a fresh
-`--answer`, which itself is what makes the next read comparable again — and
-is session-blind: whichever session supplies it clears the refusal for every
-session, not only the one that hit it. It does not touch a token an earlier
-`offer` already minted; see `gate`'s own closing paragraph for that gap,
-stated in full there.
+`--answer` is required on EVERY call — never read back from a prior `offer`
+event, no matter how many exist or what they contain. `OFFER_UNANSWERED`
+refuses whenever `--answer` is omitted, checked first, before the revision
+is even read; the refusal is identical whether the target's ledger holds no
+`offer` event, one, or many. A supplied answer is always honored and always
+appends a new event — it is never compared against, or deduplicated against,
+any prior `offer` event's answer. Refuses `OFFER_ANSWER_NOT_A_TOKEN` when
+`--answer` is given something other than `yes`/`no`, and
+`REVISION_UNREADABLE` when the pinned revision cannot be read. It does not
+touch a token an earlier `offer` already minted; see `gate`'s own closing
+paragraph for that gap, stated in full there.
 
 Every published `launch` action's `binding` carries a minted `authorization`
 token — a digest over the engine's own re-derived binding (job, commit,

@@ -13193,13 +13193,27 @@ class OfferCommandTests(unittest.TestCase):
         self.assertEqual(result["code"], "OFFER_UNANSWERED")
         self.assertNotIn("actions", result)
 
-    def test_a_pre_existing_ledger_with_no_offer_event_reads_as_unanswered(self):
-        """A `position.jsonl` written before this event kind existed --
-        only `gate`/`step` events on it -- must read the same as a fresh
-        target: absence, never an error.
+    def test_no_answer_always_refuses_regardless_of_ledger_history(self):
+        """Renamed from `..._with_no_offer_event_reads_as_unanswered`
+        (spec "A test name MUST NOT assert a dead premise"): that name
+        singled out "pre-existing ledger" as a distinct case, but every
+        ledger state with no `--answer` reads as unanswered identically
+        now -- there is no read-back left to make one history special.
+        Exercises both shapes the old name conflated (spec "Renamed test
+        still exercises both ledger shapes"): an empty ledger, and one
+        holding only a `gate` event -- the exact shape a `position.jsonl`
+        written before `offer` existed would carry.
         """
         box, commit = self._box()
         self._write_job_folder(box, commit)
+        proposals = self._proposals()
+
+        empty = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                             "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                             proposals=proposals)
+        self.assertEqual(empty.returncode, 2, empty.stdout)
+        self.assertEqual(json.loads(empty.stdout)["code"], "OFFER_UNANSWERED")
+
         ledger = box / "Method" / ".implementation" / "position.jsonl"
         impl_position.append_event(ledger, {
             "kind": "gate", "jobName": "job1", "worker": "w1", "commit": commit,
@@ -13207,13 +13221,67 @@ class OfferCommandTests(unittest.TestCase):
             "entrypoint": "tools/offer-fixture-svc/job1/run.py", "units": [],
             "justification": "prior work", "session": "s0", "at": "2026-08-27T00:00:00Z",
         })
-        proc = self.run_cli("offer", "--target", str(box), "--name", "Method",
-                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
-                            proposals=self._proposals())
-        self.assertEqual(proc.returncode, 2, proc.stdout)
-        self.assertEqual(json.loads(proc.stdout)["code"], "OFFER_UNANSWERED")
+        gate_only = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                                 "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                                 proposals=proposals)
+        self.assertEqual(gate_only.returncode, 2, gate_only.stdout)
+        self.assertEqual(json.loads(gate_only.stdout)["code"], "OFFER_UNANSWERED")
 
-    def test_offer_records_the_answer_on_first_call_and_reuses_it_after(self):
+    def test_two_consecutive_unanswered_calls_both_refuse(self):
+        """Spec "Two consecutive unattended calls both ask": no read-back
+        exists for `offer` to fall back on, so a second unanswered call
+        refuses identically to the first -- never softened by the fact
+        that a call already happened, and neither call appends an event.
+        """
+        box, commit = self._box()
+        self._write_job_folder(box, commit)
+        proposals = self._proposals()
+
+        first = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                             "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                             proposals=proposals)
+        self.assertEqual(first.returncode, 2, first.stdout)
+        self.assertEqual(json.loads(first.stdout)["code"], "OFFER_UNANSWERED")
+        self.assertNotIn("actions", json.loads(first.stdout))
+
+        second = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                              "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                              proposals=proposals)
+        self.assertEqual(second.returncode, 2, second.stdout)
+        self.assertEqual(json.loads(second.stdout)["code"], "OFFER_UNANSWERED")
+        self.assertNotIn("actions", json.loads(second.stdout))
+
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        self.assertFalse(ledger.exists(),
+                         "neither refused call may create the ledger")
+
+    def test_a_recorded_answer_does_not_excuse_a_later_unanswered_call(self):
+        """Spec "A recorded answer does not excuse a later unanswered
+        call": a ledger already holding an answered `offer` event refuses
+        identically to one with none -- `OFFER_UNANSWERED` never consults
+        history to decide whether it applies.
+        """
+        box, commit = self._box()
+        self._write_job_folder(box, commit)
+        proposals = self._proposals()
+
+        first = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                             "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                             "--answer", "yes", proposals=proposals)
+        self.assertEqual(first.returncode, 0, first.stdout)
+
+        second = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                              "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                              proposals=proposals)
+        self.assertEqual(second.returncode, 2, second.stdout)
+        self.assertEqual(json.loads(second.stdout)["code"], "OFFER_UNANSWERED")
+
+    def test_offer_requires_the_answer_again_on_every_later_call(self):
+        """Renamed subject: from "records once, reuses after" to "always
+        requires" -- the second call's ledger-count assertion inverts from
+        expecting no growth on an unanswered repeat to expecting that
+        repeat refused outright, appending nothing.
+        """
         box, commit = self._box()
         self._write_job_folder(box, commit)
         proposals = self._proposals()
@@ -13227,236 +13295,249 @@ class OfferCommandTests(unittest.TestCase):
         second = self.run_cli("offer", "--target", str(box), "--name", "Method",
                               "--revision", self.PROPOSAL_REVISION, "--session", "s1",
                               proposals=proposals)
-        self.assertEqual(second.returncode, 0, second.stdout)
-        result = json.loads(second.stdout)
-        self.assertEqual(result["status"], "unchanged")
-        self.assertEqual(result["answer"], "no")
+        self.assertEqual(second.returncode, 2, second.stdout)
+        self.assertEqual(json.loads(second.stdout)["code"], "OFFER_UNANSWERED")
 
         ledger = box / "Method" / ".implementation" / "position.jsonl"
         offer_events = [json.loads(line) for line
                         in ledger.read_text(encoding="utf-8").splitlines()
                         if json.loads(line).get("kind") == "offer"]
         self.assertEqual(len(offer_events), 1,
-                         "a repeat call with no --answer must not append a "
+                         "a refused unanswered repeat must not append a "
                          "second offer event")
 
-    # --- reopen on a material contract change ---------------------------
-
-    def test_a_material_contract_change_reopens_and_records_again(self):
-        """The ordering hazard, made observable (design "Data Flow"): today
-        `cmd_offer` reads `existing["answer"]` at its two sites -- the
-        answer fallback and the dedup condition -- with no notion that the
-        contract behind a standing answer could have moved. A standing
-        "yes" answered before `__steps__` names anything must NOT still
-        read as "unchanged" once `__steps__` names a step: the contract the
-        first "yes" was about no longer exists.
-
-        Reachability proof (must FAIL on 7113a33): before the fix, `offer`
-        has no `contractDigest` concept at all, so the second call's dedup
-        (`existing is not None and (args.answer is None or args.answer ==
-        existing.get("answer"))`) is satisfied regardless of what moved --
-        it reports `status == "unchanged"` and the ledger holds exactly one
-        `offer` event, never two.
+    def test_a_supplied_answer_is_always_honored_never_compared_to_history(self):
+        """Spec "A supplied answer is always honored, never compared to
+        history": a ledger holding a "no" answer does not stop a later
+        "yes" from succeeding, and both events land on the ledger -- the
+        prior event is never consulted to accept, reject, or dedup the
+        later one.
         """
         box, commit = self._box()
+        self._write_job_folder(box, commit)
         proposals = self._proposals()
 
         first = self.run_cli("offer", "--target", str(box), "--name", "Method",
                              "--revision", self.PROPOSAL_REVISION, "--session", "s1",
-                             "--answer", "yes", proposals=proposals)
+                             "--answer", "no", proposals=proposals)
         self.assertEqual(first.returncode, 0, first.stdout)
-        self.assertEqual(json.loads(first.stdout)["status"], "recorded")
-
-        # A material contract change: `__steps__` moves from undeclared
-        # ({}) to naming one step. Nothing else about the target changes.
-        bench_init = box / "src" / "Method_Benchmark" / "__init__.py"
-        bench_init.write_text(
-            "__steps__ = {'pilot': {'module': 'Method.pilot', 'function': 'run'}}\n",
-            encoding="utf-8")
 
         second = self.run_cli("offer", "--target", str(box), "--name", "Method",
                               "--revision", self.PROPOSAL_REVISION, "--session", "s1",
                               "--answer", "yes", proposals=proposals)
         self.assertEqual(second.returncode, 0, second.stdout)
-        self.assertEqual(
-            json.loads(second.stdout)["status"], "recorded",
-            "a same-token answer over a reopened contract must still "
-            "record, not dedup against the now-stale standing answer")
+        result = json.loads(second.stdout)
+        self.assertEqual(result["answer"], "yes")
+        self.assertEqual(result["status"], "recorded")
 
         ledger = box / "Method" / ".implementation" / "position.jsonl"
         offer_events = [json.loads(line) for line
                         in ledger.read_text(encoding="utf-8").splitlines()
                         if json.loads(line).get("kind") == "offer"]
         self.assertEqual(len(offer_events), 2,
-                         "a material contract change must append a second "
-                         "offer event even when the answer token repeats")
+                         "both calls append -- offer never dedups against "
+                         "a prior answer")
+        self.assertEqual(offer_events[0]["answer"], "no")
+        self.assertEqual(offer_events[1]["answer"], "yes")
 
-    def test_cmd_offer_dedup_reads_standing_never_existing(self):
-        """Structural guard against the ordering hazard reappearing (design
-        "Data Flow", same `ast`-over-source idiom `reportable_fidelity_states`
-        already uses on `cmd_verify`). `standing` must be assigned exactly
-        once inside `cmd_offer`, and the dedup `if` -- identified by its own
-        body assigning the literal `"unchanged"` to `status`, never by a
-        line number -- must name `standing` in its test expression and must
-        never name `existing` there. Moving the assignment back to `existing`
-        is a `NameError` at runtime (design), never a silently wrong verdict;
-        this test catches the same regression statically, before either.
+    def test_a_stored_actions_snapshot_never_changes_a_later_calls_output(self):
+        """Spec "A stored `actions` snapshot never changes a later call's
+        output": the `actions` field on a recorded event is a record of
+        what was offered at that moment, never a cache a later call reads
+        back to decide what to publish -- proven by a newly discoverable,
+        available job's `launch` action appearing only on the second call.
+        In-process (like the authorization tests above), since a `launch`
+        action needs the fixture capacity reporter registered directly
+        through `_load_remote_execution_cli`'s module object, which a
+        subprocess call cannot see.
+        """
+        box, commit = self._box()
+        self._register_fixture_reporter(box, "offer-fixture-svc")
+        proposals = self._proposals()
+
+        with unittest.mock.patch.dict(
+                os.environ, {"IMPLEMENTATION_PROPOSALS": str(proposals)}):
+            first = impl.cmd_offer(self._offer_args(box, answer="yes"))
+        self.assertNotIn(
+            "launch", {a["id"] for a in first["actions"]},
+            "no job folder exists yet on the first call")
+
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                                  "witness": {"kind": "rehearsal", "operand": "job1"}}])
+
+        with unittest.mock.patch.dict(
+                os.environ, {"IMPLEMENTATION_PROPOSALS": str(proposals)}):
+            second = impl.cmd_offer(self._offer_args(box, answer="yes"))
+
+        self.assertIn(
+            "launch", {a["id"] for a in second["actions"]},
+            "a newly discoverable, available job must appear on the "
+            "second call -- the first call's stored actions snapshot "
+            "must never be read back to decide this one's output")
+
+    # --- read-back removed: structural and documentary guards -----------
+
+    def test_cmd_offer_never_reads_a_prior_answer_back(self):
+        """Structural guard, INVERTED from
+        `test_cmd_offer_dedup_reads_standing_never_existing` rather than
+        deleted with the mechanism it guarded (spec "The read-back guard
+        is inverted, not deleted"; design "Write-only history: stated in
+        place AND held by a test"). Same `ast`-over-`inspect.getsource`
+        idiom `reportable_fidelity_states` already uses on `cmd_verify`.
+
+        Two independent structural facts over `cmd_offer`'s own source:
+
+        1. No `ast.Compare` anywhere in `cmd_offer` compares the string
+           literal `"offer"` against a `kind` subscript or `.get` call --
+           the shape a reintroduced `e.get("kind") == "offer"` lookup
+           would take.
+        2. No subscript or `.get` read of the string `"answer"` targets
+           anything other than `args` -- the shape a reintroduced
+           `existing["answer"]` / `existing.get("answer")` read would
+           take. The append dict's `"answer"` key is an `ast.Dict` key,
+           never a subscript or `.get` call, so it does not trip this.
+
+        Reachable red, confirmed by hand against the unmodified function on
+        `35922f3`: `existing = next((e for e in reversed(events) if
+        e.get("kind") == "offer"), None)` trips fact 1, and
+        `existing["answer"]` / `existing.get("answer")` at that revision
+        trip fact 2 -- both assertions below fail against that source,
+        proving this guard reaches the exact code it targets.
         """
         tree = ast.parse(textwrap.dedent(inspect.getsource(impl.cmd_offer)))
 
-        standing_assigns = [
-            node for node in ast.walk(tree)
-            if isinstance(node, ast.Assign)
-            and any(isinstance(t, ast.Name) and t.id == "standing"
-                    for t in node.targets)]
+        def is_kind_offer_compare(node):
+            if not isinstance(node, ast.Compare):
+                return False
+            operands = [node.left, *node.comparators]
+            has_offer_literal = any(
+                isinstance(o, ast.Constant) and o.value == "offer" for o in operands)
+            has_kind_read = any(
+                (isinstance(o, ast.Subscript)
+                 and isinstance(o.slice, ast.Constant) and o.slice.value == "kind")
+                or (isinstance(o, ast.Call) and isinstance(o.func, ast.Attribute)
+                    and o.func.attr == "get"
+                    and o.args and isinstance(o.args[0], ast.Constant)
+                    and o.args[0].value == "kind")
+                for o in operands)
+            return has_offer_literal and has_kind_read
+
+        kind_offer_compares = [n for n in ast.walk(tree) if is_kind_offer_compare(n)]
         self.assertEqual(
-            len(standing_assigns), 1,
-            "`standing` must be assigned exactly once in cmd_offer")
+            kind_offer_compares, [],
+            "cmd_offer must never compare an event's kind against the "
+            "literal 'offer' -- that is exactly the shape of the deleted "
+            "read-back lookup reappearing")
 
-        def names_in(node):
-            return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+        def is_answer_read(node):
+            if isinstance(node, ast.Subscript):
+                return (isinstance(node.slice, ast.Constant)
+                        and node.slice.value == "answer"
+                        and not (isinstance(node.value, ast.Name)
+                                 and node.value.id == "args"))
+            if isinstance(node, ast.Call):
+                return (isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "get"
+                        and node.args and isinstance(node.args[0], ast.Constant)
+                        and node.args[0].value == "answer"
+                        and not (isinstance(node.func.value, ast.Name)
+                                 and node.func.value.id == "args"))
+            return False
 
-        dedup_ifs = [
-            node for node in ast.walk(tree)
-            if isinstance(node, ast.If)
-            and any(isinstance(stmt, ast.Assign)
-                    and any(isinstance(t, ast.Name) and t.id == "status"
-                            for t in stmt.targets)
-                    and isinstance(stmt.value, ast.Constant)
-                    and stmt.value.value == "unchanged"
-                    for stmt in node.body)]
+        answer_reads = [n for n in ast.walk(tree) if is_answer_read(n)]
         self.assertEqual(
-            len(dedup_ifs), 1,
-            "exactly one `if` in cmd_offer must assign status = "
-            "'unchanged' in its body")
-        dedup_if = dedup_ifs[0]
+            answer_reads, [],
+            "cmd_offer must never read an 'answer' key/attr off anything "
+            "but args -- a read off a prior ledger event is exactly the "
+            "shape of the deleted read-back reappearing")
 
-        condition_names = names_in(dedup_if.test)
-        self.assertIn("standing", condition_names,
-                      "the dedup condition must compare against `standing`")
-        self.assertNotIn(
-            "existing", condition_names,
-            "the dedup condition must never read `existing` directly -- "
-            "when reopened, `standing` is None and there is no prior "
-            "answer for the dedup to swallow")
+    def test_offer_unanswered_and_token_checks_are_the_first_two_statements(self):
+        """Structural proof for design decision 1 ("Position above
+        resolve_target/revision_source is the structural proof nothing was
+        read back"): the `OFFER_UNANSWERED` and answer-token checks are the
+        FIRST TWO statements in `cmd_offer`'s body, both preceding any call
+        to `resolve_target`/`revision_source`. This is the STRUCTURAL half
+        and is the stronger proof (task 1.14); the phrase-only test on the
+        write-only-history documentation (below) is weaker by construction
+        and does not substitute for this one.
 
-    def test_contract_digest_determinism_and_ordering_asymmetry(self):
-        """Unit test on `_contract_digest` directly (design "Canonicalization,
-        stated so two implementations cannot disagree"): dict ordering is
-        invisible (`sort_keys=True`), `__levels__` ordering is material (the
-        ladder is ordered; `impl_position.level_index` does arithmetic on
-        it), and content no arm declares never moves the digest.
+        Reachable red, confirmed by hand: moving either `if` below the
+        `resolve_target(...)` call, or swapping their order, flips this
+        red -- verified, then reverted.
         """
-        box, _ = self._box()
-        bench_init = box / "src" / "Method_Benchmark" / "__init__.py"
-        source = "## 1\ntexto uno\n## 2\ntexto dos\n"
+        tree = ast.parse(textwrap.dedent(inspect.getsource(impl.cmd_offer)))
+        func = tree.body[0]
+        self.assertIsInstance(func, ast.FunctionDef)
+        statements = [
+            s for s in func.body
+            if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant)
+                    and isinstance(s.value.value, str))]
+        self.assertGreaterEqual(len(statements), 2, "nothing was scanned")
 
-        bench_init.write_text(
-            "__benchmark__ = {'arms': {'a': {'sections': ['1']}}}\n"
-            "__levels__ = ['a', 'b']\n",
-            encoding="utf-8")
-        baseline = impl._contract_digest(box, "Method", source)
+        first, second = statements[0], statements[1]
 
-        # Mutation A -- dict key order swapped in __init__.py. Invisible:
-        # `sort_keys=True` sorts recursively.
-        bench_init.write_text(
-            "__levels__ = ['a', 'b']\n"
-            "__benchmark__ = {'arms': {'a': {'sections': ['1']}}}\n",
-            encoding="utf-8")
-        self.assertEqual(
-            impl._contract_digest(box, "Method", source), baseline,
-            "reordering the same dict keys in __init__.py must not move "
-            "the digest")
+        def is_refused_if(stmt, code):
+            if not isinstance(stmt, ast.If):
+                return False
+            return any(
+                isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                and n.func.id == "Refused" and n.args
+                and isinstance(n.args[0], ast.Constant) and n.args[0].value == code
+                for n in ast.walk(stmt))
 
-        # Mutation B -- __levels__ reordered. A list, order preserved: MUST
-        # move the digest.
-        bench_init.write_text(
-            "__benchmark__ = {'arms': {'a': {'sections': ['1']}}}\n"
-            "__levels__ = ['b', 'a']\n",
-            encoding="utf-8")
-        self.assertNotEqual(
-            impl._contract_digest(box, "Method", source), baseline,
-            "reordering __levels__ must move the digest -- it is an "
-            "ordered ladder, not a set")
+        self.assertTrue(
+            is_refused_if(first, "OFFER_UNANSWERED"),
+            "the first statement in cmd_offer's body must be the "
+            "OFFER_UNANSWERED check")
+        self.assertTrue(
+            is_refused_if(second, "OFFER_ANSWER_NOT_A_TOKEN"),
+            "the second statement in cmd_offer's body must be the "
+            "answer-token check")
 
-        # Mutation C -- an immaterial change: section 2's content changes,
-        # but no arm declares section 2. Must NOT move the digest.
-        bench_init.write_text(
-            "__benchmark__ = {'arms': {'a': {'sections': ['1']}}}\n"
-            "__levels__ = ['a', 'b']\n",
-            encoding="utf-8")
-        other_source = "## 1\ntexto uno\n## 2\notro texto completamente distinto\n"
-        self.assertEqual(
-            impl._contract_digest(box, "Method", other_source), baseline,
-            "a section no arm declares must not move the digest")
+        for stmt in (first, second):
+            for n in ast.walk(stmt):
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name):
+                    self.assertNotIn(
+                        n.func.id, {"resolve_target", "revision_source"},
+                        "the first two statements must be pure-argv "
+                        "checks, never calling resolve_target/"
+                        "revision_source")
 
-    def test_an_offer_event_with_no_contract_digest_reopens_once(self):
-        """Spec "Pre-Existing Offer Events Are Not Comparable and Reopen
-        Once", the exact ledger shape the real MIL-CREDA target carries
-        (design "What Breaks", Products): a hand-written `offer` event with
-        no `contractDigest` key at all.
+    def test_the_append_site_documents_the_offer_event_as_write_only_history(self):
+        """Documentary proof (spec "The `offer` event is documented
+        write-only history" / "The append site is self-documenting"),
+        weaker by construction than the two structural guards above: a
+        substring match on comment text can be satisfied by prose that
+        lies, so this test alone would never have caught the original
+        read-back defect. It exists only so a later dead-code audit does
+        not delete the `offer` event's append call as unreachable history
+        the way an earlier audit deleted a rule nothing called.
         """
-        box, commit = self._box()
-        proposals = self._proposals()
-        ledger = box / "Method" / ".implementation" / "position.jsonl"
-        impl_position.append_event(ledger, {
-            "kind": "offer", "answer": "no", "revision": self.PROPOSAL_REVISION,
-            "revisionSha256": self.PROPOSAL_SHA256, "actions": [],
-            "session": "s0", "at": "2026-08-27T00:00:00Z",
-        })
+        # Strip each line's leading `#` before normalizing whitespace --
+        # otherwise the comment marker on every continuation line becomes
+        # its own token and splits the phrase this test looks for.
+        cleaned_lines = []
+        for line in inspect.getsource(impl.cmd_offer).splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                stripped = stripped[1:].strip()
+            cleaned_lines.append(stripped)
+        normalized = " ".join(" ".join(cleaned_lines).split())
 
-        refused = self.run_cli("offer", "--target", str(box), "--name", "Method",
-                               "--revision", self.PROPOSAL_REVISION, "--session", "s1",
-                               proposals=proposals)
-        self.assertEqual(refused.returncode, 2, refused.stdout)
-        self.assertEqual(json.loads(refused.stdout)["code"], "OFFER_ANSWER_STALE")
+        self.assertIn("write-only history", normalized)
+        self.assertIn(
+            'no code path under `.claude/skills/**/*.py` ever reads a '
+            '`kind: "offer"` event\'s fields back into any later decision',
+            normalized)
 
-        answered = self.run_cli("offer", "--target", str(box), "--name", "Method",
-                                "--revision", self.PROPOSAL_REVISION, "--session", "s1",
-                                "--answer", "no", proposals=proposals)
-        self.assertEqual(answered.returncode, 0, answered.stdout)
-        self.assertEqual(json.loads(answered.stdout)["status"], "recorded")
-
-        unchanged = self.run_cli("offer", "--target", str(box), "--name", "Method",
-                                 "--revision", self.PROPOSAL_REVISION, "--session", "s1",
-                                 proposals=proposals)
-        self.assertEqual(unchanged.returncode, 0, unchanged.stdout)
-        self.assertEqual(json.loads(unchanged.stdout)["status"], "unchanged")
-
-    def test_a_reopened_question_refuses_a_different_session_identically(self):
-        """Spec "A different session sees the same reopened state": the
-        newest-`offer` lookup carries no `session` term, so ANY session's
-        answer clears the refusal for every session, and a session that
-        never answered anything sees the identical reopened state -- never
-        a republished stale action set scoped to its own session.
-        """
-        box, commit = self._box()
-        proposals = self._proposals()
-
-        first = self.run_cli("offer", "--target", str(box), "--name", "Method",
-                             "--revision", self.PROPOSAL_REVISION, "--session", "session-a",
-                             "--answer", "yes", proposals=proposals)
-        self.assertEqual(first.returncode, 0, first.stdout)
-
-        bench_init = box / "src" / "Method_Benchmark" / "__init__.py"
-        bench_init.write_text(
-            "__steps__ = {'pilot': {'module': 'Method.pilot', 'function': 'run'}}\n",
-            encoding="utf-8")
-
-        second = self.run_cli("offer", "--target", str(box), "--name", "Method",
-                              "--revision", self.PROPOSAL_REVISION, "--session", "session-b",
-                              proposals=proposals)
-        self.assertEqual(second.returncode, 2, second.stdout)
-        result = json.loads(second.stdout)
-        self.assertEqual(result["code"], "OFFER_ANSWER_STALE")
-        self.assertNotIn("actions", result)
-
-    def test_a_reopen_and_re_answer_appends_never_rewrites(self):
-        """Spec "Reopened event is never rewritten": the original event's
-        bytes stay byte-for-byte identical on disk; a new `offer` event is
-        appended after it, never in its place -- the ledger stays
-        append-only through a reopen exactly as it does through every
-        other write path.
+    def test_a_second_answer_appends_never_rewrites(self):
+        """Renamed from `..._reopen_and_re_answer_appends_never_rewrites`,
+        `__steps__` mutation dropped: the assertion this test holds --
+        append-only, byte-identical on disk -- was never actually about a
+        reopen; it is true of ANY second `offer` call, since every call
+        now requires and appends a fresh answer.
         """
         box, commit = self._box()
         proposals = self._proposals()
@@ -13471,11 +13552,6 @@ class OfferCommandTests(unittest.TestCase):
         self.assertEqual(len(original_lines), 1)
         original_first_line = original_lines[0]
 
-        bench_init = box / "src" / "Method_Benchmark" / "__init__.py"
-        bench_init.write_text(
-            "__steps__ = {'pilot': {'module': 'Method.pilot', 'function': 'run'}}\n",
-            encoding="utf-8")
-
         second = self.run_cli("offer", "--target", str(box), "--name", "Method",
                               "--revision", self.PROPOSAL_REVISION, "--session", "s1",
                               "--answer", "no", proposals=proposals)
@@ -13485,51 +13561,20 @@ class OfferCommandTests(unittest.TestCase):
         self.assertEqual(
             new_lines[0], original_first_line,
             "the original event's bytes must be unchanged on disk after a "
-            "reopen and a re-answer")
+            "second answer")
         offer_lines = [line for line in new_lines
                        if json.loads(line).get("kind") == "offer"]
         self.assertEqual(len(offer_lines), 2)
         self.assertEqual(offer_lines[0], original_first_line)
 
-    def test_the_newest_offer_event_decides_never_an_older_digest_matching_one(self):
-        """Design "the digest is a compared field, never a lookup term":
-        the lookup for the standing answer stays `kind == "offer"`, newest
-        wins, with no digest term at all. An older event whose digest
-        happens to equal the currently-measured one must never be silently
-        preferred over a newer event that does not -- that would mean the
-        question never reopens at all.
-        """
-        box, commit = self._box()
-        proposals = self._proposals()
-        current_digest = impl._contract_digest(box, "Method", self.PROPOSAL_TEXT)
-
-        ledger = box / "Method" / ".implementation" / "position.jsonl"
-        impl_position.append_event(ledger, {
-            "kind": "offer", "answer": "no", "revision": self.PROPOSAL_REVISION,
-            "revisionSha256": self.PROPOSAL_SHA256, "contractDigest": current_digest,
-            "actions": [], "session": "s0", "at": "2026-08-27T00:00:00Z",
-        })
-        impl_position.append_event(ledger, {
-            "kind": "offer", "answer": "yes", "revision": self.PROPOSAL_REVISION,
-            "revisionSha256": self.PROPOSAL_SHA256, "contractDigest": "a" * 64,
-            "actions": [], "session": "s0", "at": "2026-08-27T00:01:00Z",
-        })
-
-        proc = self.run_cli("offer", "--target", str(box), "--name", "Method",
-                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
-                            proposals=proposals)
-        self.assertEqual(proc.returncode, 2, proc.stdout)
-        self.assertEqual(
-            json.loads(proc.stdout)["code"], "OFFER_ANSWER_STALE",
-            "the newest offer event decides the standing answer, never an "
-            "older one whose digest happens to still match")
-
-    def test_a_pre_reopen_authorization_still_gates_after_the_contract_reopens(self):
-        """Spec "Outstanding Authorizations Survive a Reopen (Documented
-        Gap)" / "A pre-reopen token still gates a launch": `_AUTHORIZATION_
-        BINDING_KEYS` names no contract fact, so a token minted before a
-        reopen keeps gating exactly as before -- the reopen alone never
-        refuses it.
+    def test_an_authorization_minted_before_a_later_contract_change_still_gates(self):
+        """Renamed from
+        `..._pre_reopen_authorization_still_gates_after_the_contract_reopens`:
+        `_AUTHORIZATION_BINDING_KEYS` is out of scope for this change and
+        still names no contract fact, so a token minted before a later
+        change to `__steps__` keeps gating exactly as before -- this was
+        never about a reopen, only about what the authorization binding
+        does and does not cover.
         """
         box, commit = self._box()
         self._register_fixture_reporter(box, "offer-fixture-svc")
@@ -13545,10 +13590,10 @@ class OfferCommandTests(unittest.TestCase):
         launch = next(a for a in result["actions"] if a["id"] == "launch")
         token = launch["binding"]["authorization"]
 
-        # Reopen: __steps__ moves from undeclared to naming one step. The
-        # token stays unconsumed; nothing about the launch binding it
-        # carries (job/commit/entrypoint/units/rung/revisionSha256/
-        # positionStatus) is affected by this.
+        # An ordinary contract change: __steps__ moves from undeclared to
+        # naming one step. The token stays unconsumed; nothing about the
+        # launch binding it carries (job/commit/entrypoint/units/rung/
+        # revisionSha256/positionStatus) is affected by this.
         bench_init = box / "src" / "Method_Benchmark" / "__init__.py"
         bench_init.write_text(
             "__steps__ = {'pilot': {'module': 'Method.pilot', 'function': 'run'}}\n",
@@ -14076,7 +14121,7 @@ class OfferCommandTests(unittest.TestCase):
                                   "witness": {"kind": "rehearsal", "operand": "job1"}}])
 
         first = impl.cmd_offer(self._offer_args(box, answer="yes"))
-        second = impl.cmd_offer(self._offer_args(box))
+        second = impl.cmd_offer(self._offer_args(box, answer="yes"))
         first_launch = next(a for a in first["actions"] if a["id"] == "launch")
         second_launch = next(a for a in second["actions"] if a["id"] == "launch")
         self.assertEqual(first_launch["binding"]["authorization"],
@@ -14140,7 +14185,7 @@ class OfferCommandTests(unittest.TestCase):
         # first -- `session`/`at` are discriminators baked into the token,
         # so an identical pair would otherwise recompute the identical
         # token even though it is being minted fresh.
-        second = impl.cmd_offer(self._offer_args(box, session="s2"))
+        second = impl.cmd_offer(self._offer_args(box, session="s2", answer="yes"))
         second_token = next(
             a for a in second["actions"] if a["id"] == "launch")["binding"]["authorization"]
 
