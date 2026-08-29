@@ -2183,6 +2183,123 @@ class AgreementsTests(unittest.TestCase):
             self.assertEqual(state["status"], "open")
 
 
+#: A position block header, held once so every test in
+#: `AgreementScanTextTests` below builds an identical, valid one.
+_POSITION_HEADER = {"revision": "r1.md", "revisionSha256": "a" * 64,
+                    "derivedAt": "2026-08-27T00:00:00Z", "session": "s1",
+                    "target": "final"}
+
+
+class AgreementScanTextTests(unittest.TestCase):
+    """`_agreement_scan_text` -- the one helper `agreements_state` and
+    `_agreement_collides` both now read through, excising the position
+    block's own byte span before either scans a line.
+
+    One cause, two symptoms, measured by construction with a minimal
+    isolated fixture, never by reading a real target: a file with 2 real
+    agreement bullets plus a 3-item position block reported `open: 5`
+    before this fix, and the same file's own sequence items always
+    "collided" with themselves in `_agreement_collides` -- both because the
+    block's own `- [ ] N. ...` lines are exactly `AGREEMENT_LINE`'s shape
+    and the block's byte span was never excluded from either scan.
+    """
+
+    def test_agreements_state_excludes_the_position_blocks_own_item_lines(self):
+        """The exact reproduction: 2 real open bullets, a 3-item block.
+        Before the fix, `open` reported all 5; after, it reports the 2 real
+        ones only.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            items = [
+                {"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                 "witness": {"kind": "rehearsal", "operand": "job-a"}},
+                {"ordinal": 2, "mark": " ", "text": "Read the pilot notebook.",
+                 "witness": {"kind": "notebook", "operand": "Notebooks/pilot.ipynb"}},
+                {"ordinal": 3, "mark": " ", "text": "Ship the shard.",
+                 "witness": {"kind": "shard", "operand": "shard-0"}},
+            ]
+            block = impl_position.render(_POSITION_HEADER, items)
+            (root / "Method" / "AGREED.md").write_text(
+                "# Agreed\n\n"
+                "- [ ] the figure shows the image, not the path\n"
+                "- [ ] the ceiling stays at one experiment family\n\n"
+                f"{block}", encoding="utf-8")
+
+            state = impl.agreements_state(root, "Method")
+            self.assertEqual(
+                sorted(state["open"]),
+                sorted(["the figure shows the image, not the path",
+                       "the ceiling stays at one experiment family"]))
+            self.assertEqual(len(state["open"]), 2)
+            self.assertEqual(state["settled"], 0)
+
+    def test_a_holder_whose_only_items_are_position_lines_reads_absent(self):
+        """The sharpest visible edge of the fix (design's own "what breaks"):
+        a holder whose sole checklist items are the block's own sequence
+        lines has no agreement of its own once those lines are excluded --
+        `position_state` already reports the block separately, so this fact
+        is never lost, only no longer double-counted as an agreement too.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                     "witness": {"kind": "rehearsal", "operand": "job-a"}}]
+            (root / "Method" / "AGREED.md").write_text(
+                impl_position.render(_POSITION_HEADER, items), encoding="utf-8")
+
+            state = impl.agreements_state(root, "Method")
+            self.assertEqual(state["status"], "absent")
+
+    def test_a_block_that_will_not_locate_falls_back_to_a_full_scan(self):
+        """`locate_block` raises `POSITION_BLOCK_MALFORMED` on an opener
+        whose header does not parse; `_agreement_scan_text` catches it and
+        returns the whole document -- `agreements_state` is total today
+        (absence is a state, never a failure) and stays that way. The same
+        malformed document already raises through `position_state` in the
+        same `verify` call, so the residual is not silently invisible.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            (root / "Method" / "AGREED.md").write_text(
+                "# Agreed\n\n"
+                "- [ ] a real agreement\n\n"
+                "<!-- position broken header -->\n"
+                "- [ ] 1. some item `@record`\n", encoding="utf-8")
+
+            state = impl.agreements_state(root, "Method")
+            self.assertIn("a real agreement", state["open"])
+            self.assertIn("1. some item `@record`", state["open"])
+
+    def test_the_injected_newline_at_the_excision_point_is_load_bearing(self):
+        """The design's own named trap: `data[:start] + data[end:]` alone
+        can merge the last partial line before the block with the first
+        partial line after it into one line neither of them was.
+
+        Built to exercise exactly that: no newline on either side of the
+        block, so the byte right before `start` and the byte right after
+        `end` each continue an unrelated, otherwise-incomplete line.
+        Without the injected `b"\\n"`, the two concatenate into
+        `- [ ] fabricated bullet text`, a checklist item that never existed
+        in the source document.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            items = [{"ordinal": 1, "mark": " ", "text": "Item.",
+                     "witness": {"kind": "record", "operand": None}}]
+            block_bytes = impl_position.render(
+                _POSITION_HEADER, items).rstrip("\n").encode("utf-8")
+            data = b"- [ ] " + block_bytes + b"fabricated bullet text\n"
+            (root / "Method" / "AGREED.md").write_bytes(data)
+
+            state = impl.agreements_state(root, "Method")
+            self.assertNotIn("fabricated bullet text", state["open"])
+
+
 class SearchIsAnExperimentTests(unittest.TestCase):
     """Una búsqueda es un experimento y se declara como tal.
 
@@ -12041,6 +12158,81 @@ class DiscussCommandTests(unittest.TestCase):
                             "--about", "9", "--question", "What is step 9?")
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["code"], "DISCUSS_ABOUT_NOT_FOUND")
+
+    # --- the cause fix: self-collision, operand-less witnesses, the bare-kind refusal ---
+
+    def test_discuss_about_an_ordinal_never_collides_with_its_own_line(self):
+        """Measured: the item's own witness operand ("job1") is a substring
+        of its own rendered line -- the witness token itself, backticks
+        included -- so a collision search that scanned the whole file,
+        block included, always reported the item colliding with itself.
+        """
+        box = self._box()
+        header = {"revision": "r1.md", "revisionSha256": "a" * 64,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
+        items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                  "witness": {"kind": "rehearsal", "operand": "job1"}}]
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+
+        proc = self.run_cli("discuss", "--target", str(box), "--name", "Method",
+                            "--about", "1", "--question", "Is job1 the right job?")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["collides"], [])
+
+    def test_about_record_reports_the_collision_search_as_unperformed(self):
+        """`record` is the one operand-less `WITNESS_KINDS` member (design's
+        own decision): a falsy operand means the search literally could not
+        run, and `[]` alone would read exactly like "ran and found nothing".
+        """
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text("# Agreed\n", encoding="utf-8")
+        proc = self.run_cli("discuss", "--target", str(box), "--name", "Method",
+                            "--about", "record",
+                            "--question", "Does the record satisfy the contract?")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["collides"], [])
+        self.assertEqual(result["collisionSearch"], "unperformed")
+
+    def test_about_notebook_with_no_operand_is_refused(self):
+        """The third defect, measured with a fixture built to discriminate.
+        The holder's agreement text names the exact operand a correct call
+        would search for -- a fixture that omits it cannot tell "the search
+        ran and found nothing" apart from "nothing ran", which is exactly
+        why the discriminating half below is required alongside this one.
+        """
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n"
+            "- [ ] Notebooks/verification.ipynb runs against this tree\n",
+            encoding="utf-8")
+        proc = self.run_cli("discuss", "--target", str(box), "--name", "Method",
+                            "--about", "notebook",
+                            "--question", "Does this discuss the right notebook?")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"],
+                         "DISCUSS_ABOUT_OPERAND_REQUIRED")
+
+    def test_about_notebook_with_an_operand_performs_the_search(self):
+        """The discriminating half of the same fixture: with the operand
+        present, the search runs and finds the collision it was built to
+        find -- proof the refusal above fires before any search ever runs,
+        not merely on an empty result.
+        """
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n"
+            "- [ ] Notebooks/verification.ipynb runs against this tree\n",
+            encoding="utf-8")
+        proc = self.run_cli("discuss", "--target", str(box), "--name", "Method",
+                            "--about", "notebook Notebooks/verification.ipynb",
+                            "--question", "Does this discuss the right notebook?")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(len(result["collides"]), 1)
+        self.assertEqual(result["collisionSearch"], "performed")
 
 
 class GateCommandTests(unittest.TestCase):

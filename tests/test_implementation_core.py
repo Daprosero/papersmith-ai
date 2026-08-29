@@ -500,6 +500,19 @@ class LaunchAvailableNoUpwardImportsTests(unittest.TestCase):
             "naming a caller's own layout from inside the shared core")
 
 
+class OperandRequiredKindsTests(unittest.TestCase):
+    """The one fact `_resolve_discuss_about` (implementation_cli.py) reads
+    to decide which bare `--about <kind>` calls it may refuse.
+    """
+
+    def test_record_is_excluded_the_rest_are_required(self):
+        self.assertEqual(impl_position.OPERAND_REQUIRED_KINDS,
+                         frozenset({"notebook", "rehearsal", "shard"}))
+        self.assertNotIn("record", impl_position.OPERAND_REQUIRED_KINDS)
+        self.assertTrue(
+            impl_position.OPERAND_REQUIRED_KINDS <= impl_position.WITNESS_KINDS)
+
+
 class DigestBytesTests(unittest.TestCase):
     """`impl_position.digest_bytes` is the one primitive the holder
     document's compare-and-swap builds on (design decision 2); it has no

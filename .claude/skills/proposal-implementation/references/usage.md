@@ -700,18 +700,26 @@ python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py dis
 ```json
 { "status": "open", "about": {"ordinal": null, "kind": "rehearsal",
                               "operand": "governing-search"},
-  "measured": null, "collides": [], "asked": "Should this job rehearse...",
-  "answered": null }
+  "measured": null, "collides": [], "collisionSearch": "performed",
+  "asked": "Should this job rehearse...", "answered": null }
 ```
 
 `--about` names the step either by its ordinal in the current position
 sequence, or by a bare witness spec (`"kind"` or `"kind operand"`) when
-there is no sequence item yet to number. `--answer` (optionally `-` to read
-stdin, like `--question`) moves `status` from `"open"` to `"answered"`; at
-most one of `--question`/`--answer` may read stdin in the same call.
-`collides` is computed fresh against every checklist item in the product
-folder's markdown that names the same operand — never remembered from an
-earlier call.
+there is no sequence item yet to number — for `notebook`/`rehearsal`/`shard`
+the operand is required (`DISCUSS_ABOUT_OPERAND_REQUIRED` refuses a bare
+`--about notebook` with none); `record` is the one witness kind that keeps
+accepting none. `--answer` (optionally `-` to read stdin, like `--question`)
+moves `status` from `"open"` to `"answered"`; at most one of
+`--question`/`--answer` may read stdin in the same call. `collides` is
+computed fresh against every checklist item in the product folder's
+markdown that names the same operand — never remembered from an earlier
+call, and never against the position section's own item lines, which are
+excluded from the search along with the rest of the block. `collisionSearch`
+distinguishes the two ways `collides` can read `[]`: `"performed"` when the
+witness carried an operand to search with, `"unperformed"` for the one kind
+(`record`) that never does — an empty list alone cannot tell "searched, found
+nothing" apart from "could not search at all".
 
 ## Probe — what stands between this repository and a benchmark
 

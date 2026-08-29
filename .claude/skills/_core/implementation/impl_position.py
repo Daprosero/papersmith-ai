@@ -10,10 +10,20 @@ from pathlib import Path
 from impl_refusals import Refused
 
 #: The section's delimiters. Both are HTML comments — neither starts with
-#: `[-*]`, so `BULLET_LINE`/`AGREEMENT_LINE` (implementation_cli.py:149,155)
-#: never mistake either one for a checklist item, and the position section can
-#: sit inside a hand-curated AGREED.md without inflating `agreements_state`'s
-#: counts by a byte.
+#: `[-*]`, so `BULLET_LINE`/`AGREEMENT_LINE` (implementation_cli.py:153,159)
+#: never mistake either DELIMITER for a checklist item. That claim covers
+#: only these two lines. The block's own sequence items, `- [ ] N. ...`
+#: (`ITEM_LINE`, below), are exactly `AGREEMENT_LINE`'s shape and WERE
+#: counted as ordinary agreements — measured on a minimal fixture (2 real
+#: bullets plus a 3-item block reporting `open: 5`, not 2) before this was
+#: caught. The position section can sit inside a hand-curated AGREED.md
+#: without inflating `agreements_state`'s counts only because
+#: `implementation_cli.py`'s `_agreement_scan_text` excises the block's
+#: whole byte span — start of this opener through the end of the closer —
+#: before either `agreements_state` or `_agreement_collides` scans a line.
+#: A claim about a delimiter is not a claim about what sits between them,
+#: and leaving this docstring unchanged beside a fixed mechanism is how the
+#: next reader re-introduces the bug it once masked.
 BLOCK_CLOSE = b"<!-- /position -->"
 
 #: A loose opener, used only to COUNT how many blocks exist in the document.
@@ -69,6 +79,24 @@ ITEM_LINE = re.compile(r"^\s*-\s*\[(?P<mark>[ xX])\]\s*(?P<ordinal>\d+)\.\s*(?P<
 #: docstring (implementation_cli.py:309-341) for why the forge recognizes no
 #: target's vocabulary; this is the same discipline one level up.
 WITNESS_KINDS = frozenset({"record", "notebook", "rehearsal", "shard"})
+
+#: The `WITNESS_KINDS` a bare `--about <kind>` (implementation_cli.py's
+#: `_resolve_discuss_about`) MUST NOT accept without an operand.
+#:
+#: Measured, not assumed: `--about notebook` with no operand built a
+#: witness whose `operand` is `None`; `_agreement_collides` (whose first
+#: line is `if not operand: return []`) then short-circuits to `[]` on that
+#: falsy operand before it ever globs a file. The caller believes a
+#: collision scan ran; nothing ran — and a fixture whose agreement text
+#: does not happen to name the operand returns `[]` too, for an entirely
+#: legitimate reason, so the two cases are indistinguishable without this
+#: refusal.
+#:
+#: `record` is deliberately excluded: it names the search contract's own
+#: declared record, one fact per target rather than a per-artifact operand,
+#: so it is the one `WITNESS_KINDS` member legitimately operand-less — the
+#: same reading `_derive_record`'s own two-state check gives it.
+OPERAND_REQUIRED_KINDS = frozenset({"notebook", "rehearsal", "shard"})
 
 #: Every witness-shaped token on a line, used only to COUNT them. Exactly one
 #: is required per item; a prose sentence that happens to mention another

@@ -159,6 +159,49 @@ AGREEMENT_LINE = re.compile(r"^\s*[-*]\s*\[(?P<mark>[ xX])\]\s*(?P<text>.+?)\s*$
 BULLET_LINE = re.compile(r"^\s*[-*]\s+\S")
 
 
+def _agreement_scan_text(data: bytes) -> str:
+    """The document's decoded text, with the position block's own byte span
+    excised — what `agreements_state` and `_agreement_collides` both scan.
+
+    One cause, one fix. Measured by construction with a minimal isolated
+    fixture (never by reading a target's own file): 2 real agreement
+    bullets plus a 3-item position block reported `open: 5`, not 2 — the
+    block's own sequence items, `- [ ] N. ...`, are exactly `AGREEMENT_LINE`
+    (line 153)'s shape, and nothing excluded the block's byte span from
+    either scanner. `_agreement_collides` reads the identical shape, which
+    is why an item's own located line always "collided" with itself: the
+    two symptoms are one cause and are repaired by the same excision.
+    `impl_position.locate_block`'s own docstring stated this exclusion
+    before it was true of anything but the two HTML-comment delimiters —
+    corrected alongside this fix, not left standing beside it.
+
+    The injected `b"\\n"` at the excision point is load-bearing, not
+    cosmetic. `data[:start] + data[end:]` alone can concatenate the last
+    partial line before the block with the first partial line after it
+    into one line neither of them was — a fabricated bullet if the merged
+    text happens to shape one, silent corruption rather than a raised
+    error. Slicing, never `re.sub` or `str.replace`, for the identical
+    backslash-interpretation reason `impl_position.splice`'s own docstring
+    gives.
+
+    A block that will not locate (`Refused`, e.g. a malformed opener or
+    more than one delimiter) is caught here, not propagated: `agreements_state`
+    is total today and reports absence as a state rather than raising, and a
+    document whose position block cannot be located is scanned in full —
+    the exact behavior both callers already had before this function
+    existed. The residual is unobservable, not merely tolerated: the same
+    document raises through `position_state` in the same `verify` call, so
+    a malformed block is never silently invisible end to end.
+    """
+    try:
+        block = impl_position.locate_block(data)
+    except Refused:
+        return data.decode("utf-8")
+    if block is None:
+        return data.decode("utf-8")
+    return (data[:block["start"]] + b"\n" + data[block["end"]:]).decode("utf-8")
+
+
 def agreements_state(target: Path, name: str) -> dict:
     """What was settled in conversation, and what of it has not reached the code.
 
@@ -183,6 +226,12 @@ def agreements_state(target: Path, name: str) -> dict:
     fixed filename would decide for the repository and then report `absent` over
     whatever the repository actually called it — which is not a missing file, it
     is an absence nobody went looking for, dressed as a finding.
+
+    **A located position block never counts as an agreement.** Its own
+    sequence items are excluded before this scan sees a single line
+    (`_agreement_scan_text`, above); a holder whose only checklist items
+    are position lines therefore reports `absent`, not `open` — the same
+    fact `position_state` already reports separately, so it is never lost.
     """
     product = target / name
     files = sorted(p for p in product.glob(AGREEMENTS_GLOB) if p.is_file()) \
@@ -194,7 +243,7 @@ def agreements_state(target: Path, name: str) -> dict:
     holding: list[str] = []
     for path in files:
         items_here = 0
-        for raw in path.read_text(encoding="utf-8").splitlines():
+        for raw in _agreement_scan_text(path.read_bytes()).splitlines():
             line = raw.rstrip()
             if not line.strip() or line.lstrip().startswith("#"):
                 continue
@@ -6072,8 +6121,16 @@ def _agreement_collides(target: Path, name: str, operand: str | None) -> list[st
     settled item down to a bare count and keeps only an open item's text.
     A collision search needs the text of every item, settled or not, so it
     reads the files itself rather than asking a function that already threw
-    half of them away. `agreements_state()` itself stays untouched (design's
-    own constraint, restated in its own docstring above).
+    half of them away.
+
+    Both this function and `agreements_state` now read through the same
+    `_agreement_scan_text` excision, so an item's own located line, inside
+    a position block, is never scanned here either -- the self-match a
+    caller `--about`-ing its own sequence item used to get, measured with
+    a fixture whose operand is a substring of its own rendered witness
+    token. Reading through the shared excision, not calling
+    `agreements_state` directly, is what keeps this function's own
+    contract (settled items included, open items too) unchanged.
     """
     if not operand:
         return []
@@ -6082,7 +6139,7 @@ def _agreement_collides(target: Path, name: str, operand: str | None) -> list[st
         return []
     collides: list[str] = []
     for path in sorted(p for p in product.glob(AGREEMENTS_GLOB) if p.is_file()):
-        for raw in path.read_text(encoding="utf-8").splitlines():
+        for raw in _agreement_scan_text(path.read_bytes()).splitlines():
             match = AGREEMENT_LINE.match(raw.rstrip())
             if match and operand in match.group("text"):
                 collides.append(match.group("text"))
@@ -6095,6 +6152,16 @@ def _resolve_discuss_about(raw: str, position: dict) -> dict:
     "kind operand") when there is no sequence item yet to number (design
     §3.3). Never both -- a witness spec is never itself all-digits, so the
     two are unambiguous on sight.
+
+    A bare `kind` with no operand, for a kind `_agreement_collides` needs
+    an operand to search with, is refused rather than silently accepted.
+    Measured with a fixture built to discriminate `--about notebook
+    <path>` (operand present, one real collision found) from `--about
+    notebook` (operand absent) -- before this refusal, both returned
+    successfully and only the second one's `collides` was always `[]`,
+    indistinguishable from a search that genuinely found nothing. `record`
+    is excluded (`impl_position.OPERAND_REQUIRED_KINDS`): it is the one
+    `WITNESS_KINDS` member legitimately operand-less.
     """
     if raw.isdigit():
         ordinal = int(raw)
@@ -6115,6 +6182,13 @@ def _resolve_discuss_about(raw: str, position: dict) -> dict:
             "POSITION_WITNESS_UNKNOWN_KIND",
             f"--about names unknown witness kind {kind!r}; expected one of "
             f"{sorted(impl_position.WITNESS_KINDS)}")
+    if kind in impl_position.OPERAND_REQUIRED_KINDS and not operand:
+        raise Refused(
+            "DISCUSS_ABOUT_OPERAND_REQUIRED",
+            f"--about {kind!r} requires an operand ('--about \"{kind} <name>\"'); "
+            "without one, the collision search this call would otherwise run "
+            "cannot know what to search for, and a caller reading an empty "
+            "`collides` back would wrongly believe it ran.")
     # A bare witness spec (no existing sequence item to read a marker off
     # of) carries no `:level` information of its own; two-state is the same
     # default the grammar itself keeps for an unmarked witness.
@@ -6167,6 +6241,12 @@ def cmd_discuss(args: argparse.Namespace) -> dict:
     evidence = {**evidence, "targetLevel": position.get("targetLevel")}
     measured = impl_position.derive([synthetic_item], evidence)[0]["derived"]
     collides = _agreement_collides(target, name, about["operand"])
+    # An operand-less witness (`record`, the only one `_resolve_discuss_about`
+    # still lets through with none) means the search literally could not run
+    # -- `[]` alone would read exactly like "ran and found nothing", the same
+    # false confidence `agreements_state`'s own `absent` doctrine refuses to
+    # give a repository with no checklist at all.
+    collision_search = "performed" if about["operand"] else "unperformed"
 
     status = "answered" if answer else "open"
     recorded_at = _now_iso8601()
@@ -6178,7 +6258,8 @@ def cmd_discuss(args: argparse.Namespace) -> dict:
     return {
         "command": "discuss", "target": str(target), "name": name,
         "status": status, "about": about, "measured": measured,
-        "collides": collides, "asked": question, "answered": answer,
+        "collides": collides, "collisionSearch": collision_search,
+        "asked": question, "answered": answer,
         "recordedAt": recorded_at,
     }
 
