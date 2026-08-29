@@ -193,6 +193,77 @@ def locate_block(data: bytes, allow_legacy: bool = False) -> dict | None:
     }
 
 
+def locate_headings(data: bytes, heading: str) -> list[dict]:
+    """Every zero-width insertion span for `heading`'s exact occurrences in
+    `data`, one entry per hit, never a refusal.
+
+    `heading` is matched by exact equality against a line's own stripped
+    text, hash marks included -- `--under "## Ladder"` matches only a line
+    that reads exactly `## Ladder`, never one that merely contains it.
+    Measured on the real holder this module's own `BLOCK_CLOSE` docstring
+    already cites: `## Figures — phase 1` and `## Figures — phase 2` both
+    contain `## Figures`, so a substring rule already picks the wrong one
+    of two on that document alone.
+
+    A fenced region -- a line beginning, after leading whitespace, with
+    three backticks or three tildes -- toggles exclusion for every line
+    between its open and its matching close. Extra hits elsewhere in the
+    document only widen the caller's own ambiguity count, which is safe; a
+    fenced heading as the ONLY hit is the one way a placement would land
+    inside a fenced block instead of the document's own prose, so it is
+    excluded here rather than merely left for the caller to notice too
+    late.
+
+    Each returned span is `{"start": p, "end": p}` -- zero-width by
+    construction, sitting at the first byte of the first non-blank line
+    after the heading's own line, or `len(data)` when nothing follows. A
+    blank separator line between a heading and its content is skipped, not
+    counted as the insertion point itself, so a document's own
+    `heading / blank / bullets` shape survives an insertion unchanged.
+    Composing a returned span with `splice` (where `start == end`) inserts
+    one new line without replacing anything that was already there.
+
+    Returns a list rather than raising, deliberately unlike `locate_block`,
+    which owns a document-wide delimiter and refuses on more than one
+    opener. A heading belongs to the caller's own vocabulary, not this
+    module's, so "none found" and "found more than once" are read off this
+    list's own length by whoever asked, and only that caller names what
+    each count means. This module stays ignorant of that caller's own
+    refusal vocabulary entirely -- the same separation `WITNESS_KINDS`
+    already keeps one level up, where a kind is named but never a code.
+    """
+    heading = heading.strip()
+    parts = data.split(b"\n")
+    count = len(parts)
+    # `data.split(b"\n")` drops every newline byte it split on; put back
+    # exactly one per line except the true final one, so summing lengths
+    # reconstructs `data`'s own byte offsets rather than a re-decoded guess.
+    lines = [parts[i] + (b"\n" if i < count - 1 else b"") for i in range(count)]
+
+    offsets: list[int] = []
+    running = 0
+    for line in lines:
+        offsets.append(running)
+        running += len(line)
+    total = running
+
+    spans: list[dict] = []
+    fenced = False
+    for i, line in enumerate(lines):
+        stripped = line.decode("utf-8").strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            fenced = not fenced
+            continue
+        if fenced or stripped != heading:
+            continue
+        following = i + 1
+        while following < count and lines[following].decode("utf-8").strip() == "":
+            following += 1
+        insertion = offsets[following] if following < count else total
+        spans.append({"start": insertion, "end": insertion})
+    return spans
+
+
 def parse_items(body: str) -> list[dict]:
     """Every sequence item in a located block's body, witness resolved.
 

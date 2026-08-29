@@ -513,6 +513,77 @@ class OperandRequiredKindsTests(unittest.TestCase):
             impl_position.OPERAND_REQUIRED_KINDS <= impl_position.WITNESS_KINDS)
 
 
+class LocateHeadingsTests(unittest.TestCase):
+    """`impl_position.locate_headings` (design "the placer" -- the one new
+    primitive `settle`, implementation_cli.py, needs beyond the three it
+    reuses unchanged: `splice`, `write_spliced`, `digest_bytes`).
+    """
+
+    def test_one_occurrence_returns_one_span_at_the_first_non_blank_line(self):
+        data = b"## Heading\n\n- item\n"
+        spans = impl_position.locate_headings(data, "## Heading")
+        self.assertEqual(spans, [{"start": 12, "end": 12}])
+        self.assertEqual(data[12:], b"- item\n")
+
+    def test_no_occurrence_returns_an_empty_list_never_a_refusal(self):
+        data = b"## Heading\n\n- item\n"
+        self.assertEqual(impl_position.locate_headings(data, "## Nowhere"), [])
+
+    def test_two_occurrences_return_two_spans(self):
+        data = b"## H\ntext\n\n## H\nmore\n"
+        spans = impl_position.locate_headings(data, "## H")
+        self.assertEqual(len(spans), 2)
+        self.assertNotEqual(spans[0]["start"], spans[1]["start"])
+
+    def test_a_substring_heading_is_not_a_match(self):
+        """Measured on the real reference holder this module's own
+        `BLOCK_CLOSE` docstring already cites: `## Figures — phase 1` and
+        `## Figures — phase 2` both contain `## Figures`, so a substring
+        rule would already pick the wrong one of two on that document.
+        """
+        data = "## Figures — phase 1\ntext\n## Figures — phase 2\nmore\n".encode("utf-8")
+        self.assertEqual(impl_position.locate_headings(data, "## Figures"), [])
+        self.assertEqual(
+            len(impl_position.locate_headings(data, "## Figures — phase 1")), 1)
+
+    def test_a_fenced_heading_as_the_sole_hit_is_excluded(self):
+        """The one way an unfenced rule would land a placement inside a
+        code fence instead of the document's own prose (design decision
+        "Fenced regions"): a heading-shaped line that only ever occurs
+        inside a fenced block must report zero hits, not one inside the
+        fence.
+        """
+        data = b"```\n# X\n```\ntext\n"
+        self.assertEqual(impl_position.locate_headings(data, "# X"), [])
+
+    def test_a_fenced_and_an_unfenced_hit_both_report_only_the_real_one(self):
+        data = b"```\n## H\n```\n## H\nreal content\n"
+        spans = impl_position.locate_headings(data, "## H")
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(data[spans[0]["start"]:], b"real content\n")
+
+    def test_heading_at_end_of_file_with_no_trailing_newline_inserts_at_len_data(self):
+        data = b"## Heading"
+        spans = impl_position.locate_headings(data, "## Heading")
+        self.assertEqual(spans, [{"start": len(data), "end": len(data)}])
+
+    def test_blank_lines_after_the_heading_are_skipped_not_counted(self):
+        data = b"## Heading\n\n\n- item\n"
+        spans = impl_position.locate_headings(data, "## Heading")
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(data[spans[0]["start"]:], b"- item\n")
+
+    def test_splicing_a_zero_width_span_inserts_without_replacing(self):
+        """The whole reason a span is zero-width (design decision
+        "Insertion point"): `splice` with `start == end` inserts the new
+        block and leaves every other byte, before and after, untouched.
+        """
+        data = b"## Heading\n\n- item\n"
+        span = impl_position.locate_headings(data, "## Heading")[0]
+        spliced = impl_position.splice(data, b"- [ ] new item\n", span)
+        self.assertEqual(spliced, b"## Heading\n\n- [ ] new item\n- item\n")
+
+
 class DigestBytesTests(unittest.TestCase):
     """`impl_position.digest_bytes` is the one primitive the holder
     document's compare-and-swap builds on (design decision 2); it has no

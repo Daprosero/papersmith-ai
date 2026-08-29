@@ -819,6 +819,16 @@ the file exists to prevent, one level down.
 Append to it at every gate, before writing any code the gate authorized. And never
 report the work done while an item is open: say which, and why it is still open.
 
+**The append is a command, not a hand edit.** `discuss` records the question and,
+once answered, the conversation itself as a fact with a ledger line; `settle` then
+places exactly one `- [ ] <text>` line under a named heading — the write, performed
+by the skill rather than narrated by the agent, is what "the skill binds you so
+that it is placed in the contract" means in practice. `settle` refuses unless an
+answered `discuss` event already names the identical thing, and refuses again on
+an unnamed collision with what is already there. It never authors the sentence and
+never ticks the box: both are still the agent's, or the human's, to decide — see
+[Flow B step 8](#flow-b--every-later-pass) for the exact invocation.
+
 **And when implementation collides with one, that is a gate, not a detail.** The
 collision is real and worth reporting — a package missing, a rendering that is far
 easier as text than as a picture, an interface that will not take the shape agreed.
@@ -968,6 +978,19 @@ design decisions.
    already says `gate` would not refuse, plus `pilot-all` or
    `expand-contract` depending on the recorded answer. Present it as a menu;
    nothing here runs on its own.
+8. **Once a `discuss` question is answered, place it — do not hand-edit
+   `AGREED.md`.** `settle --target <repo> --name <Name> --session
+   <your-session-id> --about <ordinal|witness> --text "<what was settled>"
+   --under "<exact heading>"` writes exactly one `- [ ] <text>` line,
+   verbatim, under that heading. It refuses `SETTLE_NOT_DISCUSSED` /
+   `SETTLE_DISCUSSION_UNANSWERED` unless an answered `discuss` event already
+   names the identical witness, and `SETTLE_COLLIDES_UNNAMED` when the same
+   thing already appears to be on record — name the item it supersedes with
+   `--supersedes "<exact existing text>"` to proceed. This is the mechanical
+   half of the doctrine above ("What happens to an agreement after it is
+   made"): the tool never authors the sentence and never ticks the box —
+   both are still yours — it only performs the write once you have decided
+   what to write and confirmed it was discussed.
 
 ## Conversion, then benchmark
 
@@ -2145,9 +2168,9 @@ which is prose a reader follows, not a rung the ladder computes.
 ## Command Roster
 
 `implementation_cli.py` grows a write-verb surface beyond `env`/`plan`/`apply`
-/`admit`/`handoff`/`compose`: `position`, `discuss`, `gate`, `offer`, `close`
-and `step` write into `<Name>/AGREED.md`, its ledger, or both, rather than only
-reporting.
+/`admit`/`handoff`/`compose`: `position`, `discuss`, `gate`, `offer`, `close`,
+`step` and `settle` write into `<Name>/AGREED.md`, its ledger, or both, rather
+than only reporting.
 Column one is read against `COMMANDS`' own keys, so a new command fails the
 tests until it has a row here.
 
@@ -2159,6 +2182,7 @@ tests until it has a row here.
 | `offer` | Records the run-all-pilots answer (`--answer yes` or `--answer no`, a closed token) as one `offer` event to `.implementation/position.jsonl`, then publishes a closed action set: one `launch` per job the shared availability rule (`gate` reads the identical verdict) says is available, plus `pilot-all` when the recorded answer is `yes` or `expand-contract` when it is `no`. Every action is exactly `{id, command, establishes, binding}`; an unavailable action is omitted entirely, never disabled-with-a-reason. `expand-contract`'s own `command` publishes a `discuss --about record --question <text>` invocation, never a write — it carries no `--session` (`discuss` registers none) and, run verbatim, only appends a `discuss` event; it never touches `AGREED.md`. Does not re-ask once an answer is on record — a repeat call republishes the current set and appends no second *offer* event. Repeatable `--unit` is the operator-declared ordered list a `launch` action binds instead of a single-send one, switching its published command to campaign form (`--unit ...`, never `--worker <account>`) — the engine never substitutes its own list. Every published `launch` action's `binding` also carries an `authorization` token: a digest minted over the engine's own re-derived binding (job, commit, entrypoint, units, rung, revision, position status), never over this call's argv alone. Minting is mint-if-absent — a fresh `kind: "authorization"` event is appended only when the ledger holds no unconsumed one already covering that exact binding, the same discipline `cmd_close`'s own `prior_close` lookup uses — so a repeat publish over unchanged state mints nothing new and republishes the same token. The published `command` string carries the minted token as `--authorization <token>`, so it is directly runnable | `OFFER_ANSWER_NOT_A_TOKEN` (`--answer` given something other than `yes`/`no`), `REVISION_UNREADABLE`, `OFFER_UNANSWERED` (no answer on record and none given this call — reads the same way on a ledger written before this event kind existed), `OFFER_ANSWER_STALE` (an answer is on record but the contract it was measured against — `__steps__`, `__benchmark__`'s arms, `__levels__`, or an arm-declared revision section — has since moved, or that record predates the digest and carries none to compare at all; never merely elapsed time) |
 | `close` | Refreshes the position (see `position`), then one `close` event to `.implementation/position.jsonl` binding session, revision and a digest of the resulting sequence | `REVISION_UNREADABLE`, `POSITION_ABSENT`, `POSITION_STALE`, `POSITION_DISAGREES` (checked against the position exactly as recorded, before the refresh) |
 | `step` | Runs exactly one declared `__steps__` entry as a subprocess under the target's own `.venv/bin/python`, `PATH` prefixed by that interpreter's own directory — see [Non-negotiable isolation](#non-negotiable-isolation). One `step` event to `.implementation/position.jsonl` on every RESOLVED run, pass or fail: name, dotted callable, interpreter, outcome, exit status, error (when raised). No digest field. Never appends, reads or alters a `gate` event, and calls none of the remote-execution loaders — there is no call path from here to a launch | `DIRTY_WORKTREE` (before any subprocess spawns), `STEPS_UNDECLARED`, `STEP_UNKNOWN`, `STEP_MALFORMED` (declared entry missing `module` or `function`), `INTERPRETER_ABSENT`, `STEP_MODULE_MISSING`, `STEP_FUNCTION_MISSING`, `STEP_NOT_CALLABLE`, `STEP_RUNNER_SILENT` (the process exited without ever writing a verdict) |
+| `settle` | Places exactly one caller-authored `- [ ] <text>` line, verbatim, under a caller-named `--under <heading>` (exact match, hash marks included) in whichever holder file `agreements_state` already knows carries checklist items — the mark written is always `[ ]`, never `[x]`. `--about` is resolved the identical way `discuss`'s own `--about` is, then matched against the ledger by witness identity `(kind, operand)`; ANY answered `discuss` event satisfies this, never newest-wins, so a later open clarifying question never erases an earlier answer. On a collision (the same `_agreement_collides` search `discuss` reports), `--supersedes <text>` must exact-match one of the computed colliding items; recorded in the one `settle` ledger event only — the document itself still needs a human-written `Reversed` paragraph to show the supersession actually happened, which this command deliberately cannot author. No `--revision`: a placement binds to no revision | `SETTLE_STDIN_CONFLICT` (`--text -` and `--supersedes -` together), `SETTLE_EMPTY_TEXT`, `SETTLE_NOT_DISCUSSED` (no `discuss` event names this witness identity at all), `SETTLE_DISCUSSION_UNANSWERED` (events exist, none `answered`), `SETTLE_HOLDER_ABSENT` (no markdown file under the product folder holds checklist items), `SETTLE_HEADING_ABSENT` / `SETTLE_HEADING_AMBIGUOUS` (the named heading occurs zero, or more than one, times across every holder — a fenced code block's own heading-shaped line never counts as an occurrence), `SETTLE_COLLIDES_UNNAMED` (a collision exists and `--supersedes` was not given), `SETTLE_SUPERSEDES_UNKNOWN` (`--supersedes` names text absent from the computed collision list), `POSITION_HOLDER_MOVED` (reused unchanged from `position`/`close` — the holder's bytes changed between the read that located the heading and the write) |
 
 ## References
 

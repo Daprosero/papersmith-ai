@@ -566,10 +566,12 @@ only — an explicit `--revision` is read verbatim, whether or not it is marked.
 ## `position` — refresh and install the execution sequence
 
 `verify`/`probe` only ever *read* the position section (above). `position` is
-the one command that writes it, and the only writer into `<Name>/AGREED.md` at
-all. No flag: re-derive the marks of whatever block is already there, touching
-nothing else about it — not the item text, not the order, not which witness
-each one names.
+the one command that writes it — `settle` (below) is the other writer into
+`<Name>/AGREED.md`, and the two never touch the same lines: `position` only
+ever rewrites the marks of its own delimited block, `settle` only ever inserts
+one plain checklist line outside it. No flag: re-derive the marks of whatever
+block is already there, touching nothing else about it — not the item text,
+not the order, not which witness each one names.
 
 ```bash
 python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py position \
@@ -720,6 +722,53 @@ distinguishes the two ways `collides` can read `[]`: `"performed"` when the
 witness carried an operand to search with, `"unperformed"` for the one kind
 (`record`) that never does — an empty list alone cannot tell "searched, found
 nothing" apart from "could not search at all".
+
+## `settle` — place what `discuss` answered
+
+Once a `discuss` question is answered, `settle` performs the actual write —
+the agent drafts the question and the proposed sentence, `settle` validates,
+refuses, and writes. It never authors the text and never ticks the box: the
+mark placed is always `[ ]`, and the text placed is `--text`, verbatim.
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py settle \
+  --target implementations/<repo> --name <Name> --session <your-session-id> \
+  --about "notebook Notebooks/verification.ipynb" \
+  --text "the free scalar stays at its neutral and identical across arms" \
+  --under "## Ladder"
+```
+
+```json
+{ "status": "written", "holder": "Method/AGREED.md",
+  "about": {"ordinal": null, "kind": "notebook",
+           "operand": "Notebooks/verification.ipynb", "twostate": true},
+  "text": "the free scalar stays at its neutral and identical across arms",
+  "under": "## Ladder", "supersedes": null, "collides": [] }
+```
+
+`--about` takes the identical shape `discuss`'s own `--about` does (an ordinal
+or a bare witness spec), matched against the ledger by witness identity
+`(kind, operand)` — ANY answered `discuss` event for that identity satisfies
+this, never newest-wins, so a later open clarifying question never erases an
+earlier answer. Refuses `SETTLE_NOT_DISCUSSED` when no `discuss` event names
+it at all, `SETTLE_DISCUSSION_UNANSWERED` when one does but none is answered.
+
+`--under` is matched by exact equality against a heading line, hash marks
+included — `## Figures` never matches `## Figures — phase 2` — and the item
+is inserted at the first non-blank line after it, so the document's own
+`heading / blank / bullets` shape survives untouched. Refuses
+`SETTLE_HEADING_ABSENT` or `SETTLE_HEADING_AMBIGUOUS` when it occurs zero, or
+more than one, times across every markdown file `agreements_state` already
+knows holds checklist items; `SETTLE_HOLDER_ABSENT` when none does at all.
+
+On a collision — the same collision search `discuss` already reports — name
+the existing item this placement supersedes with `--supersedes "<exact
+text>"`, or `settle` refuses `SETTLE_COLLIDES_UNNAMED`. `--supersedes` must
+exact-match a member of the computed collision list (`SETTLE_SUPERSEDES_UNKNOWN`
+otherwise) and is recorded in the ledger event only: the document itself still
+needs a human-written `Reversed` paragraph to show a supersession actually
+happened. `--text -` and `--supersedes -` cannot both read stdin in one call
+(`SETTLE_STDIN_CONFLICT`).
 
 ## Probe — what stands between this repository and a benchmark
 

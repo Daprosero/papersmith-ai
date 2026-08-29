@@ -6264,6 +6264,194 @@ def cmd_discuss(args: argparse.Namespace) -> dict:
     }
 
 
+def _settle_discussed_events(target: Path, name: str, about: dict) -> list[dict]:
+    """Every `discuss` ledger event whose `about` names the identical
+    witness identity `(kind, operand)` this call was given, oldest first.
+
+    Matched by identity, never by ordinal (design "Discussion match"): a
+    sequence renumbers across `--reconcile` calls, but the witness pair a
+    step actually names does not, and `--reconcile` itself already matches
+    existing items the same way. `status` is deliberately not filtered
+    here -- `settle` needs to tell "never discussed" apart from
+    "discussed, never answered", and folding that distinction into this
+    helper would make the caller's own two refusal codes indistinguishable
+    from one read.
+    """
+    events = impl_position.read_events(
+        target / name / ".implementation" / "position.jsonl")
+    return [event for event in events
+            if event.get("kind") == "discuss"
+            and isinstance(event.get("about"), dict)
+            and event["about"].get("kind") == about["kind"]
+            and event["about"].get("operand") == about["operand"]]
+
+
+def cmd_settle(args: argparse.Namespace) -> dict:
+    """Place one settled agreement, and only one, under a caller-named
+    heading (design "the placer" -- the third and last piece of "We
+    discuss an idea, it gets embodied, then you come in, and the skill
+    binds you so that it is placed in the contract").
+
+    The agent drafts the discussion and a proposed sentence; this command
+    validates, refuses, and performs the one write. It never authors: the
+    text placed is `--text`, verbatim, and the mark it writes is always
+    `[ ]`, never `[x]` -- a tick would assert the code already carries
+    something a human has not yet reviewed as reached.
+
+    Checked in refusing-costs-nothing order, the same discipline `cmd_gate`
+    already states for itself: pure-argv shape first, then whether a
+    discussion actually happened, then where the placement would even go,
+    then whether it collides with something already on record.
+
+    1. `SETTLE_STDIN_CONFLICT` -- `--text -` and `--supersedes -` cannot
+       both read stdin in the same call.
+    2. `SETTLE_EMPTY_TEXT` -- a blank `--text` is refused before anything
+       else is read from disk.
+    3. `SETTLE_NOT_DISCUSSED` / `SETTLE_DISCUSSION_UNANSWERED` -- `--about`
+       is resolved the identical way `discuss`'s own `--about` already is
+       (`_resolve_discuss_about`), then matched against the ledger by
+       witness identity: ANY answered event satisfies this, never
+       newest-wins (design "Discussion match") -- a later clarifying
+       question must never retroactively erase an earlier answer, which
+       would teach a caller not to ask one. Measured on the real reference
+       target this change's own design cites: the ledger held zero
+       `discuss` events at design time; one now exists there
+       (`{"kind": "record", "operand": null}`, still `"open"`) from this
+       change's own Phase 1 verifying `expand-contract`'s published
+       command -- `settle` still refuses `SETTLE_NOT_DISCUSSED` for any
+       OTHER witness identity, and `SETTLE_DISCUSSION_UNANSWERED` for that
+       exact one, so the lock was never vacuous either way.
+    4. `SETTLE_HOLDER_ABSENT` -- `agreements_state`'s own already-computed
+       `holders` is the candidate set; a target with none has nowhere this
+       command may write, and it never invents a file, the same doctrine
+       `_chosen_holder` already states for a fresh position block.
+    5. `SETTLE_HEADING_ABSENT` / `SETTLE_HEADING_AMBIGUOUS` -- every
+       holder's own `impl_position.locate_headings` hits, concatenated
+       across all of them: zero, or more than one anywhere (two hits in
+       one holder and one hit apiece in two holders read identically) --
+       the caller owns both counts, because the locator itself never
+       refuses (see its own docstring for why).
+    6. `SETTLE_COLLIDES_UNNAMED` / `SETTLE_SUPERSEDES_UNKNOWN` -- the same
+       `_agreement_collides` `discuss` already repairs (excludes the
+       position block's own item lines), run over the witness's own
+       operand. A caller naming a superseded item must name one actually
+       IN that computed list -- an unchecked string would be a rubber
+       stamp on a supersession this command cannot itself verify happened
+       in the document.
+
+    `POSITION_HOLDER_MOVED` is reused, not minted fresh: it already names a
+    holder document's own compare-and-swap failure, and a placement's own
+    pre-image digest is exactly that same fact one level down --
+    `write_spliced` raises it unchanged.
+
+    **The stated gap, left open on purpose.** `--supersedes` names the
+    superseded item in the ledger event only. The document itself shows no
+    supersession until a human writes the `Reversed` paragraph -- the
+    alternative was letting this command author that narrative on its own,
+    the identical restraint `POSITION_PLACEHOLDER_TEXT`'s own docstring
+    already states for what a discovered step means. `settle` checks that
+    a name was given and that it is real; it does not, and cannot, check
+    that the document was actually updated to say so.
+    """
+    target = resolve_target(args.target)
+    name = validate_name(args.name)
+
+    if args.text == "-" and args.supersedes == "-":
+        raise Refused(
+            "SETTLE_STDIN_CONFLICT",
+            "--text and --supersedes cannot both read stdin in one call; "
+            "pass at most one of them as -.")
+
+    text = sys.stdin.read() if args.text == "-" else args.text
+    text = text.strip()
+    if not text:
+        raise Refused("SETTLE_EMPTY_TEXT", "settle requires non-blank --text.")
+
+    evidence = _position_write_evidence(target, name)
+    position = position_state(target, name, evidence, None, None)
+    about = _resolve_discuss_about(args.about, position)
+
+    discussed = _settle_discussed_events(target, name, about)
+    if not discussed:
+        raise Refused(
+            "SETTLE_NOT_DISCUSSED",
+            f"no discuss event names witness identity "
+            f"(kind={about['kind']!r}, operand={about['operand']!r}); a "
+            "placement must be discussed before it is placed.")
+    if not any(event.get("status") == "answered" for event in discussed):
+        raise Refused(
+            "SETTLE_DISCUSSION_UNANSWERED",
+            f"{len(discussed)} discuss event(s) name this witness identity "
+            "and none carries status \"answered\"; an open question is not "
+            "yet a settled agreement.")
+
+    holders = agreements_state(target, name)["holders"]
+    if not holders:
+        raise Refused(
+            "SETTLE_HOLDER_ABSENT",
+            f"no markdown file under {name}/ holds checklist items; "
+            "settle never invents a file to write into.")
+
+    heading = args.under.strip()
+    candidates: list[tuple[Path, bytes, dict]] = []
+    for holder in holders:
+        holder_path = target / holder
+        holder_data = holder_path.read_bytes()
+        for span in impl_position.locate_headings(holder_data, heading):
+            candidates.append((holder_path, holder_data, span))
+
+    if not candidates:
+        raise Refused(
+            "SETTLE_HEADING_ABSENT",
+            f"{heading!r} occurs in none of {len(holders)} holder(s) under "
+            f"{name}/.")
+    if len(candidates) > 1:
+        raise Refused(
+            "SETTLE_HEADING_AMBIGUOUS",
+            f"{heading!r} occurs {len(candidates)} times across {name}/'s "
+            "holder(s); which occurrence receives the item is not "
+            "decidable without a human choosing.")
+    target_path, data, span = candidates[0]
+
+    collides = _agreement_collides(target, name, about["operand"])
+    supersedes = None
+    if args.supersedes is not None:
+        supersedes = sys.stdin.read() if args.supersedes == "-" else args.supersedes
+        supersedes = supersedes.strip()
+    if collides and not supersedes:
+        raise Refused(
+            "SETTLE_COLLIDES_UNNAMED",
+            f"this witness's operand already appears in {len(collides)} "
+            "existing agreement(s); name the one this placement supersedes "
+            "with --supersedes, or the write would silently duplicate it.")
+    if supersedes is not None and supersedes not in collides:
+        raise Refused(
+            "SETTLE_SUPERSEDES_UNKNOWN",
+            f"--supersedes {supersedes!r} does not exact-match any of the "
+            f"{len(collides)} computed colliding agreement(s).")
+
+    new_line = f"- [ ] {text}\n".encode("utf-8")
+    spliced = impl_position.splice(data, new_line, span)
+    pre_digest = impl_position.digest_bytes(data)
+    impl_position.write_spliced(target_path, spliced, expect_digest=pre_digest)
+
+    recorded_at = _now_iso8601()
+    impl_position.append_event(
+        target / name / ".implementation" / "position.jsonl",
+        {"kind": "settle", "session": args.session, "about": about,
+         "text": text, "under": heading,
+         "holder": str(target_path.relative_to(target)),
+         "supersedes": supersedes, "collides": collides, "at": recorded_at})
+
+    return {
+        "command": "settle", "target": str(target), "name": name,
+        "status": "written", "holder": str(target_path.relative_to(target)),
+        "about": about, "text": text, "under": heading,
+        "supersedes": supersedes, "collides": collides,
+        "recordedAt": recorded_at,
+    }
+
+
 #: The closed, forge-owned vocabulary an `offer` action's `id` may ever
 #: hold (spec "Action shape is closed and forge-owned"). Modelled on
 #: `impl_position.WITNESS_KINDS`, not on `probe`'s own scraped `nextStep`
@@ -7722,7 +7910,8 @@ COMMANDS = {"env": cmd_env, "name": cmd_name, "plan": cmd_plan, "apply": cmd_app
             "gate": cmd_gate,
             "offer": cmd_offer,
             "close": cmd_close,
-            "step": cmd_step}
+            "step": cmd_step,
+            "settle": cmd_settle}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -7780,7 +7969,7 @@ def main(argv: list[str] | None = None) -> int:
                                 "discover nothing and refuse "
                                 "REVISION_UNREADABLE if it is missing or "
                                 "unreadable")
-        if name in {"position", "gate", "offer", "close", "step"}:
+        if name in {"position", "gate", "offer", "close", "step", "settle"}:
             p.add_argument("--session", required=True,
                            help="identity stamped into the ledger event(s) "
                                 "this call appends, and into the block's "
@@ -7886,6 +8075,38 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--step", required=True,
                            help="the declared __steps__ entry to run; no "
                                 "flag runs more than one")
+        if name == "settle":
+            # No --revision: settle binds to no revision, and a flag it
+            # ignores would be a promise this file does not keep (design
+            # "settle takes --session").
+            p.add_argument("--about", required=True,
+                           help="an ordinal in the position sequence, or a "
+                                "bare witness spec ('kind' or 'kind "
+                                "operand') -- the identical shape discuss's "
+                                "own --about takes, matched against an "
+                                "answered discuss event by witness identity "
+                                "(kind, operand)")
+            p.add_argument("--text", required=True,
+                           help="the caller-authored agreement text, or - "
+                                "to read stdin; written verbatim as one "
+                                "unticked `- [ ]` line -- never authored or "
+                                "ticked by this command")
+            p.add_argument("--under", required=True,
+                           help="the exact heading line this item is "
+                                "placed under, hash marks included (e.g. "
+                                "'## Ladder'); refused SETTLE_HEADING_ABSENT "
+                                "or SETTLE_HEADING_AMBIGUOUS when it occurs "
+                                "zero or more than one time across the "
+                                "product's holder file(s)")
+            p.add_argument("--supersedes", default=None,
+                           help="the exact text of an existing colliding "
+                                "agreement this placement supersedes, or - "
+                                "to read stdin; required when the new "
+                                "item's witness collides with an existing "
+                                "one, recorded in the ledger event only -- "
+                                "the document itself still needs a "
+                                "human-written Reversed paragraph to show "
+                                "the supersession")
 
     args = parser.parse_args(argv)
     try:

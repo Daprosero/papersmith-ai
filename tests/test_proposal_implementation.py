@@ -11828,7 +11828,7 @@ class CommandRosterTests(unittest.TestCase):
         self.assertTrue(refuses.strip(), "the `position` row names nothing it refuses on")
 
     def test_every_command_dispatched_is_accounted_for(self):
-        write_verbs = {"position", "discuss", "gate", "offer", "close", "step"}
+        write_verbs = {"position", "discuss", "gate", "offer", "close", "step", "settle"}
         dispatched = set(impl.COMMANDS)
         self.assertEqual(
             dispatched, self.DOCUMENTED_ELSEWHERE | write_verbs,
@@ -12233,6 +12233,277 @@ class DiscussCommandTests(unittest.TestCase):
         result = json.loads(proc.stdout)
         self.assertEqual(len(result["collides"]), 1)
         self.assertEqual(result["collisionSearch"], "performed")
+
+
+class SettleCommandTests(unittest.TestCase):
+    """`settle` -- the placer (design "the placer", spec domain
+    `agreement-placement`). The agent drafts a discussion and a proposed
+    sentence; `settle` validates, refuses, and performs the one write --
+    exactly one unticked `- [ ] <text>` line, verbatim, under a
+    caller-named heading, gated on an answered `discuss` event it cannot
+    mint from its own argv.
+    """
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_e2e_settle_cmd_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text("", encoding="utf-8")
+        return box
+
+    def run_cli(self, *args, stdin=None):
+        return subprocess.run([sys.executable, str(CLI), *args], input=stdin,
+                              capture_output=True, text=True, cwd=FORGE)
+
+    def _discuss(self, box, about, question="Should this be settled?", answer=None):
+        args = ["discuss", "--target", str(box), "--name", "Method",
+                "--about", about, "--question", question]
+        if answer is not None:
+            args += ["--answer", answer]
+        proc = self.run_cli(*args)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        return json.loads(proc.stdout)
+
+    def _settle(self, box, **overrides):
+        args = {"target": str(box), "name": "Method", "session": "s1",
+                "about": "record", "text": "New text", "under": "## Ladder"}
+        args.update(overrides)
+        argv = ["settle"]
+        for flag, value in args.items():
+            if value is None:
+                continue
+            argv += [f"--{flag}", value]
+        return self.run_cli(*argv)
+
+    # --- pure-argv refusals, checked before anything is read from disk ---
+
+    def test_settle_refuses_stdin_conflict(self):
+        proc = self._settle(self._box(), text="-", supersedes="-")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_STDIN_CONFLICT")
+
+    def test_settle_refuses_empty_text(self):
+        proc = self._settle(self._box(), text="   ")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_EMPTY_TEXT")
+
+    # --- the discussion gate ---
+
+    def test_settle_refuses_not_discussed(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] placeholder\n", encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_NOT_DISCUSSED")
+
+    def test_settle_refuses_discussion_unanswered(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] placeholder\n", encoding="utf-8")
+        self._discuss(box, "record")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_DISCUSSION_UNANSWERED")
+
+    def test_settle_succeeds_when_the_answered_event_is_not_the_newest_one(self):
+        """Design decision "Discussion match": ANY answered event
+        satisfies, never newest-wins. A later clarifying question left
+        open must not retroactively erase an earlier answer -- if it did,
+        this would teach a caller not to ask one.
+        """
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] placeholder\n", encoding="utf-8")
+        self._discuss(box, "record", question="First question?", answer="Yes.")
+        self._discuss(box, "record", question="A later clarifying question?")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["status"], "written")
+
+    def test_settle_refuses_not_discussed_when_only_the_operand_differs(self):
+        """The witness identity is `(kind, operand)`, both fields -- a
+        discussion about one notebook must never authorize a placement
+        about a different one just because the kind matches.
+        """
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] placeholder\n", encoding="utf-8")
+        self._discuss(box, "notebook Notebooks/a.ipynb", answer="Yes.")
+        proc = self._settle(box, about="notebook Notebooks/b.ipynb")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_NOT_DISCUSSED")
+
+    # --- where the placement would even go ---
+
+    def test_settle_refuses_holder_absent(self):
+        box = self._box()
+        self._discuss(box, "record", answer="Yes.")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_HOLDER_ABSENT")
+
+    def test_settle_refuses_heading_absent(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] placeholder\n", encoding="utf-8")
+        self._discuss(box, "record", answer="Yes.")
+        proc = self._settle(box, under="## Nowhere")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_HEADING_ABSENT")
+
+    def test_settle_refuses_heading_ambiguous(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] a\n\n## Ladder\n\n- [ ] b\n",
+            encoding="utf-8")
+        self._discuss(box, "record", answer="Yes.")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_HEADING_AMBIGUOUS")
+
+    def test_settle_refuses_a_heading_inside_a_fenced_code_block(self):
+        """Design decision "Fenced regions": a heading-shaped line that
+        exists only inside a fenced block must read as absent, not as the
+        one hit that would land a placement inside the fence.
+        """
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n```\n## Ladder\n```\n\n- [ ] placeholder\n",
+            encoding="utf-8")
+        self._discuss(box, "record", answer="Yes.")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_HEADING_ABSENT")
+
+    # --- a collision must be named, not silently overwritten ---
+
+    def test_settle_refuses_collides_unnamed(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n"
+            "- [x] existing item mentioning Notebooks/verification.ipynb\n",
+            encoding="utf-8")
+        self._discuss(box, "notebook Notebooks/verification.ipynb", answer="Yes.")
+        proc = self._settle(box, about="notebook Notebooks/verification.ipynb")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_COLLIDES_UNNAMED")
+
+    def test_settle_refuses_supersedes_unknown(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n"
+            "- [x] existing item mentioning Notebooks/verification.ipynb\n",
+            encoding="utf-8")
+        self._discuss(box, "notebook Notebooks/verification.ipynb", answer="Yes.")
+        proc = self._settle(box, about="notebook Notebooks/verification.ipynb",
+                            supersedes="text nobody wrote")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_SUPERSEDES_UNKNOWN")
+
+    def test_settle_accepts_an_exact_matching_supersedes_and_writes(self):
+        box = self._box()
+        colliding = "existing item mentioning Notebooks/verification.ipynb"
+        (box / "Method" / "AGREED.md").write_text(
+            f"# Agreed\n\n## Ladder\n\n- [x] {colliding}\n", encoding="utf-8")
+        self._discuss(box, "notebook Notebooks/verification.ipynb", answer="Yes.")
+        proc = self._settle(box, about="notebook Notebooks/verification.ipynb",
+                            supersedes=colliding)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["status"], "written")
+        self.assertEqual(result["supersedes"], colliding)
+        self.assertEqual(result["collides"], [colliding])
+
+    # --- the happy path: byte-identical except one inserted unticked line ---
+
+    def test_settle_writes_exactly_one_unticked_line_byte_identical_otherwise(self):
+        box = self._box()
+        before = ("# Agreed\n\nSome prose above the section.\n\n"
+                  "## Ladder\n\n- [x] an unrelated settled item\n\n"
+                  "## Reversed\n\nA hand-written paragraph.\n")
+        (box / "Method" / "AGREED.md").write_text(before, encoding="utf-8")
+        self._discuss(box, "record", answer="Yes.")
+        proc = self._settle(box, text="the free scalar stays at its neutral")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["status"], "written")
+
+        after = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        expected = before.replace(
+            "## Ladder\n\n",
+            "## Ladder\n\n- [ ] the free scalar stays at its neutral\n")
+        self.assertEqual(after, expected)
+
+    def test_settle_never_writes_a_ticked_mark(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] placeholder\n", encoding="utf-8")
+        self._discuss(box, "record", answer="Yes.")
+        proc = self._settle(box, text="arbitrary caller text, [x] included in prose")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        after = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertIn("- [ ] arbitrary caller text, [x] included in prose", after)
+        self.assertNotIn("- [x] arbitrary caller text", after)
+
+    def test_settle_appends_one_settle_event_with_no_id_key(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] placeholder\n", encoding="utf-8")
+        self._discuss(box, "record", answer="Yes.")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+        settle_events = [e for e in events if e["kind"] == "settle"]
+        self.assertEqual(len(settle_events), 1)
+        self.assertNotIn("id", settle_events[0])
+
+    # --- the reused compare-and-swap ---
+
+    def test_settle_refuses_position_holder_moved_on_a_concurrent_write(self):
+        """`POSITION_HOLDER_MOVED` is reused, not minted fresh
+        (design "POSITION_HOLDER_MOVED reused"): `write_spliced`'s own
+        compare-and-swap fires unchanged when the holder changes between
+        the read `settle` located its heading against and the write --
+        the identical mechanism `WriteSplicedCasTests` proves at the
+        primitive level, exercised here through the whole `cmd_settle`
+        path so the wiring itself is checked too.
+        """
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] placeholder\n", encoding="utf-8")
+        self.run_cli("discuss", "--target", str(box), "--name", "Method",
+                    "--about", "record", "--question", "q?", "--answer", "a")
+
+        real_locate = impl_position.locate_headings
+
+        def racing_locate(data, heading):
+            (box / "Method" / "AGREED.md").write_text(
+                "# Agreed\n\n## Ladder\n\n- [ ] placeholder\n"
+                "- [ ] a concurrent edit nobody told settle about\n",
+                encoding="utf-8")
+            return real_locate(data, heading)
+
+        args = argparse.Namespace(
+            target=str(box), name="Method", session="s1", about="record",
+            text="New text", under="## Ladder", supersedes=None)
+        with unittest.mock.patch.object(
+                impl_position, "locate_headings", side_effect=racing_locate):
+            with self.assertRaises(impl.Refused) as ctx:
+                impl.cmd_settle(args)
+        self.assertEqual(ctx.exception.code, "POSITION_HOLDER_MOVED")
+        # Refused before any write -- the concurrent edit above is the only
+        # change on disk, byte-identical to what the racing write itself wrote.
+        after = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertIn("a concurrent edit nobody told settle about", after)
+        self.assertNotIn("New text", after)
 
 
 class GateCommandTests(unittest.TestCase):
