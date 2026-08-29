@@ -13165,6 +13165,63 @@ class OfferCommandTests(unittest.TestCase):
             for leaked in FORGE_VOCABULARY_FLOOR:
                 self.assertIsNone(re.search(rf"\b{leaked}\b", text), leaked)
 
+    def test_expand_contract_command_string_is_runnable_and_writes_nothing(self):
+        """Measured defect (spec "expand-contract publishes a runnable
+        command"): the string this branch used to publish called
+        `position --reconcile`, which WRITES -- an agent that followed the
+        menu faithfully, still inside the "what should we add" conversation
+        `offer` frames this branch as, ran it and `--reconcile` appended a
+        real sequence item for a notebook the sequence had never named.
+        That specific write was reverted by hand; the wiring that produced
+        it was not, until this slice.
+
+        This is the E2E check that holds the repointed command to being
+        both runnable and non-mutating. It does not merely inspect the
+        string -- inspection alone cannot see the measured trap below --
+        it actually executes the published string as a subprocess, exactly
+        as published, and diffs `AGREED.md`'s bytes before and after.
+
+        **The measured trap this guards against**: `discuss` registers NO
+        `--session` flag -- only `position`/`gate`/`offer`/`close`/`step`
+        do (see `main()`'s per-command `add_argument` table above). A fix
+        that swapped the verb from `position` to `discuss` while copying
+        the old string's `--session {args.session}` forward would publish
+        a command that argparse refuses outright -- a defect a test that
+        only reads the JSON string, never runs it, cannot observe.
+        """
+        box, commit = self._box()
+        self._write_job_folder(box, commit)
+        self._write_agreed(box, [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                                  "witness": {"kind": "rehearsal", "operand": "job1"}}])
+        agreed_path = box / "Method" / "AGREED.md"
+        before = agreed_path.read_bytes()
+
+        proc = self.run_cli("offer", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            "--answer", "no", proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        expand_contract = next(a for a in result["actions"] if a["id"] == "expand-contract")
+        command = expand_contract["command"]
+
+        tokens = shlex.split(command)
+        self.assertTrue(tokens[0].endswith("implementation_cli.py"), command)
+
+        # Execute the published string verbatim, dropping only the leading
+        # script-name token -- the same seam `run_cli` itself uses to turn
+        # a documented invocation into a real subprocess call. This runs
+        # UNCONDITIONALLY, before any assertion on the token shape below,
+        # so the check is never satisfied by inspecting the string alone.
+        child = subprocess.run(
+            [sys.executable, str(CLI), *tokens[1:]],
+            capture_output=True, text=True, cwd=FORGE, env=os.environ.copy())
+        after = agreed_path.read_bytes()
+
+        self.assertEqual(child.returncode, 0, child.stdout + child.stderr)
+        self.assertEqual(before, after)
+        self.assertEqual(tokens[1], "discuss", command)
+        self.assertNotIn("--session", tokens, command)
+
     # --- ACTION_IDS: pinned three ways ---------------------------------
 
     def test_action_ids_constant_covers_every_id_literal_in_the_source_and_at_runtime(self):

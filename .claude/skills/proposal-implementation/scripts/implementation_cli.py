@@ -6963,16 +6963,41 @@ def cmd_offer(args: argparse.Namespace) -> dict:
             "binding": {},
         })
     else:
+        # Repoints a live harmful write (measured incident: an agent that
+        # followed this branch verbatim ran a published `position
+        # --reconcile` and appended a real sequence item for a notebook the
+        # sequence had never named -- the operator meant this branch as a
+        # conversation about what the experiment contract should still
+        # add, never a write of its own). `discuss` publishes the
+        # conversation instead: it appends only a `discuss` ledger event,
+        # never touches `AGREED.md` (spec "expand-contract publishes a
+        # runnable command").
+        #
+        # No `--session` here (design "expand-contract target"): `discuss`
+        # is the one write-adjacent command `main()` registers with no
+        # `--session` flag at all (only `position`/`gate`/`offer`/
+        # `close`/`step` take one). Copying the old string's
+        # `--session {args.session}` forward would publish a command
+        # argparse refuses outright -- see
+        # `OfferCommandTests.test_expand_contract_command_string_is_runnable_and_writes_nothing`,
+        # which runs this exact string as a subprocess rather than merely
+        # reading it, specifically to catch that trap.
+        #
+        # `--about record` names the operand-less witness kind: this
+        # branch asks what the contract should still add in general, not
+        # about one already-declared notebook, rehearsal or shard.
         actions.append({
             "id": "expand-contract",
             "command": (
-                "implementation_cli.py position "
-                f"--target {target} --name {name} --session {args.session} "
-                "--reconcile"
+                "implementation_cli.py discuss "
+                f"--target {target} --name {name} --about record "
+                "--question 'what should the experiment contract still "
+                "add before a campaign may be gated?'"
             ),
-            "establishes": "reconciles the position sequence on the branch "
-                          "that expands the experiment contract before any "
-                          "campaign may be gated",
+            "establishes": "asks what the experiment contract should "
+                          "still add before a campaign may be gated, "
+                          "recorded as an open discussion rather than a "
+                          "write",
             "binding": {},
         })
 

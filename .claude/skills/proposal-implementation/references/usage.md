@@ -824,6 +824,15 @@ entirely — never disabled with a reason attached — and the standing
 explanation is still the position sequence and the Decision Gates table, not
 a per-action string.
 
+`expand-contract`'s published `command` is a `discuss --about record
+--question <text>` invocation, not a write: it carries no `--session`
+(`discuss` is the one write-adjacent command that registers none), and
+running it verbatim only appends a `discuss` event to
+`.implementation/position.jsonl` — `AGREED.md` is never touched. This
+repoints what used to publish `position --reconcile` on the same branch, a
+write an agent could run believing itself still inside the "what should the
+contract still add" conversation this branch is meant to open.
+
 ```bash
 python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py offer \
   --target implementations/<repo> --name <Name> \
