@@ -3204,6 +3204,221 @@ class FetchTests(unittest.TestCase):
             self.assertEqual(enumerated, [])
 
 
+class RehearsalPlacementTests(unittest.TestCase):
+    """`cmd_fetch`'s `--smoke`/`--dest` pairing check and the rehearsal
+    placement branch. Closes the live artifact-leak hole: before this,
+    `fetch --smoke` landed wherever `--dest` said -- the same place a real
+    fetch lands -- and nothing ever quarantined it.
+    """
+
+    def test_smoke_with_dest_refuses_before_any_filesystem_call(self) -> None:
+        """A non-existent --target proves ordering: if the pairing check
+        ran after `target.is_dir()`, the raised message would be the
+        does-not-resolve one, not this refusal's distinct wording.
+
+        Mutation-proven: moving the pairing check below `target.is_dir()`
+        turns this red -- verified below, then reverted.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "does-not-exist"
+            adapter = FakeAdapter(worker_id="w1", capacity=1)
+
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
+                REMOTE_CLI.cmd_fetch(
+                    target=target,
+                    entrypoint=Path(tmp) / "Notebooks" / "a.ipynb",
+                    submission_id="s1",
+                    dest=Path(tmp) / "somewhere",
+                    adapter=adapter,
+                    source_digest=lambda t, n: "d" * 64,
+                    smoke=True,
+                )
+            message = str(ctx.exception)
+            self.assertNotIn("does not resolve", message)
+            self.assertIn("--dest", message)
+            self.assertIn("computes", message)
+
+    def test_real_fetch_with_no_dest_refuses_before_any_filesystem_call(self) -> None:
+        """The other half of the pairing check: dropping `--dest`'s
+        `required=True` on the parser opens a symmetric hole for a REAL
+        fetch unless this direction refuses too.
+
+        Mutation-proven: deleting the second half of the pairing check
+        turns this red -- verified below, then reverted.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "does-not-exist"
+            adapter = FakeAdapter(worker_id="w1", capacity=1)
+
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
+                REMOTE_CLI.cmd_fetch(
+                    target=target,
+                    entrypoint=Path(tmp) / "Notebooks" / "a.ipynb",
+                    submission_id="s1",
+                    dest=None,
+                    adapter=adapter,
+                    source_digest=lambda t, n: "d" * 64,
+                    smoke=False,
+                )
+            message = str(ctx.exception)
+            self.assertNotIn("does not resolve", message)
+            self.assertIn("--dest", message)
+
+    def test_smoke_fetch_with_no_dest_lands_under_rehearsal_not_shards(self) -> None:
+        """Mutation-proven: making the `smoke` branch fall through to
+        `Path(dest)` turns this red -- verified below, then reverted.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            adapter = FakeAdapter(worker_id="w1", capacity=1)
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+                worker="w1",
+            )
+            submit_result = REMOTE_CLI.cmd_submit(
+                target=target, entrypoint=notebook, worker="w1", requested=1,
+                adapter=adapter, source_digest=lambda t, n: "d" * 64, smoke=True,
+                consent=token,
+            )
+            submission_id = submit_result["submission"].id
+
+            fetch_result = REMOTE_CLI.cmd_fetch(
+                target=target, entrypoint=notebook, submission_id=submission_id,
+                dest=None, adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                smoke=True,
+            )
+
+            self.assertTrue(fetch_result["complete"])
+            expected = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.REHEARSAL_DIRNAME / submission_id
+            )
+            self.assertEqual(fetch_result["path"], expected)
+            self.assertTrue((expected / "result.txt").exists())
+
+            shards_dir = target.resolve() / "MIL-CREDA" / "Results" / "shards"
+            self.assertFalse(shards_dir.exists())
+
+    def test_rehearsal_fetch_preserves_the_8_step_ordering_contract(self) -> None:
+        """The 8-step contract (`.partial/` guard, `--force`, `os.replace`,
+        ledger-write-last) is preserved BY CONSTRUCTION -- only `final_dest`
+        moved. This re-runs the existing re-fetch-refuses / `--force`-
+        replaces / ledger-write-last coverage against a REHEARSAL fetch
+        (`smoke=True`, `dest=None`) instead of a `--dest`-chosen one, so the
+        claim is exercised, not assumed.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            adapter = FakeAdapter(worker_id="w1", capacity=1)
+            token = _mint_launch_consent(
+                target=target, entrypoint=notebook, adapter=adapter,
+                source_digest=lambda t, n: "d" * 64,
+                worker="w1",
+            )
+            submit_result = REMOTE_CLI.cmd_submit(
+                target=target, entrypoint=notebook, worker="w1", requested=1,
+                adapter=adapter, source_digest=lambda t, n: "d" * 64, smoke=True,
+                consent=token,
+            )
+            submission_id = submit_result["submission"].id
+            smoke_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.SMOKE_LEDGER_FILENAME
+            )
+
+            first = REMOTE_CLI.cmd_fetch(
+                target=target, entrypoint=notebook, submission_id=submission_id,
+                dest=None, adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                smoke=True,
+            )
+            self.assertTrue(first["complete"])
+            final_dest = first["path"]
+            self.assertTrue((final_dest / "result.txt").exists())
+
+            # Step 0: a second rehearsal fetch of the same submission
+            # refuses cleanly, naming the existing path -- before ever
+            # calling adapter.fetch() again.
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
+                REMOTE_CLI.cmd_fetch(
+                    target=target, entrypoint=notebook, submission_id=submission_id,
+                    dest=None, adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                    smoke=True,
+                )
+            self.assertIn("--force", str(ctx.exception))
+
+            # A stray leftover file --force must remove, not merge into.
+            (final_dest / "stale-leftover.txt").write_text("stale", encoding="utf-8")
+
+            # --force replaces it and appends a second `returned` event.
+            second = REMOTE_CLI.cmd_fetch(
+                target=target, entrypoint=notebook, submission_id=submission_id,
+                dest=None, adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                smoke=True, force=True,
+            )
+            self.assertTrue(second["complete"])
+            self.assertEqual(second["path"], final_dest)
+            self.assertFalse((final_dest / "stale-leftover.txt").exists())
+
+            # Ledger-write-last: exactly submitted, returned, returned.
+            lines = smoke_ledger_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 3)
+            self.assertEqual(json.loads(lines[-2])["kind"], "returned")
+            self.assertEqual(json.loads(lines[-1])["kind"], "returned")
+
+    def test_submission_id_with_traversal_shape_refuses_before_adapter_fetch(self) -> None:
+        """Filesystem-destination-from-service-supplied-`submission_id`
+        threat-matrix row: the rehearsal branch routes every rehearsal
+        through a path built from `submission_id`, a value that originates
+        from the remote service's response and reaches a path join
+        unguarded before this test.
+
+        Mutation-proven: removing the `.resolve()` containment check must
+        turn this red -- verified below, then reverted.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            notebooks = _make_product(target, "MIL-CREDA")
+            notebook = notebooks / "a.ipynb"
+            notebook.write_text("{}", encoding="utf-8")
+
+            smoke_ledger_path = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.SMOKE_LEDGER_FILENAME
+            )
+            malicious_id = "../../../etc/evil"
+            _append_pending_submission(
+                smoke_ledger_path, entrypoint="Notebooks/a.ipynb",
+                submission_id=malicious_id, worker="w1", source_digest="d" * 64,
+            )
+
+            adapter = FakeAdapter(worker_id="w1", capacity=1)
+
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
+                REMOTE_CLI.cmd_fetch(
+                    target=target, entrypoint=notebook, submission_id=malicious_id,
+                    dest=None, adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                    smoke=True,
+                )
+            self.assertIn("submission", str(ctx.exception).lower())
+
+            # Refused before adapter.fetch() ever ran: nothing escaped the
+            # ledger directory tree.
+            outside = Path(tmp) / "etc" / "evil"
+            self.assertFalse(outside.exists())
+            ledger_root = target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+            for path in ledger_root.rglob("*"):
+                self.assertTrue(str(path.resolve()).startswith(str(ledger_root)))
+
+
 class ReconcileTests(unittest.TestCase):
     def test_reconcile_reports_orphan_remote_without_fabricating_a_submitted_line(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -17179,16 +17394,24 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
             )
 
             adapter = FakeAdapter(worker_id="w1", capacity=2)
-            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+            # `--dest` is refused under `--smoke` (fetch --smoke computes
+            # its own rehearsal destination); this fixture's own subject is
+            # the both-files ledger tie-break, not placement, so `dest` is
+            # dropped rather than kept as a value the call now refuses.
             fetch_result = REMOTE_CLI.cmd_fetch(
                 target=target, entrypoint=notebook, submission_id="both-1",
-                dest=dest, adapter=adapter, source_digest=lambda t, n: "d" * 64,
+                dest=None, adapter=adapter, source_digest=lambda t, n: "d" * 64,
                 smoke=True,
             )
 
             self.assertTrue(fetch_result["complete"])
             self.assertIsNone(fetch_result["arbitration"])
-            self.assertTrue((dest / "result.txt").exists())
+            expected = (
+                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                / REMOTE_CLI.REHEARSAL_DIRNAME / "both-1"
+            )
+            self.assertEqual(fetch_result["path"], expected)
+            self.assertTrue((expected / "result.txt").exists())
 
             smoke_lines = smoke_ledger_path.read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(smoke_lines), 2)  # submitted + returned
