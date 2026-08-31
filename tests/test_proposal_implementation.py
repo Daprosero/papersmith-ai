@@ -8682,6 +8682,100 @@ class MaterializeCommandFixture:
         assert code == 0, proc.stderr
         return box
 
+    def _materialize_objects(self, box, plan_path, *, name=None, seed=None):
+        return self._run_cli(
+            "materialize", "--target", str(box), "--name", name or self.NAME,
+            "--stage", "objects", "--plan", plan_path, "--seed", seed or self.SEED)
+
+    def _materialize_harness(self, box, plan_path, *, name=None):
+        return self._run_cli(
+            "materialize", "--target", str(box), "--name", name or self.NAME,
+            "--stage", "harness", "--plan", plan_path)
+
+    def _declare_object_map(self, box, name=None):
+        """Writes step 8's own two blocks (`revision`, `premises`) into
+        `src/<Package>_Benchmark/__init__.py` -- the disk fact
+        `resolve_benchmark_declaration` reads as "the object map is
+        approved". Requires the scaffold stage to have already copied that
+        file in.
+        """
+        name = name or self.NAME
+        package = impl.package_name(name)
+        path = box / "src" / f"{package}_Benchmark" / "__init__.py"
+        text = path.read_text(encoding="utf-8")
+        text = text.replace('"revision": "",', '"revision": "r01.md",', 1)
+        text = text.replace(
+            '"premises": {},',
+            '"premises": {"prediction": "x", "statisticalUnit": "y", '
+            '"metric": "z", "direction": "higher"},', 1)
+        path.write_text(text, encoding="utf-8")
+
+    def _fully_materialized_all_stages(self, tag="", name=None, seed=None):
+        """A target that has run all three stages -- scaffold, then the
+        step-8 declaration, then objects, then harness -- committing between
+        each so the next stage's clean-worktree check passes."""
+        name = name or self.NAME
+        box = self._fully_materialized(tag, name=name, seed=seed)
+        self._git(box, "add", "-A")
+        self._git(box, "commit", "-q", "-m", "scaffold stage")
+
+        self._declare_object_map(box, name)
+        # Step 8's declaration IS a step-9-style hand-authored edit over a
+        # scaffold-sealed file (D2): declare it, or this target drifts
+        # (correctly, per A1) on the very file objects/harness now depend on.
+        package = impl.package_name(name)
+        payload, code, proc = self._run_cli(
+            "materialize", "--target", str(box), "--name", name,
+            "--authored", f"src/{package}_Benchmark/__init__.py")
+        assert code == 0, proc.stderr
+        self._git(box, "add", "-A")
+        self._git(box, "commit", "-q", "-m", "object map declared")
+
+        plan_path = self._approved_plan_path(box, name)
+        payload, code, proc = self._materialize_objects(
+            box, plan_path, name=name, seed=seed)
+        assert code == 0, proc.stderr
+
+        # `--stage objects` deliberately writes the three step-9 templates
+        # with their tokens left standing inside identifiers -- syntactically
+        # invalid Python on purpose (see `_stage_objects`). `verify`'s
+        # pre-existing `unparsableTests` gate correctly refuses to call that
+        # "ok" until real code exists, so a target that wants a clean
+        # `structure.status` has to go the rest of the way step 9 actually
+        # asks for: real, parseable content, declared `--authored`.
+        for path in impl.object_destinations(name):
+            (box / path).write_text(
+                self._object_stub(path), encoding="utf-8")
+            payload, code, proc = self._run_cli(
+                "materialize", "--target", str(box), "--name", name,
+                "--authored", path)
+            assert code == 0, proc.stderr
+        self._git(box, "add", "-A")
+        self._git(box, "commit", "-q", "-m", "objects stage")
+
+        plan_path = self._approved_plan_path(box, name)
+        payload, code, proc = self._materialize_harness(box, plan_path, name=name)
+        assert code == 0, proc.stderr
+        self._git(box, "add", "-A")
+        self._git(box, "commit", "-q", "-m", "harness stage")
+        return box
+
+    def _object_stub(self, path):
+        """Minimal, syntactically-valid stand-in for what step 9's real
+        authoring would put in each objects-stage destination -- just enough
+        to parse and collect; not a claim about correctness."""
+        if path.endswith("module.py"):
+            return ('"""Stub."""\n\nfrom __future__ import annotations\n\n'
+                    "__provenance__ = {\n"
+                    '    "revision": "r01.md", "sections": ["1"], '
+                    '"equations": ["1"], "invariants": ["stub_holds"],\n'
+                    "}\n\n\ndef identity(x):\n    return x\n")
+        if path.endswith("test_invariants.py"):
+            return ('"""Stub."""\n\nfrom __future__ import annotations\n\n\n'
+                    "def test_stub_holds() -> None:\n    assert True\n")
+        return ('"""Stub."""\n\nfrom __future__ import annotations\n\n\n'
+                "def test_stub_case() -> None:\n    assert True\n")
+
 
 class MaterializeStageScaffoldWriterTests(MaterializeCommandFixture, unittest.TestCase):
     """The writer: preflight refusals and the successful path, RED observed
@@ -9130,13 +9224,18 @@ class MaterializeVerifyScaffoldDriftTests(MaterializeCommandFixture, unittest.Te
 
     def test_a_fully_recorded_and_matching_target_reads_ok(self):
         """V2: the positive case, without which the widening could pass by
-        always failing."""
+        always failing -- scoped to scaffold's own three fields. `status`
+        itself is not asserted "ok" here: this fixture only runs `--stage
+        scaffold`, and PR 2/PR 3 widened `structure.status` to also gate on
+        the `objects`/`harness` destinations (V1/V4), which this fixture
+        never materializes. See
+        `MaterializeVerifyObjectsAndHarnessTests.test_structure_status_ok_only_once_all_seventeen_are_materialized`
+        for the positive case over the full domain."""
         box = self._fully_materialized("_verify_ok")
         structure = self._verify(box)
         self.assertEqual(structure["scaffoldGaps"], [])
         self.assertEqual(structure["scaffoldDrift"], [])
         self.assertEqual(structure["unrecordedScaffold"], [])
-        self.assertEqual(structure["status"], "ok")
 
 
 class MaterializeAuthoredTests(MaterializeCommandFixture, unittest.TestCase):
@@ -9334,6 +9433,272 @@ class MaterializeModeSelectionTests(MaterializeCommandFixture, unittest.TestCase
             "--stage", "scaffold", "--plan", plan_path)
         self.assertEqual(code, 2, proc.stdout)
         self.assertEqual(payload["code"], "SEED_REQUIRED")
+
+
+class MaterializeStageObjectsWriterTests(MaterializeCommandFixture, unittest.TestCase):
+    """`--stage objects`: SKILL.md step 9's table (`src/<Package>/module.py`,
+    `tests/test_invariants.py`, `tests/test_synthetic.py`), gated on the
+    step-8 object map being approved and recorded."""
+
+    def test_refuses_before_the_object_map_is_approved(self):
+        """M9: the tokens these three templates carry
+        (`{{FUNCTION_NAME}}`/`{{INVARIANT_ID}}`/`{{EXPECTATION}}`) have no
+        answer before step 8's declaration exists -- refuses
+        OBJECT_MAP_NOT_APPROVED, and writes nothing."""
+        box = self._fully_materialized("_objects_before_map")
+        self._git(box, "add", "-A")
+        self._git(box, "commit", "-q", "-m", "scaffold stage")
+        plan_path = self._approved_plan_path(box)
+
+        payload, code, proc = self._materialize_objects(box, plan_path)
+
+        self.assertEqual(code, 2, proc.stdout)
+        self.assertEqual(payload["code"], "OBJECT_MAP_NOT_APPROVED")
+        for destination in impl.object_destinations(self.NAME):
+            self.assertFalse((box / destination).exists(), destination)
+
+    def test_succeeds_once_the_object_map_is_approved(self):
+        """The positive case: once step 8's declaration is recorded, the
+        three destinations are written -- deliberately still carrying their
+        step-9 tokens, since nothing here can answer them."""
+        box = self._fully_materialized("_objects_after_map")
+        self._git(box, "add", "-A")
+        self._git(box, "commit", "-q", "-m", "scaffold stage")
+        self._declare_object_map(box)
+        self._git(box, "add", "-A")
+        self._git(box, "commit", "-q", "-m", "object map declared")
+        plan_path = self._approved_plan_path(box)
+
+        payload, code, proc = self._materialize_objects(box, plan_path)
+
+        self.assertEqual(code, 0, proc.stderr)
+        self.assertEqual(sorted(payload["written"]),
+                         sorted(impl.object_destinations(self.NAME)))
+        module_path = box / "src" / self.PACKAGE / "module.py"
+        self.assertTrue(module_path.exists())
+        self.assertIn("{{FUNCTION_NAME}}", module_path.read_text(encoding="utf-8"),
+                      "the token step 9 answers is left standing, not guessed")
+        self.assertEqual(impl.object_gaps(box, self.NAME), [])
+        receipt = impl.read_materialization_receipt(box)
+        entry = impl.receipt_entry(receipt, "tests/test_invariants.py")
+        self.assertEqual(entry["kind"], "materialized")
+        self.assertEqual(entry["stage"], "objects")
+
+    def test_without_seed_refuses(self):
+        box = self._fully_materialized("_objects_no_seed")
+        self._git(box, "add", "-A")
+        self._git(box, "commit", "-q", "-m", "scaffold stage")
+        self._declare_object_map(box)
+        self._git(box, "add", "-A")
+        self._git(box, "commit", "-q", "-m", "object map declared")
+        plan_path = self._approved_plan_path(box)
+
+        payload, code, proc = self._run_cli(
+            "materialize", "--target", str(box), "--name", self.NAME,
+            "--stage", "objects", "--plan", plan_path)
+
+        self.assertEqual(code, 2, proc.stdout)
+        self.assertEqual(payload["code"], "SEED_REQUIRED")
+
+
+class MaterializeStageHarnessWriterTests(MaterializeCommandFixture, unittest.TestCase):
+    """`--stage harness`: the harness-wiring table's three destinations
+    (`benchmark.py`, `verdict.py`, `probe.ipynb`), gated only on the same
+    plan/clean-worktree preflight `scaffold` uses -- no object-map
+    precondition, and no `--seed`."""
+
+    def _staged_scaffold(self, tag):
+        box = self._fully_materialized(tag)
+        self._git(box, "add", "-A")
+        self._git(box, "commit", "-q", "-m", "scaffold stage")
+        return box
+
+    def test_needs_no_seed_and_succeeds(self):
+        box = self._staged_scaffold("_harness_no_seed")
+        plan_path = self._approved_plan_path(box)
+
+        payload, code, proc = self._materialize_harness(box, plan_path)
+
+        self.assertEqual(code, 0, proc.stderr)
+        self.assertEqual(sorted(payload["written"]),
+                         sorted(impl.harness_destinations(self.NAME)))
+        for destination in impl.harness_destinations(self.NAME):
+            self.assertTrue((box / destination).exists(), destination)
+        self.assertEqual(impl.harness_gaps(box, self.NAME), [])
+        # benchmark.py/verdict.py carry no token at all, so they must parse
+        # cleanly -- unlike the objects stage, nothing here is left standing.
+        for py_destination in (f"src/{self.PACKAGE}_Benchmark/benchmark.py",
+                               f"src/{self.PACKAGE}_Benchmark/verdict.py"):
+            ast.parse((box / py_destination).read_text(encoding="utf-8"))
+
+    def test_destination_conflict_refuses_the_whole_stage(self):
+        """The `_write_kit_stage` seam objects/harness share: a destination
+        appearing between set computation and the write refuses the whole
+        stage and writes no receipt -- the same DESTINATION_CONFLICT shape
+        `_stage_scaffold` already proves, exercised here through the new
+        shared helper instead."""
+        box = self._staged_scaffold("_harness_conflict")
+        raced = f"src/{self.PACKAGE}_Benchmark/benchmark.py"
+        (box / raced).write_text("already here\n", encoding="utf-8")
+        self._git(box, "add", "-A")
+        self._git(box, "commit", "-q", "-m", "the file the race lands on")
+        plan_path = self._approved_plan_path(box)
+        receipt_before = impl.read_materialization_receipt(box)
+
+        with unittest.mock.patch.object(
+                impl, "_materialize_harness_destinations",
+                return_value=impl.harness_destinations(self.NAME)):
+            args = self._materialize_args(box, stage="harness", plan=plan_path)
+            with self.assertRaises(impl.Refused) as ctx:
+                impl.cmd_materialize(args)
+
+        self.assertEqual(ctx.exception.code, "DESTINATION_CONFLICT")
+        self.assertEqual(impl.read_materialization_receipt(box), receipt_before,
+                         "a refused stage must write no receipt entry")
+        self.assertEqual((box / raced).read_text(encoding="utf-8"), "already here\n")
+
+    def test_mid_write_failure_aborts_and_restores_the_tree(self):
+        box = self._staged_scaffold("_harness_abort")
+        plan_path = self._approved_plan_path(box)
+        receipt_before = impl.read_materialization_receipt(box)
+        real_write_text = Path.write_text
+        calls = {"n": 0}
+
+        def flaky_write_text(self_path, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError("simulated disk failure")
+            return real_write_text(self_path, *args, **kwargs)
+
+        args = self._materialize_args(box, stage="harness", plan=plan_path)
+        with unittest.mock.patch.object(Path, "write_text", flaky_write_text):
+            with self.assertRaises(impl.Refused) as ctx:
+                impl.cmd_materialize(args)
+
+        self.assertEqual(ctx.exception.code, "APPLY_ABORTED")
+        self.assertEqual(impl.read_materialization_receipt(box), receipt_before,
+                         "a refused stage must write no receipt entry")
+        status = self._git(box, "status", "--porcelain").stdout
+        self.assertEqual(status.strip(), "", "the tree was not restored: " + status)
+
+
+class MaterializeVerifyObjectsAndHarnessTests(MaterializeCommandFixture, unittest.TestCase):
+    """`SCAFFOLD_DRIFT`/`UNRECORDED_SCAFFOLD`'s equivalent for the `objects`
+    and `harness` stages, and `structure.status` reaching all seventeen kit
+    destinations (V1/V3/V4)."""
+
+    def _all_stages(self, tag):
+        return self._fully_materialized_all_stages(tag)
+
+    def test_object_destination_drift_is_reported(self):
+        box = self._all_stages("_object_drift")
+        target_file = box / "tests" / "test_invariants.py"
+        stat_before = target_file.stat()
+        original = target_file.read_bytes()
+        mutated = original.replace(b"assert True", b"assert TRUE", 1)
+        self.assertNotEqual(original, mutated)
+        self.assertEqual(len(original), len(mutated))
+        target_file.write_bytes(mutated)
+        os.utime(target_file, (stat_before.st_atime, stat_before.st_mtime))
+
+        structure = self._verify(box)
+        self.assertIn("tests/test_invariants.py", structure["objectDrift"])
+        self.assertNotEqual(structure["status"], "ok")
+
+    def test_object_destination_unrecorded_is_reported(self):
+        box = self._staged_scaffold_for_unrecorded_objects("_object_unrecorded")
+        (box / "src" / self.PACKAGE / "module.py").write_text(
+            "# hand-written, never materialized\n", encoding="utf-8")
+
+        structure = self._verify(box)
+        self.assertIn(f"src/{self.PACKAGE}/module.py", structure["unrecordedObjects"])
+        self.assertNotEqual(structure["status"], "ok")
+
+    def _staged_scaffold_for_unrecorded_objects(self, tag):
+        box = self._fully_materialized(tag)
+        self._git(box, "add", "-A")
+        self._git(box, "commit", "-q", "-m", "scaffold stage")
+        return box
+
+    def test_harness_destination_drift_is_reported(self):
+        box = self._all_stages("_harness_drift")
+        target_file = box / "src" / f"{self.PACKAGE}_Benchmark" / "verdict.py"
+        stat_before = target_file.stat()
+        original = target_file.read_bytes()
+        mutated = original + b"\n# tampered\n"
+        target_file.write_bytes(mutated)
+        os.utime(target_file, (stat_before.st_atime, stat_before.st_mtime + 1))
+
+        structure = self._verify(box)
+        self.assertIn(f"src/{self.PACKAGE}_Benchmark/verdict.py",
+                      structure["harnessDrift"])
+        self.assertNotEqual(structure["status"], "ok")
+
+    def test_harness_gap_does_not_block_the_scaffold_only_flow(self):
+        """V4: a target that has only run `--stage scaffold` reports the six
+        objects/harness destinations as gaps, never drift or unrecorded --
+        and `verify` itself still succeeds and reports, rather than
+        refusing, so the earlier flow stays runnable."""
+        box = self._fully_materialized("_v4_scaffold_only")
+        structure = self._verify(box)
+        self.assertEqual(sorted(structure["objectGaps"]),
+                         sorted(impl.object_destinations(self.NAME)))
+        self.assertEqual(sorted(structure["harnessGaps"]),
+                         sorted(impl.harness_destinations(self.NAME)))
+        self.assertEqual(structure["objectDrift"], [])
+        self.assertEqual(structure["unrecordedObjects"], [])
+        self.assertEqual(structure["harnessDrift"], [])
+        self.assertEqual(structure["unrecordedHarness"], [])
+        self.assertNotEqual(structure["status"], "ok")
+
+    def test_structure_status_ok_only_once_all_seventeen_are_materialized(self):
+        """V1/V3, extended to all seventeen: the positive case, without which
+        the widening across objects/harness could pass by always failing."""
+        box = self._all_stages("_v1_all_seventeen")
+        structure = self._verify(box)
+        self.assertEqual(structure["scaffoldGaps"], [])
+        self.assertEqual(structure["objectGaps"], [])
+        self.assertEqual(structure["harnessGaps"], [])
+        self.assertEqual(structure["scaffoldDrift"], [])
+        self.assertEqual(structure["objectDrift"], [])
+        self.assertEqual(structure["harnessDrift"], [])
+        self.assertEqual(structure["unrecordedScaffold"], [])
+        self.assertEqual(structure["unrecordedObjects"], [])
+        self.assertEqual(structure["unrecordedHarness"], [])
+        self.assertEqual(structure["status"], "ok")
+
+    def test_authored_and_adopt_widened_to_objects_and_harness_destinations(self):
+        """The `NOT_A_KIT_DESTINATION` domain check widened from the eleven
+        scaffold destinations to all seventeen -- `--authored` on an
+        objects-stage path, and `--adopt` on a harness-stage path never
+        materialized, both succeed rather than refusing outside-domain."""
+        box = self._all_stages("_widened_domain")
+        module_path = f"src/{self.PACKAGE}/module.py"
+        (box / module_path).write_text(
+            (box / module_path).read_text(encoding="utf-8") + "\n# authored\n",
+            encoding="utf-8")
+
+        payload, code, proc = self._run_cli(
+            "materialize", "--target", str(box), "--name", self.NAME,
+            "--authored", module_path)
+        self.assertEqual(code, 0, proc.stderr)
+        receipt = impl.read_materialization_receipt(box)
+        self.assertEqual(impl.receipt_entry(receipt, module_path)["kind"], "authored")
+
+        probe_path = f"{self.NAME}/Notebooks/probe.ipynb"
+        (box / impl.MATERIALIZATION_RECEIPT).unlink()
+        # Re-seed a receipt carrying no entry for probe.ipynb so --adopt has
+        # something to resolve, without disturbing the other sixteen.
+        receipt = {"version": 1, "name": self.NAME, "entries": [
+            e for e in receipt["entries"] if e["path"] != probe_path]}
+        (box / impl.MATERIALIZATION_RECEIPT).write_text(
+            json.dumps(receipt, indent=2), encoding="utf-8")
+
+        payload, code, proc = self._run_cli(
+            "materialize", "--target", str(box), "--name", self.NAME,
+            "--adopt", probe_path)
+        self.assertEqual(code, 0, proc.stderr)
+        self.assertEqual(payload["status"], "adopted")
 
 
 class MaterializeDegradedGuaranteeTests(unittest.TestCase):
