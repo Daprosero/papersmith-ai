@@ -51,6 +51,7 @@ from impl_naming import normalize_name, package_name, validate_name  # noqa: E40
 from impl_references import (is_nesting, prefix_mappings, reference_pattern,  # noqa: E402
                              scan_reference_updates, scan_stale_references)
 import impl_availability  # noqa: E402
+import impl_execution_strategy  # noqa: E402
 import impl_position  # noqa: E402
 import impl_steps  # noqa: E402
 
@@ -2238,6 +2239,19 @@ def cmd_probe(args) -> dict:
          "levels": resolve_levels_declaration(target, name)},
         args.revision,
         revision_source(args.revision) if args.revision else None)
+    # Computed once and reused for both `search.costForecast` below and the
+    # classification call: the exact same projection, never a second one
+    # (design D3, `the-pilot-decides-the-remote-strategy`).
+    cost_forecast = search_cost_forecast(
+        state.get("reduction") or {}, declared_required_scale(search))
+    # `classify_remote_necessity` never inspects `smokeReady` today (see its
+    # own docstring), but it is folded into each row anyway so the shape
+    # handed to it matches the one the row's own producer documents.
+    necessity = impl_execution_strategy.classify_remote_necessity(
+        jobs=[{**job, "smokeReady": jobs["smokeReady"].get(job["job"], False)}
+              for job in jobs["jobs"]],
+        results_status=state["status"],
+        cost_forecast=cost_forecast)
     return {
         "status": "ok",
         "target": str(target),
@@ -2257,21 +2271,21 @@ def cmd_probe(args) -> dict:
         # has already reported a value of any other shape as malformed, and a
         # forecast projected from a scale nobody can name an axis of would be a
         # number invented to fill the field.
-        "search": {**search,
-                   "costForecast": search_cost_forecast(
-                       state.get("reduction") or {},
-                       declared_required_scale(search))},
+        "search": {**search, "costForecast": cost_forecast},
         "unreachedModules": unfaithful,
         # A static fact, reported and never gating: see `notebook_coupling`.
         "coupling": coupling_state(target, name, package_name(name)),
         # A static fact, reported and never gating: see `position_state`.
         "position": position,
         # What went out to a remote worker (the ledger), plus what job
-        # folders exist right now (the filesystem) — reported, never
-        # resolved, and never a submission. See `remote_execution_jobs_state`.
+        # folders exist right now (the filesystem), plus — purely additive,
+        # this slice refuses nothing on it — whether each job classifies as
+        # needing a remote worker at all. See `remote_execution_jobs_state`
+        # and `impl_execution_strategy.classify_remote_necessity`.
         "remoteExecution": {
             **remote,
             **jobs,
+            "necessity": necessity,
         },
         "nextStep": next_step,
         "wiring": proposal,
@@ -5537,6 +5551,89 @@ def _discovered_job_folders(target: Path, rcli) -> list[Path]:
     return found
 
 
+def _campaign_identity(target: Path, rcli) -> dict:
+    """The campaign-identifying fact `propose` freezes into its own
+    `campaign` field, and `_verify_gate_proposal` (below) re-derives fresh
+    at every `gate` call to detect drift (design D4, `the-pilot-decides-
+    the-remote-strategy`) -- the proposal's OWN staleness keys, structurally
+    distinct from `_AUTHORIZATION_BINDING_KEYS`' seven original ones (never
+    `entrypoint`, never `positionStatus`; a single job's transient failure
+    moves neither `commit` nor `jobSet` here, which is the whole retry
+    guarantee).
+
+    `jobSet` -- every job name `_discovered_job_folders()` currently finds,
+    sorted for determinism -- moves the moment a job folder is added or
+    removed, exactly the second half of the design's own stated trigger.
+
+    `commit` -- the single pin every discovered job folder's own
+    `run-config.json` currently agrees on, or `None` when they disagree.
+    `None` is a reported fact, never a picked winner: two genuinely
+    different disagreeing states could otherwise be flattened onto the
+    same fabricated value and compare equal by accident. `None` never
+    does that -- an unchanged disagreement re-derives the identical `None`
+    both times, and only an actual disk change (a job's declared commit
+    moving, or a job folder appearing/disappearing) ever moves this
+    result at all.
+
+    Never argv, never a second, independently-written copy: `propose` and
+    `gate` both call this exact function over the SAME live disk state
+    `_discovered_job_folders()` and `JOBFOLDER.read()` already expose
+    elsewhere in this file, the same single-shared-rule discipline
+    `impl_availability.launch_available` enforces one layer down.
+    """
+    job_names: list[str] = []
+    commits: set = set()
+    for job_dir in _discovered_job_folders(target, rcli):
+        try:
+            run_config = rcli.JOBFOLDER.read(job_dir).run_config
+        except rcli.JOBFOLDER.JobFolderError:
+            continue
+        job_names.append(run_config.get("jobName", job_dir.name))
+        commits.add(run_config.get("commit"))
+    commit = next(iter(commits)) if len(commits) == 1 else None
+    return {"commit": commit, "jobSet": sorted(job_names)}
+
+
+def _proposal_digest(events: list, campaign: dict) -> str | None:
+    """The digest of the NEWEST `proposal` event on this target's ledger
+    whose OWN frozen `campaign` equals `campaign` -- the CURRENT, freshly
+    re-derived `_campaign_identity()` -- or `None` when none does (design
+    D4, "the digest of the newest proposal event ... whose campaign
+    identity matches"). Read only by `_authorization_binding` (offer/mint
+    time), to bind a freshly minted token to whichever campaign proposal
+    is CURRENTLY live for this target -- never filtered by job name: a
+    campaign proposal covers every job it names, and every one of those
+    jobs' tokens bind to the SAME proposal, the same way `gate --unit`
+    already authorizes the whole campaign rather than one job's slice of
+    it. A job the bound proposal does NOT name is exactly what
+    `GATE_PROPOSAL_MISMATCH` (below) exists to catch -- not filtered out
+    here, or that refusal would never be reachable.
+
+    Filtering by CURRENT campaign match (not merely "the newest proposal,
+    period") also means a token is never minted against a proposal that
+    is ALREADY stale the instant it is minted: if disk has drifted since
+    the newest proposal was published, this returns `None` for that
+    proposal (it is not the CURRENT campaign any more) rather than
+    binding a token that would fail `GATE_PROPOSAL_STALE` before ever
+    being presented once.
+
+    `_verify_gate_proposal` (gate/verify time, below) never calls this: it
+    looks the proposal event up by the token's OWN recorded digest instead,
+    never re-derives a fresh one -- a token minted against a given
+    proposal stays checked against exactly that proposal, never silently
+    upgraded to a newer one. That is what keeps a same-campaign retry
+    (spec "proposal survives a same-campaign retry") working with no
+    re-propose: the bound proposal digest never moves under a token that
+    has not been re-minted, even though a FRESH mint (a retry's `offer`
+    call) would resolve to the identical digest again as long as the
+    campaign identity has not moved.
+    """
+    for event in reversed(events):
+        if event.get("kind") == "proposal" and event.get("campaign") == campaign:
+            return event.get("digest")
+    return None
+
+
 def remote_execution_jobs_state(target: Path) -> dict:
     """`probe`'s own job-folder fact (design #744 section 9): what job
     folders exist on disk right now, reported alongside
@@ -5552,6 +5649,15 @@ def remote_execution_jobs_state(target: Path) -> dict:
 
     Staleness is read through `remote_cli.JOBFOLDER.read()` alone — the
     single reader design #744 section 4 mandates — never recomputed here.
+
+    **`accelerator`/`localBudget`, read out of the same open `run_config`
+    this loop already holds** (design D3, `the-pilot-decides-the-remote-
+    strategy`): both are optional, additive blocks `jobfolder.
+    build_run_config()` writes only when the target declared them, and
+    both are carried through verbatim — `None` when absent, never a
+    default. This is the one and only place either is read for
+    `classify_remote_necessity()` (`impl_execution_strategy.py`); no
+    caller opens `run-config.json` a second time to get them.
 
     **The `None` conflation, made visible rather than passed through.**
     `remote_cli._job_folder_staleness()` returns `None` for two different
@@ -5613,16 +5719,25 @@ def remote_execution_jobs_state(target: Path) -> dict:
                 "job": job_dir.name,
                 "product": None,
                 "staleness": {"status": "unreadable", "reason": str(exc)},
+                "accelerator": None,
+                "localBudget": None,
             })
             continue
 
         run_config = job_folder.run_config
         job_name = run_config.get("jobName", job_dir.name)
         product = run_config.get("product")
+        # Read out of the SAME open `run_config` this loop already holds
+        # (design D3, `the-pilot-decides-the-remote-strategy`): never a
+        # second `JOBFOLDER.read()`. Both are additive, optional blocks
+        # `jobfolder.build_run_config()` writes only when the target
+        # declared them; absent here, exactly as they are absent there.
         jobs.append({
             "job": job_name,
             "product": product,
             "staleness": dict(job_folder.staleness),
+            "accelerator": run_config.get("accelerator"),
+            "localBudget": run_config.get("localBudget"),
         })
 
         if not isinstance(product, str) or not product:
@@ -5695,10 +5810,15 @@ def _position_write_evidence(
         shards_current = _shards_current(
             shards, (resolved["contract"] or {}).get("distribution") or {},
             source_digest(target, package_name(name)))
+    # One call, both fields read from it (design D3): `cmd_gate` needs the
+    # SAME `jobs` rows `probe` classifies from, never a second walk of
+    # `_discovered_job_folders()` computing its own answer.
+    jobs = remote_execution_jobs_state(target)
     return {
         "search": search, "requiredScale": declared_required_scale(search),
         "notebooks": notebooks_state(target, name, package_name(name)),
-        "smokeReady": remote_execution_jobs_state(target)["smokeReady"],
+        "smokeReady": jobs["smokeReady"],
+        "jobs": jobs["jobs"],
         "shardsArrived": shards_arrived,
         "shardsCurrent": shards_current,
         "levels": resolve_levels_declaration(target, name),
@@ -6497,40 +6617,66 @@ def _launch_disagreements(position: dict) -> list:
     return [item for item in position["disagreements"] if item["mark"] == "x"]
 
 
-#: The seven fields "the same upcoming launch" reduces to, independently
-#: recomputed on both sides of the mint/verify boundary (design decision 3):
+#: The eight fields "the same upcoming launch" reduces to, independently
+#: recomputed on both sides of the mint/verify boundary (design decision 3,
+#: extended by `the-pilot-decides-the-remote-strategy` decision D4):
 #: `_authorization_binding` (below, prospective -- computed at `offer`
 #: time) and `_verify_gate_authorization` (below, retrospective -- computed
 #: at `gate` time) each build this exact shape from their OWN freshly
 #: re-derived facts, never from each other's output and never from a value
 #: a ledger record merely repeats back. Held once here so the two
-#: derivations cannot drift on which seven keys the digest covers.
+#: derivations cannot drift on which eight keys the digest covers.
+#:
+#: `proposalDigest` (the 8th, added by D4) is the one exception to "freshly
+#: re-derived": `_authorization_binding` derives it fresh at MINT time
+#: (`_proposal_digest`, the newest proposal naming this job), but
+#: `cmd_gate`'s own `gate_binding` copy (below) is never compared against
+#: the record for it -- `_verify_gate_proposal` owns that verification,
+#: one layer down, against the RECORD's own frozen value, never a value
+#: re-derived here. It is present in `gate_binding` only so the three
+#: literals this key set is spelled in stay structurally equal (the
+#: structural test this change adds), and it still participates fully in
+#: the hash-consistency check below (`own_binding`, built entirely from
+#: `record`), which is what protects it from being edited after minting.
+#: Three literals must spell this exact key set: this tuple,
+#: `_authorization_binding`'s own return, and `cmd_gate`'s inline
+#: `gate_binding` dict -- nothing enforced their agreement before this
+#: change added a structural test for it.
 _AUTHORIZATION_BINDING_KEYS = (
     "jobName", "commit", "entrypoint", "units", "rung",
-    "revisionSha256", "positionStatus",
+    "revisionSha256", "positionStatus", "proposalDigest",
 )
 
 
-def _verify_gate_authorization(events: list, token: str, binding: dict) -> None:
+def _verify_gate_authorization(events: list, token: str, binding: dict) -> dict:
     """The full check behind `gate --authorization <token>` (design "What
     `gate` refuses"), run once, immediately before `append_event`, over
     `binding` -- THIS invocation's own fresh re-derivation of the seven
-    `_AUTHORIZATION_BINDING_KEYS` facts, never the minted event's own
-    recorded copy of them. Presence of `--authorization` at all is a
+    live-disk `_AUTHORIZATION_BINDING_KEYS` facts, never the minted event's
+    own recorded copy of them. Presence of `--authorization` at all is a
     separate, earlier, pure-argv check (`GATE_AUTHORIZATION_REQUIRED`, at
     the top of `cmd_gate`'s own ladder); by the time this runs, a token
     string exists and this is the only place it is actually verified.
+    Returns the matched `record` on success, so a caller can verify the
+    proposal it names (`_verify_gate_proposal`, below) without a second
+    lookup by token.
 
-    Four refusals, checked in an order that answers a narrower question
+    Five refusals, checked in an order that answers a narrower question
     each time (mismatch before stale, so presenting job A's token while
     gating job B says exactly that, rather than blaming the world for
     having moved):
 
     - `GATE_AUTHORIZATION_UNKNOWN`: no `authorization` event on the ledger
       carries this exact token, OR the event that does no longer re-digests
-      to its own `token` -- edited after minting, so its binding cannot be
-      trusted even though the string still matches. Both collapse to the
-      same honest answer: nothing here vouches for this token.
+      to its own `token` under the current 8-key shape, OR it does not
+      re-digest under the 8-key shape but genuinely re-digests under the
+      pre-`proposalDigest` 7-key shape too -- that last case is
+      distinguished as `GATE_AUTHORIZATION_SUPERSEDED` instead (D6,
+      below), never silently folded back into `UNKNOWN`.
+    - `GATE_AUTHORIZATION_SUPERSEDED`: a legitimate token minted before
+      `proposalDigest` joined the binding. Diagnostic only -- see the
+      dedicated check below; it refuses exactly as hard as `UNKNOWN` and
+      the remedy is identical (re-mint with `offer`).
     - `GATE_AUTHORIZATION_MISMATCH`: a genuine record exists, but it names
       a different job or a different operator-declared unit list than THIS
       invocation's own.
@@ -6559,6 +6705,41 @@ def _verify_gate_authorization(events: list, token: str, binding: dict) -> None:
              "at": record.get("at"), "mintOrdinal": record.get("mintOrdinal")},
             sort_keys=True).encode("utf-8")).hexdigest()
         if recomputed != record.get("token"):
+            # D6: an 8-key mismatch alone does not mean tampered -- a
+            # legitimate pre-change token was minted over 7 keys and can
+            # never satisfy an 8-key recompute now that `proposalDigest`
+            # exists. Distinguish it with a SECOND hash, over a payload
+            # this function already has: if the record carries no
+            # `proposalDigest` key AT ALL (never merely `null` -- a
+            # post-change record with no proposal at mint time still
+            # stores the key, set to `null`, and its ORIGINAL digest was
+            # computed WITH that key present) and the 7-key recompute
+            # (the exact shape that predates this key) matches the
+            # record's own token, this is a measurement, not a guess: an
+            # editor who merely deleted `proposalDigest` from a
+            # post-change event would fail the 7-key recompute too,
+            # because that event's token was originally digested WITH
+            # the key. Diagnostic only -- both codes refuse identically
+            # hard, and the remedy is always re-minting with `offer`,
+            # never editing a stored event to fit the new shape.
+            if "proposalDigest" not in record:
+                seven_key_binding = {
+                    key: value for key, value in own_binding.items()
+                    if key != "proposalDigest"}
+                seven_key_recomputed = hashlib.sha256(json.dumps(
+                    {**seven_key_binding, "session": record.get("session"),
+                     "at": record.get("at"),
+                     "mintOrdinal": record.get("mintOrdinal")},
+                    sort_keys=True).encode("utf-8")).hexdigest()
+                if seven_key_recomputed == record.get("token"):
+                    raise Refused(
+                        "GATE_AUTHORIZATION_SUPERSEDED",
+                        f"token {token!r} was minted before `proposalDigest` "
+                        "joined the authorization binding, and re-digests "
+                        "correctly under the 7-key shape that predates this "
+                        "contract -- a legitimate pre-change token, not a "
+                        "tampered one, but refused exactly as hard: "
+                        "publish a fresh authorization with `offer`.")
             record = None
     if record is None:
         raise Refused(
@@ -6591,6 +6772,203 @@ def _verify_gate_authorization(events: list, token: str, binding: dict) -> None:
             f"token {token!r} already authorized one successful `gate` "
             "call and cannot be reused -- single-use, and never a "
             "deletion. Publish a fresh authorization with `offer`.")
+    return record
+
+
+def _verify_gate_proposal(events: list, job: str, record: dict, campaign: dict) -> None:
+    """The campaign-proposal precondition (design D4, spec domain
+    `submission-proposal`), run immediately after `_verify_gate_authorization`
+    and before the `gate`/`authorization-consumed` events are appended --
+    never at the top of the ladder, and never over a `record` this
+    invocation has not already proven genuine and current.
+
+    Three refusals, checked in an order that answers a narrower question
+    each time -- exactly the same discipline `_verify_gate_authorization`
+    already keeps for its own four:
+
+    - `GATE_PROPOSAL_UNKNOWN`: `record`'s own `proposalDigest` is `None`
+      (a genuine token, minted while no proposal covered this job yet), or
+      no `proposal` event on the ledger carries that digest, or the event
+      that does no longer re-digests to its own `digest` -- edited after
+      publishing, so it cannot be trusted even though the string still
+      matches. All three are the same honest answer: nothing here vouches
+      for a campaign proposal behind this launch.
+    - `GATE_PROPOSAL_MISMATCH`: a genuine, current proposal exists -- but
+      it does not name THIS job in its own `jobs` list. A proposal
+      authorizes only the jobs it explicitly names, never every job on
+      the target.
+    - `GATE_PROPOSAL_STALE`: the proposal is genuine and names this job,
+      but its OWN frozen `campaign` (`commit`, `jobSet`) no longer equals
+      `campaign` -- `_campaign_identity()` re-derived fresh, THIS instant,
+      from live disk. The pin moved, or a job folder was added or removed,
+      since `propose` last ran. Deliberately never `entrypoint` or
+      `positionStatus` (those are `_AUTHORIZATION_BINDING_KEYS`' own
+      staleness keys, not the proposal's) -- a transient per-job failure
+      moves neither, which is the whole "survives a same-campaign retry"
+      guarantee (spec, domain `submission-proposal`).
+
+    No `GATE_PROPOSAL_CONSUMED`: deliberately absent. A campaign proposal
+    is multi-use by definition; nothing here ever marks one spent.
+    """
+    proposal_digest = record.get("proposalDigest")
+    proposal = None
+    if proposal_digest is not None:
+        candidate = next(
+            (e for e in events
+             if e.get("kind") == "proposal" and e.get("digest") == proposal_digest),
+            None)
+        if candidate is not None:
+            payload = {key: value for key, value in candidate.items()
+                       if key not in ("kind", "digest")}
+            recomputed = hashlib.sha256(json.dumps(
+                payload, sort_keys=True).encode("utf-8")).hexdigest()
+            if recomputed == candidate.get("digest"):
+                proposal = candidate
+    if proposal is None:
+        raise Refused(
+            "GATE_PROPOSAL_UNKNOWN",
+            "the authorization token names no campaign proposal this "
+            "target's ledger still vouches for -- either the token was "
+            "minted before any proposal covered this job, or the proposal "
+            "event that once did has been edited since and no longer "
+            "re-digests to its own digest. Publish a campaign proposal "
+            "with `propose` first.")
+    if job not in (proposal.get("jobs") or []):
+        raise Refused(
+            "GATE_PROPOSAL_MISMATCH",
+            f"the bound proposal names {proposal.get('jobs')!r}, not job "
+            f"{job!r} -- a proposal authorizes only the jobs it explicitly "
+            "names, never every job on the target.")
+    if proposal.get("campaign") != campaign:
+        raise Refused(
+            "GATE_PROPOSAL_STALE",
+            "the proposal's own campaign identity (commit, job set) no "
+            "longer matches what this gate call just re-derived from live "
+            "disk -- the pin moved, or a job folder was added or removed, "
+            "since `propose` last ran. Publish a fresh proposal with "
+            "`propose`.")
+
+
+def _verify_optional_election(job: str, necessity: str, elected: list | None) -> None:
+    """The human-election precondition (design D5, spec "Optional
+    Classification Requires Explicit Human Election"), run immediately
+    after `_verify_gate_proposal` and before the `gate` event is appended.
+
+    `gate` authorizes exactly one job (`args.job`) per call, so "the unit
+    this invocation concerns" is that one job, never the opaque `--unit`
+    work-unit list `campaign_consent_token()` binds separately. Two
+    refusals:
+
+    - `GATE_ELECTION_REQUIRED`: `job` classifies `optional`
+      (`classify_remote_necessity`'s own verdict -- the recorded facts do
+      not decide, never "you may skip it") and this invocation's own
+      `--elect` does not name it. There is no default and no
+      `--elect-all`: an election is argv, per invocation, never stored and
+      reused (design D5, "the operator's standing rule").
+    - `GATE_ELECTION_MISMATCH`: `--elect` names a job other than the one
+      this call is gating, or names this job while it does NOT classify
+      `optional` -- electing something that was never in question is its
+      own kind of mistake, refused rather than silently accepted.
+    """
+    elected = list(elected or [])
+    if necessity == "optional" and job not in elected:
+        raise Refused(
+            "GATE_ELECTION_REQUIRED",
+            f"job {job!r} classifies `optional` (the recorded facts do not "
+            "decide whether it needs a remote worker) and this invocation "
+            f"names no `--elect {job}` -- an optional job never launches "
+            "without an explicit human election, made fresh on every "
+            "gate call, never read back from an earlier one.")
+    for name in elected:
+        if name != job or necessity != "optional":
+            raise Refused(
+                "GATE_ELECTION_MISMATCH",
+                f"--elect {name!r} does not name job {job!r} classifying "
+                "`optional` on this invocation -- an election names "
+                "exactly the one job this gate call is about to authorize, "
+                "and only when its own necessity verdict is `optional`; "
+                "electing an unrelated job, or a job the facts already "
+                "decide, is refused rather than silently accepted.")
+
+
+def cmd_propose(args: argparse.Namespace) -> dict:
+    """The campaign proposal (design D4, spec domain `submission-
+    proposal`): one `kind: "proposal"` event scoped to a whole CAMPAIGN,
+    never a single job -- matching `gate --unit`'s own campaign scope, and
+    named every job it covers, its intended workers, its dependency edges
+    and a human-authored rationale, exactly the four facts the spec's own
+    "One Proposal Per Campaign" requirement names.
+
+    Multi-use by design: calling `propose` again appends a FRESH proposal
+    event rather than editing or replacing the last one (the ledger's own
+    append-only discipline, `append_event`'s own rationale) -- there is no
+    mint-if-absent here, unlike `offer`'s authorization tokens, because a
+    proposal is never consumed and reusing an unconsumed one is exactly
+    the point (spec "proposal survives a same-campaign retry"). The newest
+    proposal naming a given job is the one `_authorization_binding` binds
+    a freshly minted token to (`_proposal_digest`); older ones are simply
+    superseded by a later proposal naming the same job, never deleted.
+
+    `--job` (repeatable, required) is the human-declared subset of
+    currently discovered job folders THIS proposal actually authorizes --
+    checked at `gate` time for job MEMBERSHIP (`GATE_PROPOSAL_MISMATCH`).
+    `campaign` (`commit`, `jobSet`), by contrast, is never argv: it is
+    `_campaign_identity()`'s own live-disk snapshot of EVERY job folder
+    currently discovered, re-derived identically at `gate` time to detect
+    drift (`GATE_PROPOSAL_STALE`) -- the two are deliberately different
+    facts, checked in that order because they answer narrower questions
+    in turn (design "What `gate` refuses").
+
+    `--rationale` is required and non-blank, the same discipline `gate`'s
+    own `--justification` already keeps: a human-legible reason, recorded
+    on the transition, never inferred from a general "go ahead".
+    """
+    target = resolve_target(args.target)
+    name = validate_name(args.name)
+
+    rationale = sys.stdin.read() if args.rationale == "-" else args.rationale
+    rationale = rationale.strip()
+    if not rationale:
+        raise Refused(
+            "EMPTY_RATIONALE",
+            "propose requires a non-blank rationale: a human-legible "
+            "reason for this campaign, recorded on the transition, never "
+            "inferred from a general 'go ahead' -- the same discipline "
+            "`gate`'s own --justification already keeps.")
+
+    ledger_path = target / name / ".implementation" / "position.jsonl"
+    events = impl_position.read_events(ledger_path)
+
+    rcli = _load_remote_execution_cli()
+    campaign = _campaign_identity(target, rcli)
+
+    depends_on = []
+    for edge in (args.depends_on or []):
+        job, _, dependency = edge.partition(":")
+        depends_on.append({"job": job, "on": dependency})
+
+    propose_ordinal = sum(1 for e in events if e.get("kind") == "proposal")
+    recorded_at = _now_iso8601()
+    # `mintOrdinal`'s exact rationale (`_find_or_mint_authorization`'s own
+    # docstring): `_now_iso8601()` has second-level precision, so an
+    # identical payload published twice inside the same second and the
+    # same session would otherwise digest identically. `proposeOrdinal`
+    # closes it here the same way, disk-derived and monotonic.
+    payload = {
+        "jobs": list(args.jobs), "workers": list(args.workers),
+        "dependsOn": depends_on, "rationale": rationale,
+        "campaign": campaign, "session": args.session, "at": recorded_at,
+        "proposeOrdinal": propose_ordinal,
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+    event = {"kind": "proposal", "digest": digest, **payload}
+    impl_position.append_event(ledger_path, event)
+
+    return {
+        "command": "propose", "target": str(target), "name": name,
+        "status": "recorded", "digest": digest, **payload,
+    }
 
 
 def cmd_gate(args: argparse.Namespace) -> dict:
@@ -6814,20 +7192,63 @@ def cmd_gate(args: argparse.Namespace) -> dict:
     # recomputed a second, possibly-drifting way.
     ledger_path = target / name / ".implementation" / "position.jsonl"
     events = impl_position.read_events(ledger_path)
+    # `campaign` (design D4) is computed here, before `gate_binding`, so
+    # the SAME snapshot both feeds `gate_binding`'s own `proposalDigest`
+    # entry (below) and `_verify_gate_proposal`'s fresh STALE comparison
+    # -- never two separately re-derived copies inside one `gate` call.
+    campaign = _campaign_identity(target, rcli)
     gate_binding = {
         "jobName": args.job, "commit": commit, "entrypoint": entrypoint,
         "units": units, "rung": verdict["facts"]["jobOrdinal"],
         "revisionSha256": revision_sha256, "positionStatus": position["status"],
+        # `proposalDigest` is present here only so this literal's key set
+        # matches `_AUTHORIZATION_BINDING_KEYS` (the structural test this
+        # change adds); `_verify_gate_authorization` never compares it
+        # against the record -- `_verify_gate_proposal` (below) owns that
+        # verification, against the record's own frozen value, never this
+        # freshly re-derived one (see the comment beside
+        # `_AUTHORIZATION_BINDING_KEYS` itself).
+        "proposalDigest": _proposal_digest(events, campaign),
     }
-    _verify_gate_authorization(events, args.authorization, gate_binding)
+    record = _verify_gate_authorization(events, args.authorization, gate_binding)
+
+    _verify_gate_proposal(events, args.job, record, campaign)
+
+    # The classification this job's own facts decide (design D3,
+    # `the-pilot-decides-the-remote-strategy`), computed the same
+    # already-tolerated way `cmd_probe` computes it -- one `search`/
+    # `probe_state`/`search_cost_forecast` call this command did not
+    # already need for anything else, over the SAME `run_config` this
+    # loop already opened, never a second `JOBFOLDER.read()`.
+    gate_resolved = resolve_benchmark_declaration(target, name)
+    gate_report = report_state(target, name, package_name(name))
+    gate_search = search_state(
+        gate_resolved["contract"],
+        list((gate_report.get("declared") or {}).get("records") or []),
+        target / name, declaration_status=gate_resolved["status"])
+    gate_state = probe_state(target, name, args.revision)
+    gate_cost_forecast = search_cost_forecast(
+        gate_state.get("reduction") or {}, declared_required_scale(gate_search))
+    gate_necessity = impl_execution_strategy.classify_remote_necessity(
+        jobs=[{"job": args.job, "accelerator": run_config.get("accelerator"),
+               "localBudget": run_config.get("localBudget"),
+               "smokeReady": smoke_ready.get(args.job, False)}],
+        results_status=gate_state["status"], cost_forecast=gate_cost_forecast)
+    necessity_verdict = gate_necessity["jobs"][args.job]["necessity"]
+    _verify_optional_election(args.job, necessity_verdict, args.elected)
 
     recorded_at = _now_iso8601()
+    elected = list(args.elected or [])
     event = {
         "kind": "gate", "jobName": args.job, "worker": worker,
         "commit": commit, "revision": args.revision,
         "revisionSha256": revision_sha256, "entrypoint": entrypoint,
         "units": units, "justification": justification,
         "session": args.session, "at": recorded_at,
+        # Additive (design D5): a fact of this transition, read by
+        # nobody in this change -- `remote_cli`'s own fold selects on
+        # `kind == "gate"` and ignores unknown fields.
+        "elected": elected,
     }
     impl_position.append_event(ledger_path, event)
     # Single-use, appended alongside the `gate` event it authorizes -- never
@@ -6847,6 +7268,7 @@ def cmd_gate(args: argparse.Namespace) -> dict:
         "revisionSha256": revision_sha256, "entrypoint": entrypoint,
         "units": units, "justification": justification,
         "session": args.session, "readiness": True, "recordedAt": recorded_at,
+        "elected": elected,
     }
 
 
@@ -6936,7 +7358,8 @@ def _offer_launch_action(target, name, args, rcli, position, evidence, job_dir):
     }
 
 
-def _authorization_binding(action: dict, revision_sha256: str, position_status: str) -> dict:
+def _authorization_binding(action: dict, revision_sha256: str, position_status: str,
+                           events: list, campaign: dict) -> dict:
     """The identity two mints of the SAME upcoming launch must agree on
     (design decision 3, "mint-if-absent") -- everything the engine itself
     re-derives about what is about to be launched, and nothing an agent's
@@ -6950,10 +7373,21 @@ def _authorization_binding(action: dict, revision_sha256: str, position_status: 
     account is bound later, by the `gate` event itself, which
     `remote_cli._verify_launch_authorization()` already matches against
     separately -- this token does not authorize a particular account, only
-    the job/pin/entrypoint/units/rung/revision/position shape of the launch.
-    `justification` is likewise absent: it is authored at gate time from
-    argv, and digesting it would make the token partly argv-derivable --
-    the exact defect class this mechanism exists to close.
+    the job/pin/entrypoint/units/rung/revision/position/proposal shape of
+    the launch. `justification` is likewise absent: it is authored at gate
+    time from argv, and digesting it would make the token partly
+    argv-derivable -- the exact defect class this mechanism exists to
+    close.
+
+    `proposalDigest` (design D4, `the-pilot-decides-the-remote-strategy`)
+    is engine-derived here too, from `events` and `campaign` (the SAME
+    `_campaign_identity()` snapshot `cmd_offer` computed once for every
+    action this call publishes) -- the newest CURRENTLY-matching
+    `proposal` event (`_proposal_digest`), never filtered by job name:
+    every job a campaign proposal names binds to the SAME proposal, the
+    same way `gate --unit` already authorizes the whole campaign, not one
+    job's slice of it. Never from argv; there is no `--proposal` flag
+    anywhere in this file.
     """
     binding = action["binding"]
     return {
@@ -6961,6 +7395,7 @@ def _authorization_binding(action: dict, revision_sha256: str, position_status: 
         "entrypoint": binding["entrypoint"], "units": list(binding["units"]),
         "rung": binding["rung"], "revisionSha256": revision_sha256,
         "positionStatus": position_status,
+        "proposalDigest": _proposal_digest(events, campaign),
     }
 
 
@@ -7186,11 +7621,16 @@ def cmd_offer(args: argparse.Namespace) -> dict:
     # binding gets the authorization token that covers it -- minted now
     # only when no unconsumed one already exists for that exact binding.
     # Runs on every call: `actions` (and therefore what needs an
-    # authorization) is rebuilt every time `offer` is called.
+    # authorization) is rebuilt every time `offer` is called. `campaign`
+    # (design D4) is computed ONCE here, shared by every action's own
+    # `proposalDigest` lookup -- the same live-disk snapshot every job's
+    # token binds to, never a second, possibly-drifting derivation per job.
+    campaign = _campaign_identity(target, rcli)
     for action in actions:
         if action["id"] != "launch":
             continue
-        binding = _authorization_binding(action, revision_sha256, position["status"])
+        binding = _authorization_binding(
+            action, revision_sha256, position["status"], events, campaign)
         token = _find_or_mint_authorization(
             ledger_path, events, binding, args.session, recorded_at)
         action["binding"]["authorization"] = token
@@ -7820,6 +8260,7 @@ COMMANDS = {"env": cmd_env, "name": cmd_name, "plan": cmd_plan, "apply": cmd_app
             "verify": cmd_verify,
             "position": cmd_position,
             "discuss": cmd_discuss,
+            "propose": cmd_propose,
             "gate": cmd_gate,
             "offer": cmd_offer,
             "close": cmd_close,
@@ -7882,7 +8323,7 @@ def main(argv: list[str] | None = None) -> int:
                                 "discover nothing and refuse "
                                 "REVISION_UNREADABLE if it is missing or "
                                 "unreadable")
-        if name in {"position", "gate", "offer", "close", "step", "settle"}:
+        if name in {"position", "propose", "gate", "offer", "close", "step", "settle"}:
             p.add_argument("--session", required=True,
                            help="identity stamped into the ledger event(s) "
                                 "this call appends, and into the block's "
@@ -7931,6 +8372,31 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--answer", default=None,
                            help="the answer text, or - to read stdin; omit "
                                 "to leave the discussion open")
+        if name == "propose":
+            p.add_argument("--job", dest="jobs", action="append", required=True,
+                           help="repeatable, at least one: a job this "
+                                "campaign proposal covers. Checked at "
+                                "`gate` time for job membership -- distinct "
+                                "from `campaign.jobSet`, the full live-disk "
+                                "job-folder inventory `_campaign_identity()` "
+                                "snapshots for staleness detection, never "
+                                "argv-declared")
+            p.add_argument("--worker", dest="workers", action="append", required=True,
+                           help="repeatable, at least one: an intended "
+                                "worker account for this campaign. Recorded "
+                                "write-only history, like `offer`'s own "
+                                "`answer`; read by nobody in this change")
+            p.add_argument("--depends-on", dest="depends_on", action="append",
+                           default=None,
+                           help="repeatable, optional: one dependency edge "
+                                "as 'job:dependency' (job depends on "
+                                "dependency). Omit for a campaign with no "
+                                "ordering constraints")
+            p.add_argument("--rationale", required=True,
+                           help="the campaign rationale text, or - to read "
+                                "stdin; refused EMPTY_RATIONALE if it is "
+                                "blank -- the same discipline `gate`'s own "
+                                "--justification already keeps")
         if name == "gate":
             p.add_argument("--job", required=True,
                            help="the job name a `@rehearsal` witness names")
@@ -7963,6 +8429,17 @@ def main(argv: list[str] | None = None) -> int:
                                 "(never merely elapsed time), _CONSUMED "
                                 "when it already authorized one successful "
                                 "gate call")
+            p.add_argument("--elect", dest="elected", action="append", default=None,
+                           help="repeatable: elects --job for launch "
+                                "despite its own facts not deciding "
+                                "necessity. Required (and must name "
+                                "exactly --job) when --job classifies "
+                                "`optional`; refused "
+                                "GATE_ELECTION_REQUIRED when omitted, "
+                                "GATE_ELECTION_MISMATCH when --elect names "
+                                "a different job, or names --job while it "
+                                "does not classify `optional`. Never "
+                                "stored and reused -- argv, every call")
         if name == "offer":
             p.add_argument("--answer", default=None,
                            help="yes or no, answering whether every declared "

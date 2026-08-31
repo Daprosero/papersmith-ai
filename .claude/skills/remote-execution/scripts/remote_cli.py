@@ -194,6 +194,12 @@ NOTEBOOK_SUFFIX = ".ipynb"
 LEDGER_DIRNAME = ".remote-execution"
 LEDGER_FILENAME = "ledger.jsonl"
 QUARANTINE_DIRNAME = "quarantine"
+
+# A rehearsal's (`fetch --smoke`) landing directory -- distinct from
+# QUARANTINE_DIRNAME above, which is for a REAL fetch judged not current.
+# Before this existed, `fetch --smoke` landed wherever `--dest` said, the
+# same tree a shard reader enumerates, and nothing ever quarantined it.
+REHEARSAL_DIRNAME = "rehearsal"
 PARTIAL_SUFFIX = ".partial"
 TOOLS_DIRNAME = "tools"
 RUN_CONFIG_FILENAME = "run-config.json"
@@ -1507,7 +1513,7 @@ def cmd_fetch(
     target: str | Path,
     entrypoint: str | Path,
     submission_id: str,
-    dest: str | Path,
+    dest: str | Path | None,
     adapter: "ADAPTER.Adapter",
     source_digest: Callable[[Path, str], str] | None = None,
     force: bool = False,
@@ -1603,6 +1609,24 @@ def cmd_fetch(
        — retryable, never a false `returned` — because nothing before this
        line ever wrote to the ledger.
     """
+    # Pure-argv pairing check, above every filesystem call: a rehearsal's
+    # destination is computed and cannot be chosen, and a real fetch has no
+    # computed destination to fall back to. `--dest` losing `required=True`
+    # on the parser (so `--smoke` can omit it) opens the second half of
+    # this hole the instant it happens, so both directions are checked
+    # together here, not as two separate smoke-only refusals.
+    if smoke and dest is not None:
+        raise RemoteCLIError(
+            "fetch --smoke computes its own rehearsal destination -- "
+            "--dest is refused under --smoke, never merely defaulted away "
+            "from"
+        )
+    if not smoke and dest is None:
+        raise RemoteCLIError(
+            "fetch requires --dest for a real (non-smoke) fetch -- only "
+            "--smoke computes its own destination"
+        )
+
     target = Path(target).resolve()
     if not target.is_dir():
         raise RemoteCLIError(
@@ -1623,10 +1647,28 @@ def cmd_fetch(
     submission = state.by_id[submission_id]
 
     verdict = LEDGER.currency_verdict(submission, state.latest, live)
-    if verdict == "current":
+    if smoke:
+        final_dest = target / product / LEDGER_DIRNAME / REHEARSAL_DIRNAME / submission_id
+    elif verdict == "current":
         final_dest = Path(dest).resolve()
     else:
         final_dest = target / product / LEDGER_DIRNAME / QUARANTINE_DIRNAME / submission_id
+
+    # `submission_id` originates from the remote service's response (the
+    # ledger's own recorded `submitted` event, ultimately from
+    # `adapter.submit()`'s returned id) and reaches this path join
+    # unguarded otherwise -- the filesystem-destination-from-service-
+    # supplied-`submission_id` threat-matrix row. `.resolve()` collapses
+    # any `..` component; a result that escaped `LEDGER_DIRNAME` proves the
+    # id was shaped to break out, so refuse before `adapter.fetch()` ever
+    # runs and before anything is written.
+    if smoke or verdict != "current":
+        ledger_root = (target / product / LEDGER_DIRNAME).resolve()
+        if ledger_root != final_dest.resolve() and ledger_root not in final_dest.resolve().parents:
+            raise RemoteCLIError(
+                f"submission id {submission_id!r} does not resolve to a "
+                f"path under {ledger_root} -- refusing before any fetch"
+            )
 
     partial_dest = final_dest.with_name(final_dest.name + PARTIAL_SUFFIX)
 
@@ -2323,7 +2365,11 @@ def _build_parser() -> argparse.ArgumentParser:
     fetch.add_argument("--target", required=True, type=Path)
     fetch.add_argument("--entrypoint", required=True, type=Path)
     fetch.add_argument("--submission-id", required=True)
-    fetch.add_argument("--dest", required=True, type=Path)
+    fetch.add_argument(
+        "--dest", required=False, default=None, type=Path,
+        help="required for a real fetch; refused (not merely optional) "
+        "under --smoke, which computes its own rehearsal destination",
+    )
     fetch.add_argument(
         "--backend",
         required=True,
@@ -2479,6 +2525,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--environment-index-url", dest="environment_index_url", default=None,
         help="optional index URL for --environment-requirement; given "
         "without at least one --environment-requirement, refused.",
+    )
+    generate_job.add_argument(
+        "--local-budget-seconds", dest="local_budget_seconds", type=int, default=None,
+        help="the target's own declared threshold, in seconds, for whether "
+        "this job's pilot-projected cost is locally tolerable — recorded "
+        "verbatim as localBudget.seconds, never judged here. Omitted, no "
+        "localBudget block is written; that silence is never read as a "
+        "budget of zero.",
     )
 
     smoke = subparsers.add_parser(
@@ -2762,6 +2816,7 @@ def main(argv: list[str] | None = None) -> int:
                 accelerator_architectures=args.accelerator_architectures,
                 environment_requirements=args.environment_requirements,
                 environment_index_url=args.environment_index_url,
+                local_budget_seconds=args.local_budget_seconds,
             )
         except (JOBFOLDER.JobFolderError, ADAPTER.AdapterError, KeyError) as exc:
             print(f"error: {exc}", file=sys.stderr)
