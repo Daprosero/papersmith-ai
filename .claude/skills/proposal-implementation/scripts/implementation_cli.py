@@ -6810,83 +6810,221 @@ def _settle_discussed_events(target: Path, name: str, about: dict) -> list[dict]
             and event["about"].get("operand") == about["operand"]]
 
 
-def _render_settled_line(text: str, witness: str | None) -> bytes:
-    """The one construction of a settled checklist line, called only from
-    `cmd_settle` -- the sole write path a witness token has (design D5,
-    spec Group 5: "no other CLI surface edits one";
+def _render_settled_line(text: str, witness: str | None, *,
+                          raw_line: bytes | None = None) -> bytes:
+    """The one construction of a settled checklist line's bytes, called
+    only from `cmd_settle` -- the sole write path a witness token has
+    (design D5, spec Group 5: "no other CLI surface edits one";
     `AgreementWitnessSingleWritePathTests` holds this by an `ast` walk of
     the whole CLI, the same discipline D3 already uses for
-    `impl_availability`'s call-site sets).
+    `impl_availability`'s call-site sets). `cmd_settle` calls this from
+    both of its own modes; the lock's own `ast` walk asserts the calling
+    FUNCTION, not the call count, so a second call site inside the same
+    function was never what it guarded.
 
-    Byte-identical to the pre-witness grammar when `witness` is falsy, so
-    every existing caller that never passes `--witness` keeps writing
-    exactly the line it always wrote. Always `[ ]`: this command never
-    authors a tick, witness or no witness.
+    **Placing a NEW item** (`raw_line=None`, `cmd_settle`'s create path):
+    builds `- [ ] {text}` from scratch. Byte-identical to the pre-witness
+    grammar when `witness` is falsy, so every existing caller that never
+    passes `--witness` keeps writing exactly the line it always wrote.
+    Always `[ ]`: this branch never authors a tick, witness or no witness.
+
+    **Attaching a witness to an EXISTING line** (`raw_line` given,
+    `cmd_settle --attach`'s path, design "attach, not place"): `text` is
+    ignored entirely. `raw_line` is the located line's own bytes, taken
+    verbatim from disk by `_locate_settled_text`, never reconstructed from
+    a regex-captured group -- reconstructing `- [ ] {text}` the way the
+    create branch does would silently normalize whatever the original
+    line's own bullet character, internal spacing or mark case happened to
+    be, and the design's own "byte-identical afterward, only the witness
+    is added" requirement holds only because this branch never parses and
+    rebuilds; it only appends. The trailing newline is preserved exactly
+    as `raw_line` carried one, or not, at end of file -- the witness token
+    is inserted before it, never after.
     """
+    if raw_line is not None:
+        has_newline = raw_line.endswith(b"\n")
+        body = raw_line[:-1] if has_newline else raw_line
+        if witness:
+            body += f" `{witness}`".encode("utf-8")
+        return body + (b"\n" if has_newline else b"")
     if witness:
         return f"- [ ] {text} `{witness}`\n".encode("utf-8")
     return f"- [ ] {text}\n".encode("utf-8")
+
+
+def _locate_settled_text(data: bytes, text: str) -> list[dict]:
+    """Every full-line byte span in `data` whose `AGREEMENT_LINE` match has
+    a `text` group exactly equal to `text` -- the search space
+    `settle --attach` locates a witness attachment against, matched by
+    exact text the same way `locate_headings` matches `--under` by exact
+    heading equality (design "attach, not place").
+
+    **Found by shape, not narrowed by fencing.** Mirrors
+    `agreements_state`'s own doctrine (line 220): no fenced-code exclusion,
+    unlike `locate_headings`. `agreements_state` itself never excludes a
+    fenced region from its own scan, so a checklist-shaped line inside one
+    is already counted as an ordinary agreement today -- a line this
+    function can attach a witness to is exactly a line `agreements_state`
+    already counts, never a narrower set that would make the two disagree
+    about what "settled" means.
+
+    Byte-offset bookkeeping mirrors `locate_headings`
+    (`impl_position.py:268`): `data.split(b"\\n")` loses every newline
+    byte it split on, so it is put back per line (except a true final line
+    with none) before offsets are summed. Unlike `locate_headings`'s
+    zero-width insertion points, each returned span is the WHOLE matching
+    line, its own trailing newline included when it has one -- this span
+    is meant to be REPLACED by `impl_position.splice`, not opened.
+
+    The position block's own byte span, when one locates cleanly, is
+    excluded first -- the identical exclusion `_agreement_scan_text`
+    already applies before `agreements_state` and `_agreement_collides`
+    ever see a line, so a position sequence item's own `- [ ] N. ...`
+    (exactly `AGREEMENT_LINE`'s shape) is never mistaken for a settled
+    agreement here either. A block that will not locate is caught, not
+    propagated -- the same residual `_agreement_scan_text`'s own docstring
+    already accepts: the identical document raises through
+    `position_state` in the same `verify` call, so a malformed block is
+    never silently invisible end to end.
+
+    Returns a list, never raises -- the same "the caller owns both counts"
+    doctrine `locate_headings` already states for itself: zero hits and
+    more than one are both read off this list's own length by
+    `cmd_settle`, which names its own refusal codes over them
+    (`SETTLE_TEXT_ABSENT` / `SETTLE_TEXT_AMBIGUOUS`).
+    """
+    try:
+        block = impl_position.locate_block(data)
+    except Refused:
+        block = None
+    block_start = block["start"] if block else None
+    block_end = block["end"] if block else None
+
+    parts = data.split(b"\n")
+    count = len(parts)
+    lines = [parts[i] + (b"\n" if i < count - 1 else b"") for i in range(count)]
+
+    spans: list[dict] = []
+    offset = 0
+    for line in lines:
+        start = offset
+        end = offset + len(line)
+        offset = end
+        if block_start is not None and start < block_end and end > block_start:
+            continue
+        decoded = line.decode("utf-8").rstrip()
+        match = AGREEMENT_LINE.match(decoded)
+        if match and match.group("text") == text:
+            spans.append({"start": start, "end": end})
+    return spans
 
 
 def cmd_settle(args: argparse.Namespace) -> dict:
     """Place one settled agreement, and only one, under a caller-named
     heading (design "the placer" -- the third and last piece of "We
     discuss an idea, it gets embodied, then you come in, and the skill
-    binds you so that it is placed in the contract").
+    binds you so that it is placed in the contract") -- OR, with
+    `--attach`, bind a witness onto a line already placed, matched by its
+    exact `--text` (design "attach, not place"). Both modes go through
+    this one command; there is still no second write path.
 
-    The agent drafts the discussion and a proposed sentence; this command
-    validates, refuses, and performs the one write. It never authors: the
-    text placed is `--text`, verbatim, and the mark it writes is always
-    `[ ]`, never `[x]` -- a tick would assert the code already carries
-    something a human has not yet reviewed as reached.
+    The agent drafts the discussion and a proposed sentence; the create
+    path validates, refuses, and performs the one write. It never authors:
+    the text placed is `--text`, verbatim, and the mark it writes is
+    always `[ ]`, never `[x]` -- a tick would assert the code already
+    carries something a human has not yet reviewed as reached. `--attach`
+    writes no new text and no new mark at all: it locates an existing line
+    by its own text and appends a witness token to it, leaving the mark
+    exactly as it already was -- a ticked item stays ticked, an open one
+    stays open.
+
+    **Why `--attach` skips the discussion precondition -- decided, not
+    inherited from where the check happened to sit.** `SETTLE_NOT_DISCUSSED`
+    / `SETTLE_DISCUSSION_UNANSWERED` exist so that no agreement is PLACED
+    without having been discussed first. A line `--attach` matches was, by
+    construction, already placed by a prior `settle` call -- it already
+    passed that gate once, the moment it was written. Binding a witness
+    onto it afterward is not placing a new agreement; it is recording, for
+    an agreement that already exists, which test now measures it. Requiring
+    a fresh `discuss` per already-settled line would be ceremony with
+    nothing behind it: the discussion this precondition protects already
+    happened, and re-enacting it item by item for a batch of settled lines
+    would not produce a single new fact this command could check. If a
+    future caller finds a real need to re-litigate an already-settled
+    agreement, that is a different action than attaching a witness to it,
+    and belongs behind its own gate, not this one.
 
     Checked in refusing-costs-nothing order, the same discipline `cmd_gate`
-    already states for itself: pure-argv shape first, then whether a
-    discussion actually happened, then where the placement would even go,
-    then whether it collides with something already on record.
+    already states for itself: pure-argv shape first (including which mode
+    this call is even in), then whether a discussion actually happened
+    (create path only), then where the write would even go, then whether
+    it collides with something already on record (create path only).
 
     1. `SETTLE_STDIN_CONFLICT` -- `--text -` and `--supersedes -` cannot
        both read stdin in the same call.
     2. `SETTLE_EMPTY_TEXT` -- a blank `--text` is refused before anything
        else is read from disk.
-    3. `SETTLE_NOT_DISCUSSED` / `SETTLE_DISCUSSION_UNANSWERED` -- `--about`
-       is resolved the identical way `discuss`'s own `--about` already is
-       (`_resolve_discuss_about`), then matched against the ledger by
-       witness identity: ANY answered event satisfies this, never
-       newest-wins (design "Discussion match") -- a later clarifying
-       question must never retroactively erase an earlier answer, which
-       would teach a caller not to ask one. Measured on the real reference
-       target this change's own design cites: the ledger held zero
-       `discuss` events at design time; one now exists there
-       (`{"kind": "record", "operand": null}`, still `"open"`) from this
-       change's own Phase 1 verifying `expand-contract`'s published
-       command -- `settle` still refuses `SETTLE_NOT_DISCUSSED` for any
-       OTHER witness identity, and `SETTLE_DISCUSSION_UNANSWERED` for that
-       exact one, so the lock was never vacuous either way.
-    4. `SETTLE_HOLDER_ABSENT` -- `agreements_state`'s own already-computed
-       `holders` is the candidate set; a target with none has nowhere this
-       command may write, and it never invents a file, the same doctrine
-       `_chosen_holder` already states for a fresh position block.
-    5. `SETTLE_HEADING_ABSENT` / `SETTLE_HEADING_AMBIGUOUS` -- every
-       holder's own `impl_position.locate_headings` hits, concatenated
-       across all of them: zero, or more than one anywhere (two hits in
-       one holder and one hit apiece in two holders read identically) --
-       the caller owns both counts, because the locator itself never
-       refuses (see its own docstring for why).
-    6. `SETTLE_COLLIDES_UNNAMED` / `SETTLE_SUPERSEDES_UNKNOWN` -- the same
-       `_agreement_collides` `discuss` already repairs (excludes the
-       position block's own item lines), run over the witness's own
-       operand. A caller naming a superseded item must name one actually
-       IN that computed list -- an unchecked string would be a rubber
-       stamp on a supersession this command cannot itself verify happened
-       in the document.
-    7. `SETTLE_WITNESS_MALFORMED` -- an optional `--witness test_<id>`
+    3. `SETTLE_ATTACH_CONFLICT` -- `--attach` combined with `--under` or
+       `--supersedes`: neither names anything in this mode (there is no
+       new item to place under a heading, and nothing new to collide with),
+       and silently ignoring a flag the caller bothered to type would be
+       exactly the kind of surprise `SETTLE_STDIN_CONFLICT` already refuses
+       one level up.
+    4. `SETTLE_WITNESS_REQUIRED` -- `--attach` without `--witness`: binding
+       a witness is the entire point of this mode, so an `--attach` call
+       carrying none has nothing to do.
+    5. `SETTLE_UNDER_REQUIRED` / `SETTLE_ABOUT_REQUIRED` -- the create path
+       (no `--attach`) still needs both; `argparse` no longer enforces
+       either as unconditionally required, because `--attach` needs
+       neither, so this command enforces them itself once it knows which
+       mode it is in.
+    6. `SETTLE_WITNESS_MALFORMED` -- an optional `--witness test_<id>`
        (design D5, spec Group 3) that does not match `AGREEMENT_LINE`'s own
        trailing-token grammar (`test_[A-Za-z0-9_]+`). Refused before the
        write, not silently swallowed into plain text: a malformed value
        would otherwise round-trip as inert prose, and a caller who typed
        `--witness` believing it bound something would never learn it did
-       not.
+       not. Checked in both modes.
+    7. `SETTLE_NOT_DISCUSSED` / `SETTLE_DISCUSSION_UNANSWERED` -- create
+       path only (see "Why `--attach` skips..." above). `--about` is
+       resolved the identical way `discuss`'s own `--about` already is
+       (`_resolve_discuss_about`), then matched against the ledger by
+       witness identity: ANY answered event satisfies this, never
+       newest-wins (design "Discussion match") -- a later clarifying
+       question must never retroactively erase an earlier answer, which
+       would teach a caller not to ask one.
+    8. `SETTLE_HOLDER_ABSENT` -- `agreements_state`'s own already-computed
+       `holders` is the candidate set; a target with none has nowhere this
+       command may write, and it never invents a file, the same doctrine
+       `_chosen_holder` already states for a fresh position block. Checked
+       in both modes.
+    9. Create path: `SETTLE_HEADING_ABSENT` / `SETTLE_HEADING_AMBIGUOUS` --
+       every holder's own `impl_position.locate_headings` hits, concatenated
+       across all of them: zero, or more than one anywhere (two hits in
+       one holder and one hit apiece in two holders read identically) --
+       the caller owns both counts, because the locator itself never
+       refuses (see its own docstring for why).
+       `--attach` path: `SETTLE_TEXT_ABSENT` / `SETTLE_TEXT_AMBIGUOUS`
+       -- the identical discipline, one level down: every holder's own
+       `_locate_settled_text` hits for the exact `--text`, concatenated;
+       zero or more than one refuses the same way, for the same reason --
+       which existing line receives the witness is not decidable without
+       a human choosing when more than one line reads identically.
+    10. Create path only: `SETTLE_COLLIDES_UNNAMED` / `SETTLE_SUPERSEDES_UNKNOWN`
+        -- the same `_agreement_collides` `discuss` already repairs
+        (excludes the position block's own item lines), run over the
+        witness's own operand. A caller naming a superseded item must name
+        one actually IN that computed list -- an unchecked string would be
+        a rubber stamp on a supersession this command cannot itself verify
+        happened in the document.
+    11. `--attach` path only: `SETTLE_ALREADY_WITNESSED` -- the one located
+        line already carries a `` `test_<id>` `` token. `--attach` never
+        replaces one; there is no separate flag that does, so the only way
+        to change an existing witness today is the same "unsupported,
+        never technically prevented" doctrine hand-typing already carries
+        (see `--witness`'s own help) -- adding a silent-replace path here
+        would let one automated call quietly overwrite a binding another
+        call, or a human, put there on purpose.
 
     **The witness this places is a separate identity from `--about`.**
     `--about` names the *position* witness this placement discusses and
@@ -6898,11 +7036,14 @@ def cmd_settle(args: argparse.Namespace) -> dict:
     `impl_position.WITNESS_KINDS`, which `test_<id>` is not a member of and
     never becomes one; `--witness` is why this command needs no such
     member. Omitted, the written line stays exactly as it always was.
+    `--attach` never resolves `--about` at all (it is not even required in
+    that mode) -- there is no discussion gate left to check it against, so
+    resolving it would validate a value this call never uses for anything.
 
     `POSITION_HOLDER_MOVED` is reused, not minted fresh: it already names a
     holder document's own compare-and-swap failure, and a placement's own
     pre-image digest is exactly that same fact one level down --
-    `write_spliced` raises it unchanged.
+    `write_spliced` raises it unchanged. Reused identically for `--attach`.
 
     **The stated gap, left open on purpose.** `--supersedes` names the
     superseded item in the ledger event only. The document itself shows no
@@ -6928,8 +7069,37 @@ def cmd_settle(args: argparse.Namespace) -> dict:
     if not text:
         raise Refused("SETTLE_EMPTY_TEXT", "settle requires non-blank --text.")
 
+    attach = bool(getattr(args, "attach", False))
+
+    if attach and (args.under or args.supersedes is not None):
+        raise Refused(
+            "SETTLE_ATTACH_CONFLICT",
+            "--attach binds a witness onto a line already placed; --under "
+            "(where a NEW item goes) and --supersedes (what a NEW item "
+            "collides with) do not apply and must be omitted.")
+
     witness = getattr(args, "witness", None)
     witness = witness.strip() if witness else None
+    if attach and not witness:
+        raise Refused(
+            "SETTLE_WITNESS_REQUIRED",
+            "--attach binds a witness onto an already-settled line; "
+            "--witness is the whole point of this mode and cannot be "
+            "omitted.")
+    if not attach:
+        if not args.under:
+            raise Refused(
+                "SETTLE_UNDER_REQUIRED",
+                "--under is required to place a new item; it names where "
+                "the write goes and has no default. Omit it only together "
+                "with --attach, which binds to a line already placed.")
+        if not args.about:
+            raise Refused(
+                "SETTLE_ABOUT_REQUIRED",
+                "--about is required to place a new item; it names the "
+                "discussion this placement is bound to. Omit it only "
+                "together with --attach, which does not place anything "
+                "new.")
     if witness and not re.fullmatch(r"test_[A-Za-z0-9_]+", witness):
         raise Refused(
             "SETTLE_WITNESS_MALFORMED",
@@ -6938,23 +7108,25 @@ def cmd_settle(args: argparse.Namespace) -> dict:
             "match would round-trip as inert trailing text, never as a "
             "witness `agreements_state` can read back.")
 
-    evidence = _position_write_evidence(target, name)
-    position = position_state(target, name, evidence, None, None)
-    about = _resolve_discuss_about(args.about, position)
+    about = None
+    if not attach:
+        evidence = _position_write_evidence(target, name)
+        position = position_state(target, name, evidence, None, None)
+        about = _resolve_discuss_about(args.about, position)
 
-    discussed = _settle_discussed_events(target, name, about)
-    if not discussed:
-        raise Refused(
-            "SETTLE_NOT_DISCUSSED",
-            f"no discuss event names witness identity "
-            f"(kind={about['kind']!r}, operand={about['operand']!r}); a "
-            "placement must be discussed before it is placed.")
-    if not any(event.get("status") == "answered" for event in discussed):
-        raise Refused(
-            "SETTLE_DISCUSSION_UNANSWERED",
-            f"{len(discussed)} discuss event(s) name this witness identity "
-            "and none carries status \"answered\"; an open question is not "
-            "yet a settled agreement.")
+        discussed = _settle_discussed_events(target, name, about)
+        if not discussed:
+            raise Refused(
+                "SETTLE_NOT_DISCUSSED",
+                f"no discuss event names witness identity "
+                f"(kind={about['kind']!r}, operand={about['operand']!r}); a "
+                "placement must be discussed before it is placed.")
+        if not any(event.get("status") == "answered" for event in discussed):
+            raise Refused(
+                "SETTLE_DISCUSSION_UNANSWERED",
+                f"{len(discussed)} discuss event(s) name this witness "
+                "identity and none carries status \"answered\"; an open "
+                "question is not yet a settled agreement.")
 
     holders = agreements_state(target, name)["holders"]
     if not holders:
@@ -6963,46 +7135,84 @@ def cmd_settle(args: argparse.Namespace) -> dict:
             f"no markdown file under {name}/ holds checklist items; "
             "settle never invents a file to write into.")
 
-    heading = args.under.strip()
-    candidates: list[tuple[Path, bytes, dict]] = []
-    for holder in holders:
-        holder_path = target / holder
-        holder_data = holder_path.read_bytes()
-        for span in impl_position.locate_headings(holder_data, heading):
-            candidates.append((holder_path, holder_data, span))
-
-    if not candidates:
-        raise Refused(
-            "SETTLE_HEADING_ABSENT",
-            f"{heading!r} occurs in none of {len(holders)} holder(s) under "
-            f"{name}/.")
-    if len(candidates) > 1:
-        raise Refused(
-            "SETTLE_HEADING_AMBIGUOUS",
-            f"{heading!r} occurs {len(candidates)} times across {name}/'s "
-            "holder(s); which occurrence receives the item is not "
-            "decidable without a human choosing.")
-    target_path, data, span = candidates[0]
-
-    collides = _agreement_collides(target, name, about["operand"])
+    heading = None
     supersedes = None
-    if args.supersedes is not None:
-        supersedes = sys.stdin.read() if args.supersedes == "-" else args.supersedes
-        supersedes = supersedes.strip()
-    if collides and not supersedes:
-        raise Refused(
-            "SETTLE_COLLIDES_UNNAMED",
-            f"this witness's operand already appears in {len(collides)} "
-            "existing agreement(s); name the one this placement supersedes "
-            "with --supersedes, or the write would silently duplicate it.")
-    if supersedes is not None and supersedes not in collides:
-        raise Refused(
-            "SETTLE_SUPERSEDES_UNKNOWN",
-            f"--supersedes {supersedes!r} does not exact-match any of the "
-            f"{len(collides)} computed colliding agreement(s).")
+    collides: list[str] = []
 
-    new_line = _render_settled_line(text, witness)
-    spliced = impl_position.splice(data, new_line, span)
+    if attach:
+        candidates: list[tuple[Path, bytes, dict]] = []
+        for holder in holders:
+            holder_path = target / holder
+            holder_data = holder_path.read_bytes()
+            for span in _locate_settled_text(holder_data, text):
+                candidates.append((holder_path, holder_data, span))
+
+        if not candidates:
+            raise Refused(
+                "SETTLE_TEXT_ABSENT",
+                f"{text!r} matches no existing checklist line across "
+                f"{len(holders)} holder(s) under {name}/.")
+        if len(candidates) > 1:
+            raise Refused(
+                "SETTLE_TEXT_AMBIGUOUS",
+                f"{text!r} matches {len(candidates)} existing checklist "
+                f"lines across {name}/'s holder(s); which one receives the "
+                "witness is not decidable without a human choosing.")
+        target_path, data, span = candidates[0]
+
+        raw_line = data[span["start"]:span["end"]]
+        located = AGREEMENT_LINE.match(raw_line.decode("utf-8").rstrip())
+        if located.group("witness"):
+            raise Refused(
+                "SETTLE_ALREADY_WITNESSED",
+                f"{text!r} already carries witness "
+                f"{located.group('witness')!r}; --attach never replaces "
+                "one.")
+
+        new_line = _render_settled_line(text, witness, raw_line=raw_line)
+        spliced = impl_position.splice(data, new_line, span)
+    else:
+        heading = args.under.strip()
+        candidates = []
+        for holder in holders:
+            holder_path = target / holder
+            holder_data = holder_path.read_bytes()
+            for span in impl_position.locate_headings(holder_data, heading):
+                candidates.append((holder_path, holder_data, span))
+
+        if not candidates:
+            raise Refused(
+                "SETTLE_HEADING_ABSENT",
+                f"{heading!r} occurs in none of {len(holders)} holder(s) "
+                f"under {name}/.")
+        if len(candidates) > 1:
+            raise Refused(
+                "SETTLE_HEADING_AMBIGUOUS",
+                f"{heading!r} occurs {len(candidates)} times across "
+                f"{name}/'s holder(s); which occurrence receives the item "
+                "is not decidable without a human choosing.")
+        target_path, data, span = candidates[0]
+
+        collides = _agreement_collides(target, name, about["operand"])
+        if args.supersedes is not None:
+            supersedes = sys.stdin.read() if args.supersedes == "-" else args.supersedes
+            supersedes = supersedes.strip()
+        if collides and not supersedes:
+            raise Refused(
+                "SETTLE_COLLIDES_UNNAMED",
+                f"this witness's operand already appears in {len(collides)} "
+                "existing agreement(s); name the one this placement "
+                "supersedes with --supersedes, or the write would silently "
+                "duplicate it.")
+        if supersedes is not None and supersedes not in collides:
+            raise Refused(
+                "SETTLE_SUPERSEDES_UNKNOWN",
+                f"--supersedes {supersedes!r} does not exact-match any of "
+                f"the {len(collides)} computed colliding agreement(s).")
+
+        new_line = _render_settled_line(text, witness)
+        spliced = impl_position.splice(data, new_line, span)
+
     pre_digest = impl_position.digest_bytes(data)
     impl_position.write_spliced(target_path, spliced, expect_digest=pre_digest)
 
@@ -7010,7 +7220,7 @@ def cmd_settle(args: argparse.Namespace) -> dict:
     impl_position.append_event(
         target / name / ".implementation" / "position.jsonl",
         {"kind": "settle", "session": args.session, "about": about,
-         "text": text, "under": heading, "witness": witness,
+         "text": text, "under": heading, "witness": witness, "attach": attach,
          "holder": str(target_path.relative_to(target)),
          "supersedes": supersedes, "collides": collides, "at": recorded_at})
 
@@ -7018,7 +7228,7 @@ def cmd_settle(args: argparse.Namespace) -> dict:
         "command": "settle", "target": str(target), "name": name,
         "status": "written", "holder": str(target_path.relative_to(target)),
         "about": about, "text": text, "under": heading, "witness": witness,
-        "supersedes": supersedes, "collides": collides,
+        "attach": attach, "supersedes": supersedes, "collides": collides,
         "recordedAt": recorded_at,
     }
 
@@ -9671,25 +9881,41 @@ def main(argv: list[str] | None = None) -> int:
             # No --revision: settle binds to no revision, and a flag it
             # ignores would be a promise this file does not keep (design
             # "settle takes --session").
-            p.add_argument("--about", required=True,
+            p.add_argument("--about", default=None,
                            help="an ordinal in the position sequence, or a "
                                 "bare witness spec ('kind' or 'kind "
                                 "operand') -- the identical shape discuss's "
                                 "own --about takes, matched against an "
                                 "answered discuss event by witness identity "
-                                "(kind, operand)")
+                                "(kind, operand). Required unless --attach "
+                                "is given (refused SETTLE_ABOUT_REQUIRED); "
+                                "--attach never resolves or requires it -- "
+                                "there is no discussion gate left to check "
+                                "it against")
             p.add_argument("--text", required=True,
-                           help="the caller-authored agreement text, or - "
-                                "to read stdin; written verbatim as one "
-                                "unticked `- [ ]` line -- never authored or "
-                                "ticked by this command")
-            p.add_argument("--under", required=True,
+                           help="without --attach: the caller-authored "
+                                "agreement text, or - to read stdin; "
+                                "written verbatim as one unticked `- [ ]` "
+                                "line -- never authored or ticked by this "
+                                "command. With --attach: the EXACT existing "
+                                "text of an already-settled line this call "
+                                "attaches --witness to, matched by exact "
+                                "equality against AGREEMENT_LINE's own "
+                                "text group -- refused SETTLE_TEXT_ABSENT "
+                                "or SETTLE_TEXT_AMBIGUOUS when it matches "
+                                "zero or more than one line")
+            p.add_argument("--under", default=None,
                            help="the exact heading line this item is "
                                 "placed under, hash marks included (e.g. "
                                 "'## Ladder'); refused SETTLE_HEADING_ABSENT "
                                 "or SETTLE_HEADING_AMBIGUOUS when it occurs "
                                 "zero or more than one time across the "
-                                "product's holder file(s)")
+                                "product's holder file(s). Required unless "
+                                "--attach is given (refused "
+                                "SETTLE_UNDER_REQUIRED); refused "
+                                "SETTLE_ATTACH_CONFLICT if given together "
+                                "with --attach, which attaches to a line "
+                                "already placed and names no heading")
             p.add_argument("--supersedes", default=None,
                            help="the exact text of an existing colliding "
                                 "agreement this placement supersedes, or - "
@@ -9698,24 +9924,49 @@ def main(argv: list[str] | None = None) -> int:
                                 "one, recorded in the ledger event only -- "
                                 "the document itself still needs a "
                                 "human-written Reversed paragraph to show "
-                                "the supersession")
+                                "the supersession. Refused "
+                                "SETTLE_ATTACH_CONFLICT if given together "
+                                "with --attach, which places nothing new "
+                                "and so collides with nothing")
             p.add_argument("--witness", default=None,
-                           help="optional test_<id> naming this agreement's "
-                                "own function in the declared-invariants "
-                                "suite -- a separate identity from --about, "
-                                "which names the position witness this "
-                                "placement discusses. Persisted verbatim "
-                                "into the written line as a trailing "
-                                "`` `test_<id>` `` token; omitted, the line "
-                                "stays byte-identical to the pre-witness "
-                                "grammar. Refused SETTLE_WITNESS_MALFORMED "
-                                "if given and not test_[A-Za-z0-9_]+. "
-                                "settle is the only command that ever "
-                                "writes this token -- there is no patch or "
-                                "edit subcommand, and hand-typing one into "
-                                "the file is unsupported (evaluated "
-                                "exactly like a skill-written one by "
-                                "verify, never technically prevented)")
+                           help="test_<id> naming this agreement's own "
+                                "function in the declared-invariants suite "
+                                "-- a separate identity from --about, which "
+                                "names the position witness this placement "
+                                "discusses. Persisted verbatim into the "
+                                "written line as a trailing "
+                                "`` `test_<id>` `` token. Without --attach: "
+                                "optional; omitted, the line stays "
+                                "byte-identical to the pre-witness grammar. "
+                                "With --attach: required (refused "
+                                "SETTLE_WITNESS_REQUIRED if omitted -- "
+                                "binding a witness is the whole point of "
+                                "that mode); refused SETTLE_ALREADY_WITNESSED "
+                                "if the located line already carries one -- "
+                                "--attach never replaces one. Refused "
+                                "SETTLE_WITNESS_MALFORMED in either mode if "
+                                "given and not test_[A-Za-z0-9_]+. settle is "
+                                "the only command that ever writes this "
+                                "token -- there is no patch or edit "
+                                "subcommand, and hand-typing one into the "
+                                "file is unsupported (evaluated exactly "
+                                "like a skill-written one by verify, never "
+                                "technically prevented)")
+            p.add_argument("--attach", action="store_true",
+                           help="bind --witness onto a line ALREADY "
+                                "settled, matched by its exact --text, "
+                                "instead of placing a new `- [ ]` line "
+                                "(design 'attach, not place'). The mark "
+                                "is never touched -- a ticked item stays "
+                                "ticked, an open one stays open; only the "
+                                "witness token is added. Skips the "
+                                "discussion precondition entirely (see "
+                                "cmd_settle's own docstring for why): a "
+                                "line this matches was already placed by a "
+                                "prior settle call, so it was already "
+                                "discussed once. --under and --supersedes "
+                                "do not apply with --attach and are refused "
+                                "SETTLE_ATTACH_CONFLICT if given")
         if name == "defect":
             p.add_argument("--file", required=True,
                            help="path to the forge file this declares "
