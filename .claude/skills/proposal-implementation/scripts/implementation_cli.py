@@ -151,7 +151,21 @@ RESULT_EXT = {".png", ".jpg", ".jpeg", ".svg", ".eps"}
 AGREEMENTS_GLOB = "*.md"
 
 #: A checklist item. Anything else on the line is the item's text, verbatim.
-AGREEMENT_LINE = re.compile(r"^\s*[-*]\s*\[(?P<mark>[ xX])\]\s*(?P<text>.+?)\s*$")
+#:
+#: The trailing group is optional and scoped strictly to the shape `settle`
+#: writes (design D4, spec Group 3): a backticked `` `test_<id>` `` at the
+#: very end of the line, mirroring `impl_position.WITNESS_RE`'s own
+#: end-anchored convention one module over. A bare line, with or without a
+#: mark, parses byte-for-byte as it always has -- the group only ever
+#: matches when the line's own tail happens to have that exact shape.
+#: Measured, not assumed (design D4's own open question): a scan of the
+#: reference target's `AGREED.md` for a pre-existing line already ending in
+#: a backticked `test_...` found zero hits across 114 checklist lines, so
+#: this token form ships rather than the HTML-comment fallback D4 held in
+#: reserve.
+AGREEMENT_LINE = re.compile(
+    r"^\s*[-*]\s*\[(?P<mark>[ xX])\]\s*(?P<text>.+?)"
+    r"(?:\s+`(?P<witness>test_[A-Za-z0-9_]+)`)?\s*$")
 
 #: A bullet: a marker followed by whitespace. `**bold**` is not one, which is why
 #: this exists — a file that records a reverted agreement in prose was reported as
@@ -233,15 +247,58 @@ def agreements_state(target: Path, name: str) -> dict:
     (`_agreement_scan_text`, above); a holder whose only checklist items
     are position lines therefore reports `absent`, not `open` — the same
     fact `position_state` already reports separately, so it is never lost.
+
+    **The witness dimension, nested under `witness` (design D7, spec Group
+    4).** Three states, none collapsing into another: `unwitnessed` (the
+    line carries no `` `test_<id>` `` token at all -- reported, never a
+    failure), `unmeasured` (a token is declared but this run could not, or
+    would not, call it a contradiction), `disagrees` (declared, `tests/` is
+    readable and fully parsed, the mark is `x`, and `test_<id>` is absent
+    from `test_function_names(...)`).
+
+    **This CLI runs no test, ever** — `test_function_names` is an `ast`
+    walk, nothing here executes a suite. Finding `test_<id>` among the
+    collected names proves only that a function by that name exists; it is
+    never read as "the test passed", so that case reads `unmeasured`, the
+    same as a token this run could not evaluate at all. Only a *definite
+    absence* — a fully-parsed `tests/` that does not contain the declared
+    function — is strong enough to call `disagrees`. `unmeasured` also
+    covers `tests/` missing entirely or `unparsable_tests(...)` non-empty:
+    the collector silently skips a file that fails `ast.parse`, so "absent"
+    and "unreadable" are genuinely indistinguishable, which is exactly what
+    `unmeasured` denotes.
+
+    **One-directional, unlike `impl_position.derive()`.** An unticked
+    agreement whose declared witness function already exists is never
+    `disagrees` — `settle` always writes `[ ]`, and the symmetric rule
+    would flag every freshly settled agreement whose test already exists.
+
+    **`summary` is present on every branch, including `absent`** (`"0 of 0
+    witnessed"`), the same uniform-key-set doctrine `position_state`
+    states for itself. Silence is never how this reports "nothing is
+    declared" — see `cmd_verify`'s own contract.
     """
     product = target / name
     files = sorted(p for p in product.glob(AGREEMENTS_GLOB) if p.is_file()) \
         if product.is_dir() else []
 
+    # Computed once per call, never per item: whether `tests/` at the
+    # target's own root (the same directory `cmd_verify`'s own
+    # `test_function_names(target / "tests")` already reads) is even
+    # readable at all. A witness token cannot be told apart from a
+    # contradicted one when the collector itself could not run.
+    tests_dir = target / "tests"
+    tests_readable = tests_dir.is_dir() and not unparsable_tests(tests_dir)
+    tested_names = test_function_names(tests_dir) if tests_readable else set()
+
     open_items: list[str] = []
     settled = 0
     unparsed: list[str] = []
     holding: list[str] = []
+    unwitnessed: list[str] = []
+    unmeasured: list[str] = []
+    disagrees: list[str] = []
+    total_items = 0
     for path in files:
         items_here = 0
         for raw in _agreement_scan_text(path.read_bytes()).splitlines():
@@ -262,10 +319,21 @@ def agreements_state(target: Path, name: str) -> dict:
                     unparsed.append(f"{path.name}: {line.strip()}")
                 continue
             items_here += 1
-            if match.group("mark") == " ":
-                open_items.append(match.group("text"))
+            total_items += 1
+            text = match.group("text")
+            mark = match.group("mark")
+            witness = match.group("witness")
+            if mark == " ":
+                open_items.append(text)
             else:
                 settled += 1
+            if not witness:
+                unwitnessed.append(text)
+            elif (tests_readable and mark in ("x", "X")
+                  and witness not in tested_names):
+                disagrees.append(text)
+            else:
+                unmeasured.append(text)
         # A markdown file with no checklist items is a document, not a checklist.
         # Only what actually holds agreements is reported as holding them, and the
         # unparsed lines of a file that turned out to hold none go with it.
@@ -278,8 +346,11 @@ def agreements_state(target: Path, name: str) -> dict:
         return {"status": "absent", "holders": [], "searched": f"{name}/*.md",
                 "open": [], "settled": 0, "unparsed": [],
                 "note": "no markdown file in the product folder holds checklist "
-                        "items; if a gate happened, its agreements were lost"}
+                        "items; if a gate happened, its agreements were lost",
+                "witness": {"unwitnessed": [], "unmeasured": [], "disagrees": [],
+                           "summary": "0 of 0 witnessed"}}
 
+    witnessed = len(unmeasured) + len(disagrees)
     return {
         "status": "open" if open_items or unparsed else "settled",
         "holders": holding,
@@ -287,6 +358,13 @@ def agreements_state(target: Path, name: str) -> dict:
         "open": open_items,
         "settled": settled,
         "unparsed": unparsed,
+        "note": None,
+        "witness": {
+            "unwitnessed": unwitnessed,
+            "unmeasured": unmeasured,
+            "disagrees": disagrees,
+            "summary": f"{witnessed} of {total_items} witnessed",
+        },
     }
 
 
@@ -770,6 +848,14 @@ DISTRIBUTION_OPTIONAL = {
                    "the value there against the digest of the code as it "
                    "stands, the same division `identicalAcrossShards` already "
                    "keeps",
+    "shardsRoot": "where a split campaign's returned shards land, so that a "
+                  "command with no `--shards` flag of its own -- `gate`, "
+                  "`close`, `discuss`, `probe` -- measures a `@shard` witness "
+                  "against the same directory `position`/`verify`'s own "
+                  "`--shards` would, rather than reading it as unmeasured "
+                  "forever. The forge never invents this directory: the "
+                  "repository names it once and every reader compares against "
+                  "the identical answer",
 }
 
 
@@ -785,6 +871,7 @@ DISTRIBUTION_SHAPE = {
     "perRun": list,
     "identicalAcrossShards": list,
     "currentWhen": str,
+    "shardsRoot": str,
 }
 
 
@@ -2227,15 +2314,20 @@ def cmd_probe(args) -> dict:
     # Computed once and reused for the `remoteExecution` merge below, rather
     # than called twice for the same answer.
     jobs = remote_execution_jobs_state(target)
-    # `probe` takes no `--shards`, so the evidence carries no shard answer at
-    # all: `@shard` reports `unmeasured` here, never a false "did not arrive"
-    # (see `impl_position.derive`'s own docstring).
+    # `probe` takes no `--shards` of its own, but a target that declared
+    # `distribution.shardsRoot` still gets a real shard answer here --
+    # `_resolve_shard_evidence` is the identical fallback
+    # `_position_write_evidence` applies for `gate`/`close`/`discuss`.
+    # Undeclared, both stay `None`: `@shard` reports `unmeasured`, never a
+    # false "did not arrive" (see `impl_position.derive`'s own docstring).
+    shards_arrived, shards_current = _resolve_shard_evidence(
+        target, name, resolved["contract"], None)
     position = position_state(
         target, name,
         {"search": search, "requiredScale": declared_required_scale(search),
          "notebooks": notebooks_state(target, name, package_name(name)),
-         "smokeReady": jobs["smokeReady"], "shardsArrived": None,
-         "shardsCurrent": None,
+         "smokeReady": jobs["smokeReady"], "shardsArrived": shards_arrived,
+         "shardsCurrent": shards_current,
          "levels": resolve_levels_declaration(target, name)},
         args.revision,
         revision_source(args.revision) if args.revision else None)
@@ -6032,31 +6124,79 @@ def _now_iso8601() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _resolve_shard_evidence(
+        target: Path, name: str, contract: dict,
+        shards_root: str | None) -> tuple[list | None, list | None]:
+    """`(shardsArrived, shardsCurrent)` for any caller that needs the
+    identical answer `_position_write_evidence` derives -- factored out so
+    `cmd_probe`, the one reader of a `@shard` witness that never routed
+    through that function, computes this the same way rather than its own,
+    permanently-`None` copy.
+
+    `shards_root`, when given, is the caller's own explicit override --
+    `position`/`verify`'s own `--shards` flag. `None` falls back to the
+    target's own declared `distribution.shardsRoot` (`DISTRIBUTION_
+    OPTIONAL`): a relative path is resolved against `target`, cwd-
+    independent by construction, unlike an explicit `--shards` value, which
+    `Path()` reads exactly as typed. Neither declared: both `shards_arrived`
+    and `shards_current` stay `None`, exactly as before this key existed.
+
+    A shard location, once declared, is read by every caller equally --
+    there is no second, narrower declaration for `probe` alone or `gate`
+    alone. A repository names one directory; every reader compares against
+    that same answer.
+    """
+    resolved_root = shards_root
+    if resolved_root is None:
+        declared = ((contract or {}).get("distribution") or {}).get("shardsRoot")
+        if isinstance(declared, str) and declared:
+            candidate = Path(declared)
+            resolved_root = str(candidate if candidate.is_absolute()
+                                else target / candidate)
+    if not resolved_root:
+        return None, None
+    shard_io = _load_remote_execution_shard_io()
+    shards = shard_io.read_shards(Path(resolved_root))
+    shards_arrived = [entry["shard"] for entry in shards]
+    # The same currency read `verify --shards` makes, computed the same way
+    # from the same two inputs. A writer that skipped it would tick a
+    # `@shard` witness on a shard that arrived from code the repository has
+    # since moved past -- and `position` is the one command that writes
+    # those marks down, so the reader would then be trusting a mark the
+    # writer had never checked.
+    shards_current = _shards_current(
+        shards, (contract or {}).get("distribution") or {},
+        source_digest(target, package_name(name)))
+    return shards_arrived, shards_current
+
+
 def _position_write_evidence(
         target: Path, name: str, shards_root: str | None = None) -> dict:
     """The same evidence shape `position_state` is handed through `probe`
     (2069-2075): search, its declared required scale, the notebooks, the
-    jobs' `smokeReady`, and a shard answer only when `shards_root` names
-    one. `discuss`, `gate` and `close` declare no `--shards` flag at all
-    (`main()`, ~6333), so their callers always pass `shards_root=None` and
-    `@shard` reports `unmeasured` for them exactly as `probe` reports it —
-    `probe` itself takes no `--shards` either (2069-2075).
+    jobs' `smokeReady`, and a shard answer whenever one is resolvable —
+    either `shards_root` names one directly, or the target's own declared
+    `distribution.shardsRoot` does (`_resolve_shard_evidence`).
 
-    `position` is different: `main()` gives it `--shards` (~6320) for
-    exactly this reason, so a caller MUST thread `getattr(args, "shards",
-    None)` through here rather than let it fall back silently, or the flag
-    stops doing anything it wasn't already doing before it existed —
-    `@shard` would keep reading `unmeasured` even on a call that named the
-    very directory holding the arrived shard (see `impl_position.derive`'s
-    own docstring for why `None` must never become `False` instead).
+    `discuss`, `gate` and `close` declare no `--shards` flag at all
+    (`main()`, ~6333), so their callers always pass `shards_root=None` here
+    — but that no longer means `@shard` reads `unmeasured` for them: once a
+    target declares `shardsRoot`, this function resolves it for every one
+    of them exactly as `position --shards <dir>` would have, and a tick
+    written from real evidence stays checkable everywhere that evidence is
+    read, not only at the one command that happened to carry the flag.
+    `probe` reaches the identical answer through `_resolve_shard_evidence`
+    directly, since it builds this evidence shape inline rather than
+    calling this function (see that helper's own docstring for why).
 
-    A second small function computing this rather than a shared one `probe`
-    also calls: `cmd_probe` already needs `search`, `resolved` and `jobs` as
-    separate named locals for other keys in its own return (`nextStep`,
-    `remoteExecution`...), so factoring a helper there would not shrink it —
-    `cmd_verify` and `cmd_probe` already each build their own `search_state()`
-    call independently for the same reason. This is that same, already-
-    tolerated duplication, not a new one.
+    `position` is different: `main()` gives it `--shards` (~6320), and a
+    caller MUST thread `getattr(args, "shards", None)` through here rather
+    than let it fall back silently, or an explicit flag stops overriding
+    anything — `_resolve_shard_evidence` only reaches for the declaration
+    when `shards_root` itself is `None`, so a `--shards <dir>` passed here
+    always wins, exactly as before this fallback existed (see
+    `impl_position.derive`'s own docstring for why `None` must never become
+    `False` instead).
     """
     resolved = resolve_benchmark_declaration(target, name)
     report = report_state(target, name, package_name(name))
@@ -6064,20 +6204,8 @@ def _position_write_evidence(
         resolved["contract"],
         list((report.get("declared") or {}).get("records") or []),
         target / name, declaration_status=resolved["status"])
-    shards_arrived = shards_current = None
-    if shards_root:
-        shard_io = _load_remote_execution_shard_io()
-        shards = shard_io.read_shards(Path(shards_root))
-        shards_arrived = [entry["shard"] for entry in shards]
-        # The same currency read `verify --shards` makes, computed the same
-        # way from the same two inputs. A writer that skipped it would tick
-        # a `@shard` witness on a shard that arrived from code the
-        # repository has since moved past -- and `position` is the one
-        # command that writes those marks down, so the reader would then be
-        # trusting a mark the writer had never checked.
-        shards_current = _shards_current(
-            shards, (resolved["contract"] or {}).get("distribution") or {},
-            source_digest(target, package_name(name)))
+    shards_arrived, shards_current = _resolve_shard_evidence(
+        target, name, resolved["contract"], shards_root)
     # One call, both fields read from it (design D3): `cmd_gate` needs the
     # SAME `jobs` rows `probe` classifies from, never a second walk of
     # `_discovered_job_folders()` computing its own answer.
@@ -6682,6 +6810,24 @@ def _settle_discussed_events(target: Path, name: str, about: dict) -> list[dict]
             and event["about"].get("operand") == about["operand"]]
 
 
+def _render_settled_line(text: str, witness: str | None) -> bytes:
+    """The one construction of a settled checklist line, called only from
+    `cmd_settle` -- the sole write path a witness token has (design D5,
+    spec Group 5: "no other CLI surface edits one";
+    `AgreementWitnessSingleWritePathTests` holds this by an `ast` walk of
+    the whole CLI, the same discipline D3 already uses for
+    `impl_availability`'s call-site sets).
+
+    Byte-identical to the pre-witness grammar when `witness` is falsy, so
+    every existing caller that never passes `--witness` keeps writing
+    exactly the line it always wrote. Always `[ ]`: this command never
+    authors a tick, witness or no witness.
+    """
+    if witness:
+        return f"- [ ] {text} `{witness}`\n".encode("utf-8")
+    return f"- [ ] {text}\n".encode("utf-8")
+
+
 def cmd_settle(args: argparse.Namespace) -> dict:
     """Place one settled agreement, and only one, under a caller-named
     heading (design "the placer" -- the third and last piece of "We
@@ -6734,6 +6880,24 @@ def cmd_settle(args: argparse.Namespace) -> dict:
        IN that computed list -- an unchecked string would be a rubber
        stamp on a supersession this command cannot itself verify happened
        in the document.
+    7. `SETTLE_WITNESS_MALFORMED` -- an optional `--witness test_<id>`
+       (design D5, spec Group 3) that does not match `AGREEMENT_LINE`'s own
+       trailing-token grammar (`test_[A-Za-z0-9_]+`). Refused before the
+       write, not silently swallowed into plain text: a malformed value
+       would otherwise round-trip as inert prose, and a caller who typed
+       `--witness` believing it bound something would never learn it did
+       not.
+
+    **The witness this places is a separate identity from `--about`.**
+    `--about` names the *position* witness this placement discusses and
+    matches against the ledger; `--witness`, when given, is the *agreement's
+    own* `test_<id>` in the declared-invariants suite, persisted into the
+    written line so `agreements_state` can read it back without consulting
+    the ledger. `_resolve_discuss_about` cannot itself carry a `test_<id>`
+    -- it raises `POSITION_WITNESS_UNKNOWN_KIND` for anything outside
+    `impl_position.WITNESS_KINDS`, which `test_<id>` is not a member of and
+    never becomes one; `--witness` is why this command needs no such
+    member. Omitted, the written line stays exactly as it always was.
 
     `POSITION_HOLDER_MOVED` is reused, not minted fresh: it already names a
     holder document's own compare-and-swap failure, and a placement's own
@@ -6763,6 +6927,16 @@ def cmd_settle(args: argparse.Namespace) -> dict:
     text = text.strip()
     if not text:
         raise Refused("SETTLE_EMPTY_TEXT", "settle requires non-blank --text.")
+
+    witness = getattr(args, "witness", None)
+    witness = witness.strip() if witness else None
+    if witness and not re.fullmatch(r"test_[A-Za-z0-9_]+", witness):
+        raise Refused(
+            "SETTLE_WITNESS_MALFORMED",
+            f"--witness {witness!r} does not match the grammar's own "
+            "`test_<id>` shape (test_[A-Za-z0-9_]+); a value that does not "
+            "match would round-trip as inert trailing text, never as a "
+            "witness `agreements_state` can read back.")
 
     evidence = _position_write_evidence(target, name)
     position = position_state(target, name, evidence, None, None)
@@ -6827,7 +7001,7 @@ def cmd_settle(args: argparse.Namespace) -> dict:
             f"--supersedes {supersedes!r} does not exact-match any of the "
             f"{len(collides)} computed colliding agreement(s).")
 
-    new_line = f"- [ ] {text}\n".encode("utf-8")
+    new_line = _render_settled_line(text, witness)
     spliced = impl_position.splice(data, new_line, span)
     pre_digest = impl_position.digest_bytes(data)
     impl_position.write_spliced(target_path, spliced, expect_digest=pre_digest)
@@ -6836,14 +7010,14 @@ def cmd_settle(args: argparse.Namespace) -> dict:
     impl_position.append_event(
         target / name / ".implementation" / "position.jsonl",
         {"kind": "settle", "session": args.session, "about": about,
-         "text": text, "under": heading,
+         "text": text, "under": heading, "witness": witness,
          "holder": str(target_path.relative_to(target)),
          "supersedes": supersedes, "collides": collides, "at": recorded_at})
 
     return {
         "command": "settle", "target": str(target), "name": name,
         "status": "written", "holder": str(target_path.relative_to(target)),
-        "about": about, "text": text, "under": heading,
+        "about": about, "text": text, "under": heading, "witness": witness,
         "supersedes": supersedes, "collides": collides,
         "recordedAt": recorded_at,
     }
@@ -7342,7 +7516,7 @@ def cmd_gate(args: argparse.Namespace) -> dict:
         status=position["status"], unbacked=position["unbacked"],
         disagreements=_launch_disagreements(position),
         sequence=position["sequence"], ready=smoke_ready.get(args.job),
-        job=args.job)
+        job=args.job, shards_declared=evidence["shardsArrived"] is not None)
     if not verdict["available"]:
         code, facts = verdict["code"], verdict["facts"]
         if code == "POSITION_ABSENT":
@@ -7376,6 +7550,27 @@ def cmd_gate(args: argparse.Namespace) -> dict:
                 "nobody checked. Run `position` (with `--shards` if a shard "
                 "witness needs it) so every tick is derived, or blank the mark "
                 "until its evidence exists.")
+        if code == "POSITION_SHARDS_UNDECLARED":
+            # A distinct fact from `POSITION_UNBACKED`, not a narrower
+            # spelling of it: this item's tick is not unmeasured because a
+            # declared location was checked and found silent -- nothing was
+            # ever told where to look at all. `gate` has no `--shards` flag
+            # of its own, so the only exit here is the target's own
+            # declaration; naming that, rather than repeating `POSITION_
+            # UNBACKED`'s "run position with --shards", is the entire point
+            # of this code.
+            raise Refused(
+                "POSITION_SHARDS_UNDECLARED",
+                "item(s) "
+                f"{', '.join(str(o) for o in facts['undeclaredOrdinals'])} "
+                "in the position section carry a `@shard` witness, and "
+                "nothing named where a returned shard lands -- this target "
+                "declares no `distribution.shardsRoot` (see "
+                "`assets/kit/src_benchmark/__init__.py`'s `distribution` "
+                "comment). A launch is not authorized against a tick that "
+                "cannot be checked at all; declare `shardsRoot` once, or run "
+                "`position --shards <dir>` against an explicit directory "
+                "before gating a launch.")
         if code == "POSITION_DISAGREES":
             # Ordered immediately after `POSITION_UNBACKED`, same rationale:
             # both are honesty checks over what the sequence records, not
@@ -7565,7 +7760,8 @@ def _offer_launch_action(target, name, args, rcli, position, evidence, job_dir):
         status=position["status"], unbacked=position["unbacked"],
         disagreements=_launch_disagreements(position),
         sequence=position["sequence"],
-        ready=evidence["smokeReady"].get(job_name), job=job_name)
+        ready=evidence["smokeReady"].get(job_name), job=job_name,
+        shards_declared=evidence["shardsArrived"] is not None)
     if not verdict["available"]:
         return None
 
@@ -7938,9 +8134,20 @@ def cmd_close(args: argparse.Namespace) -> dict:
     """The finishing precondition (design §3.3): writing the position
     becomes a precondition of finishing, not a courtesy. `close` refuses
     while a transition has been made and not recorded -- the section never
-    generated, bound to a revision that has moved on, or contradicted by its
-    own measured evidence -- and names which one, rather than always
-    succeeding.
+    generated, bound to a revision that has moved on, ticked over a
+    witness nothing could measure, or contradicted by its own measured
+    evidence -- and names which one, rather than always succeeding. The
+    ladder itself is `impl_availability.position_honest`, the identical
+    rule `gate` calls first (through `launch_available`) -- one order, one
+    set of codes, never a second refusal ladder this command writes for
+    itself.
+
+    **`AGREEMENT_DISAGREES` is a second, independent axis (spec Group 3).**
+    A ticked `AGREEMENTS.md`-style checklist item whose declared
+    `test_<id>` witness is absent from a fully-parsed `tests/` is refused
+    here, after the position ladder and before the refresh -- the only
+    place in the whole CLI this ever gates, since `verify`/`probe` only
+    ever report it.
 
     **Checked against the position exactly as recorded, BEFORE the refresh
     that follows.** Refreshing first would silently correct a disagreement
@@ -7948,10 +8155,18 @@ def cmd_close(args: argparse.Namespace) -> dict:
     make `POSITION_DISAGREES` unreachable by construction -- `derive()`'s
     own three-valued rule ties every disagreement to a definite verdict a
     refresh would flip on the spot. So the check comes first, over the file
-    exactly as it stood when this call began; the refresh that follows a
-    clean check can only ever ADD ticks for a witness that was `unmeasured`
-    and has since become measurable, never resolve one that already
-    disagreed -- "a caller can never close over marks it never re-derived".
+    exactly as it stood when this call began.
+
+    **The refresh that follows a clean check does not only ever ADD
+    ticks.** It calls `cmd_position` again, whose own refresh loop writes
+    `" "` back over a mark whose witness is now measured and dissatisfied
+    -- the loop `continue`s only past a witness still unmeasured, never
+    past one that came back a definite `False`. That case cannot reach
+    here: the disagreement check immediately above already refused it one
+    step earlier, over the position exactly as it stood before any refresh
+    ran. So the refresh genuinely can only add ticks *from this point
+    forward*, but not because clearing a mark is impossible in general --
+    "a caller can never close over marks it never re-derived".
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
@@ -7969,25 +8184,74 @@ def cmd_close(args: argparse.Namespace) -> dict:
 
     evidence = _position_write_evidence(target, name)
     before = position_state(target, name, evidence, args.revision, source)
-    if before["status"] == "absent":
-        raise Refused(
-            "POSITION_ABSENT",
-            "no position section has ever been generated for this target; "
-            "run `position` (--sequence or --reconcile) before close can "
-            "require it true.")
-    if before["status"] == "stale":
-        raise Refused(
-            "POSITION_STALE",
-            "the position section is bound to a revision whose bytes no "
-            "longer match this one; run `position` again to rebind it "
-            "before close can require it current.")
-    if before["disagreements"]:
+    honesty = impl_availability.position_honest(
+        status=before["status"], unbacked=before["unbacked"],
+        disagreements=before["disagreements"],
+        shards_declared=evidence["shardsArrived"] is not None)
+    if not honesty["honest"]:
+        code, facts = honesty["code"], honesty["facts"]
+        if code == "POSITION_ABSENT":
+            raise Refused(
+                "POSITION_ABSENT",
+                "no position section has ever been generated for this target; "
+                "run `position` (--sequence or --reconcile) before close can "
+                "require it true.")
+        if code == "POSITION_STALE":
+            raise Refused(
+                "POSITION_STALE",
+                "the position section is bound to a revision whose bytes no "
+                "longer match this one; run `position` again to rebind it "
+                "before close can require it current.")
+        if code == "POSITION_UNBACKED":
+            raise Refused(
+                "POSITION_UNBACKED",
+                "item(s) "
+                f"{', '.join(str(o) for o in facts['unbackedOrdinals'])} "
+                "in the position section are ticked and their witnesses were "
+                "never measured; close requires the position to be true, not "
+                "merely written -- run `position` (with `--shards` if a shard "
+                "witness needs it) so every tick is derived, or blank the "
+                "mark until its evidence exists.")
+        if code == "POSITION_SHARDS_UNDECLARED":
+            raise Refused(
+                "POSITION_SHARDS_UNDECLARED",
+                "item(s) "
+                f"{', '.join(str(o) for o in facts['undeclaredOrdinals'])} "
+                "in the position section carry a `@shard` witness, and "
+                "nothing named where a returned shard lands -- neither an "
+                "explicit `--shards <dir>` at `position` nor this target's "
+                "own declared `distribution.shardsRoot` (see "
+                "`assets/kit/src_benchmark/__init__.py`'s `distribution` "
+                "comment). The tick is not unmeasured because nothing was "
+                "found; it is unmeasured because nothing was ever told where "
+                "to look. Declare `shardsRoot` once, or run `position "
+                "--shards <dir>` to tick it against an explicit directory.")
+        # code == "POSITION_DISAGREES"
         raise Refused(
             "POSITION_DISAGREES",
-            f"{len(before['disagreements'])} item(s) disagree with their "
-            "own measured evidence; close requires the position to be "
+            f"{len(facts['disagreeingOrdinals'])} item(s) disagree with "
+            "their own measured evidence; close requires the position to be "
             "true, not merely written -- run `position` to see and correct "
             "them, never close over a contradiction.")
+
+    # A second, independent axis from the position ladder above: an
+    # AGREEMENTS.md-style checklist item, ticked, whose own declared
+    # `test_<id>` witness (spec Group 3) is absent from a fully-parsed
+    # `tests/` -- a false claim the same shape as `POSITION_DISAGREES`, one
+    # level up. Reported by `verify`/`probe` and gated nowhere but here
+    # (spec "Gating stays at close"), so this is the one and only place the
+    # CLI ever refuses on it.
+    agreements = agreements_state(target, name)
+    agreement_disagreements = agreements["witness"]["disagrees"]
+    if agreement_disagreements:
+        raise Refused(
+            "AGREEMENT_DISAGREES",
+            "agreement(s) "
+            f"{'; '.join(repr(t) for t in agreement_disagreements)} "
+            "are ticked and their declared witness function is absent from "
+            "a fully-parsed tests/; close requires every ticked agreement's "
+            "witness to still name a real function, not merely to have "
+            "named one when it was settled.")
 
     # Only unmeasured witnesses can still move here (see docstring): pick up
     # anything that became measurable since the position was last written.
@@ -9220,15 +9484,25 @@ def main(argv: list[str] | None = None) -> int:
         if name == "apply":
             p.add_argument("--plan", required=True, help="path to the approved plan JSON")
         if name in {"verify", "position"}:
-            # `admit`, `handoff`, `discuss`, `gate` and `close` read no shard
-            # directory, and giving them a flag they ignore would be a
-            # promise this file does not keep. `probe` also takes none, so
-            # `@shard` reads `unmeasured` there for the identical reason
-            # (`_position_write_evidence`'s own docstring). `position` DOES
+            # `admit`, `handoff`, `discuss`, `gate`, `close` and `probe`
+            # carry no `--shards` flag of their own, and giving them one
+            # they ignore would be a promise this file does not keep. That
+            # no longer means they read no shard directory at all, though:
+            # once a target declares `distribution.shardsRoot`
+            # (`DISTRIBUTION_OPTIONAL`), `_position_write_evidence` and
+            # `_resolve_shard_evidence` resolve it for every one of them, so
+            # `@shard` reads a real answer everywhere the declaration is
+            # read, not only at the one command that happens to carry this
+            # flag. Undeclared, `@shard` still reads `unmeasured` for them,
+            # exactly as before this fallback existed. `position` DOES
             # thread `--shards` into every write mode, not only `--reconcile`
             # — a bare refresh or `--sequence` install with `--shards` also
             # measures any `@shard` witness already in the block, the same
-            # evidence `--reconcile` uses to both discover and measure.
+            # evidence `--reconcile` uses to both discover and measure; an
+            # explicit `--shards` here always overrides the declaration.
+            # `verify`'s own `--shards` stays explicit-only, deliberately: it
+            # is a report over whichever directory an operator names, not a
+            # gate the declaration should widen on its own.
             p.add_argument("--shards", default=None,
                            help="a directory of returned shards; each "
                                 "subdirectory holds a shard.json stamp. For "
@@ -9425,6 +9699,23 @@ def main(argv: list[str] | None = None) -> int:
                                 "the document itself still needs a "
                                 "human-written Reversed paragraph to show "
                                 "the supersession")
+            p.add_argument("--witness", default=None,
+                           help="optional test_<id> naming this agreement's "
+                                "own function in the declared-invariants "
+                                "suite -- a separate identity from --about, "
+                                "which names the position witness this "
+                                "placement discusses. Persisted verbatim "
+                                "into the written line as a trailing "
+                                "`` `test_<id>` `` token; omitted, the line "
+                                "stays byte-identical to the pre-witness "
+                                "grammar. Refused SETTLE_WITNESS_MALFORMED "
+                                "if given and not test_[A-Za-z0-9_]+. "
+                                "settle is the only command that ever "
+                                "writes this token -- there is no patch or "
+                                "edit subcommand, and hand-typing one into "
+                                "the file is unsupported (evaluated "
+                                "exactly like a skill-written one by "
+                                "verify, never technically prevented)")
         if name == "defect":
             p.add_argument("--file", required=True,
                            help="path to the forge file this declares "
