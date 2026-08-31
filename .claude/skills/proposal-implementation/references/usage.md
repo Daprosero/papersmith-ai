@@ -868,6 +868,48 @@ oversight: the fact as computed cannot tell a repository that is not ready apart
 from one that never sends work anywhere. `SKILL.md`'s Output Contract carries the
 argument and states what would change it.
 
+## `propose` — the campaign proposal
+
+Appends one `proposal` event to `.implementation/position.jsonl`, scoped to
+a whole CAMPAIGN — matching `gate --unit`'s own campaign scope — never to a
+single job. Names every job it covers, its intended workers, its dependency
+edges (if any) and a human-authored rationale: the four facts the spec's
+"One Proposal Per Campaign" requirement names.
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py propose \
+  --target implementations/<repo> --name <Name> --session <your-session-id> \
+  --job governing-search --job ablation-a \
+  --worker worker-1 --worker worker-2 \
+  --depends-on ablation-a:governing-search \
+  --rationale "Full-scale campaign for the accepted research concept."
+```
+
+`--job` (repeatable, at least one) is the human-declared subset of currently
+discovered job folders THIS proposal authorizes — checked later, at `gate`
+time, for job membership. `--worker` (repeatable, at least one) is a
+declared list of intended accounts, recorded as write-only history — read by
+no code path in this file. `--depends-on <job>:<dependency>` (repeatable,
+optional) names one ordering edge per flag. `--rationale` is required and
+non-blank, refused `EMPTY_RATIONALE` otherwise — the same discipline `gate`'s
+own `--justification` already keeps.
+
+`campaign: {commit, jobSet}` is never argv: it is a live-disk snapshot —
+every job folder `_discovered_job_folders()` currently finds, and the single
+commit they all currently agree on (`null` when they disagree) — re-derived
+identically at `gate` time to detect drift. This is deliberately a
+DIFFERENT fact from `--job`'s declared subset: `jobSet` moves the moment ANY
+job folder is added or removed, regardless of which jobs this particular
+proposal named.
+
+Multi-use by design — there is no consumed marker and no
+`GATE_PROPOSAL_CONSUMED`. Calling `propose` again appends a fresh event
+rather than editing or replacing the last one; a bound proposal survives a
+same-campaign retry (a failed job's retry re-verifies against the same
+proposal, no re-propose needed) because its own staleness keys (`commit`,
+`jobSet`) are structurally distinct from the authorization's own seven
+(never `entrypoint`, never `positionStatus`).
+
 ## `offer` — the state-derived action menu
 
 The fifth ledger-appending command, named after its own event kind the same
@@ -911,10 +953,15 @@ paragraph for that gap, stated in full there.
 
 Every published `launch` action's `binding` carries a minted `authorization`
 token — a digest over the engine's own re-derived binding (job, commit,
-entrypoint, units, rung, revision, position status), never over this call's
-argv alone — and its own `binding.authorization` key names the same value
-already appended to the action's `command` string as `--authorization
-<token>`, so the next step is to run that command exactly as printed.
+entrypoint, units, rung, revision, position status, and now the digest of
+whichever campaign `proposal` event currently names this job, or `null`
+when none does), never over this call's argv alone — and its own
+`binding.authorization` key names the same value already appended to the
+action's `command` string as `--authorization <token>`, so the next step is
+to run that command exactly as printed. A token minted while no proposal
+covers this job (`proposalDigest: null`) still mints and still passes
+`gate`'s own authorization check; `gate` then refuses `GATE_PROPOSAL_UNKNOWN`
+on the SEPARATE proposal precondition — publish one with `propose` first.
 
 ## `gate` — the launch authorization record
 
@@ -954,6 +1001,27 @@ python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py gat
   --authorization '9a10...5b3c'
 ```
 
+Once the authorization token itself verifies, `gate` requires a bound
+campaign proposal naming this job (published by `propose`) and, when this
+job classifies `optional` (`classify_remote_necessity`'s own verdict — the
+recorded facts do not decide), a matching human election:
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py gate \
+  --target implementations/<repo> --name <Name> \
+  --revision research-concept-r05.md --session <your-session-id> \
+  --job ablation-a --worker w1 \
+  --justification "No declared accelerator or local budget; electing anyway." \
+  --authorization '3f9c...e21a' --elect ablation-a
+```
+
+`--elect <job>` (repeatable) is argv, per invocation, never stored and
+reused — the same "asked every time" discipline `--justification` already
+keeps. A job with no declared `accelerator` and no `--local-budget-seconds`
+classifies `optional` and needs `--elect` at every gate call; that is
+intended, not a bug — it is the recorded facts saying "not decided", never
+"skip it".
+
 Refuses `EMPTY_JUSTIFICATION` on blank input, `POSITION_ABSENT`/`POSITION_STALE`
 when there is nothing current to gate against, `POSITION_UNBACKED` when a step
 is ticked and its witness was never measured — a blank box claims nothing and
@@ -963,17 +1031,31 @@ rehearsal is on file for this job at its current pin, `SEQUENCE_NOT_REACHED`
 when an earlier item in the sequence is still open — a launch that would skip
 a rung is refused rather than authorized around it —
 `GATE_WORKER_UNIT_CONFLICT`/`GATE_WORKER_REQUIRED` when `--worker` and
-`--unit` are both given or neither is, and five authorization codes:
+`--unit` are both given or neither is, six authorization codes:
 `GATE_AUTHORIZATION_REQUIRED` (`--authorization` omitted — there is no
 default), `GATE_AUTHORIZATION_UNKNOWN` (no ledger record vouches for the
 token, or it no longer re-digests to its own recorded fields),
-`GATE_AUTHORIZATION_MISMATCH` (the record names a different job or unit
-list), `GATE_AUTHORIZATION_STALE` (a bound fact — pin, entrypoint, rung,
-revision, position status — has moved since minting, never merely elapsed
-time), and `GATE_AUTHORIZATION_CONSUMED` (the token already authorized one
-successful `gate` call; single-use, never reusable). A `gate` record written
-before this mechanism existed carries no token and is neither migrated nor
-invalidated — the requirement binds the *command*, not the record.
+`GATE_AUTHORIZATION_SUPERSEDED` (a legitimate token minted before
+`proposalDigest` joined the binding, re-digesting correctly under the
+7-key shape that predates it — diagnostic only, refused exactly as hard as
+`UNKNOWN`), `GATE_AUTHORIZATION_MISMATCH` (the record names a different job
+or unit list), `GATE_AUTHORIZATION_STALE` (a bound fact — pin, entrypoint,
+rung, revision, position status — has moved since minting, never merely
+elapsed time), and `GATE_AUTHORIZATION_CONSUMED` (the token already
+authorized one successful `gate` call; single-use, never reusable); three
+proposal codes: `GATE_PROPOSAL_UNKNOWN` (the token names no campaign
+proposal this ledger still vouches for), `GATE_PROPOSAL_MISMATCH` (a
+genuine, current proposal exists but does not name this job),
+`GATE_PROPOSAL_STALE` (the proposal's own `commit`/`jobSet` no longer
+matches live disk); and two election codes: `GATE_ELECTION_REQUIRED` (this
+job classifies `optional` and no `--elect` names it),
+`GATE_ELECTION_MISMATCH` (`--elect` names a different job, or names this
+job while it does not classify `optional`). There is deliberately no
+`GATE_PROPOSAL_REQUIRED` and no `--proposal` flag — the proposal
+precondition is entirely engine-derived from the authorization token's own
+`proposalDigest`, never argv. A `gate` record written before this mechanism
+existed carries no token and is neither migrated nor invalidated — the
+requirement binds the *command*, not the record.
 
 A later `offer` call over a changed experiment contract does not revoke an
 outstanding, unconsumed token, either — `offer` no longer recomputes or
@@ -986,7 +1068,10 @@ after minting. That would be a true refusal under a false explanation, and
 this codebase does not ship one. Only the seven facts
 `GATE_AUTHORIZATION_STALE` already names can invalidate a token; a change to
 the underlying contract is not one of them, and no new `gate` refusal exists
-to close that gap. It is left open on purpose.
+to close that gap. It is left open on purpose. `GATE_PROPOSAL_STALE` is a
+separate, later check over a separate fact (the proposal's own `commit`/
+`jobSet`, never `_AUTHORIZATION_BINDING_KEYS`' seven) — it does not widen
+what invalidates the token itself.
 
 ## `close` — the finishing precondition
 
