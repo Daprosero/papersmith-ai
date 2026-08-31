@@ -4924,6 +4924,7 @@ def cmd_plan(args: argparse.Namespace) -> dict:
 def cmd_apply(args: argparse.Namespace) -> dict:
     target = resolve_target(args.target)
     name = validate_name(args.name)
+    _require_no_open_defect(target, name)
     require_clean_worktree(target)
 
     approved = json.loads(Path(args.plan).read_text(encoding="utf-8"))
@@ -5151,6 +5152,7 @@ def cmd_handoff(args: argparse.Namespace) -> dict:
     finishing something else.
     """
     target = resolve_target(args.target)
+    name = validate_name(args.name)
     source = revision_source(args.revision)
     if source is None:
         raise Refused("REVISION_UNREADABLE",
@@ -5221,6 +5223,15 @@ def cmd_handoff(args: argparse.Namespace) -> dict:
                 f"ECUACIONES A TOCAR: {', '.join(finding.get('remedy_equations', []))}")
             deferred.append(item)
 
+    # Diagnostic and costless (design decision 7): a new report key, never a
+    # gate on this command itself -- `handoff` reads the identical
+    # `impl_position.open_defects` derivation `_require_no_open_defect`
+    # refuses on, so a defect blocking `step`/`gate`/`offer`/`close`/
+    # `settle`/`apply`/`admit` stays visible here rather than silent.
+    ledger_path = target / name / ".implementation" / "position.jsonl"
+    events = impl_position.read_events(ledger_path)
+    open_defects = impl_position.open_defects(events, FORGE_ROOT)
+
     return {
         "command": "handoff",
         "target": str(target),
@@ -5229,6 +5240,9 @@ def cmd_handoff(args: argparse.Namespace) -> dict:
         "settleInline": inline,
         "deferToOwnSession": deferred,
         "alreadyAdopted": [i["id"] for i in settled],
+        "openDefects": [{"file": e.get("file"), "session": e.get("session"),
+                         "detail": e.get("detail"), "at": e.get("at")}
+                        for e in open_defects],
         "note": "This skill proposes; proposal-deliberation decides and publishes.",
     }
 
@@ -5304,6 +5318,8 @@ def cmd_admit(args: argparse.Namespace) -> dict:
     without it. Only the verdict travels: the proposal's text stays in the forge.
     """
     target = resolve_target(args.target)
+    name = validate_name(args.name)
+    _require_no_open_defect(target, name)
     source = revision_source(args.revision)
     if source is None:
         raise Refused("REVISION_UNREADABLE",
@@ -6483,6 +6499,7 @@ def cmd_settle(args: argparse.Namespace) -> dict:
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
+    _require_no_open_defect(target, name)
 
     if args.text == "-" and args.supersedes == "-":
         raise Refused(
@@ -7019,6 +7036,7 @@ def cmd_gate(args: argparse.Namespace) -> dict:
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
+    _require_no_open_defect(target, name)
 
     if args.units and args.worker is not None:
         raise Refused(
@@ -7540,6 +7558,7 @@ def cmd_offer(args: argparse.Namespace) -> dict:
 
     target = resolve_target(args.target)
     name = validate_name(args.name)
+    _require_no_open_defect(target, name)
 
     source = revision_source(args.revision)
     if source is None:
@@ -7684,6 +7703,7 @@ def cmd_close(args: argparse.Namespace) -> dict:
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
+    _require_no_open_defect(target, name)
     product = target / name
 
     source = revision_source(args.revision)
@@ -7806,6 +7826,7 @@ def cmd_step(args: argparse.Namespace) -> dict:
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
+    _require_no_open_defect(target, name)
     require_clean_worktree(target)
 
     steps = resolve_steps_declaration(target, name)
@@ -7891,6 +7912,114 @@ def cmd_step(args: argparse.Namespace) -> dict:
         "exitStatus": result["exitStatus"], "error": result["error"],
         "session": args.session, "recordedAt": recorded_at,
     }
+
+
+def cmd_defect(args: argparse.Namespace) -> dict:
+    """Declare that some forge file is currently broken (design decisions
+    1-4, `maintenance-blocks-it-does-not-mix`). `step`, `gate`, `offer`,
+    `close`, `settle`, `apply` and `admit` each refuse `FORGE_DEFECT_OPEN`
+    while `impl_position.open_defects` reads this declaration as still open
+    (`_require_no_open_defect`, design decision 5); `handoff` additionally
+    surfaces it.
+
+    Never gated on an already-open defect and calls no `require_clean_
+    worktree` (design decision 5): a second declaration while one is open
+    must stay possible, and the worktree is likely dirty precisely when
+    something is broken. Its own append lands under `.implementation/`,
+    which `impl_guards._is_own_bookkeeping` already excuses from
+    `DIRTY_WORKTREE` for every command that DOES check it.
+
+    Check order at declaration, each narrower than the one before it
+    (`_verify_gate_authorization`'s own ordering discipline): resolve the
+    path, non-strict -> containment under `FORGE_ROOT/.claude/skills`
+    (`DEFECT_FILE_NOT_FORGE_OWNED`) -> existence as a regular file
+    (`DEFECT_FILE_ABSENT`) -> digest. Containment precedes existence on
+    purpose -- this command never reports on the existence of anything
+    outside `.claude/skills/`.
+
+    `DEFECT_FILE_ABSENT` is design decision 1's whole point: an already-
+    absent `--file` is refused, never recorded with `ABSENT_FILE_DIGEST`.
+    Recording it would either deadlock (the sentinel compares equal to
+    itself at every future check, since the path stays absent) or, if
+    clearing were ever special-cased on absence instead, clear on the very
+    first check -- the reported bypass. Refusing here keeps both
+    unreachable by construction; see `impl_position.open_defects`'s own
+    docstring for the comparison this closes.
+    """
+    target = resolve_target(args.target)
+    name = validate_name(args.name)
+
+    resolved = Path(args.file).expanduser().resolve()
+    skills_root = (FORGE_ROOT / ".claude" / "skills").resolve()
+    try:
+        resolved.relative_to(skills_root)
+    except ValueError:
+        raise Refused(
+            "DEFECT_FILE_NOT_FORGE_OWNED",
+            f"{resolved} does not live under {skills_root}; a defect can "
+            "only be declared against a file this forge itself ships.")
+    if not resolved.is_file():
+        raise Refused(
+            "DEFECT_FILE_ABSENT",
+            f"{resolved} is not a regular file; `defect` computes "
+            "fileSha256 from --file's live bytes, and there are none here "
+            "to measure. The honest reading of a path nobody can find is a "
+            "typo or a stale citation -- declare against the file that "
+            "fails to find it instead, which exists.")
+
+    forge_relative = resolved.relative_to(FORGE_ROOT.resolve()).as_posix()
+    digest = impl_position.current_file_digest(resolved)
+    recorded_at = _now_iso8601()
+    event = {
+        "kind": "defect", "command": "defect", "file": forge_relative,
+        "fileSha256": digest, "session": args.session, "at": recorded_at,
+    }
+    if args.detail:
+        event["detail"] = args.detail
+    ledger_path = target / name / ".implementation" / "position.jsonl"
+    impl_position.append_event(ledger_path, event)
+
+    return {
+        "command": "defect", "target": str(target), "name": name,
+        "file": forge_relative, "fileSha256": digest,
+        "session": args.session, "at": recorded_at,
+        "detail": event.get("detail"),
+    }
+
+
+def _require_no_open_defect(target: Path, name: str) -> None:
+    """Refuse `FORGE_DEFECT_OPEN` while any declared forge defect for this
+    `<target>/<name>` is still open (design decisions 5 and 8,
+    `maintenance-blocks-it-does-not-mix`).
+
+    Reads the ledger and re-derives openness through the identical
+    `impl_position.open_defects` fold `cmd_handoff` reads for its own
+    report, so a refusal here and a surfaced defect there can never
+    disagree about what "open" means -- one derivation serves both.
+
+    Called only from `step`, `gate`, `offer`, `close`, `settle`, `apply` and
+    `admit`, immediately after `resolve_target`/`validate_name` and before
+    `require_clean_worktree` or any other target read -- the earliest point
+    at which a ledger path (`<target>/<name>/.implementation/`) exists to
+    consult at all. Never called from `defect` itself (declaring a second
+    defect while one is open must stay possible) or from any diagnostic
+    command (`probe`, `verify`, `position`, `plan`, `compose`, `handoff`,
+    `discuss`), which must keep answering while blocked.
+    """
+    ledger_path = target / name / ".implementation" / "position.jsonl"
+    events = impl_position.read_events(ledger_path)
+    open_defects = impl_position.open_defects(events, FORGE_ROOT)
+    if open_defects:
+        files = sorted({event.get("file") for event in open_defects})
+        raise Refused(
+            "FORGE_DEFECT_OPEN",
+            f"{len(files)} forge file(s) carry an open, un-cleared defect "
+            f"declaration blocking this command: {files}. A defect clears "
+            "only when the named file's current bytes no longer match the "
+            "digest recorded against it -- fix the file (or, if it was "
+            "moved or deleted, that absence itself clears it) and retry, "
+            "or run `handoff` to see every open defect's file, session and "
+            "detail.")
 
 
 def cmd_verify(args: argparse.Namespace) -> dict:
@@ -8254,6 +8383,74 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     }
 
 
+def _crashing_forge_file(exc: BaseException) -> Path | None:
+    """The forge module that owns a crash, chosen from `exc`'s own traceback
+    (design decision 6, `maintenance-blocks-it-does-not-mix`): walk every
+    frame from `exc.__traceback__` toward where it was raised and keep the
+    LAST one whose `co_filename` resolves under `FORGE_ROOT/.claude/skills`
+    -- never the deepest frame outright, because the deepest frame can be
+    stdlib (a mocked callable's own `side_effect` raise, for one), and the
+    forge frame that called into it is the one actually responsible. `None`
+    when no frame ever qualifies, so a caller with nothing to name records
+    nothing rather than guessing.
+    """
+    skills_root = (FORGE_ROOT / ".claude" / "skills").resolve()
+    qualifying = None
+    frame = exc.__traceback__
+    while frame is not None:
+        candidate = Path(frame.tb_frame.f_code.co_filename).resolve()
+        try:
+            candidate.relative_to(skills_root)
+        except ValueError:
+            pass
+        else:
+            qualifying = candidate
+        frame = frame.tb_next
+    return qualifying
+
+
+def _record_engine_defect(args: argparse.Namespace, exc: BaseException) -> None:
+    """Auto-append one `kind: "defect"` event for a crash `main()` did not
+    expect (design decision 6): any exception that reaches `main()`'s
+    dispatch other than `Refused` is, by definition, a forge-side bug, and
+    this needs no agent cooperation to notice or declare it first.
+
+    `target`/`name` are read with `getattr(..., None)` rather than assumed
+    present: `env` never gets a `--name` and `name` never gets a `--target`,
+    so neither has a `<target>/<name>/.implementation/` ledger path to
+    write into at all -- a stated limit this does not close, see SKILL.md.
+    `session` is read the same way and, when absent (`apply` and `admit`
+    take none), the key is OMITTED from the event, never written as `null`
+    -- the identical discipline `cmd_defect`'s own `detail` already keeps.
+
+    Called only from `main()`'s own guard, itself wrapped in its own
+    `try/except Exception: pass` -- a failure in here must never replace
+    the original traceback with one about this function instead.
+    """
+    target_raw = getattr(args, "target", None)
+    name_raw = getattr(args, "name", None)
+    if target_raw is None or name_raw is None:
+        return
+    crashing_file = _crashing_forge_file(exc)
+    if crashing_file is None:
+        return
+
+    forge_relative = crashing_file.relative_to(FORGE_ROOT.resolve()).as_posix()
+    digest = impl_position.current_file_digest(crashing_file)
+    event = {
+        "kind": "defect", "command": args.command, "file": forge_relative,
+        "fileSha256": digest, "at": _now_iso8601(),
+        "detail": f"{type(exc).__name__}: {exc}",
+    }
+    session = getattr(args, "session", None)
+    if session is not None:
+        event["session"] = session
+
+    ledger_path = (Path(target_raw).expanduser().resolve() / name_raw
+                   / ".implementation" / "position.jsonl")
+    impl_position.append_event(ledger_path, event)
+
+
 COMMANDS = {"env": cmd_env, "name": cmd_name, "plan": cmd_plan, "apply": cmd_apply,
             "admit": cmd_admit, "handoff": cmd_handoff, "compose": cmd_compose,
             "probe": cmd_probe,
@@ -8265,7 +8462,8 @@ COMMANDS = {"env": cmd_env, "name": cmd_name, "plan": cmd_plan, "apply": cmd_app
             "offer": cmd_offer,
             "close": cmd_close,
             "step": cmd_step,
-            "settle": cmd_settle}
+            "settle": cmd_settle,
+            "defect": cmd_defect}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -8323,7 +8521,8 @@ def main(argv: list[str] | None = None) -> int:
                                 "discover nothing and refuse "
                                 "REVISION_UNREADABLE if it is missing or "
                                 "unreadable")
-        if name in {"position", "propose", "gate", "offer", "close", "step", "settle"}:
+        if name in {"position", "propose", "gate", "offer", "close", "step",
+                   "settle", "defect"}:
             p.add_argument("--session", required=True,
                            help="identity stamped into the ledger event(s) "
                                 "this call appends, and into the block's "
@@ -8498,15 +8697,39 @@ def main(argv: list[str] | None = None) -> int:
                                 "the document itself still needs a "
                                 "human-written Reversed paragraph to show "
                                 "the supersession")
+        if name == "defect":
+            p.add_argument("--file", required=True,
+                           help="path to the forge file this declares "
+                                "broken; must resolve under "
+                                ".claude/skills/. Refused "
+                                "DEFECT_FILE_NOT_FORGE_OWNED outside that "
+                                "tree, DEFECT_FILE_ABSENT if it is not a "
+                                "regular file -- containment is checked "
+                                "before existence")
+            p.add_argument("--detail", default=None,
+                           help="free text describing what is broken; "
+                                "omitted from the ledger event entirely "
+                                "(never written as null) when not given")
 
     args = parser.parse_args(argv)
     try:
         result = COMMANDS[args.command](args)
-    except Refused as refused:
+    except Refused as refused:             # unchanged: exit 2, appends nothing
         json.dump({"status": "refused", "code": refused.code, "detail": refused.detail},
                   sys.stdout, indent=2)
         sys.stdout.write("\n")
         return 2
+    except Exception:                      # NOT BaseException -- Refused(Exception) is
+                                            # caught above, so this ordering is load-
+                                            # bearing: KeyboardInterrupt/SystemExit must
+                                            # never be read as a forge-side defect
+                                            # (design decision 6,
+                                            # maintenance-blocks-it-does-not-mix)
+        try:
+            _record_engine_defect(args, sys.exc_info()[1])
+        except Exception:
+            pass                            # a failing recorder must stay invisible
+        raise                              # the original propagates unchanged
     json.dump(result, sys.stdout, indent=2)
     sys.stdout.write("\n")
     return 0

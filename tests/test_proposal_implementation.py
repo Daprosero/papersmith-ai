@@ -8,8 +8,10 @@ declares whether the user can still review it.
 
 import argparse
 import ast
+import contextlib
 import hashlib
 import inspect
+import io
 import json
 import os
 import re
@@ -11075,6 +11077,138 @@ class PositionModuleTests(unittest.TestCase):
             self.assertEqual([e["kind"] for e in events], ["gate", "close"])
 
 
+class AbsentFileDigestTests(unittest.TestCase):
+    """`impl_position.current_file_digest` / `open_defects` — the derived
+    half of the `maintenance-blocks-it-does-not-mix` mechanism (design
+    decisions 1-4). Phase 1 only: record and derive, inert, blocks nothing.
+
+    Exercised directly against the module, no CLI, no repository: `forge_root`
+    is an explicit argument to `open_defects` (design decision 8) precisely so
+    the property can be proven here against a throwaway tree instead of the
+    real forge.
+    """
+
+    def _forge(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / ".claude" / "skills" / "some-skill").mkdir(parents=True)
+        return root
+
+    def _write(self, forge_root, rel, data):
+        path = forge_root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return path
+
+    # --- ABSENT_FILE_DIGEST: the sentinel itself, never a valid digest ---
+
+    def test_absent_file_digest_never_matches_a_sha256_hex_shape(self):
+        self.assertIsNone(
+            re.fullmatch(r"[0-9a-f]{64}", impl_position.ABSENT_FILE_DIGEST))
+
+    # --- current_file_digest: the one producer both declaration and check call ---
+
+    def test_current_file_digest_hashes_a_regular_file(self):
+        forge_root = self._forge()
+        path = self._write(forge_root, ".claude/skills/some-skill/mod.py", b"x = 1\n")
+        self.assertEqual(impl_position.current_file_digest(path),
+                         impl_position.digest_bytes(b"x = 1\n"))
+
+    def test_current_file_digest_returns_the_sentinel_for_an_absent_path(self):
+        forge_root = self._forge()
+        never = forge_root / ".claude" / "skills" / "some-skill" / "never.py"
+        self.assertEqual(impl_position.current_file_digest(never),
+                         impl_position.ABSENT_FILE_DIGEST)
+
+    def test_current_file_digest_returns_the_sentinel_for_a_directory(self):
+        forge_root = self._forge()
+        directory = forge_root / ".claude" / "skills" / "some-skill"
+        self.assertEqual(impl_position.current_file_digest(directory),
+                         impl_position.ABSENT_FILE_DIGEST)
+
+    # --- open_defects: one uniform comparison, latest-wins, fail-closed ---
+
+    def test_open_defects_empty_with_no_defect_events(self):
+        forge_root = self._forge()
+        self.assertEqual(impl_position.open_defects([], forge_root), [])
+        self.assertEqual(
+            impl_position.open_defects([{"kind": "gate"}], forge_root), [])
+
+    def test_open_defects_open_while_the_recorded_digest_still_matches(self):
+        forge_root = self._forge()
+        path = self._write(forge_root, ".claude/skills/some-skill/mod.py", b"x = 1\n")
+        rel = str(path.relative_to(forge_root))
+        digest = impl_position.digest_bytes(b"x = 1\n")
+        events = [{"kind": "defect", "file": rel, "fileSha256": digest}]
+        self.assertEqual(impl_position.open_defects(events, forge_root), events)
+
+    def test_open_defects_clears_the_moment_the_bytes_change(self):
+        forge_root = self._forge()
+        path = self._write(forge_root, ".claude/skills/some-skill/mod.py", b"x = 1\n")
+        rel = str(path.relative_to(forge_root))
+        stale_digest = impl_position.digest_bytes(b"x = 1\n")
+        path.write_bytes(b"x = 2\n")
+        events = [{"kind": "defect", "file": rel, "fileSha256": stale_digest}]
+        self.assertEqual(impl_position.open_defects(events, forge_root), [])
+
+    def test_open_defects_missing_filesha256_key_fails_closed_open(self):
+        forge_root = self._forge()
+        path = self._write(forge_root, ".claude/skills/some-skill/mod.py", b"x = 1\n")
+        rel = str(path.relative_to(forge_root))
+        events = [{"kind": "defect", "file": rel}]  # no fileSha256 key at all
+        self.assertEqual(impl_position.open_defects(events, forge_root), events)
+
+    def test_open_defects_latest_wins_per_file(self):
+        forge_root = self._forge()
+        path = self._write(forge_root, ".claude/skills/some-skill/mod.py", b"x = 1\n")
+        rel = str(path.relative_to(forge_root))
+        current_digest = impl_position.digest_bytes(b"x = 1\n")  # matches the file's live bytes
+        stale_digest = impl_position.digest_bytes(b"x = 0\n")    # never matches them
+        events = [
+            # Oldest: names the CURRENT digest -- would read as open alone.
+            {"kind": "defect", "file": rel, "fileSha256": current_digest},
+            # Newest: names a stale digest -- would read as cleared alone.
+            {"kind": "defect", "file": rel, "fileSha256": stale_digest},
+        ]
+        # Only the newest event decides. Without latest-wins the older
+        # matching event would leak through and report this open.
+        self.assertEqual(impl_position.open_defects(events, forge_root), [])
+
+    def test_open_defects_never_existing_path_deadlocks_open_under_the_uniform_comparison(self):
+        """The mirror image of the reported bypass (design decision 1's own
+        rationale): a `defect` event recorded with the sentinel for a path
+        that stays absent compares sentinel-equals-sentinel forever.
+        `cmd_defect` refuses this at declaration (`DEFECT_FILE_ABSENT`) so it
+        can never be produced live, but the derivation itself must still
+        exhibit the property the refusal exists to keep unreachable.
+        """
+        forge_root = self._forge()
+        never = forge_root / ".claude" / "skills" / "some-skill" / "never.py"
+        rel = str(never.relative_to(forge_root))
+        events = [{"kind": "defect", "file": rel,
+                  "fileSha256": impl_position.ABSENT_FILE_DIGEST}]
+        self.assertEqual(impl_position.open_defects(events, forge_root), events)
+
+    def test_open_defects_rejects_a_stored_file_that_escapes_the_skills_tree(self):
+        """Design decision 4: the containment invariant is re-verified for
+        free on the read side. A hand-written ledger line naming a path
+        outside `.claude/skills/` cannot point the checker anywhere else."""
+        forge_root = self._forge()
+        events = [{"kind": "defect", "file": "../outside.txt",
+                  "fileSha256": "deadbeef"}]
+        self.assertEqual(impl_position.open_defects(events, forge_root), [])
+
+    # --- the bypass's structural closure: no existence branch in the clearing path ---
+
+    def test_open_defects_source_carries_no_existence_branch(self):
+        source = inspect.getsource(impl_position.open_defects)
+        pattern = re.compile(r"if\s+not\s+\S+\.(exists|is_file)\(")
+        self.assertIsNone(
+            pattern.search(source),
+            "open_defects branches on file existence directly -- absence "
+            "must enter only as current_file_digest's own return value")
+
+
 class PositionLevelGrammarTests(unittest.TestCase):
     """PR10, `the-position-nobody-holds`: the boolean tick becomes an ordered
     level, without collapsing `None` ("unmeasured") into the floor rung, and
@@ -11806,6 +11940,770 @@ class PositionCommandTests(unittest.TestCase):
         self.assertFalse((box / "Method" / ".implementation" / "position.jsonl").exists())
 
 
+class DefectCommandTests(unittest.TestCase):
+    """`defect` — declares a forge file broken (design decisions 1-4,
+    `maintenance-blocks-it-does-not-mix`). These tests prove only the
+    ledger side (declaring, refusing on a bad `--file`, appending on a
+    repeat declaration) — `OpenDefectLadderTests` below proves the
+    refusal `_require_no_open_defect` wires into `step`/`gate`/`offer`/
+    `close`/`settle`/`apply`/`admit`, and `DiagnosticsAnsweringWhileDefect
+    OpenTests` proves the seven diagnostic commands stay unaffected.
+    """
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_e2e_defect_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        return box
+
+    def _forge_file(self, data=b"placeholder = True\n"):
+        path = (FORGE / ".claude" / "skills" / "proposal-implementation" / "scripts"
+               / f"_defect_fixture_{os.getpid()}_{id(self)}.py")
+        path.write_bytes(data)
+        self.addCleanup(path.unlink, missing_ok=True)
+        return path
+
+    def run_cli(self, *args):
+        return subprocess.run([sys.executable, str(CLI), *args],
+                              capture_output=True, text=True, cwd=FORGE)
+
+    def ledger_path(self, box):
+        return box / "Method" / ".implementation" / "position.jsonl"
+
+    def test_declares_against_a_real_forge_file_and_appends_the_computed_digest(self):
+        box = self._box()
+        fixture = self._forge_file(b"x = 1\n")
+        proc = self.run_cli("defect", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--file", str(fixture),
+                            "--detail", "smoke does not import")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        result = json.loads(proc.stdout)
+        expected_digest = hashlib.sha256(b"x = 1\n").hexdigest()
+        self.assertEqual(result["fileSha256"], expected_digest)
+        self.assertEqual(result["detail"], "smoke does not import")
+        events = impl_position.read_events(self.ledger_path(box))
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["kind"], "defect")
+        self.assertEqual(events[0]["fileSha256"], expected_digest)
+        self.assertEqual(events[0]["session"], "s1")
+        self.assertEqual(events[0]["detail"], "smoke does not import")
+        self.assertTrue(events[0]["file"].startswith(".claude/skills/"))
+
+    def test_repeat_declaration_with_no_detail_omits_the_key_rather_than_writing_null(self):
+        box = self._box()
+        fixture = self._forge_file(b"x = 1\n")
+        proc = self.run_cli("defect", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--file", str(fixture))
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        events = impl_position.read_events(self.ledger_path(box))
+        self.assertNotIn("detail", events[0])
+
+    def test_refuses_a_file_outside_the_forge_skills_tree_and_writes_nothing(self):
+        box = self._box()
+        outside_root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside_root, ignore_errors=True)
+        outside = outside_root / "somewhere.py"
+        outside.write_text("x = 1\n", encoding="utf-8")
+        proc = self.run_cli("defect", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--file", str(outside))
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "DEFECT_FILE_NOT_FORGE_OWNED")
+        self.assertFalse(self.ledger_path(box).exists())
+
+    def test_refuses_a_path_that_never_existed_inside_the_forge_tree(self):
+        """The bypass, closed (design decision 1): a declaration against an
+        already-absent path is refused, never recorded with the sentinel."""
+        box = self._box()
+        never = (FORGE / ".claude" / "skills" / "proposal-implementation" / "scripts"
+                / f"_defect_never_{os.getpid()}_{id(self)}.py")
+        self.assertFalse(never.exists())
+        proc = self.run_cli("defect", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--file", str(never))
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "DEFECT_FILE_ABSENT")
+        self.assertFalse(self.ledger_path(box).exists())
+
+    def test_outside_tree_and_nonexistent_refuses_not_forge_owned_first(self):
+        box = self._box()
+        outside_root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside_root, ignore_errors=True)
+        never = outside_root / "never.py"
+        self.assertFalse(never.exists())
+        proc = self.run_cli("defect", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--file", str(never))
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "DEFECT_FILE_NOT_FORGE_OWNED")
+
+    def test_repeat_declaration_on_an_unchanged_digest_appends_rather_than_refuses(self):
+        box = self._box()
+        fixture = self._forge_file(b"x = 1\n")
+        for _ in range(2):
+            proc = self.run_cli("defect", "--target", str(box), "--name", "Method",
+                                "--session", "s1", "--file", str(fixture))
+            self.assertEqual(proc.returncode, 0, proc.stdout)
+        events = impl_position.read_events(self.ledger_path(box))
+        self.assertEqual(len(events), 2)
+
+
+class OpenDefectLadderTests(unittest.TestCase):
+    """`_require_no_open_defect` wired into `step`/`gate`/`offer`/`close`/
+    `settle`/`apply`/`admit` (Phase 2, `maintenance-blocks-it-does-not-mix`
+    design decision 5): an open forge defect refuses `FORGE_DEFECT_OPEN` as
+    the first check after `resolve_target`/`validate_name`, ahead of every
+    other rung in each of the seven commands.
+
+    **Position is proven by which refusal wins**, never merely that
+    `FORGE_DEFECT_OPEN` can fire somewhere. Every scenario below arranges a
+    second, independent, KNOWN refusal that would win instead if the
+    insertion were missing or placed one line too low — the discipline the
+    design's own per-command table states.
+
+    **The reachability instrument is arm/disarm on a real ledger fixture,
+    never source mutation** (design "The reachability instrument: arm/
+    disarm, not source mutation"): ARMED appends a real `defect` event,
+    through the real `defect` subcommand, against a real forge file at its
+    real current digest — the identical call `_require_no_open_defect`
+    itself re-derives against. DISARMED edits that same file's bytes
+    (changing its size, so a same-size edit can never reuse a stale
+    `.pyc` and mask a change) so the identical call must stop refusing
+    `FORGE_DEFECT_OPEN`.
+    """
+
+    PROPOSAL_REVISION = "r1.md"
+    PROPOSAL_TEXT = "## 1\ntexto\n"
+
+    def setUp(self):
+        self._fixtures = []
+
+    def _proposals(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / self.PROPOSAL_REVISION).write_text(self.PROPOSAL_TEXT, encoding="utf-8")
+        return root
+
+    def _box(self, committed=True):
+        self._box_count = getattr(self, "_box_count", 0) + 1
+        box = (FORGE / "implementations"
+              / f"_e2e_open_defect_ladder_{os.getpid()}_{id(self)}_{self._box_count}")
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        # A tracked placeholder, not an empty directory: git never reports an
+        # untracked FILE inside an untracked directory on its own porcelain
+        # line -- an empty `Method/` collapses to one line, `?? Method/`,
+        # which `_is_own_bookkeeping` (parts-based) does not recognize as
+        # `.implementation/`. Committing one real file here is what lets a
+        # LATER `.implementation/position.jsonl` append show up on its own
+        # descended porcelain line instead.
+        (box / "Method" / ".gitkeep").write_text("", encoding="utf-8")
+        (box / "tests").mkdir(parents=True, exist_ok=True)
+        env = dict(os.environ)
+        env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "open-defect-ladder-tests"
+        env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = \
+            "open-defect-ladder-tests@example.invalid"
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        if committed:
+            subprocess.run(["git", "add", "-A"], cwd=box, env=env, check=True,
+                           capture_output=True)
+            subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=box, env=env,
+                           check=True, capture_output=True)
+        return box
+
+    def _forge_file(self, data=b"placeholder = True\n"):
+        path = (FORGE / ".claude" / "skills" / "proposal-implementation" / "scripts"
+               / f"_open_defect_ladder_fixture_{os.getpid()}_{id(self)}_{len(self._fixtures)}.py")
+        path.write_bytes(data)
+        self.addCleanup(path.unlink, missing_ok=True)
+        self._fixtures.append(path)
+        return path
+
+    def run_cli(self, *args, proposals=None, stdin=None):
+        env = dict(os.environ)
+        if proposals is not None:
+            env["IMPLEMENTATION_PROPOSALS"] = str(proposals)
+        return subprocess.run([sys.executable, str(CLI), *args], input=stdin,
+                              capture_output=True, text=True, cwd=FORGE, env=env)
+
+    def _arm(self, box, *, name="Method", session="s1", fixture=None, detail="broken"):
+        """Declares a real open defect through the real `defect` subcommand
+        -- never a hand-written ledger line."""
+        fixture = fixture if fixture is not None else self._forge_file()
+        proc = self.run_cli("defect", "--target", str(box), "--name", name,
+                            "--session", session, "--file", str(fixture),
+                            "--detail", detail)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return fixture
+
+    def _disarm(self, fixture):
+        """Edits the declared file's bytes (a different size) so the newest
+        `defect` event's recorded digest no longer matches -- clears
+        without touching the ledger or source-mutating any tested code."""
+        fixture.write_bytes(b"placeholder = True  # edited, a different size now\n")
+
+    def _step(self, box, name="Method", session="s1", step="anything"):
+        return self.run_cli("step", "--target", str(box), "--name", name,
+                            "--session", session, "--step", step)
+
+    # --- step: DIRTY_WORKTREE is the known refusal that would win ---
+
+    def test_step_refuses_forge_defect_open_ahead_of_dirty_worktree(self):
+        box = self._box()
+        fixture = self._arm(box)
+        (box / "dirty.txt").write_text("uncommitted\n", encoding="utf-8")
+
+        proc = self._step(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "FORGE_DEFECT_OPEN")
+
+        self._disarm(fixture)
+        proc = self._step(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "DIRTY_WORKTREE")
+
+    # --- gate: GATE_AUTHORIZATION_REQUIRED, the sharpest row (design) ---
+    # Pure-argv, at the very top of `cmd_gate`'s own ladder -- an insertion
+    # placed one line too low fails this scenario loudly.
+
+    def test_gate_refuses_forge_defect_open_ahead_of_authorization_required(self):
+        box = self._box()
+        fixture = self._arm(box)
+        args = ["gate", "--target", str(box), "--name", "Method", "--session", "s1",
+                "--job", "job1", "--worker", "w1",
+                "--justification", "Because it is time."]
+
+        proc = self.run_cli(*args)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "FORGE_DEFECT_OPEN")
+
+        self._disarm(fixture)
+        proc = self.run_cli(*args)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "GATE_AUTHORIZATION_REQUIRED")
+
+    # --- offer: REVISION_UNREADABLE, not OFFER_UNANSWERED ---
+    #
+    # `OFFER_UNANSWERED` cannot serve this scenario: `cmd_offer` checks
+    # `--answer` BEFORE `resolve_target`/`validate_name` even run (see its
+    # own docstring, "Both checks sit above resolve_target/revision_
+    # source"), so omitting `--answer` would refuse identically whether the
+    # insertion is present, missing, or misplaced -- it can never
+    # distinguish the three, which is exactly the "specified refusal no
+    # input could ever trigger" trap the design warns the implementer to
+    # watch for at every one of the seven insertion points. A valid
+    # `--answer` with an unreadable `--revision` is the nearest reachable
+    # marker: still checked immediately after the insertion point, in the
+    # same position `close`'s own `REVISION_UNREADABLE` occupies.
+
+    def test_offer_refuses_forge_defect_open_ahead_of_revision_unreadable(self):
+        box = self._box()
+        fixture = self._arm(box)
+        args = ["offer", "--target", str(box), "--name", "Method", "--session", "s1",
+                "--answer", "yes", "--revision", "does-not-exist.md"]
+
+        proc = self.run_cli(*args)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "FORGE_DEFECT_OPEN")
+
+        self._disarm(fixture)
+        proc = self.run_cli(*args)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "REVISION_UNREADABLE")
+
+    # --- close: REVISION_UNREADABLE ---
+
+    def test_close_refuses_forge_defect_open_ahead_of_revision_unreadable(self):
+        box = self._box()
+        fixture = self._arm(box)
+        args = ["close", "--target", str(box), "--name", "Method", "--session", "s1",
+                "--revision", "does-not-exist.md"]
+
+        proc = self.run_cli(*args)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "FORGE_DEFECT_OPEN")
+
+        self._disarm(fixture)
+        proc = self.run_cli(*args)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "REVISION_UNREADABLE")
+
+    # --- settle: SETTLE_HEADING_ABSENT ---
+
+    def test_settle_refuses_forge_defect_open_ahead_of_heading_absent(self):
+        box = self._box(committed=False)
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] placeholder\n", encoding="utf-8")
+        discuss = self.run_cli("discuss", "--target", str(box), "--name", "Method",
+                               "--about", "record", "--question", "Settled?",
+                               "--answer", "Yes.")
+        self.assertEqual(discuss.returncode, 0, discuss.stdout)
+        fixture = self._arm(box)
+        args = ["settle", "--target", str(box), "--name", "Method", "--session", "s1",
+                "--about", "record", "--text", "New text", "--under", "## Nowhere"]
+
+        proc = self.run_cli(*args)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "FORGE_DEFECT_OPEN")
+
+        self._disarm(fixture)
+        proc = self.run_cli(*args)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_HEADING_ABSENT")
+
+    # --- apply: PLAN_MISMATCH ---
+    #
+    # The design's own table names "--plan path unreadable/stale"; a
+    # literally unreadable (nonexistent) `--plan` path is not a coded
+    # `Refused` at all today -- `Path(args.plan).read_text()` raises
+    # `FileNotFoundError` uncaught (Phase 3's crash capture is a separate,
+    # later change), so it cannot serve as "a different KNOWN refusal
+    # wins". `PLAN_MISMATCH` is the nearest reachable, deterministic, coded
+    # refusal past `require_clean_worktree` -- a plan JSON that exists,
+    # parses, and simply names a different target/name.
+
+    def test_apply_refuses_forge_defect_open_ahead_of_plan_mismatch(self):
+        box = self._box()
+        fixture = self._arm(box)
+        plan_path = Path(tempfile.mktemp(suffix=".json"))
+        self.addCleanup(plan_path.unlink, missing_ok=True)
+        plan_path.write_text(json.dumps({"target": "bogus", "name": "Bogus"}),
+                             encoding="utf-8")
+        args = ["apply", "--target", str(box), "--name", "Method", "--plan", str(plan_path)]
+
+        proc = self.run_cli(*args)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "FORGE_DEFECT_OPEN")
+
+        self._disarm(fixture)
+        proc = self.run_cli(*args)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "PLAN_MISMATCH")
+
+    # --- admit: REVISION_UNREADABLE, admit's own actual first-ladder
+    # refusal (task 2.1's re-location -- `cmd_admit` never called
+    # `validate_name` before this change; `--name` was already required and
+    # collected by argparse, so adding the call uses a value the parser
+    # already accepted, not a new flag) ---
+
+    def test_admit_refuses_forge_defect_open_ahead_of_revision_unreadable(self):
+        box = self._box()
+        fixture = self._arm(box)
+        args = ["admit", "--target", str(box), "--name", "Method"]
+
+        proc = self.run_cli(*args)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "FORGE_DEFECT_OPEN")
+
+        self._disarm(fixture)
+        proc = self.run_cli(*args)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "REVISION_UNREADABLE")
+
+    # --- the guard order the mechanism must never invert ---
+
+    def test_non_repository_target_refuses_not_a_git_repo_not_forge_defect_open(self):
+        """`resolve_target`'s own `NOT_A_GIT_REPO` precedes the defect check
+        by construction: there is no ledger path to consult before a target
+        even resolves. A defect armed elsewhere must never leak into this
+        refusal."""
+        elsewhere = self._box()
+        self._arm(elsewhere)
+
+        not_a_repo = (FORGE / "implementations"
+                     / f"_e2e_not_a_repo_{os.getpid()}_{id(self)}")
+        self.addCleanup(shutil.rmtree, not_a_repo, ignore_errors=True)
+        (not_a_repo / "Method").mkdir(parents=True)
+
+        proc = self._step(not_a_repo)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "NOT_A_GIT_REPO")
+
+    def test_a_defect_open_under_one_target_does_not_block_a_different_target(self):
+        """Per-target scope (spec, design's Two Limits): every `defect`
+        event is scoped to the exact `<target>/<name>/.implementation/` it
+        was appended to."""
+        box_a = self._box()
+        self._arm(box_a)
+        box_b = self._box()
+
+        proc = self._step(box_b)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        # Reaches its own (unrelated) refusal, never the other target's
+        # defect -- proof the check consulted box_b's own ledger, not box_a's.
+        self.assertEqual(json.loads(proc.stdout)["code"], "STEPS_UNDECLARED")
+
+    def test_declaring_then_stepping_in_the_same_target_never_self_trips_dirty_worktree(self):
+        """Task 2.7: the defect's own ledger append must not be mistaken
+        for uncommitted work by `require_clean_worktree`
+        (`impl_guards._is_own_bookkeeping` already excuses `.implementation/`
+        for every command that checks it) -- proven here composed with the
+        NEW `FORGE_DEFECT_OPEN` check: declare, then clear (so `step` can
+        reach `require_clean_worktree` at all), and the ledger line the
+        declaration left behind must still not trip it. A genuinely
+        separate, non-ledger dirty file must still refuse."""
+        box = self._box()
+        fixture = self._arm(box)
+        self._disarm(fixture)
+
+        proc = self._step(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "STEPS_UNDECLARED")
+
+        (box / "dirty.txt").write_text("genuinely uncommitted\n", encoding="utf-8")
+        proc = self._step(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "DIRTY_WORKTREE")
+
+
+class DiagnosticsAnsweringWhileDefectOpenTests(unittest.TestCase):
+    """`probe`, `verify`, `position`, `plan`, `compose`, `handoff` and
+    `discuss` carry no `FORGE_DEFECT_OPEN` check (spec "Diagnostic Commands
+    Stay Reachable"; design decision 5's own scope). Every scenario below
+    pairs its diagnostic call with a companion assertion, on the identical
+    fixture, that a spend command (`step`) IS refused `FORGE_DEFECT_OPEN`
+    there -- without that pairing all seven would pass on a fixture whose
+    arm never armed (design "Diagnostics: seven scenarios, each with a
+    non-vacuity companion").
+    """
+
+    def setUp(self):
+        self._fixtures = []
+
+    def _proposals(self, revision="r1.md", text="## 1\ntexto\n"):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / revision).write_text(text, encoding="utf-8")
+        return root
+
+    def _box(self, committed=True):
+        self._box_count = getattr(self, "_box_count", 0) + 1
+        box = (FORGE / "implementations"
+              / f"_e2e_open_defect_diag_{os.getpid()}_{id(self)}_{self._box_count}")
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        # See `OpenDefectLadderTests._box`'s identical comment: a tracked
+        # placeholder, not an empty directory, so a later `.implementation/`
+        # append shows up on its own porcelain line rather than collapsing
+        # `Method/` itself into one untracked-directory line.
+        (box / "Method" / ".gitkeep").write_text("", encoding="utf-8")
+        (box / "tests").mkdir(parents=True, exist_ok=True)
+        env = dict(os.environ)
+        env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "open-defect-diag-tests"
+        env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = \
+            "open-defect-diag-tests@example.invalid"
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        if committed:
+            subprocess.run(["git", "add", "-A"], cwd=box, env=env, check=True,
+                           capture_output=True)
+            subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=box, env=env,
+                           check=True, capture_output=True)
+        return box
+
+    def _forge_file(self, data=b"placeholder = True\n"):
+        path = (FORGE / ".claude" / "skills" / "proposal-implementation" / "scripts"
+               / f"_open_defect_diag_fixture_{os.getpid()}_{id(self)}_{len(self._fixtures)}.py")
+        path.write_bytes(data)
+        self.addCleanup(path.unlink, missing_ok=True)
+        self._fixtures.append(path)
+        return path
+
+    def run_cli(self, *args, proposals=None, stdin=None):
+        env = dict(os.environ)
+        if proposals is not None:
+            env["IMPLEMENTATION_PROPOSALS"] = str(proposals)
+        return subprocess.run([sys.executable, str(CLI), *args], input=stdin,
+                              capture_output=True, text=True, cwd=FORGE, env=env)
+
+    def _arm(self, box, *, name="Method", session="s1"):
+        fixture = self._forge_file()
+        proc = self.run_cli("defect", "--target", str(box), "--name", name,
+                            "--session", session, "--file", str(fixture),
+                            "--detail", "broken, for a diagnostic fixture")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return fixture
+
+    def _assert_spend_command_is_refused_here(self, box, name="Method"):
+        """The non-vacuity companion: proves this exact fixture is really
+        armed, by showing a spend command refuses FORGE_DEFECT_OPEN on it."""
+        proc = self.run_cli("step", "--target", str(box), "--name", name,
+                            "--session", "s1", "--step", "anything")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "FORGE_DEFECT_OPEN")
+
+    def test_probe_answers_while_a_defect_is_open(self):
+        box = self._box()
+        self._arm(box)
+        proc = self.run_cli("probe", "--target", str(box), "--name", "Method")
+        self.assertNotEqual(json.loads(proc.stdout).get("code"), "FORGE_DEFECT_OPEN",
+                            proc.stdout)
+        self._assert_spend_command_is_refused_here(box)
+
+    def test_verify_answers_while_a_defect_is_open(self):
+        box = self._box()
+        self._arm(box)
+        proc = self.run_cli("verify", "--target", str(box), "--name", "Method")
+        self.assertNotEqual(json.loads(proc.stdout).get("code"), "FORGE_DEFECT_OPEN",
+                            proc.stdout)
+        self._assert_spend_command_is_refused_here(box)
+
+    def test_position_answers_while_a_defect_is_open(self):
+        box = self._box()
+        self._arm(box)
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--session", "s1")
+        self.assertNotEqual(json.loads(proc.stdout).get("code"), "FORGE_DEFECT_OPEN",
+                            proc.stdout)
+        self._assert_spend_command_is_refused_here(box)
+
+    def test_plan_answers_while_a_defect_is_open(self):
+        box = self._box()
+        self._arm(box)
+        proc = self.run_cli("plan", "--target", str(box), "--name", "Method")
+        self.assertNotEqual(json.loads(proc.stdout).get("code"), "FORGE_DEFECT_OPEN",
+                            proc.stdout)
+        self._assert_spend_command_is_refused_here(box)
+
+    def test_compose_answers_while_a_defect_is_open(self):
+        box = self._box()
+        self._arm(box)
+        proc = self.run_cli("compose", "--target", str(box), "--finding", "nonexistent",
+                            "--entry-text", "text")
+        self.assertNotEqual(json.loads(proc.stdout).get("code"), "FORGE_DEFECT_OPEN",
+                            proc.stdout)
+        self._assert_spend_command_is_refused_here(box)
+
+    def test_handoff_answers_while_a_defect_is_open(self):
+        box = self._box()
+        proposals = self._proposals()
+        self._arm(box)
+        proc = self.run_cli("handoff", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", proposals=proposals)
+        self.assertNotEqual(json.loads(proc.stdout).get("code"), "FORGE_DEFECT_OPEN",
+                            proc.stdout)
+        self._assert_spend_command_is_refused_here(box)
+
+    def test_discuss_answers_while_a_defect_is_open(self):
+        box = self._box()
+        self._arm(box)
+        proc = self.run_cli("discuss", "--target", str(box), "--name", "Method",
+                            "--about", "record", "--question", "Still open?")
+        self.assertNotEqual(json.loads(proc.stdout).get("code"), "FORGE_DEFECT_OPEN",
+                            proc.stdout)
+        self._assert_spend_command_is_refused_here(box)
+
+
+class HandoffSurfacesOpenDefectsTests(unittest.TestCase):
+    """`handoff` gains `openDefects` (design decision 7): a new report key,
+    additive, never folding forge health into `status`, which keeps meaning
+    exactly what it means today -- findings routing."""
+
+    def _proposals(self, revision="r1.md", text="## 1\ntexto\n"):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / revision).write_text(text, encoding="utf-8")
+        return root
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_e2e_handoff_defects_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        (box / "tests").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        return box
+
+    def _forge_file(self, data=b"placeholder = True\n"):
+        path = (FORGE / ".claude" / "skills" / "proposal-implementation" / "scripts"
+               / f"_handoff_defects_fixture_{os.getpid()}_{id(self)}.py")
+        path.write_bytes(data)
+        self.addCleanup(path.unlink, missing_ok=True)
+        return path
+
+    def run_cli(self, *args, proposals=None):
+        env = dict(os.environ)
+        if proposals is not None:
+            env["IMPLEMENTATION_PROPOSALS"] = str(proposals)
+        return subprocess.run([sys.executable, str(CLI), *args],
+                              capture_output=True, text=True, cwd=FORGE, env=env)
+
+    def test_handoff_reports_no_open_defects_when_none_are_declared(self):
+        box = self._box()
+        proc = self.run_cli("handoff", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["openDefects"], [])
+
+    def test_handoff_surfaces_an_open_defect_by_file_session_and_detail(self):
+        box = self._box()
+        fixture = self._forge_file(b"x = 1\n")
+        declare = self.run_cli("defect", "--target", str(box), "--name", "Method",
+                               "--session", "s7", "--file", str(fixture),
+                               "--detail", "smoke does not import")
+        self.assertEqual(declare.returncode, 0, declare.stdout)
+
+        proc = self.run_cli("handoff", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        open_defects = json.loads(proc.stdout)["openDefects"]
+        self.assertEqual(len(open_defects), 1)
+        self.assertTrue(open_defects[0]["file"].startswith(".claude/skills/"))
+        self.assertEqual(open_defects[0]["session"], "s7")
+        self.assertEqual(open_defects[0]["detail"], "smoke does not import")
+
+    def test_handoff_stops_surfacing_a_defect_once_the_file_changes(self):
+        box = self._box()
+        fixture = self._forge_file(b"x = 1\n")
+        declare = self.run_cli("defect", "--target", str(box), "--name", "Method",
+                               "--session", "s7", "--file", str(fixture))
+        self.assertEqual(declare.returncode, 0, declare.stdout)
+        fixture.write_bytes(b"x = 1  # fixed, a different size now\n")
+
+        proc = self.run_cli("handoff", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["openDefects"], [])
+
+
+class _CustomForgeBug(Exception):
+    """A crash type this suite owns, so "the same exception type survives"
+    means something beyond every test happening to raise `RuntimeError`."""
+
+
+class CrashCaptureTests(unittest.TestCase):
+    """`main()`'s guarded `except Exception` arm (design decision 6,
+    `maintenance-blocks-it-does-not-mix`): any exception reaching `main()`'s
+    dispatch that is not `Refused` is, by definition, a forge-side bug, and
+    is auto-recorded as a `kind: "defect"` event before it re-raises -- the
+    half of this mechanism that needs no agent cooperation.
+
+    Every scenario calls `impl.main(...)` IN-PROCESS (never through
+    `run_cli`'s subprocess) so `COMMANDS` can be monkeypatched: a reachable
+    non-`Refused` crash has to be constructed, not merely asserted possible
+    -- ordinary argv-shaped calls into the real, unpatched command surface
+    only ever reach coded `Refused` paths.
+    """
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_e2e_crash_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "Method").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        return box
+
+    def ledger_path(self, box):
+        return box / "Method" / ".implementation" / "position.jsonl"
+
+    def _call_main(self, argv):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = impl.main(argv)
+        return code, buf.getvalue()
+
+    def test_a_non_refused_crash_records_the_raising_forge_module_and_its_current_digest(self):
+        """Reachability, constructed: `COMMANDS["step"]` is monkeypatched to
+        raise a plain `RuntimeError` -- an exception `except Refused` never
+        catches. The raise itself happens inside a stdlib `unittest.mock`
+        frame, never inside `implementation_cli.py`, which is exactly the
+        "deepest frame is stdlib" hazard the design names: the recorded
+        file must be `main()`'s own frame (the LAST forge frame still on
+        the traceback), and its digest must be the file's CURRENT bytes,
+        computed through the identical `current_file_digest` the ladder
+        check re-derives against.
+        """
+        box = self._box()
+        boom = unittest.mock.Mock(side_effect=RuntimeError("boom"))
+        with unittest.mock.patch.dict(impl.COMMANDS, {"step": boom}):
+            with self.assertRaises(RuntimeError):
+                impl.main(["step", "--target", str(box), "--name", "Method",
+                          "--session", "s1", "--step", "whatever"])
+
+        events = impl_position.read_events(self.ledger_path(box))
+        defects = [e for e in events if e.get("kind") == "defect"]
+        self.assertEqual(len(defects), 1)
+        self.assertEqual(defects[0]["command"], "step")
+        self.assertEqual(defects[0]["session"], "s1")
+        self.assertTrue(defects[0]["file"].endswith("implementation_cli.py"),
+                        defects[0]["file"])
+        self.assertEqual(defects[0]["fileSha256"],
+                         impl_position.current_file_digest(CLI))
+
+    def test_the_original_exception_type_and_message_propagate_unchanged(self):
+        box = self._box()
+        boom = unittest.mock.Mock(
+            side_effect=_CustomForgeBug("cmd_step forgot to check something"))
+        with unittest.mock.patch.dict(impl.COMMANDS, {"step": boom}):
+            with self.assertRaises(_CustomForgeBug) as ctx:
+                impl.main(["step", "--target", str(box), "--name", "Method",
+                          "--session", "s1", "--step", "whatever"])
+        self.assertEqual(str(ctx.exception), "cmd_step forgot to check something")
+
+    def test_a_failing_recorder_never_replaces_the_original_exception(self):
+        """`append_event` itself raising must stay invisible: the ORIGINAL
+        exception still propagates, unwrapped and unreplaced, and no
+        second error is ever reported."""
+        box = self._box()
+        boom = unittest.mock.Mock(side_effect=RuntimeError("boom"))
+        with unittest.mock.patch.dict(impl.COMMANDS, {"step": boom}), \
+             unittest.mock.patch.object(impl_position, "append_event",
+                                        side_effect=OSError("ledger disk full")):
+            with self.assertRaises(RuntimeError) as ctx:
+                impl.main(["step", "--target", str(box), "--name", "Method",
+                          "--session", "s1", "--step", "whatever"])
+        self.assertEqual(str(ctx.exception), "boom")
+
+    def test_refused_records_nothing_the_ordinary_refusal_path_is_unchanged(self):
+        """Highest-consequence scenario in the design's own table: a
+        `Refused` leaking into the recorder would permanently block the
+        flow on its own refusals. `except Refused` sits ABOVE `except
+        Exception`, and this is the real, unpatched `cmd_step` refusing
+        for real (`NOT_A_GIT_REPO`, no `git init` here) -- not a
+        monkeypatch standing in for one."""
+        box = FORGE / "implementations" / f"_e2e_crash_refused_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "Method").mkdir(parents=True)
+        code, out = self._call_main(
+            ["step", "--target", str(box), "--name", "Method",
+             "--session", "s1", "--step", "whatever"])
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(out)["code"], "NOT_A_GIT_REPO")
+        self.assertFalse(self.ledger_path(box).exists())
+
+    def test_keyboard_interrupt_and_system_exit_record_nothing(self):
+        box = self._box()
+        for exc_type in (KeyboardInterrupt, SystemExit):
+            with self.subTest(exc_type=exc_type.__name__):
+                raiser = unittest.mock.Mock(side_effect=exc_type())
+                with unittest.mock.patch.dict(impl.COMMANDS, {"step": raiser}):
+                    with self.assertRaises(exc_type):
+                        impl.main(["step", "--target", str(box), "--name", "Method",
+                                  "--session", "s1", "--step", "whatever"])
+                self.assertFalse(self.ledger_path(box).exists())
+
+    def test_a_crash_in_env_appends_nothing_and_re_raises_the_stated_limit(self):
+        """`env` never gets a `--name`, so it has no `<target>/<name>/
+        .implementation/` ledger path to write into at all -- the stated
+        limit `_record_engine_defect`'s own docstring names, never a gap
+        this closes."""
+        box = self._box()
+        boom = unittest.mock.Mock(side_effect=RuntimeError("env boom"))
+        with unittest.mock.patch.dict(impl.COMMANDS, {"env": boom}):
+            with self.assertRaises(RuntimeError) as ctx:
+                impl.main(["env", "--target", str(box)])
+        self.assertEqual(str(ctx.exception), "env boom")
+        self.assertFalse(self.ledger_path(box).exists())
+
+
 class CommandRosterTests(unittest.TestCase):
     """`COMMANDS` binds every subcommand `main()` accepts; a table in
     `SKILL.md` is the human-facing roster of what each of the four
@@ -11851,7 +12749,7 @@ class CommandRosterTests(unittest.TestCase):
 
     def test_every_command_dispatched_is_accounted_for(self):
         write_verbs = {"position", "discuss", "propose", "gate", "offer",
-                       "close", "step", "settle"}
+                       "close", "step", "settle", "defect"}
         dispatched = set(impl.COMMANDS)
         self.assertEqual(
             dispatched, self.DOCUMENTED_ELSEWHERE | write_verbs,

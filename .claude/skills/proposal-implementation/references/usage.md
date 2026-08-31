@@ -770,6 +770,49 @@ needs a human-written `Reversed` paragraph to show a supersession actually
 happened. `--text -` and `--supersedes -` cannot both read stdin in one call
 (`SETTLE_STDIN_CONFLICT`).
 
+## `defect` — declare a forge file broken
+
+Records that some file this forge itself ships is currently wrong — a bug in
+`implementation_cli.py`, a stale claim in `SKILL.md`, anything under
+`.claude/skills/`. While it stays open, `step`, `gate`, `offer`, `close`,
+`settle`, `apply` and `admit` all refuse `FORGE_DEFECT_OPEN` for this exact
+`<target>/<name>`; `probe`, `verify`, `position`, `plan`, `compose`,
+`handoff` and `discuss` stay reachable throughout. `main()` also appends this
+same kind of event on its own, with no `defect` call at all, the moment any
+OTHER exception reaches it while dispatching a command — see SKILL.md's
+"When the forge itself crashes mid-flow".
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py defect \
+  --target implementations/<repo> --name <Name> --session <your-session-id> \
+  --file .claude/skills/proposal-implementation/scripts/implementation_cli.py \
+  --detail "cmd_step ignores STEP_MALFORMED for an entry missing 'function'"
+```
+
+```json
+{ "command": "defect", "target": "<repo>", "name": "<Name>",
+  "file": ".claude/skills/proposal-implementation/scripts/implementation_cli.py",
+  "fileSha256": "<64-char hex>", "session": "<your-session-id>",
+  "at": "2026-08-27T00:00:00Z",
+  "detail": "cmd_step ignores STEP_MALFORMED for an entry missing 'function'" }
+```
+
+`--file` must resolve under `FORGE_ROOT/.claude/skills/`; a path outside that
+tree refuses `DEFECT_FILE_NOT_FORGE_OWNED`, checked BEFORE existence, so this
+command never reports on the existence of anything outside it. A path that
+does not resolve to a regular file refuses `DEFECT_FILE_ABSENT` — declaring
+against an already-absent path is refused rather than recorded, because the
+honest reading of a `--file` nobody can find is a typo, not a forge bug; the
+genuine case ("this module is missing") is declarable against the file that
+fails to find it, which exists. `--detail` is optional free text and is
+omitted from the ledger event entirely, never written as `null`, when not
+given. Clearing happens the moment the named file's bytes change — editing
+it, even to fix the exact thing declared, clears the defect; asserting the
+fix in a fresh `--detail` on unchanged bytes does not. Deleting the file
+after the declaration clears it too, on the same rule: an absent file can
+never again match the recorded digest, so absence is treated as the
+strongest possible change, not a bypass that needs closing.
+
 ## Probe — what stands between this repository and a benchmark
 
 ```bash
