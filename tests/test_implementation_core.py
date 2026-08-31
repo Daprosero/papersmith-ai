@@ -403,7 +403,8 @@ class LaunchAvailableTests(unittest.TestCase):
 
     def _call(self, **overrides):
         facts = {"status": "complete", "unbacked": [], "disagreements": [],
-                 "sequence": self.SEQUENCE, "ready": True, "job": "job-a"}
+                 "sequence": self.SEQUENCE, "ready": True, "job": "job-a",
+                 "shards_declared": True}
         facts.update(overrides)
         return impl_availability.launch_available(**facts)
 
@@ -418,6 +419,43 @@ class LaunchAvailableTests(unittest.TestCase):
 
     def test_an_unbacked_tick_refuses_and_names_its_ordinal(self):
         verdict = self._call(unbacked=[{"ordinal": 1}])
+        self.assertEqual(verdict["code"], "POSITION_UNBACKED")
+        self.assertEqual(verdict["facts"]["unbackedOrdinals"], [1])
+
+    def test_a_shard_tick_with_nothing_declared_refuses_the_honest_code(self):
+        """The finding this change closes: a ticked `@shard` item whose
+        location nobody declared is not `POSITION_UNBACKED` -- that code
+        means "a witness was measured and found silent", and here nothing
+        was ever measured at all.
+        """
+        verdict = self._call(
+            unbacked=[{"ordinal": 1, "witness": {"kind": "shard", "operand": "s0"}}],
+            shards_declared=False)
+        self.assertEqual(verdict["code"], "POSITION_SHARDS_UNDECLARED")
+        self.assertEqual(verdict["facts"]["undeclaredOrdinals"], [1])
+
+    def test_a_shard_tick_with_a_declaration_still_reads_unbacked(self):
+        """The same shard-kind unbacked item, `shards_declared=True`: a
+        location WAS resolved and this particular tick still came back
+        unmeasured (e.g. arrived but not current) -- a different fact, and
+        it keeps the general code."""
+        verdict = self._call(
+            unbacked=[{"ordinal": 1, "witness": {"kind": "shard", "operand": "s0"}}],
+            shards_declared=True)
+        self.assertEqual(verdict["code"], "POSITION_UNBACKED")
+        self.assertEqual(verdict["facts"]["unbackedOrdinals"], [1])
+
+    def test_a_non_shard_unbacked_item_outranks_an_undeclared_shard_tick(self):
+        """Mixed causes in one sequence: a real, general unbacked item (any
+        other witness kind) is reported first, even while an undeclared
+        `@shard` tick sits beside it -- the more general honesty problem
+        is never masked by the narrower one."""
+        verdict = self._call(
+            unbacked=[
+                {"ordinal": 1, "witness": {"kind": "notebook", "operand": "n"}},
+                {"ordinal": 2, "witness": {"kind": "shard", "operand": "s0"}},
+            ],
+            shards_declared=False)
         self.assertEqual(verdict["code"], "POSITION_UNBACKED")
         self.assertEqual(verdict["facts"]["unbackedOrdinals"], [1])
 
@@ -475,6 +513,70 @@ class LaunchAvailableTests(unittest.TestCase):
         self.assertTrue(verdict["available"])
         self.assertIsNone(verdict["code"])
         self.assertEqual(verdict["facts"]["jobOrdinal"], 2)
+
+
+class PositionHonestTests(unittest.TestCase):
+    """`impl_availability.position_honest` -- the honesty prefix extracted
+    from `cmd_close`'s own former hand-rolled ladder (D2, `a-pilot-is-the-
+    whole-flow-validated`) and shared, unchanged, with `launch_available`
+    above. Table-driven over every one of its five outcomes, in the order
+    the function itself checks them.
+    """
+
+    def _honest(self, **overrides):
+        facts = {"status": "complete", "unbacked": [], "disagreements": [],
+                 "shards_declared": True}
+        facts.update(overrides)
+        return impl_availability.position_honest(**facts)
+
+    def test_the_five_outcomes_in_the_order_the_ladder_checks_them(self):
+        cases = [
+            ("absent status",
+             {"status": "absent"}, "POSITION_ABSENT", {}),
+            ("stale status",
+             {"status": "stale"}, "POSITION_STALE", {}),
+            ("a real unbacked tick",
+             {"unbacked": [{"ordinal": 3, "witness": {"kind": "notebook", "operand": "n"}}]},
+             "POSITION_UNBACKED", {"unbackedOrdinals": [3]}),
+            ("an undeclared shard tick",
+             {"unbacked": [{"ordinal": 4, "witness": {"kind": "shard", "operand": "s0"}}],
+              "shards_declared": False},
+             "POSITION_SHARDS_UNDECLARED", {"undeclaredOrdinals": [4]}),
+            ("a disagreeing item",
+             {"disagreements": [{"ordinal": 5}]},
+             "POSITION_DISAGREES", {"disagreeingOrdinals": [5]}),
+        ]
+        for label, overrides, code, facts in cases:
+            with self.subTest(label):
+                verdict = self._honest(**overrides)
+                self.assertFalse(verdict["honest"])
+                self.assertEqual(verdict["code"], code)
+                self.assertEqual(verdict["facts"], facts)
+
+    def test_nothing_wrong_reads_honest(self):
+        verdict = self._honest()
+        self.assertTrue(verdict["honest"])
+        self.assertIsNone(verdict["code"])
+        self.assertEqual(verdict["facts"], {})
+
+    def test_status_outranks_every_other_check(self):
+        """`absent`/`stale` short-circuit before the unbacked/shard/
+        disagreement checks even run -- an unbacked or disagreeing item
+        beside an absent status must never surface the narrower code."""
+        verdict = self._honest(
+            status="absent",
+            unbacked=[{"ordinal": 1, "witness": {"kind": "shard", "operand": "s0"}}],
+            shards_declared=False,
+            disagreements=[{"ordinal": 2}])
+        self.assertEqual(verdict["code"], "POSITION_ABSENT")
+
+    def test_omitting_shards_declared_raises_typeerror(self):
+        """No default, the identical doctrine `disagreements` already
+        keeps: a caller that forgets this keyword fails the call itself,
+        never silently reads every shard tick as backed."""
+        with self.assertRaises(TypeError):
+            impl_availability.position_honest(
+                status="complete", unbacked=[], disagreements=[])
 
 
 class LaunchAvailableNoUpwardImportsTests(unittest.TestCase):

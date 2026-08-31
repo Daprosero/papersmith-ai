@@ -1168,7 +1168,12 @@ Refuses `EMPTY_JUSTIFICATION` on blank input, `POSITION_ABSENT`/`POSITION_STALE`
 when there is nothing current to gate against, `POSITION_UNBACKED` when a step
 is ticked and its witness was never measured — a blank box claims nothing and
 is honest for it, a ticked one asserts a step was reached, and a launch is not
-authorized against an assertion nobody checked — `NOT_READY` when no passing
+authorized against an assertion nobody checked — `POSITION_SHARDS_UNDECLARED`
+when the ticked item's witness is `@shard` and nothing named where a returned
+shard lands (no `distribution.shardsRoot` declared, `gate` itself carries no
+`--shards` flag to override with) — a different fact from `POSITION_UNBACKED`:
+this tick was never told where to look, rather than looked-at and found
+silent — `NOT_READY` when no passing
 rehearsal is on file for this job at its current pin, `SEQUENCE_NOT_REACHED`
 when an earlier item in the sequence is still open — a launch that would skip
 a rung is refused rather than authorized around it —
@@ -1228,13 +1233,21 @@ python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py clo
 ```
 
 Checked against the position exactly as recorded, before the refresh that
-follows: `POSITION_ABSENT` when no section was ever generated,
-`POSITION_STALE` when it is bound to a revision that has moved on, and
-`POSITION_DISAGREES` when a recorded mark still contradicts its own measured
-evidence. Only once that check is clean does `close` refresh — picking up
-any witness that has become measurable since — and record the transition. A
-second `close` over the identical, unmoved position reports `"not_open"`
-rather than appending a second event.
+follows — the identical ladder `gate` calls first
+(`impl_availability.position_honest`, shared rather than reimplemented):
+`POSITION_ABSENT` when no section was ever generated, `POSITION_STALE` when
+it is bound to a revision that has moved on, `POSITION_UNBACKED` when a
+sequence item is ticked and its witness was never measured, `POSITION_
+SHARDS_UNDECLARED` when the ticked item carries a `@shard` witness and
+nothing named where a returned shard lands — neither an explicit `--shards
+<dir>` at `position` nor this target's own declared `distribution.
+shardsRoot` — so the tick cannot be checked at all, a different fact from
+`POSITION_UNBACKED`'s "checked, and found silent", and `POSITION_DISAGREES`
+when a recorded mark still contradicts its own measured evidence. Only once
+that check is clean does `close` refresh — picking up any witness that has
+become measurable since — and record the transition. A second `close` over
+the identical, unmoved position reports `"not_open"` rather than appending a
+second event.
 
 ## `step` — run one declared local step, isolated
 

@@ -465,10 +465,12 @@ def _derive_rehearsal(evidence: dict, operand: str | None) -> tuple[bool | None,
 def _derive_shard(evidence: dict, operand: str | None) -> tuple[bool | None, str]:
     """`@shard <id>` (two-state, the default) ticks against `verify --shards`'s `shardsArrived`.
 
-    `evidence["shardsArrived"]` is `None` whenever this invocation carries no
-    shard evidence at all — `probe` always, and `verify` without `--shards` —
-    and `None` here means `unmeasured`, never `False`: the shard may well have
-    arrived, this invocation simply was not told to look.
+    `evidence["shardsArrived"]` is `None` whenever this invocation resolved
+    neither an explicit override nor a declared shard location for this run
+    (a bare `verify` with no `--shards` and no `distribution.shardsRoot`
+    declared, most commonly) — and `None` here means `unmeasured`, never
+    `False`: the shard may well have arrived, this invocation simply was
+    never told where to look.
 
     **Arrival alone is not evidence that a shard reports on the code running
     now.** A shard folder is a file left behind by whatever ran; nothing about

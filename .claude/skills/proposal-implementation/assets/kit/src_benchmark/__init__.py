@@ -82,6 +82,21 @@ __benchmark__ = {
     # trusted on arrival alone, exactly as before this key existed. The
     # forge never guesses the field, the same way it never guesses which
     # measurements are poolable: you name it, and it only compares.
+    #
+    # A second, sibling key is likewise OPTIONAL: `shardsRoot`, naming
+    # where a split campaign's returned shards land, relative to this
+    # repository's own root (an absolute path is honoured as given), e.g.:
+    #     "shardsRoot": "campaign-001/shards"
+    # Declare it once and every command that reads a position section --
+    # not only the ones that carry their own `--shards` flag -- measures a
+    # `@shard` witness against that same directory automatically; a `@shard`
+    # item ticked on real evidence stays checkable everywhere, not only at
+    # the one command that was told where to look for it. An explicit
+    # `--shards <dir>`, where the command accepts one, still overrides this
+    # for that single invocation. Leave it out -- the default -- and a
+    # command with no `--shards` flag of its own reads a `@shard` witness as
+    # unmeasured, exactly as before this key existed; the forge never
+    # invents a directory a repository never named.
     "distribution": {},
 
     # The dotted module and function that actually pull the target's runtime
