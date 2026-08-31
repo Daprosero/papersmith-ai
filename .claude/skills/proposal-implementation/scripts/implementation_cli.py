@@ -8383,6 +8383,74 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     }
 
 
+def _crashing_forge_file(exc: BaseException) -> Path | None:
+    """The forge module that owns a crash, chosen from `exc`'s own traceback
+    (design decision 6, `maintenance-blocks-it-does-not-mix`): walk every
+    frame from `exc.__traceback__` toward where it was raised and keep the
+    LAST one whose `co_filename` resolves under `FORGE_ROOT/.claude/skills`
+    -- never the deepest frame outright, because the deepest frame can be
+    stdlib (a mocked callable's own `side_effect` raise, for one), and the
+    forge frame that called into it is the one actually responsible. `None`
+    when no frame ever qualifies, so a caller with nothing to name records
+    nothing rather than guessing.
+    """
+    skills_root = (FORGE_ROOT / ".claude" / "skills").resolve()
+    qualifying = None
+    frame = exc.__traceback__
+    while frame is not None:
+        candidate = Path(frame.tb_frame.f_code.co_filename).resolve()
+        try:
+            candidate.relative_to(skills_root)
+        except ValueError:
+            pass
+        else:
+            qualifying = candidate
+        frame = frame.tb_next
+    return qualifying
+
+
+def _record_engine_defect(args: argparse.Namespace, exc: BaseException) -> None:
+    """Auto-append one `kind: "defect"` event for a crash `main()` did not
+    expect (design decision 6): any exception that reaches `main()`'s
+    dispatch other than `Refused` is, by definition, a forge-side bug, and
+    this needs no agent cooperation to notice or declare it first.
+
+    `target`/`name` are read with `getattr(..., None)` rather than assumed
+    present: `env` never gets a `--name` and `name` never gets a `--target`,
+    so neither has a `<target>/<name>/.implementation/` ledger path to
+    write into at all -- a stated limit this does not close, see SKILL.md.
+    `session` is read the same way and, when absent (`apply` and `admit`
+    take none), the key is OMITTED from the event, never written as `null`
+    -- the identical discipline `cmd_defect`'s own `detail` already keeps.
+
+    Called only from `main()`'s own guard, itself wrapped in its own
+    `try/except Exception: pass` -- a failure in here must never replace
+    the original traceback with one about this function instead.
+    """
+    target_raw = getattr(args, "target", None)
+    name_raw = getattr(args, "name", None)
+    if target_raw is None or name_raw is None:
+        return
+    crashing_file = _crashing_forge_file(exc)
+    if crashing_file is None:
+        return
+
+    forge_relative = crashing_file.relative_to(FORGE_ROOT.resolve()).as_posix()
+    digest = impl_position.current_file_digest(crashing_file)
+    event = {
+        "kind": "defect", "command": args.command, "file": forge_relative,
+        "fileSha256": digest, "at": _now_iso8601(),
+        "detail": f"{type(exc).__name__}: {exc}",
+    }
+    session = getattr(args, "session", None)
+    if session is not None:
+        event["session"] = session
+
+    ledger_path = (Path(target_raw).expanduser().resolve() / name_raw
+                   / ".implementation" / "position.jsonl")
+    impl_position.append_event(ledger_path, event)
+
+
 COMMANDS = {"env": cmd_env, "name": cmd_name, "plan": cmd_plan, "apply": cmd_apply,
             "admit": cmd_admit, "handoff": cmd_handoff, "compose": cmd_compose,
             "probe": cmd_probe,
@@ -8646,11 +8714,22 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         result = COMMANDS[args.command](args)
-    except Refused as refused:
+    except Refused as refused:             # unchanged: exit 2, appends nothing
         json.dump({"status": "refused", "code": refused.code, "detail": refused.detail},
                   sys.stdout, indent=2)
         sys.stdout.write("\n")
         return 2
+    except Exception:                      # NOT BaseException -- Refused(Exception) is
+                                            # caught above, so this ordering is load-
+                                            # bearing: KeyboardInterrupt/SystemExit must
+                                            # never be read as a forge-side defect
+                                            # (design decision 6,
+                                            # maintenance-blocks-it-does-not-mix)
+        try:
+            _record_engine_defect(args, sys.exc_info()[1])
+        except Exception:
+            pass                            # a failing recorder must stay invisible
+        raise                              # the original propagates unchanged
     json.dump(result, sys.stdout, indent=2)
     sys.stdout.write("\n")
     return 0

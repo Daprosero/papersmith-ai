@@ -8,8 +8,10 @@ declares whether the user can still review it.
 
 import argparse
 import ast
+import contextlib
 import hashlib
 import inspect
+import io
 import json
 import os
 import re
@@ -12571,6 +12573,135 @@ class HandoffSurfacesOpenDefectsTests(unittest.TestCase):
                             "--revision", "r1.md", proposals=self._proposals())
         self.assertEqual(proc.returncode, 0, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["openDefects"], [])
+
+
+class _CustomForgeBug(Exception):
+    """A crash type this suite owns, so "the same exception type survives"
+    means something beyond every test happening to raise `RuntimeError`."""
+
+
+class CrashCaptureTests(unittest.TestCase):
+    """`main()`'s guarded `except Exception` arm (design decision 6,
+    `maintenance-blocks-it-does-not-mix`): any exception reaching `main()`'s
+    dispatch that is not `Refused` is, by definition, a forge-side bug, and
+    is auto-recorded as a `kind: "defect"` event before it re-raises -- the
+    half of this mechanism that needs no agent cooperation.
+
+    Every scenario calls `impl.main(...)` IN-PROCESS (never through
+    `run_cli`'s subprocess) so `COMMANDS` can be monkeypatched: a reachable
+    non-`Refused` crash has to be constructed, not merely asserted possible
+    -- ordinary argv-shaped calls into the real, unpatched command surface
+    only ever reach coded `Refused` paths.
+    """
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_e2e_crash_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "Method").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        return box
+
+    def ledger_path(self, box):
+        return box / "Method" / ".implementation" / "position.jsonl"
+
+    def _call_main(self, argv):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = impl.main(argv)
+        return code, buf.getvalue()
+
+    def test_a_non_refused_crash_records_the_raising_forge_module_and_its_current_digest(self):
+        """Reachability, constructed: `COMMANDS["step"]` is monkeypatched to
+        raise a plain `RuntimeError` -- an exception `except Refused` never
+        catches. The raise itself happens inside a stdlib `unittest.mock`
+        frame, never inside `implementation_cli.py`, which is exactly the
+        "deepest frame is stdlib" hazard the design names: the recorded
+        file must be `main()`'s own frame (the LAST forge frame still on
+        the traceback), and its digest must be the file's CURRENT bytes,
+        computed through the identical `current_file_digest` the ladder
+        check re-derives against.
+        """
+        box = self._box()
+        boom = unittest.mock.Mock(side_effect=RuntimeError("boom"))
+        with unittest.mock.patch.dict(impl.COMMANDS, {"step": boom}):
+            with self.assertRaises(RuntimeError):
+                impl.main(["step", "--target", str(box), "--name", "Method",
+                          "--session", "s1", "--step", "whatever"])
+
+        events = impl_position.read_events(self.ledger_path(box))
+        defects = [e for e in events if e.get("kind") == "defect"]
+        self.assertEqual(len(defects), 1)
+        self.assertEqual(defects[0]["command"], "step")
+        self.assertEqual(defects[0]["session"], "s1")
+        self.assertTrue(defects[0]["file"].endswith("implementation_cli.py"),
+                        defects[0]["file"])
+        self.assertEqual(defects[0]["fileSha256"],
+                         impl_position.current_file_digest(CLI))
+
+    def test_the_original_exception_type_and_message_propagate_unchanged(self):
+        box = self._box()
+        boom = unittest.mock.Mock(
+            side_effect=_CustomForgeBug("cmd_step forgot to check something"))
+        with unittest.mock.patch.dict(impl.COMMANDS, {"step": boom}):
+            with self.assertRaises(_CustomForgeBug) as ctx:
+                impl.main(["step", "--target", str(box), "--name", "Method",
+                          "--session", "s1", "--step", "whatever"])
+        self.assertEqual(str(ctx.exception), "cmd_step forgot to check something")
+
+    def test_a_failing_recorder_never_replaces_the_original_exception(self):
+        """`append_event` itself raising must stay invisible: the ORIGINAL
+        exception still propagates, unwrapped and unreplaced, and no
+        second error is ever reported."""
+        box = self._box()
+        boom = unittest.mock.Mock(side_effect=RuntimeError("boom"))
+        with unittest.mock.patch.dict(impl.COMMANDS, {"step": boom}), \
+             unittest.mock.patch.object(impl_position, "append_event",
+                                        side_effect=OSError("ledger disk full")):
+            with self.assertRaises(RuntimeError) as ctx:
+                impl.main(["step", "--target", str(box), "--name", "Method",
+                          "--session", "s1", "--step", "whatever"])
+        self.assertEqual(str(ctx.exception), "boom")
+
+    def test_refused_records_nothing_the_ordinary_refusal_path_is_unchanged(self):
+        """Highest-consequence scenario in the design's own table: a
+        `Refused` leaking into the recorder would permanently block the
+        flow on its own refusals. `except Refused` sits ABOVE `except
+        Exception`, and this is the real, unpatched `cmd_step` refusing
+        for real (`NOT_A_GIT_REPO`, no `git init` here) -- not a
+        monkeypatch standing in for one."""
+        box = FORGE / "implementations" / f"_e2e_crash_refused_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "Method").mkdir(parents=True)
+        code, out = self._call_main(
+            ["step", "--target", str(box), "--name", "Method",
+             "--session", "s1", "--step", "whatever"])
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(out)["code"], "NOT_A_GIT_REPO")
+        self.assertFalse(self.ledger_path(box).exists())
+
+    def test_keyboard_interrupt_and_system_exit_record_nothing(self):
+        box = self._box()
+        for exc_type in (KeyboardInterrupt, SystemExit):
+            with self.subTest(exc_type=exc_type.__name__):
+                raiser = unittest.mock.Mock(side_effect=exc_type())
+                with unittest.mock.patch.dict(impl.COMMANDS, {"step": raiser}):
+                    with self.assertRaises(exc_type):
+                        impl.main(["step", "--target", str(box), "--name", "Method",
+                                  "--session", "s1", "--step", "whatever"])
+                self.assertFalse(self.ledger_path(box).exists())
+
+    def test_a_crash_in_env_appends_nothing_and_re_raises_the_stated_limit(self):
+        """`env` never gets a `--name`, so it has no `<target>/<name>/
+        .implementation/` ledger path to write into at all -- the stated
+        limit `_record_engine_defect`'s own docstring names, never a gap
+        this closes."""
+        box = self._box()
+        boom = unittest.mock.Mock(side_effect=RuntimeError("env boom"))
+        with unittest.mock.patch.dict(impl.COMMANDS, {"env": boom}):
+            with self.assertRaises(RuntimeError) as ctx:
+                impl.main(["env", "--target", str(box)])
+        self.assertEqual(str(ctx.exception), "env boom")
+        self.assertFalse(self.ledger_path(box).exists())
 
 
 class CommandRosterTests(unittest.TestCase):
