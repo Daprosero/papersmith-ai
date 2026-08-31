@@ -14642,6 +14642,20 @@ class SettleCommandTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_EMPTY_TEXT")
 
+    def test_settle_refuses_paragraph_without_reverse(self):
+        """--paragraph only ever feeds a NEW ## Reversed entry; only
+        --reverse writes one, so the create path refuses it rather than
+        silently ignoring a flag the caller bothered to type -- the
+        identical discipline SETTLE_STDIN_CONFLICT already keeps one
+        level up."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] placeholder\n", encoding="utf-8")
+        self._discuss(box, "record", answer="Yes.")
+        proc = self._settle(box, paragraph="unused prose")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_REVERSE_CONFLICT")
+
     # --- the discussion gate ---
 
     def test_settle_refuses_not_discussed(self):
@@ -15384,6 +15398,301 @@ class SettleRemoveCommandTests(unittest.TestCase):
         self.assertEqual(state["open"], [])
 
 
+class SettleReverseCommandTests(unittest.TestCase):
+    """`settle --reverse` -- one transaction that writes the `## Reversed`
+    entry AND deletes the settled line, instead of requiring a hand edit
+    to satisfy `SETTLE_NOT_REVERSED` before `--remove` can run at all
+    (design "a reversal is one write"). Reuses `_locate_settled_text`,
+    `SETTLE_TEXT_ABSENT`/`SETTLE_TEXT_AMBIGUOUS`, `_reversed_quote_matches_text`
+    and `impl_position.splice` unchanged -- the same search and the same
+    guard predicate `--remove` already has, never a second implementation
+    of either.
+    """
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_e2e_settle_reverse_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text("", encoding="utf-8")
+        return box
+
+    def run_cli(self, *args, stdin=None):
+        return subprocess.run([sys.executable, str(CLI), *args], input=stdin,
+                              capture_output=True, text=True, cwd=FORGE)
+
+    def _settle(self, box, **overrides):
+        args = {"target": str(box), "name": "Method", "session": "s1",
+                "reverse": True, "text": "a retired agreement",
+                "paragraph": "Reversed because the underlying measurement changed."}
+        args.update(overrides)
+        argv = ["settle"]
+        for flag, value in args.items():
+            if value is None or value is False:
+                continue
+            if value is True:
+                argv += [f"--{flag}"]
+                continue
+            argv += [f"--{flag}", value]
+        return self.run_cli(*argv)
+
+    # --- pure-argv shape: --reverse is a fourth, mutually exclusive mode ---
+
+    def test_reverse_refuses_combined_with_attach(self):
+        box = self._box()
+        proc = self._settle(box, attach=True, witness="test_x")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_REVERSE_CONFLICT")
+
+    def test_reverse_refuses_combined_with_remove(self):
+        box = self._box()
+        proc = self._settle(box, remove=True)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_REVERSE_CONFLICT")
+
+    def test_reverse_refuses_combined_with_under(self):
+        box = self._box()
+        proc = self._settle(box, under="## Ladder")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_REVERSE_CONFLICT")
+
+    def test_reverse_refuses_combined_with_supersedes(self):
+        box = self._box()
+        proc = self._settle(box, supersedes="some other text")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_REVERSE_CONFLICT")
+
+    def test_reverse_refuses_combined_with_witness(self):
+        box = self._box()
+        proc = self._settle(box, witness="test_x")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_REVERSE_CONFLICT")
+
+    def test_reverse_refuses_without_paragraph(self):
+        """The engine never authors the reasoning -- refused before
+        anything is read from disk, the identical shape
+        `SETTLE_WITNESS_REQUIRED` already has for `--attach`."""
+        box = self._box()
+        proc = self._settle(box, paragraph=None)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_PARAGRAPH_REQUIRED")
+
+    def test_reverse_refuses_blank_paragraph(self):
+        box = self._box()
+        proc = self._settle(box, paragraph="   ")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_PARAGRAPH_REQUIRED")
+
+    # --- where the removal would even happen ---
+
+    def test_reverse_refuses_holder_absent(self):
+        box = self._box()
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_HOLDER_ABSENT")
+
+    # --- the search: matched by exact text, the identical helper --remove uses ---
+
+    def test_reverse_refuses_when_text_matches_zero_lines(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] a different item\n\n## Reversed\n\n"
+            "prose only, no quote yet.\n", encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_TEXT_ABSENT")
+
+    def test_reverse_refuses_when_text_matches_more_than_one_line(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] a retired agreement\n\n"
+            "## Elsewhere\n\n- [x] a retired agreement\n\n"
+            "## Reversed\n\nprose only, no quote yet.\n",
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_TEXT_AMBIGUOUS")
+
+    # --- the new guard: refuses a duplicate explanation ---
+
+    def test_reverse_refuses_when_the_text_is_already_quoted(self):
+        """Measured on a real adopting target (2026-08-31): a `## Reversed`
+        entry can already quote a line's exact text while the line itself
+        is still present, because the entry was hand-written before this
+        mode existed. `--reverse` must not author a SECOND explanation for
+        an agreement that already has one; plain `--remove` is the
+        reachable command for that state (see
+        `SettleRemoveCommandTests.test_remove_deletes_exactly_one_line_byte_identical_otherwise`,
+        which proves it still is)."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] a retired agreement\n\n"
+            "## Reversed\n\n"
+            '**"a retired agreement"** replaced by something better.\n',
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_ALREADY_REVERSED")
+        after = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertIn("- [ ] a retired agreement", after)
+
+    # --- where the entry would even go ---
+
+    def test_reverse_refuses_heading_absent(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] a retired agreement\n",
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_HEADING_ABSENT")
+        after = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertIn("- [ ] a retired agreement", after)
+
+    def test_reverse_refuses_heading_ambiguous(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] a retired agreement\n\n"
+            "## Reversed\n\nprose only.\n\n"
+            "## Reversed\n\nmore prose, a second heading.\n",
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_HEADING_AMBIGUOUS")
+
+    # --- the happy path: one transaction, byte-exact everywhere else ---
+
+    def test_reverse_writes_the_entry_and_deletes_the_line_in_one_call(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\nSome prose above the section.\n\n"
+            "## Ladder\n\n- [x] an unrelated settled item\n\n"
+            "- [ ] a retired agreement\n\n"
+            "## Reversed\n\n"
+            'Every reversal, written rather than deleted.\n',
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["status"], "written")
+        self.assertEqual(result["reverse"], True)
+        self.assertEqual(result["text"], "a retired agreement")
+        self.assertEqual(
+            result["paragraph"],
+            "Reversed because the underlying measurement changed.")
+
+        after = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertNotIn("- [ ] a retired agreement\n", after)
+        self.assertIn(
+            '**"a retired agreement"** '
+            "Reversed because the underlying measurement changed.",
+            after)
+        # The quote lands after the section's existing prose, not before it.
+        self.assertLess(
+            after.index("Every reversal, written rather than deleted."),
+            after.index('**"a retired agreement"**'))
+
+    def test_reverse_derives_the_quote_from_the_located_line_excluding_a_witness(self):
+        """`_render_reversed_entry` reads the bold quote off
+        `AGREEMENT_LINE`'s own `text` group on the located line -- never
+        `--text` itself -- so a witness token already bound to the line is
+        excluded from the quote the same way `--attach`'s own read of
+        `located.group("text")` already excludes it."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [x] a retired agreement `test_x`\n\n"
+            "## Reversed\n\nprose only, no quote yet.\n",
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        after = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertIn('**"a retired agreement"**', after)
+        self.assertNotIn("test_x", after)
+
+    def test_reverse_inserts_immediately_before_the_position_block(self):
+        box = self._box()
+        block = ("<!-- position revision=r1.md sha256=" + "a" * 64 +
+                "  derivedAt=2026-08-27T00:00:00Z session=s0 target=final -->\n"
+                "- [ ] 1. an unrelated position item. `@notebook Notebooks/x.ipynb`\n"
+                "<!-- /position -->\n")
+        before = ("# Agreed\n\n## Ladder\n\n- [ ] a retired agreement\n\n"
+                  "## Reversed\n\nprose only, no quote yet.\n\n" + block)
+        (box / "Method" / "AGREED.md").write_text(before, encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+
+        after = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertIn(block, after)
+        self.assertLess(
+            after.index('**"a retired agreement"**'),
+            after.index("<!-- position"))
+        self.assertNotIn("- [ ] a retired agreement\n\n## Reversed", after)
+
+    def test_reverse_appends_at_the_end_of_section_with_no_position_block(self):
+        box = self._box()
+        before = ("# Agreed\n\n## Ladder\n\n- [ ] a retired agreement\n\n"
+                  "## Reversed\n\nprose only, no quote yet.\n")
+        (box / "Method" / "AGREED.md").write_text(before, encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        after = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertTrue(after.rstrip("\n").endswith(
+            "Reversed because the underlying measurement changed."))
+
+    def test_reverse_appends_before_a_later_heading_with_no_position_block(self):
+        box = self._box()
+        before = ("# Agreed\n\n## Ladder\n\n- [ ] a retired agreement\n\n"
+                  "## Reversed\n\nprose only, no quote yet.\n\n"
+                  "## Later section\n\n- [ ] untouched\n")
+        (box / "Method" / "AGREED.md").write_text(before, encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        after = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertLess(
+            after.index('**"a retired agreement"**'),
+            after.index("## Later section"))
+        self.assertIn("## Later section\n\n- [ ] untouched\n", after)
+
+    def test_reverse_appends_one_settle_event_flagged_reverse_true(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] a retired agreement\n\n"
+            "## Reversed\n\nprose only, no quote yet.\n",
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+        settle_events = [e for e in events if e["kind"] == "settle"]
+        self.assertEqual(len(settle_events), 1)
+        self.assertEqual(settle_events[0]["reverse"], True)
+        self.assertEqual(settle_events[0]["remove"], False)
+        self.assertEqual(
+            settle_events[0]["paragraph"],
+            "Reversed because the underlying measurement changed.")
+        self.assertIsNone(settle_events[0]["about"])
+        self.assertIsNone(settle_events[0]["under"])
+        self.assertIsNone(settle_events[0]["witness"])
+
+    def test_reverse_read_back_by_agreements_state_reports_it_gone(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] a retired agreement\n\n"
+            "## Reversed\n\nprose only, no quote yet.\n",
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+
+        state = impl.agreements_state(box, "Method")
+        self.assertEqual(state["status"], "absent")
+        self.assertEqual(state["open"], [])
+
+
 class SettleUnderAboutRequirednessTests(unittest.TestCase):
     """`--under` and `--about` are no longer unconditionally
     `argparse`-required (spec/design "attach, not place"): both are only
@@ -15454,6 +15763,10 @@ class AgreementWitnessSingleWritePathTests(unittest.TestCase):
     def test_render_settled_line_is_called_only_from_cmd_settle(self):
         self.assertEqual(
             self.call_site_functions("_render_settled_line"), {"cmd_settle"})
+
+    def test_render_reversed_entry_is_called_only_from_cmd_settle(self):
+        self.assertEqual(
+            self.call_site_functions("_render_reversed_entry"), {"cmd_settle"})
 
     def test_a_second_caller_would_be_caught(self):
         """Reachable-red by construction, over a scratch copy rather than

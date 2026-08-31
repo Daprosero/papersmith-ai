@@ -7006,6 +7006,102 @@ def _reversed_quote_matches_text(data: bytes, text: str) -> bool:
     return False
 
 
+def _reversed_section_body_spans(data: bytes) -> list[dict]:
+    """Every `## Reversed` heading's own body byte span in `data`: from
+    immediately after the heading line through the byte before the next
+    `## ` heading, or through the end of the document when none follows.
+
+    Located by the identical `_SECTION_BODY` regex `_reversed_section_quotes`
+    already reads with -- never a second, parallel heading-matcher, so the
+    two can never disagree about where `## Reversed` starts or ends.
+    `_SECTION_BODY`'s own `re.Match` offsets are CHARACTER offsets; `data`
+    may hold multi-byte UTF-8 (a real `Reversed` paragraph already does, in
+    its own em dash and ellipsis), so each boundary is converted to a byte
+    offset by encoding the text up to it, the identical technique
+    `cmd_settle`'s `--reverse` path needs because `impl_position.splice`
+    only ever operates on bytes.
+
+    Deliberately NOT `impl_position.locate_headings`: that function's own
+    insertion point is the section's first CHECKLIST item, skipping past
+    any introductory prose -- exactly wrong here. Measured against a real
+    adopting target's own `## Reversed` section: its body opens with a
+    prose paragraph (not a checklist item), so `locate_headings` would walk
+    past every existing reversal entry looking for the first checklist-
+    shaped line, and find one -- the position block's own `- [x] 1. ...`
+    sequence item, sitting inside this same section. Reusing that offset
+    would splice a new reversal entry between the position block's own
+    opening comment and its first item, corrupting a structure this
+    function must never enter.
+
+    Zero hits, or more than one, are both read off this list's own length
+    by the caller, which reuses `SETTLE_HEADING_ABSENT` / `SETTLE_HEADING_
+    AMBIGUOUS` over them -- the identical codes the create path already
+    raises for a heading occurring zero or more than once anywhere across
+    the candidate holders; here the search is scoped to the one holder
+    `_locate_settled_text` already narrowed the call to, the same single-
+    file scope `_reversed_quote_matches_text` already reads its own quotes
+    within.
+
+    Deliberately ignorant of fenced regions, the same restraint
+    `_SECTION_BODY`'s own docstring already states for itself: this
+    function reads which section is `## Reversed`, by exact heading
+    equality, off the SAME regex `_reversed_section_quotes` already trusts
+    for that reading, so the two never drift apart over a document neither
+    one owns.
+    """
+    text = data.decode("utf-8")
+    spans: list[dict] = []
+    for section in _SECTION_BODY.finditer(text):
+        if section.group("heading").strip() != "Reversed":
+            continue
+        start = len(text[: section.start("body")].encode("utf-8"))
+        end = len(text[: section.end("body")].encode("utf-8"))
+        spans.append({"start": start, "end": end})
+    return spans
+
+
+def _render_reversed_entry(raw_line: bytes, paragraph: str) -> bytes:
+    """The one construction of a `## Reversed` entry's own bytes, called
+    only from `cmd_settle`'s `--reverse` path -- the identical single-
+    write-path discipline `_render_settled_line` already holds for a
+    settled line (design D5, spec Group 5), extended to the entry that
+    explains why one was turned over. `AgreementWitnessSingleWritePathTests`
+    holds this one too, by the same `ast` call-site walk.
+
+    The bold quote is DERIVED from `raw_line` -- the located line's own
+    bytes, taken verbatim from disk by `_locate_settled_text`, read through
+    `AGREEMENT_LINE`'s own `text` group the identical way `--attach`'s own
+    `located.group("text")` already reads it -- never reconstructed from
+    `--text` itself. The two are guaranteed equal the moment a span is
+    found at all (`_locate_settled_text` only ever returns a span whose
+    captured `text` group already equals the caller's `--text` exactly),
+    but deriving from the line keeps this function honest about WHERE the
+    quote actually comes from, the identical restraint `_render_settled_
+    line`'s own `--attach` branch already argues for itself: a caller-typed
+    value is never what gets quoted back into the record. One concrete
+    difference this buys: a witness token already bound to the located
+    line (`` `test_id` ``) is excluded from the quote, because
+    `AGREEMENT_LINE` captures it in its own separate group -- reconstructing
+    from `--text` alone could never have carried it in the first place, but
+    reading the wrong group could have.
+
+    `paragraph` is placed verbatim, one space after the closing `**` --
+    the shape every existing hand-written `Reversed` entry on a real
+    adopting target already uses. The caller's own reasoning for the
+    reversal is never authored here (see `cmd_settle`'s own docstring,
+    "The guard removal must pass": the engine validates and performs the
+    one write, it does not decide WHY an agreement was turned over).
+    Returns bytes ending in a blank line (`\\n\\n`), never a single `\\n`:
+    `cmd_settle` inserts this entry as a zero-width splice immediately
+    before whatever already follows it (a position block, a later heading,
+    or nothing at end of file), and that boundary supplies no separator of
+    its own.
+    """
+    located = AGREEMENT_LINE.match(raw_line.decode("utf-8").rstrip())
+    quote = located.group("text")
+    return f'**"{quote}"** {paragraph}\n\n'.encode("utf-8")
+
+
 def cmd_settle(args: argparse.Namespace) -> dict:
     """Place one settled agreement, and only one, under a caller-named
     heading (design "the placer" -- the third and last piece of "We
@@ -7014,8 +7110,10 @@ def cmd_settle(args: argparse.Namespace) -> dict:
     `--attach`, bind a witness onto a line already placed, matched by its
     exact `--text` (design "attach, not place") -- OR, with `--remove`,
     delete a line already placed, matched the identical way (design "the
-    eraser"). All three modes go through this one command; there is still
-    no second write path.
+    eraser") -- OR, with `--reverse`, write a NEW `## Reversed` entry and
+    delete that same line in ONE call (design "a reversal is one write").
+    All four modes go through this one command; there is still no second
+    write path.
 
     The agent drafts the discussion and a proposed sentence; the create
     path validates, refuses, and performs the one write. It never authors:
@@ -7029,6 +7127,84 @@ def cmd_settle(args: argparse.Namespace) -> dict:
     line's own bytes outright, including its trailing newline, and
     touches no other byte in the document -- see `_reversed_quote_matches_text`,
     below, for the guard that decides whether it may.
+
+    **Why `--reverse` exists at all, and why it is not merely
+    `--remove` with extra steps.** `--remove` shipped guarded by
+    `SETTLE_NOT_REVERSED`: refused unless the document's own `## Reversed`
+    section ALREADY quotes the exact text being deleted. Measured after
+    shipping it: nothing could ever satisfy that guard except a hand
+    edit, because `settle` places `- [ ] {text}` checklist bullets, and a
+    `## Reversed` entry is bold-quoted prose in a different shape -- no
+    existing command could write one. The guard was correct; the gap was
+    that satisfying it required the one practice this whole programme
+    exists to eliminate. `--reverse` closes that gap by writing the entry
+    and performing the deletion in the SAME call, so the explanation and
+    the erasure land together or not at all -- see "One transaction,
+    never two separate writes," below, for how that atomicity is actually
+    achieved with no new write primitive beneath `impl_position.write_
+    spliced`'s own existing compare-and-swap.
+
+    **One transaction, never two separate writes.** Both the new `##
+    Reversed` entry and the deleted line are folded into ONE `spliced`
+    bytes value, computed entirely from the SAME pre-image `data`, before
+    the single shared `impl_position.write_spliced` call at the bottom of
+    this function ever runs. There is no intermediate state where one
+    edit has landed on disk and the other has not: either both changes are
+    present in the one written file, or the compare-and-swap itself
+    refused (`POSITION_HOLDER_MOVED`) and NEITHER is. Composing the two
+    edits reuses `impl_position.splice` twice over the SAME original
+    bytes -- once (with `block=None`) purely to borrow its own blank-line
+    normalization ahead of wherever the entry lands, and once more to
+    apply both the resulting insertion and the deletion as ordinary
+    located spans -- rather than hand-rolling a second blank-line rule
+    that could drift from the one `splice` already keeps for every other
+    caller that appends with `block=None`.
+
+    **Where the entry goes: appended last, in the section's own existing
+    order.** Measured against a real adopting target's `## Reversed`
+    section (2026-08-31): its four entries read oldest first, the newest
+    -- explicitly dated -- last, immediately before the position block
+    that closes the section. `--reverse` follows that same order: the new
+    entry is always inserted immediately before the position block, when
+    the located `## Reversed` section holds one, or at the section's own
+    end (immediately before the next `## ` heading, or end of document)
+    when it does not. Never first: a reversal explains something that
+    JUST happened, in a document a human reads top to bottom, and a
+    freshly-turned-over agreement prepended ahead of three-year-old ones
+    would misstate which is recent. See `_reversed_section_body_spans`,
+    above, for why this is deliberately NOT `impl_position.locate_
+    headings` -- that function's own insertion point would land inside
+    the position block itself on a document shaped like the real one just
+    measured.
+
+    **What happens when the section already quotes the text -- decided,
+    not deferred.** Measured on that same real target (2026-08-31): one of
+    its four existing `## Reversed` entries already quotes a checklist
+    line that is STILL PRESENT, ticked, under its own heading -- written
+    by hand before `--reverse` existed, with the deletion never performed.
+    `--reverse` refuses `SETTLE_ALREADY_REVERSED` in this state rather
+    than writing a SECOND explanation beside the first: the document
+    would otherwise carry two quotes of the same retired agreement, one
+    of them redundant the moment it lands. `--remove` remains the
+    reachable command for exactly this state -- its own guard
+    (`_reversed_quote_matches_text`) is ALREADY satisfied, because the
+    explanation already exists; only the deletion is still pending. This
+    is not `--remove` left in as decoration: it is the one legitimate path
+    for an already-explained-but-undeleted agreement, a state this
+    codebase's own adopted target carries today.
+
+    **What happens when `## Reversed` does not exist at all in a holder --
+    refused, not authored.** `--reverse` reuses `SETTLE_HEADING_ABSENT`
+    (the identical code the create path already raises for a missing
+    `--under` heading) rather than inventing the section. The create
+    path's own restraint already applies here: `settle` places items UNDER
+    a heading, it never authors headings, and a freshly-invented `##
+    Reversed` section would need its own preamble prose -- the real
+    target's own preamble ("Written rather than deleted...") is exactly
+    the kind of scoped, once-per-target writing this command has never
+    performed for any OTHER heading either. A human adds the heading (and
+    whatever preamble the target wants) once, the same one-time step
+    `--under` already requires for any other missing heading.
 
     **Why `--attach` skips the discussion precondition -- decided, not
     inherited from where the check happened to sit.** `SETTLE_NOT_DISCUSSED`
@@ -7109,68 +7285,99 @@ def cmd_settle(args: argparse.Namespace) -> dict:
        exactly the kind of surprise `SETTLE_STDIN_CONFLICT` already refuses
        one level up.
     4. `SETTLE_REMOVE_CONFLICT` -- `--remove` combined with `--attach`,
-       `--under`, `--supersedes`, or `--witness`: `--remove` is a third,
-       mutually exclusive mode (never both `--attach` and `--remove` in
-       one call), places nothing new (`--under`, `--supersedes` do not
-       apply, the identical reasoning `SETTLE_ATTACH_CONFLICT` already
-       gives), and writes no witness token at all -- the line is deleted,
-       not edited, so a `--witness` the caller bothered to type would
-       otherwise be silently ignored, the same surprise every other
-       conflict code in this list already refuses.
-    5. `SETTLE_WITNESS_REQUIRED` -- `--attach` without `--witness`: binding
+       `--under`, `--supersedes`, or `--witness`: `--remove` is one of
+       three other, mutually exclusive modes (never both `--attach` and
+       `--remove` in one call), places nothing new (`--under`,
+       `--supersedes` do not apply, the identical reasoning
+       `SETTLE_ATTACH_CONFLICT` already gives), and writes no witness
+       token at all -- the line is deleted, not edited, so a `--witness`
+       the caller bothered to type would otherwise be silently ignored,
+       the same surprise every other conflict code in this list already
+       refuses.
+    5. `SETTLE_REVERSE_CONFLICT` -- either `--reverse` combined with
+       `--attach`, `--remove`, `--under`, `--supersedes`, or `--witness`
+       (the identical reasoning `SETTLE_REMOVE_CONFLICT` already gives,
+       extended to a fourth mutually exclusive mode: `--reverse` deletes
+       the line, so `--witness` binds nothing; it writes no new item
+       under a heading, so `--under` and `--supersedes` do not apply), OR
+       `--paragraph` given WITHOUT `--reverse` -- that flag feeds a `##
+       Reversed` entry only `--reverse` ever writes, so giving it in any
+       other mode is the identical unused-flag surprise this whole list
+       already refuses rather than silently ignores.
+    6. `SETTLE_WITNESS_REQUIRED` -- `--attach` without `--witness`: binding
        a witness is the entire point of this mode, so an `--attach` call
        carrying none has nothing to do.
-    6. `SETTLE_UNDER_REQUIRED` / `SETTLE_ABOUT_REQUIRED` -- the create path
-       (neither `--attach` nor `--remove`) still needs both; `argparse` no
-       longer enforces either as unconditionally required, because the
-       other two modes need neither, so this command enforces them itself
-       once it knows which mode it is in.
-    7. `SETTLE_WITNESS_MALFORMED` -- an optional `--witness test_<id>`
+    7. `SETTLE_PARAGRAPH_REQUIRED` -- `--reverse` without a non-blank
+       `--paragraph`: writing a NEW `## Reversed` entry is the entire
+       point of this mode, and the engine never authors the reasoning
+       behind one (see "Why `--reverse` exists at all," above) -- an
+       `--reverse` call carrying no paragraph has nothing to explain with.
+    8. `SETTLE_UNDER_REQUIRED` / `SETTLE_ABOUT_REQUIRED` -- the create path
+       (none of `--attach`, `--remove` or `--reverse`) still needs both;
+       `argparse` no longer enforces either as unconditionally required,
+       because the other three modes need neither, so this command
+       enforces them itself once it knows which mode it is in.
+    9. `SETTLE_WITNESS_MALFORMED` -- an optional `--witness test_<id>`
        (design D5, spec Group 3) that does not match `AGREEMENT_LINE`'s own
        trailing-token grammar (`test_[A-Za-z0-9_]+`). Refused before the
        write, not silently swallowed into plain text: a malformed value
        would otherwise round-trip as inert prose, and a caller who typed
        `--witness` believing it bound something would never learn it did
-       not. Checked in every mode that can still reach it (`--remove`
-       already refused `SETTLE_REMOVE_CONFLICT` above if `--witness` was
-       given at all).
-    8. `SETTLE_NOT_DISCUSSED` / `SETTLE_DISCUSSION_UNANSWERED` -- create
-       path only (see "Why `--attach` skips..." above; the identical
-       reasoning excuses `--remove`, which places nothing new either).
-       `--about` is resolved the identical way `discuss`'s own `--about`
-       already is (`_resolve_discuss_about`), then matched against the
-       ledger by witness identity: ANY answered event satisfies this,
-       never newest-wins (design "Discussion match") -- a later clarifying
-       question must never retroactively erase an earlier answer, which
-       would teach a caller not to ask one.
-    9. `SETTLE_HOLDER_ABSENT` -- `agreements_state`'s own already-computed
-       `holders` is the candidate set; a target with none has nowhere this
-       command may write (or, for `--remove`, nothing to delete from), and
-       it never invents a file, the same doctrine `_chosen_holder` already
-       states for a fresh position block. Checked in every mode.
-    10. Create path: `SETTLE_HEADING_ABSENT` / `SETTLE_HEADING_AMBIGUOUS` --
+       not. Checked in every mode that can still reach it (`--remove` and
+       `--reverse` already refused `SETTLE_REMOVE_CONFLICT` /
+       `SETTLE_REVERSE_CONFLICT` above if `--witness` was given at all).
+    10. `SETTLE_NOT_DISCUSSED` / `SETTLE_DISCUSSION_UNANSWERED` -- create
+        path only (see "Why `--attach` skips..." above; the identical
+        reasoning excuses `--remove` and `--reverse`, neither of which
+        places anything new). `--about` is resolved the identical way
+        `discuss`'s own `--about` already is (`_resolve_discuss_about`),
+        then matched against the ledger by witness identity: ANY answered
+        event satisfies this, never newest-wins (design "Discussion
+        match") -- a later clarifying question must never retroactively
+        erase an earlier answer, which would teach a caller not to ask
+        one.
+    11. `SETTLE_HOLDER_ABSENT` -- `agreements_state`'s own already-computed
+        `holders` is the candidate set; a target with none has nowhere this
+        command may write (or, for `--remove`/`--reverse`, nothing to
+        delete from), and it never invents a file, the same doctrine
+        `_chosen_holder` already states for a fresh position block.
+        Checked in every mode.
+    12. Create path: `SETTLE_HEADING_ABSENT` / `SETTLE_HEADING_AMBIGUOUS` --
         every holder's own `impl_position.locate_headings` hits, concatenated
         across all of them: zero, or more than one anywhere (two hits in
         one holder and one hit apiece in two holders read identically) --
         the caller owns both counts, because the locator itself never
         refuses (see its own docstring for why).
-        `--attach` AND `--remove` paths: `SETTLE_TEXT_ABSENT` /
-        `SETTLE_TEXT_AMBIGUOUS` -- the identical discipline, one level
-        down, and the identical helper (`_locate_settled_text`) both modes
-        call: every holder's own hits for the exact `--text`, concatenated;
-        zero or more than one refuses the same way, for the same reason --
-        which existing line receives the witness, or is deleted, is not
-        decidable without a human choosing when more than one line reads
-        identically. Reused, not minted twice: `--remove` mints no code of
-        its own here.
-    11. Create path only: `SETTLE_COLLIDES_UNNAMED` / `SETTLE_SUPERSEDES_UNKNOWN`
+        `--attach`, `--remove` AND `--reverse` paths: `SETTLE_TEXT_ABSENT`
+        / `SETTLE_TEXT_AMBIGUOUS` -- the identical discipline, one level
+        down, and the identical helper (`_locate_settled_text`) all three
+        modes call: every holder's own hits for the exact `--text`,
+        concatenated; zero or more than one refuses the same way, for the
+        same reason -- which existing line receives the witness, is
+        deleted, or is reversed, is not decidable without a human choosing
+        when more than one line reads identically. Reused, not minted
+        twice: neither `--remove` nor `--reverse` mints a code of its own
+        here.
+    13. `--reverse` path only, checked after the text search narrows to one
+        holder's own bytes: `SETTLE_ALREADY_REVERSED` -- see "What happens
+        when the section already quotes the text," above -- THEN
+        `SETTLE_HEADING_ABSENT` / `SETTLE_HEADING_AMBIGUOUS` over
+        `_reversed_section_body_spans(data)`, scoped to that one holder
+        (never aggregated across all of them the way the create path's own
+        `--under` search is, because by this point the search already
+        knows which single holder the located line lives in) -- see "Where
+        the entry goes," above. Reused codes, not minted twice: the create
+        path already names both for a missing or ambiguous heading; this
+        is the identical vocabulary applied to a heading this mode reads
+        rather than places under.
+    14. Create path only: `SETTLE_COLLIDES_UNNAMED` / `SETTLE_SUPERSEDES_UNKNOWN`
         -- the same `_agreement_collides` `discuss` already repairs
         (excludes the position block's own item lines), run over the
         witness's own operand. A caller naming a superseded item must name
         one actually IN that computed list -- an unchecked string would be
         a rubber stamp on a supersession this command cannot itself verify
         happened in the document.
-    12. `--attach` path only: `SETTLE_ALREADY_WITNESSED` -- the one located
+    15. `--attach` path only: `SETTLE_ALREADY_WITNESSED` -- the one located
         line already carries a `` `test_<id>` `` token. `--attach` never
         replaces one; there is no separate flag that does, so the only way
         to change an existing witness today is the same "unsupported,
@@ -7178,10 +7385,13 @@ def cmd_settle(args: argparse.Namespace) -> dict:
         (see `--witness`'s own help) -- adding a silent-replace path here
         would let one automated call quietly overwrite a binding another
         call, or a human, put there on purpose.
-    13. `--remove` path only: `SETTLE_NOT_REVERSED` -- the located line's
+    16. `--remove` path only: `SETTLE_NOT_REVERSED` -- the located line's
         own exact text is not quoted (bold, possibly truncated) under any
         `## Reversed` heading in the same holder file. See "The guard
-        removal must pass," above, for the full argument.
+        removal must pass," above, for the full argument. The mirror image
+        of `--reverse`'s own `SETTLE_ALREADY_REVERSED` (13, above): one
+        refuses until the explanation exists, the other refuses once it
+        already does.
 
     **The witness this places is a separate identity from `--about`.**
     `--about` names the *position* witness this placement discusses and
@@ -7228,6 +7438,7 @@ def cmd_settle(args: argparse.Namespace) -> dict:
 
     attach = bool(getattr(args, "attach", False))
     remove = bool(getattr(args, "remove", False))
+    reverse = bool(getattr(args, "reverse", False))
 
     if attach and (args.under or args.supersedes is not None):
         raise Refused(
@@ -7245,27 +7456,52 @@ def cmd_settle(args: argparse.Namespace) -> dict:
             "mutually exclusive mode), --under and --supersedes (what a "
             "NEW item needs), and --witness (nothing is written, so there "
             "is no token to bind) do not apply and must be omitted.")
+    paragraph = getattr(args, "paragraph", None)
+    paragraph = paragraph.strip() if paragraph else None
+    if reverse and (attach or remove or args.under or args.supersedes is not None
+                    or witness):
+        raise Refused(
+            "SETTLE_REVERSE_CONFLICT",
+            "--reverse writes the ## Reversed entry and deletes the "
+            "settled line in one call; --attach and --remove (two other, "
+            "mutually exclusive modes), --under and --supersedes (what a "
+            "NEW item needs), and --witness (nothing is written to the "
+            "deleted line, so there is no token to bind) do not apply and "
+            "must be omitted.")
+    if paragraph and not reverse:
+        raise Refused(
+            "SETTLE_REVERSE_CONFLICT",
+            "--paragraph supplies the prose a NEW ## Reversed entry is "
+            "written with, and only --reverse ever writes one; it does "
+            "not apply -- and must be omitted -- in every other mode.")
     if attach and not witness:
         raise Refused(
             "SETTLE_WITNESS_REQUIRED",
             "--attach binds a witness onto an already-settled line; "
             "--witness is the whole point of this mode and cannot be "
             "omitted.")
-    if not attach and not remove:
+    if reverse and not paragraph:
+        raise Refused(
+            "SETTLE_PARAGRAPH_REQUIRED",
+            "--reverse writes a NEW ## Reversed entry, and the engine "
+            "never authors the reasoning behind one -- --paragraph is the "
+            "caller's own explanation of why the agreement was turned "
+            "over and cannot be omitted or blank.")
+    if not attach and not remove and not reverse:
         if not args.under:
             raise Refused(
                 "SETTLE_UNDER_REQUIRED",
                 "--under is required to place a new item; it names where "
                 "the write goes and has no default. Omit it only together "
-                "with --attach or --remove, neither of which places "
-                "anything new.")
+                "with --attach, --remove or --reverse, none of which "
+                "places a new item under a heading.")
         if not args.about:
             raise Refused(
                 "SETTLE_ABOUT_REQUIRED",
                 "--about is required to place a new item; it names the "
                 "discussion this placement is bound to. Omit it only "
-                "together with --attach or --remove, neither of which "
-                "places anything new.")
+                "together with --attach, --remove or --reverse, none of "
+                "which places anything new.")
     if witness and not re.fullmatch(r"test_[A-Za-z0-9_]+", witness):
         raise Refused(
             "SETTLE_WITNESS_MALFORMED",
@@ -7275,7 +7511,7 @@ def cmd_settle(args: argparse.Namespace) -> dict:
             "witness `agreements_state` can read back.")
 
     about = None
-    if not attach and not remove:
+    if not attach and not remove and not reverse:
         evidence = _position_write_evidence(target, name)
         position = position_state(target, name, evidence, None, None)
         about = _resolve_discuss_about(args.about, position)
@@ -7369,6 +7605,74 @@ def cmd_settle(args: argparse.Namespace) -> dict:
                 "enforces one level up for the create path.")
 
         spliced = impl_position.splice(data, b"", span)
+    elif reverse:
+        candidates: list[tuple[Path, bytes, dict]] = []
+        for holder in holders:
+            holder_path = target / holder
+            holder_data = holder_path.read_bytes()
+            for span in _locate_settled_text(holder_data, text):
+                candidates.append((holder_path, holder_data, span))
+
+        if not candidates:
+            raise Refused(
+                "SETTLE_TEXT_ABSENT",
+                f"{text!r} matches no existing checklist line across "
+                f"{len(holders)} holder(s) under {name}/.")
+        if len(candidates) > 1:
+            raise Refused(
+                "SETTLE_TEXT_AMBIGUOUS",
+                f"{text!r} matches {len(candidates)} existing checklist "
+                f"lines across {name}/'s holder(s); which one this call "
+                "reverses is not decidable without a human choosing.")
+        target_path, data, span = candidates[0]
+
+        if _reversed_quote_matches_text(data, text):
+            raise Refused(
+                "SETTLE_ALREADY_REVERSED",
+                f"{text!r} is already quoted (bold, under a ## Reversed "
+                f"heading) in {target_path.name}; --reverse writes a NEW "
+                "explanation together with the deletion, and would "
+                "duplicate one the document already has. The explanation "
+                "already exists -- what is missing is only the deletion, "
+                "which plain --remove performs on its own.")
+
+        reversed_spans = _reversed_section_body_spans(data)
+        if not reversed_spans:
+            raise Refused(
+                "SETTLE_HEADING_ABSENT",
+                f"'## Reversed' occurs in none of {target_path.name}'s own "
+                "headings; --reverse places its entry under an existing "
+                "'## Reversed' section and never invents one, the "
+                "identical restraint the create path's own --under "
+                "already keeps for a heading it is given.")
+        if len(reversed_spans) > 1:
+            raise Refused(
+                "SETTLE_HEADING_AMBIGUOUS",
+                f"'## Reversed' occurs {len(reversed_spans)} times in "
+                f"{target_path.name}; which one receives this entry is "
+                "not decidable without a human choosing.")
+        body_start, body_end = reversed_spans[0]["start"], reversed_spans[0]["end"]
+
+        try:
+            position_block = impl_position.locate_block(data)
+        except Refused:
+            position_block = None
+        if position_block is not None and body_start <= position_block["start"] < body_end:
+            boundary = position_block["start"]
+        else:
+            boundary = body_end
+
+        raw_line = data[span["start"]:span["end"]]
+        entry = _render_reversed_entry(raw_line, paragraph)
+        prefixed = impl_position.splice(data[:boundary], entry, None)
+        insertion = prefixed[boundary:]
+
+        edits = sorted(
+            [(span, b""), ({"start": boundary, "end": boundary}, insertion)],
+            key=lambda edit: edit[0]["start"], reverse=True)
+        spliced = data
+        for edit_span, new_bytes in edits:
+            spliced = impl_position.splice(spliced, new_bytes, edit_span)
     else:
         heading = args.under.strip()
         candidates = []
@@ -7419,14 +7723,16 @@ def cmd_settle(args: argparse.Namespace) -> dict:
         target / name / ".implementation" / "position.jsonl",
         {"kind": "settle", "session": args.session, "about": about,
          "text": text, "under": heading, "witness": witness, "attach": attach,
-         "remove": remove, "holder": str(target_path.relative_to(target)),
+         "remove": remove, "reverse": reverse, "paragraph": paragraph,
+         "holder": str(target_path.relative_to(target)),
          "supersedes": supersedes, "collides": collides, "at": recorded_at})
 
     return {
         "command": "settle", "target": str(target), "name": name,
         "status": "written", "holder": str(target_path.relative_to(target)),
         "about": about, "text": text, "under": heading, "witness": witness,
-        "attach": attach, "remove": remove, "supersedes": supersedes,
+        "attach": attach, "remove": remove, "reverse": reverse,
+        "paragraph": paragraph, "supersedes": supersedes,
         "collides": collides, "recordedAt": recorded_at,
     }
 
@@ -10196,14 +10502,60 @@ def main(argv: list[str] | None = None) -> int:
                                 "settled agreement is the one destructive "
                                 "write this command can make, and it is "
                                 "refused until the document itself already "
-                                "explains why. Skips the discussion "
-                                "precondition for the identical reason "
-                                "--attach does: a line this matches was "
-                                "already discussed once, when it was first "
-                                "placed. --under, --supersedes and "
-                                "--witness do not apply with --remove and "
-                                "are refused SETTLE_REMOVE_CONFLICT if "
-                                "given, and so is --attach itself")
+                                "explains why. This remains the reachable "
+                                "command when that explanation was ALREADY "
+                                "written -- by hand, or by a prior "
+                                "--reverse call -- and only the deletion is "
+                                "still pending; --reverse itself refuses "
+                                "SETTLE_ALREADY_REVERSED rather than write a "
+                                "second explanation over an existing one. "
+                                "Skips the discussion precondition for the "
+                                "identical reason --attach does: a line "
+                                "this matches was already discussed once, "
+                                "when it was first placed. --under, "
+                                "--supersedes and --witness do not apply "
+                                "with --remove and are refused "
+                                "SETTLE_REMOVE_CONFLICT if given, and so "
+                                "are --attach and --reverse themselves")
+            p.add_argument("--reverse", action="store_true",
+                           help="one transaction that WRITES a new ## "
+                                "Reversed entry and DELETES the settled "
+                                "line matched by its exact --text, instead "
+                                "of requiring the two as separate steps "
+                                "(design 'a reversal is one write'). The "
+                                "bold quote is derived from the located "
+                                "line itself, never retyped by the caller; "
+                                "--paragraph supplies the caller-authored "
+                                "prose that follows it and is required "
+                                "(refused SETTLE_PARAGRAPH_REQUIRED if "
+                                "omitted or blank -- the engine never "
+                                "authors the reasoning). Refused "
+                                "SETTLE_TEXT_ABSENT / SETTLE_TEXT_AMBIGUOUS "
+                                "the identical way --attach and --remove "
+                                "already are; refused SETTLE_HEADING_ABSENT "
+                                "/ SETTLE_HEADING_AMBIGUOUS if the holder "
+                                "carries zero or more than one '## "
+                                "Reversed' heading -- this mode places its "
+                                "entry under an EXISTING heading and never "
+                                "invents one. Refused SETTLE_ALREADY_"
+                                "REVERSED if the exact text is already "
+                                "quoted there (use plain --remove instead "
+                                "-- the explanation already exists). "
+                                "Skips the discussion precondition for the "
+                                "identical reason --attach and --remove "
+                                "do. --under, --supersedes and --witness do "
+                                "not apply and are refused SETTLE_REVERSE_"
+                                "CONFLICT if given, and so are --attach and "
+                                "--remove themselves")
+            p.add_argument("--paragraph", default=None,
+                           help="the caller-authored prose placed after the "
+                                "derived bold quote in a new ## Reversed "
+                                "entry; required with --reverse (refused "
+                                "SETTLE_PARAGRAPH_REQUIRED if omitted or "
+                                "blank), and ignored -- refused SETTLE_"
+                                "REVERSE_CONFLICT if given at all -- in "
+                                "every other mode, since none of them write "
+                                "one")
         if name == "defect":
             p.add_argument("--file", required=True,
                            help="path to the forge file this declares "
