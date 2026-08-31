@@ -4924,6 +4924,7 @@ def cmd_plan(args: argparse.Namespace) -> dict:
 def cmd_apply(args: argparse.Namespace) -> dict:
     target = resolve_target(args.target)
     name = validate_name(args.name)
+    _require_no_open_defect(target, name)
     require_clean_worktree(target)
 
     approved = json.loads(Path(args.plan).read_text(encoding="utf-8"))
@@ -5151,6 +5152,7 @@ def cmd_handoff(args: argparse.Namespace) -> dict:
     finishing something else.
     """
     target = resolve_target(args.target)
+    name = validate_name(args.name)
     source = revision_source(args.revision)
     if source is None:
         raise Refused("REVISION_UNREADABLE",
@@ -5221,6 +5223,15 @@ def cmd_handoff(args: argparse.Namespace) -> dict:
                 f"ECUACIONES A TOCAR: {', '.join(finding.get('remedy_equations', []))}")
             deferred.append(item)
 
+    # Diagnostic and costless (design decision 7): a new report key, never a
+    # gate on this command itself -- `handoff` reads the identical
+    # `impl_position.open_defects` derivation `_require_no_open_defect`
+    # refuses on, so a defect blocking `step`/`gate`/`offer`/`close`/
+    # `settle`/`apply`/`admit` stays visible here rather than silent.
+    ledger_path = target / name / ".implementation" / "position.jsonl"
+    events = impl_position.read_events(ledger_path)
+    open_defects = impl_position.open_defects(events, FORGE_ROOT)
+
     return {
         "command": "handoff",
         "target": str(target),
@@ -5229,6 +5240,9 @@ def cmd_handoff(args: argparse.Namespace) -> dict:
         "settleInline": inline,
         "deferToOwnSession": deferred,
         "alreadyAdopted": [i["id"] for i in settled],
+        "openDefects": [{"file": e.get("file"), "session": e.get("session"),
+                         "detail": e.get("detail"), "at": e.get("at")}
+                        for e in open_defects],
         "note": "This skill proposes; proposal-deliberation decides and publishes.",
     }
 
@@ -5304,6 +5318,8 @@ def cmd_admit(args: argparse.Namespace) -> dict:
     without it. Only the verdict travels: the proposal's text stays in the forge.
     """
     target = resolve_target(args.target)
+    name = validate_name(args.name)
+    _require_no_open_defect(target, name)
     source = revision_source(args.revision)
     if source is None:
         raise Refused("REVISION_UNREADABLE",
@@ -6483,6 +6499,7 @@ def cmd_settle(args: argparse.Namespace) -> dict:
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
+    _require_no_open_defect(target, name)
 
     if args.text == "-" and args.supersedes == "-":
         raise Refused(
@@ -7019,6 +7036,7 @@ def cmd_gate(args: argparse.Namespace) -> dict:
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
+    _require_no_open_defect(target, name)
 
     if args.units and args.worker is not None:
         raise Refused(
@@ -7540,6 +7558,7 @@ def cmd_offer(args: argparse.Namespace) -> dict:
 
     target = resolve_target(args.target)
     name = validate_name(args.name)
+    _require_no_open_defect(target, name)
 
     source = revision_source(args.revision)
     if source is None:
@@ -7684,6 +7703,7 @@ def cmd_close(args: argparse.Namespace) -> dict:
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
+    _require_no_open_defect(target, name)
     product = target / name
 
     source = revision_source(args.revision)
@@ -7806,6 +7826,7 @@ def cmd_step(args: argparse.Namespace) -> dict:
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
+    _require_no_open_defect(target, name)
     require_clean_worktree(target)
 
     steps = resolve_steps_declaration(target, name)
@@ -7895,9 +7916,11 @@ def cmd_step(args: argparse.Namespace) -> dict:
 
 def cmd_defect(args: argparse.Namespace) -> dict:
     """Declare that some forge file is currently broken (design decisions
-    1-4, `maintenance-blocks-it-does-not-mix`). Phase 1 only: this appends
-    to the ledger and nothing yet reads `impl_position.open_defects`'s
-    verdict to refuse anything -- that wiring is a separate, later change.
+    1-4, `maintenance-blocks-it-does-not-mix`). `step`, `gate`, `offer`,
+    `close`, `settle`, `apply` and `admit` each refuse `FORGE_DEFECT_OPEN`
+    while `impl_position.open_defects` reads this declaration as still open
+    (`_require_no_open_defect`, design decision 5); `handoff` additionally
+    surfaces it.
 
     Never gated on an already-open defect and calls no `require_clean_
     worktree` (design decision 5): a second declaration while one is open
@@ -7962,6 +7985,41 @@ def cmd_defect(args: argparse.Namespace) -> dict:
         "session": args.session, "at": recorded_at,
         "detail": event.get("detail"),
     }
+
+
+def _require_no_open_defect(target: Path, name: str) -> None:
+    """Refuse `FORGE_DEFECT_OPEN` while any declared forge defect for this
+    `<target>/<name>` is still open (design decisions 5 and 8,
+    `maintenance-blocks-it-does-not-mix`).
+
+    Reads the ledger and re-derives openness through the identical
+    `impl_position.open_defects` fold `cmd_handoff` reads for its own
+    report, so a refusal here and a surfaced defect there can never
+    disagree about what "open" means -- one derivation serves both.
+
+    Called only from `step`, `gate`, `offer`, `close`, `settle`, `apply` and
+    `admit`, immediately after `resolve_target`/`validate_name` and before
+    `require_clean_worktree` or any other target read -- the earliest point
+    at which a ledger path (`<target>/<name>/.implementation/`) exists to
+    consult at all. Never called from `defect` itself (declaring a second
+    defect while one is open must stay possible) or from any diagnostic
+    command (`probe`, `verify`, `position`, `plan`, `compose`, `handoff`,
+    `discuss`), which must keep answering while blocked.
+    """
+    ledger_path = target / name / ".implementation" / "position.jsonl"
+    events = impl_position.read_events(ledger_path)
+    open_defects = impl_position.open_defects(events, FORGE_ROOT)
+    if open_defects:
+        files = sorted({event.get("file") for event in open_defects})
+        raise Refused(
+            "FORGE_DEFECT_OPEN",
+            f"{len(files)} forge file(s) carry an open, un-cleared defect "
+            f"declaration blocking this command: {files}. A defect clears "
+            "only when the named file's current bytes no longer match the "
+            "digest recorded against it -- fix the file (or, if it was "
+            "moved or deleted, that absence itself clears it) and retry, "
+            "or run `handoff` to see every open defect's file, session and "
+            "detail.")
 
 
 def cmd_verify(args: argparse.Namespace) -> dict:
