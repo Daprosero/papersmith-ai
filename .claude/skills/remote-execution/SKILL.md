@@ -349,7 +349,12 @@ Three modules exist so far, each service-blind and stdlib-only:
     entirely and is fetched into
     `<target>/<Name>/.remote-execution/quarantine/<submissionId>/` instead
     — structurally outside `Results/shards/`, so it is parked and
-    auditable, never merged. Every `returned` event also carries
+    auditable, never merged. `fetch --smoke` computes its own destination
+    the same way, into `<target>/<Name>/.remote-execution/rehearsal/
+    <submissionId>/` — `--dest` is refused (not merely unused) under
+    `--smoke`, and a real fetch with no `--dest` is refused symmetrically;
+    both directions closed by one pure-argv pairing check, above every
+    filesystem call. Every `returned` event also carries
     `observedConcurrency`: `LedgerState.pending_for(worker)` read from the
     ledger state at the top of the call, so a service throttling below the
     packer's own grant becomes a visible, different number instead of an
@@ -748,6 +753,19 @@ executable — no test in this suite reaches the network or a real account).
     actually turns on. Omitted entirely, no `accelerator` block is
     written and a job behaves exactly as it did before this field
     existed — additive, `schemaVersion` stays 1.
+  - **A job may also declare its own local-sufficiency budget.**
+    `generate-job --local-budget-seconds N` writes `run-config.json`'s
+    additive `localBudget: {seconds: N}` block, in the identical
+    conditional-block site the `accelerator` block above already uses —
+    written only when the flag is passed, silence otherwise, never a
+    forge-invented default of zero. `the-pilot-decides-the-remote-
+    strategy`'s `classify_remote_necessity` (`_core/implementation/
+    impl_execution_strategy.py`) compares this declared seconds figure
+    against the pilot-projected cost to decide whether a job needs a
+    remote worker at all; a job with no `accelerator` and no
+    `--local-budget-seconds` classifies `optional` — the recorded facts
+    do not decide, and `proposal-implementation`'s `gate` then requires
+    an explicit `--elect` naming it, on every gate call.
   - **The from-zero gap, closed (session addition): a job generated with
     no caller-declared accelerator at all is not left unprotected
     anymore.** `generate-job` exposes `--accelerator-kind`/
