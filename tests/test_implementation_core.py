@@ -24,6 +24,7 @@ CORE = REPOSITORY_ROOT / ".claude/skills/_core/implementation"
 sys.path.insert(0, str(CORE))
 
 import impl_availability  # noqa: E402
+import impl_execution_strategy  # noqa: E402
 import impl_gitops  # noqa: E402
 import impl_guards  # noqa: E402
 import impl_layout  # noqa: E402
@@ -497,6 +498,193 @@ class LaunchAvailableNoUpwardImportsTests(unittest.TestCase):
         self.assertTrue(
             roots.isdisjoint(self.FORBIDDEN_ROOTS),
             f"impl_availability.py imports {roots & self.FORBIDDEN_ROOTS}, "
+            "naming a caller's own layout from inside the shared core")
+
+
+class ClassifyRemoteNecessityTests(unittest.TestCase):
+    """`impl_execution_strategy.classify_remote_necessity()` -- the pure
+    5-rule ladder (design D3, `the-pilot-decides-the-remote-strategy`),
+    exercised over hand-built facts, exactly `LaunchAvailableTests`'s
+    own discipline for `impl_availability.launch_available` above.
+    """
+
+    def _classify(self, *, job: dict | None = None,
+                   results_status: str = "piloted",
+                   cost_forecast: dict | None = None) -> dict:
+        row = job or {"job": "job-a", "accelerator": None,
+                       "localBudget": None, "smokeReady": False}
+        return impl_execution_strategy.classify_remote_necessity(
+            jobs=[row], results_status=results_status, cost_forecast=cost_forecast)
+
+    def _verdict(self, **kwargs) -> dict:
+        return self._classify(**kwargs)["jobs"]["job-a"]
+
+    # -- rule 1: results already current --------------------------------
+
+    def test_results_current_is_local_sufficient_regardless_of_other_facts(self):
+        """Mutation-proven: deleting rule 1's short-circuit must turn
+        this red -- verified below, then reverted. A job that would
+        otherwise be `must-remote` on accelerator alone still resolves
+        `local-sufficient` here, because rule 1 runs first and returns.
+        """
+        job = {"job": "job-a", "accelerator": {"kind": "cuda", "architectures": ["sm_90"]},
+               "localBudget": None, "smokeReady": False}
+        verdict = self._verdict(job=job, results_status="current")
+        self.assertEqual(verdict, {"necessity": "local-sufficient", "reason": "results.current"})
+
+    # -- rule 2: accelerator declared ------------------------------------
+
+    def test_declared_accelerator_is_must_remote(self):
+        job = {"job": "job-a", "accelerator": {"kind": "cuda", "architectures": ["sm_90"]},
+               "localBudget": None, "smokeReady": False}
+        verdict = self._verdict(job=job, results_status="piloted")
+        self.assertEqual(verdict, {"necessity": "must-remote", "reason": "accelerator.declared"})
+
+    # -- rules 3-4: budget vs. projected cost -----------------------------
+
+    def test_projected_cost_above_budget_is_must_remote(self):
+        """Mutation-proven: inverting rule 3's `>` must turn this red --
+        verified below, then reverted.
+        """
+        job = {"job": "job-a", "accelerator": None, "localBudget": {"seconds": 100},
+               "smokeReady": False}
+        verdict = self._verdict(
+            job=job, results_status="piloted", cost_forecast={"projectedSeconds": 200})
+        self.assertEqual(verdict, {"necessity": "must-remote", "reason": "budget.exceeded"})
+
+    def test_projected_cost_within_budget_is_local_sufficient(self):
+        job = {"job": "job-a", "accelerator": None, "localBudget": {"seconds": 200},
+               "smokeReady": False}
+        verdict = self._verdict(
+            job=job, results_status="piloted", cost_forecast={"projectedSeconds": 100})
+        self.assertEqual(verdict, {"necessity": "local-sufficient", "reason": "budget.within"})
+
+    def test_projected_cost_equal_to_budget_is_local_sufficient(self):
+        """The boundary rule 3's `>` (never `>=`) decides: equal cost does
+        not exceed its own budget.
+        """
+        job = {"job": "job-a", "accelerator": None, "localBudget": {"seconds": 150},
+               "smokeReady": False}
+        verdict = self._verdict(
+            job=job, results_status="piloted", cost_forecast={"projectedSeconds": 150})
+        self.assertEqual(verdict, {"necessity": "local-sufficient", "reason": "budget.within"})
+
+    # -- rule 5: the facts do not decide -----------------------------------
+
+    def test_undeclared_budget_with_a_forecast_is_optional(self):
+        """Mutation-proven: making rule 5 fall through to
+        `local-sufficient` must turn this (and the two tests below) red
+        -- verified below, then reverted.
+        """
+        verdict = self._verdict(
+            results_status="piloted", cost_forecast={"projectedSeconds": 100})
+        self.assertEqual(verdict, {"necessity": "optional", "reason": "budget.undeclared"})
+
+    def test_declared_budget_with_no_forecast_is_optional(self):
+        job = {"job": "job-a", "accelerator": None, "localBudget": {"seconds": 100},
+               "smokeReady": False}
+        verdict = self._verdict(job=job, results_status="piloted", cost_forecast=None)
+        self.assertEqual(verdict, {"necessity": "optional", "reason": "forecast.unprojectable"})
+
+    def test_declared_budget_with_an_unprojectable_forecast_is_optional(self):
+        """`cost_forecast` given but its own `projectedSeconds` is `None`
+        -- `search_cost_forecast()`'s own shape when nothing was ever
+        measured to project from.
+        """
+        job = {"job": "job-a", "accelerator": None, "localBudget": {"seconds": 100},
+               "smokeReady": False}
+        verdict = self._verdict(
+            job=job, results_status="piloted",
+            cost_forecast={"projectedSeconds": None, "reason": "no target scale declared"})
+        self.assertEqual(verdict, {"necessity": "optional", "reason": "forecast.unprojectable"})
+
+    def test_unmeasured_results_outranks_an_undeclared_budget(self):
+        verdict = self._verdict(results_status="absent", cost_forecast=None)
+        self.assertEqual(verdict, {"necessity": "optional", "reason": "results.unmeasured"})
+
+    def test_unreadable_results_is_also_unmeasured(self):
+        verdict = self._verdict(results_status="unreadable", cost_forecast=None)
+        self.assertEqual(verdict, {"necessity": "optional", "reason": "results.unmeasured"})
+
+    def test_stale_results_is_not_treated_as_unmeasured(self):
+        """`stale` means a real measurement exists, against the wrong
+        revision -- distinct from never having measured at all.
+        """
+        verdict = self._verdict(results_status="stale", cost_forecast=None)
+        self.assertEqual(verdict, {"necessity": "optional", "reason": "budget.undeclared"})
+
+    # -- keyword-only, no defaults ------------------------------------------
+
+    def test_omitting_results_status_raises_typeerror(self):
+        """Mutation-proven: giving `results_status` a default value must
+        turn this red -- verified below, then reverted.
+        """
+        with self.assertRaises(TypeError):
+            impl_execution_strategy.classify_remote_necessity(
+                jobs=[{"job": "job-a", "accelerator": None,
+                       "localBudget": None, "smokeReady": False}],
+                cost_forecast=None)
+
+    def test_omitting_cost_forecast_raises_typeerror(self):
+        with self.assertRaises(TypeError):
+            impl_execution_strategy.classify_remote_necessity(
+                jobs=[{"job": "job-a", "accelerator": None,
+                       "localBudget": None, "smokeReady": False}],
+                results_status="piloted")
+
+    def test_omitting_jobs_raises_typeerror(self):
+        with self.assertRaises(TypeError):
+            impl_execution_strategy.classify_remote_necessity(
+                results_status="piloted", cost_forecast=None)
+
+    # -- multi-job summary ---------------------------------------------------
+
+    def test_summary_counts_each_verdict_class(self):
+        jobs = [
+            {"job": "current", "accelerator": None, "localBudget": None, "smokeReady": False},
+            {"job": "accel", "accelerator": {"kind": "cuda", "architectures": ["sm_90"]},
+             "localBudget": None, "smokeReady": False},
+            {"job": "undeclared", "accelerator": None, "localBudget": None, "smokeReady": False},
+        ]
+        result = impl_execution_strategy.classify_remote_necessity(
+            jobs=jobs, results_status="current", cost_forecast=None)
+        # `results_status` is shared across every job in one call (it is a
+        # fact about the target's record, not about any one job) -- so all
+        # three resolve `results.current` here regardless of their own
+        # accelerator/budget fields. A second call with a non-`current`
+        # status below is what actually reaches the accelerator/budget
+        # rules for the mixed-summary assertion.
+        self.assertEqual(result["summary"],
+                         {"mustRemote": 0, "localSufficient": 3, "optional": 0})
+
+        result = impl_execution_strategy.classify_remote_necessity(
+            jobs=jobs, results_status="piloted", cost_forecast=None)
+        self.assertEqual(result["summary"],
+                         {"mustRemote": 1, "localSufficient": 0, "optional": 2})
+        self.assertEqual(result["jobs"]["accel"]["necessity"], "must-remote")
+
+
+class ExecutionStrategyNoUpwardImportsTests(unittest.TestCase):
+    """The same discipline `LaunchAvailableNoUpwardImportsTests` already
+    holds for `impl_availability.py`, extended to its new sibling: the
+    shared core may not import a caller-side module.
+    """
+
+    FORBIDDEN_ROOTS = {"proposal-implementation", "remote-execution",
+                       "kaggle-accounts", "implementation_cli", "adapter",
+                       "kaggle"}
+
+    def test_imports_no_caller_side_module(self):
+        tree = ast.parse((CORE / "impl_execution_strategy.py").read_text(encoding="utf-8"))
+        roots = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                roots.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                roots.add(node.module.split(".")[0])
+        self.assertTrue(
+            roots.isdisjoint(self.FORBIDDEN_ROOTS),
+            f"impl_execution_strategy.py imports {roots & self.FORBIDDEN_ROOTS}, "
             "naming a caller's own layout from inside the shared core")
 
 
