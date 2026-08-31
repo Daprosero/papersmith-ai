@@ -2526,6 +2526,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="optional index URL for --environment-requirement; given "
         "without at least one --environment-requirement, refused.",
     )
+    generate_job.add_argument(
+        "--local-budget-seconds", dest="local_budget_seconds", type=int, default=None,
+        help="the target's own declared threshold, in seconds, for whether "
+        "this job's pilot-projected cost is locally tolerable — recorded "
+        "verbatim as localBudget.seconds, never judged here. Omitted, no "
+        "localBudget block is written; that silence is never read as a "
+        "budget of zero.",
+    )
 
     smoke = subparsers.add_parser(
         "smoke", help="smoke-run bookkeeping: recording a rehearsal's evidence-derived verdict"
@@ -2808,6 +2816,7 @@ def main(argv: list[str] | None = None) -> int:
                 accelerator_architectures=args.accelerator_architectures,
                 environment_requirements=args.environment_requirements,
                 environment_index_url=args.environment_index_url,
+                local_budget_seconds=args.local_budget_seconds,
             )
         except (JOBFOLDER.JobFolderError, ADAPTER.AdapterError, KeyError) as exc:
             print(f"error: {exc}", file=sys.stderr)

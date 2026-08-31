@@ -10466,6 +10466,189 @@ class DefaultAcceleratorProvisioningTests(unittest.TestCase):
             )
 
 
+class LocalBudgetDeclarationTests(unittest.TestCase):
+    """`jobfolder.generate_job(local_budget_seconds=...)` — the
+    `--local-budget-seconds` surface `impl_execution_strategy.
+    classify_remote_necessity()` (design D2/D3, `the-pilot-decides-the-
+    remote-strategy`) reads its `localBudget.seconds` fact from.
+
+    Same discipline as `--accelerator-kind`/`--accelerator-architecture`
+    and `--smoke-required-evidence`: recorded verbatim beside `accelerator`
+    in `run-config.json` only when the flag is given; omission writes no
+    key at all, never a default. Unlike the accelerator pair, this field
+    has no service-registered fallback of any kind — it is target
+    knowledge, exactly like `environment_requirements`.
+    """
+
+    FAKE_SERVICE = "local-budget-fake-service"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        ADAPTER.register_metadata(
+            cls.FAKE_SERVICE,
+            lambda run_config: ("fake-metadata.json", json.dumps({"ok": True})),
+        )
+
+    def setUp(self) -> None:
+        patcher = unittest.mock.patch.object(
+            JOBFOLDER, "verify_pin_preconditions", return_value=None
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _fixture_assets(self, tmp: str) -> tuple[Path, Path]:
+        bootstrap = Path(tmp) / "fixture_bootstrap.py"
+        invoke = Path(tmp) / "fixture_invoke.py"
+        bootstrap.write_text("# fixture bootstrap cell\nprint('cell-0')\n", encoding="utf-8")
+        invoke.write_text("# fixture invoke cell\nprint('cell-1')\n", encoding="utf-8")
+        return bootstrap, invoke
+
+    def _ensure_default_source_tree(self, target: Path) -> None:
+        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        if not harness.exists():
+            harness.parent.mkdir(parents=True, exist_ok=True)
+            harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
+
+    def _generate(self, tmp: str, target: Path, **overrides) -> Path:
+        bootstrap, invoke = self._fixture_assets(tmp)
+        self._ensure_default_source_tree(target)
+        kwargs = dict(
+            target=target,
+            service=self.FAKE_SERVICE,
+            job_name="search-a",
+            product="MIL-CREDA",
+            commit="a" * 40,
+            repo_url="https://example.invalid/repo.git",
+            repo_ref="main",
+            clone_paths=["src/MIL_CREDA_Benchmark"],
+            run_module="MIL_CREDA_Benchmark.harness",
+            run_function="campaign",
+            bootstrap_asset=bootstrap,
+            invoke_asset=invoke,
+        )
+        kwargs.update(overrides)
+        return JOBFOLDER.generate_job(**kwargs)
+
+    # -- jobfolder.generate_job(): silence, never a default ----------------
+
+    def test_generate_job_without_local_budget_seconds_omits_the_key(self) -> None:
+        """Mutation-proven: substituting a default `{"seconds": 0}` for the
+        omitted case must turn this red — verified below, then reverted.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            destination = self._generate(tmp, target)
+            run_config = json.loads(
+                (destination / "run-config.json").read_text(encoding="utf-8")
+            )
+            self.assertNotIn("localBudget", run_config)
+
+    def test_generate_job_with_local_budget_seconds_writes_the_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            destination = self._generate(tmp, target, local_budget_seconds=1800)
+            run_config = json.loads(
+                (destination / "run-config.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(run_config["localBudget"], {"seconds": 1800})
+
+    # -- jobfolder.validate_run_config(): the optional block round-trips ---
+
+    def test_validate_run_config_accepts_a_localbudget_block(self) -> None:
+        """No allowlist rejects an optional key here (see that function's
+        own docstring); this documents the round-trip rather than
+        mutation-proving a rejection that was never written.
+        """
+        run_config = {
+            "schemaVersion": 1, "product": "P", "service": "s", "jobName": "j",
+            "commit": "a" * 40, "repo": {"url": "u", "ref": "main"},
+            "clonePaths": ["src/A"], "run": {"module": "A.b", "function": "f"},
+            "runnerTemplate": [{"path": "x", "sha256": "y"}],
+            "localBudget": {"seconds": 900},
+        }
+        JOBFOLDER.validate_run_config(run_config)  # must not raise
+
+    # -- CLI wiring: --local-budget-seconds ---------------------------------
+
+    def test_generate_job_parser_declares_local_budget_seconds_flag(self) -> None:
+        parser = REMOTE_CLI._build_parser()
+        args = parser.parse_args([
+            "generate-job", "--target", "/tmp/x", "--service", "svc",
+            "--job-name", "job", "--product", "P", "--commit", "a" * 40,
+            "--repo-url", "https://example.invalid/r.git", "--repo-ref", "main",
+            "--run-module", "m", "--run-function", "f",
+            "--local-budget-seconds", "1800",
+        ])
+        self.assertEqual(args.local_budget_seconds, 1800)
+
+    def test_generate_job_parser_local_budget_seconds_defaults_to_none(self) -> None:
+        parser = REMOTE_CLI._build_parser()
+        args = parser.parse_args([
+            "generate-job", "--target", "/tmp/x", "--service", "svc",
+            "--job-name", "job", "--product", "P", "--commit", "a" * 40,
+            "--repo-url", "https://example.invalid/r.git", "--repo-ref", "main",
+            "--run-module", "m", "--run-function", "f",
+        ])
+        self.assertIsNone(args.local_budget_seconds)
+
+    def test_cli_generate_job_with_local_budget_seconds_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            self._ensure_default_source_tree(target)
+            bootstrap, invoke = self._fixture_assets(tmp)
+
+            with unittest.mock.patch.object(
+                JOBFOLDER, "DEFAULT_BOOTSTRAP_ASSET", bootstrap
+            ), unittest.mock.patch.object(JOBFOLDER, "DEFAULT_INVOKE_ASSET", invoke):
+                exit_code = REMOTE_CLI.main([
+                    "generate-job",
+                    "--target", str(target),
+                    "--service", self.FAKE_SERVICE,
+                    "--job-name", "cli-local-budget",
+                    "--product", "MIL-CREDA",
+                    "--commit", "a" * 40,
+                    "--repo-url", "https://example.invalid/repo.git",
+                    "--repo-ref", "main",
+                    "--clone-path", "src/MIL_CREDA_Benchmark",
+                    "--run-module", "MIL_CREDA_Benchmark.harness",
+                    "--run-function", "campaign",
+                    "--local-budget-seconds", "600",
+                ])
+
+            self.assertEqual(exit_code, 0)
+            job_dir = target / "tools" / self.FAKE_SERVICE / "cli-local-budget"
+            run_config = json.loads((job_dir / "run-config.json").read_text(encoding="utf-8"))
+            self.assertEqual(run_config["localBudget"], {"seconds": 600})
+
+    def test_cli_generate_job_without_local_budget_seconds_omits_the_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "repo"
+            self._ensure_default_source_tree(target)
+            bootstrap, invoke = self._fixture_assets(tmp)
+
+            with unittest.mock.patch.object(
+                JOBFOLDER, "DEFAULT_BOOTSTRAP_ASSET", bootstrap
+            ), unittest.mock.patch.object(JOBFOLDER, "DEFAULT_INVOKE_ASSET", invoke):
+                exit_code = REMOTE_CLI.main([
+                    "generate-job",
+                    "--target", str(target),
+                    "--service", self.FAKE_SERVICE,
+                    "--job-name", "cli-no-local-budget",
+                    "--product", "MIL-CREDA",
+                    "--commit", "a" * 40,
+                    "--repo-url", "https://example.invalid/repo.git",
+                    "--repo-ref", "main",
+                    "--clone-path", "src/MIL_CREDA_Benchmark",
+                    "--run-module", "MIL_CREDA_Benchmark.harness",
+                    "--run-function", "campaign",
+                ])
+
+            self.assertEqual(exit_code, 0)
+            job_dir = target / "tools" / self.FAKE_SERVICE / "cli-no-local-budget"
+            run_config = json.loads((job_dir / "run-config.json").read_text(encoding="utf-8"))
+            self.assertNotIn("localBudget", run_config)
+
+
 class CommitShapeTests(unittest.TestCase):
     """`jobfolder.validate_run_config()` — a pin must be a commit, not a
     name.

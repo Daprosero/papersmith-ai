@@ -1231,6 +1231,12 @@ def validate_run_config(run_config: Mapping[str, object]) -> None:
     is refused when it is READ, not only when it is written. A guard that
     lived at the CLI flag would let exactly that job folder through, and a
     job folder is read at submit, status, fetch, reconcile and readiness.
+
+    `localBudget`, like `accelerator` and `environment` before it, needs
+    no explicit acceptance here: this function checks REQUIRED_RUN_CONFIG_
+    FIELDS against a fixed list and never rejects a key outside it, so an
+    optional, additive block is already readable the moment
+    `build_run_config()` writes it — no allowlist exists to widen.
     """
     if not isinstance(run_config, Mapping):
         raise JobFolderError("run-config.json must decode to a JSON object")
@@ -1286,6 +1292,7 @@ def build_run_config(
     accelerator_architectures: Sequence[str] | None = None,
     environment_requirements: Sequence[str] | None = None,
     environment_index_url: str | None = None,
+    local_budget_seconds: int | None = None,
 ) -> dict:
     """Assemble `run-config.json`'s exact shape from target-supplied values.
 
@@ -1340,6 +1347,19 @@ def build_run_config(
     `schemaVersion` stays 1). Given partially — a kind with no
     architecture list, or the reverse — is refused: neither half alone is
     a value this schema can express.
+
+    `local_budget_seconds`, when given, is recorded verbatim as
+    `localBudget: {seconds}` — the target's own declared threshold for
+    whether a job's pilot-projected cost is locally tolerable, the SAME
+    "declared here, compared elsewhere" discipline `accelerator` already
+    holds: this module names the number and never judges it. Seconds,
+    because `search_cost_forecast()` (`implementation_cli.py`) projects
+    in seconds and the comparison this budget exists for is seconds
+    against seconds, with no unit conversion anywhere. Omitted entirely,
+    no `localBudget` block is written — silence, not a default of `0` or
+    any other value, because `classify_remote_necessity()` (design D3)
+    treats a target that declared nothing as a fact it does not have,
+    never as a target that declared "no time at all".
 
     `environment_requirements`/`environment_index_url`, when given, are
     recorded verbatim as `environment: {install: {requirements[],
@@ -1420,6 +1440,8 @@ def build_run_config(
             "kind": accelerator_kind,
             "architectures": list(accelerator_architectures),
         }
+    if local_budget_seconds is not None:
+        run_config["localBudget"] = {"seconds": local_budget_seconds}
     if has_environment_install:
         install_block: dict = {"requirements": list(environment_requirements)}
         if environment_index_url:
@@ -1509,6 +1531,7 @@ def generate_job(
     accelerator_architectures: Sequence[str] | None = None,
     environment_requirements: Sequence[str] | None = None,
     environment_index_url: str | None = None,
+    local_budget_seconds: int | None = None,
 ) -> Path:
     """Generate one job folder, atomically, refusing to overwrite an
     existing one unless `regenerate=True`.
@@ -1566,6 +1589,12 @@ def generate_job(
     default: an install is TARGET knowledge (which packages a specific
     repository needs), never service knowledge, so this function only
     ever forwards what a caller explicitly declared.
+
+    `local_budget_seconds` carries no default of any kind, unlike
+    `accelerator_kind`/`accelerator_architectures` above: there is no
+    service-registered fallback and no forge-invented value. Omitted, no
+    `localBudget` block is written at all — see `build_run_config()`'s
+    own docstring for why that silence must never become a `0`.
     """
     resolved_target = resolve_target(target)
     destination = resolve_destination(resolved_target, service, job_name)
@@ -1665,6 +1694,7 @@ def generate_job(
         accelerator_architectures=accelerator_architectures,
         environment_requirements=environment_requirements,
         environment_index_url=environment_index_url,
+        local_budget_seconds=local_budget_seconds,
     )
     notebook = build_notebook(resolved_bootstrap, resolved_invoke)
     metadata_filename, metadata_text = ADAPTER.resolve_metadata(service)(run_config)
