@@ -109,15 +109,27 @@ is the only move that catches the document and the producer drifting apart while
 each stays internally consistent. It is only sound under the conditions below.
 
 `structure`'s `fromZero` side now drives a real external `claude -p` process
-through a `driver` step. The two tests that exercise this for real
-(`FrozenPayloadTests.test_structure_payload_carries_frozen` and
-`StructureSelfProbeTests.test_the_shipped_recipe_drives_a_real_external_process`)
+through a `driver` step. The three tests that exercise this for real
+(`FrozenPayloadTests.test_structure_payload_carries_frozen`,
+`StructureSelfProbeTests.test_the_shipped_recipe_drives_a_real_external_process`
+and
+`NothingWasRepairedTests.test_a_structure_run_leaves_the_subject_and_its_ground_untouched`)
 default to skipped and opt in only with `SKILL_AUDIT_LIVE_DRIVER=1`. Before
 any change to `run_box_step`, `BOX_STEP_KINDS`, `DRIVER_ENV_ALLOWLIST`, or the
 shipped recipe's `driver` step, run
-`SKILL_AUDIT_LIVE_DRIVER=1 .venv/bin/python -m unittest tests.test_skill_audit.FrozenPayloadTests.test_structure_payload_carries_frozen tests.test_skill_audit.StructureSelfProbeTests.test_the_shipped_recipe_drives_a_real_external_process`
+`SKILL_AUDIT_LIVE_DRIVER=1 .venv/bin/python -m unittest tests.test_skill_audit.FrozenPayloadTests.test_structure_payload_carries_frozen tests.test_skill_audit.StructureSelfProbeTests.test_the_shipped_recipe_drives_a_real_external_process tests.test_skill_audit.NothingWasRepairedTests.test_a_structure_run_leaves_the_subject_and_its_ground_untouched`
 so the change is proven against the real driver mechanism, not only against
 its default-skipped shadow.
+
+The gate is not a convenience. `subprocess.run`'s own timeout reaches the
+agent it started and nothing the agent started in turn: those children are
+reparented and keep working long after the driver step has been recorded as
+timed out. They work inside `implementations/`, which is also where this
+suite's own throwaway boxes live and what several of its assertions compare
+before against after. An ungated site therefore does not merely cost time --
+it injects a nondeterministic writer into the directory the rest of the suite
+is measuring, and the failures land on whichever unrelated test is running
+when it writes.
 
 ### Move 6, in detail
 
