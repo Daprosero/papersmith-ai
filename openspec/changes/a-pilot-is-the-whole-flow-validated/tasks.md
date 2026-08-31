@@ -48,25 +48,25 @@ Chain strategy: pending
 
 DoD: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_proposal_implementation tests.test_implementation_core -v` green; delete `__pycache__` under `.claude/skills/_core/implementation/` before each reachable-red run.
 
-## Phase 2: Slice B — witness persistence (spec Groups 3-4-5, PR 2, gated on 0.2)
+## Phase 2: Slice B — witness persistence (spec Groups 3-4-5, PR 2, gated on 0.2) — implemented 2026-08-31
 
-- [ ] 2.1 RED: grammar tests — bare line unchanged; witness round-trip; trailing-backtick collision fixture using 0.2's chosen token. Red: `AGREEMENT_LINE` has no witness group.
-- [ ] 2.2 GREEN: extend `AGREEMENT_LINE` with the optional trailing witness group; no new `WITNESS_KINDS` member.
-- [ ] 2.3 RED: `cmd_settle --witness test_<id>` writes `` - [ ] {text} `{witness}` ``; omitted stays bare.
-- [ ] 2.4 GREEN: add `--witness` argparse flag; write logic in `cmd_settle` (sole writer).
-- [ ] 2.5 RED: single-write-path `ast` lock — only `cmd_settle` constructs a witness segment.
-- [ ] 2.6 GREEN: implement lock.
-- [ ] 2.7 RED: `agreements_state` three-state tests (`unwitnessed`/`unmeasured`/`disagrees` per D6); uniform `returned_keys` across every branch incl. `absent`.
-- [ ] 2.8 GREEN: `agreements_state` reads witness; state via `tests_dir` presence + `unparsable_tests` + `test_function_names`; one-directional (unticked + existing test ≠ `disagrees`).
-- [ ] 2.9 RED: `close` refuses `AGREEMENT_DISAGREES`, naming the item's exact text.
-- [ ] 2.10 GREEN: `cmd_close` checks `agreements_state`, raises `AGREEMENT_DISAGREES`.
-- [ ] 2.11 RED: `verify` emits `agreements.witness.summary: "N of M witnessed"` on every branch incl. `"0 of 0 witnessed"`; `verify`/`probe` exit 0 on `disagrees`.
-- [ ] 2.12 GREEN: `cmd_verify` nests the witness dimension inside the existing `agreements` key; update `returned_keys`/`markdown_table_rows`.
-- [ ] 2.13 Docs: `SKILL.md` verify status row + hand-editing doctrine (unsupported, evaluated not rejected); `references/usage.md` three states.
+- [x] 2.1 RED: grammar tests — bare line unchanged; witness round-trip; trailing-backtick collision fixture using 0.2's chosen token. Landed as `AgreementWitnessGrammarTests` (3 tests). Reachable-red confirmed by `git stash` of production files only (`implementation_cli.py`, `SKILL.md`, `usage.md`, keeping the new tests): all 16 new witness tests in this phase failed (4 assertion failures + 12 `KeyError: 'witness'`), restored by `git stash pop`, confirmed byte-identical.
+- [x] 2.2 GREEN: extended `AGREEMENT_LINE` with the optional trailing witness group (`` (?:\s+`(?P<witness>test_[A-Za-z0-9_]+)`)? ``); no new `WITNESS_KINDS` member.
+- [x] 2.3 RED: `cmd_settle --witness test_<id>` writes `` - [ ] {text} `{witness}` ``; omitted stays bare. Landed as 3 tests in `SettleCommandTests` (`test_settle_omitting_witness_writes_the_byte_identical_bare_line`, `test_settle_with_witness_persists_it_into_the_written_line`, `test_settle_refuses_a_malformed_witness`).
+- [x] 2.4 GREEN: added `--witness` argparse flag (default `None`, `getattr(args, "witness", None)` read at the call site so every pre-existing hand-built `argparse.Namespace` in the test suite — e.g. the CAS-race test — keeps working with no edit); write logic via a new `_render_settled_line(text, witness)` helper, `cmd_settle`'s sole caller. New refusal `SETTLE_WITNESS_MALFORMED` for a value not matching `test_[A-Za-z0-9_]+` (not in the original task list — added because a malformed value would otherwise silently round-trip as inert prose, never as a witness `agreements_state` could read back).
+- [x] 2.5 RED: single-write-path `ast` lock — landed as `AgreementWitnessSingleWritePathTests` (2 tests): a call-site-set assertion over `_render_settled_line(` (mirrors D3's own discipline for `impl_availability`'s call sites) plus a mutation test that injects a second caller into a scratch copy of the CLI and confirms the assertion catches it, never touching the real file.
+- [x] 2.6 GREEN: `_render_settled_line` extracted, called only from `cmd_settle`; both lock tests pass.
+- [x] 2.7 RED: `agreements_state` three-state tests (`unwitnessed`/`unmeasured`/`disagrees` per D6) — landed as `AgreementWitnessThreeStateTests` (7 tests) plus 3 more in `VerifyAgreementWitnessTests`; uniform `returned_keys` across every branch incl. `absent` — `test_returned_keys_agree_across_every_branch_including_absent` calls the existing `returned_keys` helper directly (it already raises `AssertionError` on its own if a function's dict-literal returns disagree).
+- [x] 2.8 GREEN: `agreements_state` reads witness; state computed once per call via `tests_dir = target / "tests"` presence + `unparsable_tests(tests_dir)` + `test_function_names(tests_dir)`; one-directional (unticked + existing test ≠ `disagrees` — confirmed by `test_unticked_with_the_same_absent_function_is_not_a_disagreement`). **Revision beyond the original task wording**: a witnessed item whose declared function IS found is classified `unmeasured`, not a fourth unnamed "proven" state — this CLI never executes a suite (only an `ast` walk), so finding the name proves existence, never a PASS; `unmeasured` is therefore the catch-all for every witnessed item that is not provably contradicting. `disagrees` fires only for `tests_readable AND mark == 'x' AND witness not in tested_names`; every other witnessed case (tests/ absent, unparsable, unticked, or found) is `unmeasured`. The `"note"` key (previously present only on the `absent` branch) was also added to the `open`/`settled` branch as `None`, closing the pre-existing key-set asymmetry `returned_keys` would otherwise have raised on regardless of the witness addition.
+- [x] 2.9 RED: `close` refuses `AGREEMENT_DISAGREES`, naming the item's exact text — landed as `test_close_refuses_agreement_disagrees` and `test_close_succeeds_when_the_witnessed_function_exists` in `CloseCommandTests`.
+- [x] 2.10 GREEN: `cmd_close` calls `agreements_state` and raises `AGREEMENT_DISAGREES` right after the `position_honest` ladder and before the refresh — a second, independent axis, never folded into the position ladder.
+- [x] 2.11 RED: `verify` emits `agreements.witness.summary: "N of M witnessed"` on every branch incl. `"0 of 0 witnessed"`; `verify`/`probe` exit 0 on `disagrees` — landed as `VerifyAgreementWitnessTests` (3 subprocess end-to-end tests against `cmd_verify`).
+- [x] 2.12 GREEN: **no code change needed in `cmd_verify` itself** — since the witness dimension nests inside `agreements_state`'s own return value and `cmd_verify` already does `"agreements": agreements_state(target, name)`, the existing single top-level key absorbs the new nested data with zero top-level-key changes; `VerifyStatusRosterTests` (`returned_keys(CLI, "cmd_verify")`) confirmed still green, unmodified.
+- [x] 2.13 Docs: `SKILL.md`'s `agreements` status row extended with the `witness` dimension and its gating column split (open items gate, `witness.disagrees` never gates here); `close` and `settle` refusal-set rows gained `AGREEMENT_DISAGREES` / `SETTLE_WITNESS_MALFORMED`. `references/usage.md`: new `agreements.witness` bullet in "Reading `verify`"; new `--witness` subsection under `settle` stating the hand-editing doctrine (unsupported, evaluated not rejected — parser cannot and does not distinguish provenance); `close` section extended with the `AGREEMENT_DISAGREES` axis.
 
-DoD: same suite command as Phase 1, full `discover -p 'test_*.py'`; confirm `implementations/Domain_Adaptation/MIL-CREDA/AGREED.md` byte-identical (`git diff --stat` empty).
+DoD: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest discover -s tests -p 'test_*.py'` — see apply-progress for the exact result; `npm test` — pass 385, fail 0 (baseline, unaffected); `implementations/Domain_Adaptation/MIL-CREDA/AGREED.md` confirmed byte-identical (`git diff --stat` empty, verified this session).
 
-## Phase 3: Cross-cutting (spec Cross-cutting)
+## Phase 3: Cross-cutting (spec Cross-cutting) — explicitly out of scope this session (not assigned)
 
 - [ ] 3.1 RED: `FORGE_VOCABULARY_FLOOR` test — a word merely containing the forbidden substring must not flag.
 - [ ] 3.2 GREEN: switch to `\b`-anchored matching in `test_proposal_implementation.py`/`test_skill_audit.py`.

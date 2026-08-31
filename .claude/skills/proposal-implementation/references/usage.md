@@ -617,6 +617,20 @@ they were easy to leave undocumented:
   `unmeasured` names a witness this invocation could not check at all (most
   commonly `@shard` without `--shards`). It **never gates** — read it before
   telling a human a step is done.
+- **`agreements.witness`** — a nested reading of every checklist item's
+  optional trailing `` `test_<id>` `` token (`settle --witness` is the only
+  command that ever writes one). Three states, never collapsed into one
+  another: `unwitnessed` (the line carries no token — a state, not a
+  failure), `unmeasured` (a token is declared but this run could not, or
+  would not, call it a contradiction — this CLI never executes a suite, so
+  even a token whose function name *is* found among `test_<id>` functions
+  stays `unmeasured`, never "proven"), and `disagrees` (declared, `tests/`
+  is readable and fully parsed, the item is ticked, and the declared
+  function is absent). `summary` prints `"N of M witnessed"` on every run,
+  including a target with zero declared tokens (`"0 of 0 witnessed"`) —
+  silence never stands in for "nothing is declared". It **never gates
+  here** — `close` is the one place `disagrees` refuses
+  (`AGREEMENT_DISAGREES`); `verify` and `probe` only ever report it.
 
 Omit `--revision` and `fidelity.status` is `unknown`: the modules' declared
 revisions are still listed, but nothing is compared. Never report an
@@ -868,6 +882,29 @@ otherwise) and is recorded in the ledger event only: the document itself still
 needs a human-written `Reversed` paragraph to show a supersession actually
 happened. `--text -` and `--supersedes -` cannot both read stdin in one call
 (`SETTLE_STDIN_CONFLICT`).
+
+### `--witness` — binding this agreement to a test, at write time
+
+Optional `--witness test_<id>` names this agreement's own function in the
+declared-invariants suite — a separate identity from `--about`, which names
+the *position* witness this placement discussed. Given, it is persisted
+verbatim into the written line as a trailing `` `test_<id>` `` token;
+omitted, the line is byte-identical to the pre-witness grammar, exactly as
+it always was. Refused `SETTLE_WITNESS_MALFORMED` if given and it does not
+match `test_[A-Za-z0-9_]+` — a malformed value would otherwise round-trip
+as inert trailing text, never as a witness `agreements_state` could read
+back.
+
+**`settle` is the only command that ever writes this token.** There is no
+`patch` or `edit` subcommand, by design (spec Group 5): a witness token
+binds at the moment an agreement is placed, never afterward. Hand-typing
+one into `AGREED.md` is unsupported doctrine, not a technical prevention —
+the parser cannot, and does not try to, distinguish a skill-written token
+from a hand-typed one, so `verify` and `close` evaluate either exactly the
+same way. Retrofitting an already-settled agreement (writing a witness
+token onto a line `settle` placed before this flag existed) is a separate,
+prior, bounded target-side pass, never something a flow does incrementally
+as it happens to encounter an unwired agreement.
 
 ## `defect` — declare a forge file broken
 
@@ -1243,11 +1280,15 @@ nothing named where a returned shard lands — neither an explicit `--shards
 <dir>` at `position` nor this target's own declared `distribution.
 shardsRoot` — so the tick cannot be checked at all, a different fact from
 `POSITION_UNBACKED`'s "checked, and found silent", and `POSITION_DISAGREES`
-when a recorded mark still contradicts its own measured evidence. Only once
-that check is clean does `close` refresh — picking up any witness that has
-become measurable since — and record the transition. A second `close` over
-the identical, unmoved position reports `"not_open"` rather than appending a
-second event.
+when a recorded mark still contradicts its own measured evidence. Right
+after that ladder, a second and independent axis: `AGREEMENT_DISAGREES`
+when a ticked `AGREEMENTS.md`-style checklist item's own declared
+`test_<id>` witness (`settle --witness`) is absent from a fully-parsed
+`tests/` — the only place in the whole CLI this ever gates; `verify` and
+`probe` only ever report it. Only once both checks are clean does `close`
+refresh — picking up any position witness that has become measurable since
+— and record the transition. A second `close` over the identical, unmoved
+position reports `"not_open"` rather than appending a second event.
 
 ## `step` — run one declared local step, isolated
 

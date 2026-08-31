@@ -151,7 +151,21 @@ RESULT_EXT = {".png", ".jpg", ".jpeg", ".svg", ".eps"}
 AGREEMENTS_GLOB = "*.md"
 
 #: A checklist item. Anything else on the line is the item's text, verbatim.
-AGREEMENT_LINE = re.compile(r"^\s*[-*]\s*\[(?P<mark>[ xX])\]\s*(?P<text>.+?)\s*$")
+#:
+#: The trailing group is optional and scoped strictly to the shape `settle`
+#: writes (design D4, spec Group 3): a backticked `` `test_<id>` `` at the
+#: very end of the line, mirroring `impl_position.WITNESS_RE`'s own
+#: end-anchored convention one module over. A bare line, with or without a
+#: mark, parses byte-for-byte as it always has -- the group only ever
+#: matches when the line's own tail happens to have that exact shape.
+#: Measured, not assumed (design D4's own open question): a scan of the
+#: reference target's `AGREED.md` for a pre-existing line already ending in
+#: a backticked `test_...` found zero hits across 114 checklist lines, so
+#: this token form ships rather than the HTML-comment fallback D4 held in
+#: reserve.
+AGREEMENT_LINE = re.compile(
+    r"^\s*[-*]\s*\[(?P<mark>[ xX])\]\s*(?P<text>.+?)"
+    r"(?:\s+`(?P<witness>test_[A-Za-z0-9_]+)`)?\s*$")
 
 #: A bullet: a marker followed by whitespace. `**bold**` is not one, which is why
 #: this exists — a file that records a reverted agreement in prose was reported as
@@ -233,15 +247,58 @@ def agreements_state(target: Path, name: str) -> dict:
     (`_agreement_scan_text`, above); a holder whose only checklist items
     are position lines therefore reports `absent`, not `open` — the same
     fact `position_state` already reports separately, so it is never lost.
+
+    **The witness dimension, nested under `witness` (design D7, spec Group
+    4).** Three states, none collapsing into another: `unwitnessed` (the
+    line carries no `` `test_<id>` `` token at all -- reported, never a
+    failure), `unmeasured` (a token is declared but this run could not, or
+    would not, call it a contradiction), `disagrees` (declared, `tests/` is
+    readable and fully parsed, the mark is `x`, and `test_<id>` is absent
+    from `test_function_names(...)`).
+
+    **This CLI runs no test, ever** — `test_function_names` is an `ast`
+    walk, nothing here executes a suite. Finding `test_<id>` among the
+    collected names proves only that a function by that name exists; it is
+    never read as "the test passed", so that case reads `unmeasured`, the
+    same as a token this run could not evaluate at all. Only a *definite
+    absence* — a fully-parsed `tests/` that does not contain the declared
+    function — is strong enough to call `disagrees`. `unmeasured` also
+    covers `tests/` missing entirely or `unparsable_tests(...)` non-empty:
+    the collector silently skips a file that fails `ast.parse`, so "absent"
+    and "unreadable" are genuinely indistinguishable, which is exactly what
+    `unmeasured` denotes.
+
+    **One-directional, unlike `impl_position.derive()`.** An unticked
+    agreement whose declared witness function already exists is never
+    `disagrees` — `settle` always writes `[ ]`, and the symmetric rule
+    would flag every freshly settled agreement whose test already exists.
+
+    **`summary` is present on every branch, including `absent`** (`"0 of 0
+    witnessed"`), the same uniform-key-set doctrine `position_state`
+    states for itself. Silence is never how this reports "nothing is
+    declared" — see `cmd_verify`'s own contract.
     """
     product = target / name
     files = sorted(p for p in product.glob(AGREEMENTS_GLOB) if p.is_file()) \
         if product.is_dir() else []
 
+    # Computed once per call, never per item: whether `tests/` at the
+    # target's own root (the same directory `cmd_verify`'s own
+    # `test_function_names(target / "tests")` already reads) is even
+    # readable at all. A witness token cannot be told apart from a
+    # contradicted one when the collector itself could not run.
+    tests_dir = target / "tests"
+    tests_readable = tests_dir.is_dir() and not unparsable_tests(tests_dir)
+    tested_names = test_function_names(tests_dir) if tests_readable else set()
+
     open_items: list[str] = []
     settled = 0
     unparsed: list[str] = []
     holding: list[str] = []
+    unwitnessed: list[str] = []
+    unmeasured: list[str] = []
+    disagrees: list[str] = []
+    total_items = 0
     for path in files:
         items_here = 0
         for raw in _agreement_scan_text(path.read_bytes()).splitlines():
@@ -262,10 +319,21 @@ def agreements_state(target: Path, name: str) -> dict:
                     unparsed.append(f"{path.name}: {line.strip()}")
                 continue
             items_here += 1
-            if match.group("mark") == " ":
-                open_items.append(match.group("text"))
+            total_items += 1
+            text = match.group("text")
+            mark = match.group("mark")
+            witness = match.group("witness")
+            if mark == " ":
+                open_items.append(text)
             else:
                 settled += 1
+            if not witness:
+                unwitnessed.append(text)
+            elif (tests_readable and mark in ("x", "X")
+                  and witness not in tested_names):
+                disagrees.append(text)
+            else:
+                unmeasured.append(text)
         # A markdown file with no checklist items is a document, not a checklist.
         # Only what actually holds agreements is reported as holding them, and the
         # unparsed lines of a file that turned out to hold none go with it.
@@ -278,8 +346,11 @@ def agreements_state(target: Path, name: str) -> dict:
         return {"status": "absent", "holders": [], "searched": f"{name}/*.md",
                 "open": [], "settled": 0, "unparsed": [],
                 "note": "no markdown file in the product folder holds checklist "
-                        "items; if a gate happened, its agreements were lost"}
+                        "items; if a gate happened, its agreements were lost",
+                "witness": {"unwitnessed": [], "unmeasured": [], "disagrees": [],
+                           "summary": "0 of 0 witnessed"}}
 
+    witnessed = len(unmeasured) + len(disagrees)
     return {
         "status": "open" if open_items or unparsed else "settled",
         "holders": holding,
@@ -287,6 +358,13 @@ def agreements_state(target: Path, name: str) -> dict:
         "open": open_items,
         "settled": settled,
         "unparsed": unparsed,
+        "note": None,
+        "witness": {
+            "unwitnessed": unwitnessed,
+            "unmeasured": unmeasured,
+            "disagrees": disagrees,
+            "summary": f"{witnessed} of {total_items} witnessed",
+        },
     }
 
 
@@ -6732,6 +6810,24 @@ def _settle_discussed_events(target: Path, name: str, about: dict) -> list[dict]
             and event["about"].get("operand") == about["operand"]]
 
 
+def _render_settled_line(text: str, witness: str | None) -> bytes:
+    """The one construction of a settled checklist line, called only from
+    `cmd_settle` -- the sole write path a witness token has (design D5,
+    spec Group 5: "no other CLI surface edits one";
+    `AgreementWitnessSingleWritePathTests` holds this by an `ast` walk of
+    the whole CLI, the same discipline D3 already uses for
+    `impl_availability`'s call-site sets).
+
+    Byte-identical to the pre-witness grammar when `witness` is falsy, so
+    every existing caller that never passes `--witness` keeps writing
+    exactly the line it always wrote. Always `[ ]`: this command never
+    authors a tick, witness or no witness.
+    """
+    if witness:
+        return f"- [ ] {text} `{witness}`\n".encode("utf-8")
+    return f"- [ ] {text}\n".encode("utf-8")
+
+
 def cmd_settle(args: argparse.Namespace) -> dict:
     """Place one settled agreement, and only one, under a caller-named
     heading (design "the placer" -- the third and last piece of "We
@@ -6784,6 +6880,24 @@ def cmd_settle(args: argparse.Namespace) -> dict:
        IN that computed list -- an unchecked string would be a rubber
        stamp on a supersession this command cannot itself verify happened
        in the document.
+    7. `SETTLE_WITNESS_MALFORMED` -- an optional `--witness test_<id>`
+       (design D5, spec Group 3) that does not match `AGREEMENT_LINE`'s own
+       trailing-token grammar (`test_[A-Za-z0-9_]+`). Refused before the
+       write, not silently swallowed into plain text: a malformed value
+       would otherwise round-trip as inert prose, and a caller who typed
+       `--witness` believing it bound something would never learn it did
+       not.
+
+    **The witness this places is a separate identity from `--about`.**
+    `--about` names the *position* witness this placement discusses and
+    matches against the ledger; `--witness`, when given, is the *agreement's
+    own* `test_<id>` in the declared-invariants suite, persisted into the
+    written line so `agreements_state` can read it back without consulting
+    the ledger. `_resolve_discuss_about` cannot itself carry a `test_<id>`
+    -- it raises `POSITION_WITNESS_UNKNOWN_KIND` for anything outside
+    `impl_position.WITNESS_KINDS`, which `test_<id>` is not a member of and
+    never becomes one; `--witness` is why this command needs no such
+    member. Omitted, the written line stays exactly as it always was.
 
     `POSITION_HOLDER_MOVED` is reused, not minted fresh: it already names a
     holder document's own compare-and-swap failure, and a placement's own
@@ -6813,6 +6927,16 @@ def cmd_settle(args: argparse.Namespace) -> dict:
     text = text.strip()
     if not text:
         raise Refused("SETTLE_EMPTY_TEXT", "settle requires non-blank --text.")
+
+    witness = getattr(args, "witness", None)
+    witness = witness.strip() if witness else None
+    if witness and not re.fullmatch(r"test_[A-Za-z0-9_]+", witness):
+        raise Refused(
+            "SETTLE_WITNESS_MALFORMED",
+            f"--witness {witness!r} does not match the grammar's own "
+            "`test_<id>` shape (test_[A-Za-z0-9_]+); a value that does not "
+            "match would round-trip as inert trailing text, never as a "
+            "witness `agreements_state` can read back.")
 
     evidence = _position_write_evidence(target, name)
     position = position_state(target, name, evidence, None, None)
@@ -6877,7 +7001,7 @@ def cmd_settle(args: argparse.Namespace) -> dict:
             f"--supersedes {supersedes!r} does not exact-match any of the "
             f"{len(collides)} computed colliding agreement(s).")
 
-    new_line = f"- [ ] {text}\n".encode("utf-8")
+    new_line = _render_settled_line(text, witness)
     spliced = impl_position.splice(data, new_line, span)
     pre_digest = impl_position.digest_bytes(data)
     impl_position.write_spliced(target_path, spliced, expect_digest=pre_digest)
@@ -6886,14 +7010,14 @@ def cmd_settle(args: argparse.Namespace) -> dict:
     impl_position.append_event(
         target / name / ".implementation" / "position.jsonl",
         {"kind": "settle", "session": args.session, "about": about,
-         "text": text, "under": heading,
+         "text": text, "under": heading, "witness": witness,
          "holder": str(target_path.relative_to(target)),
          "supersedes": supersedes, "collides": collides, "at": recorded_at})
 
     return {
         "command": "settle", "target": str(target), "name": name,
         "status": "written", "holder": str(target_path.relative_to(target)),
-        "about": about, "text": text, "under": heading,
+        "about": about, "text": text, "under": heading, "witness": witness,
         "supersedes": supersedes, "collides": collides,
         "recordedAt": recorded_at,
     }
@@ -8018,6 +8142,13 @@ def cmd_close(args: argparse.Namespace) -> dict:
     set of codes, never a second refusal ladder this command writes for
     itself.
 
+    **`AGREEMENT_DISAGREES` is a second, independent axis (spec Group 3).**
+    A ticked `AGREEMENTS.md`-style checklist item whose declared
+    `test_<id>` witness is absent from a fully-parsed `tests/` is refused
+    here, after the position ladder and before the refresh -- the only
+    place in the whole CLI this ever gates, since `verify`/`probe` only
+    ever report it.
+
     **Checked against the position exactly as recorded, BEFORE the refresh
     that follows.** Refreshing first would silently correct a disagreement
     by rewriting the very mark this refusal exists to catch, which would
@@ -8102,6 +8233,25 @@ def cmd_close(args: argparse.Namespace) -> dict:
             "their own measured evidence; close requires the position to be "
             "true, not merely written -- run `position` to see and correct "
             "them, never close over a contradiction.")
+
+    # A second, independent axis from the position ladder above: an
+    # AGREEMENTS.md-style checklist item, ticked, whose own declared
+    # `test_<id>` witness (spec Group 3) is absent from a fully-parsed
+    # `tests/` -- a false claim the same shape as `POSITION_DISAGREES`, one
+    # level up. Reported by `verify`/`probe` and gated nowhere but here
+    # (spec "Gating stays at close"), so this is the one and only place the
+    # CLI ever refuses on it.
+    agreements = agreements_state(target, name)
+    agreement_disagreements = agreements["witness"]["disagrees"]
+    if agreement_disagreements:
+        raise Refused(
+            "AGREEMENT_DISAGREES",
+            "agreement(s) "
+            f"{'; '.join(repr(t) for t in agreement_disagreements)} "
+            "are ticked and their declared witness function is absent from "
+            "a fully-parsed tests/; close requires every ticked agreement's "
+            "witness to still name a real function, not merely to have "
+            "named one when it was settled.")
 
     # Only unmeasured witnesses can still move here (see docstring): pick up
     # anything that became measurable since the position was last written.
@@ -9549,6 +9699,23 @@ def main(argv: list[str] | None = None) -> int:
                                 "the document itself still needs a "
                                 "human-written Reversed paragraph to show "
                                 "the supersession")
+            p.add_argument("--witness", default=None,
+                           help="optional test_<id> naming this agreement's "
+                                "own function in the declared-invariants "
+                                "suite -- a separate identity from --about, "
+                                "which names the position witness this "
+                                "placement discusses. Persisted verbatim "
+                                "into the written line as a trailing "
+                                "`` `test_<id>` `` token; omitted, the line "
+                                "stays byte-identical to the pre-witness "
+                                "grammar. Refused SETTLE_WITNESS_MALFORMED "
+                                "if given and not test_[A-Za-z0-9_]+. "
+                                "settle is the only command that ever "
+                                "writes this token -- there is no patch or "
+                                "edit subcommand, and hand-typing one into "
+                                "the file is unsupported (evaluated "
+                                "exactly like a skill-written one by "
+                                "verify, never technically prevented)")
         if name == "defect":
             p.add_argument("--file", required=True,
                            help="path to the forge file this declares "

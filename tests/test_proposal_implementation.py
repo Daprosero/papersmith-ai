@@ -2302,6 +2302,168 @@ class AgreementScanTextTests(unittest.TestCase):
             self.assertNotIn("fabricated bullet text", state["open"])
 
 
+class AgreementWitnessGrammarTests(unittest.TestCase):
+    """`AGREEMENT_LINE`'s optional trailing witness token (design D4, spec
+    Group 3): a bare `- [ ] <text>` line parses byte-identically whether or
+    not this grammar exists, and a token round-trips when written and
+    re-read. `settle --witness` is the only writer; these tests exercise
+    the grammar directly, never through a CLI subprocess.
+    """
+
+    def state(self, root: Path, body: str) -> dict:
+        (root / "Method").mkdir(parents=True, exist_ok=True)
+        (root / "Method" / "AGREED.md").write_text(body, encoding="utf-8")
+        return impl.agreements_state(root, "Method")
+
+    def test_a_bare_line_parses_exactly_as_before_this_grammar_existed(self):
+        """Reachable-red under `git stash` of only the production files:
+        this assertion holds unconditionally on both sides of the grammar
+        change, which is exactly the point -- a bare line must never
+        notice the optional group exists.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            state = self.state(Path(raw), "- [x] the ceiling stays at one\n")
+            self.assertEqual(state["open"], [])
+            self.assertEqual(state["settled"], 1)
+            self.assertEqual(state["witness"]["unwitnessed"],
+                             ["the ceiling stays at one"])
+
+    def test_a_witness_token_round_trips_through_mark_text_and_witness(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "Method").mkdir(parents=True, exist_ok=True)
+            (root / "tests").mkdir(parents=True, exist_ok=True)
+            (root / "tests" / "test_agreement.py").write_text(
+                "def test_the_thing():\n    assert True\n", encoding="utf-8")
+            state = self.state(
+                root, "- [x] the thing holds `test_the_thing`\n")
+            self.assertEqual(state["settled"], 1)
+            self.assertEqual(state["open"], [])
+            # A found function name is never read as "proven" -- this CLI
+            # runs no test, ever (design D6). It is `unmeasured`, not a
+            # fourth, unnamed "passed" state.
+            self.assertEqual(state["witness"]["unmeasured"],
+                             ["the thing holds"])
+            self.assertEqual(state["witness"]["disagrees"], [])
+            self.assertEqual(state["witness"]["unwitnessed"], [])
+
+    def test_a_pre_existing_line_ending_in_a_backticked_test_word_is_the_measured_case(self):
+        """D4's own open question, closed by measurement (Phase 0.2): zero
+        hits across the reference target's 114 checklist lines, so the
+        backtick token form ships rather than the HTML-comment fallback.
+        This fixture documents the one behavior that measurement accepted
+        -- such a line now parses its trailing token as a witness, not as
+        inert prose -- rather than leaving it unproven.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            state = self.state(
+                Path(raw),
+                "- [ ] a line whose own prose happens to end in `test_old`\n")
+            self.assertEqual(
+                state["open"],
+                ["a line whose own prose happens to end in"])
+            # The trailing token is read as a witness, not left inside
+            # `text` as inert prose -- no `tests/` dir here, so it is
+            # `unmeasured`, never `unwitnessed`.
+            self.assertEqual(
+                state["witness"]["unmeasured"],
+                ["a line whose own prose happens to end in"])
+            self.assertEqual(state["witness"]["unwitnessed"], [])
+
+
+class AgreementWitnessThreeStateTests(unittest.TestCase):
+    """The three states `agreements_state` reads back (design D6, spec
+    Group 3): `unwitnessed`, `unmeasured`, `disagrees`, none collapsing
+    into another, plus the "N of M witnessed" summary (spec Group 4).
+    """
+
+    def write(self, root: Path, body: str, *, tests: dict[str, str] | None = None,
+             tests_dir_present: bool = True) -> dict:
+        (root / "Method").mkdir(parents=True, exist_ok=True)
+        (root / "Method" / "AGREED.md").write_text(body, encoding="utf-8")
+        if tests_dir_present:
+            (root / "tests").mkdir(parents=True, exist_ok=True)
+            for filename, content in (tests or {}).items():
+                (root / "tests" / filename).write_text(content, encoding="utf-8")
+        return impl.agreements_state(root, "Method")
+
+    def test_no_token_is_unwitnessed_never_a_failure(self):
+        with tempfile.TemporaryDirectory() as raw:
+            state = self.write(Path(raw), "- [x] settled with no witness\n")
+            self.assertEqual(state["witness"]["unwitnessed"],
+                             ["settled with no witness"])
+            self.assertEqual(state["witness"]["summary"], "0 of 1 witnessed")
+
+    def test_tests_dir_absent_is_unmeasured_even_when_ticked(self):
+        with tempfile.TemporaryDirectory() as raw:
+            state = self.write(
+                Path(raw), "- [x] a claim `test_never_written`\n",
+                tests_dir_present=False)
+            self.assertEqual(state["witness"]["unmeasured"],
+                             ["a claim"])
+            self.assertEqual(state["witness"]["disagrees"], [])
+
+    def test_an_unparsable_test_file_is_unmeasured_not_disagrees(self):
+        """`unparsable_tests` swallows `SyntaxError` per file; "absent" and
+        "unreadable" are genuinely indistinguishable to the collector, so
+        both read `unmeasured` rather than the stronger `disagrees`.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            state = self.write(
+                Path(raw), "- [x] a claim `test_ghost`\n",
+                tests={"test_broken.py": "def test_x(:\n"})
+            self.assertEqual(state["witness"]["unmeasured"], ["a claim"])
+            self.assertEqual(state["witness"]["disagrees"], [])
+
+    def test_ticked_and_function_absent_from_a_readable_suite_disagrees(self):
+        with tempfile.TemporaryDirectory() as raw:
+            state = self.write(
+                Path(raw), "- [x] a false claim `test_ghost`\n",
+                tests={"test_real.py": "def test_something_else():\n    pass\n"})
+            self.assertEqual(state["witness"]["disagrees"], ["a false claim"])
+            self.assertEqual(state["witness"]["unmeasured"], [])
+
+    def test_unticked_with_the_same_absent_function_is_not_a_disagreement(self):
+        """One-directional, unlike `impl_position.derive()`: `settle`
+        always writes `[ ]`, so a symmetric rule would flag every freshly
+        settled agreement whose test does not exist yet -- which is every
+        one of them, the moment it is placed.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            state = self.write(
+                Path(raw), "- [ ] not yet reached `test_ghost`\n",
+                tests={"test_real.py": "def test_something_else():\n    pass\n"})
+            self.assertEqual(state["witness"]["disagrees"], [])
+            self.assertEqual(state["witness"]["unmeasured"], ["not yet reached"])
+
+    def test_zero_declared_anywhere_still_announces_zero_of_zero(self):
+        """Group 4's own scenario, at the unit level: silence is never how
+        this reports "nothing is declared"."""
+        with tempfile.TemporaryDirectory() as raw:
+            state = impl.agreements_state(Path(raw), "Method")
+            self.assertEqual(state["status"], "absent")
+            self.assertEqual(state["witness"]["summary"], "0 of 0 witnessed")
+
+    def test_the_summary_counts_every_witnessed_item_regardless_of_state(self):
+        with tempfile.TemporaryDirectory() as raw:
+            state = self.write(
+                Path(raw),
+                "- [x] no witness at all\n"
+                "- [x] found but never proven `test_real`\n"
+                "- [x] absent and ticked `test_ghost`\n",
+                tests={"test_real.py": "def test_real():\n    pass\n"})
+            self.assertEqual(state["witness"]["summary"], "2 of 3 witnessed")
+
+    def test_returned_keys_agree_across_every_branch_including_absent(self):
+        """`returned_keys` itself raises if a function's dict-literal
+        returns disagree on their key set -- the same uniform-key-set
+        doctrine `position_state`'s own docstring states for itself.
+        """
+        keys = returned_keys(CLI, "agreements_state")
+        self.assertIn("witness", keys)
+        self.assertIn("note", keys)
+
+
 class SearchIsAnExperimentTests(unittest.TestCase):
     """Una búsqueda es un experimento y se declara como tal.
 
@@ -5481,6 +5643,60 @@ class VerifyDiscoversTheNewestRevisionTests(unittest.TestCase):
         self.assertIsNone(fidelity["latestRevision"])
         self.assertEqual(fidelity["revisionSource"], "none")
         self.assertEqual(fidelity["status"], "unknown")
+
+
+class VerifyAgreementWitnessTests(unittest.TestCase):
+    """`verify` announces the witness dimension on every run, including
+    zero (spec Group 4), and never refuses on `disagrees` -- `close` is the
+    only place that gates (spec Group 3, "verify/probe MUST never refuse").
+    """
+
+    def verify_in(self, agreed_body=None, tests=()):
+        proposals = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, proposals, ignore_errors=True)
+
+        box = FORGE / "implementations" / f"_e2e_verify_witness_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text("", encoding="utf-8")
+        if agreed_body is not None:
+            (box / "Method" / "AGREED.md").write_text(agreed_body, encoding="utf-8")
+        for filename, content in tests:
+            (box / "tests" / filename).write_text(content, encoding="utf-8")
+
+        environment = dict(os.environ, IMPLEMENTATION_PROPOSALS=str(proposals))
+        return subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box), "--name", "Method"],
+            capture_output=True, text=True, cwd=FORGE, env=environment)
+
+    def test_zero_witnesses_declared_anywhere_still_announces_zero_of_zero(self):
+        proc = self.verify_in()
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        agreements = json.loads(proc.stdout)["agreements"]
+        self.assertEqual(agreements["status"], "absent")
+        self.assertEqual(agreements["witness"]["summary"], "0 of 0 witnessed")
+
+    def test_a_disagreeing_witness_is_reported_and_verify_still_exits_zero(self):
+        proc = self.verify_in("# Agreed\n\n- [x] a false claim `test_ghost`\n")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        agreements = json.loads(proc.stdout)["agreements"]
+        self.assertEqual(agreements["witness"]["disagrees"], ["a false claim"])
+        self.assertEqual(agreements["witness"]["summary"], "1 of 1 witnessed")
+
+    def test_the_summary_prints_on_a_run_with_some_witnesses_declared(self):
+        proc = self.verify_in(
+            "# Agreed\n\n"
+            "- [x] no witness\n"
+            "- [x] found but unproven `test_real`\n",
+            tests=[("test_real.py", "def test_real():\n    pass\n")])
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        agreements = json.loads(proc.stdout)["agreements"]
+        self.assertEqual(agreements["witness"]["summary"], "1 of 2 witnessed")
 
 
 class EquationTagRecognitionTests(unittest.TestCase):
@@ -14596,6 +14812,51 @@ class SettleCommandTests(unittest.TestCase):
         self.assertEqual(len(settle_events), 1)
         self.assertNotIn("id", settle_events[0])
 
+    # --- the witness token (design D5, spec Groups 3 & 5) ---
+
+    def test_settle_omitting_witness_writes_the_byte_identical_bare_line(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] placeholder\n", encoding="utf-8")
+        self._discuss(box, "record", answer="Yes.")
+        proc = self._settle(box, text="a bare agreement")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        after = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertIn("- [ ] a bare agreement\n", after)
+        self.assertNotIn("`", after)
+        self.assertIsNone(json.loads(proc.stdout)["witness"])
+
+    def test_settle_with_witness_persists_it_into_the_written_line(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] placeholder\n", encoding="utf-8")
+        self._discuss(box, "record", answer="Yes.")
+        proc = self._settle(box, text="a witnessed agreement",
+                            witness="test_the_thing")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["witness"], "test_the_thing")
+        after = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "- [ ] a witnessed agreement `test_the_thing`\n", after)
+
+        # Read back without consulting the ledger (spec "the binding
+        # survives the write").
+        state = impl.agreements_state(box, "Method")
+        self.assertEqual(state["witness"]["unmeasured"],
+                         ["a witnessed agreement"])
+
+    def test_settle_refuses_a_malformed_witness(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] placeholder\n", encoding="utf-8")
+        self._discuss(box, "record", answer="Yes.")
+        proc = self._settle(box, witness="not-a-valid-token")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_WITNESS_MALFORMED")
+        after = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertNotIn("not-a-valid-token", after)
+
     # --- the reused compare-and-swap ---
 
     def test_settle_refuses_position_holder_moved_on_a_concurrent_write(self):
@@ -14635,6 +14896,76 @@ class SettleCommandTests(unittest.TestCase):
         after = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
         self.assertIn("a concurrent edit nobody told settle about", after)
         self.assertNotIn("New text", after)
+
+
+class AgreementWitnessSingleWritePathTests(unittest.TestCase):
+    """Spec Group 5: `settle` is the ONLY command that ever writes a
+    witness token. Held the same way D3 holds `impl_availability`'s
+    call-site sets -- by an `ast` walk of the whole CLI, not by reading
+    every command's docstring and trusting it.
+
+    `_render_settled_line` is the one construction of a witness segment
+    (design D5); if a future command ever called it too, this test would
+    fail the moment that call landed, before any hand-editing doctrine had
+    to be relied on.
+    """
+
+    def call_site_functions(self, name: str) -> set[str]:
+        tree = ast.parse(CLI.read_text(encoding="utf-8"))
+        enclosing: dict[int, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for child in ast.walk(node):
+                    if child is not node:
+                        enclosing[id(child)] = node.name
+        sites = set()
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == name):
+                caller = enclosing.get(id(node))
+                if caller:
+                    sites.add(caller)
+        return sites
+
+    def test_render_settled_line_is_called_only_from_cmd_settle(self):
+        self.assertEqual(
+            self.call_site_functions("_render_settled_line"), {"cmd_settle"})
+
+    def test_a_second_caller_would_be_caught(self):
+        """Reachable-red by construction, over a scratch copy rather than
+        the real CLI: a second call site is added, the assertion fails
+        naming both callers, and the scratch copy is discarded -- the real
+        file is never touched by this test.
+        """
+        scratch = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
+        mutated = scratch / "mutated_cli.py"
+        source = CLI.read_text(encoding="utf-8")
+        injected = source.replace(
+            "def cmd_discuss(args: argparse.Namespace) -> dict:",
+            "def cmd_discuss(args: argparse.Namespace) -> dict:\n"
+            "    _render_settled_line('x', None)  # injected second caller",
+            1)
+        self.assertNotEqual(injected, source, "the anchor text moved")
+        mutated.write_text(injected, encoding="utf-8")
+
+        tree = ast.parse(mutated.read_text(encoding="utf-8"))
+        enclosing: dict[int, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for child in ast.walk(node):
+                    if child is not node:
+                        enclosing[id(child)] = node.name
+        sites = set()
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "_render_settled_line"):
+                caller = enclosing.get(id(node))
+                if caller:
+                    sites.add(caller)
+        self.assertEqual(sites, {"cmd_settle", "cmd_discuss"})
 
 
 class GateCommandTests(unittest.TestCase):
@@ -17389,6 +17720,65 @@ class CloseCommandTests(unittest.TestCase):
         ledger = box / "Method" / ".implementation" / "position.jsonl"
         events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
         self.assertEqual([e["kind"] for e in events], ["close"])
+
+    # --- spec Group 3: the agreement-witness axis, independent of position ---
+
+    def test_close_refuses_agreement_disagrees(self):
+        """A second, independent axis from the position ladder above
+        (spec Group 3, design's `cmd_close` docstring addition): a ticked
+        checklist item outside the position block whose declared
+        `test_<id>` witness is absent from a fully-parsed `tests/`.
+
+        The position section itself is built clean (no items at all) so
+        the ladder above is honest and this check is the one that fires --
+        proving the two axes are independent rather than the position
+        ladder masking this one.
+        """
+        box, _ = self._box()
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n"
+            "- [x] a false claim `test_ghost`\n\n"
+            + impl_position.render(header, []), encoding="utf-8")
+        proposals = self._proposals()
+
+        proc = self.run_cli("close", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            proposals=proposals)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["code"], "AGREEMENT_DISAGREES")
+        self.assertIn("a false claim", result["detail"])
+        # A refused close never writes.
+        on_disk = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertIn("- [x] a false claim `test_ghost`", on_disk)
+
+    def test_close_succeeds_when_the_witnessed_function_exists(self):
+        """The positive pole: a declared witness whose function IS present
+        never refuses here -- `unmeasured`, not `disagrees`, per D6's own
+        one-directional rule (found is never proof of PASS, but it is
+        never a contradiction either).
+        """
+        box, _ = self._box()
+        (box / "tests").mkdir(parents=True, exist_ok=True)
+        (box / "tests" / "test_agreement.py").write_text(
+            "def test_real():\n    pass\n", encoding="utf-8")
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n"
+            "- [x] a real claim `test_real`\n\n"
+            + impl_position.render(header, []), encoding="utf-8")
+        proposals = self._proposals()
+
+        proc = self.run_cli("close", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            proposals=proposals)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["status"], "closed")
 
 
 class ResolveStepsDeclarationTests(unittest.TestCase):
