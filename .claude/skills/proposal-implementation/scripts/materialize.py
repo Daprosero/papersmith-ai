@@ -15,35 +15,19 @@ neutral fixture kit instead: a paper forge must not carry one paper's content.
 
 from __future__ import annotations
 
-import ast
 import sys
 from pathlib import Path
 
-from implementation_cli import IGNORE_ENTRIES
+# The one-way dependency this file's own docstring claims:
+# `implementation_cli.py`, the production engine, never imports this script;
+# this script imports the engine. `writable_at_scaffold_time` used to be
+# defined twice — once here, once (now) as the production check
+# `materialize --stage scaffold` refuses on (`STAGE_CANNOT_ANSWER`) — and a
+# duplicate is exactly how the two could drift without either copy being
+# wrong on its own.
+from implementation_cli import IGNORE_ENTRIES, writable_at_scaffold_time  # noqa: F401
 
 DEFAULT_KIT = Path(__file__).resolve().parents[1] / "assets" / "kit"
-
-
-def writable_at_scaffold_time(source: str) -> bool:
-    """Whether a substituted template is a file the scaffold may write.
-
-    The discriminator between the two stages, and it is mechanical rather than a
-    list the kit could fall out of step with. A template that still carries a
-    `{{TOKEN}}` where an identifier has to be does not parse, and the tokens left
-    in it — `{{FUNCTION_NAME}}`, `{{INVARIANT_ID}}`, `{{EXPECTATION}}` — are
-    answers to the object map step 8 approves. Nothing could have answered them
-    at scaffold time.
-
-    Writing them anyway produced three files no target could import, and the
-    checker read the resulting tree as complete. Substituting dummy identifiers
-    instead would have been worse: the result parses, collects and *passes*
-    while asserting nothing.
-    """
-    try:
-        ast.parse(source)
-    except SyntaxError:
-        return False
-    return True
 
 
 def main(target: str, name: str, seed: str, kit: str | None = None) -> int:

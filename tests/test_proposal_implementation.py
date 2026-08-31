@@ -7227,11 +7227,19 @@ class UnparsableTestVisibilityTests(unittest.TestCase):
 
     def test_a_complete_scaffold_names_no_unparsable_test(self):
         """The control the gate is worth nothing without: every file a
-        doctrine-faithful scaffold places under `tests/` parses today."""
+        doctrine-faithful scaffold places under `tests/` parses today.
+
+        `structure.status` is no longer `"ok"` for this fixture -- see
+        `HarnessPlacementTests
+        .test_a_doctrine_faithful_scaffold_reports_no_stray_modules`'s
+        docstring for why (`doctrine_scaffold()` carries no receipt by
+        design). Asserted directly rather than loosened away.
+        """
         structure = self.verify(self.box())
 
         self.assertEqual(structure["unparsableTests"], [])
-        self.assertEqual(structure["status"], "ok")
+        self.assertEqual(structure["scaffoldGaps"], [])
+        self.assertTrue(structure["unrecordedScaffold"])
 
     def test_a_test_file_that_cannot_be_parsed_is_named_and_gates_the_status(self):
         """The same tree, one file later. Nothing else about it changed, so the
@@ -7415,12 +7423,32 @@ class HarnessPlacementTests(unittest.TestCase):
     def test_a_doctrine_faithful_scaffold_reports_no_stray_modules(self):
         """The reason the harness cannot move to the notebooks instead: a `.py`
         outside `SOURCE_ROOTS` is a stray module, and admitting `Notebooks/`
-        would readmit every stray the check exists to catch."""
+        would readmit every stray the check exists to catch.
+
+        `structure.status` itself is no longer `"ok"` here, and that is a
+        fact about this fixture, not a regression in what this test holds:
+        `doctrine_scaffold()` writes gap-by-gap, exactly like an agent once
+        did by hand, and deliberately never through `materialize --stage
+        scaffold` (see its own docstring) -- so it carries no receipt, and
+        every one of its eleven scaffold destinations now reads
+        `UNRECORDED_SCAFFOLD`. That is the migration case
+        (`MaterializeVerifyScaffoldDriftTests
+        .test_a_target_scaffolded_before_this_change_is_fully_unrecorded`),
+        asserted directly below so this test stays honest about why `status`
+        moved, rather than silently loosening to `assertNotEqual(..., "ok")`.
+        """
         structure = self.run_cli("verify", self.scaffold("structure"))["structure"]
 
         self.assertEqual(structure["strayModules"], [])
         self.assertEqual(structure["scaffoldGaps"], [])
-        self.assertEqual(structure["status"], "ok")
+        self.assertEqual(structure["scaffoldDrift"], [])
+        self.assertTrue(structure["unrecordedScaffold"],
+                        "a doctrine_scaffold() fixture carries no receipt by "
+                        "design; if this is ever empty, either the fixture "
+                        "started writing a receipt (and the byte-identity "
+                        "check against materialize.py's own output needs "
+                        "revisiting) or the UNRECORDED_SCAFFOLD check stopped "
+                        "running")
 
     def test_probe_finds_the_harness_doctrine_told_the_agent_to_write(self):
         """Once the declaration names the harness, `probe` finds it at the
@@ -8203,14 +8231,29 @@ class FreshScaffoldStaysRedTests(unittest.TestCase):
             "target's suite has nothing left to be red about")
 
 
-class MaterializeIsNotAProductionStepTests(unittest.TestCase):
-    """Three documents told three different lies about the same script, and no
-    test read any of them.
+class MaterializeScriptStaysTestOnlyTests(unittest.TestCase):
+    """`scripts/materialize.py` — the script, not the `materialize` CLI
+    command — is still not a production step, even now that the engine
+    dispatches a real command by that name.
 
-    `scripts/materialize.py` is the forge's own harness. An agent fills the
-    scaffold gaps by reading step 5; the script plays that part so this suite can
-    examine a freshly scaffolded target. It is not a step of Flow A and it has no
-    production caller. All three sites that once said otherwise —
+    Formerly `MaterializeIsNotAProductionStepTests`, asserting that no CLI
+    command could ever be named `materialize`. That specific claim is now
+    false by design: `implementation_cli.py materialize --stage scaffold`
+    is exactly the production engine writing a target's scaffold, replacing
+    the manual copy-by-table an agent used to perform from step 5. What
+    survives, unchanged, is the fact this class actually exists to protect —
+    the standalone *script* `scripts/materialize.py` is still never imported
+    by the engine, still never named as something an agent runs, and still
+    exists solely so the test suite can materialize a scratch target the
+    identical way the production command now does for real ones. The
+    coincidence of names is deliberate, not a regression: the command models
+    exactly what the harness has modeled for the suite all along.
+
+    An agent fills the scaffold gaps by running `materialize --stage
+    scaffold`, which step 5 now says explicitly; the script plays the same
+    part for the test suite, examining a freshly scaffolded target without
+    going through the CLI's plan-gate and receipt machinery. All three sites
+    that once told a different, false story about this same script —
     `SKILL.md`'s step 5 ("performs this exact mapping for eight of the nine",
     false in both halves), `README.md`'s Flow A diagram, and the docstring of
     `assets/kit/src_benchmark/__init__.py`, a template that ships *into* targets
@@ -8519,12 +8562,26 @@ class MaterializeIsNotAProductionStepTests(unittest.TestCase):
         for invoking anything is ``Run `x` ``, and every `x` must be a command the
         CLI actually dispatches.
 
-        Reachable red by adding ``Run `materialize.py <target>` `` anywhere in the
-        document. This is the general form of the finding rather than its
-        instance — the harness is only the script that happened to be drawn as a
-        step; nothing else may be either.
+        Reachable red by adding ``Run `something-not-dispatched`` anywhere in the
+        document.
+
+        **What this no longer asserts, and why.** A prior revision also
+        required ``harness.stem not in impl.COMMANDS`` — i.e. that nothing
+        named `materialize` could ever be a real command. This change adds
+        `materialize --stage scaffold` as exactly that: a CLI command the
+        engine dispatches. The two facts do not collide the way they look
+        like they do. `harness` (`scripts/materialize.py`, found by
+        `self.harness()`, resolved as "the one script besides the engine")
+        stays what it always was: a test-only fixture the production engine
+        never imports and doctrine never tells the agent to run (both still
+        held below, unchanged, by
+        `test_the_production_engine_never_reaches_the_harness` and this very
+        method's own remaining assertion). The command and the script merely
+        share a name, because the command performs — for real targets — the
+        identical mapping the script has always performed for the test
+        suite's scratch ones. Continuing to forbid that name coincidence
+        would be pinning a fact about a string, not about behaviour.
         """
-        harness = self.harness()
         invoked = self.RUN_RE.findall(SKILL_MD.read_text(encoding="utf-8"))
         self.assertTrue(
             invoked,
@@ -8534,10 +8591,774 @@ class MaterializeIsNotAProductionStepTests(unittest.TestCase):
             sorted(set(invoked) - set(impl.COMMANDS)), [],
             "doctrine tells the agent to run something that is not a command "
             f"the CLI dispatches; it dispatches {sorted(impl.COMMANDS)}")
-        self.assertNotIn(
-            harness.stem, impl.COMMANDS,
-            f"{harness.name} became a CLI command, which is the one thing the "
-            "framing of this change says it must never be")
+
+
+class MaterializeCommandFixture:
+    """Shared scaffolding for `materialize` command tests: a real git repo
+    under `implementations/`, structurally compliant (so `build_plan`'s
+    renames/moves/createDirs/referenceUpdates are all empty and an approved
+    plan never goes stale on its own), with every scaffold gap still open.
+
+    Not a `unittest.TestCase` itself -- mixed in by the concrete classes
+    below, the same shape `ReportFirstSectionProseTests.guarded_documents`
+    is borrowed by by `ForgeVocabularyDerivedGuardTests` two classes up.
+    """
+
+    NAME = "Scaffold-Target"
+    PACKAGE = "Scaffold_Target"
+    SEED = "7"
+
+    def _git(self, cwd, *args, check=True):
+        env = dict(os.environ)
+        env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "materialize-tests"
+        env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "materialize-tests@example.invalid"
+        return subprocess.run(["git", *args], cwd=cwd, env=env,
+                              capture_output=True, text=True, check=check)
+
+    def _box(self, tag=""):
+        box = FORGE / "implementations" / f"_materialize_cmd{tag}_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        return box
+
+    def _compliant_repo(self, tag="", name=None):
+        """A fresh, committed, structurally compliant target: every directory
+        `expected_dirs` wants exists, nothing needs a rename/move, and every
+        one of the eleven scaffold destinations is still a gap."""
+        name = name or self.NAME
+        box = self._box(tag)
+        box.mkdir(parents=True)
+        self._git(box, "init", "-q")
+        for rel in impl.expected_dirs(name, with_data=False):
+            directory = box / rel
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / ".gitkeep").touch()
+        self._git(box, "add", "-A")
+        self._git(box, "commit", "-q", "-m", "initial")
+        return box
+
+    def _approved_plan_path(self, box, name=None):
+        """The plan `build_plan` computes right now, written to a scratch
+        file the way an operator would save it after approval."""
+        name = name or self.NAME
+        plan = impl.build_plan(box, name)
+        handle = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        self.addCleanup(os.remove, handle.name)
+        json.dump(plan, handle)
+        handle.close()
+        return handle.name
+
+    def _run_cli(self, *args):
+        proc = subprocess.run([sys.executable, str(CLI), *args],
+                              capture_output=True, text=True, cwd=FORGE)
+        payload = json.loads(proc.stdout or "{}")
+        return payload, proc.returncode, proc
+
+    def _materialize_scaffold(self, box, plan_path, *, name=None, seed=None):
+        return self._run_cli(
+            "materialize", "--target", str(box), "--name", name or self.NAME,
+            "--stage", "scaffold", "--plan", plan_path, "--seed", seed or self.SEED)
+
+    def _materialize_args(self, box, *, name=None, stage=None, authored=None,
+                          adopt=None, plan=None, seed=None):
+        return argparse.Namespace(
+            target=str(box), name=name or self.NAME, stage=stage,
+            authored=authored, adopt=adopt, plan=plan, seed=seed)
+
+    def _verify(self, box, name=None):
+        payload, code, proc = self._run_cli(
+            "verify", "--target", str(box), "--name", name or self.NAME)
+        self.assertEqual(code, 0, proc.stderr)
+        return payload["structure"]
+
+    def _fully_materialized(self, tag="", name=None, seed=None):
+        """A compliant target that has already run `--stage scaffold`
+        successfully once."""
+        name = name or self.NAME
+        box = self._compliant_repo(tag, name)
+        plan_path = self._approved_plan_path(box, name)
+        payload, code, proc = self._materialize_scaffold(
+            box, plan_path, name=name, seed=seed)
+        assert code == 0, proc.stderr
+        return box
+
+
+class MaterializeStageScaffoldWriterTests(MaterializeCommandFixture, unittest.TestCase):
+    """The writer: preflight refusals and the successful path, RED observed
+    against the pre-command CLI before this suite existed, GREEN once
+    `cmd_materialize`'s `--stage scaffold` branch landed.
+    """
+
+    def test_refuses_without_an_approved_plan_mismatch(self):
+        """M1a: a plan approved for a different target/name refuses
+        PLAN_MISMATCH, and nothing is written."""
+        box = self._compliant_repo("_mismatch")
+        other = self._compliant_repo("_mismatch_other", name="Other-Target")
+        plan_path = self._approved_plan_path(other, "Other-Target")
+
+        payload, code, proc = self._materialize_scaffold(box, plan_path)
+
+        self.assertEqual(code, 2, proc.stdout)
+        self.assertEqual(payload["code"], "PLAN_MISMATCH")
+        self.assertEqual(
+            impl.scaffold_gaps(box, self.NAME),
+            [".gitignore (.venv/, __pycache__/, .ipynb_checkpoints/, .implementation/)",
+             "pyproject.toml [tool.pytest.ini_options] pythonpath",
+             *impl.scaffold_destinations(self.NAME)],
+            "a refused stage must write nothing")
+
+    def test_refuses_when_the_plan_has_gone_stale(self):
+        """M1b: the repository's structure moved since the plan was approved
+        -> PLAN_STALE, nothing written."""
+        box = self._compliant_repo("_stale")
+        plan_path = self._approved_plan_path(box)
+        # Drift the structure after approval: a top-level notebook `classify`
+        # now wants to move into `<Name>/Notebooks/`.
+        (box / "analysis.ipynb").write_text("{}", encoding="utf-8")
+        self._git(box, "add", "-A")
+        self._git(box, "commit", "-q", "-m", "drift")
+
+        payload, code, proc = self._materialize_scaffold(box, plan_path)
+
+        self.assertEqual(code, 2, proc.stdout)
+        self.assertEqual(payload["code"], "PLAN_STALE")
+
+    def test_refuses_without_a_git_repository(self):
+        """M2: no `.git` -> NOT_A_GIT_REPO, and none is created."""
+        box = self._box("_nogit")
+        box.mkdir(parents=True)
+
+        payload, code, proc = self._materialize_scaffold(box, "/nonexistent-plan.json")
+
+        self.assertEqual(code, 2, proc.stdout)
+        self.assertEqual(payload["code"], "NOT_A_GIT_REPO")
+        self.assertFalse((box / ".git").exists())
+
+    def test_refuses_a_dirty_worktree(self):
+        """M3: a staged edit -> DIRTY_WORKTREE."""
+        box = self._compliant_repo("_dirty")
+        plan_path = self._approved_plan_path(box)
+        (box / "untracked.txt").write_text("x", encoding="utf-8")
+        self._git(box, "add", "untracked.txt")
+
+        payload, code, proc = self._materialize_scaffold(box, plan_path)
+
+        self.assertEqual(code, 2, proc.stdout)
+        self.assertEqual(payload["code"], "DIRTY_WORKTREE")
+
+    def test_refuses_a_target_outside_the_workspace(self):
+        """M4: a target outside `implementations/` -> OUTSIDE_WORKSPACE."""
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+
+        payload, code, proc = self._materialize_scaffold(outside, "/nonexistent-plan.json")
+
+        self.assertEqual(code, 2, proc.stdout)
+        self.assertEqual(payload["code"], "OUTSIDE_WORKSPACE")
+
+    def test_a_pre_existing_destination_is_simply_not_in_the_set(self):
+        """M6: one of the eleven already exists by hand (no receipt); the
+        stage runs and SUCCEEDS, writing the remaining ones and leaving the
+        pre-existing file untouched -- decides D1 is not a trap."""
+        box = self._compliant_repo("_preexist")
+        hand_written = box / "tests" / "test_smoke.py"
+        hand_written.parent.mkdir(parents=True, exist_ok=True)
+        hand_written.write_text("# hand-written, never touched\n", encoding="utf-8")
+        self._git(box, "add", "-A")
+        self._git(box, "commit", "-q", "-m", "hand-written scaffold file")
+        plan_path = self._approved_plan_path(box)
+
+        payload, code, proc = self._materialize_scaffold(box, plan_path)
+
+        self.assertEqual(code, 0, proc.stderr)
+        self.assertNotIn("tests/test_smoke.py", payload["written"])
+        self.assertEqual(hand_written.read_text(encoding="utf-8"),
+                         "# hand-written, never touched\n")
+        self.assertEqual(impl.scaffold_gaps(box, self.NAME), [],
+                         "the hand-written file still counts as present")
+        receipt = impl.read_materialization_receipt(box)
+        self.assertIsNone(impl.receipt_entry(receipt, "tests/test_smoke.py"),
+                          "a file this command never wrote must carry no entry")
+
+    def test_a_successful_stage_writes_every_destination_and_no_gap_remains(self):
+        box = self._compliant_repo("_success")
+        plan_path = self._approved_plan_path(box)
+
+        payload, code, proc = self._materialize_scaffold(box, plan_path)
+
+        self.assertEqual(code, 0, proc.stderr)
+        self.assertEqual(sorted(payload["written"]),
+                         sorted(impl.scaffold_destinations(self.NAME)))
+        self.assertEqual(impl.scaffold_gaps(box, self.NAME), [])
+        for path in impl.scaffold_destinations(self.NAME):
+            self.assertTrue((box / path).exists(), path)
+
+    def test_destination_conflict_refuses_the_whole_stage_and_writes_no_receipt(self):
+        """M5: a destination the set was computed from now exists on disk --
+        simulated by monkeypatching the seam `_stage_scaffold` reads the
+        destination set through, since a real race inside one process cannot
+        otherwise be produced."""
+        box = self._compliant_repo("_conflict")
+        plan_path = self._approved_plan_path(box)
+        raced = "tests/test_smoke.py"
+        (box / "tests").mkdir(parents=True, exist_ok=True)
+        (box / raced).write_text("already here\n", encoding="utf-8")
+        self._git(box, "add", "-A")
+        self._git(box, "commit", "-q", "-m", "the file the race lands on")
+
+        with unittest.mock.patch.object(
+                impl, "_materialize_scaffold_destinations",
+                return_value=impl.scaffold_destinations(self.NAME)):
+            args = self._materialize_args(box, stage="scaffold", plan=plan_path,
+                                          seed=self.SEED)
+            with self.assertRaises(impl.Refused) as ctx:
+                impl.cmd_materialize(args)
+
+        self.assertEqual(ctx.exception.code, "DESTINATION_CONFLICT")
+        self.assertFalse((box / impl.MATERIALIZATION_RECEIPT).exists(),
+                         "a refused stage must write no receipt")
+        self.assertEqual((box / raced).read_text(encoding="utf-8"), "already here\n")
+
+    def test_a_mid_write_failure_aborts_and_restores_the_tree(self):
+        """M7: an I/O failure partway through the copy loop -> APPLY_ABORTED,
+        the tree reset and cleaned, no receipt entry from this invocation."""
+        box = self._compliant_repo("_abort")
+        plan_path = self._approved_plan_path(box)
+        real_write_text = Path.write_text
+        calls = {"n": 0}
+
+        def flaky_write_text(self_path, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 3:
+                raise OSError("simulated disk failure")
+            return real_write_text(self_path, *args, **kwargs)
+
+        args = self._materialize_args(box, stage="scaffold", plan=plan_path, seed=self.SEED)
+        with unittest.mock.patch.object(Path, "write_text", flaky_write_text):
+            with self.assertRaises(impl.Refused) as ctx:
+                impl.cmd_materialize(args)
+
+        self.assertEqual(ctx.exception.code, "APPLY_ABORTED")
+        self.assertFalse((box / impl.MATERIALIZATION_RECEIPT).exists())
+        status = self._git(box, "status", "--porcelain").stdout
+        self.assertEqual(status.strip(), "", "the tree was not restored: " + status)
+
+    def test_stage_cannot_answer_on_an_unresolved_token(self):
+        """M8: a scaffold template that still fails to parse after
+        substitution -> STAGE_CANNOT_ANSWER, naming the file."""
+        box = self._compliant_repo("_cannot_answer")
+        plan_path = self._approved_plan_path(box)
+        broken = Path(tempfile.mkdtemp()) / "broken_smoke.py"
+        self.addCleanup(shutil.rmtree, broken.parent, ignore_errors=True)
+        broken.write_text("def f({{FUNCTION_NAME}}):\n    return None\n",
+                          encoding="utf-8")
+
+        real_source = impl.scaffold_kit_source
+
+        def patched(destination, name):
+            if destination == "tests/test_smoke.py":
+                return broken
+            return real_source(destination, name)
+
+        args = self._materialize_args(box, stage="scaffold", plan=plan_path, seed=self.SEED)
+        with unittest.mock.patch.object(impl, "scaffold_kit_source", patched):
+            with self.assertRaises(impl.Refused) as ctx:
+                impl.cmd_materialize(args)
+
+        self.assertEqual(ctx.exception.code, "STAGE_CANNOT_ANSWER")
+        self.assertIn("tests/test_smoke.py", ctx.exception.detail)
+        self.assertFalse((box / "tests" / "test_smoke.py").exists(),
+                         "nothing is written once one destination cannot answer")
+
+
+class MaterializeReceiptTests(MaterializeCommandFixture, unittest.TestCase):
+    """The receipt: written last, atomically, and matching the bytes on
+    disk."""
+
+    def test_written_sha256_matches_the_bytes_on_disk(self):
+        box = self._fully_materialized("_receipt_bytes")
+        receipt = impl.read_materialization_receipt(box)
+        for path in impl.scaffold_destinations(self.NAME):
+            entry = impl.receipt_entry(receipt, path)
+            self.assertIsNotNone(entry, path)
+            self.assertEqual(
+                entry["writtenSha256"],
+                hashlib.sha256((box / path).read_bytes()).hexdigest(), path)
+
+    def test_kit_source_and_source_sha256_are_recorded(self):
+        box = self._fully_materialized("_receipt_source")
+        receipt = impl.read_materialization_receipt(box)
+        copied = impl.receipt_entry(receipt, "tests/test_smoke.py")
+        self.assertEqual(copied["kitSource"],
+                         "assets/kit/tests/test_smoke.py")
+        self.assertEqual(
+            copied["sourceSha256"],
+            hashlib.sha256((SKILL_ROOT / "assets" / "kit" / "tests" /
+                            "test_smoke.py").read_bytes()).hexdigest())
+        authored = impl.receipt_entry(
+            receipt, f"src/{self.PACKAGE}/__init__.py")
+        self.assertIsNone(authored["kitSource"],
+                          "the authored init file copies from no kit template")
+
+    def test_a_second_write_appends_rather_than_truncating(self):
+        """M14, exercised at the receipt-helper level: writing a second
+        stage's entries beside a first's must not drop the first's."""
+        target = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, target, ignore_errors=True)
+        receipt = impl.read_materialization_receipt(target)
+        impl.set_receipt_entry(receipt, {"path": "a.py", "kind": "materialized",
+                                         "writtenSha256": "sha-a"})
+        impl.write_materialization_receipt(target, receipt)
+
+        reloaded = impl.read_materialization_receipt(target)
+        impl.set_receipt_entry(reloaded, {"path": "b.py", "kind": "materialized",
+                                          "writtenSha256": "sha-b"})
+        impl.write_materialization_receipt(target, reloaded)
+
+        final = impl.read_materialization_receipt(target)
+        self.assertEqual({e["path"] for e in final["entries"]}, {"a.py", "b.py"})
+
+    def test_a_stale_entry_is_replaced_not_duplicated(self):
+        target = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, target, ignore_errors=True)
+        receipt = impl.read_materialization_receipt(target)
+        impl.set_receipt_entry(receipt, {"path": "a.py", "kind": "materialized",
+                                         "writtenSha256": "sha-1"})
+        impl.set_receipt_entry(receipt, {"path": "a.py", "kind": "materialized",
+                                         "writtenSha256": "sha-2"})
+        self.assertEqual(len(receipt["entries"]), 1)
+        self.assertEqual(receipt["entries"][0]["writtenSha256"], "sha-2")
+
+    def test_rerun_after_a_rollback_succeeds_and_replaces_the_stale_entries(self):
+        """M11 / D5: the receipt is git-ignored (`.implementation/` is in
+        `IGNORE_ENTRIES`), so `git reset --hard` + `git clean -qfd` deletes
+        the materialized files and leaves the receipt standing -- recorded,
+        but absent. That is a gap, never drift (proven directly in
+        `MaterializeVerifyScaffoldDriftTests.test_a_deleted_recorded_file_is_a_gap_never_drift`),
+        and a second `--stage scaffold` run over the same target must
+        succeed, replacing the stale entries rather than reading them as
+        drift or refusing on them.
+        """
+        box = self._fully_materialized("_rollback")
+        receipt_before = impl.read_materialization_receipt(box)
+        self.assertTrue(receipt_before["entries"])
+
+        # The rollback the design names: discard everything since the last
+        # commit. The scaffold files were never committed (materialize does
+        # not commit), so this removes them; `.implementation/` survives
+        # because it is git-ignored, never touched by `reset`/`clean`.
+        self._git(box, "reset", "-q", "--hard")
+        self._git(box, "clean", "-qfd")
+        for path in impl.scaffold_destinations(self.NAME):
+            self.assertFalse((box / path).exists(), path)
+        self.assertTrue((box / impl.MATERIALIZATION_RECEIPT).exists(),
+                        "the receipt is git-ignored and must survive the rollback")
+
+        plan_path = self._approved_plan_path(box)
+        payload, code, proc = self._materialize_scaffold(box, plan_path)
+
+        self.assertEqual(code, 0, proc.stderr)
+        self.assertEqual(sorted(payload["written"]),
+                         sorted(impl.scaffold_destinations(self.NAME)))
+        receipt_after = impl.read_materialization_receipt(box)
+        for path in impl.scaffold_destinations(self.NAME):
+            entry = impl.receipt_entry(receipt_after, path)
+            self.assertEqual(
+                entry["writtenSha256"],
+                hashlib.sha256((box / path).read_bytes()).hexdigest(), path)
+
+
+class MaterializeAnchorTests(MaterializeCommandFixture, unittest.TestCase):
+    """D4: the two merge anchors never overwrite, never carry a byte seal."""
+
+    def test_gitignore_is_merged_not_overwritten(self):
+        box = self._compliant_repo("_anchor_gitignore")
+        (box / ".gitignore").write_text("*.log\nnode_modules/\n", encoding="utf-8")
+        self._git(box, "add", "-A")
+        self._git(box, "commit", "-q", "-m", "pre-existing gitignore")
+        plan_path = self._approved_plan_path(box)
+
+        payload, code, proc = self._materialize_scaffold(box, plan_path)
+        self.assertEqual(code, 0, proc.stderr)
+
+        text = (box / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn("*.log", text)
+        self.assertIn("node_modules/", text)
+        for entry in impl.IGNORE_ENTRIES:
+            self.assertIn(entry, text)
+
+        receipt = impl.read_materialization_receipt(box)
+        entry = impl.receipt_entry(receipt, ".gitignore")
+        self.assertEqual(entry["kind"], "anchor")
+        self.assertNotIn("writtenSha256", entry)
+
+    def test_rerunning_the_anchor_merge_adds_nothing_once_complete(self):
+        box = self._box("_anchor_idempotent")
+        box.mkdir(parents=True)
+        first = impl._materialize_scaffold_anchors(box, self.NAME)
+        self.assertTrue(first, "the first run should have found gaps to merge")
+        text_after_first = (box / ".gitignore").read_text(encoding="utf-8")
+
+        second = impl._materialize_scaffold_anchors(box, self.NAME)
+
+        self.assertEqual(second, [], "nothing left to merge the second time")
+        self.assertEqual((box / ".gitignore").read_text(encoding="utf-8"),
+                         text_after_first)
+
+
+class MaterializeVerifyScaffoldDriftTests(MaterializeCommandFixture, unittest.TestCase):
+    """`SCAFFOLD_DRIFT` / `UNRECORDED_SCAFFOLD`, scoped to the eleven scaffold
+    destinations, reported through `structure` and never raised -- the same
+    shape every other structural check in `cmd_verify` already uses."""
+
+    def test_a_hand_edit_is_reported_as_drift(self):
+        """S1: change one byte and restore mtime/size -- the discriminating
+        mutation a weaker (delete-only) lock would survive."""
+        box = self._fully_materialized("_drift_edit")
+        target_file = box / "tests" / "findings.py"
+        stat_before = target_file.stat()
+        original = target_file.read_bytes()
+        mutated = original.replace(b"FINDINGS", b"FINDXNGS", 1)
+        self.assertNotEqual(original, mutated, "the fixture no longer contains FINDINGS")
+        self.assertEqual(len(original), len(mutated),
+                         "the mutation must not change the byte length")
+        target_file.write_bytes(mutated)
+        os.utime(target_file, (stat_before.st_atime, stat_before.st_mtime))
+
+        structure = self._verify(box)
+        self.assertIn("tests/findings.py", structure["scaffoldDrift"])
+        self.assertNotEqual(structure["status"], "ok")
+
+    def test_an_edit_reverted_to_the_original_bytes_is_not_drift(self):
+        """S2: drift is a byte comparison, not an event log."""
+        box = self._fully_materialized("_drift_reverted")
+        target_file = box / "tests" / "findings.py"
+        original = target_file.read_bytes()
+        target_file.write_bytes(original.replace(b"FINDINGS", b"FINDXNGS", 1))
+        target_file.write_bytes(original)
+
+        structure = self._verify(box)
+        self.assertEqual(structure["scaffoldDrift"], [])
+
+    def test_a_deleted_recorded_file_is_a_gap_never_drift(self):
+        """S3: absence routes through the existing gap channel."""
+        box = self._fully_materialized("_drift_deleted")
+        (box / "tests" / "findings.py").unlink()
+
+        structure = self._verify(box)
+        self.assertNotIn("tests/findings.py", structure["scaffoldDrift"])
+        self.assertNotIn("tests/findings.py", structure["unrecordedScaffold"])
+        self.assertTrue(any("tests/findings.py" == gap_path(g)
+                            for g in structure["scaffoldGaps"]))
+
+    def test_editing_the_gitignore_anchor_is_not_drift(self):
+        """S4: the anchor's correctness is re-derived presence, never a
+        hash."""
+        box = self._fully_materialized("_drift_anchor")
+        (box / ".gitignore").write_text(
+            (box / ".gitignore").read_text(encoding="utf-8") + "\n# a note\n",
+            encoding="utf-8")
+
+        structure = self._verify(box)
+        self.assertEqual(structure["scaffoldDrift"], [])
+        self.assertEqual(structure["unrecordedScaffold"], [])
+
+    def test_every_drifting_destination_is_named(self):
+        """S5: three of eleven drift, all three are named."""
+        box = self._fully_materialized("_drift_many")
+        targets = ["tests/findings.py", "tests/conftest.py", "tests/sweep.py"]
+        for rel in targets:
+            path = box / rel
+            stat_before = path.stat()
+            content = path.read_bytes()
+            path.write_bytes(content + b"#" if not content.endswith(b"\n")
+                             else content[:-1] + b"#\n")
+            os.utime(path, (stat_before.st_atime, stat_before.st_mtime + 1))
+
+        structure = self._verify(box)
+        self.assertEqual(sorted(structure["scaffoldDrift"]), sorted(targets))
+
+    def test_a_moved_kit_template_is_not_drift(self):
+        """S6: the target's on-disk bytes are untouched, so nothing about a
+        (hypothetical) kit template move can be drift -- `verify` never
+        re-reads `scaffold_kit_source` at all. Proven in-process (a
+        subprocess `verify` call would not see this patch) rather than by
+        mutating this forge's own shipped kit assets."""
+        box = self._fully_materialized("_drift_kit_moved")
+        with unittest.mock.patch.object(
+                impl, "scaffold_kit_source",
+                side_effect=AssertionError(
+                    "verify must never re-read the kit template")):
+            recorded = impl.scaffold_structure_gaps(box, self.NAME)
+        self.assertEqual(recorded["drift"], [])
+
+    def test_an_unrecorded_present_destination_is_named(self):
+        """U1."""
+        box = self._compliant_repo("_unrecorded_one")
+        (box / "tests").mkdir(parents=True, exist_ok=True)
+        (box / "tests" / "test_smoke.py").write_text("MODULES = []\n", encoding="utf-8")
+
+        structure = self._verify(box)
+        self.assertIn("tests/test_smoke.py", structure["unrecordedScaffold"])
+        self.assertNotEqual(structure["status"], "ok")
+
+    def test_a_non_kit_file_beside_the_destinations_is_not_flagged(self):
+        """U3: only the eleven are in domain."""
+        box = self._fully_materialized("_unrecorded_domain")
+        (box / "tests" / "test_my_thing.py").write_text(
+            "def test_x():\n    assert True\n", encoding="utf-8")
+
+        structure = self._verify(box)
+        self.assertNotIn("tests/test_my_thing.py", structure["unrecordedScaffold"])
+
+    def test_a_target_scaffolded_before_this_change_is_fully_unrecorded(self):
+        """U2, the migration case: `doctrine_scaffold` writes the identical
+        tree an agent used to write by hand, with no receipt at all.
+
+        Exercised directly against `scaffold_structure_gaps` -- the pure
+        function `structure.unrecordedScaffold` is built from -- rather than
+        through a second full git-repo fixture the migration fact does not
+        need.
+        """
+        box = doctrine_scaffold(self, self.NAME, self.SEED)
+
+        recorded = impl.scaffold_structure_gaps(box, self.NAME)
+
+        self.assertEqual(sorted(recorded["unrecorded"]),
+                         sorted(impl.scaffold_destinations(self.NAME)))
+        self.assertEqual(recorded["drift"], [])
+
+    def test_a_fully_recorded_and_matching_target_reads_ok(self):
+        """V2: the positive case, without which the widening could pass by
+        always failing."""
+        box = self._fully_materialized("_verify_ok")
+        structure = self._verify(box)
+        self.assertEqual(structure["scaffoldGaps"], [])
+        self.assertEqual(structure["scaffoldDrift"], [])
+        self.assertEqual(structure["unrecordedScaffold"], [])
+        self.assertEqual(structure["status"], "ok")
+
+
+class MaterializeAuthoredTests(MaterializeCommandFixture, unittest.TestCase):
+    """`--authored`: release the drift seal after a declared edit."""
+
+    def test_silent_authoring_still_drifts(self):
+        """A1."""
+        box = self._fully_materialized("_authored_silent")
+        path = box / "src" / self.PACKAGE / "__init__.py"
+        path.write_text(path.read_text(encoding="utf-8") + "\nVALUE = 1\n",
+                        encoding="utf-8")
+
+        structure = self._verify(box)
+        self.assertIn(f"src/{self.PACKAGE}/__init__.py", structure["scaffoldDrift"])
+
+    def test_authored_declares_the_new_sha_and_clears_drift(self):
+        """A2."""
+        box = self._fully_materialized("_authored_declare")
+        rel = f"src/{self.PACKAGE}/__init__.py"
+        path = box / rel
+        path.write_text(path.read_text(encoding="utf-8") + "\nVALUE = 1\n",
+                        encoding="utf-8")
+
+        payload, code, proc = self._run_cli(
+            "materialize", "--target", str(box), "--name", self.NAME,
+            "--authored", rel)
+        self.assertEqual(code, 0, proc.stderr)
+        self.assertEqual(payload["status"], "authored")
+
+        structure = self._verify(box)
+        self.assertNotIn(rel, structure["scaffoldDrift"])
+        receipt = impl.read_materialization_receipt(box)
+        self.assertEqual(impl.receipt_entry(receipt, rel)["kind"], "authored")
+
+    def test_authored_on_a_path_with_no_receipt_entry_refuses(self):
+        """A3."""
+        box = self._compliant_repo("_authored_no_entry")
+        (box / "tests").mkdir(parents=True, exist_ok=True)
+        (box / "tests" / "test_smoke.py").write_text("MODULES = []\n", encoding="utf-8")
+
+        payload, code, proc = self._run_cli(
+            "materialize", "--target", str(box), "--name", self.NAME,
+            "--authored", "tests/test_smoke.py")
+
+        self.assertEqual(code, 2, proc.stdout)
+        self.assertEqual(payload["code"], "NO_RECEIPT_ENTRY")
+
+    def test_a_second_silent_edit_after_declaring_drifts_again(self):
+        """A4: release is per-declaration, not permanent."""
+        box = self._fully_materialized("_authored_twice")
+        rel = f"src/{self.PACKAGE}/__init__.py"
+        path = box / rel
+        path.write_text(path.read_text(encoding="utf-8") + "\nVALUE = 1\n",
+                        encoding="utf-8")
+        payload, code, proc = self._run_cli(
+            "materialize", "--target", str(box), "--name", self.NAME,
+            "--authored", rel)
+        self.assertEqual(code, 0, proc.stderr)
+        self.assertEqual(self._verify(box)["scaffoldDrift"], [])
+
+        path.write_text(path.read_text(encoding="utf-8") + "\nVALUE = 2\n",
+                        encoding="utf-8")
+
+        self.assertIn(rel, self._verify(box)["scaffoldDrift"])
+
+    def test_authored_succeeds_on_a_dirty_tree(self):
+        """A5: no clean-worktree requirement for this mode."""
+        box = self._fully_materialized("_authored_dirty")
+        rel = f"src/{self.PACKAGE}/__init__.py"
+        path = box / rel
+        path.write_text(path.read_text(encoding="utf-8") + "\nVALUE = 1\n",
+                        encoding="utf-8")
+        (box / "unrelated_untracked.txt").write_text("x", encoding="utf-8")
+
+        payload, code, proc = self._run_cli(
+            "materialize", "--target", str(box), "--name", self.NAME,
+            "--authored", rel)
+        self.assertEqual(code, 0, proc.stderr)
+
+    def test_authored_together_with_stage_refuses(self):
+        """A6: the modes are mutually exclusive."""
+        box = self._fully_materialized("_authored_and_stage")
+        plan_path = self._approved_plan_path(box)
+
+        payload, code, proc = self._run_cli(
+            "materialize", "--target", str(box), "--name", self.NAME,
+            "--stage", "scaffold", "--plan", plan_path, "--seed", self.SEED,
+            "--authored", f"src/{self.PACKAGE}/__init__.py")
+
+        self.assertEqual(code, 2, proc.stdout)
+        self.assertEqual(payload["code"], "MATERIALIZE_MODE_CONFLICT")
+
+    def test_authored_on_a_path_outside_the_kit_destinations_refuses(self):
+        box = self._fully_materialized("_authored_outside")
+
+        payload, code, proc = self._run_cli(
+            "materialize", "--target", str(box), "--name", self.NAME,
+            "--authored", "README.md")
+
+        self.assertEqual(code, 2, proc.stdout)
+        self.assertEqual(payload["code"], "NOT_A_KIT_DESTINATION")
+
+
+class MaterializeAdoptTests(MaterializeCommandFixture, unittest.TestCase):
+    """`--adopt`: resolve `UNRECORDED_SCAFFOLD`, the degraded-guarantee
+    remedy."""
+
+    def test_adopt_records_current_sha_and_kind_adopted(self):
+        """U4."""
+        box = self._compliant_repo("_adopt_basic")
+        (box / "tests").mkdir(parents=True, exist_ok=True)
+        (box / "tests" / "test_smoke.py").write_text("MODULES = []\n", encoding="utf-8")
+
+        payload, code, proc = self._run_cli(
+            "materialize", "--target", str(box), "--name", self.NAME,
+            "--adopt", "tests/test_smoke.py")
+
+        self.assertEqual(code, 0, proc.stderr)
+        self.assertEqual(payload["status"], "adopted")
+        receipt = impl.read_materialization_receipt(box)
+        entry = impl.receipt_entry(receipt, "tests/test_smoke.py")
+        self.assertEqual(entry["kind"], "adopted")
+        self.assertEqual(
+            entry["writtenSha256"],
+            hashlib.sha256((box / "tests" / "test_smoke.py").read_bytes()).hexdigest())
+
+    def test_adopt_on_an_already_recorded_path_refuses(self):
+        """U5: adoption is not a re-seal."""
+        box = self._fully_materialized("_adopt_recorded")
+
+        payload, code, proc = self._run_cli(
+            "materialize", "--target", str(box), "--name", self.NAME,
+            "--adopt", f"src/{self.PACKAGE}/__init__.py")
+
+        self.assertEqual(code, 2, proc.stdout)
+        self.assertEqual(payload["code"], "ALREADY_RECORDED")
+
+    def test_adopt_outside_the_kit_destinations_refuses(self):
+        """U6."""
+        box = self._compliant_repo("_adopt_outside")
+
+        payload, code, proc = self._run_cli(
+            "materialize", "--target", str(box), "--name", self.NAME,
+            "--adopt", "README.md")
+
+        self.assertEqual(code, 2, proc.stdout)
+        self.assertEqual(payload["code"], "NOT_A_KIT_DESTINATION")
+
+    def test_adopt_on_an_absent_path_refuses(self):
+        """U7: there is nothing to adopt."""
+        box = self._compliant_repo("_adopt_absent")
+
+        payload, code, proc = self._run_cli(
+            "materialize", "--target", str(box), "--name", self.NAME,
+            "--adopt", "tests/test_smoke.py")
+
+        self.assertEqual(code, 2, proc.stdout)
+        self.assertEqual(payload["code"], "MATERIALIZE_PATH_ABSENT")
+
+    def test_verify_is_clean_after_adopting(self):
+        """U8."""
+        box = self._compliant_repo("_adopt_then_verify")
+        (box / "tests").mkdir(parents=True, exist_ok=True)
+        (box / "tests" / "test_smoke.py").write_text("MODULES = []\n", encoding="utf-8")
+        payload, code, proc = self._run_cli(
+            "materialize", "--target", str(box), "--name", self.NAME,
+            "--adopt", "tests/test_smoke.py")
+        self.assertEqual(code, 0, proc.stderr)
+
+        structure = self._verify(box)
+        self.assertNotIn("tests/test_smoke.py", structure["unrecordedScaffold"])
+
+
+class MaterializeModeSelectionTests(MaterializeCommandFixture, unittest.TestCase):
+    def test_no_mode_given_refuses(self):
+        box = self._compliant_repo("_no_mode")
+        payload, code, proc = self._run_cli(
+            "materialize", "--target", str(box), "--name", self.NAME)
+        self.assertEqual(code, 2, proc.stdout)
+        self.assertEqual(payload["code"], "MATERIALIZE_MODE_REQUIRED")
+
+    def test_stage_scaffold_without_plan_refuses(self):
+        box = self._compliant_repo("_no_plan")
+        payload, code, proc = self._run_cli(
+            "materialize", "--target", str(box), "--name", self.NAME,
+            "--stage", "scaffold", "--seed", self.SEED)
+        self.assertEqual(code, 2, proc.stdout)
+        self.assertEqual(payload["code"], "PLAN_REQUIRED")
+
+    def test_stage_scaffold_without_seed_refuses(self):
+        box = self._compliant_repo("_no_seed")
+        plan_path = self._approved_plan_path(box)
+        payload, code, proc = self._run_cli(
+            "materialize", "--target", str(box), "--name", self.NAME,
+            "--stage", "scaffold", "--plan", plan_path)
+        self.assertEqual(code, 2, proc.stdout)
+        self.assertEqual(payload["code"], "SEED_REQUIRED")
+
+
+class MaterializeDegradedGuaranteeTests(unittest.TestCase):
+    """2.3: the adoption guarantee is degraded, and that sentence has to
+    appear at every surface an operator can reach it from -- the usage
+    reference's refusal row, the `--adopt` argparse help, and the JSON output
+    of an adopted entry (proven in `MaterializeAdoptTests` above via the
+    `entry["kind"] == "adopted"` distinguishability; this class holds the
+    prose)."""
+
+    MARKER_A = "record the bytes came from the kit"
+    MARKER_B = "the record names who"
+
+    def test_usage_md_states_the_degraded_guarantee(self):
+        text = USAGE_MD.read_text(encoding="utf-8")
+        self.assertIn("UNRECORDED_SCAFFOLD", text)
+        self.assertIn(self.MARKER_B, text)
+
+    def test_argparse_help_states_the_degraded_guarantee(self):
+        source = CLI.read_text(encoding="utf-8")
+        self.assertIn("Degrades the guarantee", source)
+
+    def test_the_adopted_json_output_states_the_degraded_guarantee(self):
+        source = CLI.read_text(encoding="utf-8")
+        self.assertIn(self.MARKER_B, source)
 
 
 #: The vocabulary the forge legitimately owns, word to the reason it was admitted.
@@ -12358,6 +13179,29 @@ class OpenDefectLadderTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["code"], "DIRTY_WORKTREE")
 
+    # --- materialize: MATERIALIZE_MODE_REQUIRED, a pure-argv check ---
+    # `materialize` arrived from a sibling change AFTER the seven insertions
+    # were written, so it was the one spend command the merge left unguarded.
+    # It writes kit destinations over the target -- squarely a command that
+    # spends -- and its mode check is pure argv, so an insertion placed one
+    # line too low fails this scenario loudly.
+
+    def test_materialize_refuses_forge_defect_open_ahead_of_mode_required(self):
+        box = self._box()
+        fixture = self._arm(box)
+        args = ["materialize", "--target", str(box), "--name", "Method"]
+
+        proc = self.run_cli(*args)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "FORGE_DEFECT_OPEN")
+
+        self._disarm(fixture)
+        proc = self.run_cli(*args)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"],
+                         "MATERIALIZE_MODE_REQUIRED")
+
+
 
 class DiagnosticsAnsweringWhileDefectOpenTests(unittest.TestCase):
     """`probe`, `verify`, `position`, `plan`, `compose`, `handoff` and
@@ -12749,7 +13593,8 @@ class CommandRosterTests(unittest.TestCase):
 
     def test_every_command_dispatched_is_accounted_for(self):
         write_verbs = {"position", "discuss", "propose", "gate", "offer",
-                       "close", "step", "settle", "defect"}
+                       "close", "step", "settle", "defect",
+                       "materialize"}
         dispatched = set(impl.COMMANDS)
         self.assertEqual(
             dispatched, self.DOCUMENTED_ELSEWHERE | write_verbs,
