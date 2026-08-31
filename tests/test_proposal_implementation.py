@@ -4885,7 +4885,9 @@ class RemoteExecutionJobsSectionTests(unittest.TestCase):
         self.assertEqual(by_job["job-fresh"]["staleness"]["status"], "fresh")
         self.assertEqual(by_job["job-stale"]["staleness"]["status"], "drift")
         for job in state["jobs"]:
-            self.assertEqual(set(job.keys()), {"job", "product", "staleness"})
+            self.assertEqual(
+                set(job.keys()),
+                {"job", "product", "staleness", "accelerator", "localBudget"})
 
     def test_services_is_a_count_never_a_name(self):
         """Mirrors `test_the_section_names_no_service` above, over the
@@ -9632,6 +9634,26 @@ class ProbeReportedFactsRosterTests(unittest.TestCase):
              for job in probe["remoteExecution"]["jobs"]],
             ["unknown"])
         self.assertEqual(probe["nextStep"], "benchmark")
+
+    def test_a_job_with_no_accelerator_and_no_local_budget_classifies_optional(self):
+        """`classify_remote_necessity` (design D3, `the-pilot-decides-the-
+        remote-strategy`) is purely additive in this slice -- reported
+        beside the offer, refusing nothing. This fixture's job folder
+        declares neither `accelerator` nor `localBudget`, and the fixture
+        never wrote a `Probe_results.json` at all, so `results.status` is
+        `"absent"` -- the more fundamental gap that outranks a merely
+        undeclared budget (design D3's rule 5 sub-priority).
+        """
+        box, head = self.build_target("optional")
+        self.write_job_folder(box, head)
+        probe = self.probe(box)
+        necessity = probe["remoteExecution"]["necessity"]
+        self.assertEqual(probe["results"]["status"], "absent")
+        self.assertEqual(
+            necessity["jobs"]["job"],
+            {"necessity": "optional", "reason": "results.unmeasured"})
+        self.assertEqual(necessity["summary"],
+                         {"mustRemote": 0, "localSufficient": 0, "optional": 1})
 
     def test_the_toy_targets_left_nothing_behind(self):
         box, head = self.build_target("cleanup")

@@ -51,6 +51,7 @@ from impl_naming import normalize_name, package_name, validate_name  # noqa: E40
 from impl_references import (is_nesting, prefix_mappings, reference_pattern,  # noqa: E402
                              scan_reference_updates, scan_stale_references)
 import impl_availability  # noqa: E402
+import impl_execution_strategy  # noqa: E402
 import impl_position  # noqa: E402
 import impl_steps  # noqa: E402
 
@@ -2238,6 +2239,19 @@ def cmd_probe(args) -> dict:
          "levels": resolve_levels_declaration(target, name)},
         args.revision,
         revision_source(args.revision) if args.revision else None)
+    # Computed once and reused for both `search.costForecast` below and the
+    # classification call: the exact same projection, never a second one
+    # (design D3, `the-pilot-decides-the-remote-strategy`).
+    cost_forecast = search_cost_forecast(
+        state.get("reduction") or {}, declared_required_scale(search))
+    # `classify_remote_necessity` never inspects `smokeReady` today (see its
+    # own docstring), but it is folded into each row anyway so the shape
+    # handed to it matches the one the row's own producer documents.
+    necessity = impl_execution_strategy.classify_remote_necessity(
+        jobs=[{**job, "smokeReady": jobs["smokeReady"].get(job["job"], False)}
+              for job in jobs["jobs"]],
+        results_status=state["status"],
+        cost_forecast=cost_forecast)
     return {
         "status": "ok",
         "target": str(target),
@@ -2257,21 +2271,21 @@ def cmd_probe(args) -> dict:
         # has already reported a value of any other shape as malformed, and a
         # forecast projected from a scale nobody can name an axis of would be a
         # number invented to fill the field.
-        "search": {**search,
-                   "costForecast": search_cost_forecast(
-                       state.get("reduction") or {},
-                       declared_required_scale(search))},
+        "search": {**search, "costForecast": cost_forecast},
         "unreachedModules": unfaithful,
         # A static fact, reported and never gating: see `notebook_coupling`.
         "coupling": coupling_state(target, name, package_name(name)),
         # A static fact, reported and never gating: see `position_state`.
         "position": position,
         # What went out to a remote worker (the ledger), plus what job
-        # folders exist right now (the filesystem) — reported, never
-        # resolved, and never a submission. See `remote_execution_jobs_state`.
+        # folders exist right now (the filesystem), plus — purely additive,
+        # this slice refuses nothing on it — whether each job classifies as
+        # needing a remote worker at all. See `remote_execution_jobs_state`
+        # and `impl_execution_strategy.classify_remote_necessity`.
         "remoteExecution": {
             **remote,
             **jobs,
+            "necessity": necessity,
         },
         "nextStep": next_step,
         "wiring": proposal,
@@ -5553,6 +5567,15 @@ def remote_execution_jobs_state(target: Path) -> dict:
     Staleness is read through `remote_cli.JOBFOLDER.read()` alone — the
     single reader design #744 section 4 mandates — never recomputed here.
 
+    **`accelerator`/`localBudget`, read out of the same open `run_config`
+    this loop already holds** (design D3, `the-pilot-decides-the-remote-
+    strategy`): both are optional, additive blocks `jobfolder.
+    build_run_config()` writes only when the target declared them, and
+    both are carried through verbatim — `None` when absent, never a
+    default. This is the one and only place either is read for
+    `classify_remote_necessity()` (`impl_execution_strategy.py`); no
+    caller opens `run-config.json` a second time to get them.
+
     **The `None` conflation, made visible rather than passed through.**
     `remote_cli._job_folder_staleness()` returns `None` for two different
     situations: an entrypoint with no job folder at all (correct — nothing
@@ -5613,16 +5636,25 @@ def remote_execution_jobs_state(target: Path) -> dict:
                 "job": job_dir.name,
                 "product": None,
                 "staleness": {"status": "unreadable", "reason": str(exc)},
+                "accelerator": None,
+                "localBudget": None,
             })
             continue
 
         run_config = job_folder.run_config
         job_name = run_config.get("jobName", job_dir.name)
         product = run_config.get("product")
+        # Read out of the SAME open `run_config` this loop already holds
+        # (design D3, `the-pilot-decides-the-remote-strategy`): never a
+        # second `JOBFOLDER.read()`. Both are additive, optional blocks
+        # `jobfolder.build_run_config()` writes only when the target
+        # declared them; absent here, exactly as they are absent there.
         jobs.append({
             "job": job_name,
             "product": product,
             "staleness": dict(job_folder.staleness),
+            "accelerator": run_config.get("accelerator"),
+            "localBudget": run_config.get("localBudget"),
         })
 
         if not isinstance(product, str) or not product:
@@ -5695,10 +5727,15 @@ def _position_write_evidence(
         shards_current = _shards_current(
             shards, (resolved["contract"] or {}).get("distribution") or {},
             source_digest(target, package_name(name)))
+    # One call, both fields read from it (design D3): `cmd_gate` needs the
+    # SAME `jobs` rows `probe` classifies from, never a second walk of
+    # `_discovered_job_folders()` computing its own answer.
+    jobs = remote_execution_jobs_state(target)
     return {
         "search": search, "requiredScale": declared_required_scale(search),
         "notebooks": notebooks_state(target, name, package_name(name)),
-        "smokeReady": remote_execution_jobs_state(target)["smokeReady"],
+        "smokeReady": jobs["smokeReady"],
+        "jobs": jobs["jobs"],
         "shardsArrived": shards_arrived,
         "shardsCurrent": shards_current,
         "levels": resolve_levels_declaration(target, name),
