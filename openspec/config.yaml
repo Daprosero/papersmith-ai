@@ -2,8 +2,10 @@ strict_tdd: true
 context: |
   papersmith-ai is a mixed Python + Node.js repository.
   Detected markers: `requirements.txt`, `tests/`, `.pi/`, `openspec/`, `papersmith.yaml`.
-  Test capabilities were verified during init: Node built-in `node:test` suites and a Python `unittest` suite are present.
-  Unit tests: Node built-in suites in `tests/*.test.mjs`.
+  Test capabilities were verified during init: Node built-in `node:test` suites and Python `unittest` suites are present.
+  Unit tests: Node built-in suites in `tests/*.test.mjs`, and Python suites in `tests/test_*.py`.
+  The Python half runs under `.venv/bin/python` (3.12), named relative to this repository root, which is the directory every caller of this file already runs from.
+  The system `python3` here is 3.9 and raises `TypeError` importing this repository's own modules, so a gate configured against it reports nothing about what it ran.
   Integration tests: none explicitly detected.
   E2E tests: none explicitly detected.
 rules:
@@ -16,13 +18,13 @@ rules:
   tasks:
     protect_review_workload: true
   apply:
-    test_command: "node --test tests/*.test.mjs && python3 -m unittest discover -s tests -p 'test_extract_pdf.py'"
+    test_command: "npm test && .venv/bin/python -m unittest discover -s tests -p 'test_*.py'"
   verify:
-    test_command: "node --test tests/*.test.mjs && python3 -m unittest discover -s tests -p 'test_extract_pdf.py'"
+    test_command: "npm test && .venv/bin/python -m unittest discover -s tests -p 'test_*.py'"
 testing:
   detected: "2026-07-16"
   runner:
-    command: "node --test tests/*.test.mjs && python3 -m unittest discover -s tests -p 'test_extract_pdf.py'"
+    command: "npm test && .venv/bin/python -m unittest discover -s tests -p 'test_*.py'"
     framework: "node:test + unittest"
   layers:
     unit: ""

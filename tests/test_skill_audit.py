@@ -3455,7 +3455,26 @@ class NothingWasRepairedTests(unittest.TestCase):
 
         The borrowed ground is checked too. A box that outlives its run is a
         mutation with a delay on it.
+
+        [W4] Gated, for the same reason its two siblings are: the shipped
+        recipe's `fromZero` step is a `driver`, and driving it spawns a real
+        external `claude -p` agent inside `implementations/`. That agent is
+        not reproducible run to run, and `subprocess.run`'s timeout reaches
+        only the agent itself -- its own children are reparented and go on
+        working long after the step is over, creating and removing
+        directories under the very `implementations/` this test, and every
+        `BoxMixin` cleanup in this file, asserts over. Measured: an ungated
+        run left boxes belonging to `tests/test_proposal_implementation.py`
+        behind in a `test_skill_audit.py`-only process, and one surviving
+        box failed 132 assertions in the following one.
         """
+        # Opt-in gate -- see `FrozenPayloadTests
+        # .test_structure_payload_carries_frozen` for why the literal name
+        # is hardcoded here rather than shared.
+        if not os.environ.get("SKILL_AUDIT_LIVE_DRIVER"):
+            self.skipTest(
+                "spawns a real external `claude -p` process; opt in with "
+                "SKILL_AUDIT_LIVE_DRIVER=1")
         ground = FORGE / "implementations"
         occupants = lambda: sorted(e.name for e in ground.iterdir()) \
             if ground.is_dir() else []
@@ -3786,30 +3805,46 @@ Making the finding's digest agree with '## Frozen' would remove the rejection.
             f"rejected and must name the finding: {violations}")
 
 
-#: The canonical env-var name the lock below checks each of the three
+#: The canonical env-var name the lock below checks each of the four
 #: sites against -- never imported by the sites themselves. Each of
 #: `FrozenPayloadTests.test_structure_payload_carries_frozen`,
 #: `StructureSelfProbeTests.test_the_shipped_recipe_drives_a_real_external_process`,
+#: `NothingWasRepairedTests.test_a_structure_run_leaves_the_subject_and_its_ground_untouched`,
 #: and `SKILL.md`'s own obligation text hardcodes this name as its own
-#: literal, so the three can drift independently and the lock is the
+#: literal, so the four can drift independently and the lock is the
 #: thing that would notice. The bare-uppercase-noun-phrase shape follows
 #: `IMPLEMENTATION_PROPOSALS` in `tests/test_proposal_implementation.py`.
+#:
+#: The membership of this set is the whole point, not just the spelling.
+#: Every site that drives `skill-audit.structure.json` spawns a live
+#: `claude -p` agent, and an ungated one runs that agent -- and whatever
+#: it decides to do to this repository -- on every default run. That is
+#: how the third site below came to be found: its orphaned grandchildren
+#: outlived the 30s the driver step allows them and went on creating and
+#: deleting directories under `implementations/` while unrelated tests
+#: were asserting over exactly that directory.
 LIVE_DRIVER_ENV_VAR = "SKILL_AUDIT_LIVE_DRIVER"
 
 
 class LiveDriverGateNameLockTests(unittest.TestCase):
-    """The opt-in gate's env-var name is pinned identical across the three
+    """The opt-in gate's env-var name is pinned identical across the four
     sites that must agree on it: `FrozenPayloadTests
     .test_structure_payload_carries_frozen`'s own `os.environ` read,
     `StructureSelfProbeTests
     .test_the_shipped_recipe_drives_a_real_external_process`'s own
-    `os.environ` read, and `SKILL.md`'s recorded obligation text. A rename
-    at exactly one site breaks this lock, naming that site -- the same
-    discipline `SchemaVersionDerivationTests` established for a numeral,
-    applied here to a literal name instead.
+    `os.environ` read, `NothingWasRepairedTests
+    .test_a_structure_run_leaves_the_subject_and_its_ground_untouched`'s
+    own `os.environ` read, and `SKILL.md`'s recorded obligation text. A
+    rename at exactly one site breaks this lock, naming that site -- the
+    same discipline `SchemaVersionDerivationTests` established for a
+    numeral, applied here to a literal name instead.
+
+    The third test site is here because it was once missing. It drives the
+    same shipped recipe as the other two, so it spawned the same live
+    agent, but it carried no gate and therefore ran on every default run.
     """
 
-    def test_the_gate_name_is_identical_across_all_three_sites(self):
+    def test_the_gate_name_is_identical_across_every_site(self):
         frozen_src = function_source(
             Path(__file__), "test_structure_payload_carries_frozen")
         selfprobe_src = function_source(
@@ -3825,6 +3860,18 @@ class LiveDriverGateNameLockTests(unittest.TestCase):
             LIVE_DRIVER_ENV_VAR, selfprobe_src,
             "test_the_shipped_recipe_drives_a_real_external_process does "
             f"not read {LIVE_DRIVER_ENV_VAR}")
+
+        untouched_src = function_source(
+            Path(__file__),
+            "test_a_structure_run_leaves_the_subject_and_its_ground_untouched")
+        self.assertIn(
+            LIVE_DRIVER_ENV_VAR, untouched_src,
+            "test_a_structure_run_leaves_the_subject_and_its_ground_untouched "
+            f"does not read {LIVE_DRIVER_ENV_VAR}, so it spawns a live "
+            "`claude -p` agent on every default run; that agent's orphaned "
+            "grandchildren outlive the driver step's own timeout and keep "
+            "writing under implementations/ while unrelated tests assert "
+            "over it")
         self.assertIn(
             LIVE_DRIVER_ENV_VAR, doctrine,
             f"SKILL.md does not record the obligation to run with "
