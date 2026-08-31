@@ -14622,7 +14622,10 @@ class SettleCommandTests(unittest.TestCase):
         args.update(overrides)
         argv = ["settle"]
         for flag, value in args.items():
-            if value is None:
+            if value is None or value is False:
+                continue
+            if value is True:
+                argv += [f"--{flag}"]
                 continue
             argv += [f"--{flag}", value]
         return self.run_cli(*argv)
@@ -14896,6 +14899,244 @@ class SettleCommandTests(unittest.TestCase):
         after = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
         self.assertIn("a concurrent edit nobody told settle about", after)
         self.assertNotIn("New text", after)
+
+
+class SettleAttachCommandTests(unittest.TestCase):
+    """`settle --attach` -- binds a witness onto a line ALREADY settled,
+    matched by its exact `--text`, instead of placing a new one (design
+    "attach, not place"). This is the missing half of the programme this
+    change closes: `settle --text` only ever creates; nothing before this
+    could attach a witness to what a target already had settled by hand
+    or by a prior `settle` call made before `--witness` existed.
+    """
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_e2e_settle_attach_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text("", encoding="utf-8")
+        return box
+
+    def run_cli(self, *args, stdin=None):
+        return subprocess.run([sys.executable, str(CLI), *args], input=stdin,
+                              capture_output=True, text=True, cwd=FORGE)
+
+    def _settle(self, box, **overrides):
+        args = {"target": str(box), "name": "Method", "session": "s1",
+                "attach": True, "text": "an already-settled item",
+                "witness": "test_the_thing"}
+        args.update(overrides)
+        argv = ["settle"]
+        for flag, value in args.items():
+            if value is None or value is False:
+                continue
+            if value is True:
+                argv += [f"--{flag}"]
+                continue
+            argv += [f"--{flag}", value]
+        return self.run_cli(*argv)
+
+    # --- the search: matched by exact text, same discipline as headings ---
+
+    def test_attach_refuses_when_text_matches_zero_lines(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [x] a different item\n",
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_TEXT_ABSENT")
+
+    def test_attach_refuses_when_text_matches_more_than_one_line(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] an already-settled item\n\n"
+            "## Reversed\n\n- [x] an already-settled item\n",
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_TEXT_AMBIGUOUS")
+
+    def test_attach_refuses_when_the_line_already_carries_a_witness(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n"
+            "- [x] an already-settled item `test_prior_witness`\n",
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_ALREADY_WITNESSED")
+        # Refused before any write.
+        after = (box / "Method" / "AGREED.md").read_bytes()
+        before = (b"# Agreed\n\n## Ladder\n\n"
+                  b"- [x] an already-settled item `test_prior_witness`\n")
+        self.assertEqual(after, before)
+
+    def test_attach_refuses_holder_absent(self):
+        box = self._box()
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_HOLDER_ABSENT")
+
+    # --- pure-argv shape ---
+
+    def test_attach_refuses_without_witness(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] an already-settled item\n",
+            encoding="utf-8")
+        proc = self._settle(box, witness=None)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_WITNESS_REQUIRED")
+
+    def test_attach_refuses_a_malformed_witness(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] an already-settled item\n",
+            encoding="utf-8")
+        proc = self._settle(box, witness="not-a-valid-token")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_WITNESS_MALFORMED")
+
+    def test_attach_refuses_combined_with_under(self):
+        box = self._box()
+        proc = self._settle(box, under="## Ladder")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_ATTACH_CONFLICT")
+
+    def test_attach_refuses_combined_with_supersedes(self):
+        box = self._box()
+        proc = self._settle(box, supersedes="some other text")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_ATTACH_CONFLICT")
+
+    # --- the design decision: no discussion precondition for --attach ---
+
+    def test_attach_succeeds_with_zero_discuss_events_ever_recorded(self):
+        """The whole point: a line already settled was already discussed
+        and already placed at the time `settle` first wrote it. Attaching
+        a witness to it now must never require a fresh `discuss` call --
+        proven here by an empty ledger (no position.jsonl at all).
+        """
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] an already-settled item\n",
+            encoding="utf-8")
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        self.assertFalse(ledger.exists())
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["status"], "written")
+
+    # --- the happy path: byte-identical except the appended witness ---
+
+    def test_attach_preserves_an_open_mark_byte_identical_otherwise(self):
+        box = self._box()
+        before = ("# Agreed\n\nSome prose above the section.\n\n"
+                  "## Ladder\n\n- [ ] an already-settled item\n\n"
+                  "## Reversed\n\nA hand-written paragraph.\n")
+        (box / "Method" / "AGREED.md").write_text(before, encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["status"], "written")
+        self.assertEqual(result["attach"], True)
+        self.assertEqual(result["witness"], "test_the_thing")
+
+        after = (box / "Method" / "AGREED.md").read_bytes()
+        expected = before.replace(
+            "- [ ] an already-settled item\n",
+            "- [ ] an already-settled item `test_the_thing`\n").encode("utf-8")
+        self.assertEqual(after, expected)
+
+    def test_attach_preserves_a_ticked_mark_byte_identical_otherwise(self):
+        """A ticked item stays ticked -- `--attach` never authors or
+        removes a tick, only the create path's own `[ ]` restriction is
+        about NEW items; this line was already `[x]` before this call.
+        """
+        box = self._box()
+        before = ("# Agreed\n\n## Ladder\n\n"
+                  "- [x] an already-settled item\n\n"
+                  "## Reversed\n\nA hand-written paragraph.\n")
+        (box / "Method" / "AGREED.md").write_text(before, encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+
+        after = (box / "Method" / "AGREED.md").read_bytes()
+        expected = before.replace(
+            "- [x] an already-settled item\n",
+            "- [x] an already-settled item `test_the_thing`\n").encode("utf-8")
+        self.assertEqual(after, expected)
+
+    def test_attach_appends_one_settle_event_flagged_attach_true(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] an already-settled item\n",
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+        settle_events = [e for e in events if e["kind"] == "settle"]
+        self.assertEqual(len(settle_events), 1)
+        self.assertEqual(settle_events[0]["attach"], True)
+        self.assertIsNone(settle_events[0]["about"])
+        self.assertIsNone(settle_events[0]["under"])
+
+    def test_attach_read_back_by_agreements_state_without_the_ledger(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] an already-settled item\n",
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+
+        state = impl.agreements_state(box, "Method")
+        self.assertEqual(state["witness"]["unmeasured"],
+                         ["an already-settled item"])
+
+
+class SettleUnderAboutRequirednessTests(unittest.TestCase):
+    """`--under` and `--about` are no longer unconditionally
+    `argparse`-required (spec/design "attach, not place"): both are only
+    required on the create path, since `--attach` needs neither. Enforced
+    by `cmd_settle` itself now, refused the same coded way every other
+    settle precondition already is.
+    """
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_e2e_settle_required_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        return box
+
+    def run_cli(self, *args, stdin=None):
+        return subprocess.run([sys.executable, str(CLI), *args], input=stdin,
+                              capture_output=True, text=True, cwd=FORGE)
+
+    def test_create_mode_refuses_under_required(self):
+        box = self._box()
+        proc = self.run_cli("settle", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--about", "record",
+                            "--text", "New text")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_UNDER_REQUIRED")
+
+    def test_create_mode_refuses_about_required(self):
+        box = self._box()
+        proc = self.run_cli("settle", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--under", "## Ladder",
+                            "--text", "New text")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_ABOUT_REQUIRED")
 
 
 class AgreementWitnessSingleWritePathTests(unittest.TestCase):

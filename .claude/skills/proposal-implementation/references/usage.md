@@ -896,15 +896,67 @@ as inert trailing text, never as a witness `agreements_state` could read
 back.
 
 **`settle` is the only command that ever writes this token.** There is no
-`patch` or `edit` subcommand, by design (spec Group 5): a witness token
-binds at the moment an agreement is placed, never afterward. Hand-typing
-one into `AGREED.md` is unsupported doctrine, not a technical prevention —
-the parser cannot, and does not try to, distinguish a skill-written token
-from a hand-typed one, so `verify` and `close` evaluate either exactly the
-same way. Retrofitting an already-settled agreement (writing a witness
-token onto a line `settle` placed before this flag existed) is a separate,
-prior, bounded target-side pass, never something a flow does incrementally
-as it happens to encounter an unwired agreement.
+`patch` or `edit` subcommand, by design (spec Group 5): a witness token is
+bound either at the moment an agreement is placed (`--witness`, above) or,
+with `--attach` (below), afterward — both routes stay inside this one
+command; there is still no third way in. Hand-typing one into `AGREED.md`
+is unsupported doctrine, not a technical prevention — the parser cannot,
+and does not try to, distinguish a skill-written token from a hand-typed
+one, so `verify` and `close` evaluate either exactly the same way.
+
+### `--attach` — binding a witness to a line already settled
+
+`--text` only ever CREATES with the shape above; there was no way to bind
+`--witness` onto an agreement a prior `settle` call already placed, ticked
+or not, without either hand-editing `AGREED.md` (unsupported) or
+re-`settle`ing it (which would write a fresh `[ ]` line and un-tick
+whatever was already reached). `--attach` closes that gap:
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py settle \
+  --target implementations/<repo> --name <Name> --session <your-session-id> \
+  --attach \
+  --text "the free scalar stays at its neutral and identical across arms" \
+  --witness test_the_free_scalar_stays_neutral
+```
+
+```json
+{ "status": "written", "holder": "Method/AGREED.md", "attach": true,
+  "about": null, "text": "the free scalar stays at its neutral and identical across arms",
+  "under": null, "witness": "test_the_free_scalar_stays_neutral",
+  "supersedes": null, "collides": [] }
+```
+
+`--text` is matched by EXACT equality against an existing line's own
+`AGREEMENT_LINE` text group — the identical "found by shape, matched
+exactly" discipline `--under` already uses for a heading. Refuses
+`SETTLE_TEXT_ABSENT` when it matches no existing line, `SETTLE_TEXT_AMBIGUOUS`
+when it matches more than one — which one receives the witness is not
+decidable without a human choosing, the same reasoning
+`SETTLE_HEADING_AMBIGUOUS` already states one level up. `--witness` is
+required in this mode (`SETTLE_WITNESS_REQUIRED` if omitted — binding one
+is the entire point) and refused `SETTLE_ALREADY_WITNESSED` if the located
+line already carries a token: `--attach` never replaces one, only adds.
+
+**The mark is never touched.** A ticked item stays ticked, an open one
+stays open — only the witness token is appended, and everything else in
+the holder file is byte-identical afterward. `--under` and `--supersedes`
+name nothing in this mode and are refused `SETTLE_ATTACH_CONFLICT` if
+given together with `--attach`.
+
+**The discussion precondition is skipped, on purpose.** `SETTLE_NOT_DISCUSSED`
+/ `SETTLE_DISCUSSION_UNANSWERED` exist so nothing is PLACED without having
+been discussed first. A line `--attach` matches was, by construction,
+already placed by an earlier `settle` call — it already passed that gate
+once. Binding a witness onto it afterward is not placing a new agreement;
+requiring a fresh `discuss` per already-settled line would be ceremony
+with nothing behind it. `--about` is not even resolved in this mode, since
+there is no discussion gate left to check it against.
+
+**This is the mechanism, not the retrofit.** Running `--attach` over every
+already-settled line in a target is a separate, bounded, operator-directed
+pass — never something a flow does incrementally as it happens to
+encounter an unwired agreement.
 
 ## `defect` — declare a forge file broken
 
