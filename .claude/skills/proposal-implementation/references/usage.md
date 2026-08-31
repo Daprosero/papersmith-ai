@@ -250,6 +250,44 @@ scaffolded by hand keeps its hand-written files untouched (and unrecorded —
 see `UNRECORDED_SCAFFOLD` below). `DESTINATION_CONFLICT` fires only on the
 genuine race of a file appearing between that computation and the write.
 
+## Materialize the object scaffolding
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py materialize \
+  --target implementations/<repo> --name Example-Method \
+  --stage objects --plan /tmp/plan.json --seed 7
+```
+
+The three destinations SKILL.md step 9 names: `src/<Package>/module.py`,
+`tests/test_invariants.py`, `tests/test_synthetic.py`. Same plan/clean-worktree
+preflight as `--stage scaffold`, plus one more: it refuses
+`OBJECT_MAP_NOT_APPROVED` until `src/<Package>_Benchmark/__init__.py` carries
+step 8's `revision`/`premises`. Unlike scaffold, this write is **not** gated on
+the result parsing — `writable_at_scaffold_time`'s `ast.parse` check is scoped
+to the scaffold stage on purpose. All three templates carry tokens
+(`{{FUNCTION_NAME}}`, `{{INVARIANT_ID}}`, `{{EXPECTATION}}`, ...) sitting
+inside Python identifiers that only step 9's own authoring can answer, so this
+stage writes them as scaffolding for the agent to author over, left standing
+exactly like `{{MODULE}}` is in a freshly scaffolded `test_smoke.py`. Author
+the real module and tests, then run `materialize --authored <path>` on each of
+the three so `verify` stops reading them as drift.
+
+## Materialize the harness
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py materialize \
+  --target implementations/<repo> --name Example-Method \
+  --stage harness --plan /tmp/plan.json
+```
+
+The three destinations the harness-wiring section names: `benchmark.py`,
+`verdict.py`, `probe.ipynb`. No `--seed`: none of the three carries a
+`{{SEED}}` token (`probe.ipynb` carries `{{SEEDS}}` instead, answered later, at
+probe time, not by this command). No object-map precondition either —
+`benchmark.py`/`verdict.py` carry no token at all and parse the moment they
+land. `wiring.py` stays out of this stage entirely: SKILL.md states it is
+bespoke-authored, never a kit destination.
+
 ### Declaring authorship, and adopting what was never recorded
 
 Two more modes, both ledger-only — no file write, no plan gate, and
@@ -1321,10 +1359,11 @@ state, alongside the scenarios — not verified by hand once.
 | `MATERIALIZE_MODE_CONFLICT` | Two or more of `--stage`/`--authored`/`--adopt` were given together; the three modes are mutually exclusive. |
 | `PLAN_REQUIRED` | `materialize --stage` needs `--plan <approved plan JSON>`. |
 | `SEED_REQUIRED` | `materialize --stage scaffold` needs `--seed`, substituted into `{{SEED}}`. |
-| `STAGE_CANNOT_ANSWER` | A scaffold-stage `.py` destination still fails `ast.parse` after `{{PKG}}`/`{{SEED}}` substitution — its remaining token answers a later step. Names the file. |
-| `SCAFFOLD_DRIFT` | (`verify`, reported in `structure.scaffoldDrift`, never raised) A receipt-recorded scaffold destination's on-disk bytes no longer match its `writtenSha256`. Release the seal with `materialize --authored <path>` after declaring the edit. |
-| `UNRECORDED_SCAFFOLD` | (`verify`, reported in `structure.unrecordedScaffold`, never raised) A scaffold destination exists on disk with no receipt entry — most often because the target was scaffolded before this command existed. Remedy: `materialize --adopt <path>`, one path at a time, deliberately. **This degrades the guarantee**: adoption records who is responsible for the bytes, never that they came from the kit — the record names who wrote them, not that the engine owns them. |
-| `NOT_A_KIT_DESTINATION` | `materialize --authored`/`--adopt` named a path outside the eleven scaffold destinations. The receipt is not a general-purpose ledger. |
+| `STAGE_CANNOT_ANSWER` | A scaffold-stage `.py` destination still fails `ast.parse` after `{{PKG}}`/`{{SEED}}` substitution — its remaining token answers a later step. Names the file. Never raised by `objects`/`harness`: their three destinations are either written with tokens deliberately left standing (`objects`) or already parse cleanly (`harness`'s two `.py` files). |
+| `OBJECT_MAP_NOT_APPROVED` | `materialize --stage objects` ran before step 8's `revision`/`premises` were recorded in `src/<Package>_Benchmark/__init__.py`. Get that declaration approved and written first. |
+| `SCAFFOLD_DRIFT` | (`verify`, reported in `structure.scaffoldDrift`, never raised) A receipt-recorded scaffold destination's on-disk bytes no longer match its `writtenSha256`. Release the seal with `materialize --authored <path>` after declaring the edit. `objects`/`harness` destinations get the identical check under `structure.objectDrift`/`structure.harnessDrift`. |
+| `UNRECORDED_SCAFFOLD` | (`verify`, reported in `structure.unrecordedScaffold`, never raised) A scaffold destination exists on disk with no receipt entry — most often because the target was scaffolded before this command existed. Remedy: `materialize --adopt <path>`, one path at a time, deliberately. **This degrades the guarantee**: adoption records who is responsible for the bytes, never that they came from the kit — the record names who wrote them, not that the engine owns them. `objects`/`harness` destinations get the identical check under `structure.unrecordedObjects`/`structure.unrecordedHarness`. |
+| `NOT_A_KIT_DESTINATION` | `materialize --authored`/`--adopt` named a path outside the seventeen kit destinations (eleven scaffold, three objects, three harness). The receipt is not a general-purpose ledger. |
 | `MATERIALIZE_PATH_ABSENT` | `materialize --authored`/`--adopt` named a path with no bytes on disk. |
 | `NO_RECEIPT_ENTRY` | `materialize --authored <path>` named a path the engine never wrote. There is no seal to release; use `--adopt`. |
 | `ALREADY_RECORDED` | `materialize --adopt <path>` named a path the receipt already carries. Adoption is not a re-seal; use `--authored`. |

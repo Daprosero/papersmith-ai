@@ -2554,6 +2554,74 @@ def scaffold_gaps(target: Path, name: str) -> list[str]:
     return gaps
 
 
+def object_destinations(name: str) -> list[str]:
+    """The three file paths a `materialize --stage objects` writes.
+
+    SKILL.md step 9's table, made concrete. `module.py` is the kit's own
+    filename — not a per-object name — matching `MaterializeWritesStageOneTests
+    .STAGE_TWO`, which already fixes `src/<Package>/module.py` as the literal
+    path a stage-two write lands on.
+    """
+    package = package_name(name)
+    return [f"src/{package}/module.py", "tests/test_invariants.py",
+            "tests/test_synthetic.py"]
+
+
+def object_gaps(target: Path, name: str) -> list[str]:
+    return [w for w in object_destinations(name) if not (target / w).exists()]
+
+
+def object_kit_source(destination: str, name: str) -> Path | None:
+    package = package_name(name)
+    mapping = {
+        f"src/{package}/module.py": SKILL_ROOT / "assets" / "kit" / "src" / "module.py",
+        "tests/test_invariants.py":
+            SKILL_ROOT / "assets" / "kit" / "tests" / "test_invariants.py",
+        "tests/test_synthetic.py":
+            SKILL_ROOT / "assets" / "kit" / "tests" / "test_synthetic.py",
+    }
+    return mapping.get(destination)
+
+
+def harness_destinations(name: str) -> list[str]:
+    """The three file paths a `materialize --stage harness` writes: SKILL.md's
+    harness-wiring table, made concrete. `wiring.py` is deliberately absent —
+    SKILL.md states it is bespoke-authored, never kit-sourced, and stays out
+    of every stage.
+    """
+    package = package_name(name)
+    return [f"src/{package}_Benchmark/benchmark.py",
+            f"src/{package}_Benchmark/verdict.py",
+            f"{name}/Notebooks/probe.ipynb"]
+
+
+def harness_gaps(target: Path, name: str) -> list[str]:
+    return [w for w in harness_destinations(name) if not (target / w).exists()]
+
+
+def harness_kit_source(destination: str, name: str) -> Path | None:
+    package = package_name(name)
+    mapping = {
+        f"src/{package}_Benchmark/benchmark.py":
+            SKILL_ROOT / "assets" / "kit" / "nb" / "benchmark.py",
+        f"src/{package}_Benchmark/verdict.py":
+            SKILL_ROOT / "assets" / "kit" / "nb" / "verdict.py",
+        f"{name}/Notebooks/probe.ipynb":
+            SKILL_ROOT / "assets" / "kit" / "nb" / "probe.ipynb",
+    }
+    return mapping.get(destination)
+
+
+def all_kit_destinations(name: str) -> list[str]:
+    """Every kit destination across all three stages — the domain
+    `--authored`/`--adopt` are scoped to (`NOT_A_KIT_DESTINATION`). Eleven
+    scaffold + three objects + three harness = seventeen, matching the
+    design's own count.
+    """
+    return [*scaffold_destinations(name), *object_destinations(name),
+            *harness_destinations(name)]
+
+
 # --------------------------------------------------------------------------
 # materialize — the engine writes the scaffold; the receipt is the only
 # mechanism. See design #the-skill-materializes-not-the-agent.
@@ -2668,18 +2736,23 @@ def set_receipt_entry(receipt: dict, entry: dict) -> None:
     entries.append(entry)
 
 
-def scaffold_structure_gaps(target: Path, name: str) -> dict:
-    """`SCAFFOLD_DRIFT` / `UNRECORDED_SCAFFOLD` over the eleven scaffold
-    destinations only — never the two merge anchors, whose correctness is
+def _kit_structure_gaps(target: Path, destinations: list[str]) -> dict:
+    """`SCAFFOLD_DRIFT` / `UNRECORDED_SCAFFOLD`, generalized over any one
+    stage's own destination list — never a merge anchor, whose correctness is
     re-derived presence (`ignore_gaps`/`pytest_anchor_missing`), not a hash,
-    and never a destination absent from disk, which is a gap `scaffold_gaps`
-    already reports, not drift or an unrecorded write.
+    and never a destination absent from disk, which is a gap the stage's own
+    `*_gaps` reports, not drift or an unrecorded write.
+
+    One function shared by `scaffold_structure_gaps`, `object_structure_gaps`
+    and `harness_structure_gaps`: the three stages' destination sets are
+    disjoint paths, so a receipt entry keyed by path is unambiguous across
+    all of them without needing to also check the entry's own `stage` field.
     """
     receipt = read_materialization_receipt(target)
     entries = {e["path"]: e for e in receipt["entries"]}
     drift: list[str] = []
     unrecorded: list[str] = []
-    for destination in scaffold_destinations(name):
+    for destination in destinations:
         full = target / destination
         if not full.exists():
             continue
@@ -2691,6 +2764,35 @@ def scaffold_structure_gaps(target: Path, name: str) -> dict:
         if current_sha256 != entry.get("writtenSha256"):
             drift.append(destination)
     return {"drift": sorted(drift), "unrecorded": sorted(unrecorded)}
+
+
+def scaffold_structure_gaps(target: Path, name: str) -> dict:
+    """`SCAFFOLD_DRIFT` / `UNRECORDED_SCAFFOLD` over the eleven scaffold
+    destinations only — never the two merge anchors, whose correctness is
+    re-derived presence (`ignore_gaps`/`pytest_anchor_missing`), not a hash,
+    and never a destination absent from disk, which is a gap `scaffold_gaps`
+    already reports, not drift or an unrecorded write.
+    """
+    return _kit_structure_gaps(target, scaffold_destinations(name))
+
+
+def object_structure_gaps(target: Path, name: str) -> dict:
+    """`SCAFFOLD_DRIFT` / `UNRECORDED_SCAFFOLD` over the three `objects`
+    destinations only. Named `object_structure_gaps`, not folded into
+    `scaffold_structure_gaps`, because the two stages' destinations are
+    different files reported under different `structure` keys
+    (`objectDrift`/`unrecordedObjects` vs `scaffoldDrift`/`unrecordedScaffold`)
+    — `scaffold_gaps`/`scaffold_structure_gaps` stay scoped to the eleven, as
+    every existing caller and test already assumes.
+    """
+    return _kit_structure_gaps(target, object_destinations(name))
+
+
+def harness_structure_gaps(target: Path, name: str) -> dict:
+    """`SCAFFOLD_DRIFT` / `UNRECORDED_SCAFFOLD` over the three `harness`
+    destinations only — see `object_structure_gaps` for why this is a
+    sibling function rather than a widening of the scaffold one."""
+    return _kit_structure_gaps(target, harness_destinations(name))
 
 
 # --------------------------------------------------------------------------
@@ -8201,13 +8303,24 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     # still match what it wrote (SCAFFOLD_DRIFT), and whether one of them
     # exists with no receipt entry explaining it (UNRECORDED_SCAFFOLD). Scoped
     # to the eleven scaffold destinations only — the anchors' correctness is
-    # re-derived presence, already covered by `scaffold_gaps` above.
+    # re-derived presence, already covered by `scaffold_gaps` above. The
+    # `objects` and `harness` stages get their own sibling checks, over their
+    # own three destinations each, so all seventeen kit destinations are
+    # accounted for — never only the eleven scaffold ones.
     scaffold_recorded = scaffold_structure_gaps(target, name)
+    object_recorded = object_structure_gaps(target, name)
+    harness_recorded = harness_structure_gaps(target, name)
     structure_ok = (not missing_dirs and not stray and not stale_refs
                     and not unparsable
                     and not scaffold_gaps(target, name)
                     and not scaffold_recorded["drift"]
-                    and not scaffold_recorded["unrecorded"])
+                    and not scaffold_recorded["unrecorded"]
+                    and not object_gaps(target, name)
+                    and not object_recorded["drift"]
+                    and not object_recorded["unrecorded"]
+                    and not harness_gaps(target, name)
+                    and not harness_recorded["drift"]
+                    and not harness_recorded["unrecorded"])
 
     package = target / "src" / package_name(name)
     modules: list[dict] = []
@@ -8458,6 +8571,12 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "scaffoldGaps": scaffold_gaps(target, name),
             "scaffoldDrift": scaffold_recorded["drift"],
             "unrecordedScaffold": scaffold_recorded["unrecorded"],
+            "objectGaps": object_gaps(target, name),
+            "objectDrift": object_recorded["drift"],
+            "unrecordedObjects": object_recorded["unrecorded"],
+            "harnessGaps": harness_gaps(target, name),
+            "harnessDrift": harness_recorded["drift"],
+            "unrecordedHarness": harness_recorded["unrecorded"],
         },
         "priorWork": prior_work_state(target, package_name(name)),
         "agreements": agreements_state(target, name),
@@ -8780,8 +8899,181 @@ def _materialize_scaffold_anchors(target: Path, name: str) -> list[dict]:
     return entries
 
 
+def _materialize_object_destinations(target: Path, name: str) -> list[str]:
+    """The `objects` stage's own destination set: `object_destinations` minus
+    whatever already exists on disk — the identical seam
+    `_materialize_scaffold_destinations` gives the scaffold stage, kept as a
+    separate function per stage so a test can monkeypatch one without
+    touching the others.
+    """
+    return [d for d in object_destinations(name) if not (target / d).exists()]
+
+
+def _materialize_harness_destinations(target: Path, name: str) -> list[str]:
+    """The `harness` stage's own destination set — see
+    `_materialize_object_destinations`."""
+    return [d for d in harness_destinations(name) if not (target / d).exists()]
+
+
+def harness_substitute_body(text: str, name: str) -> str:
+    """The one token a harness template might carry: `{{PKG}}`. None of the
+    three do today — `benchmark.py`/`verdict.py` carry no token at all, and
+    `probe.ipynb`'s tokens (`{{SEEDS}}`, `{{DATASET}}`, `{{EPOCHS}}`, ...) are
+    answered by a later step, not this one, and are left standing on purpose,
+    the same way `verification.ipynb`'s remaining tokens are. Substituting
+    `{{PKG}}` regardless is harmless and keeps this stage exercising the same
+    substitution path scaffold and objects do, rather than skipping it.
+    """
+    return text.replace("{{PKG}}", package_name(name))
+
+
+def _write_kit_stage(target: Path, name: str, stage: str, destinations: list[str],
+                     bodies: dict[str, str], kit_source_fn) -> dict:
+    """The write-conflict-preflight / write-loop / abort / receipt sequence
+    shared by the `objects` and `harness` stages — the same shape
+    `_stage_scaffold` established for `scaffold`, factored out once a second
+    and third stage needed it rather than tripled by copy. `_stage_scaffold`
+    keeps its own inlined copy: it alone carries the anchor merge and the
+    authored `__init__.py` special case, neither of which `objects`/`harness`
+    have.
+
+    Deliberately carries no `writable_at_scaffold_time`/`ast.parse` gate —
+    see `_stage_objects`'s own docstring for why applying scaffold's gate
+    here would make a stage refuse unconditionally, forever.
+    """
+    conflicts = [d for d in destinations if (target / d).exists()]
+    if conflicts:
+        raise Refused(
+            "DESTINATION_CONFLICT",
+            f"Destinations clash (existing file): {conflicts}. Materializing "
+            "would overwrite. Resolve with the user first.",
+        )
+
+    written: list[str] = []
+    try:
+        for destination in destinations:
+            full = target / destination
+            full.parent.mkdir(parents=True, exist_ok=True)
+            full.write_text(bodies[destination], encoding="utf-8")
+            written.append(destination)
+    except Exception as failure:  # noqa: BLE001 - the tree must not stay half-written
+        # `require_clean_worktree` proved the tree clean before this ran, so
+        # discarding everything just written restores exactly that state.
+        git(target, "reset", "-q", "--hard", check=False)
+        git(target, "clean", "-qfd", check=False)
+        raise Refused(
+            "APPLY_ABORTED",
+            f"{failure}. Nothing was recorded; the working tree was restored "
+            "to its pre-materialize state; re-run `plan` to see the current situation.",
+        ) from failure
+
+    recorded_at = _now_iso8601()
+    receipt = read_materialization_receipt(target)
+    receipt["name"] = name
+    for destination in written:
+        full = target / destination
+        source = kit_source_fn(destination, name)
+        set_receipt_entry(receipt, {
+            "path": destination,
+            "kind": "materialized",
+            "stage": stage,
+            "kitSource": (str(source.relative_to(SKILL_ROOT)) if source else None),
+            "sourceSha256": (hashlib.sha256(source.read_bytes()).hexdigest()
+                             if source else None),
+            "writtenSha256": hashlib.sha256(full.read_bytes()).hexdigest(),
+            "recordedAt": recorded_at,
+        })
+    write_materialization_receipt(target, receipt)
+
+    return {
+        "command": "materialize", "mode": "stage", "stage": stage,
+        "target": str(target), "name": name,
+        "status": "materialized",
+        "written": written,
+        "note": "The receipt is git-ignored under .implementation/ and is "
+                "the only record of what this command wrote.",
+    }
+
+
+def _stage_objects(target: Path, name: str, seed: str) -> dict:
+    """Writes the three step-9 kit destinations as raw, `{{PKG}}`/`{{SEED}}`-
+    substituted templates — deliberately NOT gated by
+    `writable_at_scaffold_time`.
+
+    Unlike scaffold's eleven, all three of these templates carry tokens
+    (`{{FUNCTION_NAME}}`, `{{INVARIANT_ID}}`, `{{EXPECTATION}}`, ...) sitting
+    inside Python identifiers that only step 9's own authoring can answer —
+    no CLI flag supplies them, and none should, since answering them IS the
+    mathematics step 9 exists to write (confirmed:
+    `MaterializeWritesStageOneTests` already establishes these three do not
+    survive `ast.parse` after only `{{PKG}}`/`{{SEED}}` are substituted).
+    Applying scaffold's `ast.parse` gate here would make this stage refuse
+    `STAGE_CANNOT_ANSWER` unconditionally, forever — a refusal no invocation
+    could ever satisfy. So these three are written as scaffolding for the
+    agent to author over, exactly the destinations `--authored` (design
+    decision D2) was built to release the seal on afterward.
+
+    Gated on the step-8 object map having been approved and recorded:
+    SKILL.md step 8 requires `revision`/`premises` to be written into
+    `src/<Package>_Benchmark/__init__.py` before any step-9 code, and
+    `resolve_benchmark_declaration` is the one place that fact is already
+    read from disk — reused rather than inventing a second way to ask it.
+    """
+    declared = resolve_benchmark_declaration(target, name)
+    if declared["status"] != "declared":
+        raise Refused(
+            "OBJECT_MAP_NOT_APPROVED",
+            "The step-8 object map has not been approved yet: "
+            f"src/{package_name(name)}_Benchmark/__init__.py declares no "
+            "revision/premises. --stage objects writes scaffolding for step "
+            "9's authoring, not before that approval is recorded.",
+        )
+
+    destinations = _materialize_object_destinations(target, name)
+    bodies = {
+        destination: scaffold_substitute_body(
+            object_kit_source(destination, name).read_text(encoding="utf-8"),
+            name, seed)
+        for destination in destinations
+    }
+    return _write_kit_stage(target, name, "objects", destinations, bodies,
+                            object_kit_source)
+
+
+def _stage_harness(target: Path, name: str) -> dict:
+    """`benchmark.py`/`verdict.py` carry no unresolved token at all;
+    `probe.ipynb` carries several (`{{DATASET}}`, `{{EPOCHS}}`, ...) left
+    standing on purpose — it is never `.py`, so no `ast.parse` gate ever
+    reaches it, the same way `verification.ipynb` is exempt in the scaffold
+    stage. `{{SEED}}` itself is not among them (`probe.ipynb` carries
+    `{{SEEDS}}`, a distinct token this stage does not answer), so unlike
+    scaffold/objects this stage needs no `--seed`.
+    """
+    destinations = _materialize_harness_destinations(target, name)
+    bodies = {
+        destination: harness_substitute_body(
+            harness_kit_source(destination, name).read_text(encoding="utf-8"), name)
+        for destination in destinations
+    }
+    return _write_kit_stage(target, name, "harness", destinations, bodies,
+                            harness_kit_source)
+
+
+def _kit_destination_stage(path: str, name: str) -> str | None:
+    """Which stage's destination list `path` belongs to, or `None` outside
+    all three. Used so `--adopt`'s receipt entry records the stage it
+    actually adopted into rather than a hardcoded one."""
+    if path in scaffold_destinations(name):
+        return "scaffold"
+    if path in object_destinations(name):
+        return "objects"
+    if path in harness_destinations(name):
+        return "harness"
+    return None
+
+
 def _materialize_authored(target: Path, name: str, path: str) -> dict:
-    if path not in scaffold_destinations(name):
+    if path not in all_kit_destinations(name):
         raise Refused("NOT_A_KIT_DESTINATION",
                       f"{path} is not one of this stage's kit destinations.")
     full = target / path
@@ -8809,7 +9101,7 @@ def _materialize_authored(target: Path, name: str, path: str) -> dict:
 
 
 def _materialize_adopt(target: Path, name: str, path: str) -> dict:
-    if path not in scaffold_destinations(name):
+    if path not in all_kit_destinations(name):
         raise Refused("NOT_A_KIT_DESTINATION",
                       f"{path} is not one of this stage's kit destinations.")
     full = target / path
@@ -8824,7 +9116,7 @@ def _materialize_adopt(target: Path, name: str, path: str) -> dict:
 
     new_sha256 = hashlib.sha256(full.read_bytes()).hexdigest()
     set_receipt_entry(receipt, {
-        "path": path, "kind": "adopted", "stage": "scaffold",
+        "path": path, "kind": "adopted", "stage": _kit_destination_stage(path, name),
         "writtenSha256": new_sha256, "recordedAt": _now_iso8601(),
         # Stated where the operator reads it: adoption records who is
         # responsible for the bytes, not that the bytes came from the kit.
@@ -8864,9 +9156,18 @@ def cmd_materialize(args: argparse.Namespace) -> dict:
         if not args.plan:
             raise Refused("PLAN_REQUIRED", "--stage requires --plan <approved plan JSON>.")
         _materialize_plan_gate(target, name, args.plan)
-        if not args.seed:
-            raise Refused("SEED_REQUIRED", "--stage scaffold requires --seed.")
-        return _stage_scaffold(target, name, args.seed)
+        # `--seed` substitutes `{{SEED}}`, and only `scaffold`/`objects`
+        # templates carry that token (`tests/test_smoke.py`,
+        # `tests/test_synthetic.py`); `harness`'s three carry `{{SEEDS}}`
+        # instead, a distinct token this command never answers, so demanding
+        # `--seed` there would be a decorative requirement with no effect.
+        if args.stage in ("scaffold", "objects") and not args.seed:
+            raise Refused("SEED_REQUIRED", f"--stage {args.stage} requires --seed.")
+        if args.stage == "scaffold":
+            return _stage_scaffold(target, name, args.seed)
+        if args.stage == "objects":
+            return _stage_objects(target, name, args.seed)
+        return _stage_harness(target, name)
 
     # `--authored`/`--adopt`: ledger-only, no file write, no plan gate and
     # deliberately no clean-worktree requirement -- the file the agent just
@@ -9139,10 +9440,14 @@ def main(argv: list[str] | None = None) -> int:
                                 "(never written as null) when not given")
         if name == "materialize":
             p.add_argument(
-                "--stage", choices=["scaffold"], default=None,
+                "--stage", choices=["scaffold", "objects", "harness"], default=None,
                 help="write one stage's kit destinations over an approved, "
-                     "structurally-compliant target -- only 'scaffold' ships "
-                     "in this slice. Requires --plan and --seed. Mutually "
+                     "structurally-compliant target. 'scaffold' and "
+                     "'objects' require --plan and --seed; 'objects' also "
+                     "refuses OBJECT_MAP_NOT_APPROVED until the step-8 "
+                     "declaration is recorded. 'harness' requires --plan "
+                     "only -- its templates carry no {{SEED}} token. "
+                     "Mutually "
                      "exclusive with --authored/--adopt")
             p.add_argument(
                 "--authored", default=None, metavar="PATH",
