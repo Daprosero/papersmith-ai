@@ -8201,14 +8201,29 @@ class FreshScaffoldStaysRedTests(unittest.TestCase):
             "target's suite has nothing left to be red about")
 
 
-class MaterializeIsNotAProductionStepTests(unittest.TestCase):
-    """Three documents told three different lies about the same script, and no
-    test read any of them.
+class MaterializeScriptStaysTestOnlyTests(unittest.TestCase):
+    """`scripts/materialize.py` — the script, not the `materialize` CLI
+    command — is still not a production step, even now that the engine
+    dispatches a real command by that name.
 
-    `scripts/materialize.py` is the forge's own harness. An agent fills the
-    scaffold gaps by reading step 5; the script plays that part so this suite can
-    examine a freshly scaffolded target. It is not a step of Flow A and it has no
-    production caller. All three sites that once said otherwise —
+    Formerly `MaterializeIsNotAProductionStepTests`, asserting that no CLI
+    command could ever be named `materialize`. That specific claim is now
+    false by design: `implementation_cli.py materialize --stage scaffold`
+    is exactly the production engine writing a target's scaffold, replacing
+    the manual copy-by-table an agent used to perform from step 5. What
+    survives, unchanged, is the fact this class actually exists to protect —
+    the standalone *script* `scripts/materialize.py` is still never imported
+    by the engine, still never named as something an agent runs, and still
+    exists solely so the test suite can materialize a scratch target the
+    identical way the production command now does for real ones. The
+    coincidence of names is deliberate, not a regression: the command models
+    exactly what the harness has modeled for the suite all along.
+
+    An agent fills the scaffold gaps by running `materialize --stage
+    scaffold`, which step 5 now says explicitly; the script plays the same
+    part for the test suite, examining a freshly scaffolded target without
+    going through the CLI's plan-gate and receipt machinery. All three sites
+    that once told a different, false story about this same script —
     `SKILL.md`'s step 5 ("performs this exact mapping for eight of the nine",
     false in both halves), `README.md`'s Flow A diagram, and the docstring of
     `assets/kit/src_benchmark/__init__.py`, a template that ships *into* targets
@@ -8517,12 +8532,26 @@ class MaterializeIsNotAProductionStepTests(unittest.TestCase):
         for invoking anything is ``Run `x` ``, and every `x` must be a command the
         CLI actually dispatches.
 
-        Reachable red by adding ``Run `materialize.py <target>` `` anywhere in the
-        document. This is the general form of the finding rather than its
-        instance — the harness is only the script that happened to be drawn as a
-        step; nothing else may be either.
+        Reachable red by adding ``Run `something-not-dispatched`` anywhere in the
+        document.
+
+        **What this no longer asserts, and why.** A prior revision also
+        required ``harness.stem not in impl.COMMANDS`` — i.e. that nothing
+        named `materialize` could ever be a real command. This change adds
+        `materialize --stage scaffold` as exactly that: a CLI command the
+        engine dispatches. The two facts do not collide the way they look
+        like they do. `harness` (`scripts/materialize.py`, found by
+        `self.harness()`, resolved as "the one script besides the engine")
+        stays what it always was: a test-only fixture the production engine
+        never imports and doctrine never tells the agent to run (both still
+        held below, unchanged, by
+        `test_the_production_engine_never_reaches_the_harness` and this very
+        method's own remaining assertion). The command and the script merely
+        share a name, because the command performs — for real targets — the
+        identical mapping the script has always performed for the test
+        suite's scratch ones. Continuing to forbid that name coincidence
+        would be pinning a fact about a string, not about behaviour.
         """
-        harness = self.harness()
         invoked = self.RUN_RE.findall(SKILL_MD.read_text(encoding="utf-8"))
         self.assertTrue(
             invoked,
