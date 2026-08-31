@@ -546,14 +546,23 @@ date. Drift is Flow B's fourth step, not a reason to start over.
      this long is approved without being read, and an unread approval is not one.
      Say so, and hand the user a self-contained prompt that performs exactly this
      reorganization in a separate session. Then continue without it.
-5. **Fill every scaffold gap.** `plan`'s `scaffoldFiles` and `verify`'s
-   `structure.scaffoldGaps` report the same thirteen, and every one of them is
-   written from the kit at `assets/kit/`. Writing four of them leaves a target
-   `verify` reports incomplete, and the cheapest reading of that is that the
-   checker is wrong. `scripts/materialize.py` — the forge's own harness, never
-   a step of Flow A — performs this exact mapping for all thirteen: the two
-   rows marked `authored:` are written rather than copied, and the `.gitignore`
-   is merged into whatever the repository already has instead of written over it.
+5. **Fill every scaffold gap.** Run `materialize --stage scaffold --plan <path
+   to the approved plan> --seed <the suite's fixed seed>`. `plan`'s
+   `scaffoldFiles` and `verify`'s `structure.scaffoldGaps` report the same
+   thirteen, and the command writes every one of them from the kit at
+   `assets/kit/`, then records what it wrote in `<Name>/.implementation/
+   materialization.json` — the receipt a later hand-edit is checked against
+   (`SCAFFOLD_DRIFT`), and the reason a target scaffolded before this command
+   existed reads `UNRECORDED_SCAFFOLD` until an operator runs `materialize
+   --adopt <path>` on each of its scaffold destinations, deliberately, one at
+   a time. The agent never copies these files by hand: a target `verify`
+   reports incomplete after this command runs means the command refused, not
+   that four rows were skipped. `scripts/materialize.py` — the forge's own
+   harness, never a step of Flow A — performs this exact mapping for all
+   thirteen, so the test suite can examine a freshly scaffolded target the
+   identical way: the two rows marked `authored:` are written rather than
+   copied, and the `.gitignore` is merged into whatever the repository
+   already has instead of written over it.
 
    | Gap `plan` and `verify` report | Written from |
    | --- | --- |
@@ -577,7 +586,10 @@ date. Drift is Flow B's fourth step, not a reason to start over.
    not collected at all. `admissibility.py` belongs in `tests/` specifically —
    it reads the ruling from beside itself, which is where `admit` writes it.
 
-   Substitute the `{{TOKEN}}` placeholders as `references/usage.md` lists them.
+   `materialize --stage scaffold` substitutes the scaffold-time `{{TOKEN}}`
+   placeholders (`{{PKG}}`, `{{SEED}}`) itself; the step-9 tokens are left
+   standing on purpose — see `references/usage.md` for the full token table
+   and when each one is answered.
 6. **Ask for the name.** Run `name --name "<whatever they typed>"` and show both
    forms it returns — the `<Name>/` directory and the `src/<Package>/` package —
    then **[GATE]** confirm before writing anything with them.
@@ -2199,6 +2211,7 @@ tests until it has a row here.
 | `close` | Refreshes the position (see `position`), then one `close` event to `.implementation/position.jsonl` binding session, revision and a digest of the resulting sequence | `REVISION_UNREADABLE`, `POSITION_ABSENT`, `POSITION_STALE`, `POSITION_DISAGREES` (checked against the position exactly as recorded, before the refresh) |
 | `step` | Runs exactly one declared `__steps__` entry as a subprocess under the target's own `.venv/bin/python`, `PATH` prefixed by that interpreter's own directory — see [Non-negotiable isolation](#non-negotiable-isolation). One `step` event to `.implementation/position.jsonl` on every RESOLVED run, pass or fail: name, dotted callable, interpreter, outcome, exit status, error (when raised). No digest field. Never appends, reads or alters a `gate` event, and calls none of the remote-execution loaders — there is no call path from here to a launch | `DIRTY_WORKTREE` (before any subprocess spawns), `STEPS_UNDECLARED`, `STEP_UNKNOWN`, `STEP_MALFORMED` (declared entry missing `module` or `function`), `INTERPRETER_ABSENT`, `STEP_MODULE_MISSING`, `STEP_FUNCTION_MISSING`, `STEP_NOT_CALLABLE`, `STEP_RUNNER_SILENT` (the process exited without ever writing a verdict) |
 | `settle` | Places exactly one caller-authored `- [ ] <text>` line, verbatim, under a caller-named `--under <heading>` (exact match, hash marks included) in whichever holder file `agreements_state` already knows carries checklist items — the mark written is always `[ ]`, never `[x]`. `--about` is resolved the identical way `discuss`'s own `--about` is, then matched against the ledger by witness identity `(kind, operand)`; ANY answered `discuss` event satisfies this, never newest-wins, so a later open clarifying question never erases an earlier answer. On a collision (the same `_agreement_collides` search `discuss` reports), `--supersedes <text>` must exact-match one of the computed colliding items; recorded in the one `settle` ledger event only — the document itself still needs a human-written `Reversed` paragraph to show the supersession actually happened, which this command deliberately cannot author. No `--revision`: a placement binds to no revision | `SETTLE_STDIN_CONFLICT` (`--text -` and `--supersedes -` together), `SETTLE_EMPTY_TEXT`, `SETTLE_NOT_DISCUSSED` (no `discuss` event names this witness identity at all), `SETTLE_DISCUSSION_UNANSWERED` (events exist, none `answered`), `SETTLE_HOLDER_ABSENT` (no markdown file under the product folder holds checklist items), `SETTLE_HEADING_ABSENT` / `SETTLE_HEADING_AMBIGUOUS` (the named heading occurs zero, or more than one, times across every holder — a fenced code block's own heading-shaped line never counts as an occurrence), `SETTLE_COLLIDES_UNNAMED` (a collision exists and `--supersedes` was not given), `SETTLE_SUPERSEDES_UNKNOWN` (`--supersedes` names text absent from the computed collision list), `POSITION_HOLDER_MOVED` (reused unchanged from `position`/`close` — the holder's bytes changed between the read that located the heading and the write) |
+| `materialize` | Exactly one of three mutually exclusive modes. `--stage scaffold --plan <path> --seed <n>`: plan-gated (the `PLAN_MISMATCH`/`PLAN_STALE` pattern `apply` uses) and clean-worktree-required; writes every one of `scaffold_gaps()`'s eleven file destinations from the kit, merges the two anchors (`.gitignore`, `pyproject.toml`) into whatever the target already has, and records every write in `<Name>/.implementation/materialization.json` (git-ignored), written last, atomically, after every file has landed. `--authored <path>`: releases the drift seal on one receipt-recorded destination after the agent has authored over it — no file write, no plan gate, a dirty tree is fine (precedent: `_is_own_bookkeeping`). `--adopt <path>`: records an unrecorded destination's current bytes into the receipt as `kind: "adopted"` — the degraded guarantee, spelled out in `references/usage.md`: the record names who is responsible for the bytes, never that they came from the kit | `MATERIALIZE_MODE_REQUIRED`, `MATERIALIZE_MODE_CONFLICT` (two or more of `--stage`/`--authored`/`--adopt` given together), `OUTSIDE_WORKSPACE`, `NOT_A_GIT_REPO`, `DIRTY_WORKTREE` (`--stage` only), `PLAN_REQUIRED`, `PLAN_MISMATCH`, `PLAN_STALE`, `SEED_REQUIRED`, `STAGE_CANNOT_ANSWER` (a template still carries an unresolved `{{TOKEN}}` after scaffold-time substitution), `DESTINATION_CONFLICT` (a destination appeared between the set computation and the write, the whole stage refused before any byte lands), `APPLY_ABORTED` (mid-write failure; tree reset and cleaned, no receipt entry), `NOT_A_KIT_DESTINATION` (`--authored`/`--adopt` naming a path outside the eleven), `MATERIALIZE_PATH_ABSENT` (naming a path with no bytes on disk), `NO_RECEIPT_ENTRY` (`--authored` on a path the engine never wrote — use `--adopt`), `ALREADY_RECORDED` (`--adopt` on a path the receipt already carries — use `--authored`) |
 
 ## References
 

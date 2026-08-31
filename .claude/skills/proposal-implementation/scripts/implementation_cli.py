@@ -2515,32 +2515,182 @@ def ignore_gaps(target: Path) -> list[str]:
     return [entry for entry in IGNORE_ENTRIES if entry.rstrip("/") not in text]
 
 
+def scaffold_destinations(name: str) -> list[str]:
+    """The eleven file paths a `materialize --stage scaffold` writes.
+
+    Pulled out of `scaffold_gaps` so the writer and the gap-reporter read one
+    list rather than two: `scaffold_gaps` reports which of these are missing
+    (plus the two merge anchors, which are not paths in this sense at all —
+    see `scaffold_gaps`'s own docstring-equivalent comment below), and
+    `materialize --stage scaffold` copies exactly these into a target.
+    """
+    return [f"src/{package_name(name)}/__init__.py",
+            f"src/{package_name(name)}_Benchmark/__init__.py",
+            # The seal every notebook stamps by importing, rather than by
+            # hashing a tree of its own. It belongs inside the package because
+            # `_here()` reads the repository off its own path as `parents[1]`,
+            # and because producing the report is what the bench package does.
+            f"src/{package_name(name)}_Benchmark/report_digest.py",
+            "tests/test_smoke.py",
+            # `conftest.py`, `sweep.py` and `admissibility.py` are not tests and
+            # were never asked for, so a scaffold built from exactly this list
+            # could not be collected: `test_audit.py` and `test_remedies.py`
+            # below both open by importing them. `admissibility.py` fixes its
+            # own destination — its RULING_PATH resolves beside itself, which is
+            # where `admit` writes the ruling.
+            "tests/findings.py", "tests/conftest.py", "tests/sweep.py",
+            "tests/admissibility.py",
+            "tests/test_audit.py", "tests/test_remedies.py",
+            f"{name}/Notebooks/verification.ipynb"]
+
+
 def scaffold_gaps(target: Path, name: str) -> list[str]:
-    wanted = [f"src/{package_name(name)}/__init__.py",
-              f"src/{package_name(name)}_Benchmark/__init__.py",
-              # The seal every notebook stamps by importing, rather than by
-              # hashing a tree of its own. It belongs inside the package because
-              # `_here()` reads the repository off its own path as `parents[1]`,
-              # and because producing the report is what the bench package does.
-              f"src/{package_name(name)}_Benchmark/report_digest.py",
-              "tests/test_smoke.py",
-              # `conftest.py`, `sweep.py` and `admissibility.py` are not tests and
-              # were never asked for, so a scaffold built from exactly this list
-              # could not be collected: `test_audit.py` and `test_remedies.py`
-              # below both open by importing them. `admissibility.py` fixes its
-              # own destination — its RULING_PATH resolves beside itself, which is
-              # where `admit` writes the ruling.
-              "tests/findings.py", "tests/conftest.py", "tests/sweep.py",
-              "tests/admissibility.py",
-              "tests/test_audit.py", "tests/test_remedies.py",
-              f"{name}/Notebooks/verification.ipynb"]
-    gaps = [w for w in wanted if not (target / w).exists()]
+    gaps = [w for w in scaffold_destinations(name) if not (target / w).exists()]
     if pytest_anchor_missing(target):
         gaps.insert(0, "pyproject.toml [tool.pytest.ini_options] pythonpath")
     missing_ignores = ignore_gaps(target)
     if missing_ignores:
         gaps.insert(0, f".gitignore ({', '.join(missing_ignores)})")
     return gaps
+
+
+# --------------------------------------------------------------------------
+# materialize — the engine writes the scaffold; the receipt is the only
+# mechanism. See design #the-skill-materializes-not-the-agent.
+# --------------------------------------------------------------------------
+
+#: Where the receipt lives, relative to a target's root. `.implementation/`
+#: is already git-ignored (`IGNORE_ENTRIES`) and already excused from the
+#: dirty-worktree check (`_is_own_bookkeeping`), so this file inherits both
+#: properties rather than needing either built for it.
+MATERIALIZATION_RECEIPT = Path(".implementation") / "materialization.json"
+
+#: The kit template each copied scaffold destination is written from, keyed
+#: by the destination path a `{Name}`-parameterized target resolves to. The
+#: one entry with no kit source (`src/<Package>/__init__.py`) is authored by
+#: this engine directly — step 9 has written no module yet, so it exports
+#: none — and is looked up as `None`, never a missing key.
+def scaffold_kit_source(destination: str, name: str) -> Path | None:
+    package = package_name(name)
+    mapping = {
+        f"src/{package}_Benchmark/__init__.py":
+            SKILL_ROOT / "assets" / "kit" / "src_benchmark" / "__init__.py",
+        f"src/{package}_Benchmark/report_digest.py":
+            SKILL_ROOT / "assets" / "kit" / "nb" / "report_digest.py",
+        "tests/test_smoke.py": SKILL_ROOT / "assets" / "kit" / "tests" / "test_smoke.py",
+        "tests/findings.py": SKILL_ROOT / "assets" / "kit" / "tests" / "findings.py",
+        "tests/conftest.py": SKILL_ROOT / "assets" / "kit" / "tests" / "conftest.py",
+        "tests/sweep.py": SKILL_ROOT / "assets" / "kit" / "tests" / "sweep.py",
+        "tests/admissibility.py": SKILL_ROOT / "assets" / "kit" / "tests" / "admissibility.py",
+        "tests/test_audit.py": SKILL_ROOT / "assets" / "kit" / "tests" / "test_audit.py",
+        "tests/test_remedies.py": SKILL_ROOT / "assets" / "kit" / "tests" / "test_remedies.py",
+        f"{name}/Notebooks/verification.ipynb":
+            SKILL_ROOT / "assets" / "kit" / "nb" / "verification.ipynb",
+    }
+    return mapping.get(destination)
+
+
+def authored_package_init(name: str) -> str:
+    """`src/<Package>/__init__.py`'s content: authored, never copied.
+
+    Exports the target's own modules, and step 9 has written none of them
+    yet, so it exports nothing.
+    """
+    return (f'"""Reference implementation of the {name} formulation.\n\n'
+            "Each module declares the sections and equations it implements in\n"
+            "`__provenance__`, and every invariant listed there has a matching\n"
+            "test under tests/.\n"
+            '"""\n\n'
+            "__all__ = []\n")
+
+
+def writable_at_scaffold_time(source: str) -> bool:
+    """Whether a substituted template is a file the scaffold stage may write.
+
+    The discriminator between the two stages, and it is mechanical rather
+    than a list the kit could fall out of step with. A template that still
+    carries a `{{TOKEN}}` where an identifier has to be does not parse, and
+    the tokens left in it — `{{FUNCTION_NAME}}`, `{{INVARIANT_ID}}`,
+    `{{EXPECTATION}}` — are answers to the object map step 8 approves.
+    Nothing could have answered them at scaffold time.
+
+    Substituting dummy identifiers instead would be worse: the result
+    parses, collects and *passes* while asserting nothing.
+    """
+    try:
+        ast.parse(source)
+    except SyntaxError:
+        return False
+    return True
+
+
+def scaffold_substitute_body(text: str, name: str, seed: str) -> str:
+    """The two tokens `materialize --stage scaffold` answers: `{{PKG}}` and
+    `{{SEED}}`. Every other token a template still carries after this belongs
+    to a later step and is left standing — see `writable_at_scaffold_time`.
+    """
+    return text.replace("{{PKG}}", package_name(name)).replace("{{SEED}}", seed)
+
+
+def read_materialization_receipt(target: Path) -> dict:
+    path = target / MATERIALIZATION_RECEIPT
+    if not path.exists():
+        return {"version": 1, "name": None, "entries": []}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_materialization_receipt(target: Path, receipt: dict) -> None:
+    """Atomic replace, written last — after every file of the stage has
+    landed. An aborted run leaves no receipt entry for that invocation."""
+    path = target / MATERIALIZATION_RECEIPT
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def receipt_entry(receipt: dict, path: str) -> dict | None:
+    return next((e for e in receipt["entries"] if e["path"] == path), None)
+
+
+def set_receipt_entry(receipt: dict, entry: dict) -> None:
+    """Replace the entry for `entry['path']` in place; append if absent.
+
+    Keeps a second stage's entries beside the first's rather than truncating
+    them, and lets a stale entry (the file it names no longer exists) be
+    replaced by a fresh one on the next successful write of that path.
+    """
+    entries = receipt["entries"]
+    for index, existing in enumerate(entries):
+        if existing["path"] == entry["path"]:
+            entries[index] = entry
+            return
+    entries.append(entry)
+
+
+def scaffold_structure_gaps(target: Path, name: str) -> dict:
+    """`SCAFFOLD_DRIFT` / `UNRECORDED_SCAFFOLD` over the eleven scaffold
+    destinations only — never the two merge anchors, whose correctness is
+    re-derived presence (`ignore_gaps`/`pytest_anchor_missing`), not a hash,
+    and never a destination absent from disk, which is a gap `scaffold_gaps`
+    already reports, not drift or an unrecorded write.
+    """
+    receipt = read_materialization_receipt(target)
+    entries = {e["path"]: e for e in receipt["entries"]}
+    drift: list[str] = []
+    unrecorded: list[str] = []
+    for destination in scaffold_destinations(name):
+        full = target / destination
+        if not full.exists():
+            continue
+        entry = entries.get(destination)
+        if entry is None:
+            unrecorded.append(destination)
+            continue
+        current_sha256 = hashlib.sha256(full.read_bytes()).hexdigest()
+        if current_sha256 != entry.get("writtenSha256"):
+            drift.append(destination)
+    return {"drift": sorted(drift), "unrecorded": sorted(unrecorded)}
 
 
 # --------------------------------------------------------------------------
@@ -7918,9 +8068,17 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     # same silence as a headline reading `ok` beside a benchmark it had just
     # called `undeclared`.
     unparsable = unparsable_tests(target / "tests")
+    # The receipt-backed half: whether the destinations `materialize` writes
+    # still match what it wrote (SCAFFOLD_DRIFT), and whether one of them
+    # exists with no receipt entry explaining it (UNRECORDED_SCAFFOLD). Scoped
+    # to the eleven scaffold destinations only — the anchors' correctness is
+    # re-derived presence, already covered by `scaffold_gaps` above.
+    scaffold_recorded = scaffold_structure_gaps(target, name)
     structure_ok = (not missing_dirs and not stray and not stale_refs
                     and not unparsable
-                    and not scaffold_gaps(target, name))
+                    and not scaffold_gaps(target, name)
+                    and not scaffold_recorded["drift"]
+                    and not scaffold_recorded["unrecorded"])
 
     package = target / "src" / package_name(name)
     modules: list[dict] = []
@@ -8169,6 +8327,8 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "unparsableTests": unparsable,
             "staleReferences": stale_refs,
             "scaffoldGaps": scaffold_gaps(target, name),
+            "scaffoldDrift": scaffold_recorded["drift"],
+            "unrecordedScaffold": scaffold_recorded["unrecorded"],
         },
         "priorWork": prior_work_state(target, package_name(name)),
         "agreements": agreements_state(target, name),
@@ -8254,6 +8414,273 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     }
 
 
+def _materialize_plan_gate(target: Path, name: str, plan_path: str) -> None:
+    """The exact pattern `cmd_apply` runs: `PLAN_MISMATCH` when the approved
+    plan was produced for a different target/name, `PLAN_STALE` when the
+    repository's structure has moved since approval. `materialize --stage`
+    reuses it rather than minting a second gate over the same fact.
+    """
+    approved = json.loads(Path(plan_path).read_text(encoding="utf-8"))
+    if approved.get("target") != str(target) or approved.get("name") != name:
+        raise Refused("PLAN_MISMATCH",
+                      "The approved plan was produced for a different target or name.")
+    current = build_plan(target, name)
+    if any(current[key] != approved.get(key)
+           for key in ("renames", "moves", "createDirs", "referenceUpdates")):
+        raise Refused(
+            "PLAN_STALE",
+            "The repository changed since the plan was approved. Re-run `plan` and get approval again.",
+        )
+
+
+def _materialize_scaffold_destinations(target: Path, name: str) -> list[str]:
+    """The stage's destination set: `scaffold_destinations` minus whatever
+    already exists on disk. A path already present is never a destination,
+    so it can never conflict — see design D1. Factored out so a test can
+    monkeypatch this one seam to simulate a destination appearing between set
+    computation and the write loop, without weakening the real preflight.
+    """
+    return [d for d in scaffold_destinations(name) if not (target / d).exists()]
+
+
+def _stage_scaffold(target: Path, name: str, seed: str) -> dict:
+    package_init = f"src/{package_name(name)}/__init__.py"
+    destinations = _materialize_scaffold_destinations(target, name)
+
+    bodies: dict[str, str] = {}
+    for destination in destinations:
+        if destination == package_init:
+            continue
+        source = scaffold_kit_source(destination, name)
+        body = scaffold_substitute_body(
+            source.read_text(encoding="utf-8"), name, seed)
+        if destination.endswith(".py") and not writable_at_scaffold_time(body):
+            raise Refused(
+                "STAGE_CANNOT_ANSWER",
+                f"{destination} still carries an unresolved token after "
+                "scaffold-time substitution; its answer belongs to a later step.",
+            )
+        bodies[destination] = body
+
+    # Preflight, over the same set the write loop is about to use: a path
+    # that appeared here since `_materialize_scaffold_destinations` computed
+    # the set is the one genuine race this command can hit, and it refuses
+    # the whole stage before a single byte lands.
+    conflicts = [d for d in destinations if (target / d).exists()]
+    if conflicts:
+        raise Refused(
+            "DESTINATION_CONFLICT",
+            f"Destinations clash (existing file): {conflicts}. Materializing "
+            "would overwrite. Resolve with the user first.",
+        )
+
+    written: list[str] = []
+    try:
+        for destination in destinations:
+            full = target / destination
+            full.parent.mkdir(parents=True, exist_ok=True)
+            body = (authored_package_init(name) if destination == package_init
+                    else bodies[destination])
+            full.write_text(body, encoding="utf-8")
+            written.append(destination)
+
+        anchors = _materialize_scaffold_anchors(target, name)
+    except Exception as failure:  # noqa: BLE001 - the tree must not stay half-written
+        # `require_clean_worktree` proved the tree clean before this ran, so
+        # discarding everything just written restores exactly that state.
+        git(target, "reset", "-q", "--hard", check=False)
+        git(target, "clean", "-qfd", check=False)
+        raise Refused(
+            "APPLY_ABORTED",
+            f"{failure}. Nothing was recorded; the working tree was restored "
+            "to its pre-materialize state; re-run `plan` to see the current situation.",
+        ) from failure
+
+    recorded_at = _now_iso8601()
+    receipt = read_materialization_receipt(target)
+    receipt["name"] = name
+    for destination in written:
+        full = target / destination
+        source = scaffold_kit_source(destination, name)
+        set_receipt_entry(receipt, {
+            "path": destination,
+            "kind": "materialized",
+            "stage": "scaffold",
+            "kitSource": (str(source.relative_to(SKILL_ROOT)) if source else None),
+            "sourceSha256": (hashlib.sha256(source.read_bytes()).hexdigest()
+                             if source else None),
+            "writtenSha256": hashlib.sha256(full.read_bytes()).hexdigest(),
+            "substitutions": {"PKG": package_name(name), "SEED": seed},
+            "recordedAt": recorded_at,
+        })
+    for anchor in anchors:
+        set_receipt_entry(receipt, anchor)
+    write_materialization_receipt(target, receipt)
+
+    return {
+        "command": "materialize", "mode": "stage", "stage": "scaffold",
+        "target": str(target), "name": name,
+        "status": "materialized",
+        "written": written,
+        "anchors": [a["path"] for a in anchors],
+        "note": "The receipt is git-ignored under .implementation/ and is "
+                "the only record of what this command wrote.",
+    }
+
+
+#: Mirrors what a fresh `pyproject.toml` looks like when a target has none
+#: yet — the same content `materialize.py` has always written, restated here
+#: rather than imported so this file never depends on the harness for its own
+#: production path (`test_the_production_engine_never_reaches_the_harness`).
+_DEFAULT_PYPROJECT = (
+    "[build-system]\n"
+    'requires = ["setuptools>=68"]\n'
+    'build-backend = "setuptools.build_meta"\n\n'
+    "[project]\n"
+    'name = "{distribution}"\n'
+    'version = "0.1.0"\n'
+    'requires-python = ">=3.9"\n'
+    'dependencies = ["numpy>=1.24"]\n\n'
+    "[tool.setuptools.packages.find]\n"
+    'where = ["src"]\n'
+)
+
+
+def _materialize_scaffold_anchors(target: Path, name: str) -> list[dict]:
+    """Merge the two anchors into whatever the target already has, never
+    writing over it — see design D4. Anchors get `kind: "anchor"` receipt
+    entries, no byte seal: a user editing `.gitignore` afterwards is not
+    drift, and their correctness check is re-derived presence.
+    """
+    entries: list[dict] = []
+    recorded_at = _now_iso8601()
+
+    missing_ignores = ignore_gaps(target)
+    if missing_ignores:
+        ignore_file = target / ".gitignore"
+        existing = ignore_file.read_text(encoding="utf-8") if ignore_file.exists() else ""
+        prefix = "" if not existing or existing.endswith("\n") else "\n"
+        ignore_file.write_text(
+            existing + prefix + "".join(f"{entry}\n" for entry in missing_ignores),
+            encoding="utf-8",
+        )
+        entries.append({"path": ".gitignore", "kind": "anchor", "stage": "scaffold",
+                        "added": missing_ignores, "recordedAt": recorded_at})
+
+    if pytest_anchor_missing(target):
+        pyproject = target / "pyproject.toml"
+        distribution = package_name(name).lower().replace("_", "-")
+        text = (pyproject.read_text(encoding="utf-8") if pyproject.exists()
+                else _DEFAULT_PYPROJECT.format(distribution=distribution))
+        if "[tool.pytest.ini_options]" not in text:
+            text += ('\n[tool.pytest.ini_options]\n'
+                     'testpaths = ["tests"]\n'
+                     'pythonpath = ["src"]\n')
+        pyproject.write_text(text, encoding="utf-8")
+        entries.append({
+            "path": "pyproject.toml", "kind": "anchor", "stage": "scaffold",
+            "added": ["[tool.pytest.ini_options] pythonpath"], "recordedAt": recorded_at,
+        })
+
+    return entries
+
+
+def _materialize_authored(target: Path, name: str, path: str) -> dict:
+    if path not in scaffold_destinations(name):
+        raise Refused("NOT_A_KIT_DESTINATION",
+                      f"{path} is not one of this stage's kit destinations.")
+    full = target / path
+    if not full.exists():
+        raise Refused("MATERIALIZE_PATH_ABSENT",
+                      f"{path} does not exist; there is nothing to declare authored.")
+    receipt = read_materialization_receipt(target)
+    entry = receipt_entry(receipt, path)
+    if entry is None:
+        raise Refused("NO_RECEIPT_ENTRY",
+                      f"{path} carries no receipt entry; the engine never wrote "
+                      "it, so there is no seal to release. Use --adopt instead.")
+
+    new_sha256 = hashlib.sha256(full.read_bytes()).hexdigest()
+    entry = dict(entry)
+    entry["kind"] = "authored"
+    entry["writtenSha256"] = new_sha256
+    entry["recordedAt"] = _now_iso8601()
+    set_receipt_entry(receipt, entry)
+    write_materialization_receipt(target, receipt)
+
+    return {"command": "materialize", "mode": "authored", "target": str(target),
+            "name": name, "path": path, "status": "authored",
+            "writtenSha256": new_sha256}
+
+
+def _materialize_adopt(target: Path, name: str, path: str) -> dict:
+    if path not in scaffold_destinations(name):
+        raise Refused("NOT_A_KIT_DESTINATION",
+                      f"{path} is not one of this stage's kit destinations.")
+    full = target / path
+    if not full.exists():
+        raise Refused("MATERIALIZE_PATH_ABSENT",
+                      f"{path} does not exist; there is nothing to adopt.")
+    receipt = read_materialization_receipt(target)
+    if receipt_entry(receipt, path) is not None:
+        raise Refused("ALREADY_RECORDED",
+                      f"{path} already carries a receipt entry; adoption is not "
+                      "a re-seal. Use --authored to release a drifted seal.")
+
+    new_sha256 = hashlib.sha256(full.read_bytes()).hexdigest()
+    set_receipt_entry(receipt, {
+        "path": path, "kind": "adopted", "stage": "scaffold",
+        "writtenSha256": new_sha256, "recordedAt": _now_iso8601(),
+        # Stated where the operator reads it: adoption records who is
+        # responsible for the bytes, not that the bytes came from the kit.
+        # For an adopted destination the guarantee is "the record names who
+        # wrote them", not "the engine owns the bytes" -- not equivalent
+        # protection to a `materialized` entry, and `kind` is what keeps the
+        # two distinguishable forever.
+        "guarantee": "the record names who wrote them, not that the engine owns the bytes",
+    })
+    write_materialization_receipt(target, receipt)
+
+    return {"command": "materialize", "mode": "adopt", "target": str(target),
+            "name": name, "path": path, "status": "adopted",
+            "writtenSha256": new_sha256,
+            "guarantee": "the record names who wrote them, not that the engine owns the bytes"}
+
+
+def cmd_materialize(args: argparse.Namespace) -> dict:
+    target = resolve_target(args.target)
+    name = validate_name(args.name)
+
+    modes_given = [flag for flag in ("stage", "authored", "adopt")
+                  if getattr(args, flag, None)]
+    if not modes_given:
+        raise Refused("MATERIALIZE_MODE_REQUIRED",
+                      "Exactly one of --stage, --authored, --adopt is required.")
+    if len(modes_given) > 1:
+        raise Refused("MATERIALIZE_MODE_CONFLICT",
+                      f"--{'/--'.join(modes_given)} were given together; the "
+                      "three modes are mutually exclusive.")
+
+    if args.stage:
+        # The writer: plan-gated, clean worktree required -- files land on
+        # disk and the receipt is written last, atomically.
+        require_clean_worktree(target)
+        if not args.plan:
+            raise Refused("PLAN_REQUIRED", "--stage requires --plan <approved plan JSON>.")
+        _materialize_plan_gate(target, name, args.plan)
+        if not args.seed:
+            raise Refused("SEED_REQUIRED", "--stage scaffold requires --seed.")
+        return _stage_scaffold(target, name, args.seed)
+
+    # `--authored`/`--adopt`: ledger-only, no file write, no plan gate and
+    # deliberately no clean-worktree requirement -- the file the agent just
+    # authored is by definition an uncommitted modification. Precedent:
+    # `_is_own_bookkeeping` in `_core/implementation/impl_guards.py`.
+    if args.authored:
+        return _materialize_authored(target, name, args.authored)
+    return _materialize_adopt(target, name, args.adopt)
+
+
 COMMANDS = {"env": cmd_env, "name": cmd_name, "plan": cmd_plan, "apply": cmd_apply,
             "admit": cmd_admit, "handoff": cmd_handoff, "compose": cmd_compose,
             "probe": cmd_probe,
@@ -8265,7 +8692,8 @@ COMMANDS = {"env": cmd_env, "name": cmd_name, "plan": cmd_plan, "apply": cmd_app
             "offer": cmd_offer,
             "close": cmd_close,
             "step": cmd_step,
-            "settle": cmd_settle}
+            "settle": cmd_settle,
+            "materialize": cmd_materialize}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -8498,6 +8926,37 @@ def main(argv: list[str] | None = None) -> int:
                                 "the document itself still needs a "
                                 "human-written Reversed paragraph to show "
                                 "the supersession")
+        if name == "materialize":
+            p.add_argument(
+                "--stage", choices=["scaffold"], default=None,
+                help="write one stage's kit destinations over an approved, "
+                     "structurally-compliant target -- only 'scaffold' ships "
+                     "in this slice. Requires --plan and --seed. Mutually "
+                     "exclusive with --authored/--adopt")
+            p.add_argument(
+                "--authored", default=None, metavar="PATH",
+                help="release the drift seal on one receipt-recorded "
+                     "destination after the agent authored over it: no file "
+                     "write, no plan gate, a dirty tree is fine. Refuses "
+                     "NO_RECEIPT_ENTRY if the engine never wrote that path "
+                     "(use --adopt instead). Mutually exclusive with "
+                     "--stage/--adopt")
+            p.add_argument(
+                "--adopt", default=None, metavar="PATH",
+                help="record an unrecorded kit destination's current bytes "
+                     "into the receipt as adopted. Degrades the guarantee: "
+                     "the record names who is responsible for the bytes, "
+                     "never that they came from the kit. Refuses "
+                     "ALREADY_RECORDED on a path the receipt already carries "
+                     "(use --authored instead). Mutually exclusive with "
+                     "--stage/--authored")
+            p.add_argument(
+                "--plan", default=None,
+                help="path to the approved plan JSON; required with --stage")
+            p.add_argument(
+                "--seed", default=None,
+                help="the suite's fixed seed, substituted into {{SEED}}; "
+                     "required with --stage scaffold")
 
     args = parser.parse_args(argv)
     try:

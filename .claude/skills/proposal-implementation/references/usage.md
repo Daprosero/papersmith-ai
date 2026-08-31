@@ -224,13 +224,74 @@ without that check `apply` would rewrite a file that was never on the list the
 user approved. On success everything lands in one commit — `git revert <commit>`
 undoes the whole migration.
 
-Then write every file listed in `scaffoldFiles`. The templates live under
-`assets/kit/` inside this skill — `kit/src/`, `kit/src_benchmark/`, `kit/tests/`
-and `kit/nb/` — with `assets/pyproject.template.toml` beside them. SKILL.md
-step 5 carries the gap → template mapping file by file.
+## Materialize the scaffold
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py materialize \
+  --target implementations/<repo> --name Example-Method \
+  --stage scaffold --plan /tmp/plan.json --seed 7
+```
+
+This is the command that fills every scaffold gap — never the agent copying
+files by hand. It writes every one of `scaffoldFiles`' eleven file
+destinations from `assets/kit/` — `kit/src_benchmark/`, `kit/tests/` and
+`kit/nb/`, with `src/<Package>/__init__.py` authored directly — merges the
+two anchors (`.gitignore`, `pyproject.toml [tool.pytest.ini_options]`) into
+whatever the target already has, and records every write in
+`<Name>/.implementation/materialization.json`, git-ignored, written last and
+atomically after every file has landed.
+
+The plan gate is the same one `apply` uses: `PLAN_MISMATCH` for a plan
+produced elsewhere, `PLAN_STALE` if the repository's structure moved since
+approval. `--stage` requires a clean worktree — commit whatever `apply` just
+produced first. A destination already present on disk is never a
+destination: it is simply excluded from what this call writes, so a target
+scaffolded by hand keeps its hand-written files untouched (and unrecorded —
+see `UNRECORDED_SCAFFOLD` below). `DESTINATION_CONFLICT` fires only on the
+genuine race of a file appearing between that computation and the write.
+
+### Declaring authorship, and adopting what was never recorded
+
+Two more modes, both ledger-only — no file write, no plan gate, and
+deliberately no clean-worktree requirement, because the file they name is by
+definition an uncommitted edit:
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py materialize \
+  --target implementations/<repo> --name Example-Method \
+  --authored src/Example_Method/module.py
+```
+
+`--authored <path>` releases the drift seal on one receipt-recorded
+destination after the agent has genuinely authored over it — the record's
+`writtenSha256` is updated to the new bytes and `kind` becomes `"authored"`.
+It refuses `NO_RECEIPT_ENTRY` on a path the engine never wrote in the first
+place; that path is adopted, not re-sealed. The release is per-declaration:
+a second silent edit after this drifts again.
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py materialize \
+  --target implementations/<repo> --name Example-Method \
+  --adopt tests/test_smoke.py
+```
+
+`--adopt <path>` is the remedy for `UNRECORDED_SCAFFOLD` (see the refusal
+table below): a kit destination exists on disk with no receipt entry
+explaining it — most commonly because a target was scaffolded before this
+command existed. Adoption records the destination's current sha256 with
+`kind: "adopted"`, distinguishable forever from `"materialized"`. **This
+degrades the guarantee, and says so where an operator reads it**: adoption
+records who is responsible for the bytes; it does not verify the bytes came
+from the kit. For an adopted destination the guarantee is "the record names
+who wrote them," not "the engine owns the bytes." Adopt one path at a time,
+deliberately — there is no batch or automatic adopt, because auto-adopting
+would record engine confidence in bytes the engine never saw.
 
 Substitute these placeholders. Every one of them occurs in some template, and
-no template carries any other.
+no template carries any other. `materialize --stage scaffold` substitutes
+`{{PKG}}` and `{{SEED}}` itself; every other token is left standing on
+purpose, and refuses `STAGE_CANNOT_ANSWER` if a scaffold-stage `.py`
+destination still fails to parse after that substitution.
 
 `Answered at` says when the value exists, which is not the same as when the file
 carrying the token is written. `tests/test_smoke.py` is placed by the scaffold and
@@ -1210,9 +1271,20 @@ state, alongside the scenarios — not verified by hand once.
 | `FORGE_INTERPRETER` | The CLI is running from a forge venv. Use system `python3`. |
 | `PLAN_STALE` | The repository changed after approval — a rename, a move, a directory **or a reference update**. Re-plan, re-approve. |
 | `MALFORMED_FINDINGS` | `tests/findings.py` exists but cannot be read as a list of mappings each carrying an `id`. Reading it as empty would answer `audit: none`, which is what an audited, clean repository answers. |
-| `DESTINATION_CONFLICT` | A destination is taken, or two sources target one path. |
+| `DESTINATION_CONFLICT` | A destination is taken, or two sources target one path. For `materialize --stage`, a destination appeared between the destination set's computation and the write; the whole stage refuses before any byte lands. |
 | `UNCLASSIFIED_FILES` | No rule covers some files. Ask where they belong. |
-| `APPLY_ABORTED` | Something failed mid-migration. Nothing was committed and the tree was restored; re-run `plan`. |
+| `APPLY_ABORTED` | Something failed mid-migration, or mid-`materialize`. Nothing was committed/written and the tree was restored; re-run `plan`. |
+| `MATERIALIZE_MODE_REQUIRED` | `materialize` needs exactly one of `--stage`/`--authored`/`--adopt`; none was given. |
+| `MATERIALIZE_MODE_CONFLICT` | Two or more of `--stage`/`--authored`/`--adopt` were given together; the three modes are mutually exclusive. |
+| `PLAN_REQUIRED` | `materialize --stage` needs `--plan <approved plan JSON>`. |
+| `SEED_REQUIRED` | `materialize --stage scaffold` needs `--seed`, substituted into `{{SEED}}`. |
+| `STAGE_CANNOT_ANSWER` | A scaffold-stage `.py` destination still fails `ast.parse` after `{{PKG}}`/`{{SEED}}` substitution — its remaining token answers a later step. Names the file. |
+| `SCAFFOLD_DRIFT` | (`verify`, reported in `structure.scaffoldDrift`, never raised) A receipt-recorded scaffold destination's on-disk bytes no longer match its `writtenSha256`. Release the seal with `materialize --authored <path>` after declaring the edit. |
+| `UNRECORDED_SCAFFOLD` | (`verify`, reported in `structure.unrecordedScaffold`, never raised) A scaffold destination exists on disk with no receipt entry — most often because the target was scaffolded before this command existed. Remedy: `materialize --adopt <path>`, one path at a time, deliberately. **This degrades the guarantee**: adoption records who is responsible for the bytes, never that they came from the kit — the record names who wrote them, not that the engine owns them. |
+| `NOT_A_KIT_DESTINATION` | `materialize --authored`/`--adopt` named a path outside the eleven scaffold destinations. The receipt is not a general-purpose ledger. |
+| `MATERIALIZE_PATH_ABSENT` | `materialize --authored`/`--adopt` named a path with no bytes on disk. |
+| `NO_RECEIPT_ENTRY` | `materialize --authored <path>` named a path the engine never wrote. There is no seal to release; use `--adopt`. |
+| `ALREADY_RECORDED` | `materialize --adopt <path>` named a path the receipt already carries. Adoption is not a re-seal; use `--authored`. |
 
 `DESTINATION_CONFLICT` also covers a rename whose destination already exists.
 That case is not cosmetic: `git mv A B` with `B` present does not rename, it
