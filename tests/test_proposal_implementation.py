@@ -11075,6 +11075,138 @@ class PositionModuleTests(unittest.TestCase):
             self.assertEqual([e["kind"] for e in events], ["gate", "close"])
 
 
+class AbsentFileDigestTests(unittest.TestCase):
+    """`impl_position.current_file_digest` / `open_defects` — the derived
+    half of the `maintenance-blocks-it-does-not-mix` mechanism (design
+    decisions 1-4). Phase 1 only: record and derive, inert, blocks nothing.
+
+    Exercised directly against the module, no CLI, no repository: `forge_root`
+    is an explicit argument to `open_defects` (design decision 8) precisely so
+    the property can be proven here against a throwaway tree instead of the
+    real forge.
+    """
+
+    def _forge(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / ".claude" / "skills" / "some-skill").mkdir(parents=True)
+        return root
+
+    def _write(self, forge_root, rel, data):
+        path = forge_root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return path
+
+    # --- ABSENT_FILE_DIGEST: the sentinel itself, never a valid digest ---
+
+    def test_absent_file_digest_never_matches_a_sha256_hex_shape(self):
+        self.assertIsNone(
+            re.fullmatch(r"[0-9a-f]{64}", impl_position.ABSENT_FILE_DIGEST))
+
+    # --- current_file_digest: the one producer both declaration and check call ---
+
+    def test_current_file_digest_hashes_a_regular_file(self):
+        forge_root = self._forge()
+        path = self._write(forge_root, ".claude/skills/some-skill/mod.py", b"x = 1\n")
+        self.assertEqual(impl_position.current_file_digest(path),
+                         impl_position.digest_bytes(b"x = 1\n"))
+
+    def test_current_file_digest_returns_the_sentinel_for_an_absent_path(self):
+        forge_root = self._forge()
+        never = forge_root / ".claude" / "skills" / "some-skill" / "never.py"
+        self.assertEqual(impl_position.current_file_digest(never),
+                         impl_position.ABSENT_FILE_DIGEST)
+
+    def test_current_file_digest_returns_the_sentinel_for_a_directory(self):
+        forge_root = self._forge()
+        directory = forge_root / ".claude" / "skills" / "some-skill"
+        self.assertEqual(impl_position.current_file_digest(directory),
+                         impl_position.ABSENT_FILE_DIGEST)
+
+    # --- open_defects: one uniform comparison, latest-wins, fail-closed ---
+
+    def test_open_defects_empty_with_no_defect_events(self):
+        forge_root = self._forge()
+        self.assertEqual(impl_position.open_defects([], forge_root), [])
+        self.assertEqual(
+            impl_position.open_defects([{"kind": "gate"}], forge_root), [])
+
+    def test_open_defects_open_while_the_recorded_digest_still_matches(self):
+        forge_root = self._forge()
+        path = self._write(forge_root, ".claude/skills/some-skill/mod.py", b"x = 1\n")
+        rel = str(path.relative_to(forge_root))
+        digest = impl_position.digest_bytes(b"x = 1\n")
+        events = [{"kind": "defect", "file": rel, "fileSha256": digest}]
+        self.assertEqual(impl_position.open_defects(events, forge_root), events)
+
+    def test_open_defects_clears_the_moment_the_bytes_change(self):
+        forge_root = self._forge()
+        path = self._write(forge_root, ".claude/skills/some-skill/mod.py", b"x = 1\n")
+        rel = str(path.relative_to(forge_root))
+        stale_digest = impl_position.digest_bytes(b"x = 1\n")
+        path.write_bytes(b"x = 2\n")
+        events = [{"kind": "defect", "file": rel, "fileSha256": stale_digest}]
+        self.assertEqual(impl_position.open_defects(events, forge_root), [])
+
+    def test_open_defects_missing_filesha256_key_fails_closed_open(self):
+        forge_root = self._forge()
+        path = self._write(forge_root, ".claude/skills/some-skill/mod.py", b"x = 1\n")
+        rel = str(path.relative_to(forge_root))
+        events = [{"kind": "defect", "file": rel}]  # no fileSha256 key at all
+        self.assertEqual(impl_position.open_defects(events, forge_root), events)
+
+    def test_open_defects_latest_wins_per_file(self):
+        forge_root = self._forge()
+        path = self._write(forge_root, ".claude/skills/some-skill/mod.py", b"x = 1\n")
+        rel = str(path.relative_to(forge_root))
+        current_digest = impl_position.digest_bytes(b"x = 1\n")  # matches the file's live bytes
+        stale_digest = impl_position.digest_bytes(b"x = 0\n")    # never matches them
+        events = [
+            # Oldest: names the CURRENT digest -- would read as open alone.
+            {"kind": "defect", "file": rel, "fileSha256": current_digest},
+            # Newest: names a stale digest -- would read as cleared alone.
+            {"kind": "defect", "file": rel, "fileSha256": stale_digest},
+        ]
+        # Only the newest event decides. Without latest-wins the older
+        # matching event would leak through and report this open.
+        self.assertEqual(impl_position.open_defects(events, forge_root), [])
+
+    def test_open_defects_never_existing_path_deadlocks_open_under_the_uniform_comparison(self):
+        """The mirror image of the reported bypass (design decision 1's own
+        rationale): a `defect` event recorded with the sentinel for a path
+        that stays absent compares sentinel-equals-sentinel forever.
+        `cmd_defect` refuses this at declaration (`DEFECT_FILE_ABSENT`) so it
+        can never be produced live, but the derivation itself must still
+        exhibit the property the refusal exists to keep unreachable.
+        """
+        forge_root = self._forge()
+        never = forge_root / ".claude" / "skills" / "some-skill" / "never.py"
+        rel = str(never.relative_to(forge_root))
+        events = [{"kind": "defect", "file": rel,
+                  "fileSha256": impl_position.ABSENT_FILE_DIGEST}]
+        self.assertEqual(impl_position.open_defects(events, forge_root), events)
+
+    def test_open_defects_rejects_a_stored_file_that_escapes_the_skills_tree(self):
+        """Design decision 4: the containment invariant is re-verified for
+        free on the read side. A hand-written ledger line naming a path
+        outside `.claude/skills/` cannot point the checker anywhere else."""
+        forge_root = self._forge()
+        events = [{"kind": "defect", "file": "../outside.txt",
+                  "fileSha256": "deadbeef"}]
+        self.assertEqual(impl_position.open_defects(events, forge_root), [])
+
+    # --- the bypass's structural closure: no existence branch in the clearing path ---
+
+    def test_open_defects_source_carries_no_existence_branch(self):
+        source = inspect.getsource(impl_position.open_defects)
+        pattern = re.compile(r"if\s+not\s+\S+\.(exists|is_file)\(")
+        self.assertIsNone(
+            pattern.search(source),
+            "open_defects branches on file existence directly -- absence "
+            "must enter only as current_file_digest's own return value")
+
+
 class PositionLevelGrammarTests(unittest.TestCase):
     """PR10, `the-position-nobody-holds`: the boolean tick becomes an ordered
     level, without collapsing `None` ("unmeasured") into the floor rung, and
@@ -11806,6 +11938,112 @@ class PositionCommandTests(unittest.TestCase):
         self.assertFalse((box / "Method" / ".implementation" / "position.jsonl").exists())
 
 
+class DefectCommandTests(unittest.TestCase):
+    """`defect` — declares a forge file broken (design decisions 1-4, phase 1
+    of `maintenance-blocks-it-does-not-mix`: record and derive, inert, blocks
+    nothing). No command in this phase reads `open_defects`'s verdict yet —
+    wiring the refusal into `step`/`gate`/`offer`/`close`/`settle`/`apply`/
+    `admit` is a separate, later change; these tests prove the ledger side
+    only.
+    """
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_e2e_defect_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        return box
+
+    def _forge_file(self, data=b"placeholder = True\n"):
+        path = (FORGE / ".claude" / "skills" / "proposal-implementation" / "scripts"
+               / f"_defect_fixture_{os.getpid()}_{id(self)}.py")
+        path.write_bytes(data)
+        self.addCleanup(path.unlink, missing_ok=True)
+        return path
+
+    def run_cli(self, *args):
+        return subprocess.run([sys.executable, str(CLI), *args],
+                              capture_output=True, text=True, cwd=FORGE)
+
+    def ledger_path(self, box):
+        return box / "Method" / ".implementation" / "position.jsonl"
+
+    def test_declares_against_a_real_forge_file_and_appends_the_computed_digest(self):
+        box = self._box()
+        fixture = self._forge_file(b"x = 1\n")
+        proc = self.run_cli("defect", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--file", str(fixture),
+                            "--detail", "smoke does not import")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        result = json.loads(proc.stdout)
+        expected_digest = hashlib.sha256(b"x = 1\n").hexdigest()
+        self.assertEqual(result["fileSha256"], expected_digest)
+        self.assertEqual(result["detail"], "smoke does not import")
+        events = impl_position.read_events(self.ledger_path(box))
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["kind"], "defect")
+        self.assertEqual(events[0]["fileSha256"], expected_digest)
+        self.assertEqual(events[0]["session"], "s1")
+        self.assertEqual(events[0]["detail"], "smoke does not import")
+        self.assertTrue(events[0]["file"].startswith(".claude/skills/"))
+
+    def test_repeat_declaration_with_no_detail_omits_the_key_rather_than_writing_null(self):
+        box = self._box()
+        fixture = self._forge_file(b"x = 1\n")
+        proc = self.run_cli("defect", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--file", str(fixture))
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        events = impl_position.read_events(self.ledger_path(box))
+        self.assertNotIn("detail", events[0])
+
+    def test_refuses_a_file_outside_the_forge_skills_tree_and_writes_nothing(self):
+        box = self._box()
+        outside_root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside_root, ignore_errors=True)
+        outside = outside_root / "somewhere.py"
+        outside.write_text("x = 1\n", encoding="utf-8")
+        proc = self.run_cli("defect", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--file", str(outside))
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "DEFECT_FILE_NOT_FORGE_OWNED")
+        self.assertFalse(self.ledger_path(box).exists())
+
+    def test_refuses_a_path_that_never_existed_inside_the_forge_tree(self):
+        """The bypass, closed (design decision 1): a declaration against an
+        already-absent path is refused, never recorded with the sentinel."""
+        box = self._box()
+        never = (FORGE / ".claude" / "skills" / "proposal-implementation" / "scripts"
+                / f"_defect_never_{os.getpid()}_{id(self)}.py")
+        self.assertFalse(never.exists())
+        proc = self.run_cli("defect", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--file", str(never))
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "DEFECT_FILE_ABSENT")
+        self.assertFalse(self.ledger_path(box).exists())
+
+    def test_outside_tree_and_nonexistent_refuses_not_forge_owned_first(self):
+        box = self._box()
+        outside_root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside_root, ignore_errors=True)
+        never = outside_root / "never.py"
+        self.assertFalse(never.exists())
+        proc = self.run_cli("defect", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--file", str(never))
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "DEFECT_FILE_NOT_FORGE_OWNED")
+
+    def test_repeat_declaration_on_an_unchanged_digest_appends_rather_than_refuses(self):
+        box = self._box()
+        fixture = self._forge_file(b"x = 1\n")
+        for _ in range(2):
+            proc = self.run_cli("defect", "--target", str(box), "--name", "Method",
+                                "--session", "s1", "--file", str(fixture))
+            self.assertEqual(proc.returncode, 0, proc.stdout)
+        events = impl_position.read_events(self.ledger_path(box))
+        self.assertEqual(len(events), 2)
+
+
 class CommandRosterTests(unittest.TestCase):
     """`COMMANDS` binds every subcommand `main()` accepts; a table in
     `SKILL.md` is the human-facing roster of what each of the four
@@ -11851,7 +12089,7 @@ class CommandRosterTests(unittest.TestCase):
 
     def test_every_command_dispatched_is_accounted_for(self):
         write_verbs = {"position", "discuss", "propose", "gate", "offer",
-                       "close", "step", "settle"}
+                       "close", "step", "settle", "defect"}
         dispatched = set(impl.COMMANDS)
         self.assertEqual(
             dispatched, self.DOCUMENTED_ELSEWHERE | write_verbs,

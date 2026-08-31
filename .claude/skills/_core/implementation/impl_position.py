@@ -817,6 +817,42 @@ def digest_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+#: The digest a `defect` declaration or check reads for a path with no
+#: regular file at it. A fixed non-hex string, never `None`: `append_event`
+#: writes exactly the keys a dict carries (`json.dumps(event, sort_keys=True)`),
+#: so a key that was never written and a key written as JSON `null` both
+#: collapse to `None` under `event.get("fileSha256")` — this repository has
+#: already been bitten by that class (`_derive_record`'s `"recordFound" not
+#: in search` check, `_derive_shard`'s `shardsCurrent is None` doctrine).
+#: Choosing a string instead of `None` keeps the field's type uniform —
+#: always a string when the key is present — so "the key is missing" and
+#: "the file is absent" separate cleanly at `.get()` with nothing to
+#: remember. `"absent"` cannot collide with a real digest for two
+#: independent reasons: a sha256 hex digest is exactly 64 characters, and
+#: its alphabet is `[0-9a-f]` — `"absent"` is 6 characters and contains `s`,
+#: `n`, `t`. Nothing ever parses this field; it is an opaque equality token
+#: with one distinguished value, compared only by `==` against another
+#: token from this identical producer.
+ABSENT_FILE_DIGEST = "absent"
+
+
+def current_file_digest(path: Path) -> str:
+    """The one producer both a `defect` declaration and a later check call.
+
+    `digest_bytes(path.read_bytes())` for a regular file, `ABSENT_FILE_DIGEST`
+    for anything else (absent, a directory, a socket, ...). This is the ONLY
+    place absence is tested as a branch anywhere in the mechanism — every
+    caller, including `open_defects` below, treats absence as a VALUE this
+    function returns, never as a condition of its own to test. That is what
+    keeps clearing (see `open_defects`) a single uniform comparison rather
+    than a special case that would clear a never-existing path on its first
+    check (design decision 1's own bypass, design decision 3's closure of it).
+    """
+    if path.is_file():
+        return digest_bytes(path.read_bytes())
+    return ABSENT_FILE_DIGEST
+
+
 def write_spliced(path: Path, data: bytes, *, expect_digest: str) -> None:
     """Write `data` to `path` by temp file + `os.replace`, same directory --
     but only once `path`'s CURRENT bytes still digest to `expect_digest`.
@@ -898,3 +934,64 @@ def append_event(path: Path, event: dict) -> None:
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event, sort_keys=True))
         handle.write("\n")
+
+
+def open_defects(events: list[dict], forge_root: Path) -> list[dict]:
+    """Every currently-open `defect` declaration, latest-wins per file.
+
+    `forge_root` is an explicit argument, never imported (`impl_guards`'
+    own doctrine, restated for this module in design decision 8): this
+    module stays ignorant of the caller's own layout, and one derivation
+    serves both a refusal guard and a diagnostic report, so the two can
+    never disagree about what "open" means.
+
+    Clearing is ONE uniform comparison — `current_file_digest(path) !=
+    recorded` — with no existence branch anywhere in this function. Absence
+    enters only as a VALUE `current_file_digest` returns for the recorded
+    file, never as a condition this function evaluates for itself; see that
+    function's own docstring for why the difference is load-bearing.
+
+    Two checks run before the comparison, both independent of file
+    existence:
+
+    - a `kind: "defect"` event with no `fileSha256` key at all (`.get()`
+      reads `None`) is treated as OPEN unconditionally — fail closed, per
+      design decision 2. It can only be hand-written or truncated; its own
+      exit is a fresh `defect` declaration for the same file, which
+      supersedes it under latest-wins and then clears by editing.
+    - a stored `file` that does not resolve under `forge_root/.claude/
+      skills` is rejected outright — the containment invariant `cmd_defect`
+      enforces at declaration is re-verified for free on this read side, so
+      a hand-written ledger line can never point this checker outside the
+      forge tree it is allowed to name.
+
+    Latest-wins: `events` is oldest-first (`read_events`'s own contract), so
+    a later `kind: "defect"` event for the same `file` simply overwrites an
+    earlier one in the fold below — the newest declaration is always the one
+    compared.
+    """
+    forge_root = forge_root.resolve()
+    skills_root = forge_root / ".claude" / "skills"
+    latest: dict[str, dict] = {}
+    for event in events:
+        if event.get("kind") != "defect":
+            continue
+        file_field = event.get("file")
+        if not isinstance(file_field, str):
+            continue
+        resolved = (forge_root / file_field).resolve()
+        try:
+            resolved.relative_to(skills_root)
+        except ValueError:
+            continue
+        latest[file_field] = event
+
+    still_open = []
+    for file_field, event in latest.items():
+        recorded = event.get("fileSha256")
+        if recorded is None:
+            still_open.append(event)
+            continue
+        if current_file_digest(forge_root / file_field) == recorded:
+            still_open.append(event)
+    return still_open

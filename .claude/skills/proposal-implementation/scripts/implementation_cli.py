@@ -7893,6 +7893,77 @@ def cmd_step(args: argparse.Namespace) -> dict:
     }
 
 
+def cmd_defect(args: argparse.Namespace) -> dict:
+    """Declare that some forge file is currently broken (design decisions
+    1-4, `maintenance-blocks-it-does-not-mix`). Phase 1 only: this appends
+    to the ledger and nothing yet reads `impl_position.open_defects`'s
+    verdict to refuse anything -- that wiring is a separate, later change.
+
+    Never gated on an already-open defect and calls no `require_clean_
+    worktree` (design decision 5): a second declaration while one is open
+    must stay possible, and the worktree is likely dirty precisely when
+    something is broken. Its own append lands under `.implementation/`,
+    which `impl_guards._is_own_bookkeeping` already excuses from
+    `DIRTY_WORKTREE` for every command that DOES check it.
+
+    Check order at declaration, each narrower than the one before it
+    (`_verify_gate_authorization`'s own ordering discipline): resolve the
+    path, non-strict -> containment under `FORGE_ROOT/.claude/skills`
+    (`DEFECT_FILE_NOT_FORGE_OWNED`) -> existence as a regular file
+    (`DEFECT_FILE_ABSENT`) -> digest. Containment precedes existence on
+    purpose -- this command never reports on the existence of anything
+    outside `.claude/skills/`.
+
+    `DEFECT_FILE_ABSENT` is design decision 1's whole point: an already-
+    absent `--file` is refused, never recorded with `ABSENT_FILE_DIGEST`.
+    Recording it would either deadlock (the sentinel compares equal to
+    itself at every future check, since the path stays absent) or, if
+    clearing were ever special-cased on absence instead, clear on the very
+    first check -- the reported bypass. Refusing here keeps both
+    unreachable by construction; see `impl_position.open_defects`'s own
+    docstring for the comparison this closes.
+    """
+    target = resolve_target(args.target)
+    name = validate_name(args.name)
+
+    resolved = Path(args.file).expanduser().resolve()
+    skills_root = (FORGE_ROOT / ".claude" / "skills").resolve()
+    try:
+        resolved.relative_to(skills_root)
+    except ValueError:
+        raise Refused(
+            "DEFECT_FILE_NOT_FORGE_OWNED",
+            f"{resolved} does not live under {skills_root}; a defect can "
+            "only be declared against a file this forge itself ships.")
+    if not resolved.is_file():
+        raise Refused(
+            "DEFECT_FILE_ABSENT",
+            f"{resolved} is not a regular file; `defect` computes "
+            "fileSha256 from --file's live bytes, and there are none here "
+            "to measure. The honest reading of a path nobody can find is a "
+            "typo or a stale citation -- declare against the file that "
+            "fails to find it instead, which exists.")
+
+    forge_relative = resolved.relative_to(FORGE_ROOT.resolve()).as_posix()
+    digest = impl_position.current_file_digest(resolved)
+    recorded_at = _now_iso8601()
+    event = {
+        "kind": "defect", "command": "defect", "file": forge_relative,
+        "fileSha256": digest, "session": args.session, "at": recorded_at,
+    }
+    if args.detail:
+        event["detail"] = args.detail
+    ledger_path = target / name / ".implementation" / "position.jsonl"
+    impl_position.append_event(ledger_path, event)
+
+    return {
+        "command": "defect", "target": str(target), "name": name,
+        "file": forge_relative, "fileSha256": digest,
+        "session": args.session, "at": recorded_at,
+        "detail": event.get("detail"),
+    }
+
+
 def cmd_verify(args: argparse.Namespace) -> dict:
     target = resolve_target(args.target)
     name = validate_name(args.name)
@@ -8265,7 +8336,8 @@ COMMANDS = {"env": cmd_env, "name": cmd_name, "plan": cmd_plan, "apply": cmd_app
             "offer": cmd_offer,
             "close": cmd_close,
             "step": cmd_step,
-            "settle": cmd_settle}
+            "settle": cmd_settle,
+            "defect": cmd_defect}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -8323,7 +8395,8 @@ def main(argv: list[str] | None = None) -> int:
                                 "discover nothing and refuse "
                                 "REVISION_UNREADABLE if it is missing or "
                                 "unreadable")
-        if name in {"position", "propose", "gate", "offer", "close", "step", "settle"}:
+        if name in {"position", "propose", "gate", "offer", "close", "step",
+                   "settle", "defect"}:
             p.add_argument("--session", required=True,
                            help="identity stamped into the ledger event(s) "
                                 "this call appends, and into the block's "
@@ -8498,6 +8571,19 @@ def main(argv: list[str] | None = None) -> int:
                                 "the document itself still needs a "
                                 "human-written Reversed paragraph to show "
                                 "the supersession")
+        if name == "defect":
+            p.add_argument("--file", required=True,
+                           help="path to the forge file this declares "
+                                "broken; must resolve under "
+                                ".claude/skills/. Refused "
+                                "DEFECT_FILE_NOT_FORGE_OWNED outside that "
+                                "tree, DEFECT_FILE_ABSENT if it is not a "
+                                "regular file -- containment is checked "
+                                "before existence")
+            p.add_argument("--detail", default=None,
+                           help="free text describing what is broken; "
+                                "omitted from the ledger event entirely "
+                                "(never written as null) when not given")
 
     args = parser.parse_args(argv)
     try:
