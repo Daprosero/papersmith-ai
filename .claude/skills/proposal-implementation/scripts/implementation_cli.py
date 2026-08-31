@@ -6919,14 +6919,103 @@ def _locate_settled_text(data: bytes, text: str) -> list[dict]:
     return spans
 
 
+#: Every `## <Heading>` section's own body in a document, keyed by the
+#: heading's exact stripped text -- `settle --remove`'s own reading of
+#: `## Reversed`, matched by exact equality the identical way `--under`
+#: already is (`locate_headings`'s own docstring: a substring rule already
+#: picks the wrong one of two sections on a real document). `(?m)` so `^`
+#: anchors every line, never only the string's start; `re.S` so a body
+#: spanning several lines is captured whole, up to the next `## ` heading
+#: or the end of the document. Deliberately ignorant of fenced regions,
+#: unlike `locate_headings`: this reads an existing paragraph, it never
+#: places anything inside one, so the one failure mode fencing exclusion
+#: guards against -- landing a NEW insertion inside a fence -- cannot
+#: happen here.
+_SECTION_BODY = re.compile(r"(?m)^##[ \t]+(?P<heading>.+?)[ \t]*$(?P<body>.*?)(?=^##[ \t]|\Z)",
+                          re.S)
+
+#: A bold-quoted span inside a section body: `**"..."**`, `re.S` so a
+#: quote that happens to wrap across a line inside the paragraph is still
+#: captured whole. Mirrors `BULLET_LINE`'s own comment on why `**bold**`
+#: is deliberately not treated as a checklist item -- this is the reverse
+#: reading of the identical fact: prose the agreement scanner already
+#: ignores is exactly the shape `## Reversed` uses to name what it turned
+#: over.
+_BOLD_QUOTE = re.compile(r'\*\*"(?P<quote>.*?)"\*\*', re.S)
+
+#: The two ways a truncated quote may end (design "the guard removal must
+#: pass", see `cmd_settle`'s own docstring): the three-dot form and the
+#: single Unicode ellipsis character. Checked longest-appropriate first is
+#: unnecessary here -- neither is a prefix of the other -- but both must be
+#: tried, since a human writing the `Reversed` paragraph by hand types
+#: whichever their editor or habit produces.
+_TRUNCATION_MARKS = ("...", "…")
+
+
+def _reversed_section_quotes(data: bytes) -> list[str]:
+    """Every bold-quoted span found under a literal `## Reversed` heading
+    anywhere in `data`, whitespace-collapsed and stripped. Never raises --
+    a document with no such heading, or one whose body quotes nothing,
+    simply contributes an empty list, the same "the caller owns the
+    count" doctrine `_locate_settled_text` already states for itself one
+    function up.
+
+    Only the SOURCE quote is normalized (internal whitespace runs
+    collapsed to one space) -- never the caller's own `--text`, which is
+    compared exactly as `_locate_settled_text` already located it. A bold
+    quote that happens to wrap across a markdown line inside the
+    `Reversed` paragraph must still read as the identical span a quote
+    typed on one line would; `--text` itself carries no such wrapping to
+    begin with, since it is either one `argparse` token or one exact
+    checklist line's own text.
+    """
+    text = data.decode("utf-8")
+    quotes: list[str] = []
+    for section in _SECTION_BODY.finditer(text):
+        if section.group("heading").strip() != "Reversed":
+            continue
+        for match in _BOLD_QUOTE.finditer(section.group("body")):
+            quotes.append(re.sub(r"\s+", " ", match.group("quote")).strip())
+    return quotes
+
+
+def _reversed_quote_matches_text(data: bytes, text: str) -> bool:
+    """Whether `text` is quoted (bold, under `## Reversed`, possibly
+    truncated) anywhere in `data` -- the single predicate `--remove`'s own
+    guard evaluates (design "the guard removal must pass").
+
+    A quote matches by exact equality, or -- since a long agreement is
+    plausible to elide in prose -- by prefix: the quote ends in one of
+    `_TRUNCATION_MARKS`, and what precedes the mark is a non-empty,
+    EXACT prefix of `text`. The mark alone proves nothing; a truncated
+    quote whose visible prefix does not actually match `text` is not
+    accepted merely for ending in "..." -- that would let an unrelated
+    reversed paragraph that happens to trail off authorize deleting an
+    agreement it never named. See `cmd_settle`'s own docstring for why
+    this guard exists at all, and why prefix matching -- not substring or
+    fuzzy matching -- is the line drawn.
+    """
+    for quote in _reversed_section_quotes(data):
+        if quote == text:
+            return True
+        for mark in _TRUNCATION_MARKS:
+            if quote.endswith(mark):
+                prefix = quote[: -len(mark)]
+                if prefix and text.startswith(prefix):
+                    return True
+    return False
+
+
 def cmd_settle(args: argparse.Namespace) -> dict:
     """Place one settled agreement, and only one, under a caller-named
     heading (design "the placer" -- the third and last piece of "We
     discuss an idea, it gets embodied, then you come in, and the skill
     binds you so that it is placed in the contract") -- OR, with
     `--attach`, bind a witness onto a line already placed, matched by its
-    exact `--text` (design "attach, not place"). Both modes go through
-    this one command; there is still no second write path.
+    exact `--text` (design "attach, not place") -- OR, with `--remove`,
+    delete a line already placed, matched the identical way (design "the
+    eraser"). All three modes go through this one command; there is still
+    no second write path.
 
     The agent drafts the discussion and a proposed sentence; the create
     path validates, refuses, and performs the one write. It never authors:
@@ -6936,7 +7025,10 @@ def cmd_settle(args: argparse.Namespace) -> dict:
     writes no new text and no new mark at all: it locates an existing line
     by its own text and appends a witness token to it, leaving the mark
     exactly as it already was -- a ticked item stays ticked, an open one
-    stays open.
+    stays open. `--remove` writes nothing at all: it deletes the located
+    line's own bytes outright, including its trailing newline, and
+    touches no other byte in the document -- see `_reversed_quote_matches_text`,
+    below, for the guard that decides whether it may.
 
     **Why `--attach` skips the discussion precondition -- decided, not
     inherited from where the check happened to sit.** `SETTLE_NOT_DISCUSSED`
@@ -6954,11 +7046,57 @@ def cmd_settle(args: argparse.Namespace) -> dict:
     agreement, that is a different action than attaching a witness to it,
     and belongs behind its own gate, not this one.
 
+    **The guard removal must pass -- decided, not merely present.**
+    Deleting a settled agreement is the single most destructive write this
+    command can make: unlike `--attach` (adds a token) or the create path
+    (adds a line), nothing `--remove` deletes is recoverable from anything
+    `settle` itself ever wrote. The guard is not invented for this
+    command; it is inherited from the document's own stated convention --
+    the `## Reversed` section's own preamble already says, in prose,
+    "Written rather than deleted: an agreement that was turned over is
+    part of the record, and removing it would lose exactly what this file
+    exists to keep." `--remove` therefore refuses `SETTLE_NOT_REVERSED`
+    unless the EXACT text it would delete is already quoted, bold, under a
+    `## Reversed` heading somewhere in the same holder file the line
+    itself lives in (`_reversed_quote_matches_text`, above). This forces
+    the write that explains WHY an agreement was turned over to exist
+    BEFORE the write that erases it can happen -- the identical ordering
+    the discussion gate already enforces one level up on the create path
+    (nothing is placed before it was discussed; nothing is removed before
+    it was explained), and `--remove` deliberately cannot author that
+    explanation itself, the same restraint `--supersedes`'s own "stated
+    gap" already states below for the create path's own narrative.
+
+    Matched by an exact bold quote, or a quote truncated with a trailing
+    ellipsis (`...` or `…`) whose visible prefix is an exact prefix of
+    `--text`: measured against a real adopting target's own `Reversed`
+    paragraphs, which quote every reversed agreement in full as of this
+    writing, but a long agreement is plausible to elide in prose, and a
+    guard that only ever accepted an exact full quote would refuse a
+    caller whose reversal note is perfectly good and merely trims a long
+    sentence's tail. A prefix match proves the identical fact an exact
+    match proves -- that a human wrote,
+    in this document, that this specific agreement (identified by its own
+    opening words) was turned over -- so it is accepted; a substring or
+    fuzzy match is not, because either would let an unrelated `Reversed`
+    paragraph that merely shares some words authorize deleting an
+    agreement it never actually reversed. This is deliberately narrower
+    than `--supersedes`'s own collision check: that flag only ever records,
+    in the ledger, that a NEW placement collides with an old one, and
+    already documents (see "The stated gap, left open on purpose" below)
+    that it never verifies the document itself says so. `--remove` closes
+    that identical gap for deletion, because deletion has no ledger
+    fallback the way a placement's own `collides` list does -- once the
+    line is gone, `agreements_state` can no longer even report it once
+    existed.
+
     Checked in refusing-costs-nothing order, the same discipline `cmd_gate`
     already states for itself: pure-argv shape first (including which mode
     this call is even in), then whether a discussion actually happened
     (create path only), then where the write would even go, then whether
-    it collides with something already on record (create path only).
+    it collides with something already on record (create path only), then
+    whether a removal is already explained in the document (`--remove`
+    path only).
 
     1. `SETTLE_STDIN_CONFLICT` -- `--text -` and `--supersedes -` cannot
        both read stdin in the same call.
@@ -6970,54 +7108,69 @@ def cmd_settle(args: argparse.Namespace) -> dict:
        and silently ignoring a flag the caller bothered to type would be
        exactly the kind of surprise `SETTLE_STDIN_CONFLICT` already refuses
        one level up.
-    4. `SETTLE_WITNESS_REQUIRED` -- `--attach` without `--witness`: binding
+    4. `SETTLE_REMOVE_CONFLICT` -- `--remove` combined with `--attach`,
+       `--under`, `--supersedes`, or `--witness`: `--remove` is a third,
+       mutually exclusive mode (never both `--attach` and `--remove` in
+       one call), places nothing new (`--under`, `--supersedes` do not
+       apply, the identical reasoning `SETTLE_ATTACH_CONFLICT` already
+       gives), and writes no witness token at all -- the line is deleted,
+       not edited, so a `--witness` the caller bothered to type would
+       otherwise be silently ignored, the same surprise every other
+       conflict code in this list already refuses.
+    5. `SETTLE_WITNESS_REQUIRED` -- `--attach` without `--witness`: binding
        a witness is the entire point of this mode, so an `--attach` call
        carrying none has nothing to do.
-    5. `SETTLE_UNDER_REQUIRED` / `SETTLE_ABOUT_REQUIRED` -- the create path
-       (no `--attach`) still needs both; `argparse` no longer enforces
-       either as unconditionally required, because `--attach` needs
-       neither, so this command enforces them itself once it knows which
-       mode it is in.
-    6. `SETTLE_WITNESS_MALFORMED` -- an optional `--witness test_<id>`
+    6. `SETTLE_UNDER_REQUIRED` / `SETTLE_ABOUT_REQUIRED` -- the create path
+       (neither `--attach` nor `--remove`) still needs both; `argparse` no
+       longer enforces either as unconditionally required, because the
+       other two modes need neither, so this command enforces them itself
+       once it knows which mode it is in.
+    7. `SETTLE_WITNESS_MALFORMED` -- an optional `--witness test_<id>`
        (design D5, spec Group 3) that does not match `AGREEMENT_LINE`'s own
        trailing-token grammar (`test_[A-Za-z0-9_]+`). Refused before the
        write, not silently swallowed into plain text: a malformed value
        would otherwise round-trip as inert prose, and a caller who typed
        `--witness` believing it bound something would never learn it did
-       not. Checked in both modes.
-    7. `SETTLE_NOT_DISCUSSED` / `SETTLE_DISCUSSION_UNANSWERED` -- create
-       path only (see "Why `--attach` skips..." above). `--about` is
-       resolved the identical way `discuss`'s own `--about` already is
-       (`_resolve_discuss_about`), then matched against the ledger by
-       witness identity: ANY answered event satisfies this, never
-       newest-wins (design "Discussion match") -- a later clarifying
+       not. Checked in every mode that can still reach it (`--remove`
+       already refused `SETTLE_REMOVE_CONFLICT` above if `--witness` was
+       given at all).
+    8. `SETTLE_NOT_DISCUSSED` / `SETTLE_DISCUSSION_UNANSWERED` -- create
+       path only (see "Why `--attach` skips..." above; the identical
+       reasoning excuses `--remove`, which places nothing new either).
+       `--about` is resolved the identical way `discuss`'s own `--about`
+       already is (`_resolve_discuss_about`), then matched against the
+       ledger by witness identity: ANY answered event satisfies this,
+       never newest-wins (design "Discussion match") -- a later clarifying
        question must never retroactively erase an earlier answer, which
        would teach a caller not to ask one.
-    8. `SETTLE_HOLDER_ABSENT` -- `agreements_state`'s own already-computed
+    9. `SETTLE_HOLDER_ABSENT` -- `agreements_state`'s own already-computed
        `holders` is the candidate set; a target with none has nowhere this
-       command may write, and it never invents a file, the same doctrine
-       `_chosen_holder` already states for a fresh position block. Checked
-       in both modes.
-    9. Create path: `SETTLE_HEADING_ABSENT` / `SETTLE_HEADING_AMBIGUOUS` --
-       every holder's own `impl_position.locate_headings` hits, concatenated
-       across all of them: zero, or more than one anywhere (two hits in
-       one holder and one hit apiece in two holders read identically) --
-       the caller owns both counts, because the locator itself never
-       refuses (see its own docstring for why).
-       `--attach` path: `SETTLE_TEXT_ABSENT` / `SETTLE_TEXT_AMBIGUOUS`
-       -- the identical discipline, one level down: every holder's own
-       `_locate_settled_text` hits for the exact `--text`, concatenated;
-       zero or more than one refuses the same way, for the same reason --
-       which existing line receives the witness is not decidable without
-       a human choosing when more than one line reads identically.
-    10. Create path only: `SETTLE_COLLIDES_UNNAMED` / `SETTLE_SUPERSEDES_UNKNOWN`
+       command may write (or, for `--remove`, nothing to delete from), and
+       it never invents a file, the same doctrine `_chosen_holder` already
+       states for a fresh position block. Checked in every mode.
+    10. Create path: `SETTLE_HEADING_ABSENT` / `SETTLE_HEADING_AMBIGUOUS` --
+        every holder's own `impl_position.locate_headings` hits, concatenated
+        across all of them: zero, or more than one anywhere (two hits in
+        one holder and one hit apiece in two holders read identically) --
+        the caller owns both counts, because the locator itself never
+        refuses (see its own docstring for why).
+        `--attach` AND `--remove` paths: `SETTLE_TEXT_ABSENT` /
+        `SETTLE_TEXT_AMBIGUOUS` -- the identical discipline, one level
+        down, and the identical helper (`_locate_settled_text`) both modes
+        call: every holder's own hits for the exact `--text`, concatenated;
+        zero or more than one refuses the same way, for the same reason --
+        which existing line receives the witness, or is deleted, is not
+        decidable without a human choosing when more than one line reads
+        identically. Reused, not minted twice: `--remove` mints no code of
+        its own here.
+    11. Create path only: `SETTLE_COLLIDES_UNNAMED` / `SETTLE_SUPERSEDES_UNKNOWN`
         -- the same `_agreement_collides` `discuss` already repairs
         (excludes the position block's own item lines), run over the
         witness's own operand. A caller naming a superseded item must name
         one actually IN that computed list -- an unchecked string would be
         a rubber stamp on a supersession this command cannot itself verify
         happened in the document.
-    11. `--attach` path only: `SETTLE_ALREADY_WITNESSED` -- the one located
+    12. `--attach` path only: `SETTLE_ALREADY_WITNESSED` -- the one located
         line already carries a `` `test_<id>` `` token. `--attach` never
         replaces one; there is no separate flag that does, so the only way
         to change an existing witness today is the same "unsupported,
@@ -7025,6 +7178,10 @@ def cmd_settle(args: argparse.Namespace) -> dict:
         (see `--witness`'s own help) -- adding a silent-replace path here
         would let one automated call quietly overwrite a binding another
         call, or a human, put there on purpose.
+    13. `--remove` path only: `SETTLE_NOT_REVERSED` -- the located line's
+        own exact text is not quoted (bold, possibly truncated) under any
+        `## Reversed` heading in the same holder file. See "The guard
+        removal must pass," above, for the full argument.
 
     **The witness this places is a separate identity from `--about`.**
     `--about` names the *position* witness this placement discusses and
@@ -7070,6 +7227,7 @@ def cmd_settle(args: argparse.Namespace) -> dict:
         raise Refused("SETTLE_EMPTY_TEXT", "settle requires non-blank --text.")
 
     attach = bool(getattr(args, "attach", False))
+    remove = bool(getattr(args, "remove", False))
 
     if attach and (args.under or args.supersedes is not None):
         raise Refused(
@@ -7080,26 +7238,34 @@ def cmd_settle(args: argparse.Namespace) -> dict:
 
     witness = getattr(args, "witness", None)
     witness = witness.strip() if witness else None
+    if remove and (attach or args.under or args.supersedes is not None or witness):
+        raise Refused(
+            "SETTLE_REMOVE_CONFLICT",
+            "--remove deletes a line already placed; --attach (a second, "
+            "mutually exclusive mode), --under and --supersedes (what a "
+            "NEW item needs), and --witness (nothing is written, so there "
+            "is no token to bind) do not apply and must be omitted.")
     if attach and not witness:
         raise Refused(
             "SETTLE_WITNESS_REQUIRED",
             "--attach binds a witness onto an already-settled line; "
             "--witness is the whole point of this mode and cannot be "
             "omitted.")
-    if not attach:
+    if not attach and not remove:
         if not args.under:
             raise Refused(
                 "SETTLE_UNDER_REQUIRED",
                 "--under is required to place a new item; it names where "
                 "the write goes and has no default. Omit it only together "
-                "with --attach, which binds to a line already placed.")
+                "with --attach or --remove, neither of which places "
+                "anything new.")
         if not args.about:
             raise Refused(
                 "SETTLE_ABOUT_REQUIRED",
                 "--about is required to place a new item; it names the "
                 "discussion this placement is bound to. Omit it only "
-                "together with --attach, which does not place anything "
-                "new.")
+                "together with --attach or --remove, neither of which "
+                "places anything new.")
     if witness and not re.fullmatch(r"test_[A-Za-z0-9_]+", witness):
         raise Refused(
             "SETTLE_WITNESS_MALFORMED",
@@ -7109,7 +7275,7 @@ def cmd_settle(args: argparse.Namespace) -> dict:
             "witness `agreements_state` can read back.")
 
     about = None
-    if not attach:
+    if not attach and not remove:
         evidence = _position_write_evidence(target, name)
         position = position_state(target, name, evidence, None, None)
         about = _resolve_discuss_about(args.about, position)
@@ -7171,6 +7337,38 @@ def cmd_settle(args: argparse.Namespace) -> dict:
 
         new_line = _render_settled_line(text, witness, raw_line=raw_line)
         spliced = impl_position.splice(data, new_line, span)
+    elif remove:
+        candidates: list[tuple[Path, bytes, dict]] = []
+        for holder in holders:
+            holder_path = target / holder
+            holder_data = holder_path.read_bytes()
+            for span in _locate_settled_text(holder_data, text):
+                candidates.append((holder_path, holder_data, span))
+
+        if not candidates:
+            raise Refused(
+                "SETTLE_TEXT_ABSENT",
+                f"{text!r} matches no existing checklist line across "
+                f"{len(holders)} holder(s) under {name}/.")
+        if len(candidates) > 1:
+            raise Refused(
+                "SETTLE_TEXT_AMBIGUOUS",
+                f"{text!r} matches {len(candidates)} existing checklist "
+                f"lines across {name}/'s holder(s); which one this call "
+                "removes is not decidable without a human choosing.")
+        target_path, data, span = candidates[0]
+
+        if not _reversed_quote_matches_text(data, text):
+            raise Refused(
+                "SETTLE_NOT_REVERSED",
+                f"{text!r} is not quoted (bold, under a ## Reversed "
+                f"heading) anywhere in {target_path.name}; --remove only "
+                "deletes an agreement the document's own Reversed section "
+                "already explains turning over -- write that paragraph "
+                "first, the same discipline SETTLE_NOT_DISCUSSED already "
+                "enforces one level up for the create path.")
+
+        spliced = impl_position.splice(data, b"", span)
     else:
         heading = args.under.strip()
         candidates = []
@@ -7221,15 +7419,15 @@ def cmd_settle(args: argparse.Namespace) -> dict:
         target / name / ".implementation" / "position.jsonl",
         {"kind": "settle", "session": args.session, "about": about,
          "text": text, "under": heading, "witness": witness, "attach": attach,
-         "holder": str(target_path.relative_to(target)),
+         "remove": remove, "holder": str(target_path.relative_to(target)),
          "supersedes": supersedes, "collides": collides, "at": recorded_at})
 
     return {
         "command": "settle", "target": str(target), "name": name,
         "status": "written", "holder": str(target_path.relative_to(target)),
         "about": about, "text": text, "under": heading, "witness": witness,
-        "attach": attach, "supersedes": supersedes, "collides": collides,
-        "recordedAt": recorded_at,
+        "attach": attach, "remove": remove, "supersedes": supersedes,
+        "collides": collides, "recordedAt": recorded_at,
     }
 
 
@@ -9888,22 +10086,29 @@ def main(argv: list[str] | None = None) -> int:
                                 "own --about takes, matched against an "
                                 "answered discuss event by witness identity "
                                 "(kind, operand). Required unless --attach "
-                                "is given (refused SETTLE_ABOUT_REQUIRED); "
-                                "--attach never resolves or requires it -- "
-                                "there is no discussion gate left to check "
-                                "it against")
+                                "or --remove is given (refused "
+                                "SETTLE_ABOUT_REQUIRED); neither mode ever "
+                                "resolves or requires it -- there is no "
+                                "discussion gate left to check it against")
             p.add_argument("--text", required=True,
-                           help="without --attach: the caller-authored "
-                                "agreement text, or - to read stdin; "
-                                "written verbatim as one unticked `- [ ]` "
-                                "line -- never authored or ticked by this "
-                                "command. With --attach: the EXACT existing "
-                                "text of an already-settled line this call "
-                                "attaches --witness to, matched by exact "
-                                "equality against AGREEMENT_LINE's own "
-                                "text group -- refused SETTLE_TEXT_ABSENT "
-                                "or SETTLE_TEXT_AMBIGUOUS when it matches "
-                                "zero or more than one line")
+                           help="without --attach/--remove: the "
+                                "caller-authored agreement text, or - to "
+                                "read stdin; written verbatim as one "
+                                "unticked `- [ ]` line -- never authored or "
+                                "ticked by this command. With --attach: the "
+                                "EXACT existing text of an already-settled "
+                                "line this call attaches --witness to. "
+                                "With --remove: the EXACT existing text of "
+                                "an already-settled line this call deletes "
+                                "outright. Both modes match by exact "
+                                "equality against AGREEMENT_LINE's own text "
+                                "group -- refused SETTLE_TEXT_ABSENT or "
+                                "SETTLE_TEXT_AMBIGUOUS when it matches zero "
+                                "or more than one line; --remove additionally "
+                                "refuses SETTLE_NOT_REVERSED unless that "
+                                "exact text is already quoted, bold, under "
+                                "a ## Reversed heading in the same holder "
+                                "file")
             p.add_argument("--under", default=None,
                            help="the exact heading line this item is "
                                 "placed under, hash marks included (e.g. "
@@ -9911,11 +10116,13 @@ def main(argv: list[str] | None = None) -> int:
                                 "or SETTLE_HEADING_AMBIGUOUS when it occurs "
                                 "zero or more than one time across the "
                                 "product's holder file(s). Required unless "
-                                "--attach is given (refused "
+                                "--attach or --remove is given (refused "
                                 "SETTLE_UNDER_REQUIRED); refused "
                                 "SETTLE_ATTACH_CONFLICT if given together "
-                                "with --attach, which attaches to a line "
-                                "already placed and names no heading")
+                                "with --attach, or SETTLE_REMOVE_CONFLICT "
+                                "if given together with --remove -- neither "
+                                "mode places anything new and so neither "
+                                "names a heading")
             p.add_argument("--supersedes", default=None,
                            help="the exact text of an existing colliding "
                                 "agreement this placement supersedes, or - "
@@ -9926,8 +10133,10 @@ def main(argv: list[str] | None = None) -> int:
                                 "human-written Reversed paragraph to show "
                                 "the supersession. Refused "
                                 "SETTLE_ATTACH_CONFLICT if given together "
-                                "with --attach, which places nothing new "
-                                "and so collides with nothing")
+                                "with --attach, or SETTLE_REMOVE_CONFLICT "
+                                "if given together with --remove -- neither "
+                                "mode places anything new and so neither "
+                                "collides with anything")
             p.add_argument("--witness", default=None,
                            help="test_<id> naming this agreement's own "
                                 "function in the declared-invariants suite "
@@ -9943,14 +10152,18 @@ def main(argv: list[str] | None = None) -> int:
                                 "binding a witness is the whole point of "
                                 "that mode); refused SETTLE_ALREADY_WITNESSED "
                                 "if the located line already carries one -- "
-                                "--attach never replaces one. Refused "
-                                "SETTLE_WITNESS_MALFORMED in either mode if "
-                                "given and not test_[A-Za-z0-9_]+. settle is "
-                                "the only command that ever writes this "
-                                "token -- there is no patch or edit "
-                                "subcommand, and hand-typing one into the "
-                                "file is unsupported (evaluated exactly "
-                                "like a skill-written one by verify, never "
+                                "--attach never replaces one. With --remove: "
+                                "refused SETTLE_REMOVE_CONFLICT if given at "
+                                "all -- the line is deleted outright, so "
+                                "there is no witness token left to bind. "
+                                "Refused SETTLE_WITNESS_MALFORMED in every "
+                                "mode that reaches this check if given and "
+                                "not test_[A-Za-z0-9_]+. settle is the only "
+                                "command that ever writes this token -- "
+                                "there is no patch or edit subcommand, and "
+                                "hand-typing one into the file is "
+                                "unsupported (evaluated exactly like a "
+                                "skill-written one by verify, never "
                                 "technically prevented)")
             p.add_argument("--attach", action="store_true",
                            help="bind --witness onto a line ALREADY "
@@ -9966,7 +10179,31 @@ def main(argv: list[str] | None = None) -> int:
                                 "prior settle call, so it was already "
                                 "discussed once. --under and --supersedes "
                                 "do not apply with --attach and are refused "
-                                "SETTLE_ATTACH_CONFLICT if given")
+                                "SETTLE_ATTACH_CONFLICT if given. Refused "
+                                "SETTLE_REMOVE_CONFLICT if given together "
+                                "with --remove -- the two write modes are "
+                                "mutually exclusive")
+            p.add_argument("--remove", action="store_true",
+                           help="delete a line ALREADY settled outright, "
+                                "matched by its exact --text, instead of "
+                                "placing or attaching anything (design "
+                                "'the eraser'). Refused SETTLE_NOT_REVERSED "
+                                "unless that exact text is already quoted, "
+                                "bold, under a ## Reversed heading in the "
+                                "same holder file (see cmd_settle's own "
+                                "docstring, 'The guard removal must pass', "
+                                "for the full argument) -- deleting a "
+                                "settled agreement is the one destructive "
+                                "write this command can make, and it is "
+                                "refused until the document itself already "
+                                "explains why. Skips the discussion "
+                                "precondition for the identical reason "
+                                "--attach does: a line this matches was "
+                                "already discussed once, when it was first "
+                                "placed. --under, --supersedes and "
+                                "--witness do not apply with --remove and "
+                                "are refused SETTLE_REMOVE_CONFLICT if "
+                                "given, and so is --attach itself")
         if name == "defect":
             p.add_argument("--file", required=True,
                            help="path to the forge file this declares "

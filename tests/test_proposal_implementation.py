@@ -15102,6 +15102,288 @@ class SettleAttachCommandTests(unittest.TestCase):
                          ["an already-settled item"])
 
 
+class SettleReversedQuoteMatchingTests(unittest.TestCase):
+    """The pure predicate `settle --remove`'s own guard evaluates:
+    whether `--text` is quoted, bold, inside the document's own
+    `## Reversed` section -- possibly truncated with a trailing
+    ellipsis (design "the guard removal must pass", see `cmd_settle`'s
+    own docstring). Tested directly against `impl._reversed_quote_matches_text`,
+    without a CLI round-trip: the `SettleRemoveCommandTests` class below
+    proves the WIRING (the guard is actually consulted, in the right
+    order, against the right file); these prove the RULE itself, cheaply,
+    over inputs a full CLI fixture would make tedious to vary.
+    """
+
+    def test_exact_bold_quote_matches(self):
+        data = b'## Reversed\n\n**"the exact text"** replaced by something else.\n'
+        self.assertTrue(impl._reversed_quote_matches_text(data, "the exact text"))
+
+    def test_unrelated_bold_quote_does_not_match(self):
+        data = b'## Reversed\n\n**"something else entirely"** replaced.\n'
+        self.assertFalse(impl._reversed_quote_matches_text(data, "the exact text"))
+
+    def test_no_reversed_section_at_all_does_not_match(self):
+        data = b"## Ladder\n\n- [ ] the exact text\n"
+        self.assertFalse(impl._reversed_quote_matches_text(data, "the exact text"))
+
+    def test_bold_quote_under_a_differently_named_heading_does_not_match(self):
+        """Exact heading equality, the same discipline
+        `impl_position.locate_headings` already states for `--under`: a
+        section merely named something else must never authorize
+        removal, even if it quotes the identical text."""
+        data = b'## Retired\n\n**"the exact text"** replaced.\n'
+        self.assertFalse(impl._reversed_quote_matches_text(data, "the exact text"))
+
+    def test_truncated_quote_matches_by_exact_prefix(self):
+        data = b'## Reversed\n\n**"the exact..."** replaced by something shorter.\n'
+        self.assertTrue(impl._reversed_quote_matches_text(data, "the exact text"))
+
+    def test_truncated_quote_with_a_wrong_prefix_does_not_match(self):
+        """The trailing ellipsis alone proves nothing -- what precedes it
+        must be an actual prefix of `--text`, or an unrelated truncated
+        quote that merely happens to end in "..." would authorize
+        removing an agreement it never actually named."""
+        data = b'## Reversed\n\n**"nothing alike at all..."** replaced.\n'
+        self.assertFalse(impl._reversed_quote_matches_text(data, "the exact text"))
+
+    def test_truncated_quote_matches_by_unicode_ellipsis_too(self):
+        data = '## Reversed\n\n**"the exact…"** replaced.\n'.encode("utf-8")
+        self.assertTrue(impl._reversed_quote_matches_text(data, "the exact text"))
+
+
+class SettleRemoveCommandTests(unittest.TestCase):
+    """`settle --remove` -- deletes a line ALREADY settled, matched by its
+    exact `--text` (design "the eraser", the destructive counterpart to
+    "attach, not place"). The one write path this CLI has never had until
+    now: every other `settle` mode only ever adds bytes. Guarded on
+    purpose -- refused `SETTLE_NOT_REVERSED` unless the document's own
+    `## Reversed` section already quotes the exact text being removed
+    (see `cmd_settle`'s own docstring for the full argument).
+    """
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_e2e_settle_remove_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text("", encoding="utf-8")
+        return box
+
+    def run_cli(self, *args, stdin=None):
+        return subprocess.run([sys.executable, str(CLI), *args], input=stdin,
+                              capture_output=True, text=True, cwd=FORGE)
+
+    def _settle(self, box, **overrides):
+        args = {"target": str(box), "name": "Method", "session": "s1",
+                "remove": True, "text": "a retired agreement"}
+        args.update(overrides)
+        argv = ["settle"]
+        for flag, value in args.items():
+            if value is None or value is False:
+                continue
+            if value is True:
+                argv += [f"--{flag}"]
+                continue
+            argv += [f"--{flag}", value]
+        return self.run_cli(*argv)
+
+    REVERSED_QUOTE = ('\n\n## Reversed\n\n'
+                      '**"a retired agreement"** replaced by something better.\n')
+
+    # --- pure-argv shape: --remove needs nothing else, and refuses ---
+    # --- whatever the create/attach paths need but this one doesn't ---
+
+    def test_remove_refuses_combined_with_attach(self):
+        box = self._box()
+        proc = self._settle(box, attach=True, witness="test_x")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_REMOVE_CONFLICT")
+
+    def test_remove_refuses_combined_with_under(self):
+        box = self._box()
+        proc = self._settle(box, under="## Ladder")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_REMOVE_CONFLICT")
+
+    def test_remove_refuses_combined_with_supersedes(self):
+        box = self._box()
+        proc = self._settle(box, supersedes="some other text")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_REMOVE_CONFLICT")
+
+    def test_remove_refuses_combined_with_witness(self):
+        box = self._box()
+        proc = self._settle(box, witness="test_x")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_REMOVE_CONFLICT")
+
+    # --- where the removal would even happen ---
+
+    def test_remove_refuses_holder_absent(self):
+        box = self._box()
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_HOLDER_ABSENT")
+
+    # --- the search: matched by exact text, same discipline as --attach ---
+
+    def test_remove_refuses_when_text_matches_zero_lines(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] a different item\n" + self.REVERSED_QUOTE,
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_TEXT_ABSENT")
+
+    def test_remove_refuses_when_text_matches_more_than_one_line(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] a retired agreement\n\n"
+            "## Elsewhere\n\n- [x] a retired agreement\n" + self.REVERSED_QUOTE,
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_TEXT_AMBIGUOUS")
+
+    def test_remove_never_matches_a_position_block_item(self):
+        """`_agreement_scan_text`'s own exclusion, reused unchanged via
+        `_locate_settled_text` -- the identical function `--attach`
+        already searches with. A position sequence item has exactly
+        `AGREEMENT_LINE`'s shape, and must never read as a removable
+        agreement even when the `## Reversed` section quotes its text."""
+        box = self._box()
+        block = ("<!-- position revision=r1.md sha256=" + "a" * 64 +
+                "  derivedAt=2026-08-27T00:00:00Z session=s0 target=final -->\n"
+                "- [ ] 1. a position sequence item. `@notebook Notebooks/x.ipynb`\n"
+                "<!-- /position -->\n")
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [x] an unrelated real agreement\n\n" +
+            block +
+            "\n## Reversed\n\n"
+            "**\"1. a position sequence item. `@notebook Notebooks/x.ipynb`\"** "
+            "never agreed, never removable.\n",
+            encoding="utf-8")
+        proc = self._settle(
+            box, text="1. a position sequence item. `@notebook Notebooks/x.ipynb`")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_TEXT_ABSENT")
+
+    # --- the guard: refused unless the document already reversed it ---
+
+    def test_remove_refuses_when_not_quoted_in_reversed_section_at_all(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] a retired agreement\n",
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_NOT_REVERSED")
+        # Refused before any write.
+        after = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertIn("- [ ] a retired agreement", after)
+
+    def test_remove_refuses_when_reversed_section_quotes_different_text(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] a retired agreement\n\n"
+            "## Reversed\n\n**\"a completely different agreement\"** replaced.\n",
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_NOT_REVERSED")
+
+    def test_remove_accepts_a_truncated_quote_ending_in_ellipsis(self):
+        box = self._box()
+        long_text = ("a very long retired agreement whose reversal paragraph "
+                    "elides the tail")
+        before = ("# Agreed\n\n## Ladder\n\n"
+                  f"- [ ] {long_text}\n\n"
+                  "## Reversed\n\n"
+                  '**"a very long retired agreement whose reversal..."** '
+                  "replaced by something shorter.\n")
+        (box / "Method" / "AGREED.md").write_text(before, encoding="utf-8")
+        proc = self._settle(box, text=long_text)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        after = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        self.assertNotIn(long_text, after)
+
+    # --- the happy path: byte-identical except the one deleted line ---
+
+    def test_remove_deletes_exactly_one_line_byte_identical_otherwise(self):
+        box = self._box()
+        before = ("# Agreed\n\nSome prose above the section.\n\n"
+                  "## Ladder\n\n- [x] an unrelated settled item\n\n"
+                  "- [ ] a retired agreement\n\n"
+                  "## Reversed\n\n"
+                  '**"a retired agreement"** replaced by something better.\n')
+        (box / "Method" / "AGREED.md").write_text(before, encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["status"], "written")
+        self.assertEqual(result["remove"], True)
+        self.assertEqual(result["text"], "a retired agreement")
+
+        after = (box / "Method" / "AGREED.md").read_bytes()
+        expected = before.replace("- [ ] a retired agreement\n", "").encode("utf-8")
+        self.assertEqual(after, expected)
+
+    def test_remove_preserves_a_ticked_neighbor_and_the_position_block(self):
+        """No reflow: an unrelated item above AND a position block below
+        the deleted line both come out byte-identical."""
+        box = self._box()
+        block = ("<!-- position revision=r1.md sha256=" + "a" * 64 +
+                "  derivedAt=2026-08-27T00:00:00Z session=s0 target=final -->\n"
+                "- [ ] 1. an unrelated position item. `@notebook Notebooks/x.ipynb`\n"
+                "<!-- /position -->\n")
+        before = ("# Agreed\n\n## Ladder\n\n- [x] an unrelated settled item\n\n"
+                  "- [ ] a retired agreement\n\n" + block +
+                  "\n## Reversed\n\n"
+                  '**"a retired agreement"** replaced by something better.\n')
+        (box / "Method" / "AGREED.md").write_text(before, encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+
+        after = (box / "Method" / "AGREED.md").read_bytes()
+        expected = before.replace("- [ ] a retired agreement\n", "").encode("utf-8")
+        self.assertEqual(after, expected)
+        self.assertIn(block.encode("utf-8"), after)
+
+    def test_remove_appends_one_settle_event_flagged_remove_true(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] a retired agreement\n" +
+            self.REVERSED_QUOTE, encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+        settle_events = [e for e in events if e["kind"] == "settle"]
+        self.assertEqual(len(settle_events), 1)
+        self.assertEqual(settle_events[0]["remove"], True)
+        self.assertIsNone(settle_events[0]["about"])
+        self.assertIsNone(settle_events[0]["under"])
+        self.assertIsNone(settle_events[0]["witness"])
+
+    def test_remove_read_back_by_agreements_state_reports_it_gone(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] a retired agreement\n" +
+            self.REVERSED_QUOTE, encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+
+        state = impl.agreements_state(box, "Method")
+        self.assertEqual(state["status"], "absent")
+        self.assertEqual(state["open"], [])
+
+
 class SettleUnderAboutRequirednessTests(unittest.TestCase):
     """`--under` and `--about` are no longer unconditionally
     `argparse`-required (spec/design "attach, not place"): both are only
