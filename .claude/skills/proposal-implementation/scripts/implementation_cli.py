@@ -7075,6 +7075,34 @@ def _render_settled_line(text: str, witness: str | None, *,
     return f"- [ ] {text}\n".encode("utf-8")
 
 
+def _render_done_line(raw_line: bytes) -> bytes:
+    """The one construction of a ticked checklist line's bytes, called only
+    from `cmd_settle`'s own `--done` path -- the mirror of `_render_settled_
+    line`'s `--attach` branch, one mark over. `raw_line` is the located
+    line's own bytes, taken verbatim from disk by `_locate_settled_text`,
+    never reconstructed from a regex-captured group: rebuilding
+    `- [x] {text}` from scratch would silently normalize whatever the
+    original line's own bullet character, internal spacing, or trailing
+    witness token happened to be, the identical restraint `_render_settled_
+    line` already keeps for the identical reason.
+
+    Only the ONE byte inside the checklist mark's own brackets moves, at
+    the position `AGREEMENT_LINE`'s own `mark` group actually matched --
+    never a fixed offset, so a `*` bullet, extra leading whitespace, or a
+    witness token already appended can never shift which byte this writes
+    over. Every byte before and after that single position round-trips
+    through `str`/`bytes` unchanged, because nothing else in the line is
+    parsed or rebuilt -- only located.
+    """
+    has_newline = raw_line.endswith(b"\n")
+    body = raw_line[:-1] if has_newline else raw_line
+    decoded = body.decode("utf-8")
+    located = AGREEMENT_LINE.match(decoded)
+    start, end = located.span("mark")
+    new_body = (decoded[:start] + "x" + decoded[end:]).encode("utf-8")
+    return new_body + (b"\n" if has_newline else b"")
+
+
 def _locate_settled_text(data: bytes, text: str) -> list[dict]:
     """Every full-line byte span in `data` whose `AGREEMENT_LINE` match has
     a `text` group exactly equal to `text` -- the search space
@@ -7334,9 +7362,11 @@ def cmd_settle(args: argparse.Namespace) -> dict:
     exact `--text` (design "attach, not place") -- OR, with `--remove`,
     delete a line already placed, matched the identical way (design "the
     eraser") -- OR, with `--reverse`, write a NEW `## Reversed` entry and
-    delete that same line in ONE call (design "a reversal is one write").
-    All four modes go through this one command; there is still no second
-    write path.
+    delete that same line in ONE call (design "a reversal is one write")
+    -- OR, with `--done`, flip an already-settled line's own mark from
+    `[ ]` to `[x]`, matched the identical way once more (design "the tick
+    this class closes"). All five modes go through this one command; there
+    is still no second write path.
 
     The agent drafts the discussion and a proposed sentence; the create
     path validates, refuses, and performs the one write. It never authors:
@@ -7349,7 +7379,80 @@ def cmd_settle(args: argparse.Namespace) -> dict:
     stays open. `--remove` writes nothing at all: it deletes the located
     line's own bytes outright, including its trailing newline, and
     touches no other byte in the document -- see `_reversed_quote_matches_text`,
-    below, for the guard that decides whether it may.
+    below, for the guard that decides whether it may. `--done` writes no
+    new text either: it locates an existing line by its own text and
+    flips the ONE byte inside its checklist mark's own brackets, from
+    ` ` to `x` -- the text, any witness token it already carries, and
+    every other byte in the holder file are unchanged (`_render_done_
+    line`, below).
+
+    **`--done` is the last member of a class this programme already
+    closes the rest of.** Editing an agreement's own text is `--reverse`
+    (which explains why) followed by a fresh placement; moving one between
+    sections is `--remove` (once explained) followed by a placement under
+    the new heading. Both are compositions of verbs this file already had.
+    Ticking one had no composition at all: nothing --attach, --remove or
+    --reverse can do, alone or chained, ever changes a mark from `[ ]` to
+    `[x]`. `--done` closes that gap; it is not a sixth primitive bolted on
+    beside the other four, it is the one verb the other four's own
+    compositions could never reach.
+
+    **Why marking done requires a witness -- decided, not merely
+    present.** A tick asserts the work named by this line is DONE. Every
+    other guard in this command exists to make sure some assertion this
+    file writes rests on something (`SETTLE_NOT_DISCUSSED`: nothing is
+    PLACED without having been discussed; `SETTLE_NOT_REVERSED`: nothing
+    is REMOVED without having been explained). `--done` states the
+    identical discipline one level further in: nothing is marked DONE
+    without a witness -- a `` `test_<id>` `` token naming exactly what
+    would show the work was reached -- already bound to it. `settle
+    --attach` already exists to put one there; refusing `SETTLE_NOT_
+    WITNESSED` costs the caller nothing it did not already have a command
+    for. The alternative -- letting `--done` tick an unwitnessed line --
+    would make this command author the one assertion it has refused to
+    author since the create path's own docstring line above: "a tick
+    would assert the code already carries something a human has not yet
+    reviewed as reached." An unwitnessed tick reviews nothing; it is a
+    human's plain assertion with a command's authority behind it.
+
+    **Measured against the weighing this decision requires, not assumed.**
+    A real adopting target's `AGREED.md` carries agreements ticked with no
+    witness at all -- irreducible arguments (a design tradeoff, a scoping
+    decision) that no test could ever contradict, because nothing about
+    them is executable. A guard requiring a witness cannot mark THOSE done
+    through this command, ever -- and that is read here as correct, not as
+    a gap needing an escape hatch. Two reasons, not one: first, an
+    argument is not the kind of claim `[x]` was ever meant to certify in
+    this file's own grammar -- `disagrees`/`unmeasured` (`agreements_
+    state`, above) only exist for a claim a witness token could measure,
+    and an unwitnessed line already reports `unwitnessed`, a state this
+    file treats as legitimate and permanent, never as an error. Second,
+    the "unsupported, never technically prevented" doctrine this same
+    file already states for hand-typing a witness token (`--witness`'s
+    own CLI help, `usage.md`) already covers exactly this case: a human
+    may still tick an irreducible argument by hand, the identical way
+    those existing lines were ticked, and `verify`/`close` evaluate a
+    hand-ticked mark exactly the same as one this command would have
+    written. An escape flag on `--done` would not add a capability this
+    programme lacks; it would only let an AUTOMATED call assert "done"
+    over an argument nobody can measure, the one assertion this guard
+    exists to keep a human, not a command, responsible for.
+
+    **Un-ticking does not belong in this change.** `--done` closes a
+    measured gap: no composition of the other four modes could ever
+    produce a tick. The inverse has no equivalent gap to close -- a human
+    can already un-tick a line by hand today, the same "unsupported,
+    never technically prevented" doctrine that already governs every
+    hand edit this file does not itself perform, and nothing measured
+    against a real target found a ticked-in-error agreement this command
+    needed to correct. Un-ticking is also not this guard's mirror image:
+    `--done` asserts a fact came true and rests that assertion on a
+    witness; retracting a tick asserts a PRIOR assertion was wrong, which
+    is closer in shape to `--reverse` (a written admission that something
+    changed) than to any read this command already performs -- it would
+    need its own guard, arguably its own required explanation, designed
+    on its own terms rather than inherited from `--done`'s. Left open,
+    not overlooked.
 
     **Why `--reverse` exists at all, and why it is not merely
     `--remove` with extra steps.** `--remove` shipped guarded by
@@ -7493,9 +7596,11 @@ def cmd_settle(args: argparse.Namespace) -> dict:
     already states for itself: pure-argv shape first (including which mode
     this call is even in), then whether a discussion actually happened
     (create path only), then where the write would even go, then whether
-    it collides with something already on record (create path only), then
-    whether a removal is already explained in the document (`--remove`
-    path only).
+    the located line is already done or already reversed (`--done` /
+    `--reverse` paths only), then whether it collides with something
+    already on record (create path only), then whether a witness or a
+    removal is already bound or already explained in the document
+    (`--attach` / `--remove` paths only).
 
     1. `SETTLE_STDIN_CONFLICT` -- `--text -` and `--supersedes -` cannot
        both read stdin in the same call.
@@ -7509,7 +7614,7 @@ def cmd_settle(args: argparse.Namespace) -> dict:
        one level up.
     4. `SETTLE_REMOVE_CONFLICT` -- `--remove` combined with `--attach`,
        `--under`, `--supersedes`, or `--witness`: `--remove` is one of
-       three other, mutually exclusive modes (never both `--attach` and
+       four other, mutually exclusive modes (never both `--attach` and
        `--remove` in one call), places nothing new (`--under`,
        `--supersedes` do not apply, the identical reasoning
        `SETTLE_ATTACH_CONFLICT` already gives), and writes no witness
@@ -7527,61 +7632,70 @@ def cmd_settle(args: argparse.Namespace) -> dict:
        Reversed` entry only `--reverse` ever writes, so giving it in any
        other mode is the identical unused-flag surprise this whole list
        already refuses rather than silently ignores.
-    6. `SETTLE_WITNESS_REQUIRED` -- `--attach` without `--witness`: binding
+    6. `SETTLE_DONE_CONFLICT` -- `--done` combined with `--attach`,
+       `--remove`, `--reverse`, `--under`, `--supersedes`, `--witness` or
+       `--paragraph` -- the identical reasoning `SETTLE_REVERSE_CONFLICT`
+       already gives, extended to a fifth mutually exclusive mode:
+       `--done` places nothing new (`--under`, `--supersedes` do not
+       apply), writes no new witness token (`--witness` binds one
+       separately, by `--attach`, before this mode may ever reach it) and
+       writes no `## Reversed` entry (`--paragraph` does not apply).
+    7. `SETTLE_WITNESS_REQUIRED` -- `--attach` without `--witness`: binding
        a witness is the entire point of this mode, so an `--attach` call
        carrying none has nothing to do.
-    7. `SETTLE_PARAGRAPH_REQUIRED` -- `--reverse` without a non-blank
+    8. `SETTLE_PARAGRAPH_REQUIRED` -- `--reverse` without a non-blank
        `--paragraph`: writing a NEW `## Reversed` entry is the entire
        point of this mode, and the engine never authors the reasoning
        behind one (see "Why `--reverse` exists at all," above) -- an
        `--reverse` call carrying no paragraph has nothing to explain with.
-    8. `SETTLE_UNDER_REQUIRED` / `SETTLE_ABOUT_REQUIRED` -- the create path
-       (none of `--attach`, `--remove` or `--reverse`) still needs both;
-       `argparse` no longer enforces either as unconditionally required,
-       because the other three modes need neither, so this command
-       enforces them itself once it knows which mode it is in.
-    9. `SETTLE_WITNESS_MALFORMED` -- an optional `--witness test_<id>`
-       (design D5, spec Group 3) that does not match `AGREEMENT_LINE`'s own
-       trailing-token grammar (`test_[A-Za-z0-9_]+`). Refused before the
-       write, not silently swallowed into plain text: a malformed value
-       would otherwise round-trip as inert prose, and a caller who typed
-       `--witness` believing it bound something would never learn it did
-       not. Checked in every mode that can still reach it (`--remove` and
-       `--reverse` already refused `SETTLE_REMOVE_CONFLICT` /
-       `SETTLE_REVERSE_CONFLICT` above if `--witness` was given at all).
-    10. `SETTLE_NOT_DISCUSSED` / `SETTLE_DISCUSSION_UNANSWERED` -- create
+    9. `SETTLE_UNDER_REQUIRED` / `SETTLE_ABOUT_REQUIRED` -- the create path
+       (none of `--attach`, `--remove`, `--reverse` or `--done`) still
+       needs both; `argparse` no longer enforces either as unconditionally
+       required, because the other four modes need neither, so this
+       command enforces them itself once it knows which mode it is in.
+    10. `SETTLE_WITNESS_MALFORMED` -- an optional `--witness test_<id>`
+        (design D5, spec Group 3) that does not match `AGREEMENT_LINE`'s own
+        trailing-token grammar (`test_[A-Za-z0-9_]+`). Refused before the
+        write, not silently swallowed into plain text: a malformed value
+        would otherwise round-trip as inert prose, and a caller who typed
+        `--witness` believing it bound something would never learn it did
+        not. Checked in every mode that can still reach it (`--remove`,
+        `--reverse` and `--done` already refused `SETTLE_REMOVE_CONFLICT` /
+        `SETTLE_REVERSE_CONFLICT` / `SETTLE_DONE_CONFLICT` above if
+        `--witness` was given at all).
+    11. `SETTLE_NOT_DISCUSSED` / `SETTLE_DISCUSSION_UNANSWERED` -- create
         path only (see "Why `--attach` skips..." above; the identical
-        reasoning excuses `--remove` and `--reverse`, neither of which
-        places anything new). `--about` is resolved the identical way
+        reasoning excuses `--remove`, `--reverse` and `--done`, none of
+        which places anything new). `--about` is resolved the identical way
         `discuss`'s own `--about` already is (`_resolve_discuss_about`),
         then matched against the ledger by witness identity: ANY answered
         event satisfies this, never newest-wins (design "Discussion
         match") -- a later clarifying question must never retroactively
         erase an earlier answer, which would teach a caller not to ask
         one.
-    11. `SETTLE_HOLDER_ABSENT` -- `agreements_state`'s own already-computed
+    12. `SETTLE_HOLDER_ABSENT` -- `agreements_state`'s own already-computed
         `holders` is the candidate set; a target with none has nowhere this
-        command may write (or, for `--remove`/`--reverse`, nothing to
-        delete from), and it never invents a file, the same doctrine
-        `_chosen_holder` already states for a fresh position block.
-        Checked in every mode.
-    12. Create path: `SETTLE_HEADING_ABSENT` / `SETTLE_HEADING_AMBIGUOUS` --
+        command may write (or, for `--remove`/`--reverse`/`--done`, nothing
+        to delete from or flip), and it never invents a file, the same
+        doctrine `_chosen_holder` already states for a fresh position
+        block. Checked in every mode.
+    13. Create path: `SETTLE_HEADING_ABSENT` / `SETTLE_HEADING_AMBIGUOUS` --
         every holder's own `impl_position.locate_headings` hits, concatenated
         across all of them: zero, or more than one anywhere (two hits in
         one holder and one hit apiece in two holders read identically) --
         the caller owns both counts, because the locator itself never
         refuses (see its own docstring for why).
-        `--attach`, `--remove` AND `--reverse` paths: `SETTLE_TEXT_ABSENT`
-        / `SETTLE_TEXT_AMBIGUOUS` -- the identical discipline, one level
-        down, and the identical helper (`_locate_settled_text`) all three
-        modes call: every holder's own hits for the exact `--text`,
+        `--attach`, `--remove`, `--reverse` AND `--done` paths: `SETTLE_TEXT_
+        ABSENT` / `SETTLE_TEXT_AMBIGUOUS` -- the identical discipline, one
+        level down, and the identical helper (`_locate_settled_text`) all
+        four modes call: every holder's own hits for the exact `--text`,
         concatenated; zero or more than one refuses the same way, for the
         same reason -- which existing line receives the witness, is
-        deleted, or is reversed, is not decidable without a human choosing
-        when more than one line reads identically. Reused, not minted
-        twice: neither `--remove` nor `--reverse` mints a code of its own
-        here.
-    13. `--reverse` path only, checked after the text search narrows to one
+        deleted, is reversed, or is marked done, is not decidable without
+        a human choosing when more than one line reads identically.
+        Reused, not minted twice: none of `--remove`, `--reverse` or
+        `--done` mints a code of its own here.
+    14. `--reverse` path only, checked after the text search narrows to one
         holder's own bytes: `SETTLE_ALREADY_REVERSED` -- see "What happens
         when the section already quotes the text," above -- THEN
         `SETTLE_HEADING_ABSENT` / `SETTLE_HEADING_AMBIGUOUS` over
@@ -7593,14 +7707,25 @@ def cmd_settle(args: argparse.Namespace) -> dict:
         path already names both for a missing or ambiguous heading; this
         is the identical vocabulary applied to a heading this mode reads
         rather than places under.
-    14. Create path only: `SETTLE_COLLIDES_UNNAMED` / `SETTLE_SUPERSEDES_UNKNOWN`
+    15. `--done` path only, checked after the identical text search
+        narrows to one holder's own bytes: `SETTLE_ALREADY_DONE` -- the
+        located line's own mark is already `x` or `X` -- THEN `SETTLE_NOT_
+        WITNESSED` -- the located line carries no `` `test_<id>` `` token
+        (see "Why marking done requires a witness," above, for the full
+        argument). Checked in this order, not the reverse: an already-done
+        line is refused on that fact alone, regardless of whether it also
+        happens to carry a witness, the identical "state check before
+        precondition check" ordering `--reverse`'s own `SETTLE_ALREADY_
+        REVERSED` (14, above) already keeps ahead of its own heading
+        checks.
+    16. Create path only: `SETTLE_COLLIDES_UNNAMED` / `SETTLE_SUPERSEDES_UNKNOWN`
         -- the same `_agreement_collides` `discuss` already repairs
         (excludes the position block's own item lines), run over the
         witness's own operand. A caller naming a superseded item must name
         one actually IN that computed list -- an unchecked string would be
         a rubber stamp on a supersession this command cannot itself verify
         happened in the document.
-    15. `--attach` path only: `SETTLE_ALREADY_WITNESSED` -- the one located
+    17. `--attach` path only: `SETTLE_ALREADY_WITNESSED` -- the one located
         line already carries a `` `test_<id>` `` token. `--attach` never
         replaces one; there is no separate flag that does, so the only way
         to change an existing witness today is the same "unsupported,
@@ -7608,11 +7733,11 @@ def cmd_settle(args: argparse.Namespace) -> dict:
         (see `--witness`'s own help) -- adding a silent-replace path here
         would let one automated call quietly overwrite a binding another
         call, or a human, put there on purpose.
-    16. `--remove` path only: `SETTLE_NOT_REVERSED` -- the located line's
+    18. `--remove` path only: `SETTLE_NOT_REVERSED` -- the located line's
         own exact text is not quoted (bold, possibly truncated) under any
         `## Reversed` heading in the same holder file. See "The guard
         removal must pass," above, for the full argument. The mirror image
-        of `--reverse`'s own `SETTLE_ALREADY_REVERSED` (13, above): one
+        of `--reverse`'s own `SETTLE_ALREADY_REVERSED` (14, above): one
         refuses until the explanation exists, the other refuses once it
         already does.
 
@@ -7662,6 +7787,7 @@ def cmd_settle(args: argparse.Namespace) -> dict:
     attach = bool(getattr(args, "attach", False))
     remove = bool(getattr(args, "remove", False))
     reverse = bool(getattr(args, "reverse", False))
+    done = bool(getattr(args, "done", False))
 
     if attach and (args.under or args.supersedes is not None):
         raise Refused(
@@ -7691,6 +7817,17 @@ def cmd_settle(args: argparse.Namespace) -> dict:
             "NEW item needs), and --witness (nothing is written to the "
             "deleted line, so there is no token to bind) do not apply and "
             "must be omitted.")
+    if done and (attach or remove or reverse or args.under
+                 or args.supersedes is not None or witness or paragraph):
+        raise Refused(
+            "SETTLE_DONE_CONFLICT",
+            "--done flips an already-settled line's own mark to done; "
+            "--attach, --remove and --reverse (three other, mutually "
+            "exclusive modes), --under and --supersedes (what a NEW item "
+            "needs), --witness (bound separately, by --attach, before a "
+            "line may ever be marked done through this command) and "
+            "--paragraph (only --reverse ever writes one) do not apply "
+            "and must be omitted.")
     if paragraph and not reverse:
         raise Refused(
             "SETTLE_REVERSE_CONFLICT",
@@ -7710,21 +7847,21 @@ def cmd_settle(args: argparse.Namespace) -> dict:
             "never authors the reasoning behind one -- --paragraph is the "
             "caller's own explanation of why the agreement was turned "
             "over and cannot be omitted or blank.")
-    if not attach and not remove and not reverse:
+    if not attach and not remove and not reverse and not done:
         if not args.under:
             raise Refused(
                 "SETTLE_UNDER_REQUIRED",
                 "--under is required to place a new item; it names where "
                 "the write goes and has no default. Omit it only together "
-                "with --attach, --remove or --reverse, none of which "
-                "places a new item under a heading.")
+                "with --attach, --remove, --reverse or --done, none of "
+                "which places a new item under a heading.")
         if not args.about:
             raise Refused(
                 "SETTLE_ABOUT_REQUIRED",
                 "--about is required to place a new item; it names the "
                 "discussion this placement is bound to. Omit it only "
-                "together with --attach, --remove or --reverse, none of "
-                "which places anything new.")
+                "together with --attach, --remove, --reverse or --done, "
+                "none of which places anything new.")
     if witness and not re.fullmatch(r"test_[A-Za-z0-9_]+", witness):
         raise Refused(
             "SETTLE_WITNESS_MALFORMED",
@@ -7734,7 +7871,7 @@ def cmd_settle(args: argparse.Namespace) -> dict:
             "witness `agreements_state` can read back.")
 
     about = None
-    if not attach and not remove and not reverse:
+    if not attach and not remove and not reverse and not done:
         evidence = _position_write_evidence(target, name)
         position = position_state(target, name, evidence, None, None)
         about = _resolve_discuss_about(args.about, position)
@@ -7896,6 +8033,45 @@ def cmd_settle(args: argparse.Namespace) -> dict:
         spliced = data
         for edit_span, new_bytes in edits:
             spliced = impl_position.splice(spliced, new_bytes, edit_span)
+    elif done:
+        candidates: list[tuple[Path, bytes, dict]] = []
+        for holder in holders:
+            holder_path = target / holder
+            holder_data = holder_path.read_bytes()
+            for span in _locate_settled_text(holder_data, text):
+                candidates.append((holder_path, holder_data, span))
+
+        if not candidates:
+            raise Refused(
+                "SETTLE_TEXT_ABSENT",
+                f"{text!r} matches no existing checklist line across "
+                f"{len(holders)} holder(s) under {name}/.")
+        if len(candidates) > 1:
+            raise Refused(
+                "SETTLE_TEXT_AMBIGUOUS",
+                f"{text!r} matches {len(candidates)} existing checklist "
+                f"lines across {name}/'s holder(s); which one this call "
+                "marks done is not decidable without a human choosing.")
+        target_path, data, span = candidates[0]
+
+        raw_line = data[span["start"]:span["end"]]
+        located = AGREEMENT_LINE.match(raw_line.decode("utf-8").rstrip())
+        if located.group("mark") in ("x", "X"):
+            raise Refused(
+                "SETTLE_ALREADY_DONE",
+                f"{text!r} is already marked done "
+                f"(`[{located.group('mark')}]`); --done never re-ticks an "
+                "already-ticked line.")
+        if not located.group("witness"):
+            raise Refused(
+                "SETTLE_NOT_WITNESSED",
+                f"{text!r} carries no witness token; --done refuses to "
+                "mark an agreement done that names nothing a test could "
+                "contradict -- bind one first with `settle --attach "
+                "--witness test_<id>`.")
+
+        new_line = _render_done_line(raw_line)
+        spliced = impl_position.splice(data, new_line, span)
     else:
         heading = args.under.strip()
         candidates = []
@@ -7954,7 +8130,8 @@ def cmd_settle(args: argparse.Namespace) -> dict:
         target / name / ".implementation" / "position.jsonl",
         {"kind": "settle", "session": args.session, "about": about,
          "text": text, "under": heading, "witness": witness, "attach": attach,
-         "remove": remove, "reverse": reverse, "paragraph": paragraph,
+         "remove": remove, "reverse": reverse, "done": done,
+         "paragraph": paragraph,
          "holder": str(target_path.relative_to(target)),
          "supersedes": supersedes, "collides": collides, "at": recorded_at})
 
@@ -7962,7 +8139,7 @@ def cmd_settle(args: argparse.Namespace) -> dict:
         "command": "settle", "target": str(target), "name": name,
         "status": "written", "holder": str(target_path.relative_to(target)),
         "about": about, "text": text, "under": heading, "witness": witness,
-        "attach": attach, "remove": remove, "reverse": reverse,
+        "attach": attach, "remove": remove, "reverse": reverse, "done": done,
         "paragraph": paragraph, "supersedes": supersedes,
         "collides": collides, "recordedAt": recorded_at,
     }
@@ -10769,7 +10946,11 @@ def main(argv: list[str] | None = None) -> int:
                                 "SETTLE_ATTACH_CONFLICT if given. Refused "
                                 "SETTLE_REMOVE_CONFLICT if given together "
                                 "with --remove -- the two write modes are "
-                                "mutually exclusive")
+                                "mutually exclusive; --attach combined with "
+                                "--reverse or --done is refused SETTLE_"
+                                "REVERSE_CONFLICT / SETTLE_DONE_CONFLICT "
+                                "instead, checked on that other flag's own "
+                                "side")
             p.add_argument("--remove", action="store_true",
                            help="delete a line ALREADY settled outright, "
                                 "matched by its exact --text, instead of "
@@ -10797,7 +10978,10 @@ def main(argv: list[str] | None = None) -> int:
                                 "--supersedes and --witness do not apply "
                                 "with --remove and are refused "
                                 "SETTLE_REMOVE_CONFLICT if given, and so "
-                                "are --attach and --reverse themselves")
+                                "are --attach and --reverse themselves; "
+                                "--done combined with --remove is refused "
+                                "SETTLE_DONE_CONFLICT instead, checked on "
+                                "--done's own side")
             p.add_argument("--reverse", action="store_true",
                            help="one transaction that WRITES a new ## "
                                 "Reversed entry and DELETES the settled "
@@ -10827,7 +11011,9 @@ def main(argv: list[str] | None = None) -> int:
                                 "do. --under, --supersedes and --witness do "
                                 "not apply and are refused SETTLE_REVERSE_"
                                 "CONFLICT if given, and so are --attach and "
-                                "--remove themselves")
+                                "--remove themselves; --done combined with "
+                                "--reverse is refused SETTLE_DONE_CONFLICT "
+                                "instead, checked on --done's own side")
             p.add_argument("--paragraph", default=None,
                            help="the caller-authored prose placed after the "
                                 "derived bold quote in a new ## Reversed "
@@ -10837,6 +11023,25 @@ def main(argv: list[str] | None = None) -> int:
                                 "REVERSE_CONFLICT if given at all -- in "
                                 "every other mode, since none of them write "
                                 "one")
+            p.add_argument("--done", action="store_true",
+                           help="flip an already-settled line's own mark "
+                                "from `[ ]` to `[x]`, matched by its exact "
+                                "--text, instead of placing, attaching or "
+                                "removing anything (design 'the tick this "
+                                "class closes'). Refused SETTLE_NOT_"
+                                "WITNESSED unless the located line already "
+                                "carries a `` `test_<id>` `` token -- a "
+                                "tick asserts the work is done, and this "
+                                "command refuses to author that assertion "
+                                "for a line nobody can point a test at; "
+                                "bind one first with `settle --attach`. "
+                                "Refused SETTLE_ALREADY_DONE if the located "
+                                "line's own mark is already `x` or `X`. "
+                                "--under, --supersedes, --witness and "
+                                "--paragraph do not apply with --done and "
+                                "are refused SETTLE_DONE_CONFLICT if given, "
+                                "and so are --attach, --remove and "
+                                "--reverse themselves")
         if name == "defect":
             p.add_argument("--file", required=True,
                            help="path to the forge file this declares "

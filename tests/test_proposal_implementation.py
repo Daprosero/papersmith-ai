@@ -16308,6 +16308,259 @@ class SettleReverseCommandTests(unittest.TestCase):
         self.assertEqual(state["open"], [])
 
 
+class SettleDoneCommandTests(unittest.TestCase):
+    """`settle --done` -- flips an already-settled line's own mark from
+    `[ ]` to `[x]`, matched by its exact `--text` (design "the tick this
+    class closes"). This is the last member of the class `--attach`,
+    `--remove` and `--reverse` already close: editing an agreement's text
+    is `--reverse` then place, moving one between sections is `--remove`
+    then place elsewhere -- both compositions of verbs that already
+    existed. There was no composition that ticked one; every one of a real
+    target's 90 ticked agreements was typed by hand before this landed.
+
+    Guarded on purpose -- refused `SETTLE_NOT_WITNESSED` unless the located
+    line already carries a `` `test_<id>` `` token (see `cmd_settle`'s own
+    docstring, "Why marking done requires a witness", for the full
+    argument): a tick asserts the work is done, and a line nobody can point
+    a test at cannot assert that through this command. `settle --attach`
+    is the one way to put a witness there first.
+    """
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_e2e_settle_done_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text("", encoding="utf-8")
+        return box
+
+    def run_cli(self, *args, stdin=None):
+        return subprocess.run([sys.executable, str(CLI), *args], input=stdin,
+                              capture_output=True, text=True, cwd=FORGE)
+
+    def _settle(self, box, **overrides):
+        args = {"target": str(box), "name": "Method", "session": "s1",
+                "done": True, "text": "an already-settled item"}
+        args.update(overrides)
+        argv = ["settle"]
+        for flag, value in args.items():
+            if value is None or value is False:
+                continue
+            if value is True:
+                argv += [f"--{flag}"]
+                continue
+            argv += [f"--{flag}", value]
+        return self.run_cli(*argv)
+
+    # --- the search: matched by exact text, same discipline as --attach ---
+
+    def test_done_refuses_when_text_matches_zero_lines(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] a different item `test_x`\n",
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_TEXT_ABSENT")
+
+    def test_done_refuses_when_text_matches_more_than_one_line(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] an already-settled item `test_a`\n\n"
+            "## Reversed\n\n- [ ] an already-settled item `test_b`\n",
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_TEXT_AMBIGUOUS")
+
+    def test_done_refuses_holder_absent(self):
+        box = self._box()
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_HOLDER_ABSENT")
+
+    # --- pure-argv shape: --done is a fourth, mutually exclusive mode ---
+
+    def test_done_refuses_combined_with_attach(self):
+        box = self._box()
+        proc = self._settle(box, attach=True, witness="test_the_thing")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_DONE_CONFLICT")
+
+    def test_done_refuses_combined_with_remove(self):
+        box = self._box()
+        proc = self._settle(box, remove=True)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_DONE_CONFLICT")
+
+    def test_done_refuses_combined_with_reverse(self):
+        box = self._box()
+        proc = self._settle(box, reverse=True, paragraph="because")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_DONE_CONFLICT")
+
+    def test_done_refuses_combined_with_under(self):
+        box = self._box()
+        proc = self._settle(box, under="## Ladder")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_DONE_CONFLICT")
+
+    def test_done_refuses_combined_with_supersedes(self):
+        box = self._box()
+        proc = self._settle(box, supersedes="some other text")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_DONE_CONFLICT")
+
+    def test_done_refuses_combined_with_witness(self):
+        box = self._box()
+        proc = self._settle(box, witness="test_the_thing")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_DONE_CONFLICT")
+
+    def test_done_refuses_combined_with_paragraph(self):
+        box = self._box()
+        proc = self._settle(box, paragraph="because")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_DONE_CONFLICT")
+
+    # --- the guard: a tick must rest on a witness ---
+
+    def test_done_refuses_a_line_with_no_witness_at_all(self):
+        box = self._box()
+        before = "# Agreed\n\n## Ladder\n\n- [ ] an already-settled item\n"
+        (box / "Method" / "AGREED.md").write_text(before, encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_NOT_WITNESSED")
+        # Refused before any write.
+        after = (box / "Method" / "AGREED.md").read_bytes()
+        self.assertEqual(after, before.encode("utf-8"))
+
+    def test_done_refuses_a_line_already_ticked(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [x] an already-settled item `test_the_thing`\n",
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_ALREADY_DONE")
+
+    def test_done_refuses_a_line_already_ticked_uppercase_mark(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [X] an already-settled item `test_the_thing`\n",
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_ALREADY_DONE")
+
+    # --- the happy path: byte-identical except the flipped mark ---
+
+    def test_done_flips_the_mark_byte_identical_otherwise(self):
+        box = self._box()
+        before = ("# Agreed\n\nSome prose above the section.\n\n"
+                  "## Ladder\n\n- [ ] an already-settled item `test_the_thing`\n\n"
+                  "## Reversed\n\nA hand-written paragraph.\n")
+        (box / "Method" / "AGREED.md").write_text(before, encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["status"], "written")
+        self.assertEqual(result["done"], True)
+
+        after = (box / "Method" / "AGREED.md").read_bytes()
+        expected = before.replace(
+            "- [ ] an already-settled item `test_the_thing`\n",
+            "- [x] an already-settled item `test_the_thing`\n").encode("utf-8")
+        self.assertEqual(after, expected)
+
+    def test_done_on_a_star_bullet_is_byte_identical_otherwise(self):
+        box = self._box()
+        before = "# Agreed\n\n## Ladder\n\n* [ ] an already-settled item `test_the_thing`\n"
+        (box / "Method" / "AGREED.md").write_text(before, encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        after = (box / "Method" / "AGREED.md").read_bytes()
+        expected = before.replace(
+            "* [ ] an already-settled item `test_the_thing`\n",
+            "* [x] an already-settled item `test_the_thing`\n").encode("utf-8")
+        self.assertEqual(after, expected)
+
+    # --- the design decision: no discussion precondition for --done ---
+
+    def test_done_succeeds_with_zero_discuss_events_ever_recorded(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] an already-settled item `test_the_thing`\n",
+            encoding="utf-8")
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        self.assertFalse(ledger.exists())
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["status"], "written")
+
+    def test_done_appends_one_settle_event_flagged_done_true(self):
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] an already-settled item `test_the_thing`\n",
+            encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+        settle_events = [e for e in events if e["kind"] == "settle"]
+        self.assertEqual(len(settle_events), 1)
+        self.assertEqual(settle_events[0]["done"], True)
+        self.assertEqual(settle_events[0]["attach"], False)
+        self.assertEqual(settle_events[0]["remove"], False)
+        self.assertEqual(settle_events[0]["reverse"], False)
+        self.assertIsNone(settle_events[0]["about"])
+        self.assertIsNone(settle_events[0]["under"])
+
+    def test_done_read_back_by_agreements_state_when_the_witness_exists(self):
+        """The witness function genuinely exists in `tests/`, so the tick
+        reads as `unmeasured` (present, never executed by this CLI) rather
+        than `disagrees` (present as a token, absent from `tests/`)."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] an already-settled item `test_the_thing`\n",
+            encoding="utf-8")
+        (box / "tests" / "test_it.py").write_text(
+            "def test_the_thing():\n    pass\n", encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+
+        state = impl.agreements_state(box, "Method")
+        self.assertEqual(state["open"], [])
+        self.assertEqual(state["settled"], 1)
+        self.assertEqual(state["witness"]["unmeasured"],
+                         ["an already-settled item"])
+        self.assertEqual(state["witness"]["disagrees"], [])
+
+    def test_done_read_back_by_agreements_state_disagrees_when_the_witness_does_not_exist(self):
+        """The mirror case: the located line's witness token names no real
+        function under `tests/`. `agreements_state` -- not this command --
+        is the instrument that catches it, immediately after the tick, the
+        same as it would for any hand-ticked line."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n## Ladder\n\n- [ ] an already-settled item `test_the_thing`\n",
+            encoding="utf-8")
+        (box / "tests" / "test_it.py").write_text(
+            "def test_something_else():\n    pass\n", encoding="utf-8")
+        proc = self._settle(box)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+
+        state = impl.agreements_state(box, "Method")
+        self.assertEqual(state["witness"]["disagrees"],
+                         ["an already-settled item"])
+
+
 class SettleUnderAboutRequirednessTests(unittest.TestCase):
     """`--under` and `--about` are no longer unconditionally
     `argparse`-required (spec/design "attach, not place"): both are only
@@ -16382,6 +16635,10 @@ class AgreementWitnessSingleWritePathTests(unittest.TestCase):
     def test_render_reversed_entry_is_called_only_from_cmd_settle(self):
         self.assertEqual(
             self.call_site_functions("_render_reversed_entry"), {"cmd_settle"})
+
+    def test_render_done_line_is_called_only_from_cmd_settle(self):
+        self.assertEqual(
+            self.call_site_functions("_render_done_line"), {"cmd_settle"})
 
     def test_a_second_caller_would_be_caught(self):
         """Reachable-red by construction, over a scratch copy rather than
