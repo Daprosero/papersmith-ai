@@ -9047,6 +9047,14 @@ def cmd_close(args: argparse.Namespace) -> dict:
     ran. So the refresh genuinely can only add ticks *from this point
     forward*, but not because clearing a mark is impossible in general --
     "a caller can never close over marks it never re-derived".
+
+    **`DISCUSSION_UNANSWERED` proves a decision reached the record, never
+    that the operator authored it.** The ledger holds an answer; it holds
+    nothing about whose it was. An agent can open a question and answer it
+    itself, and no check here or downstream can tell that apart from a
+    person answering -- the CLI cannot know who typed. Stated rather than
+    softened, because a refusal whose name is broader than what it proves
+    is read as the wider guarantee by everyone who did not write it.
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
