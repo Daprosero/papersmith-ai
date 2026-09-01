@@ -6337,6 +6337,100 @@ def _resolve_shard_evidence(
     return shards_arrived, shards_current
 
 
+def _skipped_rung_detail(
+        items: list[dict], evidence: dict, levels: list[str],
+        target_level: str, recorded_level: str | None) -> str | None:
+    """Why this pass skips a rung, or `None` when it skips none: **to seal at
+    rung N, every leveled item must already grade as satisfied at rung N-1.**
+
+    Returns the refusal's detail rather than raising it, and the caller raises.
+    `GatingRefusalRosterTests` walks a gating command's own body for the
+    `Refused` literals it carries, and a code raised one call deep in a helper
+    is invisible to that walk -- so a rule this heavy would have entered the
+    engine with nobody having classified it. The refusal is kept where the
+    roster can see it; the reasoning is kept here, where it belongs.
+
+    The three checks above this one ask whether a rung was named, whether the
+    target declared it, and whether a leveled witness has a ladder to stand on.
+    None of them asks whether the rung *below* the named one was ever reached,
+    so a header could jump straight from the floor to the top of a target's own
+    ladder -- and the rung being skipped is exactly the one whose whole purpose
+    is proving the flow runs before anything is spent further up.
+
+    **Derived from state, never from history.** The obvious rule -- "was there
+    a prior pass at the rung below" -- reads the position ledger, and a target
+    that has never run this command has no ledger at all: the check would pass
+    vacuously on precisely the repositories it exists to stop, which is worse
+    than no check, because it looks like one. So the question is put to the
+    evidence instead, and put to it through `impl_position.derive` itself,
+    re-graded at the previous rung rather than by a second arithmetic beside
+    it: whatever "satisfied at rung N-1" means for a witness, it means the same
+    thing here as it does when the mark is written.
+
+    Four boundaries, each of them a decision rather than a fallout:
+
+    - **The first rung has no predecessor** (`target_index == 0`), so nothing is
+      checked there. A repository where nothing has run yet must still be able
+      to start, or the ladder has no bottom step.
+    - **Only a forward move is checked.** `recorded_level` is the rung the block
+      already on disk names, and a pass that does not climb above it -- a
+      re-seal at the same rung, a sticky refresh that restates it, a retreat to
+      a lower one -- is exempt. Two reasons, and they point the same way.
+      `position` is the instrument that measures; an instrument that refuses to
+      take a reading because the reading is bad hides the regression it exists
+      to report. And a retreat asserts less than the header already did: it
+      spends nothing and skips nothing, so there is nothing here to refuse. No
+      skip can be laundered through the exemption either, because a move that
+      does not climb cannot raise the recorded rung, and every move that does
+      climb is checked against the rung directly below its own target -- never
+      against wherever it happened to come from.
+    - **Two-state items do not participate.** Their verdict is computed without
+      the ladder and is identical at every rung (`derive`: `satisfied` *is*
+      `derived` for them), so they carry no information about which rung was
+      reached. Folding them in would refuse a legitimate advance because some
+      unrelated boolean step is still open -- whole-sequence completeness
+      wearing this rule's name. Their own ordering is already held, within a
+      rung, by `impl_availability.launch_available`'s `SEQUENCE_NOT_REACHED`.
+    - **An unmeasured leveled item is not attainment.** `satisfied is None`
+      means nobody looked, and "we did not look" is not "it has been reached" --
+      the same distinction `derive` keeps one level down by refusing to fold
+      `None` into the floor rung. This is also what separates this rule from a
+      cheaper one that merely counts positions on the ladder: a single-step
+      advance is refused too when the step below it is not shown attained.
+
+    A target that declares no ladder (`levels == []`) reaches none of this: it
+    has no rungs, so it has no progression to enforce, and `level_index` would
+    answer `None` for every name anyway.
+    """
+    target_index = impl_position.level_index(levels, target_level)
+    if not levels or not target_index:
+        # `not target_index` covers both `None` (a name off the ladder -- an
+        # undeclared ladder cannot be climbed, and a declared one already
+        # refused an unknown rung above) and `0` (the floor, which has no
+        # predecessor to attain).
+        return None
+    recorded_index = impl_position.level_index(levels, recorded_level)
+    if recorded_index is not None and target_index <= recorded_index:
+        return None
+    previous = levels[target_index - 1]
+    graded = impl_position.derive(items, {**evidence, "targetLevel": previous})
+    short = [(item, result) for item, result in zip(items, graded)
+            if not result["twostate"] and result["satisfied"] is not True]
+    if not short:
+        return None
+    named = "; ".join(
+        f"item {item['ordinal']} reached "
+        + (f"{result['derived']!r}" if result["derived"] is not None
+          else "nothing measurable")
+        for item, result in short)
+    return (
+        f"--target-level {target_level!r} sits above {previous!r} on this "
+        f"target's own declared ladder, and {previous!r} is not attained by "
+        f"the evidence as it stands ({named}); a position never skips a rung "
+        "going forward, so the rung below has to be reached before this one "
+        "can be sealed.")
+
+
 def _position_write_evidence(
         target: Path, name: str, shards_root: str | None = None) -> dict:
     """The same evidence shape `position_state` is handed through `probe`
@@ -6718,6 +6812,15 @@ def cmd_position(args: argparse.Namespace) -> dict:
 
     evidence = _position_write_evidence(target, name, getattr(args, "shards", None))
     evidence["targetLevel"] = target_level
+    # Read before a single mark is derived, and so before a single byte is
+    # written: the three checks above decide whether the rung NAMED is a legal
+    # name, and this one decides whether the rung is legally REACHABLE from
+    # where the evidence currently stands.
+    skipped = _skipped_rung_detail(
+        items, evidence, declared_levels, target_level,
+        existing_block["target"] if existing_block is not None else None)
+    if skipped is not None:
+        raise Refused("POSITION_RUNG_SKIPPED", skipped)
     derived = impl_position.derive(items, evidence)
     wrote, left, unmeasured, unbacked = [], [], [], []
     for item, result in zip(items, derived):
@@ -10901,8 +11004,17 @@ def cmd_materialize(args: argparse.Namespace) -> dict:
 #: and every one can stop a session dead. `GatingRefusalRosterTests` walks
 #: exactly these functions for the codes they raise, so adding a command here
 #: forces its refusals through the roster below.
+#:
+#: `position` is here for the reason the criterion states rather than by
+#: history: it reads the target before it will write, and every one of its
+#: refusals stops a session -- `POSITION_HOLDER_AMBIGUOUS` and
+#: `POSITION_LEVELS_UNDECLARED` sat outside this roster and therefore reached
+#: their reader as a bare code, which is the exact defect the roster exists to
+#: make impossible. It is also the only place `POSITION_RUNG_SKIPPED` can be
+#: raised: the rung is decided where the header is sealed, not where a later
+#: command reads it back.
 GATING_COMMANDS = ("apply", "admit", "gate", "offer", "close", "step",
-                   "settle", "materialize")
+                   "settle", "materialize", "position")
 
 #: The caller typed something the caller can retype. The detail already names
 #: the flag, the token or the mutual exclusion, so nothing is published beside
@@ -11000,6 +11112,31 @@ GATING_REFUSALS: dict[str, str] = {
     "MATERIALIZE_MODE_CONFLICT": INVOCATION_DEFECT,
     "PLAN_REQUIRED": INVOCATION_DEFECT,
     "SEED_REQUIRED": INVOCATION_DEFECT,
+    # --- position ----------------------------------------------------------
+    "POSITION_SEQUENCE_AND_RECONCILE": INVOCATION_DEFECT,  # drop one of the two
+    "POSITION_SEQUENCE_UNREADABLE": INVOCATION_DEFECT,     # fix the JSON typed
+    "POSITION_SEQUENCE_EMPTY": INVOCATION_DEFECT,          # pass a real sequence
+    "POSITION_BLOCK_EXISTS": INVOCATION_DEFECT,            # pass --replace
+    # The second arguable one, and it lands the other side of the line from
+    # `GATE_AUTHORIZATION_REQUIRED`: the rung names are the target's own, so a
+    # caller may have to go read `__levels__` before typing one -- but reading
+    # is not acting, nothing in the repository has to change, and the same call
+    # with the flag added goes through. `POSITION_ABSENT`'s own resolution
+    # already publishes that reading as a question, at the command that can
+    # answer it.
+    "POSITION_TARGET_LEVEL_REQUIRED": INVOCATION_DEFECT,
+    "POSITION_TARGET_LEVEL_UNKNOWN": INVOCATION_DEFECT,    # the detail lists them
+    # A ladder is declared in the target's own benchmark package, so no
+    # argument this command accepts can supply one.
+    "POSITION_LEVELS_UNDECLARED": WORK_STATE,
+    # Two files carry the block; which one holds the section is a decision
+    # about the documents, and no flag names a holder.
+    "POSITION_HOLDER_AMBIGUOUS": WORK_STATE,
+    # Nothing about the invocation clears a skipped rung: the work the rung
+    # below asks for has to actually happen, and until it does every spelling
+    # of the call is refused. So the exit published is the rung this target CAN
+    # seal next, read from its own ladder.
+    "POSITION_RUNG_SKIPPED": WORK_STATE,
 }
 
 
@@ -11069,6 +11206,68 @@ def _resolve_position_disagrees(args) -> dict:
         f"{execution} && {_refusal_position_command(args)}")
 
 
+def _position_recorded_level(target: Path, name: str) -> str | None:
+    """The rung the block already on disk names, or `None` when no block does.
+
+    A read, never a second validation: `cmd_position` has already located the
+    block from its own scan by the time it refuses, and this exists only so a
+    resolution built at the `except Refused` chokepoint -- which is handed
+    nothing but `args` -- can reach the same fact without the command passing
+    it along. Ambiguity is not re-refused here (the first block wins): this is
+    a builder for a refusal that already happened, and a resolution that raised
+    on its way to being published would cost the reader both.
+    """
+    product = target / name
+    if not product.is_dir():
+        return None
+    for path in sorted(product.glob("*.md")):
+        if not path.is_file():
+            continue
+        block = impl_position.locate_block(path.read_bytes(), allow_legacy=True)
+        if block is not None:
+            return block.get("target")
+    return None
+
+
+def _resolve_position_rung_skipped(args) -> dict:
+    """The rung this target can seal next, and the question of what has to run
+    before the one above it can be claimed.
+
+    A question rather than a command, for the reason `POSITION_ABSENT`'s own
+    resolution states: the command that would clear this is the one that
+    refused, and publishing the caller's own call back to them is advice that
+    refuses on its own advice. What can be named concretely is the next rung --
+    one above whatever the block on disk already records, or the floor when
+    nothing records anything -- so that is what the question carries, together
+    with the seal command for it.
+
+    Every rung name here is read off the target's own `__levels__` at the
+    moment of refusal. The forge holds no rung vocabulary of its own (see
+    `resolve_levels_declaration`), so when a ladder cannot be read at all the
+    question still asks the same thing and simply names no rung, rather than
+    inventing one on the repository's behalf.
+    """
+    target = Path(str(getattr(args, "target", "")))
+    name = str(getattr(args, "name", ""))
+    levels = resolve_levels_declaration(target, name)
+    recorded = impl_position.level_index(
+        levels, _position_recorded_level(target, name))
+    following = None
+    if levels:
+        following = levels[0] if recorded is None else levels[
+            min(recorded + 1, len(levels) - 1)]
+    named = (
+        f" The next rung this target can seal is {following!r}: run `"
+        + _refusal_position_command(args, "--target-level", following) + "`."
+        if following else "")
+    return _refusal_question(
+        args,
+        "this pass aims at a rung whose predecessor on the target's own "
+        "ladder is not attained by anything measurable now, and a position "
+        "never skips a rung going forward; what has to run before the rung "
+        "above it can be claimed, and why?" + named)
+
+
 #: One builder per work state. Every one of them is reached only by its own
 #: code, and every one publishes something a reader runs unedited -- a code
 #: with nothing real to publish is a misclassification, not an empty field, and
@@ -11134,6 +11333,17 @@ _WORK_STATE_RESOLUTIONS = {
               "benchmark package now, or name the directory to measure "
               "against, and why?"),
     "POSITION_DISAGREES": _resolve_position_disagrees,
+    "POSITION_RUNG_SKIPPED": _resolve_position_rung_skipped,
+    "POSITION_LEVELS_UNDECLARED": lambda args: _refusal_question(
+        args, "an item in this sequence is marked as reaching a rung and the "
+              "target's benchmark package declares no `__levels__` ladder for "
+              "it to reach; which rungs does this target climb, in order, and "
+              "why?"),
+    "POSITION_HOLDER_AMBIGUOUS": lambda args: _refusal_question(
+        args, "more than one markdown file under this product carries a "
+              "`<!-- position -->` block, and no argument this command takes "
+              "can tell them apart; which file holds the section, and should "
+              "the other block be removed, and why?"),
     "AGREEMENT_DISAGREES": lambda args: _refusal_question(
         args, "a ticked agreement names a witness function that is absent "
               "from a fully-parsed tests/ (the refusal detail names it); "

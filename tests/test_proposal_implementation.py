@@ -13563,6 +13563,304 @@ class PositionCommandTests(unittest.TestCase):
         self.assertFalse((box / "Method" / ".implementation" / "position.jsonl").exists())
 
 
+class PositionRungLadderTests(unittest.TestCase):
+    """A position may never skip a rung going forward.
+
+    `__levels__` names an ordered ladder and `--target-level` names the rung a
+    pass aims at. Three checks already guarded that flag -- a rung must be
+    named, it must be one the target declared, and a leveled witness needs a
+    ladder to exist -- and not one of them asks whether the rung *below* the
+    named one was ever reached. `--target-level <third rung>` was accepted on a
+    repository whose evidence had not left the floor.
+
+    **Derived from state, never from history.** The rule could have been
+    written against the position ledger -- "was there a prior pass at the rung
+    below" -- and it is deliberately not: a target that has never run this
+    command has no ledger at all, so a history check would pass vacuously on
+    exactly the repositories it exists to stop. The predicate asks the evidence
+    instead: *to seal at rung N, every leveled item in the sequence must
+    already grade as satisfied at rung N-1*, graded by `impl_position.derive`
+    itself at that previous rung rather than by a second, parallel arithmetic.
+
+    The ladder names below (`floor`/`middle`/`top`) are this test's own
+    invention. The forge holds no rung vocabulary -- it knows only the ordered
+    list a target declared -- so a fixture that borrowed a real target's rung
+    names would be teaching the suite a word the engine must never learn.
+    """
+
+    PROPOSAL_TEXT = PositionCommandTests.PROPOSAL_TEXT
+    PROPOSAL_SHA256 = PositionCommandTests.PROPOSAL_SHA256
+    LADDER = ["floor", "middle", "top"]
+
+    def _proposals(self):
+        return PositionCommandTests._proposals(self)
+
+    def _box(self, ladder=LADDER):
+        box = FORGE / "implementations" / f"_e2e_position_rung_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            "" if ladder is None else f"__levels__ = {ladder!r}\n", encoding="utf-8")
+        return box
+
+    def _shards(self, box):
+        """An empty directory of returned shards -- present, so `shardsArrived`
+        is `[]` (a definite "asked, and nothing came back") rather than `None`
+        ("nobody asked"). That is what puts a `@shard:level` witness on the
+        floor rung instead of leaving it unmeasured, and the two cases below
+        need to be told apart by exactly that difference."""
+        root = box / "shards"
+        root.mkdir(parents=True, exist_ok=True)
+        return str(root)
+
+    def run_cli(self, *args, stdin=None, proposals=None):
+        return PositionCommandTests.run_cli(self, *args, stdin=stdin,
+                                            proposals=proposals)
+
+    def _block(self, body, target, sha256=None):
+        return (f"<!-- position revision=r1.md sha256={sha256 or 'a' * 64} "
+                f"derivedAt=2026-08-27T00:00:00Z session=s0 target={target} -->\n"
+                f"{body}<!-- /position -->\n")
+
+    LEVELED = "- [ ] 1. Distribute the campaign. `@shard:level s1`\n"
+
+    # --- the rule itself -----------------------------------------------------
+
+    def test_a_pass_that_skips_a_rung_is_refused(self):
+        """The headline. The block sits at the floor, the evidence reaches the
+        floor, and the caller asks for the top -- the rung between them was
+        never attained, so the seal is refused rather than recorded."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self._block(self.LEVELED, "floor"), encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "top", "--shards", self._shards(box),
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["code"], "POSITION_RUNG_SKIPPED")
+        # The refusal names the rung that was skipped, not just the one asked
+        # for: a reader who is told only "top is refused" still does not know
+        # what to do next.
+        self.assertIn("middle", payload["detail"])
+        # And nothing was written: the header on disk still records the floor.
+        self.assertIn("target=floor",
+                      (box / "Method" / "AGREED.md").read_text(encoding="utf-8"))
+
+    def test_a_legitimate_one_rung_advance_is_still_allowed(self):
+        """The other pole, and the one that keeps the guard from being a wall.
+        Identical repository, identical evidence -- only the rung asked for
+        differs, and the one directly above the attained rung goes through."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self._block(self.LEVELED, "floor"), encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "middle", "--shards", self._shards(box),
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["status"], "written")
+        self.assertEqual(result["targetLevel"], "middle")
+
+    def test_one_rung_forward_is_refused_when_the_rung_below_is_unmeasured(self):
+        """State, not ordinals. A guard that only counted positions on the
+        ladder would wave this through -- it is a single step. The rung below
+        is not *attained*, though: without a shards directory nothing measured
+        the one leveled witness at all, and 'we did not look' is not 'it has
+        been reached'. This is the case that separates the predicate this
+        change builds from the cheaper one it is not."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self._block(self.LEVELED, "floor"), encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "middle",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_RUNG_SKIPPED")
+
+    def test_a_fresh_header_may_seal_above_the_floor_when_the_evidence_is_there(self):
+        """History, not consulted. Nothing has ever been sealed here -- no
+        block, no ledger, nothing to read a prior pass out of -- and the second
+        rung is still reachable, because the evidence on disk currently grades
+        the sequence as satisfied at the first. A rule written against the
+        ledger would refuse this repository forever."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n- [x] 1. Something already settled.\n", encoding="utf-8")
+        sequence = json.dumps([
+            {"text": "Distribute the campaign.",
+             "witness": {"kind": "shard", "operand": "s1", "twostate": False}}])
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "middle", "--shards", self._shards(box),
+                            "--sequence", "-", stdin=sequence,
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["targetLevel"], "middle")
+
+    # --- the five boundaries the rule is defined against ---------------------
+
+    def test_the_first_rung_needs_no_predecessor_on_an_empty_repository(self):
+        """Index zero has nothing below it, and a repository where nothing has
+        run yet must still be able to start. No shards directory, so the one
+        leveled witness measures to nothing at all -- and the floor is still
+        sealable, because the check never runs there."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n- [x] 1. Something already settled.\n", encoding="utf-8")
+        sequence = json.dumps([
+            {"text": "Distribute the campaign.",
+             "witness": {"kind": "shard", "operand": "s1", "twostate": False}}])
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "floor",
+                            "--sequence", "-", stdin=sequence,
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["targetLevel"], "floor")
+
+    def test_re_sealing_the_same_rung_survives_evidence_that_regressed(self):
+        """`position` is the instrument that measures, and an instrument that
+        refuses to read when the reading is bad hides exactly what it exists to
+        report. The block already records the middle rung; the shards it was
+        sealed against are gone, so the rung below it no longer grades as
+        attained -- and the refresh still runs, writing down what is true now."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self._block(self.LEVELED, "middle", sha256=self.PROPOSAL_SHA256),
+            encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["targetLevel"], "middle")
+
+    def test_moving_back_down_the_ladder_is_always_allowed(self):
+        """A retreat is not a skip. Re-rehearsing at a lower rung spends
+        nothing and asserts less than the header already did, and refusing it
+        would strand an operator whose remote work failed at the one honest
+        thing left to do.
+
+        The retreat lands on the MIDDLE rung, not the floor: a retreat to the
+        floor is exempt anyway (index zero has no predecessor), so it would
+        prove nothing about the forward-only rule. This one has a predecessor,
+        and that predecessor is unmeasured here -- so only the exemption lets
+        it through.
+        """
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self._block(self.LEVELED, "top"), encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "middle",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["targetLevel"], "middle")
+
+    def test_retreating_all_the_way_to_the_floor_is_allowed_too(self):
+        """The other retreat, kept because it is the one an operator actually
+        types after a remote rung failed: back to the bottom of the ladder,
+        with nothing measurable anywhere."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self._block(self.LEVELED, "top"), encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "floor",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["targetLevel"], "floor")
+
+    def test_a_target_that_declares_no_ladder_is_untouched(self):
+        """No `__levels__`, no rungs, no progression to enforce. The header may
+        name whatever it names, exactly as it did before this rule existed --
+        the same silence `POSITION_TARGET_LEVEL_UNKNOWN` already keeps for an
+        undeclared ladder."""
+        box = self._box(ladder=None)
+        (box / "Method" / "AGREED.md").write_text(
+            self._block("- [ ] 1. Rehearse. `@rehearsal job-none`\n", "final"),
+            encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "whatever-it-likes",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["targetLevel"], "whatever-it-likes")
+
+    def test_a_two_state_item_never_holds_the_ladder_back(self):
+        """Two-state items do not participate. Their verdict is computed
+        without the ladder and is identical at every rung, so folding them in
+        would make this refuse a legitimate advance for a reason that has
+        nothing to do with rungs -- whole-sequence completeness wearing this
+        rule's name. Here the leveled witness is on the floor and an open
+        two-state one sits beside it; the advance goes through."""
+        box = self._box()
+        body = (self.LEVELED
+                + "- [ ] 2. Rehearse. `@rehearsal job-none`\n")
+        (box / "Method" / "AGREED.md").write_text(
+            self._block(body, "floor"), encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "middle", "--shards", self._shards(box),
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["targetLevel"], "middle")
+
+    # --- the refusal obeys the roster ----------------------------------------
+
+    def test_the_refusal_publishes_the_next_rung_this_target_can_seal(self):
+        """A work state publishes what unblocks it. Nothing about the
+        invocation clears a skipped rung -- the work below it has to actually
+        happen -- so the payload carries the rung this target can seal next,
+        read from the target's own ladder, and the `discuss` command that opens
+        the decision."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self._block(self.LEVELED, "floor"), encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "top", "--shards", self._shards(box),
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["resolve"]["kind"], "question")
+        self.assertIn("middle", payload["resolve"]["question"])
+        self.assertIn("implementation_cli.py discuss",
+                      payload["resolve"]["command"])
+
+    def test_the_published_discuss_command_is_directly_runnable(self):
+        """A published command that does not parse is prose in a monospace
+        font. This runs the one the engine published, unedited."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self._block(self.LEVELED, "floor"), encoding="utf-8")
+        proposals = self._proposals()
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "top", "--shards", self._shards(box),
+                            proposals=proposals)
+        published = json.loads(proc.stdout)["resolve"]["command"]
+        rerun = self.run_cli(*shlex.split(published)[1:], proposals=proposals)
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+
+    def test_position_is_a_gating_command_and_the_code_is_a_work_state(self):
+        """The roster is where the decision lives. `position` refuses on the
+        repository's own state and can stop a session dead -- the criterion
+        `GATING_COMMANDS` states for itself -- so its refusals are classified
+        there, and this one is a work state."""
+        self.assertIn("position", impl.GATING_COMMANDS)
+        self.assertEqual(impl.GATING_REFUSALS["POSITION_RUNG_SKIPPED"],
+                         impl.WORK_STATE)
+
+
 class DefectCommandTests(unittest.TestCase):
     """`defect` — declares a forge file broken (design decisions 1-4,
     `maintenance-blocks-it-does-not-mix`). These tests prove only the
@@ -21426,8 +21724,12 @@ class LedgerIsARequiredIgnoreTests(unittest.TestCase):
 _ENGLISH_COUNTS = {
     9: "Nine", 10: "Ten", 19: "Nineteen",
     26: "Twenty-six", 27: "Twenty-seven", 28: "Twenty-eight",
-    29: "Twenty-nine", 30: "Thirty",
+    29: "Twenty-nine", 30: "Thirty", 31: "Thirty-one", 32: "Thirty-two",
+    33: "Thirty-three", 34: "Thirty-four", 35: "Thirty-five",
+    36: "Thirty-six",
     54: "Fifty-four", 55: "Fifty-five", 56: "Fifty-six", 57: "Fifty-seven",
+    63: "Sixty-three", 64: "Sixty-four", 65: "Sixty-five", 66: "Sixty-six",
+    67: "Sixty-seven",
 }
 
 
@@ -21509,11 +21811,15 @@ class GatingRefusalRosterTests(unittest.TestCase):
             codes |= raised_refusal_codes(CLI, f"cmd_{command}")
         return codes
 
-    def test_the_derivation_finds_the_measured_fifty_six(self):
+    def test_the_derivation_finds_the_measured_sixty_five(self):
         """Sanity check on the scraper itself, not on the roster: a change to a
         gating command that adds, removes or renames a refusal should move this
-        number, never a typo in the walk above."""
-        self.assertEqual(len(self.gating_codes()), 56)
+        number, never a typo in the walk above.
+
+        Fifty-six until `position` joined `GATING_COMMANDS`, which brought its
+        own eight previously-unclassified codes with it (`REVISION_UNREADABLE`
+        it already shared with `admit`) plus `POSITION_RUNG_SKIPPED`."""
+        self.assertEqual(len(self.gating_codes()), 65)
 
     def test_every_gating_refusal_is_classified(self):
         roster = set(impl.GATING_REFUSALS)
@@ -21577,7 +21883,7 @@ class GatingRefusalRosterTests(unittest.TestCase):
         skill = " ".join(SKILL_MD.read_text(encoding="utf-8").split())
         self.assertIn(
             f"{_english_count(len(impl.GATING_REFUSALS))} distinct codes are "
-            "raised inside the eight gating commands", skill)
+            "raised inside the nine gating commands", skill)
         self.assertIn(
             f"an *invocation* defect** ({counts[impl.INVOCATION_DEFECT]} "
             "codes)", skill)

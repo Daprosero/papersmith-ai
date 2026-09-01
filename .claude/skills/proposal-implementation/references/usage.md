@@ -749,6 +749,53 @@ not one of `__levels__`'s own entries), and `POSITION_LEVELS_UNDECLARED` (a
 leveled witness exists in the sequence but `__levels__` declares no
 ladder).
 
+#### A rung is never skipped going forward
+
+Naming a declared rung is not the same as being allowed to reach it. **To
+seal at rung N, every leveled item in the sequence must already grade as
+satisfied at rung N-1** — otherwise `POSITION_RUNG_SKIPPED`, a work state
+whose published `resolve` names the rung this target *can* seal next and
+asks what has to run before the one above it can be claimed. The rung whose
+whole purpose is proving the flow runs before anything is spent further up
+is exactly the rung a jump would skip.
+
+The check reads the **evidence**, never the ledger. "Was there a prior pass
+at the rung below" would be the obvious rule and is deliberately not the
+one: a target that has never run this command has no `position.jsonl` at
+all, so a history check would pass vacuously on precisely the repositories
+it exists to stop. Instead the sequence is re-graded by
+`impl_position.derive` itself at the previous rung, so "satisfied at rung
+N-1" means here exactly what it means when a mark is written.
+
+Four boundaries, each of them decided rather than fallen into:
+
+- **The first rung has no predecessor.** Sealing at `__levels__[0]` is
+  always possible, including on a repository with no evidence whatsoever —
+  a ladder needs a bottom step or nothing can ever start.
+- **Only a forward move is checked.** A re-seal at the rung already
+  recorded, a bare refresh that inherits it, and a retreat to a lower rung
+  are all exempt. `position` is the instrument that measures, and an
+  instrument that refuses to take a reading because the reading is bad
+  hides the regression it exists to report; a retreat, meanwhile, asserts
+  less than the header already did — it spends nothing and skips nothing.
+  Nothing is laundered through the exemption: a move that does not climb
+  cannot raise the recorded rung, and every move that does climb is checked
+  against the rung directly below its own target, never against wherever it
+  came from.
+- **Two-state items do not participate.** Their verdict is computed without
+  the ladder and is identical at every rung, so they say nothing about
+  which rung was reached. Folding them in would refuse a legitimate advance
+  because some unrelated boolean step is still open. Their own ordering is
+  already held, within a rung, by `SEQUENCE_NOT_REACHED`.
+- **Unmeasured is not attained.** A leveled item nobody could measure does
+  not satisfy the rung below, because "we did not look" is not "it has been
+  reached". This is also what separates the rule from a cheaper one that
+  merely counts ladder positions: even a single-step advance is refused
+  when the step below it is not *shown* attained.
+
+A target that declares no `__levels__` at all is entirely unaffected: no
+ladder, no rungs, no progression to enforce.
+
 Each witness in the block's markdown may carry `:level` right after its
 kind — `` `@rehearsal:level governing-search` `` — to opt into being
 measured against the declared ladder instead of a plain pass/fail. Omitted
@@ -1723,22 +1770,22 @@ state, alongside the scenarios — not verified by hand once.
 
 Every refusal leaves the CLI through one handler and prints the same JSON:
 `status`, `code`, `detail`, exit `2`, nothing appended anywhere. Refusals raised
-inside the eight **gating** commands — `apply`, `admit`, `gate`, `offer`,
-`close`, `step`, `settle`, `materialize` — carry one more thing, and which ones
-carry it is itself the answer to a question:
+inside the nine **gating** commands — `apply`, `admit`, `gate`, `offer`,
+`close`, `step`, `settle`, `materialize`, `position` — carry one more thing, and
+which ones carry it is itself the answer to a question:
 
 > Can the caller clear this by changing the invocation alone, without touching
 > the repository?
 
 **Yes — an invocation defect.** The detail already names the flag, the token or
-the mutual exclusion. Twenty-eight codes, and nothing is published beside them:
+the mutual exclusion. Thirty-four codes, and nothing is published beside them:
 `SETTLE_STDIN_CONFLICT`, `OFFER_ANSWER_NOT_A_TOKEN`, `MATERIALIZE_MODE_REQUIRED`
 and the rest. Retype the call.
 
 **No — a work state.** Somebody has to act on the repository, so the payload
-carries a `resolve` key saying what. Twenty-eight codes, including
+carries a `resolve` key saying what. Thirty-one codes, including
 `POSITION_DISAGREES`, `AGREEMENT_DISAGREES`, `POSITION_STALE`,
-`STEPS_UNDECLARED` and `NOT_READY`:
+`POSITION_RUNG_SKIPPED`, `STEPS_UNDECLARED` and `NOT_READY`:
 
 ```json
 { "status": "refused", "code": "POSITION_STALE",
