@@ -642,6 +642,17 @@ they were easy to leave undocumented:
   unwitnessed` (a legitimate resting state, not an open question). It
   **never gates** — publishing the command lowers the friction to ask; it
   does not prove whoever answers it is the operator.
+- **`undeclaredOptional`** — every optional key a DECLARED `search` or
+  `distribution` block left unanswered: `search.currentWhen`,
+  `distribution.currentWhen`, `distribution.shardsRoot`. Each entry names
+  its `section`, `field` and the exact `consequence` its absence carries —
+  e.g. without `search.currentWhen`, a found record is trusted on the
+  strength of being present, never checked against the code that produced
+  it. **Reported, never demanded**: a target with no search, or no split
+  run, is asked nothing here either — the same restraint every other
+  optional field in this file already keeps. It **never gates** — an
+  unanswered optional field is a legitimate resting state, not a defect;
+  this only makes the option visible.
 
 Omit `--revision` and `fidelity.status` is `unknown`: the modules' declared
 revisions are still listed, but nothing is compared. Never report an
@@ -974,13 +985,127 @@ already-settled line in a target is a separate, bounded, operator-directed
 pass — never something a flow does incrementally as it happens to
 encounter an unwired agreement.
 
+### `--remove` — the eraser, guarded by the record itself
+
+`--text` only ever CREATES, and `--attach` only ever binds a witness onto
+a line that stays exactly where it was. Neither ever deletes one. Moving
+an agreement between sections, or dropping one the target has genuinely
+outgrown, had no supported path at all — either a hand edit
+(unsupported) or leaving a retired line sitting under a heading it no
+longer belongs to. `--remove` closes that gap by deleting the located
+line's own bytes outright, including its trailing newline, and touching
+no other byte in the document:
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py settle \
+  --target implementations/<repo> --name <Name> --session <your-session-id> \
+  --remove \
+  --text "the free scalar stays at its neutral and identical across arms"
+```
+
+```json
+{ "status": "written", "holder": "Method/AGREED.md", "remove": true,
+  "about": null, "text": "the free scalar stays at its neutral and identical across arms",
+  "under": null, "witness": null,
+  "supersedes": null, "collides": [] }
+```
+
+`--text` is matched by the identical exact-equality discipline `--attach`
+already uses. Refuses `SETTLE_TEXT_ABSENT` / `SETTLE_TEXT_AMBIGUOUS` the
+same way.
+
+**The guard: nothing is deleted before it is explained.** This is the
+single most destructive write this command can make — unlike `--attach`
+(adds a token) or the create path (adds a line), nothing `--remove`
+deletes is recoverable from anything `settle` itself ever wrote. The
+guard is inherited from the document's own stated convention: the `##
+Reversed` section's own preamble already says, in prose, "Written rather
+than deleted: an agreement that was turned over is part of the record,
+and removing it would lose exactly what this file exists to keep."
+`--remove` therefore refuses `SETTLE_NOT_REVERSED` unless the EXACT text
+it would delete is already quoted, bold, under a `## Reversed` heading
+somewhere in the same holder file the line itself lives in — a full quote
+or one truncated with a trailing ellipsis (`...`/`…`) whose visible
+prefix exactly matches `--text`'s own opening words. This forces the
+write that explains WHY an agreement was turned over to exist BEFORE the
+write that erases it can happen. `--remove` never authors that
+explanation itself — write it by hand, or with `--reverse` (below), which
+writes both in one call.
+
+**Conflicts.** `--under`, `--supersedes` and `--witness` name nothing in
+this mode (there is no new item to place, and no witness to bind onto a
+line being deleted) and are refused `SETTLE_REMOVE_CONFLICT` if given
+together with `--remove`, so a flag the caller bothered to type is never
+silently ignored.
+
+### `--reverse` — writing the explanation and the deletion in one call
+
+`--remove` shipped guarded by `SETTLE_NOT_REVERSED`, correctly — but
+measured after shipping it, nothing could ever satisfy that guard except
+a hand edit: `settle` places `- [ ] {text}` checklist bullets, and a `##
+Reversed` entry is bold-quoted prose in a different shape, so no existing
+command could write one. `--reverse` closes that gap by writing the `##
+Reversed` entry and performing the deletion in the SAME call:
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py settle \
+  --target implementations/<repo> --name <Name> --session <your-session-id> \
+  --reverse \
+  --text "the free scalar stays at its neutral and identical across arms" \
+  --paragraph "Reversed because the underlying measurement changed."
+```
+
+```json
+{ "status": "written", "holder": "Method/AGREED.md", "reverse": true,
+  "about": null, "text": "the free scalar stays at its neutral and identical across arms",
+  "under": null, "witness": null,
+  "paragraph": "Reversed because the underlying measurement changed.",
+  "supersedes": null, "collides": [] }
+```
+
+**The guard that makes it safe: it refuses without an explanation.** The
+engine never authors the reasoning behind a reversal — that is a human's
+call, not a computed fact. `--paragraph` is therefore required
+(`SETTLE_PARAGRAPH_REQUIRED` if blank or omitted): an `--reverse` call
+carrying no paragraph has nothing to explain with, and this mode's entire
+point is writing that explanation down.
+
+**One transaction, never two separate writes.** Both the new `##
+Reversed` entry and the deleted checklist line are folded into ONE
+spliced buffer, computed from the same pre-image bytes, before the single
+shared compare-and-swap write at the bottom of this command ever runs.
+There is no intermediate state where one edit has landed and the other
+has not — both land in the one written file, or the write itself refuses
+(`POSITION_HOLDER_MOVED`, the holder changed underneath it) and NEITHER
+does. The entry is appended last, immediately before the section's own
+position block when one exists, or at the section's own end otherwise —
+never first, since a reversal explains something that just happened.
+
+Refuses `SETTLE_ALREADY_REVERSED` if the exact text is already quoted
+under `## Reversed` — this mode writes a NEW explanation together with
+the deletion, and would duplicate one the document already has. In that
+state the explanation already exists and only the deletion is still
+pending; plain `--remove` (above) is the reachable command for exactly
+that case. Refuses `SETTLE_HEADING_ABSENT` when no `## Reversed` heading
+exists in the holder at all — this mode places its entry under an
+existing section and never authors one, the identical restraint the
+create path's own `--under` already keeps for a heading it is given —
+and `SETTLE_HEADING_AMBIGUOUS` when more than one `## Reversed` heading
+occurs in the same holder.
+
+**Conflicts.** `--under`, `--supersedes` and `--witness` name nothing in
+this mode (the identical reasoning `--remove`'s own conflict already
+gives) and are refused `SETTLE_REVERSE_CONFLICT` if given together with
+`--reverse`; giving `--paragraph` in any OTHER mode is refused the same
+way, since that flag feeds an entry only `--reverse` ever writes.
+
 ### `--done` — the tick this class closes
 
-`--attach`, `--remove` and `--reverse` are all *compositions* of verbs this
-file already had: editing an agreement's text is `--reverse` (which
-explains why) followed by a fresh placement; moving one between sections is
-`--remove` (once explained) followed by placement under the new heading.
-Ticking one had no composition at all — nothing any of those three could
+`--remove` and `--reverse` are *compositions* of verbs this file already
+had: editing an agreement's text is `--reverse` (which explains why)
+followed by a fresh placement; moving one between sections is `--remove`
+(once explained) followed by placement under the new heading.
+Ticking one had no composition at all — nothing either of those two could
 do, alone or chained, ever changed a mark from `[ ]` to `[x]`. Every ticked
 agreement a real target carries was typed by hand. `--done` closes that
 gap:

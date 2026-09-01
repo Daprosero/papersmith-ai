@@ -10829,6 +10829,15 @@ class VerifyStatusRosterTests(unittest.TestCase):
         section = section[:section.index("\n## ", 1)]
         self.assertIn("`toDiscuss`", section)
 
+    def test_undeclaredOptional_is_documented_in_reading_verify(self):
+        """Gap 1: the new top-level `undeclaredOptional` key, same doctrine
+        as the `toDiscuss` test above -- a status that reached the JSON is
+        worth nothing to a reader never told it exists."""
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("## Reading `verify`"):]
+        section = section[:section.index("\n## ", 1)]
+        self.assertIn("`undeclaredOptional`", section)
+
     def test_the_non_goal_is_stated_without_softening(self):
         """Cross-Domain Requirement (spec): the non-goal sentence -- the
         gate/publication points prove a decision reached the record, never
@@ -16561,6 +16570,86 @@ class SettleDoneCommandTests(unittest.TestCase):
                          ["an already-settled item"])
 
 
+class SettleRemoveReverseUsageDocumentedTests(unittest.TestCase):
+    """Gap 2: `--remove` and `--reverse` shipped with three passing
+    mentions each in `usage.md` (inside the `--done` section) and no
+    worked section of their own -- unlike `--attach` and `--done`, which
+    each carry a `### ` heading, a runnable example and the fact that
+    makes the mode safe. This locks the two missing sections to that same
+    depth.
+    """
+
+    def usage_text(self):
+        return USAGE_MD.read_text(encoding="utf-8")
+
+    def section(self, heading):
+        text = self.usage_text()
+        self.assertIn(heading, text, f"{heading!r} has no worked section")
+        body = text[text.index(heading):]
+        return body[:body.index("\n#", 1)]
+
+    def test_remove_has_its_own_worked_section(self):
+        body = self.section("### `--remove`")
+        self.assertIn("```bash", body)
+        self.assertIn("--remove", body)
+        # The guard that makes `--remove` safe: nothing is deleted before
+        # the document's own `## Reversed` section already explains why.
+        self.assertIn("SETTLE_NOT_REVERSED", body)
+
+    def test_reverse_has_its_own_worked_section(self):
+        body = self.section("### `--reverse`")
+        self.assertIn("```bash", body)
+        self.assertIn("--reverse", body)
+        # The guard that makes `--reverse` safe: the engine never authors
+        # the reasoning, so it refuses without `--paragraph`.
+        self.assertIn("--paragraph", body)
+        self.assertIn("SETTLE_PARAGRAPH_REQUIRED", body)
+        # The atomicity claim: the `## Reversed` entry and the deletion
+        # land in the SAME call, or neither does.
+        self.assertIn("one", body.lower())
+        self.assertIn("SETTLE_ALREADY_REVERSED", body)
+
+
+class SettleFiveModesClassStatedOnceTests(unittest.TestCase):
+    """Gap 3: `cmd_settle` now has five modes -- place, `--attach`,
+    `--remove`, `--reverse`, `--done` -- and their relationship (two of
+    them are compositions of the other three, not new gaps) is worth
+    stating once in `SKILL.md`, rather than re-derived by measurement
+    every time somebody trips over the missing member.
+    """
+
+    def skill_text(self):
+        return SKILL_MD.read_text(encoding="utf-8")
+
+    def test_the_five_modes_are_named_together(self):
+        text = " ".join(self.skill_text().split())
+        for token in ("`--attach`", "`--remove`", "`--reverse`", "`--done`"):
+            self.assertIn(token, text)
+
+    def test_the_two_compositions_are_named_as_such(self):
+        """Editing an agreement's text is `--reverse` then a fresh
+        placement; moving one between sections is `--remove` then a
+        placement under the new heading -- both compositions, never
+        gaps."""
+        text = " ".join(self.skill_text().split())
+        self.assertIn("editing an agreement's text is `--reverse`", text)
+        self.assertIn("moving one between sections is `--remove`", text)
+
+    def test_the_settle_row_documents_remove_and_reverse(self):
+        rows = markdown_table_rows(
+            self.skill_text(), "| Command | What it writes | Refuses on |")
+        self.assertEqual(len(rows), 1)
+        row = next(r for r in rows[0] if r[0].strip("`") == "settle")
+        writes, refuses = row[1], row[2]
+        self.assertIn("`--remove`", writes)
+        self.assertIn("`--reverse`", writes)
+        self.assertIn("SETTLE_NOT_REVERSED", refuses)
+        self.assertIn("SETTLE_ALREADY_REVERSED", refuses)
+        self.assertIn("SETTLE_PARAGRAPH_REQUIRED", refuses)
+        self.assertIn("SETTLE_REMOVE_CONFLICT", refuses)
+        self.assertIn("SETTLE_REVERSE_CONFLICT", refuses)
+
+
 class SettleUnderAboutRequirednessTests(unittest.TestCase):
     """`--under` and `--about` are no longer unconditionally
     `argparse`-required (spec/design "attach, not place"): both are only
@@ -20554,6 +20643,76 @@ class ShardCurrencyDeclarationTests(unittest.TestCase):
         self.doCleanups()
         leftover = list((FORGE / "implementations").glob("_shardcurrent_*"))
         self.assertEqual(leftover, [], leftover)
+
+
+class UndeclaredOptionalDeclarationTests(unittest.TestCase):
+    """Gap 1, "nothing the forge offers stays invisible": `SEARCH_OPTIONAL`
+    and `DISTRIBUTION_OPTIONAL` are scanned for shape only, never presence
+    (`_search_malformed`/`_distribution_malformed`), so a target that never
+    answers `currentWhen`/`shardsRoot` is not `missing` anything there --
+    and learns the keys exist nowhere but a source comment. This is the
+    other half: reported, never demanded, the identical restraint
+    `DISTRIBUTION_OPTIONAL`'s own docstring already states for presence. A
+    target with no search, or no split run, is asked nothing here either --
+    forcing an answer from one would be the forge deciding for the target.
+    """
+
+    SEARCH_DECLARED = {
+        "what": "the ceiling", "requiredScale": {"epochs": 1}, "role": "valid",
+        "tieRule": "the smaller one wins", "record": "Results/ceilings.json",
+    }
+    DISTRIBUTION_DECLARED = {
+        "axis": "seed", "poolable": [], "perEnvironment": [], "perRun": [],
+        "identicalAcrossShards": [],
+    }
+
+    def test_a_declared_search_missing_currentWhen_is_named_with_its_consequence(self):
+        search = impl.search_state({"search": self.SEARCH_DECLARED}, [])
+        distribution = impl.distribution_state({}, {})
+        entries = impl.undeclared_optional_state(search, distribution)
+        self.assertEqual(len(entries), 1, entries)
+        self.assertEqual(entries[0]["section"], "search")
+        self.assertEqual(entries[0]["field"], "currentWhen")
+        self.assertEqual(entries[0]["consequence"], impl.SEARCH_OPTIONAL["currentWhen"])
+
+    def test_an_answered_currentWhen_is_never_reported(self):
+        declared = {**self.SEARCH_DECLARED, "currentWhen": "evidence.codeDigest"}
+        search = impl.search_state({"search": declared}, [])
+        distribution = impl.distribution_state({}, {})
+        self.assertEqual(impl.undeclared_optional_state(search, distribution), [])
+
+    def test_a_target_with_no_search_is_asked_nothing(self):
+        """Absence is `none`, not an unanswered question -- see
+        `search_state`'s own doctrine one level up."""
+        search = impl.search_state({}, [])
+        distribution = impl.distribution_state({}, {})
+        self.assertEqual(impl.undeclared_optional_state(search, distribution), [])
+
+    def test_a_declared_distribution_missing_both_optional_keys_names_both(self):
+        search = impl.search_state({}, [])
+        distribution = impl.distribution_state(
+            {"distribution": self.DISTRIBUTION_DECLARED}, {})
+        entries = impl.undeclared_optional_state(search, distribution)
+        fields = sorted(e["field"] for e in entries)
+        self.assertEqual(fields, ["currentWhen", "shardsRoot"])
+        for entry in entries:
+            self.assertEqual(entry["section"], "distribution")
+            self.assertEqual(
+                entry["consequence"], impl.DISTRIBUTION_OPTIONAL[entry["field"]])
+
+    def test_a_target_with_no_split_run_is_asked_nothing(self):
+        search = impl.search_state({}, [])
+        distribution = impl.distribution_state({}, {})
+        self.assertEqual(impl.undeclared_optional_state(search, distribution), [])
+
+    def test_undeclaredOptional_is_a_top_level_verify_key(self):
+        """The constraint that decided `toDiscuss`'s own placement
+        (see that comment in `cmd_verify`): `returned_keys` reads
+        dict-literal keys at the top level of a function's own return, so a
+        key nested under `search`/`distribution` ships invisible to
+        `VerifyStatusRosterTests` -- the identical defect this test exists
+        to keep from recurring."""
+        self.assertIn("undeclaredOptional", returned_keys(CLI, "cmd_verify"))
 
 
 class UnbackedPositionSurfaceTests(unittest.TestCase):
