@@ -1313,6 +1313,45 @@ def search_state(contract: dict, declared_records: list,
     }
 
 
+def undeclared_optional_state(search: dict, distribution: dict) -> list[dict]:
+    """Every optional key a DECLARED `search` or `distribution` block left
+    unanswered, named beside the exact consequence its absence carries.
+
+    `SEARCH_OPTIONAL`/`DISTRIBUTION_OPTIONAL` are scanned for shape only,
+    never presence, at `search_state`/`distribution_state` themselves --
+    both docstrings state it directly, and for the identical reason: a
+    required key added there would declare every existing target
+    incomplete for a question nobody had asked it yet. That restraint is
+    correct and stays. What was missing is the OTHER half: a target that
+    never learns the key exists cannot decide to answer it either, and the
+    comment naming it sits only in the kit's own source, never in
+    anything `verify` prints. This reads what `search_state`/
+    `distribution_state` already computed -- `declared`, the raw section
+    dict, copied verbatim only when a real block was found -- and never
+    touches the filesystem or the contract itself a second time.
+
+    **Reported, never demanded.** A target with no search, or no split
+    run, is asked nothing here either: `search["declared"]`/
+    `distribution["declared"]` are empty exactly when `contract.get(
+    "search"/"distribution")` was falsy, the same gate `search_state`/
+    `distribution_state` open with. Forcing an answer from a target with
+    nothing to answer would be the forge deciding for the target -- the
+    one thing this whole file refuses to do.
+    """
+    entries: list[dict] = []
+    if search.get("declared"):
+        for field, consequence in SEARCH_OPTIONAL.items():
+            if field not in search["declared"]:
+                entries.append({"section": "search", "field": field,
+                                "consequence": consequence})
+    if distribution.get("declared"):
+        for field, consequence in DISTRIBUTION_OPTIONAL.items():
+            if field not in distribution["declared"]:
+                entries.append({"section": "distribution", "field": field,
+                                "consequence": consequence})
+    return entries
+
+
 def search_cost_forecast(reduction: dict, required_scale: dict) -> dict | None:
     """What the declared search would cost, projected from what was actually measured.
 
@@ -10095,6 +10134,13 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         # entry per `audit.localRemediesNotWritten` id -- see
         # `_local_remedy_discuss_entry`.
         "toDiscuss": to_discuss,
+        # Gap 1, "nothing the forge offers stays invisible": the identical
+        # constraint that decided `toDiscuss`'s own placement, above --
+        # top-level, never nested under `search`/`distribution`, or the
+        # entry ships invisible to the same roster test. See
+        # `undeclared_optional_state`'s own docstring for why this is
+        # reported and never demanded.
+        "undeclaredOptional": undeclared_optional_state(search, distribution),
     }
 
 
