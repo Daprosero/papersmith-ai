@@ -484,8 +484,10 @@ proposals/research-concept-rNN.md           la revisión, con un marcador de art
 - **Falla cerrado.** Una operación desconocida se rechaza; no cae al camino por
   defecto.
 
-**Limitaciones conocidas.** Cinco, y cada una dice qué pasa, qué podés hacer igual,
-qué no, y cómo se arreglaría.
+**Limitaciones conocidas.** Nueve. Las cinco primeras son del motor de edición, y cada
+una dice qué pasa, qué podés hacer igual, qué no, y cómo se arreglaría. Las cuatro
+últimas son sobre el alcance de las garantías: qué es lo que esta skill, medida, no
+puede afirmar.
 
 *La consulta que ubica un cambio es sensible a cómo la escribís.* Para aplicar un
 cambio hay que decirle a qué sección apunta. Esa consulta se compara **por substring
@@ -548,6 +550,62 @@ operación de re-base autorizada —algo como `ADOPT_MANUAL_EDIT`: *"edité esta
 propósito, adoptá los bytes actuales como nueva línea base"*— que actualice el recibo
 tras confirmación explícita. Con eso, editar a mano dejaría de ser una ruptura y
 pasaría a ser un acto declarado.
+
+*Ninguna edición a mano está impedida; en el mejor caso se detecta después.* No hay en
+la forja ninguna barrera que frene a alguien —o a un agente— que abra un archivo
+gestionado y lo escriba por afuera del motor. `.claude/settings.json` tiene **un solo**
+hook `PreToolUse` (`refuse_offpath_push.py`, con matcher `Bash`, y es de
+`remote-execution`, no de esta skill), y su clave `permissions` **no tiene ninguna
+entrada `deny`**. **Qué significa para vos:** todo lo que esta skill opone a una edición
+manual llega después del hecho — la auditoría del punto anterior te avisa en la
+operación siguiente, con los bytes ya escritos. **Qué no cubre:** el momento de la
+escritura, ni nada de lo que pase entre esa escritura y la próxima vez que alguien
+invoque el motor. **Cómo se arregla:** con una regla `deny` sobre `proposals/` y sobre
+`.proposal-deliberation/`, para que la escritura por afuera del motor no llegue a
+ocurrir.
+
+*El índice persistido es un caché que se cura solo, no un guardia.* Es tentador leer
+`.proposal-deliberation/state/<archivo>.json` —un manifiesto con el `documentSha256` del
+documento entero y, por cada entrada de la estructura, su propio `textSha256` sobre un
+rango de bytes— como una defensa contra una edición manual. **No lo es.**
+`loadDocumentState` reconstruye **siempre** el estado a partir de los bytes que hay en
+el disco, y sólo usa el guardado si valida contra ese mismo documento; si no valida —que
+es exactamente lo que pasa después de una edición a mano— lo **sobrescribe en silencio**
+con la reconstrucción fresca. Ningún error, ningún reporte, nada que llegue a quien
+llamó. **Qué significa para vos:** el estado guardado no contradice una edición manual;
+se acomoda a ella. **Qué no cubre:** `consistency-audit.ts` tiene un
+`MANIFEST_SHA_MISMATCH`, pero no hay ninguna operación que puedas invocar para
+preguntarlo, y para cuando la auditoría corre el caché ya se curó. Lo que de verdad nota
+una edición a mano es el **recibo** —la limitación de más arriba—, no el índice. **Qué
+lo contiene:** la skill de al lado. El bloque de posición de `proposal-implementation`
+guarda el `sha256` de la revisión contra la que se derivó, así que cambiarle los bytes a
+una propuesta levanta `POSITION_STALE` en `gate` y en `close` —comprobado por
+ejecución—. El motor de deliberación no lo detecta; la implementación sí. **Cómo se
+arregla:** haciendo que el caché, cuando no valida, lo diga antes de curarse.
+
+*El estado no sobrevive a un clon.* `.proposal-deliberation/` es una entrada de
+`.gitignore` (línea 40), así que nada de lo que hay adentro —ni los índices, ni los
+recibos, ni la cuarentena— viaja en un clon nuevo. **Qué significa para vos:** un clon
+fresco arranca sin contabilidad y la reconstruye a partir de los bytes que encuentra en
+`proposals/`, aceptándolos tal como están. Si esos bytes venían editados a mano, el clon
+no tiene contra qué notarlo: para él ese es el documento, y la auditoría cierra. **Qué
+no cubre:** la verificación byte a byte es una propiedad **de la máquina donde se
+publicó**, no del repositorio. Un linaje verificado acá no llega verificado allá. **Cómo
+se arregla:** no está decidido. Habría que separar qué mitad de esa contabilidad es
+historia del proyecto y cuál es estado de máquina, y versionar sólo la primera. Por
+ahora está anotado, no resuelto.
+
+*Nada prueba quién decidió.* El motor deja constancia de lo que se publicó, contra qué
+base y con qué hash. Lo que no deja —ni puede dejar— es constancia de que la
+confirmación de la puerta la haya dado una persona: el token de aceptación es de un solo
+uso y ata una vista previa a su aprobación, pero lo consume quien llame al motor, y el
+agente que armó la vista previa puede llamarlo. **Qué significa para vos:** una decisión
+registrada prueba que llegó al registro, nunca que alguien la tomó. Un agente puede
+abrir la pregunta y contestársela solo, y nadie más adelante en la cadena puede
+distinguir ese caso del otro. **Qué no cubre:** cualquier lectura del registro como
+"esto fue aprobado". Lo que dice es "esto quedó registrado". **Cómo se arregla:** no con
+más registro. Haría falta que la confirmación entre por un canal que el motor no pueda
+originar, y hoy no existe.
 
 **Deuda de mantenimiento.** No limita a quien usa la skill; limita a quien la
 modifique. *El nombre del directorio de estado está repetido.* La carpeta
@@ -876,6 +934,72 @@ adivinado** —igual que hoy se declara dónde vive el registro— y que disting
 nada corriendo* de *este repositorio no lo declara*, porque un hecho cuyo valor vacío no
 separa esos dos casos no sirve para gatillar nada. Es la misma razón por la que
 `smokeReady` se reporta y nunca decide.
+
+*`verify` compara nombres de revisión, no contenido.* El sello de procedencia que cada
+módulo declara se contrasta contra la revisión vigente con una sola comparación:
+`module["stale"] = bool(revision) and module["revision"] != revision`. Es una
+comparación **de strings**, y el `__provenance__` del módulo no lleva ningún hash del
+texto contra el que se escribió. **Qué significa para vos:** si una revisión se
+reescribe **bajo su mismo nombre** —se corrige una ecuación y el archivo se sigue
+llamando igual—, `verify` no ve nada: ningún módulo queda marcado como viejo y la pasada
+sale limpia. La deriva recién aparece más tarde, en `gate` o en `close`, como
+`POSITION_STALE` —"atada a una revisión cuyos bytes ya no coinciden"—, que sí compara
+bytes. **Qué no cubre, y es lo importante:** un `verify` limpio **no significa que la
+matemática se haya sostenido**. Significa que ningún módulo nombra una revisión distinta
+de la vigente. **Cómo se arregla:** haciendo que el sello lleve también el hash del
+contenido, para que la comparación sea contra los bytes y no contra la etiqueta.
+
+*Un testigo prueba que el test existe, nunca que pasa.* Un acuerdo puede declarar qué
+test lo respalda, con un token `test_<id>`. La CLI **no corre ninguna suite**: para
+resolver ese token hace un recorrido `ast` sobre `tests/` y junta los nombres de las
+funciones. Encontrar el nombre prueba que existe una función así, y nada más. **Qué
+significa para vos:** un testigo bien formado cuyo test existe se reporta `unmeasured`,
+y `unmeasured` es un estado **terminal** — lo único que puede sacarlo de ahí es que el
+test desaparezca, y recién entonces, con el ítem tildado, pasa a `disagrees`. Cruzar un
+testigo contra el resultado de una corrida no existe. **Qué no cubre:** un test que
+existe y falla, o que existe y no prueba lo que dice. Los dos se leen igual que uno que
+pasa. **Cómo se arregla:** con un cruce contra el resultado real de la suite, que hoy no
+tiene por dónde entrar.
+
+*Ninguna edición a mano está impedida, y acá ni siquiera se detecta.* Vale la misma
+observación que en `proposal-deliberation` —un solo hook `PreToolUse`, que es de
+`remote-execution`, y ninguna entrada `deny`—, pero la diferencia entre las dos skills
+importa. Allá una edición manual rompe un recibo y se nota en la operación siguiente;
+acá no hay recibo que romper. El `SKILL.md` de esta skill lo dice sin adornos sobre el
+token de testigo: escribirlo a mano es doctrina no soportada, **no** una prevención
+técnica — el parser no puede distinguir, y no distingue, un token escrito por la skill
+de uno escrito a mano, y `verify` y `close` evalúan los dos exactamente igual. **Qué
+significa para vos:** una marca o un testigo puestos a mano en el archivo de acuerdos
+son indistinguibles de los que puso la herramienta. **Qué no cubre:** ni el momento de
+la escritura, ni ninguna lectura posterior que los separe. **Qué lo contiene:** el
+lanzamiento no depende de ese archivo. `gate` lee la escalera de posición, la
+autorización, la propuesta de campaña y la elección — el archivo de acuerdos, **cero
+veces**. Un acuerdo editado a mano corrompe el registro de lo que se decidió, pero **no
+puede provocar un lanzamiento ni un gasto**: no llega a la acción. **Cómo se arregla:**
+con una regla `deny` sobre el archivo de acuerdos, o con una contabilidad byte a byte
+como la que sí tiene la otra skill.
+
+*El registro no viaja en un clon.* `.implementation/` es una entrada obligatoria del
+`.gitignore` del repositorio destino (en el destino de referencia de esta forja, la
+línea 61). Para una mitad de lo que guarda eso es lo correcto: una autorización de
+lanzamiento que aparece en un clon es una autorización que nadie en ese clon dio. Para
+la otra mitad no lo es: la deliberación —lo que se preguntó, lo que se respondió, y por
+eso los acuerdos dicen lo que dicen— es historia del proyecto, y el clon no recibe nada.
+**Qué significa para vos:** un clon fresco arranca sin registro y toma el archivo de
+acuerdos tal como está, sin nada con qué contrastarlo. **Qué no cubre:** todo lo que
+dependa de haber visto la deliberación previa. **Cómo se arregla:** separando las dos
+mitades, que es un cambio en lo que todo lector del registro espera encontrar en un solo
+lugar. Está anotado en el `SKILL.md` de la skill, no resuelto.
+
+*Nada prueba quién decidió.* La precondición de que un acuerdo haya sido discutido antes
+de colocarse se satisface con **cualquier** evento de discusión respondido. Nada
+comprueba que la respuesta haya venido de una persona. **Qué significa para vos:** vale
+lo mismo que del otro lado de la costura — un acuerdo registrado prueba que llegó al
+registro, nunca que alguien lo decidió. Un agente puede abrir la pregunta y
+contestársela solo, y nadie más adelante en la cadena puede distinguir ese caso del
+otro. **Qué no cubre:** cualquier lectura del registro como prueba de consentimiento.
+**Cómo se arregla:** hace falta un canal de confirmación que la skill no pueda originar,
+y hoy no existe.
 
 **Deuda de mantenimiento.** *El inventario del `SKILL.md` nombra 5 de los 9 comandos.*
 En su sección de referencias, la línea que describe `implementation_cli.py` lista `env`,

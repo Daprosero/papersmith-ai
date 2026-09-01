@@ -25,6 +25,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -2426,6 +2427,17 @@ def cmd_probe(args) -> dict:
               for job in jobs["jobs"]],
         results_status=state["status"],
         cost_forecast=cost_forecast)
+    # One runnable `discuss` command when (and only when) the answer above
+    # is the final `piloted` -- never when a downgrade elif overwrote it,
+    # since none of those seven states is the reachability this publishes
+    # (design D1; spec "Probe's `piloted` status publishes a specific,
+    # runnable discuss command"). Computed unconditionally as a list so the
+    # key's shape never varies with state, the same discipline `verify`'s
+    # `toDiscuss` already keeps.
+    to_discuss = (
+        [_piloted_discuss_entry(target, name, state.get("belowTargetScale") or {})]
+        if next_step == "piloted" else []
+    )
     return {
         "status": "ok",
         "target": str(target),
@@ -2462,6 +2474,7 @@ def cmd_probe(args) -> dict:
             "necessity": necessity,
         },
         "nextStep": next_step,
+        "toDiscuss": to_discuss,
         "wiring": proposal,
         # `probe` looks and reports; it never runs anything itself.
         "kind": "read-only",
@@ -6802,6 +6815,133 @@ def _resolve_discuss_about(raw: str, position: dict) -> dict:
     return {"ordinal": None, "kind": kind, "operand": operand, "twostate": True}
 
 
+def _discuss_command(target: Path, name: str, *, about: str, question: str,
+                     answer: str | None = None) -> str:
+    """The one directly runnable `discuss` command string every publication
+    point this change adds routes through (design D2; spec "reuses the
+    identical `shlex.quote` discipline as Half 1"): every embedded value is
+    escaped with `shlex.quote`, never a naive interpolation or single-quote
+    wrapping. `expand-contract`'s own hardcoded command (`cmd_offer`, above)
+    survives with a different, single-quoted construction only because its
+    fixed text carries no apostrophe -- left alone, out of scope, rather
+    than migrated to this builder.
+    """
+    parts = ["implementation_cli.py", "discuss",
+             "--target", str(target), "--name", name,
+             "--about", about, "--question", question]
+    if answer is not None:
+        parts += ["--answer", answer]
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+def _about_arg(about: dict) -> str:
+    """Round-trips a ledger event's `about` dict back into the `--about
+    <ordinal|witness>` spelling `_resolve_discuss_about` reads (design D1's
+    shared `_discuss_command` needs one caller-agnostic form). Never an
+    ordinal: an ordinal names a position-sequence slot that may not exist,
+    or may no longer mean the same thing, by the time a retirement command
+    is actually run -- the bare witness spec is stable across a
+    `--reconcile` renumber the same way `_settle_discussed_events`'s own
+    identity match already is.
+    """
+    kind = about.get("kind") or "record"
+    operand = about.get("operand")
+    return f"{kind} {operand}" if operand else kind
+
+
+def _local_remedy_discuss_entry(target: Path, name: str, finding_id: str) -> dict:
+    """One `toDiscuss` entry for one `audit.localRemediesNotWritten` finding
+    id (design D1's new top-level publication surface; spec Domain B,
+    "Verify publishes one discuss command per unwritten local remedy
+    finding"). Question text derives from the finding id alone (design D5's
+    stable source for this site) -- never a count, never anything that
+    varies between calls while the same finding is still unwritten.
+    """
+    question = (f"finding {finding_id!r}'s local remedy is not written; "
+                "write it now, or record why it is deliberately deferred, "
+                "and why?")
+    return {
+        "about": {"kind": "record", "operand": finding_id},
+        "question": question,
+        "command": _discuss_command(
+            target, name, about=f"record {finding_id}", question=question),
+    }
+
+
+def _piloted_discuss_entry(target: Path, name: str, below: dict) -> dict:
+    """The one `toDiscuss` entry `cmd_probe` publishes when `nextStep` is
+    `piloted` (design D1's new top-level publication surface; spec "Probe's
+    `piloted` status publishes a specific, runnable discuss command").
+
+    Question text derives from the target/name pair and each axis's
+    DECLARED scale alone -- `below[axis]["declared"]`, sorted by axis name
+    (design D5's stable source for this site). `below[axis]["ran"]` (the
+    currently-achieved count) is never read here: it climbs on every poll
+    while the pilot-vs-declared-scale decision has not changed, and
+    embedding it would open a new, never-to-be-revisited `discuss` bucket
+    on every call (spec's stability requirement, Test Obligation #7).
+    """
+    axes = ", ".join(
+        f"{axis}={below[axis]['declared']!r}" for axis in sorted(below))
+    question = (
+        f"{name} (target {target}) ran a pilot below its declared scale "
+        f"({axes}); accept the pilot's scale as final, or continue toward "
+        "the declared scale?")
+    return {
+        "about": {"kind": "record", "operand": None},
+        "question": question,
+        "command": _discuss_command(
+            target, name, about="record", question=question),
+    }
+
+
+def _open_discussions(target: Path, name: str) -> list[dict]:
+    """Every distinct `discuss` question text whose LAST occurrence in
+    ledger order carries no answer (spec Domain A, "Bucketing is by exact
+    trimmed question text, never by witness identity"; "A bucket's state is
+    the LAST event in ledger order, never a per-event reading, never
+    answered-once").
+
+    Grouped by `asked.strip()`, never by `(about.kind, about.operand)` --
+    `_settle_discussed_events` (below) groups by that identity for its own,
+    narrower purpose, and reusing it here would let one answer silently
+    mark every other distinct question answered too: all 27 live `discuss`
+    events measured on the reference target share the identical witness
+    identity `(kind="record", operand=None)`.
+
+    A bucket's open/answered state is read from the event that occurs LAST
+    in `impl_position.read_events`'s own file (append) order -- never a
+    comparison of `at`, which is second-granularity and can tie, and never
+    "any answered event satisfies this" (answered-once would silently
+    accept a stale answer sitting behind a fresh, unanswered re-ask).
+    Because grouping is by exact text, a later, differently-worded
+    clarification forms its own, independent bucket and can never enter an
+    already-answered one -- the doctrine `settle`'s own
+    `SETTLE_DISCUSSION_UNANSWERED` ("ANY answered event satisfies this,
+    never newest-wins") protects under identity grouping is preserved here
+    by construction, not by a second rule.
+
+    Returned in first-asked order (plain dict insertion order: re-assigning
+    an existing key updates its value in place, it never moves the key) --
+    deterministic across identical ledgers, never a live re-sort.
+    """
+    events = impl_position.read_events(
+        target / name / ".implementation" / "position.jsonl")
+    last_by_text: dict[str, dict] = {}
+    for event in events:
+        if event.get("kind") != "discuss":
+            continue
+        text = (event.get("asked") or "").strip()
+        if not text:
+            continue
+        last_by_text[text] = event
+    return [
+        {"asked": text, "about": event.get("about") or {}}
+        for text, event in last_by_text.items()
+        if not (event.get("answered") or "").strip()
+    ]
+
+
 def cmd_discuss(args: argparse.Namespace) -> dict:
     """Discussion as an operation with a return value (design §3.3).
 
@@ -7783,12 +7923,20 @@ def cmd_settle(args: argparse.Namespace) -> dict:
             supersedes = sys.stdin.read() if args.supersedes == "-" else args.supersedes
             supersedes = supersedes.strip()
         if collides and not supersedes:
+            colliding_texts = sorted(collides)
+            listed = "; ".join(repr(t) for t in colliding_texts)
+            collision_question = (
+                f"{about['operand']!r} collides with existing agreement(s): "
+                f"{listed}. Which one, if any, does this placement "
+                "supersede?")
             raise Refused(
                 "SETTLE_COLLIDES_UNNAMED",
-                f"this witness's operand already appears in {len(collides)} "
-                "existing agreement(s); name the one this placement "
-                "supersedes with --supersedes, or the write would silently "
-                "duplicate it.")
+                "this witness's operand already appears in existing "
+                f"agreement(s): {listed}; name the one this placement "
+                "supersedes with --supersedes, or the write would "
+                "silently duplicate it. Ask which one with:\n" +
+                _discuss_command(target, name, about=_about_arg(about),
+                                 question=collision_question))
         if supersedes is not None and supersedes not in collides:
             raise Refused(
                 "SETTLE_SUPERSEDES_UNKNOWN",
@@ -8965,6 +9113,14 @@ def cmd_close(args: argparse.Namespace) -> dict:
     ran. So the refresh genuinely can only add ticks *from this point
     forward*, but not because clearing a mark is impossible in general --
     "a caller can never close over marks it never re-derived".
+
+    **`DISCUSSION_UNANSWERED` proves a decision reached the record, never
+    that the operator authored it.** The ledger holds an answer; it holds
+    nothing about whose it was. An agent can open a question and answer it
+    itself, and no check here or downstream can tell that apart from a
+    person answering -- the CLI cannot know who typed. Stated rather than
+    softened, because a refusal whose name is broader than what it proves
+    is read as the wider guarantee by everyone who did not write it.
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
@@ -9050,6 +9206,28 @@ def cmd_close(args: argparse.Namespace) -> dict:
             "a fully-parsed tests/; close requires every ticked agreement's "
             "witness to still name a real function, not merely to have "
             "named one when it was settled.")
+
+    # A third, independent axis (spec Domain A `close-discussion-gate`,
+    # this change): the record proves a decision reached it, never that the
+    # operator authored it -- an agent can open a question and answer it
+    # itself, and nothing downstream can tell. `_open_discussions` buckets
+    # by exact trimmed question text and reads only the LAST event in
+    # ledger order per bucket (see its own docstring); positioned here,
+    # after `AGREEMENT_DISAGREES` and before the refresh below, so the
+    # refusal fires before any refresh side effect could run.
+    open_discussions = _open_discussions(target, name)
+    if open_discussions:
+        retirements = "\n".join(
+            _discuss_command(target, name, about=_about_arg(item["about"]),
+                             question=item["asked"], answer="<answer text>")
+            for item in open_discussions)
+        raise Refused(
+            "DISCUSSION_UNANSWERED",
+            "discussion(s) "
+            f"{'; '.join(repr(item['asked']) for item in open_discussions)} "
+            "were asked and never answered; close requires every opened "
+            "discussion to reach a recorded answer, not merely to have "
+            "been asked. Retire each with:\n" + retirements)
 
     # Only unmeasured witnesses can still move here (see docstring): pick up
     # anything that became measurable since the position was last written.
@@ -9621,6 +9799,22 @@ def cmd_verify(args: argparse.Namespace) -> dict:
          "levels": resolve_levels_declaration(target, name)},
         revision, target_source)
 
+    # Computed once, before the return, and reused both inside `audit`
+    # (the bare id list) and at the top level (`toDiscuss`, one runnable
+    # command per id) -- design D1's new publication surface, spec Domain
+    # B "Verify publishes one discuss command per unwritten local remedy
+    # finding". Never `prose.staleRevisions`/`unresolvedSymbols` or
+    # `agreements.witness.unwitnessed`: both are excluded on their own
+    # documented semantics (spec), not by oversight.
+    local_remedies_not_written = [
+        f["id"] for f in findings
+        if finding_impact(f, source or "")["class"] == "local"
+        and not f.get("remedy_block")
+        and adoption_state(f, source or "")["state"] != "adopted"
+    ]
+    to_discuss = [_local_remedy_discuss_entry(target, name, finding_id)
+                  for finding_id in local_remedies_not_written]
+
     return {
         "command": "verify",
         "target": str(target),
@@ -9694,12 +9888,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             # A local remedy nobody wrote out is not a defect in the audit, but
             # it is the difference between a change that settles inline and one
             # that costs a session. Reported so it is a decision, not a silence.
-            "localRemediesNotWritten": [
-                f["id"] for f in findings
-                if finding_impact(f, source or "")["class"] == "local"
-                and not f.get("remedy_block")
-                and adoption_state(f, source or "")["state"] != "adopted"
-            ],
+            "localRemediesNotWritten": local_remedies_not_written,
             "remediesWithoutValidation": unvalidated,
             "remediesWithoutControl": uncontrolled,
             "migration": migration,
@@ -9722,6 +9911,13 @@ def cmd_verify(args: argparse.Namespace) -> dict:
                               "unexecuted": [], "errors": []}),
             "notebooks": notebooks,
         },
+        # New top-level key (design D1), never nested under `audit`:
+        # `returned_keys` reads dict literals at the top level of a
+        # function's own return, so a key buried inside `audit` would ship
+        # undocumented and invisible to `VerifyStatusRosterTests`. One
+        # entry per `audit.localRemediesNotWritten` id -- see
+        # `_local_remedy_discuss_entry`.
+        "toDiscuss": to_discuss,
     }
 
 

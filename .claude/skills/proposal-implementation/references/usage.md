@@ -631,6 +631,17 @@ they were easy to leave undocumented:
   silence never stands in for "nothing is declared". It **never gates
   here** — `close` is the one place `disagrees` refuses
   (`AGREEMENT_DISAGREES`); `verify` and `probe` only ever report it.
+- **`toDiscuss`** — one directly runnable, `shlex.quote`-escaped `discuss`
+  command per `audit.localRemediesNotWritten` finding id, asking whether
+  that finding's local remedy is written now or deliberately deferred (and
+  why). Question text derives from the finding id alone, never a count or
+  anything else that could vary between calls while the same finding stays
+  unwritten — run it verbatim, or run `discuss` by hand. Never published
+  for `prose.staleRevisions`/`unresolvedSymbols` (unbounded per call, and
+  the engine already declines to judge them) or `agreements.witness.
+  unwitnessed` (a legitimate resting state, not an open question). It
+  **never gates** — publishing the command lowers the friction to ask; it
+  does not prove whoever answers it is the operator.
 
 Omit `--revision` and `fidelity.status` is `unknown`: the modules' declared
 revisions are still listed, but nothing is compared. Never report an
@@ -876,11 +887,16 @@ knows holds checklist items; `SETTLE_HOLDER_ABSENT` when none does at all.
 
 On a collision — the same collision search `discuss` already reports — name
 the existing item this placement supersedes with `--supersedes "<exact
-text>"`, or `settle` refuses `SETTLE_COLLIDES_UNNAMED`. `--supersedes` must
-exact-match a member of the computed collision list (`SETTLE_SUPERSEDES_UNKNOWN`
-otherwise) and is recorded in the ledger event only: the document itself still
-needs a human-written `Reversed` paragraph to show a supersession actually
-happened. `--text -` and `--supersedes -` cannot both read stdin in one call
+text>"`, or `settle` refuses `SETTLE_COLLIDES_UNNAMED`. The refusal names
+every colliding text verbatim, never a bare count ("2 existing
+agreement(s)"), and also prints one directly runnable, `shlex.quote`-escaped
+`discuss` command asking which one, if any, this placement supersedes — the
+same identity-derived, `discuss --answer` retirement discipline
+`DISCUSSION_UNANSWERED` uses. `--supersedes` must exact-match a member of the
+computed collision list (`SETTLE_SUPERSEDES_UNKNOWN` otherwise) and is
+recorded in the ledger event only: the document itself still needs a
+human-written `Reversed` paragraph to show a supersession actually happened.
+`--text -` and `--supersedes -` cannot both read stdin in one call
 (`SETTLE_STDIN_CONFLICT`).
 
 ### `--witness` — binding this agreement to a test, at write time
@@ -1098,6 +1114,17 @@ Neither one is a rung on the ladder, and that is a position rather than an
 oversight: the fact as computed cannot tell a repository that is not ready apart
 from one that never sends work anywhere. `SKILL.md`'s Output Contract carries the
 argument and states what would change it.
+
+A third field is reported beside `nextStep`, present only when the answer
+itself is `piloted`:
+
+- **`toDiscuss`** — one directly runnable, `shlex.quote`-escaped `discuss`
+  command. The question names the target/name pair and the DECLARED scale
+  the protocol asks for — never the currently-achieved count, which climbs
+  on every poll while the pilot-vs-declared-scale decision has not changed
+  — asking whether to accept the pilot's reduced scale as final or continue
+  toward the declared one. Run it verbatim, or run `discuss` by hand. It
+  **never gates** — the same non-goal as `verify`'s own `toDiscuss` above.
 
 ## `propose` — the campaign proposal
 

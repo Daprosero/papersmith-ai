@@ -10819,6 +10819,26 @@ class VerifyStatusRosterTests(unittest.TestCase):
         for status in ("coupling", "lfs", "position"):
             self.assertIn(f"`{status}`", section)
 
+    def test_toDiscuss_is_documented_in_reading_verify(self):
+        """Design D1 / spec Domain B: the new top-level `toDiscuss` key,
+        same doctrine as `test_the_usage_reference_tells_a_reader_how_to_
+        read_them` above -- a status that reached the JSON is worth nothing
+        to a reader who is never told it exists."""
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("## Reading `verify`"):]
+        section = section[:section.index("\n## ", 1)]
+        self.assertIn("`toDiscuss`", section)
+
+    def test_the_non_goal_is_stated_without_softening(self):
+        """Cross-Domain Requirement (spec): the non-goal sentence -- the
+        gate/publication points prove a decision reached the record, never
+        that the operator authored it -- must appear in `SKILL.md`,
+        unsoftened."""
+        skill = " ".join(SKILL_MD.read_text(encoding="utf-8").split())
+        self.assertIn("never that the operator authored it", skill)
+        self.assertIn("An agent can open a question and answer it itself, "
+                      "and nothing downstream can tell", skill)
+
     def test_the_roster_names_a_renamed_key(self):
         """Reachability, measured rather than asserted.
 
@@ -11151,6 +11171,101 @@ class ProbeReportedFactsRosterTests(unittest.TestCase):
         self.doCleanups()
         leftover = list((FORGE / "implementations").glob("_smokebox_*"))
         self.assertEqual(leftover, [], leftover)
+
+    # --- Phase 4: probe's `piloted` `toDiscuss` (spec "Probe's `piloted`
+    # status publishes a specific, runnable discuss command"; design D1/D5).
+    # Reuses `build_target` unchanged -- the identical repository that
+    # already reaches `benchmark` with all seven downgrade rungs non-firing
+    # (Phase 0.2's reachability proof) -- and adds only the one file
+    # `probe_state` reads to tell a pilot from a finished run.
+
+    def build_piloted_target(self, suffix, ran=1, declared=5):
+        box, head = self.build_target(suffix)
+        # The pilot's own results file lands beside `summary.json` under the
+        # same `Results/` directory `records_state` walks -- it must be
+        # declared too, or it reports as a second, unaccounted-for
+        # experiment (`undeclaredRecords`) and drifts the report, which
+        # downgrades `piloted` to `report-first` before the branch under
+        # test is ever reached.
+        declaration = self.DECLARATION.replace(
+            "'records': ['Results/summary.json']",
+            "'records': ['Results/summary.json', 'Results/Probe_results.json']")
+        self.assertIn("Probe_results.json", declaration,
+                       "the declaration's records list was not extended; "
+                       "the DECLARATION fixture text moved")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            declaration, encoding="utf-8")
+        (box / "Method" / "Results" / impl.PROBE_RESULTS).write_text(
+            json.dumps({
+                "revision": "r01.md",
+                "comparison": {"scale": 1},
+                "reduction": {"epochs": ran},
+                "targetScale": {"epochs": declared},
+            }), encoding="utf-8")
+        return box, head
+
+    def test_a_piloted_probe_publishes_a_runnable_discuss_command(self):
+        box, _ = self.build_piloted_target("piloted")
+        probe = self.probe(box)
+        self.assertEqual(probe["nextStep"], "piloted")
+        to_discuss = probe["toDiscuss"]
+        self.assertEqual(len(to_discuss), 1)
+        entry = to_discuss[0]
+        self.assertIn("Method", entry["question"])
+        self.assertIn("5", entry["question"],
+                       "the question must name the DECLARED scale")
+        self.assertIn("implementation_cli.py discuss", entry["command"])
+        self.assertIn(str(box), entry["command"])
+
+    def test_a_non_piloted_probe_publishes_no_discuss_command(self):
+        """The pole: the fixture this whole class already relies on reaches
+        `benchmark`, not `piloted`, and must publish nothing here."""
+        box, head = self.build_target("not-piloted")
+        self.write_job_folder(box, head)
+        probe = self.probe(box)
+        self.assertEqual(probe["nextStep"], "benchmark")
+        self.assertEqual(probe["toDiscuss"], [])
+
+    def test_the_piloted_command_is_runnable_and_appends_the_exact_question(self):
+        box, _ = self.build_piloted_target("piloted-run")
+        probe = self.probe(box)
+        entry = probe["toDiscuss"][0]
+        tokens = shlex.split(entry["command"])
+        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
+                              capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["asked"], entry["question"])
+
+    def test_the_piloted_question_is_stable_across_polls_at_different_achieved_counts(self):
+        """Mutation proof 7 (spec Test Obligations #7): two probes against
+        the same declared scale, at two different achieved repetition
+        counts, both still below it, must publish byte-identical question
+        text -- the pilot-vs-declared-scale decision has not changed."""
+        box, _ = self.build_piloted_target("piloted-stable", ran=1, declared=5)
+        first = self.probe(box)
+        before_question = first["toDiscuss"][0]["question"]
+        before_command = first["toDiscuss"][0]["command"]
+
+        (box / "Method" / "Results" / impl.PROBE_RESULTS).write_text(
+            json.dumps({
+                "revision": "r01.md",
+                "comparison": {"scale": 1},
+                "reduction": {"epochs": 3},
+                "targetScale": {"epochs": 5},
+            }), encoding="utf-8")
+        second = self.probe(box)
+        self.assertEqual(second["nextStep"], "piloted")
+        self.assertEqual(before_question, second["toDiscuss"][0]["question"])
+        self.assertEqual(before_command, second["toDiscuss"][0]["command"])
+
+    def test_toDiscuss_is_documented_in_reading_probe(self):
+        """Same doctrine as `VerifyStatusRosterTests.test_toDiscuss_is_
+        documented_in_reading_verify` -- a key that reached the JSON is
+        worth nothing to a reader never told it exists."""
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("## Reading `probe`"):]
+        section = section[:section.index("\n## ", 1)]
+        self.assertIn("`toDiscuss`", section)
 
 
 def dict_literal_keys(source: Path, name: str) -> list[str]:
@@ -14482,6 +14597,164 @@ class PositionReconcileTests(unittest.TestCase):
             "(design §11's own falsifier).")
 
 
+class DiscussCommandBuilderTests(unittest.TestCase):
+    """`_discuss_command` -- the one command-string builder every
+    publication point in this change routes through (design D2): every
+    embedded value escaped with `shlex.quote`, never a naive interpolation
+    or single-quote wrapping.
+    """
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_e2e_discuss_command_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text("", encoding="utf-8")
+        return box
+
+    def test_apostrophe_bearing_question_is_quoted_and_runnable(self):
+        """Mutation proof 5 (spec Test Obligations #5): remove `shlex.quote`
+        and this fails against an apostrophe-bearing text -- the same
+        discipline `OfferCommandTests.test_expand_contract_command_string_
+        is_runnable_and_writes_nothing` already applies to `expand-contract`.
+        """
+        box = self._box()
+        question = "does render's docstring still hold?"
+        command = impl._discuss_command(
+            box, "Method", about="record", question=question,
+            answer="yes, it still holds")
+
+        tokens = shlex.split(command)
+        self.assertTrue(tokens[0].endswith("implementation_cli.py"), command)
+        self.assertEqual(tokens[1], "discuss", command)
+
+        # Executed as a subprocess, not merely read as text -- inspection
+        # alone cannot see a quoting defect an apostrophe would trigger.
+        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
+                              capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["asked"], question)
+        self.assertEqual(result["status"], "answered")
+
+    def test_omitted_answer_leaves_the_flag_out_and_the_call_stays_open(self):
+        box = self._box()
+        command = impl._discuss_command(
+            box, "Method", about="record", question="what next?")
+        tokens = shlex.split(command)
+        self.assertNotIn("--answer", tokens, command)
+
+        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
+                              capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["status"], "open")
+
+    def test_operand_bearing_about_round_trips(self):
+        box = self._box()
+        command = impl._discuss_command(
+            box, "Method", about="notebook Notebooks/pilot.ipynb",
+            question="does an agreement already name this notebook?")
+        tokens = shlex.split(command)
+        self.assertIn("--about", tokens)
+        self.assertEqual(tokens[tokens.index("--about") + 1],
+                         "notebook Notebooks/pilot.ipynb")
+
+
+class OpenDiscussionsTests(unittest.TestCase):
+    """`_open_discussions` -- the pure reader `cmd_close`'s new third axis
+    is built on (spec Domain A, "Bucketing is by exact trimmed question
+    text, never by witness identity"; "A bucket's state is the LAST event
+    in ledger order").
+    """
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_e2e_open_discussions_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "Method").mkdir(parents=True)
+        return box
+
+    def _ledger(self, box):
+        return box / "Method" / ".implementation" / "position.jsonl"
+
+    def _append(self, box, *, asked, answered=None):
+        impl_position.append_event(self._ledger(box), {
+            "kind": "discuss",
+            "about": {"kind": "record", "operand": None, "twostate": True},
+            "asked": asked, "answered": answered,
+            "status": "answered" if answered else "open",
+            "at": impl._now_iso8601(),
+        })
+
+    def test_zero_events_is_zero_open(self):
+        box = self._box()
+        self.assertEqual(impl._open_discussions(box, "Method"), [])
+
+    def test_exact_text_grouping_not_identity(self):
+        """Mutation proof 1 (spec Test Obligations #1): every event below
+        shares the identical witness identity `(kind="record",
+        operand=None)` -- the measured live shape (all 27 reference-target
+        `discuss` events). Swapping to identity grouping would report every
+        text answered once any one of them is.
+        """
+        box = self._box()
+        texts = [f"question {n}?" for n in range(4)]
+        for text in texts:
+            self._append(box, asked=text)
+        self._append(box, asked=texts[0], answered="yes")
+
+        open_texts = {item["asked"] for item in impl._open_discussions(box, "Method")}
+        self.assertEqual(open_texts, set(texts[1:]))
+
+    def test_last_word_in_ledger_order_five_open_two_answered(self):
+        """Spec 'Five open, two answered, evaluates to zero open': the
+        measured recurring-text shape, 7 events for one exact question --
+        open, open, open, open, answered, open, answered.
+        """
+        box = self._box()
+        text = "what should the experiment contract still add?"
+        for _ in range(4):
+            self._append(box, asked=text)
+        self._append(box, asked=text, answered="first answer")
+        self._append(box, asked=text)
+        self._append(box, asked=text, answered="second answer")
+
+        self.assertEqual(impl._open_discussions(box, "Method"), [])
+
+    def test_ask_answer_ask_reports_open_not_answered_once(self):
+        """Mutation proof 3 (spec Test Obligations #3): a fresh, unanswered
+        re-ask of byte-identical text after an answer must still read open
+        -- 'answered-once' would silently accept the stale answer sitting
+        behind it."""
+        box = self._box()
+        text = "should this job rehearse before the campaign?"
+        self._append(box, asked=text, answered="yes")
+        self._append(box, asked=text)
+
+        open_texts = [item["asked"] for item in impl._open_discussions(box, "Method")]
+        self.assertEqual(open_texts, [text])
+
+    def test_a_clarifying_question_never_reopens_the_original(self):
+        """Doctrine preservation (spec 'A later, differently-worded question
+        never reopens an earlier answered one'): `settle`'s own 'ANY
+        answered event satisfies this, never newest-wins' protects a
+        clarification under IDENTITY grouping; under exact-text grouping the
+        clarification simply forms its own, independent bucket -- the same
+        guarantee, delivered by construction rather than a second rule.
+        """
+        box = self._box()
+        original = "should RAMP_CEILING stay at 1.0?"
+        clarification = "does 'stay at 1.0' mean for every family, or per family?"
+        self._append(box, asked=original, answered="yes, for every family")
+        self._append(box, asked=clarification)
+
+        open_texts = [item["asked"] for item in impl._open_discussions(box, "Method")]
+        self.assertEqual(open_texts, [clarification])
+
+
 class DiscussCommandTests(unittest.TestCase):
     """`discuss` -- discussion as an operation with a return value (design §3.3).
 
@@ -14843,6 +15116,128 @@ class SettleCommandTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_COLLIDES_UNNAMED")
 
+    def test_settle_collides_unnamed_names_every_colliding_text(self):
+        """Spec Domain B, 'A settle collision publishes a specific, runnable
+        discuss command': the refusal enumerates every colliding text, not
+        `len(collides)` (design D5 -- excluded source)."""
+        box = self._box()
+        first = "first item mentioning Notebooks/verification.ipynb"
+        second = "second item also mentioning Notebooks/verification.ipynb"
+        (box / "Method" / "AGREED.md").write_text(
+            f"# Agreed\n\n## Ladder\n\n- [x] {first}\n- [ ] {second}\n",
+            encoding="utf-8")
+        self._discuss(box, "notebook Notebooks/verification.ipynb", answer="Yes.")
+        proc = self._settle(box, about="notebook Notebooks/verification.ipynb")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        body = json.loads(proc.stdout)
+        self.assertEqual(body["code"], "SETTLE_COLLIDES_UNNAMED")
+        self.assertIn(first, body["detail"])
+        self.assertIn(second, body["detail"])
+        self.assertNotIn("2 existing agreement(s)", body["detail"])
+
+    def test_settle_collides_unnamed_publishes_a_runnable_discuss_command(self):
+        """Mutation proof groundwork (spec Test Obligations #6): the
+        collision refusal also prints a directly runnable `discuss` command
+        naming the operand and both colliding texts, executed as a
+        subprocess -- not merely read as text -- the same discipline
+        `test_close_discussion_refusal_prints_a_runnable_apostrophe_
+        bearing_retirement` already applies to Half 1's retirement command.
+        """
+        box = self._box()
+        first = "first item mentioning Notebooks/verification.ipynb"
+        second = "second item also mentioning Notebooks/verification.ipynb"
+        (box / "Method" / "AGREED.md").write_text(
+            f"# Agreed\n\n## Ladder\n\n- [x] {first}\n- [ ] {second}\n",
+            encoding="utf-8")
+        self._discuss(box, "notebook Notebooks/verification.ipynb", answer="Yes.")
+        proc = self._settle(box, about="notebook Notebooks/verification.ipynb")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        body = json.loads(proc.stdout)
+
+        line = next(l for l in body["detail"].splitlines()
+                    if "implementation_cli.py discuss" in l)
+        tokens = shlex.split(line)
+        self.assertEqual(tokens[tokens.index("--target") + 1], str(box))
+        self.assertEqual(tokens[tokens.index("--name") + 1], "Method")
+        question = tokens[tokens.index("--question") + 1]
+        self.assertIn(first, question)
+        self.assertIn(second, question)
+
+        run = self.run_cli(*tokens[1:])
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(json.loads(run.stdout)["asked"], question)
+
+    def test_settle_collides_command_is_runnable_for_an_apostrophe_bearing_text(self):
+        """Mutation proof 6 (spec Test Obligations #6, apostrophe form): a
+        colliding text containing an ASCII apostrophe must still produce a
+        runnable command -- executed as a subprocess, the same discipline
+        `mutation proof 5` already applies to Half 1."""
+        box = self._box()
+        first = "the target's own item mentioning Notebooks/verification.ipynb"
+        (box / "Method" / "AGREED.md").write_text(
+            f"# Agreed\n\n## Ladder\n\n- [x] {first}\n", encoding="utf-8")
+        self._discuss(box, "notebook Notebooks/verification.ipynb", answer="Yes.")
+        proc = self._settle(box, about="notebook Notebooks/verification.ipynb")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        body = json.loads(proc.stdout)
+        self.assertIn(first, body["detail"])
+
+        line = next(l for l in body["detail"].splitlines()
+                    if "implementation_cli.py discuss" in l)
+        tokens = shlex.split(line)
+        run = self.run_cli(*tokens[1:])
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn(first, json.loads(run.stdout)["asked"])
+
+    def test_settle_collision_question_is_stable_across_calls_with_unrelated_state_changes(self):
+        """Spec 'Published question text MUST be reproducible from stable
+        identity alone': derived from operand + sorted colliding texts only
+        (design D5). An unrelated, later `discuss` event landing on the
+        SAME ledger between the two calls must not change one byte of the
+        collision question."""
+        box = self._box()
+        first = "first item mentioning Notebooks/verification.ipynb"
+        (box / "Method" / "AGREED.md").write_text(
+            f"# Agreed\n\n## Ladder\n\n- [x] {first}\n", encoding="utf-8")
+        self._discuss(box, "notebook Notebooks/verification.ipynb", answer="Yes.")
+        first_proc = self._settle(box, about="notebook Notebooks/verification.ipynb")
+        self.assertEqual(first_proc.returncode, 2, first_proc.stdout)
+        before = json.loads(first_proc.stdout)["detail"]
+
+        # Unrelated ledger growth between the two calls -- a fresh, distinct
+        # discuss bucket about a different witness identity entirely.
+        self._discuss(box, "record", question="an unrelated question?")
+
+        second_proc = self._settle(box, about="notebook Notebooks/verification.ipynb")
+        self.assertEqual(second_proc.returncode, 2, second_proc.stdout)
+        after = json.loads(second_proc.stdout)["detail"]
+        self.assertEqual(before, after)
+
+    def test_settle_collision_question_changes_when_a_new_colliding_agreement_is_added(self):
+        """The one legitimate exception (spec, design D5): a genuinely NEW
+        colliding agreement changes the collision question's text, and that
+        is correct -- it is a different decision, not the same one restated.
+        """
+        box = self._box()
+        first = "first item mentioning Notebooks/verification.ipynb"
+        (box / "Method" / "AGREED.md").write_text(
+            f"# Agreed\n\n## Ladder\n\n- [x] {first}\n", encoding="utf-8")
+        self._discuss(box, "notebook Notebooks/verification.ipynb", answer="Yes.")
+        first_proc = self._settle(box, about="notebook Notebooks/verification.ipynb")
+        self.assertEqual(first_proc.returncode, 2, first_proc.stdout)
+        before = json.loads(first_proc.stdout)["detail"]
+
+        second = "second item also mentioning Notebooks/verification.ipynb"
+        text = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        (box / "Method" / "AGREED.md").write_text(
+            text + f"- [ ] {second}\n", encoding="utf-8")
+
+        second_proc = self._settle(box, about="notebook Notebooks/verification.ipynb")
+        self.assertEqual(second_proc.returncode, 2, second_proc.stdout)
+        after = json.loads(second_proc.stdout)["detail"]
+        self.assertNotEqual(before, after)
+        self.assertIn(second, after)
+
     def test_settle_refuses_supersedes_unknown(self):
         box = self._box()
         (box / "Method" / "AGREED.md").write_text(
@@ -14998,6 +15393,141 @@ class SettleCommandTests(unittest.TestCase):
         after = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
         self.assertIn("a concurrent edit nobody told settle about", after)
         self.assertNotIn("New text", after)
+
+
+class VerifyToDiscussTests(unittest.TestCase):
+    """`verify`'s new top-level `toDiscuss` key (spec Domain B, 'Verify
+    publishes one discuss command per unwritten local remedy finding';
+    design D1's new top-level publication surface). One command per
+    `audit.localRemediesNotWritten` finding id, and no command at all for
+    `prose.staleRevisions`/`unresolvedSymbols` or
+    `agreements.witness.unwitnessed` -- both explicitly excluded (spec).
+    """
+
+    def _box(self, findings_src: str, extra_files: dict | None = None) -> Path:
+        box = FORGE / "implementations" / f"_verify_todiscuss_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            "", encoding="utf-8")
+        (box / "tests" / "findings.py").write_text(findings_src, encoding="utf-8")
+        for relative, content in (extra_files or {}).items():
+            path = box / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        return box
+
+    def _verify(self, box: Path) -> dict:
+        return impl.cmd_verify(
+            argparse.Namespace(target=str(box), name="Method", revision=None))
+
+    def test_each_unwritten_local_remedy_gets_its_own_discuss_command(self):
+        """Spec scenario 'Each unwritten local remedy gets its own
+        command': `audit.localRemediesNotWritten: ["finding_7",
+        "finding_12"]` -> two distinct commands, neither a generic
+        question, each naming its own finding id."""
+        findings = (
+            "FINDINGS = [\n"
+            "    {'id': 'finding_7'},\n"
+            "    {'id': 'finding_12'},\n"
+            "]\n"
+        )
+        box = self._box(findings)
+        result = self._verify(box)
+        self.assertEqual(result["audit"]["localRemediesNotWritten"],
+                         ["finding_7", "finding_12"])
+        to_discuss = result["toDiscuss"]
+        self.assertEqual(len(to_discuss), 2)
+        questions = {entry["about"]["operand"]: entry["question"] for entry in to_discuss}
+        self.assertEqual(set(questions), {"finding_7", "finding_12"})
+        self.assertIn("finding_7", questions["finding_7"])
+        self.assertIn("finding_12", questions["finding_12"])
+        self.assertNotEqual(questions["finding_7"], questions["finding_12"])
+        for entry in to_discuss:
+            self.assertIn("implementation_cli.py discuss", entry["command"])
+            self.assertIn(str(box), entry["command"])
+
+    def test_toDiscuss_commands_are_runnable_and_append_the_exact_question(self):
+        findings = "FINDINGS = [\n    {'id': 'finding_alone'},\n]\n"
+        box = self._box(findings)
+        result = self._verify(box)
+        entry = result["toDiscuss"][0]
+        tokens = shlex.split(entry["command"])
+        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
+                              capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["asked"], entry["question"])
+
+    def test_a_finding_id_with_an_apostrophe_still_publishes_a_runnable_command(self):
+        """Reuses Half 1's `shlex.quote` discipline (spec 'Every command
+        published under this domain reuses the identical shlex.quote
+        discipline as Half 1')."""
+        findings = "FINDINGS = [\n    {'id': \"the target's finding\"},\n]\n"
+        box = self._box(findings)
+        result = self._verify(box)
+        entry = result["toDiscuss"][0]
+        tokens = shlex.split(entry["command"])
+        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
+                              capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("the target's finding", json.loads(proc.stdout)["asked"])
+
+    def test_prose_and_unwitnessed_findings_publish_no_discuss_command(self):
+        """Spec 'prose.staleRevisions and prose.unresolvedSymbols MUST NOT
+        publish a discuss action' and 'agreements.witness.unwitnessed MUST
+        NOT publish a discuss action' -- both present and non-empty
+        alongside one genuine local-remedy finding, and `toDiscuss` still
+        holds exactly one entry, addressed to that finding alone."""
+        findings = "FINDINGS = [\n    {'id': 'only_local_finding'},\n]\n"
+        box = self._box(findings, extra_files={
+            "Method/notes.md": "See `not_a_real_symbol` for details.\n",
+            "Method/AGREED.md": "# Agreed\n\n## Ladder\n\n"
+                               "- [ ] an unwitnessed agreement item\n",
+        })
+        result = self._verify(box)
+        self.assertTrue(result["prose"]["unresolvedSymbols"],
+                        "fixture must actually trigger unresolvedSymbols")
+        self.assertTrue(result["agreements"]["witness"]["unwitnessed"],
+                        "fixture must actually trigger unwitnessed")
+        to_discuss = result["toDiscuss"]
+        self.assertEqual(len(to_discuss), 1)
+        self.assertEqual(to_discuss[0]["about"]["operand"], "only_local_finding")
+        for entry in to_discuss:
+            self.assertNotIn("not_a_real_symbol", entry["question"])
+            self.assertNotIn("unwitnessed", entry["question"])
+
+    def test_toDiscuss_question_is_stable_across_calls_with_changed_surrounding_state(self):
+        """Spec 'Published question text MUST be reproducible from stable
+        identity alone': derived from the finding id alone (design D5).
+        Adding an unrelated, already-adopted second finding between the two
+        `verify` calls must not change one byte of the first finding's own
+        question."""
+        findings_one = "FINDINGS = [\n    {'id': 'only_local_finding'},\n]\n"
+        box = self._box(findings_one)
+        first = self._verify(box)
+        before = first["toDiscuss"][0]["question"]
+        before_command = first["toDiscuss"][0]["command"]
+
+        findings_two = (
+            "FINDINGS = [\n"
+            "    {'id': 'only_local_finding'},\n"
+            "    {'id': 'a_second_finding', 'equations': ['1.1'],\n"
+            "     'remedy_equations': ['1.1'], 'introduces': ['x'],\n"
+            "     'remedy_block': 'written'},\n"
+            "]\n"
+        )
+        (box / "tests" / "findings.py").write_text(findings_two, encoding="utf-8")
+        second = self._verify(box)
+        entries = [e for e in second["toDiscuss"]
+                  if e["about"]["operand"] == "only_local_finding"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(before, entries[0]["question"])
+        self.assertEqual(before_command, entries[0]["command"])
 
 
 class SettleAttachCommandTests(unittest.TestCase):
@@ -18694,6 +19224,124 @@ class CloseCommandTests(unittest.TestCase):
             "- [x] a real claim `test_real`\n\n"
             + impl_position.render(header, []), encoding="utf-8")
         proposals = self._proposals()
+
+        proc = self.run_cli("close", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            proposals=proposals)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["status"], "closed")
+
+    # --- spec Domain A: the discussion axis, a third and independent one ---
+
+    def test_close_refuses_discussion_unanswered(self):
+        """Half 1's own axis (spec Domain A, this change): `close` refuses
+        `DISCUSSION_UNANSWERED` while the last ledger event carrying a
+        distinct question text is unanswered, and names that exact text.
+        """
+        box, _ = self._box()
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, []), encoding="utf-8")
+        proposals = self._proposals()
+
+        question = "what should the experiment contract still add?"
+        discuss = self.run_cli("discuss", "--target", str(box), "--name", "Method",
+                               "--about", "record", "--question", question)
+        self.assertEqual(discuss.returncode, 0, discuss.stdout)
+
+        proc = self.run_cli("close", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            proposals=proposals)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["code"], "DISCUSSION_UNANSWERED")
+        self.assertIn(question, result["detail"])
+
+    def test_close_discussion_refusal_prints_a_runnable_apostrophe_bearing_retirement(self):
+        """Mutation proof 5 (Half 1, spec Test Obligations #5): the printed
+        retirement command is executed as a subprocess, not merely read, the
+        same discipline `OfferCommandTests.test_expand_contract_command_
+        string_is_runnable_and_writes_nothing` already applies. A refused
+        `close` also never writes -- not even the refresh that would
+        otherwise follow a clean discussion check (spec 'Refusal fires
+        before any refresh side effect').
+        """
+        box, _ = self._box()
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, []), encoding="utf-8")
+        proposals = self._proposals()
+
+        question = "does render's docstring still hold?"
+        self.run_cli("discuss", "--target", str(box), "--name", "Method",
+                     "--about", "record", "--question", question)
+
+        before = (box / "Method" / "AGREED.md").read_bytes()
+        proc = self.run_cli("close", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            proposals=proposals)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["code"], "DISCUSSION_UNANSWERED")
+        self.assertIn(question, result["detail"])
+        after = (box / "Method" / "AGREED.md").read_bytes()
+        self.assertEqual(before, after,
+                         "a refused close must never run the position refresh")
+
+        line = next(l for l in result["detail"].splitlines()
+                    if "implementation_cli.py discuss" in l)
+        tokens = shlex.split(line)
+        # Spec "--answer - is rejected as the retirement form": the printed
+        # command must never carry the stdin form, which retires nothing.
+        self.assertNotEqual(tokens[tokens.index("--answer") + 1], "-", line)
+        tokens[tokens.index("--answer") + 1] = "yes, it still holds"
+        retire = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
+                                capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(retire.returncode, 0, retire.stdout + retire.stderr)
+
+        second = self.run_cli("close", "--target", str(box), "--name", "Method",
+                              "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                              proposals=proposals)
+        self.assertEqual(second.returncode, 0, second.stdout)
+        self.assertEqual(json.loads(second.stdout)["status"], "closed")
+
+    def test_answer_dash_with_empty_stdin_is_the_vacuous_form_never_published(self):
+        """Spec '--answer - is rejected as the retirement form': under an
+        empty stdin `cmd_discuss` does `raw_answer.strip() or None` ->
+        status 'open', so a retirement command built on `--answer -` would
+        read as though it succeeded while retiring nothing. Proven by
+        execution, not asserted from the docstring alone.
+        """
+        box, _ = self._box()
+        (box / "Method" / "AGREED.md").write_text("# Agreed\n", encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "discuss", "--target", str(box),
+             "--name", "Method", "--about", "record",
+             "--question", "would --answer - retire this?", "--answer", "-"],
+            input="", capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["status"], "open")
+
+    def test_close_succeeds_when_every_discussion_bucket_is_answered(self):
+        """Spec 'Zero open on the reference target': several distinct
+        buckets, each answered as its own last event, must never trip
+        `DISCUSSION_UNANSWERED` -- the shape the live reference ledger (27
+        events, 12 distinct texts, all answered) already has today."""
+        box, _ = self._box()
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, []), encoding="utf-8")
+        proposals = self._proposals()
+        for n in range(5):
+            self.run_cli("discuss", "--target", str(box), "--name", "Method",
+                         "--about", "record", "--question", f"question {n}?",
+                         "--answer", f"answer {n}")
 
         proc = self.run_cli("close", "--target", str(box), "--name", "Method",
                             "--revision", self.PROPOSAL_REVISION, "--session", "s1",
