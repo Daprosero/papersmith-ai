@@ -14482,6 +14482,164 @@ class PositionReconcileTests(unittest.TestCase):
             "(design §11's own falsifier).")
 
 
+class DiscussCommandBuilderTests(unittest.TestCase):
+    """`_discuss_command` -- the one command-string builder every
+    publication point in this change routes through (design D2): every
+    embedded value escaped with `shlex.quote`, never a naive interpolation
+    or single-quote wrapping.
+    """
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_e2e_discuss_command_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text("", encoding="utf-8")
+        return box
+
+    def test_apostrophe_bearing_question_is_quoted_and_runnable(self):
+        """Mutation proof 5 (spec Test Obligations #5): remove `shlex.quote`
+        and this fails against an apostrophe-bearing text -- the same
+        discipline `OfferCommandTests.test_expand_contract_command_string_
+        is_runnable_and_writes_nothing` already applies to `expand-contract`.
+        """
+        box = self._box()
+        question = "does render's docstring still hold?"
+        command = impl._discuss_command(
+            box, "Method", about="record", question=question,
+            answer="yes, it still holds")
+
+        tokens = shlex.split(command)
+        self.assertTrue(tokens[0].endswith("implementation_cli.py"), command)
+        self.assertEqual(tokens[1], "discuss", command)
+
+        # Executed as a subprocess, not merely read as text -- inspection
+        # alone cannot see a quoting defect an apostrophe would trigger.
+        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
+                              capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["asked"], question)
+        self.assertEqual(result["status"], "answered")
+
+    def test_omitted_answer_leaves_the_flag_out_and_the_call_stays_open(self):
+        box = self._box()
+        command = impl._discuss_command(
+            box, "Method", about="record", question="what next?")
+        tokens = shlex.split(command)
+        self.assertNotIn("--answer", tokens, command)
+
+        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
+                              capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["status"], "open")
+
+    def test_operand_bearing_about_round_trips(self):
+        box = self._box()
+        command = impl._discuss_command(
+            box, "Method", about="notebook Notebooks/pilot.ipynb",
+            question="does an agreement already name this notebook?")
+        tokens = shlex.split(command)
+        self.assertIn("--about", tokens)
+        self.assertEqual(tokens[tokens.index("--about") + 1],
+                         "notebook Notebooks/pilot.ipynb")
+
+
+class OpenDiscussionsTests(unittest.TestCase):
+    """`_open_discussions` -- the pure reader `cmd_close`'s new third axis
+    is built on (spec Domain A, "Bucketing is by exact trimmed question
+    text, never by witness identity"; "A bucket's state is the LAST event
+    in ledger order").
+    """
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_e2e_open_discussions_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "Method").mkdir(parents=True)
+        return box
+
+    def _ledger(self, box):
+        return box / "Method" / ".implementation" / "position.jsonl"
+
+    def _append(self, box, *, asked, answered=None):
+        impl_position.append_event(self._ledger(box), {
+            "kind": "discuss",
+            "about": {"kind": "record", "operand": None, "twostate": True},
+            "asked": asked, "answered": answered,
+            "status": "answered" if answered else "open",
+            "at": impl._now_iso8601(),
+        })
+
+    def test_zero_events_is_zero_open(self):
+        box = self._box()
+        self.assertEqual(impl._open_discussions(box, "Method"), [])
+
+    def test_exact_text_grouping_not_identity(self):
+        """Mutation proof 1 (spec Test Obligations #1): every event below
+        shares the identical witness identity `(kind="record",
+        operand=None)` -- the measured live shape (all 27 reference-target
+        `discuss` events). Swapping to identity grouping would report every
+        text answered once any one of them is.
+        """
+        box = self._box()
+        texts = [f"question {n}?" for n in range(4)]
+        for text in texts:
+            self._append(box, asked=text)
+        self._append(box, asked=texts[0], answered="yes")
+
+        open_texts = {item["asked"] for item in impl._open_discussions(box, "Method")}
+        self.assertEqual(open_texts, set(texts[1:]))
+
+    def test_last_word_in_ledger_order_five_open_two_answered(self):
+        """Spec 'Five open, two answered, evaluates to zero open': the
+        measured recurring-text shape, 7 events for one exact question --
+        open, open, open, open, answered, open, answered.
+        """
+        box = self._box()
+        text = "what should the experiment contract still add?"
+        for _ in range(4):
+            self._append(box, asked=text)
+        self._append(box, asked=text, answered="first answer")
+        self._append(box, asked=text)
+        self._append(box, asked=text, answered="second answer")
+
+        self.assertEqual(impl._open_discussions(box, "Method"), [])
+
+    def test_ask_answer_ask_reports_open_not_answered_once(self):
+        """Mutation proof 3 (spec Test Obligations #3): a fresh, unanswered
+        re-ask of byte-identical text after an answer must still read open
+        -- 'answered-once' would silently accept the stale answer sitting
+        behind it."""
+        box = self._box()
+        text = "should this job rehearse before the campaign?"
+        self._append(box, asked=text, answered="yes")
+        self._append(box, asked=text)
+
+        open_texts = [item["asked"] for item in impl._open_discussions(box, "Method")]
+        self.assertEqual(open_texts, [text])
+
+    def test_a_clarifying_question_never_reopens_the_original(self):
+        """Doctrine preservation (spec 'A later, differently-worded question
+        never reopens an earlier answered one'): `settle`'s own 'ANY
+        answered event satisfies this, never newest-wins' protects a
+        clarification under IDENTITY grouping; under exact-text grouping the
+        clarification simply forms its own, independent bucket -- the same
+        guarantee, delivered by construction rather than a second rule.
+        """
+        box = self._box()
+        original = "should RAMP_CEILING stay at 1.0?"
+        clarification = "does 'stay at 1.0' mean for every family, or per family?"
+        self._append(box, asked=original, answered="yes, for every family")
+        self._append(box, asked=clarification)
+
+        open_texts = [item["asked"] for item in impl._open_discussions(box, "Method")]
+        self.assertEqual(open_texts, [clarification])
+
+
 class DiscussCommandTests(unittest.TestCase):
     """`discuss` -- discussion as an operation with a return value (design §3.3).
 
@@ -18694,6 +18852,124 @@ class CloseCommandTests(unittest.TestCase):
             "- [x] a real claim `test_real`\n\n"
             + impl_position.render(header, []), encoding="utf-8")
         proposals = self._proposals()
+
+        proc = self.run_cli("close", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            proposals=proposals)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["status"], "closed")
+
+    # --- spec Domain A: the discussion axis, a third and independent one ---
+
+    def test_close_refuses_discussion_unanswered(self):
+        """Half 1's own axis (spec Domain A, this change): `close` refuses
+        `DISCUSSION_UNANSWERED` while the last ledger event carrying a
+        distinct question text is unanswered, and names that exact text.
+        """
+        box, _ = self._box()
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, []), encoding="utf-8")
+        proposals = self._proposals()
+
+        question = "what should the experiment contract still add?"
+        discuss = self.run_cli("discuss", "--target", str(box), "--name", "Method",
+                               "--about", "record", "--question", question)
+        self.assertEqual(discuss.returncode, 0, discuss.stdout)
+
+        proc = self.run_cli("close", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            proposals=proposals)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["code"], "DISCUSSION_UNANSWERED")
+        self.assertIn(question, result["detail"])
+
+    def test_close_discussion_refusal_prints_a_runnable_apostrophe_bearing_retirement(self):
+        """Mutation proof 5 (Half 1, spec Test Obligations #5): the printed
+        retirement command is executed as a subprocess, not merely read, the
+        same discipline `OfferCommandTests.test_expand_contract_command_
+        string_is_runnable_and_writes_nothing` already applies. A refused
+        `close` also never writes -- not even the refresh that would
+        otherwise follow a clean discussion check (spec 'Refusal fires
+        before any refresh side effect').
+        """
+        box, _ = self._box()
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, []), encoding="utf-8")
+        proposals = self._proposals()
+
+        question = "does render's docstring still hold?"
+        self.run_cli("discuss", "--target", str(box), "--name", "Method",
+                     "--about", "record", "--question", question)
+
+        before = (box / "Method" / "AGREED.md").read_bytes()
+        proc = self.run_cli("close", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                            proposals=proposals)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["code"], "DISCUSSION_UNANSWERED")
+        self.assertIn(question, result["detail"])
+        after = (box / "Method" / "AGREED.md").read_bytes()
+        self.assertEqual(before, after,
+                         "a refused close must never run the position refresh")
+
+        line = next(l for l in result["detail"].splitlines()
+                    if "implementation_cli.py discuss" in l)
+        tokens = shlex.split(line)
+        # Spec "--answer - is rejected as the retirement form": the printed
+        # command must never carry the stdin form, which retires nothing.
+        self.assertNotEqual(tokens[tokens.index("--answer") + 1], "-", line)
+        tokens[tokens.index("--answer") + 1] = "yes, it still holds"
+        retire = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
+                                capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(retire.returncode, 0, retire.stdout + retire.stderr)
+
+        second = self.run_cli("close", "--target", str(box), "--name", "Method",
+                              "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+                              proposals=proposals)
+        self.assertEqual(second.returncode, 0, second.stdout)
+        self.assertEqual(json.loads(second.stdout)["status"], "closed")
+
+    def test_answer_dash_with_empty_stdin_is_the_vacuous_form_never_published(self):
+        """Spec '--answer - is rejected as the retirement form': under an
+        empty stdin `cmd_discuss` does `raw_answer.strip() or None` ->
+        status 'open', so a retirement command built on `--answer -` would
+        read as though it succeeded while retiring nothing. Proven by
+        execution, not asserted from the docstring alone.
+        """
+        box, _ = self._box()
+        (box / "Method" / "AGREED.md").write_text("# Agreed\n", encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "discuss", "--target", str(box),
+             "--name", "Method", "--about", "record",
+             "--question", "would --answer - retire this?", "--answer", "-"],
+            input="", capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["status"], "open")
+
+    def test_close_succeeds_when_every_discussion_bucket_is_answered(self):
+        """Spec 'Zero open on the reference target': several distinct
+        buckets, each answered as its own last event, must never trip
+        `DISCUSSION_UNANSWERED` -- the shape the live reference ledger (27
+        events, 12 distinct texts, all answered) already has today."""
+        box, _ = self._box()
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1", "target": "final"}
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, []), encoding="utf-8")
+        proposals = self._proposals()
+        for n in range(5):
+            self.run_cli("discuss", "--target", str(box), "--name", "Method",
+                         "--about", "record", "--question", f"question {n}?",
+                         "--answer", f"answer {n}")
 
         proc = self.run_cli("close", "--target", str(box), "--name", "Method",
                             "--revision", self.PROPOSAL_REVISION, "--session", "s1",

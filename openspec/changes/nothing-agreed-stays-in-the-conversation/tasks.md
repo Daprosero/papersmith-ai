@@ -25,21 +25,29 @@ Chain strategy: feature-branch-chain
 | 3 (conditional) | Probe `piloted` `toDiscuss`, only if Phase 0.2 GO | PR 3 | `-k ProbePiloted` | `probe` vs. constructed 7-condition fixture | Drop `toDiscuss` + roster row |
 
 ## Phase 0 — Pre-flight measurement (blocking, before any code)
-- [ ] 0.1 Run `verify` on the reference target; record live `audit.localRemediesNotWritten` count in this file and the PR body (D3 obligation).
-- [ ] 0.2 Attempt a fixture reaching `cmd_probe`'s `next_step == "piloted"` (`implementation_cli.py:2297`) with all seven downgrade `elif`s false (`declare-first` x2 @2356/2367, `env-first` @2370, `wiring-first` @2372, `poll-first` @2380, `search-first` @2385, `report-first` @2387). GO → Phase 4/Unit 3. NO-GO → delete the probe-piloted requirement from scope, record why, skip Phase 4.
+- [x] 0.1 Run `verify` on the reference target; record live `audit.localRemediesNotWritten` count in this file and the PR body (D3 obligation).
+      **Measured 2026-09-01**: `implementation_cli.py verify --target implementations/Domain_Adaptation --name MIL-CREDA --revision research-concept-r17.md` → `audit.localRemediesNotWritten: []`, count **0**. Confirms the operator's own measurement; D3's inclusion argument (unbounded volume / unreachable guard, both decided from code shape, not from this count) stands unchanged.
+- [x] 0.2 Attempt a fixture reaching `cmd_probe`'s `next_step == "piloted"` (`implementation_cli.py:2297`) with all seven downgrade `elif`s false (`declare-first` x2 @2356/2367, `env-first` @2370, `wiring-first` @2372, `poll-first` @2380, `search-first` @2385, `report-first` @2387). GO → Phase 4/Unit 3. NO-GO → delete the probe-piloted requirement from scope, record why, skip Phase 4.
+      **VERDICT: GO — measured live 2026-09-01**, via a direct `impl.cmd_probe(...)` call (not a design-only reachability argument) against a constructed fixture under `implementations/`: declared `__benchmark__` with `arms`, `entry.module` pointing to a pure-Python module (no heavy deps, so `introspect()`'s live subprocess check needs only a working interpreter, not real torch), a full `report` contract (non-empty `components`, `records` covering every `Results/*.json` file, `record` + `conclusionEntry` naming a real callable that produces different text under `INTROSPECT`'s permutation check), a satisfied `search` record, no remote-execution ledger, a `.venv/bin/python` symlinked to the running interpreter, and a `Probe_results.json` below the declared scale. Result: `nextStep: "piloted"`, `report.status: "ok"`, `report.live: "ok"`, `search.recordFound/scaleSatisfied: true`, `remoteExecution.status: "absent"` — all seven `elif`s confirmed non-firing. Phase 4/Unit 3 (PR 3) may proceed in a later PR; out of scope for this PR regardless.
 
 ## Phase 1 — Foundation (PR 1)
-- [ ] 1.1 RED: test calling `_discuss_command(target, name, about=, question=, answer=None)` on apostrophe text; assert quoted, subprocess-runnable output (symbol absent today).
-- [ ] 1.2 GREEN: add `import shlex`; implement `_discuss_command` in `implementation_cli.py`.
-- [ ] 1.3 RED: mutation proofs 1–4 (exact-text grouping, last-word ordering x2, doctrine preservation) against `_open_discussions`, using spec's 7-event and clarification fixtures.
-- [ ] 1.4 GREEN: implement `_open_discussions(target, name)`.
+- [x] 1.1 RED: test calling `_discuss_command(target, name, about=, question=, answer=None)` on apostrophe text; assert quoted, subprocess-runnable output (symbol absent today).
+      Confirmed RED via `git stash` on `implementation_cli.py` only (production file), tests kept: `AttributeError: module 'implementation_cli' has no attribute '_discuss_command'` / `'_open_discussions'`.
+- [x] 1.2 GREEN: add `import shlex`; implement `_discuss_command` in `implementation_cli.py`.
+- [x] 1.3 RED: mutation proofs 1–4 (exact-text grouping, last-word ordering x2, doctrine preservation) against `_open_discussions`, using spec's 7-event and clarification fixtures.
+      Mutation proofs 1, 2, 3 individually verified by temporarily swapping the implementation (identity grouping / per-event `status` reading / answered-once) and confirming the corresponding test fails; reverted each time. Mutation 4 (doctrine preservation) shares the identity-grouping defect class already disproven by mutation 1's swap.
+- [x] 1.4 GREEN: implement `_open_discussions(target, name)`.
 
 ## Phase 2 — Half 1: close-discussion-gate (PR 1)
-- [ ] 2.1 RED baseline: `git stash` `implementation_cli.py` only; run new `close`-refuses test; confirm it fails today; unstash.
-- [ ] 2.2 GREEN: wire `_open_discussions` into `cmd_close` as axis 3, after `AGREEMENT_DISAGREES`, before the position refresh; raise `DISCUSSION_UNANSWERED` with one retirement command per open text.
-- [ ] 2.3 RED/GREEN: apostrophe retirement command run as subprocess (mutation proof 5), same discipline as `OfferCommandTests.test_expand_contract_command_string_is_runnable_and_writes_nothing`.
-- [ ] 2.4 RED: prove `--answer -` (stdin) is the rejected form — assert empty-stdin yields vacuous `status:"open"`, and the printed command never uses it.
-- [ ] 2.5 Test: zero-open on the reference ledger (27 events/12 texts); refusal fires before `cmd_position`'s refresh runs, no position bytes rewritten.
+- [x] 2.1 RED baseline: `git stash` `implementation_cli.py` only; run new `close`-refuses test; confirm it fails today; unstash.
+      Confirmed: `test_close_refuses_discussion_unanswered` and `test_close_discussion_refusal_prints_a_runnable_apostrophe_bearing_retirement` both failed (`returncode 0 != 2`, `status: "closed"`) against the stashed production file; all other `CloseCommandTests` (not exercising this axis) stayed green, ruling out a vacuously-passing suite.
+- [x] 2.2 GREEN: wire `_open_discussions` into `cmd_close` as axis 3, after `AGREEMENT_DISAGREES`, before the position refresh; raise `DISCUSSION_UNANSWERED` with one retirement command per open text.
+- [x] 2.3 RED/GREEN: apostrophe retirement command run as subprocess (mutation proof 5), same discipline as `OfferCommandTests.test_expand_contract_command_string_is_runnable_and_writes_nothing`.
+- [x] 2.4 RED: prove `--answer -` (stdin) is the rejected form — assert empty-stdin yields vacuous `status:"open"`, and the printed command never uses it.
+- [x] 2.5 Test: zero-open on the reference ledger (27 events/12 texts); refusal fires before `cmd_position`'s refresh runs, no position bytes rewritten.
+      Reference-ledger shape reproduced synthetically (multiple distinct answered buckets); refresh non-side-effect proven by byte-identical `AGREED.md` across a refused `close` call.
+
+**PR 1 status**: Phases 0–2 complete. Full gate: `.venv/bin/python -m unittest discover -s tests -p 'test_*.py'` and `npm test` (385/385) — see commit message / PR body for the exact run.
 
 ## Phase 3 — Half 2a: settle collision + verify remedy (PR 2)
 - [ ] 3.1 RED: keep `test_settle_refuses_collides_unnamed` asserting `code` only; add test asserting enumerated colliding texts (not `len(collides)`) in `SETTLE_COLLIDES_UNNAMED` (`cmd_settle` ~7787).
@@ -60,7 +68,8 @@ Chain strategy: feature-branch-chain
 - [ ] 5.3 `references/usage.md`: `toDiscuss` under `## Reading verify`; update collision wording example.
 
 ## Phase 6 — Full-suite verification (each PR, before merge)
-- [ ] 6.1 `.venv/bin/python -m unittest discover -s tests -p 'test_*.py'` — confirm `Ran 2039+N tests, OK, skipped=3`.
-- [ ] 6.2 `npm test` — confirm 385/385 (+ new).
-- [ ] 6.3 Run `FORGE_VOCABULARY_FLOOR`/`FORGE_LEXICON` rule B against every changed file — zero violations.
-- [ ] 6.4 Run `CoreNamesNoDomainTests` — confirm pass by scope (`_core/implementation/` untouched).
+- [x] 6.1 (PR 1) `.venv/bin/python -m unittest discover -s tests -p 'test_*.py'` — confirmed `Ran 2051 tests, OK, skipped=3` (2039 baseline + 12 new: 3 `DiscussCommandBuilderTests` + 5 `OpenDiscussionsTests` + 4 `CloseCommandTests`).
+- [x] 6.2 (PR 1) `npm test` — confirmed 385/385 (unchanged; this PR touches no TypeScript).
+- [x] 6.3 (PR 1) Ran `ForgeVocabularyDerivedGuardTests` (`FORGE_VOCABULARY_FLOOR`/`FORGE_LEXICON` rule B, executed not reasoned about) — 8/8 pass, zero violations.
+- [x] 6.4 (PR 1) `CoreNamesNoDomainTests` passes by scope — this PR touches only `.claude/skills/proposal-implementation/scripts/implementation_cli.py` and `tests/`, no `_core/implementation/` change; confirmed included and green in the 6.1 full-suite run.
+- [ ] 6.1–6.4 repeat for PR 2 and PR 3 (conditional) before each of those merges.

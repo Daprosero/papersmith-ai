@@ -25,6 +25,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -6802,6 +6803,87 @@ def _resolve_discuss_about(raw: str, position: dict) -> dict:
     return {"ordinal": None, "kind": kind, "operand": operand, "twostate": True}
 
 
+def _discuss_command(target: Path, name: str, *, about: str, question: str,
+                     answer: str | None = None) -> str:
+    """The one directly runnable `discuss` command string every publication
+    point this change adds routes through (design D2; spec "reuses the
+    identical `shlex.quote` discipline as Half 1"): every embedded value is
+    escaped with `shlex.quote`, never a naive interpolation or single-quote
+    wrapping. `expand-contract`'s own hardcoded command (`cmd_offer`, above)
+    survives with a different, single-quoted construction only because its
+    fixed text carries no apostrophe -- left alone, out of scope, rather
+    than migrated to this builder.
+    """
+    parts = ["implementation_cli.py", "discuss",
+             "--target", str(target), "--name", name,
+             "--about", about, "--question", question]
+    if answer is not None:
+        parts += ["--answer", answer]
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+def _about_arg(about: dict) -> str:
+    """Round-trips a ledger event's `about` dict back into the `--about
+    <ordinal|witness>` spelling `_resolve_discuss_about` reads (design D1's
+    shared `_discuss_command` needs one caller-agnostic form). Never an
+    ordinal: an ordinal names a position-sequence slot that may not exist,
+    or may no longer mean the same thing, by the time a retirement command
+    is actually run -- the bare witness spec is stable across a
+    `--reconcile` renumber the same way `_settle_discussed_events`'s own
+    identity match already is.
+    """
+    kind = about.get("kind") or "record"
+    operand = about.get("operand")
+    return f"{kind} {operand}" if operand else kind
+
+
+def _open_discussions(target: Path, name: str) -> list[dict]:
+    """Every distinct `discuss` question text whose LAST occurrence in
+    ledger order carries no answer (spec Domain A, "Bucketing is by exact
+    trimmed question text, never by witness identity"; "A bucket's state is
+    the LAST event in ledger order, never a per-event reading, never
+    answered-once").
+
+    Grouped by `asked.strip()`, never by `(about.kind, about.operand)` --
+    `_settle_discussed_events` (below) groups by that identity for its own,
+    narrower purpose, and reusing it here would let one answer silently
+    mark every other distinct question answered too: all 27 live `discuss`
+    events measured on the reference target share the identical witness
+    identity `(kind="record", operand=None)`.
+
+    A bucket's open/answered state is read from the event that occurs LAST
+    in `impl_position.read_events`'s own file (append) order -- never a
+    comparison of `at`, which is second-granularity and can tie, and never
+    "any answered event satisfies this" (answered-once would silently
+    accept a stale answer sitting behind a fresh, unanswered re-ask).
+    Because grouping is by exact text, a later, differently-worded
+    clarification forms its own, independent bucket and can never enter an
+    already-answered one -- the doctrine `settle`'s own
+    `SETTLE_DISCUSSION_UNANSWERED` ("ANY answered event satisfies this,
+    never newest-wins") protects under identity grouping is preserved here
+    by construction, not by a second rule.
+
+    Returned in first-asked order (plain dict insertion order: re-assigning
+    an existing key updates its value in place, it never moves the key) --
+    deterministic across identical ledgers, never a live re-sort.
+    """
+    events = impl_position.read_events(
+        target / name / ".implementation" / "position.jsonl")
+    last_by_text: dict[str, dict] = {}
+    for event in events:
+        if event.get("kind") != "discuss":
+            continue
+        text = (event.get("asked") or "").strip()
+        if not text:
+            continue
+        last_by_text[text] = event
+    return [
+        {"asked": text, "about": event.get("about") or {}}
+        for text, event in last_by_text.items()
+        if not (event.get("answered") or "").strip()
+    ]
+
+
 def cmd_discuss(args: argparse.Namespace) -> dict:
     """Discussion as an operation with a return value (design §3.3).
 
@@ -9050,6 +9132,28 @@ def cmd_close(args: argparse.Namespace) -> dict:
             "a fully-parsed tests/; close requires every ticked agreement's "
             "witness to still name a real function, not merely to have "
             "named one when it was settled.")
+
+    # A third, independent axis (spec Domain A `close-discussion-gate`,
+    # this change): the record proves a decision reached it, never that the
+    # operator authored it -- an agent can open a question and answer it
+    # itself, and nothing downstream can tell. `_open_discussions` buckets
+    # by exact trimmed question text and reads only the LAST event in
+    # ledger order per bucket (see its own docstring); positioned here,
+    # after `AGREEMENT_DISAGREES` and before the refresh below, so the
+    # refusal fires before any refresh side effect could run.
+    open_discussions = _open_discussions(target, name)
+    if open_discussions:
+        retirements = "\n".join(
+            _discuss_command(target, name, about=_about_arg(item["about"]),
+                             question=item["asked"], answer="<answer text>")
+            for item in open_discussions)
+        raise Refused(
+            "DISCUSSION_UNANSWERED",
+            "discussion(s) "
+            f"{'; '.join(repr(item['asked']) for item in open_discussions)} "
+            "were asked and never answered; close requires every opened "
+            "discussion to reach a recorded answer, not merely to have "
+            "been asked. Retire each with:\n" + retirements)
 
     # Only unmeasured witnesses can still move here (see docstring): pick up
     # anything that became measurable since the position was last written.
