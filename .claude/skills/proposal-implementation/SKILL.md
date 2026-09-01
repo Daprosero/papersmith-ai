@@ -960,6 +960,20 @@ design decisions.
    broken: every provenance intact, every id matched, `fidelity` clean, and a claim
    failing underneath. That gap is widest right after a change of backend, which
    rewrites how every number is computed while leaving every declaration untouched.
+
+   **A module's revision binding is by name, not by content.** `verify` marks a
+   module `stale` only when its own declared `revision` names a file other than
+   `latest` — `__provenance__` carries a filename, never a content hash. Editing
+   `latest` itself in place, while every module still names it correctly, passes
+   the suite and `verify` clean: nothing this step reads compares the file's
+   current bytes against anything. That edit is invisible here, not fixed here —
+   it surfaces later, at `gate`/`close`, as `POSITION_STALE` (the position
+   section's own header carries a `sha256` of the revision it was measured
+   against, and re-checks it there): a refusal, not an overwrite. Nothing already
+   recorded is touched; the old evidence stays on disk and simply stops counting
+   until `position` is run again to rebind it. A green suite and a clean `verify`
+   at THIS step are never proof that `latest`'s bytes are the ones any earlier
+   position was measured against.
 3. **Suite green and no differences** → report both, then run `probe --revision <latest>`
    before asking anything and follow its `nextStep`. See
    [Conversion, then benchmark](#conversion-then-benchmark). On `nothing-to-compare`

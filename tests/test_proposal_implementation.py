@@ -2684,6 +2684,91 @@ class SearchRecordScaleAgreementTests(unittest.TestCase):
         self.assertIsNone(state["scaleSatisfied"])
 
 
+class SearchRecordCurrencyTests(unittest.TestCase):
+    """`@shard` already refuses to attribute a rung to a folder that merely
+    exists; `@record` did not. A `ceilings.json` written by yesterday's code
+    still ticked its rung today, on the strength of `recordFound` alone --
+    `_derive_record`'s own `recordCurrent` finding, one level up.
+
+    `search.currentWhen`, the sibling `distribution.currentWhen` already
+    declares for a shard: a dotted path into the record's own file naming
+    where it wrote down the identity of the code that produced it. Optional,
+    asked of nobody, never guessed -- undeclared, `search_state` reports
+    `recordCurrent: None` and a found record is trusted on arrival alone,
+    exactly as it was before this key existed.
+    """
+
+    COMPLETE = {
+        "what": "el techo del coeficiente de adaptación, por familia",
+        "requiredScale": {},
+        "role": "valid",
+        "tieRule": "el techo más chico entre los empatados",
+        "record": "Results/ceilings.json",
+    }
+
+    def _state(self, record_payload, *, current_when="evidence.sourcesDigest",
+               digest="digest-of-current-code"):
+        declaration = dict(self.COMPLETE)
+        if current_when is not None:
+            declaration["currentWhen"] = current_when
+        with tempfile.TemporaryDirectory() as raw:
+            product = Path(raw) / "Method"
+            results = product / "Results"
+            results.mkdir(parents=True, exist_ok=True)
+            if record_payload is not None:
+                (results / "ceilings.json").write_text(
+                    json.dumps(record_payload), encoding="utf-8")
+            return impl.search_state(
+                {"search": declaration}, ["Results/ceilings.json"], product,
+                digest=digest)
+
+    def test_no_currentwhen_declared_is_none_the_compatibility_default(self):
+        """The compatibility half: a target that never named a stamp field
+        has said nothing this could check, and `recordCurrent` reads `None`
+        exactly as it did before this key existed -- whatever the record's
+        own bytes say."""
+        state = self._state({"evidence": {"sourcesDigest": "digest-of-current-code"}},
+                            current_when=None)
+        self.assertIsNone(state["recordCurrent"])
+
+    def test_a_record_stamped_with_the_current_digest_is_true(self):
+        state = self._state({"evidence": {"sourcesDigest": "digest-of-current-code"}})
+        self.assertIs(state["recordCurrent"], True)
+
+    def test_a_record_stamped_with_a_stale_digest_is_false(self):
+        """The finding this closes: `Results/ceilings.json` written by code
+        this repository has since moved past must not read as current."""
+        state = self._state({"evidence": {"sourcesDigest": "digest-of-yesterdays-code"}})
+        self.assertIs(state["recordCurrent"], False)
+
+    def test_a_record_silent_at_the_declared_path_is_false_not_guessed(self):
+        """A stamp that cannot answer the question is not evidence that the
+        answer is yes -- the identical doctrine `_shards_current` already
+        keeps for a shard whose stamp carries nothing at the declared
+        path."""
+        state = self._state({"evidence": {}})
+        self.assertIs(state["recordCurrent"], False)
+
+    def test_no_record_on_disk_never_raises_even_with_currentwhen_declared(self):
+        state = self._state(None)
+        self.assertIs(state["recordFound"], False)
+        self.assertIs(state["recordCurrent"], False)
+
+    def test_a_malformed_currentwhen_is_reported_not_silently_ignored(self):
+        """The same third thing `_distribution_malformed` already keeps for
+        `distribution.currentWhen`: a value of the wrong shape is neither
+        missing nor answered."""
+        declaration = {**self.COMPLETE, "currentWhen": 7}
+        with tempfile.TemporaryDirectory() as raw:
+            product = Path(raw) / "Method"
+            state = impl.search_state(
+                {"search": declaration}, ["Results/ceilings.json"], product,
+                digest="digest-of-current-code")
+        self.assertIn(
+            {"field": "currentWhen", "expected": "str", "found": "int"},
+            state["malformed"])
+
+
 class SearchRecordScaleNestedFieldShapedRecordTests(unittest.TestCase):
     """The declaration declares axis *names*; it never declared a depth.
 

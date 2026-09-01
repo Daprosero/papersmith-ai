@@ -47,6 +47,19 @@ __benchmark__ = {
     #         "role": "validation split",
     #         "tieRule": "smallest value within one standard error of the best",
     #     }
+    #
+    # One further key is OPTIONAL and asked of nobody: `currentWhen`, a
+    # dotted path into the record's own file naming where it wrote down the
+    # identity of the code that produced it, e.g.:
+    #     "currentWhen": "evidence.sourcesDigest"
+    # `distribution.currentWhen`'s own idiom, one level up from a shard.
+    # Declare it and a found record only counts as evidence while the value
+    # there still matches the code as it stands; a record left behind by
+    # code this repository has moved past reads as unmeasured rather than as
+    # a rung reached. Leave it out -- the default -- and a found record is
+    # trusted on arrival alone, exactly as before this key existed. The
+    # forge never guesses the field, the same way it never guesses which
+    # measurements are poolable: you name it, and it only compares.
     "search": {},
 
     # Which functions render tables and figures, which produce conclusions,

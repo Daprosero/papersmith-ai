@@ -408,6 +408,26 @@ def _derive_record(evidence: dict) -> tuple[bool | None, str]:
     `evidence["requiredScale"]` is the caller's own `declared_required_scale(search)`
     — computed once by the caller rather than re-derived here, so this stays a
     plain dict reader and never learns `search_state`'s internal shape.
+
+    **Arrival alone is not evidence that a record reports on the code
+    running now.** A record is a file left behind by whatever ran; nothing
+    about its presence says which code produced it -- the same gap
+    `_derive_shard`'s own docstring names for a shard, one level up.
+    `evidence["search"]["recordCurrent"]` is `search_state()`'s own answer,
+    computed the identical way `_shards_current` computes one for a shard:
+    `None` when the target never declared `search.currentWhen` (nothing to
+    check, so a found record is trusted on arrival alone, exactly as before
+    this key existed); `True`/`False` once it did, comparing the record's
+    own stamp against the digest of the code as it stands.
+
+    **A stale record reads `None` (unmeasured), never `False`.** The record
+    exists -- `recordFound` already said so -- we simply cannot say it
+    speaks for this code; that is a different fact from "nothing has run
+    yet", the identical distinction `_derive_shard`'s `shardsCurrent`
+    doctrine already draws for an arrived-but-not-current shard. Only
+    `recordFound is False` is ever a definite `False` here: currency
+    answers a question about a record that was found, never about one that
+    was not.
     """
     search = evidence.get("search")
     if not isinstance(search, dict) or "recordFound" not in search:
@@ -417,9 +437,13 @@ def _derive_record(evidence: dict) -> tuple[bool | None, str]:
         return None, "search.recordFound"
     if found is False:
         return False, "search.recordFound"
+    current = search.get("recordCurrent")
+    if current is False:
+        return None, "search.recordCurrent"
+    suffix = "" if current is None else "+recordCurrent"
     if evidence.get("requiredScale"):
-        return search.get("scaleSatisfied") is True, "search.scaleSatisfied"
-    return True, "search.recordFound"
+        return search.get("scaleSatisfied") is True, "search.scaleSatisfied" + suffix
+    return True, "search.recordFound" + suffix
 
 
 def _derive_notebook(evidence: dict, operand: str | None) -> tuple[bool | None, str]:
