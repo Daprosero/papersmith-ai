@@ -12,12 +12,6 @@ mathematics is.
 
 ## What this skill has not written down
 
-**Its own operations are not documented as a closed set.** The CLI accepts nine
-and refuses everything else by naming them, so the running code holds a roster;
-this document does not. An audit of that surface returns `no-closed-roster` over
-all 2045 lines -- not "nothing found", but "every line read and no closed roster
-in any of them".
-
 **The ledger is ignored whole, and half of it deserves better.** `.implementation/`
 is a required `.gitignore` entry, so nothing under it reaches a clone. That is
 right for one half of what it holds: a `gate` event is a launch authorization,
@@ -32,12 +26,6 @@ machine-local state, the deliberation is the reason the agreements say what they
 say, and one `.gitignore` line currently decides both. Recorded rather than
 resolved, because splitting a ledger is a change to what every reader of it
 already expects to find in one place.
-
-That is the defect this forge's own auditor exists to find, standing in this
-file. The remedy is the one applied to a sibling skill: a plainly-named heading
-carrying a markdown table, late in the reference tail, that a probe can derive
-the documented side from. It is not written here yet, and until it is, a reader
-learns the operations by running the CLI and reading its refusal.
 
 ## Non-negotiable isolation
 
@@ -1229,6 +1217,13 @@ repository itself: the fix is provisioning, not code.
 
 ### `nextStep: "wiring-first"` — an arm declares mathematics it never calls
 
+**The `wiring` draft is in this payload.** It used to be guarded on
+`next_step == "benchmark"` alone, and the override that sets `wiring-first` runs
+before that guard — so at the one answer that names missing wiring, the draft of
+how each module becomes trainable came back `null` and whoever was reading had
+to compose the plan in prose. `PROBE_NEXT_STEPS` now says which answers carry
+it, and both of the two that describe the wiring do.
+
 `unreachedModules` names each module of the method that no arm reaches, directly or
 through another module, while at least one arm declares its sections. Each entry
 carries the equations it implements and the arms that claim them, because the section
@@ -1327,6 +1322,14 @@ command, run with `--regenerate` against the existing folder rather than a
 fresh one.
 
 ### `nextStep: "search-first"` — a declared search has not chosen anything yet
+
+**This rung asks the flow question, and used to publish nothing.** A search is
+an experiment, declared as one, with a scale of its own — so this is one of the
+three answers where the standing rule applies: continue the flow toward the
+declared scale, or complement the experiments first. `resolve` and `toDiscuss`
+carry the runnable `discuss` command that opens it; the question names the
+DECLARED scale and never the achieved one, so it stays byte-identical across
+polls while the decision has not changed.
 
 `search` carries the same reading `verify` already reports (see the hard rule on a
 search being an experiment, declared as one, under
@@ -2179,11 +2182,12 @@ is a fact nobody reads:
 | `position` | The execution sequence's derived state, read from `<Name>/AGREED.md`'s own position section. `probe` takes no `--shards`, so every `@shard` witness reports `unmeasured` here, never a false "did not arrive" | **Never** — a derived fact, reported so a human can decide about it |
 | `remoteExecution` | The ledger's fold, plus the job folders that exist on disk right now | Yes — a submission already out is `poll-first` |
 | `report` | Whether the document a human reads agrees with the run | Yes — a document in drift is `report-first` |
+| `resolve` | What to do about `nextStep`, published by the engine rather than composed by whoever reads it: `{kind: "command", command}` for a step this flow can name completely, `{kind: "question", question, command}` for a step whose next act is a decision, and `null` only for the two steps the roster declares terminal | **Never** — a published action, not a verdict; publishing it proves the decision reached the record, never that the operator took it |
 | `results` | What the last pilot measured, and at what scale | Yes — below scale is `piloted`, at scale is `already-benchmarked` |
 | `search` | Whether a declared search chose anything, and what a full run would cost | Yes — a record absent from disk, or its `scaleSatisfied` short of `true`, is `search-first` |
-| `toDiscuss` | One directly runnable, `shlex.quote`-escaped `discuss` command, published only when `nextStep` is `piloted`, naming the target/name pair and the DECLARED (never the achieved) scale, asking whether the pilot's reduced scale is accepted as final or the run should continue toward it | **Never** — a published action naming an already-computed undecided thing, not a verdict (see "Neither half proves who answered," above) |
+| `toDiscuss` | The question-shaped half of `resolve`, as a list: one directly runnable, `shlex.quote`-escaped `discuss` command for every `nextStep` whose next act is a decision, naming the target/name pair and — for `piloted` and `search-first` — the DECLARED (never the achieved) scale. Empty for the two terminal steps and for `env-first`, whose exit is a command nobody has to decide about | **Never** — a published action naming an already-computed undecided thing, not a verdict (see "Neither half proves who answered," above) |
 | `unreachedModules` | Arms declaring mathematics they never call | Yes — that is `wiring-first` |
-| `wiring` | The proposed wiring, present only when the answer is `benchmark` | Reported whatever it says |
+| `wiring` | The proposed wiring, present at the two answers `PROBE_NEXT_STEPS` marks as carrying it: `benchmark`, the offer to run, and `wiring-first`, where an arm declares mathematics it never calls. It used to be guarded on `benchmark` alone, so the one answer that named missing wiring withheld the draft of how to wire it | Reported whatever it says |
 
 Column one is read by the suite against `probe`'s own return, exactly as the
 table above is read against `verify`'s: a fact added to the command fails the
@@ -2254,12 +2258,14 @@ which is prose a reader follows, not a rung the ladder computes.
 
 ## Command Roster
 
-`implementation_cli.py` grows a write-verb surface beyond `env`/`plan`/`apply`
-/`admit`/`handoff`/`compose`: `position`, `discuss`, `gate`, `offer`, `close`,
-`step` and `settle` write into `<Name>/AGREED.md`, its ledger, or both, rather
-than only reporting.
-Column one is read against `COMMANDS`' own keys, so a new command fails the
-tests until it has a row here.
+Two tables, and together they are the whole of `implementation_cli.py`'s
+dispatch surface. The first is the write-verb half: every command that writes
+into `<Name>/AGREED.md`, into `.implementation/`'s ledger, or into both, rather
+than only reporting. The second is everything else the CLI accepts.
+
+Column one of both is read against `COMMANDS`' own keys, in both directions: a
+new command fails the tests until it has a row, and a row no command backs
+fails them too.
 
 **`settle`'s class is closed at five modes**, stated once here rather than
 re-derived by measurement: place (the default), attach a witness
@@ -2281,8 +2287,87 @@ else in this file writes into `AGREED.md`'s checklist body.
 | `close` | Refreshes the position (see `position`), then one `close` event to `.implementation/position.jsonl` binding session, revision and a digest of the resulting sequence | `FORGE_DEFECT_OPEN` (an open forge defect for this target/name — checked first, before `REVISION_UNREADABLE`), `REVISION_UNREADABLE`, `POSITION_ABSENT`, `POSITION_STALE`, `POSITION_UNBACKED` (a sequence item is ticked and its witness was never measured), `POSITION_SHARDS_UNDECLARED` (the ticked item's witness is `@shard` and nothing named where a returned shard lands — a different fact from `POSITION_UNBACKED`: never told where to look, rather than looked and found silent), `POSITION_DISAGREES` (checked against the position exactly as recorded, before the refresh) — the identical ladder `gate` calls first (`impl_availability.position_honest`), never a second refusal ladder this command writes for itself; `AGREEMENT_DISAGREES` (a separate axis, checked right after the ladder: a ticked `AGREEMENTS.md`-style item whose declared `test_<id>` witness is absent from a fully-parsed `tests/` — the only place this ever gates, `verify`/`probe` only ever report it); `DISCUSSION_UNANSWERED` (a third, independent axis, checked right after `AGREEMENT_DISAGREES` and before the position refresh: at least one distinct `discuss` question text — grouped by exact trimmed text, never by witness identity — has no answer as its last event in ledger order; names every open text and prints one runnable `discuss --answer` retirement command per text) |
 | `step` | Runs exactly one declared `__steps__` entry as a subprocess under the target's own `.venv/bin/python`, `PATH` prefixed by that interpreter's own directory — see [Non-negotiable isolation](#non-negotiable-isolation). One `step` event to `.implementation/position.jsonl` on every RESOLVED run, pass or fail: name, dotted callable, interpreter, outcome, exit status, error (when raised). No digest field. Never appends, reads or alters a `gate` event, and calls none of the remote-execution loaders — there is no call path from here to a launch | `FORGE_DEFECT_OPEN` (an open forge defect for this target/name — checked first, before `DIRTY_WORKTREE`), `DIRTY_WORKTREE` (before any subprocess spawns), `STEPS_UNDECLARED`, `STEP_UNKNOWN`, `STEP_MALFORMED` (declared entry missing `module` or `function`), `INTERPRETER_ABSENT`, `STEP_MODULE_MISSING`, `STEP_FUNCTION_MISSING`, `STEP_NOT_CALLABLE`, `STEP_RUNNER_SILENT` (the process exited without ever writing a verdict) |
 | `settle` | Places exactly one caller-authored `- [ ] <text>` line, verbatim, under a caller-named `--under <heading>` (exact match, hash marks included) in whichever holder file `agreements_state` already knows carries checklist items — the mark written is always `[ ]`, never `[x]`. `--about` is resolved the identical way `discuss`'s own `--about` is, then matched against the ledger by witness identity `(kind, operand)`; ANY answered `discuss` event satisfies this, never newest-wins, so a later open clarifying question never erases an earlier answer. On a collision (the same `_agreement_collides` search `discuss` reports), `--supersedes <text>` must exact-match one of the computed colliding items; recorded in the one `settle` ledger event only — the document itself still needs a human-written `Reversed` paragraph to show the supersession actually happened, which this command deliberately cannot author. Optional `--witness test_<id>` — a separate identity from `--about` — is persisted verbatim as a trailing `` `test_<id>` `` token; omitted, the written line is byte-identical to the pre-witness grammar. `settle` is the ONLY command that ever writes this token: there is no `patch`/`edit` subcommand, and hand-typing one into the file is unsupported doctrine, not a technical prevention — the parser cannot and does not distinguish a skill-written token from a hand-typed one, and `verify`/`close` evaluate either exactly the same way. No `--revision`: a placement binds to no revision. **`--attach`** (design "attach, not place") switches this same command into a second mode: bind `--witness` (required in this mode) onto a line ALREADY settled, matched by its exact `--text` — the mark is never touched, a ticked item stays ticked and an open one stays open, and everything else in the holder file is byte-identical afterward. `--under`/`--about`/`--supersedes` do not apply with `--attach` and are refused if given; the discussion precondition (`SETTLE_NOT_DISCUSSED`/`SETTLE_DISCUSSION_UNANSWERED`) is skipped entirely, because a line `--attach` matches was already discussed and placed by a prior `settle` call — attaching a witness to it is not placing a new agreement (see `cmd_settle`'s own docstring for the full reasoning). This is the retrofit mechanism, not the retrofit itself: running it over every already-settled line in a target is a separate, bounded, operator-directed pass. **`--remove`** (design "the eraser") switches this same command into a third mode: delete an already-settled line's own bytes outright, matched by its exact `--text`, touching no other byte in the document. Refused `SETTLE_NOT_REVERSED` unless the exact text is already quoted, bold, under a `## Reversed` heading somewhere in the same holder — deletion is refused until the document itself already explains why, and `--remove` deliberately cannot author that explanation. `--under`/`--supersedes`/`--witness` do not apply and are refused if given. **`--reverse`** (design "a reversal is one write") switches this same command into a fourth mode: write a NEW `## Reversed` entry (from `--paragraph`, required — `SETTLE_PARAGRAPH_REQUIRED` if blank or omitted, since the engine never authors the reasoning) and delete that same located line, both folded into ONE spliced write — either both land or the compare-and-swap itself refuses and neither does. Refused `SETTLE_ALREADY_REVERSED` if the text is already quoted under `## Reversed` (plain `--remove` is the reachable command for that state) and `SETTLE_HEADING_ABSENT`/`SETTLE_HEADING_AMBIGUOUS` if the holder carries no `## Reversed` heading, or more than one. `--under`/`--supersedes`/`--witness` do not apply and are refused if given. **`--done`** (design "the tick this class closes") switches this same command into a fifth mode: flip an already-settled line's own mark from `[ ]` to `[x]`, matched by its exact `--text` — the text, any witness token it already carries, and every other byte in the holder file are unchanged. Refused `SETTLE_NOT_WITNESSED` unless the located line already carries a `` `test_<id>` `` token: a tick asserts the work is done, and this command refuses to author that assertion for a line nobody can point a test at — bind one first with `--attach`. Refused `SETTLE_ALREADY_DONE` if the located mark is already `x`/`X`. `--under`/`--supersedes`/`--witness`/`--paragraph` do not apply with `--done` and are refused if given; the discussion precondition is skipped for the identical reason `--attach` skips it (see `cmd_settle`'s own docstring for the full guard argument, including why an escape hatch for witness-less irreducible arguments was deliberately not added, and why un-ticking is deliberately left out of this change) | `FORGE_DEFECT_OPEN` (an open forge defect for this target/name — checked first, before every code below), `SETTLE_STDIN_CONFLICT` (`--text -` and `--supersedes -` together), `SETTLE_EMPTY_TEXT`, `SETTLE_ATTACH_CONFLICT` (`--attach` combined with `--under` or `--supersedes`), `SETTLE_REMOVE_CONFLICT` (`--remove` combined with `--attach`/`--under`/`--supersedes`/`--witness`), `SETTLE_REVERSE_CONFLICT` (`--reverse` combined with `--attach`/`--remove`/`--under`/`--supersedes`/`--witness`, or `--paragraph` given without `--reverse`), `SETTLE_DONE_CONFLICT` (`--done` combined with `--attach`/`--remove`/`--reverse`/`--under`/`--supersedes`/`--witness`/`--paragraph`), `SETTLE_WITNESS_REQUIRED` (`--attach` without `--witness`), `SETTLE_PARAGRAPH_REQUIRED` (`--reverse` without a non-blank `--paragraph`), `SETTLE_UNDER_REQUIRED` / `SETTLE_ABOUT_REQUIRED` (create path only, omitted without `--attach`/`--remove`/`--reverse`/`--done`), `SETTLE_NOT_DISCUSSED` (no `discuss` event names this witness identity at all — create path only), `SETTLE_DISCUSSION_UNANSWERED` (events exist, none `answered` — create path only), `SETTLE_HOLDER_ABSENT` (no markdown file under the product folder holds checklist items), `SETTLE_HEADING_ABSENT` / `SETTLE_HEADING_AMBIGUOUS` (create path: the named heading occurs zero, or more than one, times across every holder — a fenced code block's own heading-shaped line never counts as an occurrence), `SETTLE_TEXT_ABSENT` / `SETTLE_TEXT_AMBIGUOUS` (`--attach`/`--remove`/`--reverse`/`--done` paths: `--text` matches zero, or more than one, existing checklist line across every holder), `SETTLE_ALREADY_WITNESSED` (`--attach` path: the one located line already carries a witness token; `--attach` never replaces one), `SETTLE_NOT_REVERSED` (`--remove` path: the exact text is not already quoted, bold, under a `## Reversed` heading in the same holder), `SETTLE_ALREADY_REVERSED` (`--reverse` path: the exact text is already quoted under `## Reversed`; plain `--remove` is the reachable command for that state), `SETTLE_ALREADY_DONE` (`--done` path: the located line's own mark is already `x`/`X`), `SETTLE_NOT_WITNESSED` (`--done` path: the located line carries no witness token), `SETTLE_COLLIDES_UNNAMED` (create path: a collision exists and `--supersedes` was not given; names every colliding text verbatim, never a count, and prints one runnable `discuss` command asking which one, if any, this placement supersedes), `SETTLE_SUPERSEDES_UNKNOWN` (create path: `--supersedes` names text absent from the computed collision list), `SETTLE_WITNESS_MALFORMED` (`--witness` given and not `test_[A-Za-z0-9_]+`, either path), `POSITION_HOLDER_MOVED` (reused unchanged from `position`/`close` — the holder's bytes changed between the read that located the line and the write) |
-| `defect` | One `defect` event to `.implementation/position.jsonl`: the forge-relative `--file` path, its live `fileSha256` digest, `session`, `at` and, when given, `detail` (omitted entirely, never written as `null`, when not given). Declares that some file this forge itself ships is currently broken. While this stays open (see `open_defects`), `step`, `gate`, `offer`, `close`, `settle`, `apply` and `admit` all refuse `FORGE_DEFECT_OPEN` for this exact `<target>/<name>` — see their own rows below, and `apply`/`admit` in [Command Roster](#command-roster)'s own out-of-table doctrine. `probe`, `verify`, `position`, `plan`, `compose`, `handoff` and `discuss` stay reachable throughout; `handoff` additionally surfaces every open defect (file, session, detail) in its report. Never gated on an already-open defect and calls no worktree guard itself: a second declaration while one is open must stay possible, and the worktree is likely dirty precisely when something is broken. Repeatable — a call over an unchanged digest appends a fresh event rather than editing or refusing. Clearing happens the moment the named file's bytes change; asserting a fix in a fresh `--detail` on unchanged bytes does not clear it. **Deleting the file after a defect was declared against it is itself a clear**, decided rather than an oversight: the recorded digest can never again match an absent file, so absence is the strongest possible digest change (`ABSENT_FILE_DIGEST`, see `impl_position.current_file_digest`) — not a hole to close. This blocks mid-flow forge repair once detected; it does not prevent the edit itself — no hook or deny rule is added. Scope is per `<target>/<name>`, never a switch that blocks every target at once: a parallel session on a different target running the identical broken code must rediscover it | `DEFECT_FILE_NOT_FORGE_OWNED` (`--file` resolves outside `FORGE_ROOT/.claude/skills` — checked before existence, so this command never reports on the existence of anything outside that tree), `DEFECT_FILE_ABSENT` (`--file` is not a regular file; a path that never existed is refused rather than recorded, since the sentinel it would otherwise carry could never clear on its own) |
+| `defect` | One `defect` event to `.implementation/position.jsonl`: the forge-relative `--file` path, its live `fileSha256` digest, `session`, `at` and, when given, `detail` (omitted entirely, never written as `null`, when not given). Declares that some file this forge itself ships is currently broken. While this stays open (see `open_defects`), `step`, `gate`, `offer`, `close`, `settle`, `apply` and `admit` all refuse `FORGE_DEFECT_OPEN` for this exact `<target>/<name>` — see their own rows below, and `apply`/`admit` in [The rest of the surface](#the-rest-of-the-surface-and-the-roster-closed-at-nineteen). `probe`, `verify`, `position`, `plan`, `compose`, `handoff` and `discuss` stay reachable throughout; `handoff` additionally surfaces every open defect (file, session, detail) in its report. Never gated on an already-open defect and calls no worktree guard itself: a second declaration while one is open must stay possible, and the worktree is likely dirty precisely when something is broken. Repeatable — a call over an unchanged digest appends a fresh event rather than editing or refusing. Clearing happens the moment the named file's bytes change; asserting a fix in a fresh `--detail` on unchanged bytes does not clear it. **Deleting the file after a defect was declared against it is itself a clear**, decided rather than an oversight: the recorded digest can never again match an absent file, so absence is the strongest possible digest change (`ABSENT_FILE_DIGEST`, see `impl_position.current_file_digest`) — not a hole to close. This blocks mid-flow forge repair once detected; it does not prevent the edit itself — no hook or deny rule is added. Scope is per `<target>/<name>`, never a switch that blocks every target at once: a parallel session on a different target running the identical broken code must rediscover it | `DEFECT_FILE_NOT_FORGE_OWNED` (`--file` resolves outside `FORGE_ROOT/.claude/skills` — checked before existence, so this command never reports on the existence of anything outside that tree), `DEFECT_FILE_ABSENT` (`--file` is not a regular file; a path that never existed is refused rather than recorded, since the sentinel it would otherwise carry could never clear on its own) |
 | `materialize` | Exactly one of three mutually exclusive modes. `--stage <scaffold\|objects\|harness> --plan <path> [--seed <n>]`: plan-gated (the `PLAN_MISMATCH`/`PLAN_STALE` pattern `apply` uses) and clean-worktree-required; writes the chosen stage's file destinations from the kit — eleven for `scaffold` (plus its two merge anchors, `.gitignore`/`pyproject.toml`), three for `objects` (gated on step 8's declaration; `--seed` required), three for `harness` (no `--seed` needed) — and records every write in `<Name>/.implementation/materialization.json` (git-ignored), written last, atomically, after every file has landed. `--authored <path>`: releases the drift seal on one receipt-recorded destination, any of the seventeen, after the agent has authored over it — no file write, no plan gate, a dirty tree is fine (precedent: `_is_own_bookkeeping`). `--adopt <path>`: records an unrecorded destination's current bytes into the receipt as `kind: "adopted"` — the degraded guarantee, spelled out in `references/usage.md`: the record names who is responsible for the bytes, never that they came from the kit | `FORGE_DEFECT_OPEN` (an open forge defect for this target/name — checked first, before every code below: `materialize --stage` writes kit destinations over the target, so it spends exactly as `apply` does), `MATERIALIZE_MODE_REQUIRED`, `MATERIALIZE_MODE_CONFLICT` (two or more of `--stage`/`--authored`/`--adopt` given together), `OUTSIDE_WORKSPACE`, `NOT_A_GIT_REPO`, `DIRTY_WORKTREE` (`--stage` only), `PLAN_REQUIRED`, `PLAN_MISMATCH`, `PLAN_STALE`, `SEED_REQUIRED` (`scaffold`/`objects` only), `OBJECT_MAP_NOT_APPROVED` (`--stage objects` before step 8's `revision`/`premises` are recorded), `STAGE_CANNOT_ANSWER` (a scaffold-stage template still carries an unresolved `{{TOKEN}}` after substitution), `DESTINATION_CONFLICT` (a destination appeared between the set computation and the write, the whole stage refused before any byte lands), `APPLY_ABORTED` (mid-write failure; tree reset and cleaned, no receipt entry), `NOT_A_KIT_DESTINATION` (`--authored`/`--adopt` naming a path outside the seventeen), `MATERIALIZE_PATH_ABSENT` (naming a path with no bytes on disk), `NO_RECEIPT_ENTRY` (`--authored` on a path the engine never wrote — use `--adopt`), `ALREADY_RECORDED` (`--adopt` on a path the receipt already carries — use `--authored`) |
+
+### The rest of the surface, and the roster closed at nineteen
+
+The table above is the write-verb half. A partial roster read as a complete one
+is the failure this heading exists to prevent, and this file has already made
+it once: a limitation paragraph at the top said the CLI accepted nine and
+refused everything else by naming them, so the running code held a roster this
+document did not. Nothing derived that nine. By the time anybody measured it
+the surface had doubled and the sentence was still there, unchallenged, because
+a spelled number with nothing reading it cannot go red.
+
+`COMMANDS` binds nineteen subcommands and dispatches nothing else. The ten
+above and the nine below are that set, stated here as closed. The nine are not
+lesser commands; they are the ones whose contract is already carried at length
+elsewhere — `probe` and `verify` each own a status roster of their own, and
+restating those statuses here would be the second definition of one rule this
+file's doctrine keeps rejecting. So for them the load-bearing column is the
+third: where the detail actually lives.
+
+| Command | What it does | Where its detail lives |
+| --- | --- | --- |
+| `name` | Normalizes a name as the user typed it into the directory/package pair every later command takes as `--name`, and reports it so the agent can show it before writing anything. The only command that takes no `--target`: it runs before a target exists. Refuses `NAME_EMPTY`, `NAME_HAS_NO_WORDS`, `NAME_NOT_ALPHANUMERIC` and `NAME_STARTS_WITH_DIGIT` rather than guessing a spelling | `references/usage.md`, *The name, normalized before the directory exists* |
+| `env` | Builds the target's own `.venv` under `implementations/<repo>/`, refusing an interpreter below 3.10 or below the target's own declared `python_requires`, whichever is higher — and refusing outright to run from a forge virtualenv. Reports every LFS pointer as a placeholder with the real file's size, at the one moment a repository full of pointers looks complete | `references/usage.md`, *2. The isolated environment* |
+| `plan` | Reads the repository and returns the migration it would perform — `renames`, moves, `createDirs`, `referenceUpdates`, `unclassifiedFiles` — and writes nothing. The artefact the user approves; `apply` refuses anything else | `references/usage.md`, *3. Plan the migration (read-only)* |
+| `apply` | Executes exactly the approved plan — and refuses anything else — as one separate `git mv` commit, all-or-nothing: the tree is verified clean first, and a mid-migration failure restores the reviewed starting point rather than leaving a half-migrated repository. A gating command — it refuses `FORGE_DEFECT_OPEN` like the write-verbs above | `references/usage.md`, *4. Apply, as one separate commit* |
+| `verify` | Reports layout, revision fidelity, scaffold/object/harness drift, the audit bridge's state and every executed notebook's interpreter. Reports and never gates: its statuses are their own roster, held to `cmd_verify`'s own returns | `references/usage.md`, *5. Verify* and *Reading `verify`* |
+| `admit` | Rules on each remedy's admissibility before anything is measured, and writes the verdict into the target so the remedy suite can refuse to run without it. Only the verdict travels — the proposal's text stays in the forge. Gating, and refuses `FORGE_DEFECT_OPEN` | `references/usage.md`, *`admit` — admissibility is ruled on first* |
+| `compose` | Rewrites one resolved entry so a finding's remedy takes its place, substituting inside the entry rather than handing back the bare block, and using the equation's own `\tag{n}` as the identity it lands on | `references/usage.md`, *`compose` — the remedy takes the entry's place* |
+| `handoff` | Hands the open findings back to the deliberation, sized by their reach: a local remedy travels as an agenda item, a structural one as a prompt for a session of its own. Also surfaces every open forge `defect` — file, session, detail — in its report | `references/usage.md`, *`handoff` — back to the deliberation, sized by reach* |
+| `probe` | Reports what stands between this repository and a benchmark, and runs nothing. Answers `nextStep`, which is what the Decision Gates rows are written about and what a reader is sent to before every offer to run. Its reported facts are their own roster; none of them is a gate | `references/usage.md`, *Probe — what stands between this repository and a benchmark* and *Reading `probe`* |
+
+### Every refusal declares how it is cleared
+
+The write-verb table's `Refuses on` column enumerates codes. A code is not an exit: a live
+session hit `POSITION_DISAGREES`, the engine printed the code and a sentence,
+and the agent driving the CLI composed the next question itself — "Do you want
+me to do that now?". That is the failure this section exists to make
+impossible. **The engine publishes what happens next. The agent never composes
+it.**
+
+Fifty-six distinct codes are raised inside the eight gating commands — `apply`,
+`admit`, `gate`, `offer`, `close`, `step`, `settle`, `materialize`
+(`GATING_COMMANDS`). Each is classified in `GATING_REFUSALS` by one derivable
+test, and the classification is a decision somebody made rather than a shape
+somebody noticed:
+
+> Can the caller clear this by changing the invocation alone, without touching
+> the repository?
+
+- **Yes — an *invocation* defect** (28 codes). The detail already names the
+  flag, the token or the mutual exclusion. Nothing is published beside it: a
+  `resolve` key on every refusal is the shape a reader learns to skip, and that
+  is how a real one stops being read.
+- **No — a *work state*** (28 codes). Somebody must act on the repository, so
+  the refused payload carries `resolve`: `{kind: "command", command}` when the
+  engine can name the whole exit, or `{kind: "question", question, command}`
+  when the next act is a decision, where `command` is the runnable `discuss`
+  invocation that opens it.
+
+`POSITION_DISAGREES` resolves to re-executing the verification notebook under
+the target's own venv with that venv's `bin` on `PATH` — see
+[Executing a notebook needs `PATH`](#executing-a-notebook-needs-path-not-just-the-right-python)
+— and then re-running `position` to rebind the mark to what was measured.
+
+Two classifications are worth stating because a reader will argue with them.
+`GATE_AUTHORIZATION_REQUIRED`'s detail *does* name a flag, and it is still a
+work state: naming `--authorization` is not the same as being able to fill it,
+because the token is minted only by a prior `offer` publish. And
+`POSITION_ABSENT` publishes a question rather than a command — measured, not
+assumed: the obvious `position --reconcile` was run and refused
+`POSITION_TARGET_LEVEL_REQUIRED`, because a fresh header cannot be written
+without naming the rung the pass aims at, and only the target's own `__levels__`
+name the rungs.
+
+The roster is derived-against rather than proof-read, exactly as the Output
+Contract's status table is: the suite walks the gating commands' own source for
+the codes they raise, so **a refusal added to a gating command fails the tests
+until it has been classified.** Adding a code that publishes nothing is now a
+decision with a name on it, not an omission.
 
 ### When the forge itself crashes mid-flow
 
@@ -2304,5 +2389,5 @@ propagates in full; it is simply never captured.
 ## References
 
 - `references/usage.md` — worked invocations of every command.
-- `scripts/implementation_cli.py` — `env`, `plan`, `apply`, `admit`, `verify`. Stdlib only.
+- `scripts/implementation_cli.py` — every command in [Command Roster](#command-roster), and nothing outside it. Stdlib only.
 - `assets/` — pyproject, module, test and notebook templates.
