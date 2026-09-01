@@ -385,6 +385,84 @@ class ShardCurrencyTests(unittest.TestCase):
         self.assertNotIn("shardsCurrent", without["measuredBy"])
 
 
+class RecordCurrencyTests(unittest.TestCase):
+    """A record found on disk was trusted without asking what code produced
+    it -- `ShardCurrencyTests`'s own finding, one level up: `@shard` already
+    reads currency, `@record` did not. A `ceilings.json` written by code this
+    repository has since moved past used to tick its rung today, on the
+    strength of `search.recordFound` alone.
+
+    `recordCurrent` is `search_state()`'s answer to the identical question
+    for a record: `None` when the target never declared `search.currentWhen`
+    (the default, unchanged); otherwise a real `True`/`False`, computed by
+    reading the record's own file at that declared dotted path and comparing
+    it against the digest of the code as it stands. This module never learns
+    which stamp field carries a record's code identity or reads a file
+    itself -- it only reads the dict `search_state()` was already handed.
+    """
+
+    def _item(self):
+        return [{"ordinal": 1, "mark": " ", "text": "step",
+                 "witness": {"kind": "record", "operand": None}}]
+
+    def _derive(self, evidence):
+        return impl_position.derive(self._item(), evidence)[0]
+
+    def test_no_currency_declared_leaves_arrival_deciding_exactly_as_before(self):
+        """The compatibility half, and the one that must not move: a target
+        that never named a stamp field has said nothing this could check,
+        and an absent `recordCurrent` therefore has to read exactly as it
+        did before the key existed."""
+        result = self._derive({"search": {"recordFound": True}, "requiredScale": {}})
+        self.assertIs(result["derived"], True)
+
+    def test_a_found_and_current_record_reads_as_it_always_did(self):
+        """The pole for the test below: declaring the field changes nothing
+        at all for a record that answers it."""
+        evidence = {"search": {"recordFound": True, "recordCurrent": True},
+                    "requiredScale": {}}
+        self.assertIs(self._derive(evidence)["derived"], True)
+
+    def test_a_found_but_stale_record_is_unmeasured_and_never_false(self):
+        """The finding. A record written by code this repository has since
+        moved past cannot attribute a tick to anything the current code
+        did -- `None`, not `False`: the file exists, we simply cannot say
+        it speaks for this code."""
+        evidence = {"search": {"recordFound": True, "recordCurrent": False},
+                    "requiredScale": {}}
+        self.assertIsNone(self._derive(evidence)["derived"])
+
+    def test_a_record_that_never_arrived_is_still_definitely_not_there(self):
+        """Currency answers a question about a record that was found. One
+        that was never found is answered by `recordFound` alone, as before
+        -- definite `False`, whatever `recordCurrent` says."""
+        evidence = {"search": {"recordFound": False, "recordCurrent": False},
+                    "requiredScale": {}}
+        self.assertIs(self._derive(evidence)["derived"], False)
+
+    def test_currency_composes_with_required_scale(self):
+        """A current record still has to satisfy a declared scale --
+        currency answers "whose code wrote this", never "how much of it"."""
+        short = {"search": {"recordFound": True, "recordCurrent": True,
+                            "scaleSatisfied": False},
+                 "requiredScale": {"seeds": 30}}
+        self.assertIs(self._derive(short)["derived"], False)
+
+        met = {"search": {"recordFound": True, "recordCurrent": True,
+                          "scaleSatisfied": True},
+               "requiredScale": {"seeds": 30}}
+        self.assertIs(self._derive(met)["derived"], True)
+
+    def test_the_currency_it_used_is_named_in_measured_by(self):
+        with_currency = self._derive(
+            {"search": {"recordFound": True, "recordCurrent": True},
+             "requiredScale": {}})
+        self.assertIn("recordCurrent", with_currency["measuredBy"])
+        without = self._derive(
+            {"search": {"recordFound": True}, "requiredScale": {}})
+        self.assertNotIn("recordCurrent", without["measuredBy"])
+
+
 class LaunchAvailableTests(unittest.TestCase):
     """The one rule `cmd_gate` and the state-derived action menu's publisher
     must agree on (spec "One shared availability rule"), exercised over

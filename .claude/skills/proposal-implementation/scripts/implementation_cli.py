@@ -511,17 +511,38 @@ SEARCH_DECLARATION = {
 }
 
 
-#: The declared shape of each `search` field, the same way `DISTRIBUTION_SHAPE`
-#: declares `distribution`'s. `requiredScale` is a scale along named axes, so it
-#: is a mapping and never a bare number: `30` cannot say whether it means epochs,
-#: seeds or runs, and there is no axis to project a cost along. Without this
-#: table the field was accepted on bare truthiness and the arithmetic downstream
-#: iterated a scalar, which ended the process on a traceback instead of a result.
+#: What a search MAY say about itself, and is never asked to -- held apart
+#: from `SEARCH_DECLARATION` above for the identical reason
+#: `DISTRIBUTION_OPTIONAL` is held apart from `DISTRIBUTION_DECLARATION`: the
+#: required set is what goes `missing` when unanswered, and a key added
+#: there would declare every existing target incomplete for a question
+#: nobody had asked it yet.
+SEARCH_OPTIONAL = {
+    "currentWhen": "a dotted path into the record's own file naming where it "
+                   "wrote down the identity of the code that produced it -- "
+                   "`distribution.currentWhen`'s own idiom, one level up "
+                   "from a shard. Arrival says the record's file exists, "
+                   "never which code wrote it, so without this a found "
+                   "record is trusted on the strength of being present. "
+                   "The forge never guesses the field: the repository "
+                   "names it and the forge only compares the value there "
+                   "against the digest of the code as it stands",
+}
+
+
+#: The declared shape of each `search` field, required and optional alike --
+#: the same way `DISTRIBUTION_SHAPE` declares `distribution`'s. `requiredScale`
+#: is a scale along named axes, so it is a mapping and never a bare number:
+#: `30` cannot say whether it means epochs, seeds or runs, and there is no
+#: axis to project a cost along. Without this table the field was accepted on
+#: bare truthiness and the arithmetic downstream iterated a scalar, which
+#: ended the process on a traceback instead of a result.
 SEARCH_SHAPE = {
     "what": str,
     "requiredScale": dict,
     "role": str,
     "tieRule": str,
+    "currentWhen": str,
 }
 
 
@@ -1113,9 +1134,46 @@ def distribution_state(contract: dict, dimensions: dict,
     }
 
 
+def _record_current(expected: Path | None, current_when, digest: str | None) -> bool | None:
+    """Whether the record found at `expected` says it was produced by the
+    code as it stands -- `_shards_current`'s own doctrine (see that
+    function's docstring), one level up from a shard.
+
+    `None` is the sentinel that means "nothing to check", and it means that
+    for exactly one reason: `current_when` (`search.currentWhen`) is not a
+    real string. That is the ONLY branch this returns `None` from, so
+    `_derive_record` can read `recordCurrent is None` as "not declared" and
+    nothing else -- the identical contract `_shards_current` keeps for a
+    shard by returning `None` only when `distribution.currentWhen` is
+    absent, never when a declared check merely came back negative.
+
+    Declared, this always resolves to a real `True`/`False`: the record's
+    own JSON is read at the declared dotted path (absent, unparsable, or the
+    path itself missing all read the same as a value that fails to match)
+    and compared against `digest`. A `False` here composes with
+    `impl_position._derive_record`'s own doctrine that a definite mismatch
+    and an unreadable stamp are graded identically -- both collapse to
+    `None` (unmeasured), never `False`, at the witness itself; see that
+    function's own docstring for why.
+    """
+    if not isinstance(current_when, str) or not current_when:
+        return None
+    if expected is None or not expected.is_file():
+        return False
+    try:
+        stamp = json.loads(expected.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    value = _stamp_at(stamp if isinstance(stamp, dict) else {}, current_when)
+    if value is _STAMP_ABSENT:
+        return False
+    return value == digest
+
+
 def search_state(contract: dict, declared_records: list,
                  product: Path | None = None,
-                 declaration_status: str = "declared") -> dict:
+                 declaration_status: str = "declared",
+                 digest: str | None = None) -> dict:
     """Whether a declared search says enough about itself to be an experiment.
 
     A search is an experiment and gets declared as one. Three things it needs are
@@ -1157,10 +1215,12 @@ def search_state(contract: dict, declared_records: list,
             return {"status": declaration_status, "declared": {}, "missing": [],
                     "malformed": [],
                     "recordNotDeclared": None, "recordFound": None,
+                    "recordCurrent": None,
                     "strayRecords": [], "recordScale": {}, "scaleSatisfied": None,
                     "note": "no benchmark declaration to read a search from yet"}
         return {"status": "none", "declared": {}, "missing": [], "malformed": [],
-                "recordNotDeclared": None, "recordFound": None, "strayRecords": [],
+                "recordNotDeclared": None, "recordFound": None,
+                "recordCurrent": None, "strayRecords": [],
                 "recordScale": {}, "scaleSatisfied": None,
                 "note": "no search declared; `undeclaredRecords` is what would "
                         "surface one that left an artefact"}
@@ -1173,10 +1233,14 @@ def search_state(contract: dict, declared_records: list,
     # A value of the wrong shape is reported as itself. Folding it into
     # `missing` would ask for a field that is already there, and folding it
     # into the answered set is what let a scalar reach the arithmetic.
+    # `SEARCH_OPTIONAL` is scanned for shape and never for presence, the same
+    # rule `distribution_state` already keeps for its own optional fields: a
+    # target that answered `currentWhen` badly hears about it, and one that
+    # never answered it at all is not `missing` anything.
     malformed = [{"field": field,
                   "expected": SEARCH_SHAPE[field].__name__,
                   "found": type(search[field]).__name__}
-                 for field in SEARCH_DECLARATION
+                 for field in (*SEARCH_DECLARATION, *SEARCH_OPTIONAL)
                  if _search_malformed(search, field)]
 
     # The join between the two declarations: a search that writes a record and
@@ -1213,11 +1277,28 @@ def search_state(contract: dict, declared_records: list,
     scale_satisfied = (_scale_satisfied(record_scale, required_scale)
                        if required_scale else None)
 
+    # `None` whenever `currentWhen` is not a real string -- undeclared, or
+    # declared with the wrong shape (already reported in `malformed` above,
+    # and contributing no comparison here for the identical reason a
+    # malformed `requiredScale` contributes no axes). `_record_current`
+    # itself never raises on a missing/unparsable record; see its own
+    # docstring for why the only `None` this ever returns is "not declared".
+    record_current = _record_current(
+        expected,
+        search.get("currentWhen") if isinstance(search.get("currentWhen"), str) else None,
+        digest)
+
     return {
         "status": ("ok" if not missing and not malformed and covered
                    and found is not False else "incomplete"),
         "declared": dict(search),
         "recordFound": found,
+        # `impl_position._derive_record`'s own currency check, computed here
+        # rather than at the witness: this is the only layer that knows both
+        # the record's own on-disk bytes and the digest of the code as it
+        # stands. See `_record_current`'s docstring for the three-valued
+        # contract.
+        "recordCurrent": record_current,
         "strayRecords": stray,
         "missing": missing,
         "malformed": malformed,
@@ -2268,7 +2349,8 @@ def cmd_probe(args) -> dict:
     search = search_state(
         resolved["contract"],
         list((report.get("declared") or {}).get("records") or []),
-        target / name, declaration_status=resolved["status"])
+        target / name, declaration_status=resolved["status"],
+        digest=source_digest(target, package_name(name)))
     if next_step in ("benchmark", "piloted") and resolved["status"] in (
             "absent", "undeclared"):
         next_step = "declare-first"
@@ -6203,7 +6285,8 @@ def _position_write_evidence(
     search = search_state(
         resolved["contract"],
         list((report.get("declared") or {}).get("records") or []),
-        target / name, declaration_status=resolved["status"])
+        target / name, declaration_status=resolved["status"],
+        digest=source_digest(target, package_name(name)))
     shards_arrived, shards_current = _resolve_shard_evidence(
         target, name, resolved["contract"], shards_root)
     # One call, both fields read from it (design D3): `cmd_gate` needs the
@@ -8404,7 +8487,8 @@ def cmd_gate(args: argparse.Namespace) -> dict:
     gate_search = search_state(
         gate_resolved["contract"],
         list((gate_report.get("declared") or {}).get("records") or []),
-        target / name, declaration_status=gate_resolved["status"])
+        target / name, declaration_status=gate_resolved["status"],
+        digest=source_digest(target, package_name(name)))
     gate_state = probe_state(target, name, args.revision)
     gate_cost_forecast = search_cost_forecast(
         gate_state.get("reduction") or {}, declared_required_scale(gate_search))
@@ -9525,7 +9609,8 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     search = search_state(
         resolved["contract"],
         list((report.get("declared") or {}).get("records") or []),
-        target / name, declaration_status=resolved["status"])
+        target / name, declaration_status=resolved["status"],
+        digest=source_digest(target, package_name(name)))
     position = position_state(
         target, name,
         {"search": search, "requiredScale": declared_required_scale(search),
