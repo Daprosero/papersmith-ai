@@ -974,6 +974,68 @@ already-settled line in a target is a separate, bounded, operator-directed
 pass — never something a flow does incrementally as it happens to
 encounter an unwired agreement.
 
+### `--done` — the tick this class closes
+
+`--attach`, `--remove` and `--reverse` are all *compositions* of verbs this
+file already had: editing an agreement's text is `--reverse` (which
+explains why) followed by a fresh placement; moving one between sections is
+`--remove` (once explained) followed by placement under the new heading.
+Ticking one had no composition at all — nothing any of those three could
+do, alone or chained, ever changed a mark from `[ ]` to `[x]`. Every ticked
+agreement a real target carries was typed by hand. `--done` closes that
+gap:
+
+```bash
+python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py settle \
+  --target implementations/<repo> --name <Name> --session <your-session-id> \
+  --done \
+  --text "the free scalar stays at its neutral and identical across arms"
+```
+
+```json
+{ "status": "written", "holder": "Method/AGREED.md", "done": true,
+  "about": null, "text": "the free scalar stays at its neutral and identical across arms",
+  "under": null, "witness": "test_the_free_scalar_stays_neutral",
+  "supersedes": null, "collides": [] }
+```
+
+`--text` is matched by the identical exact-equality discipline `--attach`
+already uses. Refuses `SETTLE_TEXT_ABSENT` / `SETTLE_TEXT_AMBIGUOUS` the
+same way.
+
+**The guard: a tick must rest on a witness.** Refused `SETTLE_NOT_WITNESSED`
+unless the located line already carries a `` `test_<id>` `` token — bind
+one first with `--attach`. A tick asserts the work is done; a line nobody
+can point a test at cannot assert that through this command. This is
+decided, not merely present: a real target carries agreements ticked with
+no witness at all — irreducible arguments no test could ever measure — and
+this guard leaves those permanently unreachable through `--done`, on
+purpose. An unwitnessed line already reports `unwitnessed` in
+`agreements_state`, a state this file treats as legitimate; a human may
+still tick one by hand, the same "unsupported, never technically
+prevented" doctrine that already covers a hand-typed `--witness` token.
+Refused `SETTLE_ALREADY_DONE` if the located mark is already `x`/`X` —
+`--done` never re-ticks an already-ticked line.
+
+**Only the mark moves.** `--text`, any witness token the line already
+carries, and every other byte in the holder file are byte-identical
+afterward — the single byte inside the checklist mark's own brackets is
+the only thing this writes. `--under`, `--supersedes`, `--witness` and
+`--paragraph` do not apply with `--done` and are refused
+`SETTLE_DONE_CONFLICT` if given, and so are `--attach`, `--remove` and
+`--reverse` themselves. The discussion precondition is skipped for the
+identical reason `--attach` skips it: a line `--done` matches was already
+discussed and placed by a prior `settle` call.
+
+**Un-ticking is deliberately out of scope.** `--done` closes a measured
+gap — no composition of the other modes could ever produce a tick.
+Retracting one is a different kind of assertion (a prior claim was wrong,
+not that a fact came true) and would need its own guard, designed on its
+own terms; nothing measured against a real target found a mistakenly
+ticked agreement this command needed to correct. A human may still
+un-tick a line by hand today, the same doctrine that already covers every
+other hand edit this file does not itself perform.
+
 ## `defect` — declare a forge file broken
 
 Records that some file this forge itself ships is currently wrong — a bug in
