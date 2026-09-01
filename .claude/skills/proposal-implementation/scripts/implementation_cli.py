@@ -2427,6 +2427,17 @@ def cmd_probe(args) -> dict:
               for job in jobs["jobs"]],
         results_status=state["status"],
         cost_forecast=cost_forecast)
+    # One runnable `discuss` command when (and only when) the answer above
+    # is the final `piloted` -- never when a downgrade elif overwrote it,
+    # since none of those seven states is the reachability this publishes
+    # (design D1; spec "Probe's `piloted` status publishes a specific,
+    # runnable discuss command"). Computed unconditionally as a list so the
+    # key's shape never varies with state, the same discipline `verify`'s
+    # `toDiscuss` already keeps.
+    to_discuss = (
+        [_piloted_discuss_entry(target, name, state.get("belowTargetScale") or {})]
+        if next_step == "piloted" else []
+    )
     return {
         "status": "ok",
         "target": str(target),
@@ -2463,6 +2474,7 @@ def cmd_probe(args) -> dict:
             "necessity": necessity,
         },
         "nextStep": next_step,
+        "toDiscuss": to_discuss,
         "wiring": proposal,
         # `probe` looks and reports; it never runs anything itself.
         "kind": "read-only",
@@ -6853,6 +6865,33 @@ def _local_remedy_discuss_entry(target: Path, name: str, finding_id: str) -> dic
         "question": question,
         "command": _discuss_command(
             target, name, about=f"record {finding_id}", question=question),
+    }
+
+
+def _piloted_discuss_entry(target: Path, name: str, below: dict) -> dict:
+    """The one `toDiscuss` entry `cmd_probe` publishes when `nextStep` is
+    `piloted` (design D1's new top-level publication surface; spec "Probe's
+    `piloted` status publishes a specific, runnable discuss command").
+
+    Question text derives from the target/name pair and each axis's
+    DECLARED scale alone -- `below[axis]["declared"]`, sorted by axis name
+    (design D5's stable source for this site). `below[axis]["ran"]` (the
+    currently-achieved count) is never read here: it climbs on every poll
+    while the pilot-vs-declared-scale decision has not changed, and
+    embedding it would open a new, never-to-be-revisited `discuss` bucket
+    on every call (spec's stability requirement, Test Obligation #7).
+    """
+    axes = ", ".join(
+        f"{axis}={below[axis]['declared']!r}" for axis in sorted(below))
+    question = (
+        f"{name} (target {target}) ran a pilot below its declared scale "
+        f"({axes}); accept the pilot's scale as final, or continue toward "
+        "the declared scale?")
+    return {
+        "about": {"kind": "record", "operand": None},
+        "question": question,
+        "command": _discuss_command(
+            target, name, about="record", question=question),
     }
 
 

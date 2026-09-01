@@ -2161,7 +2161,7 @@ friction to ask; it does not raise the bar on who is allowed to answer.
 
 ### What `probe` reports, and why none of the job facts is a gate
 
-`probe` answers `nextStep` and reports fourteen facts around it. The ladder
+`probe` answers `nextStep` and reports fifteen facts around it. The ladder
 that chooses `nextStep` reads most of them; the rest are read by a human
 before deciding what to do with the answer, and a fact nobody was told about
 is a fact nobody reads:
@@ -2180,6 +2180,7 @@ is a fact nobody reads:
 | `report` | Whether the document a human reads agrees with the run | Yes — a document in drift is `report-first` |
 | `results` | What the last pilot measured, and at what scale | Yes — below scale is `piloted`, at scale is `already-benchmarked` |
 | `search` | Whether a declared search chose anything, and what a full run would cost | Yes — a record absent from disk, or its `scaleSatisfied` short of `true`, is `search-first` |
+| `toDiscuss` | One directly runnable, `shlex.quote`-escaped `discuss` command, published only when `nextStep` is `piloted`, naming the target/name pair and the DECLARED (never the achieved) scale, asking whether the pilot's reduced scale is accepted as final or the run should continue toward it | **Never** — a published action naming an already-computed undecided thing, not a verdict (see "Neither half proves who answered," above) |
 | `unreachedModules` | Arms declaring mathematics they never call | Yes — that is `wiring-first` |
 | `wiring` | The proposed wiring, present only when the answer is `benchmark` | Reported whatever it says |
 

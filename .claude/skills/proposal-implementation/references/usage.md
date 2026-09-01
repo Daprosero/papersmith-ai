@@ -1115,6 +1115,17 @@ oversight: the fact as computed cannot tell a repository that is not ready apart
 from one that never sends work anywhere. `SKILL.md`'s Output Contract carries the
 argument and states what would change it.
 
+A third field is reported beside `nextStep`, present only when the answer
+itself is `piloted`:
+
+- **`toDiscuss`** — one directly runnable, `shlex.quote`-escaped `discuss`
+  command. The question names the target/name pair and the DECLARED scale
+  the protocol asks for — never the currently-achieved count, which climbs
+  on every poll while the pilot-vs-declared-scale decision has not changed
+  — asking whether to accept the pilot's reduced scale as final or continue
+  toward the declared one. Run it verbatim, or run `discuss` by hand. It
+  **never gates** — the same non-goal as `verify`'s own `toDiscuss` above.
+
 ## `propose` — the campaign proposal
 
 Appends one `proposal` event to `.implementation/position.jsonl`, scoped to

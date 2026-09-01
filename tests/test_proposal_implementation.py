@@ -11172,6 +11172,101 @@ class ProbeReportedFactsRosterTests(unittest.TestCase):
         leftover = list((FORGE / "implementations").glob("_smokebox_*"))
         self.assertEqual(leftover, [], leftover)
 
+    # --- Phase 4: probe's `piloted` `toDiscuss` (spec "Probe's `piloted`
+    # status publishes a specific, runnable discuss command"; design D1/D5).
+    # Reuses `build_target` unchanged -- the identical repository that
+    # already reaches `benchmark` with all seven downgrade rungs non-firing
+    # (Phase 0.2's reachability proof) -- and adds only the one file
+    # `probe_state` reads to tell a pilot from a finished run.
+
+    def build_piloted_target(self, suffix, ran=1, declared=5):
+        box, head = self.build_target(suffix)
+        # The pilot's own results file lands beside `summary.json` under the
+        # same `Results/` directory `records_state` walks -- it must be
+        # declared too, or it reports as a second, unaccounted-for
+        # experiment (`undeclaredRecords`) and drifts the report, which
+        # downgrades `piloted` to `report-first` before the branch under
+        # test is ever reached.
+        declaration = self.DECLARATION.replace(
+            "'records': ['Results/summary.json']",
+            "'records': ['Results/summary.json', 'Results/Probe_results.json']")
+        self.assertIn("Probe_results.json", declaration,
+                       "the declaration's records list was not extended; "
+                       "the DECLARATION fixture text moved")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            declaration, encoding="utf-8")
+        (box / "Method" / "Results" / impl.PROBE_RESULTS).write_text(
+            json.dumps({
+                "revision": "r01.md",
+                "comparison": {"scale": 1},
+                "reduction": {"epochs": ran},
+                "targetScale": {"epochs": declared},
+            }), encoding="utf-8")
+        return box, head
+
+    def test_a_piloted_probe_publishes_a_runnable_discuss_command(self):
+        box, _ = self.build_piloted_target("piloted")
+        probe = self.probe(box)
+        self.assertEqual(probe["nextStep"], "piloted")
+        to_discuss = probe["toDiscuss"]
+        self.assertEqual(len(to_discuss), 1)
+        entry = to_discuss[0]
+        self.assertIn("Method", entry["question"])
+        self.assertIn("5", entry["question"],
+                       "the question must name the DECLARED scale")
+        self.assertIn("implementation_cli.py discuss", entry["command"])
+        self.assertIn(str(box), entry["command"])
+
+    def test_a_non_piloted_probe_publishes_no_discuss_command(self):
+        """The pole: the fixture this whole class already relies on reaches
+        `benchmark`, not `piloted`, and must publish nothing here."""
+        box, head = self.build_target("not-piloted")
+        self.write_job_folder(box, head)
+        probe = self.probe(box)
+        self.assertEqual(probe["nextStep"], "benchmark")
+        self.assertEqual(probe["toDiscuss"], [])
+
+    def test_the_piloted_command_is_runnable_and_appends_the_exact_question(self):
+        box, _ = self.build_piloted_target("piloted-run")
+        probe = self.probe(box)
+        entry = probe["toDiscuss"][0]
+        tokens = shlex.split(entry["command"])
+        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
+                              capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["asked"], entry["question"])
+
+    def test_the_piloted_question_is_stable_across_polls_at_different_achieved_counts(self):
+        """Mutation proof 7 (spec Test Obligations #7): two probes against
+        the same declared scale, at two different achieved repetition
+        counts, both still below it, must publish byte-identical question
+        text -- the pilot-vs-declared-scale decision has not changed."""
+        box, _ = self.build_piloted_target("piloted-stable", ran=1, declared=5)
+        first = self.probe(box)
+        before_question = first["toDiscuss"][0]["question"]
+        before_command = first["toDiscuss"][0]["command"]
+
+        (box / "Method" / "Results" / impl.PROBE_RESULTS).write_text(
+            json.dumps({
+                "revision": "r01.md",
+                "comparison": {"scale": 1},
+                "reduction": {"epochs": 3},
+                "targetScale": {"epochs": 5},
+            }), encoding="utf-8")
+        second = self.probe(box)
+        self.assertEqual(second["nextStep"], "piloted")
+        self.assertEqual(before_question, second["toDiscuss"][0]["question"])
+        self.assertEqual(before_command, second["toDiscuss"][0]["command"])
+
+    def test_toDiscuss_is_documented_in_reading_probe(self):
+        """Same doctrine as `VerifyStatusRosterTests.test_toDiscuss_is_
+        documented_in_reading_verify` -- a key that reached the JSON is
+        worth nothing to a reader never told it exists."""
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("## Reading `probe`"):]
+        section = section[:section.index("\n## ", 1)]
+        self.assertIn("`toDiscuss`", section)
+
 
 def dict_literal_keys(source: Path, name: str) -> list[str]:
     """The string keys of a module-level dict assigned to `name`.
