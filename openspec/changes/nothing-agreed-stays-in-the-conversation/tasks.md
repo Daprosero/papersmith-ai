@@ -50,26 +50,41 @@ Chain strategy: feature-branch-chain
 **PR 1 status**: Phases 0–2 complete. Full gate: `.venv/bin/python -m unittest discover -s tests -p 'test_*.py'` and `npm test` (385/385) — see commit message / PR body for the exact run.
 
 ## Phase 3 — Half 2a: settle collision + verify remedy (PR 2)
-- [ ] 3.1 RED: keep `test_settle_refuses_collides_unnamed` asserting `code` only; add test asserting enumerated colliding texts (not `len(collides)`) in `SETTLE_COLLIDES_UNNAMED` (`cmd_settle` ~7787).
-- [ ] 3.2 GREEN: rewrite the message to list every colliding text; append a collision `_discuss_command` (operand + sorted texts, never a count).
-- [ ] 3.3 RED/GREEN: apostrophe collision command run as subprocess (mutation proof 6).
-- [ ] 3.4 RED/GREEN: `toDiscuss` top-level key on `cmd_verify`'s dict — one command per `localRemediesNotWritten` id (~9697), text from finding id only.
-- [ ] 3.5 Test: `prose.staleRevisions`/`unresolvedSymbols`/`agreements.witness.unwitnessed` publish no `discuss` command.
-- [ ] 3.6 Re-grep `*.py` for literal `"existing agreement(s)"` post-change; confirm zero remaining assertions of the old wording.
+- [x] 3.1 RED: keep `test_settle_refuses_collides_unnamed` asserting `code` only; add test asserting enumerated colliding texts (not `len(collides)`) in `SETTLE_COLLIDES_UNNAMED` (`cmd_settle` ~7787).
+      Confirmed RED: `test_settle_collides_unnamed_names_every_colliding_text`, `test_settle_collides_unnamed_publishes_a_runnable_discuss_command`, `test_settle_collides_command_is_runnable_for_an_apostrophe_bearing_text` all failed against the pre-change message (`AssertionError`/`StopIteration`) before the rewrite below.
+- [x] 3.2 GREEN: rewrite the message to list every colliding text; append a collision `_discuss_command` (operand + sorted texts, never a count).
+      Implemented in `cmd_settle`'s create path: `sorted(collides)`, `repr()`-joined, plus one `_discuss_command(..., about=_about_arg(about), question=...)` call appended to the `Refused` detail.
+- [x] 3.3 RED/GREEN: apostrophe collision command run as subprocess (mutation proof 6).
+      `test_settle_collides_command_is_runnable_for_an_apostrophe_bearing_text` executes the printed command as a real subprocess against an apostrophe-bearing colliding text; mutation proof (removed `shlex.quote` from the shared `_discuss_command`) makes it, the settle-collision enumeration test, and the verify apostrophe test all fail (`ValueError: No closing quotation` / argparse `unrecognized arguments`) — reverted after confirming.
+- [x] 3.4 RED/GREEN: `toDiscuss` top-level key on `cmd_verify`'s dict — one command per `localRemediesNotWritten` id (~9697), text from finding id only.
+      `local_remedies_not_written` computed once before the `return {`, reused inside `audit.localRemediesNotWritten` (no behavior change) and to build the new top-level `toDiscuss` list via `_local_remedy_discuss_entry`. Question text derives from the finding id alone (design D5).
+- [x] 3.5 Test: `prose.staleRevisions`/`unresolvedSymbols`/`agreements.witness.unwitnessed` publish no `discuss` command.
+      `test_prose_and_unwitnessed_findings_publish_no_discuss_command`: fixture actually triggers non-empty `unresolvedSymbols` (a backtick-quoted unresolved symbol in a `.md` file) AND `witness.unwitnessed` (an un-witnessed checklist item) alongside one genuine local-remedy finding; asserts `toDiscuss` holds exactly the one entry, addressed to that finding alone.
+- [x] 3.6 Re-grep `*.py` for literal `"existing agreement(s)"` post-change; confirm zero remaining assertions of the old wording.
+      Re-grepped after the change: only an unrelated docstring quote (`discuss`'s AGREEMENTS doctrine paragraph, singular "an existing agreement") and my own new `assertNotIn("2 existing agreement(s)", ...)` negative assertion remain. Zero assertions of the old count-only wording survive.
 
-## Phase 4 — Half 2b: probe piloted (PR 3, conditional on 0.2 GO)
+Additional stability locks (spec "Published question text MUST be reproducible from stable identity alone," applied here per the operator's instruction, not deferred to Phase 4): `test_settle_collision_question_is_stable_across_calls_with_unrelated_state_changes`, `test_settle_collision_question_changes_when_a_new_colliding_agreement_is_added` (the one legitimate exception), `test_toDiscuss_question_is_stable_across_calls_with_changed_surrounding_state` — each proven both by a passing test against the shipped code and by a mutation (embedding a varying value) that makes the stability test fail.
+
+## Phase 4 — Half 2b: probe piloted (PR 3, conditional on 0.2 GO) — OUT OF SCOPE for PR 2
 - [ ] 4.1 RED: 0.2's fixture reaches `piloted`; assert `toDiscuss` present, question names target/name + declared scale.
 - [ ] 4.2 GREEN: add `toDiscuss` top-level key to `cmd_probe`'s piloted branch.
 - [ ] 4.3 RED/GREEN: mutation proof 7 — two polls, same declared scale, different achieved counts, byte-identical `--question` text; a build embedding the count MUST fail.
 
 ## Phase 5 — Rosters and docs (PR 2, PR 3 if Unit 3 ships)
-- [ ] 5.1 `VerifyStatusRosterTests`/`ProbeReportedFactsRosterTests` — add `toDiscuss` rows; confirm both red until docs land.
-- [ ] 5.2 `SKILL.md`: non-goal sentence verbatim in both halves' sections + `toDiscuss` row in both roster tables.
-- [ ] 5.3 `references/usage.md`: `toDiscuss` under `## Reading verify`; update collision wording example.
+- [x] 5.1 `VerifyStatusRosterTests`/`ProbeReportedFactsRosterTests` — add `toDiscuss` rows; confirm both red until docs land.
+      `cmd_probe` is untouched in PR 2 (Phase 4 stays out of scope), so only `VerifyStatusRosterTests` gets a `toDiscuss` row here; `ProbeReportedFactsRosterTests` is unaffected and stays green throughout (verified before and after this PR's changes — 14/14 both times). `VerifyStatusRosterTests` confirmed red before the SKILL.md/usage.md edits (`['toDiscuss'] != []`), green after.
+- [x] 5.2 `SKILL.md`: non-goal sentence verbatim in both halves' sections + `toDiscuss` row in both roster tables.
+      One `toDiscuss` row added to the `verify` Output Contract table (probe's row is PR 3's, since probe is untouched here). Non-goal sentence added once, in a new "Neither half proves who answered" paragraph directly under that table — the second of the spec's two named places (`cmd_close`'s docstring, already carried from a prior commit, is the first). `close`'s and `settle`'s Command Roster rows also updated to name `DISCUSSION_UNANSWERED` and the new collision-command behavior respectively (accuracy beyond the design's minimum, not gated by any test). RED-first proven for both new locks by `git stash` on `SKILL.md` alone: `test_the_non_goal_is_stated_without_softening` and `test_toDiscuss_is_documented_in_reading_verify` both failed against the stashed file, passed after unstash.
+- [x] 5.3 `references/usage.md`: `toDiscuss` under `## Reading verify`; update collision wording example.
+      New bullet added to the `## Reading \`verify\`` list; the `SETTLE_COLLIDES_UNNAMED` prose paragraph updated to describe the enumerated-texts + published-command behavior.
 
 ## Phase 6 — Full-suite verification (each PR, before merge)
 - [x] 6.1 (PR 1) `.venv/bin/python -m unittest discover -s tests -p 'test_*.py'` — confirmed `Ran 2051 tests, OK, skipped=3` (2039 baseline + 12 new: 3 `DiscussCommandBuilderTests` + 5 `OpenDiscussionsTests` + 4 `CloseCommandTests`).
 - [x] 6.2 (PR 1) `npm test` — confirmed 385/385 (unchanged; this PR touches no TypeScript).
 - [x] 6.3 (PR 1) Ran `ForgeVocabularyDerivedGuardTests` (`FORGE_VOCABULARY_FLOOR`/`FORGE_LEXICON` rule B, executed not reasoned about) — 8/8 pass, zero violations.
 - [x] 6.4 (PR 1) `CoreNamesNoDomainTests` passes by scope — this PR touches only `.claude/skills/proposal-implementation/scripts/implementation_cli.py` and `tests/`, no `_core/implementation/` change; confirmed included and green in the 6.1 full-suite run.
-- [ ] 6.1–6.4 repeat for PR 2 and PR 3 (conditional) before each of those merges.
+- [x] 6.1 (PR 2) `.venv/bin/python -m unittest discover -s tests -p 'test_*.py'` — `Ran 2063 tests, OK, skipped=3` (2051 baseline + 12 new: 5 `SettleCommandTests` + 5 `VerifyToDiscussTests` + 2 `VerifyStatusRosterTests`).
+- [x] 6.2 (PR 2) `npm test` — 385/385 pass, unchanged (this PR touches no TypeScript).
+- [x] 6.3 (PR 2) `ForgeVocabularyDerivedGuardTests` — 9/9 pass (all subtests green, `test_rule_b_finds_no_target_vocabulary_in_the_forge` run for real).
+- [x] 6.4 (PR 2) `CoreNamesNoDomainTests` (`tests/test_implementation_core.py`) — 2/2 pass; this PR touches only `implementation_cli.py`, `SKILL.md`, `references/usage.md` and `tests/`, no `_core/implementation/` change.
+- [ ] 6.1–6.4 repeat for PR 3 (conditional on Phase 4) before that merge.

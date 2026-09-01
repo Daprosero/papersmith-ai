@@ -10819,6 +10819,26 @@ class VerifyStatusRosterTests(unittest.TestCase):
         for status in ("coupling", "lfs", "position"):
             self.assertIn(f"`{status}`", section)
 
+    def test_toDiscuss_is_documented_in_reading_verify(self):
+        """Design D1 / spec Domain B: the new top-level `toDiscuss` key,
+        same doctrine as `test_the_usage_reference_tells_a_reader_how_to_
+        read_them` above -- a status that reached the JSON is worth nothing
+        to a reader who is never told it exists."""
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("## Reading `verify`"):]
+        section = section[:section.index("\n## ", 1)]
+        self.assertIn("`toDiscuss`", section)
+
+    def test_the_non_goal_is_stated_without_softening(self):
+        """Cross-Domain Requirement (spec): the non-goal sentence -- the
+        gate/publication points prove a decision reached the record, never
+        that the operator authored it -- must appear in `SKILL.md`,
+        unsoftened."""
+        skill = " ".join(SKILL_MD.read_text(encoding="utf-8").split())
+        self.assertIn("never that the operator authored it", skill)
+        self.assertIn("An agent can open a question and answer it itself, "
+                      "and nothing downstream can tell", skill)
+
     def test_the_roster_names_a_renamed_key(self):
         """Reachability, measured rather than asserted.
 
@@ -15001,6 +15021,128 @@ class SettleCommandTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["code"], "SETTLE_COLLIDES_UNNAMED")
 
+    def test_settle_collides_unnamed_names_every_colliding_text(self):
+        """Spec Domain B, 'A settle collision publishes a specific, runnable
+        discuss command': the refusal enumerates every colliding text, not
+        `len(collides)` (design D5 -- excluded source)."""
+        box = self._box()
+        first = "first item mentioning Notebooks/verification.ipynb"
+        second = "second item also mentioning Notebooks/verification.ipynb"
+        (box / "Method" / "AGREED.md").write_text(
+            f"# Agreed\n\n## Ladder\n\n- [x] {first}\n- [ ] {second}\n",
+            encoding="utf-8")
+        self._discuss(box, "notebook Notebooks/verification.ipynb", answer="Yes.")
+        proc = self._settle(box, about="notebook Notebooks/verification.ipynb")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        body = json.loads(proc.stdout)
+        self.assertEqual(body["code"], "SETTLE_COLLIDES_UNNAMED")
+        self.assertIn(first, body["detail"])
+        self.assertIn(second, body["detail"])
+        self.assertNotIn("2 existing agreement(s)", body["detail"])
+
+    def test_settle_collides_unnamed_publishes_a_runnable_discuss_command(self):
+        """Mutation proof groundwork (spec Test Obligations #6): the
+        collision refusal also prints a directly runnable `discuss` command
+        naming the operand and both colliding texts, executed as a
+        subprocess -- not merely read as text -- the same discipline
+        `test_close_discussion_refusal_prints_a_runnable_apostrophe_
+        bearing_retirement` already applies to Half 1's retirement command.
+        """
+        box = self._box()
+        first = "first item mentioning Notebooks/verification.ipynb"
+        second = "second item also mentioning Notebooks/verification.ipynb"
+        (box / "Method" / "AGREED.md").write_text(
+            f"# Agreed\n\n## Ladder\n\n- [x] {first}\n- [ ] {second}\n",
+            encoding="utf-8")
+        self._discuss(box, "notebook Notebooks/verification.ipynb", answer="Yes.")
+        proc = self._settle(box, about="notebook Notebooks/verification.ipynb")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        body = json.loads(proc.stdout)
+
+        line = next(l for l in body["detail"].splitlines()
+                    if "implementation_cli.py discuss" in l)
+        tokens = shlex.split(line)
+        self.assertEqual(tokens[tokens.index("--target") + 1], str(box))
+        self.assertEqual(tokens[tokens.index("--name") + 1], "Method")
+        question = tokens[tokens.index("--question") + 1]
+        self.assertIn(first, question)
+        self.assertIn(second, question)
+
+        run = self.run_cli(*tokens[1:])
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(json.loads(run.stdout)["asked"], question)
+
+    def test_settle_collides_command_is_runnable_for_an_apostrophe_bearing_text(self):
+        """Mutation proof 6 (spec Test Obligations #6, apostrophe form): a
+        colliding text containing an ASCII apostrophe must still produce a
+        runnable command -- executed as a subprocess, the same discipline
+        `mutation proof 5` already applies to Half 1."""
+        box = self._box()
+        first = "the target's own item mentioning Notebooks/verification.ipynb"
+        (box / "Method" / "AGREED.md").write_text(
+            f"# Agreed\n\n## Ladder\n\n- [x] {first}\n", encoding="utf-8")
+        self._discuss(box, "notebook Notebooks/verification.ipynb", answer="Yes.")
+        proc = self._settle(box, about="notebook Notebooks/verification.ipynb")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        body = json.loads(proc.stdout)
+        self.assertIn(first, body["detail"])
+
+        line = next(l for l in body["detail"].splitlines()
+                    if "implementation_cli.py discuss" in l)
+        tokens = shlex.split(line)
+        run = self.run_cli(*tokens[1:])
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn(first, json.loads(run.stdout)["asked"])
+
+    def test_settle_collision_question_is_stable_across_calls_with_unrelated_state_changes(self):
+        """Spec 'Published question text MUST be reproducible from stable
+        identity alone': derived from operand + sorted colliding texts only
+        (design D5). An unrelated, later `discuss` event landing on the
+        SAME ledger between the two calls must not change one byte of the
+        collision question."""
+        box = self._box()
+        first = "first item mentioning Notebooks/verification.ipynb"
+        (box / "Method" / "AGREED.md").write_text(
+            f"# Agreed\n\n## Ladder\n\n- [x] {first}\n", encoding="utf-8")
+        self._discuss(box, "notebook Notebooks/verification.ipynb", answer="Yes.")
+        first_proc = self._settle(box, about="notebook Notebooks/verification.ipynb")
+        self.assertEqual(first_proc.returncode, 2, first_proc.stdout)
+        before = json.loads(first_proc.stdout)["detail"]
+
+        # Unrelated ledger growth between the two calls -- a fresh, distinct
+        # discuss bucket about a different witness identity entirely.
+        self._discuss(box, "record", question="an unrelated question?")
+
+        second_proc = self._settle(box, about="notebook Notebooks/verification.ipynb")
+        self.assertEqual(second_proc.returncode, 2, second_proc.stdout)
+        after = json.loads(second_proc.stdout)["detail"]
+        self.assertEqual(before, after)
+
+    def test_settle_collision_question_changes_when_a_new_colliding_agreement_is_added(self):
+        """The one legitimate exception (spec, design D5): a genuinely NEW
+        colliding agreement changes the collision question's text, and that
+        is correct -- it is a different decision, not the same one restated.
+        """
+        box = self._box()
+        first = "first item mentioning Notebooks/verification.ipynb"
+        (box / "Method" / "AGREED.md").write_text(
+            f"# Agreed\n\n## Ladder\n\n- [x] {first}\n", encoding="utf-8")
+        self._discuss(box, "notebook Notebooks/verification.ipynb", answer="Yes.")
+        first_proc = self._settle(box, about="notebook Notebooks/verification.ipynb")
+        self.assertEqual(first_proc.returncode, 2, first_proc.stdout)
+        before = json.loads(first_proc.stdout)["detail"]
+
+        second = "second item also mentioning Notebooks/verification.ipynb"
+        text = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
+        (box / "Method" / "AGREED.md").write_text(
+            text + f"- [ ] {second}\n", encoding="utf-8")
+
+        second_proc = self._settle(box, about="notebook Notebooks/verification.ipynb")
+        self.assertEqual(second_proc.returncode, 2, second_proc.stdout)
+        after = json.loads(second_proc.stdout)["detail"]
+        self.assertNotEqual(before, after)
+        self.assertIn(second, after)
+
     def test_settle_refuses_supersedes_unknown(self):
         box = self._box()
         (box / "Method" / "AGREED.md").write_text(
@@ -15156,6 +15298,141 @@ class SettleCommandTests(unittest.TestCase):
         after = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
         self.assertIn("a concurrent edit nobody told settle about", after)
         self.assertNotIn("New text", after)
+
+
+class VerifyToDiscussTests(unittest.TestCase):
+    """`verify`'s new top-level `toDiscuss` key (spec Domain B, 'Verify
+    publishes one discuss command per unwritten local remedy finding';
+    design D1's new top-level publication surface). One command per
+    `audit.localRemediesNotWritten` finding id, and no command at all for
+    `prose.staleRevisions`/`unresolvedSymbols` or
+    `agreements.witness.unwitnessed` -- both explicitly excluded (spec).
+    """
+
+    def _box(self, findings_src: str, extra_files: dict | None = None) -> Path:
+        box = FORGE / "implementations" / f"_verify_todiscuss_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            "", encoding="utf-8")
+        (box / "tests" / "findings.py").write_text(findings_src, encoding="utf-8")
+        for relative, content in (extra_files or {}).items():
+            path = box / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        return box
+
+    def _verify(self, box: Path) -> dict:
+        return impl.cmd_verify(
+            argparse.Namespace(target=str(box), name="Method", revision=None))
+
+    def test_each_unwritten_local_remedy_gets_its_own_discuss_command(self):
+        """Spec scenario 'Each unwritten local remedy gets its own
+        command': `audit.localRemediesNotWritten: ["finding_7",
+        "finding_12"]` -> two distinct commands, neither a generic
+        question, each naming its own finding id."""
+        findings = (
+            "FINDINGS = [\n"
+            "    {'id': 'finding_7'},\n"
+            "    {'id': 'finding_12'},\n"
+            "]\n"
+        )
+        box = self._box(findings)
+        result = self._verify(box)
+        self.assertEqual(result["audit"]["localRemediesNotWritten"],
+                         ["finding_7", "finding_12"])
+        to_discuss = result["toDiscuss"]
+        self.assertEqual(len(to_discuss), 2)
+        questions = {entry["about"]["operand"]: entry["question"] for entry in to_discuss}
+        self.assertEqual(set(questions), {"finding_7", "finding_12"})
+        self.assertIn("finding_7", questions["finding_7"])
+        self.assertIn("finding_12", questions["finding_12"])
+        self.assertNotEqual(questions["finding_7"], questions["finding_12"])
+        for entry in to_discuss:
+            self.assertIn("implementation_cli.py discuss", entry["command"])
+            self.assertIn(str(box), entry["command"])
+
+    def test_toDiscuss_commands_are_runnable_and_append_the_exact_question(self):
+        findings = "FINDINGS = [\n    {'id': 'finding_alone'},\n]\n"
+        box = self._box(findings)
+        result = self._verify(box)
+        entry = result["toDiscuss"][0]
+        tokens = shlex.split(entry["command"])
+        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
+                              capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["asked"], entry["question"])
+
+    def test_a_finding_id_with_an_apostrophe_still_publishes_a_runnable_command(self):
+        """Reuses Half 1's `shlex.quote` discipline (spec 'Every command
+        published under this domain reuses the identical shlex.quote
+        discipline as Half 1')."""
+        findings = "FINDINGS = [\n    {'id': \"the target's finding\"},\n]\n"
+        box = self._box(findings)
+        result = self._verify(box)
+        entry = result["toDiscuss"][0]
+        tokens = shlex.split(entry["command"])
+        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
+                              capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("the target's finding", json.loads(proc.stdout)["asked"])
+
+    def test_prose_and_unwitnessed_findings_publish_no_discuss_command(self):
+        """Spec 'prose.staleRevisions and prose.unresolvedSymbols MUST NOT
+        publish a discuss action' and 'agreements.witness.unwitnessed MUST
+        NOT publish a discuss action' -- both present and non-empty
+        alongside one genuine local-remedy finding, and `toDiscuss` still
+        holds exactly one entry, addressed to that finding alone."""
+        findings = "FINDINGS = [\n    {'id': 'only_local_finding'},\n]\n"
+        box = self._box(findings, extra_files={
+            "Method/notes.md": "See `not_a_real_symbol` for details.\n",
+            "Method/AGREED.md": "# Agreed\n\n## Ladder\n\n"
+                               "- [ ] an unwitnessed agreement item\n",
+        })
+        result = self._verify(box)
+        self.assertTrue(result["prose"]["unresolvedSymbols"],
+                        "fixture must actually trigger unresolvedSymbols")
+        self.assertTrue(result["agreements"]["witness"]["unwitnessed"],
+                        "fixture must actually trigger unwitnessed")
+        to_discuss = result["toDiscuss"]
+        self.assertEqual(len(to_discuss), 1)
+        self.assertEqual(to_discuss[0]["about"]["operand"], "only_local_finding")
+        for entry in to_discuss:
+            self.assertNotIn("not_a_real_symbol", entry["question"])
+            self.assertNotIn("unwitnessed", entry["question"])
+
+    def test_toDiscuss_question_is_stable_across_calls_with_changed_surrounding_state(self):
+        """Spec 'Published question text MUST be reproducible from stable
+        identity alone': derived from the finding id alone (design D5).
+        Adding an unrelated, already-adopted second finding between the two
+        `verify` calls must not change one byte of the first finding's own
+        question."""
+        findings_one = "FINDINGS = [\n    {'id': 'only_local_finding'},\n]\n"
+        box = self._box(findings_one)
+        first = self._verify(box)
+        before = first["toDiscuss"][0]["question"]
+        before_command = first["toDiscuss"][0]["command"]
+
+        findings_two = (
+            "FINDINGS = [\n"
+            "    {'id': 'only_local_finding'},\n"
+            "    {'id': 'a_second_finding', 'equations': ['1.1'],\n"
+            "     'remedy_equations': ['1.1'], 'introduces': ['x'],\n"
+            "     'remedy_block': 'written'},\n"
+            "]\n"
+        )
+        (box / "tests" / "findings.py").write_text(findings_two, encoding="utf-8")
+        second = self._verify(box)
+        entries = [e for e in second["toDiscuss"]
+                  if e["about"]["operand"] == "only_local_finding"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(before, entries[0]["question"])
+        self.assertEqual(before_command, entries[0]["command"])
 
 
 class SettleAttachCommandTests(unittest.TestCase):

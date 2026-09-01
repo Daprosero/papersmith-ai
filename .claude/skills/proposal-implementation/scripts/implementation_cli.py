@@ -6837,6 +6837,25 @@ def _about_arg(about: dict) -> str:
     return f"{kind} {operand}" if operand else kind
 
 
+def _local_remedy_discuss_entry(target: Path, name: str, finding_id: str) -> dict:
+    """One `toDiscuss` entry for one `audit.localRemediesNotWritten` finding
+    id (design D1's new top-level publication surface; spec Domain B,
+    "Verify publishes one discuss command per unwritten local remedy
+    finding"). Question text derives from the finding id alone (design D5's
+    stable source for this site) -- never a count, never anything that
+    varies between calls while the same finding is still unwritten.
+    """
+    question = (f"finding {finding_id!r}'s local remedy is not written; "
+                "write it now, or record why it is deliberately deferred, "
+                "and why?")
+    return {
+        "about": {"kind": "record", "operand": finding_id},
+        "question": question,
+        "command": _discuss_command(
+            target, name, about=f"record {finding_id}", question=question),
+    }
+
+
 def _open_discussions(target: Path, name: str) -> list[dict]:
     """Every distinct `discuss` question text whose LAST occurrence in
     ledger order carries no answer (spec Domain A, "Bucketing is by exact
@@ -7865,12 +7884,20 @@ def cmd_settle(args: argparse.Namespace) -> dict:
             supersedes = sys.stdin.read() if args.supersedes == "-" else args.supersedes
             supersedes = supersedes.strip()
         if collides and not supersedes:
+            colliding_texts = sorted(collides)
+            listed = "; ".join(repr(t) for t in colliding_texts)
+            collision_question = (
+                f"{about['operand']!r} collides with existing agreement(s): "
+                f"{listed}. Which one, if any, does this placement "
+                "supersede?")
             raise Refused(
                 "SETTLE_COLLIDES_UNNAMED",
-                f"this witness's operand already appears in {len(collides)} "
-                "existing agreement(s); name the one this placement "
-                "supersedes with --supersedes, or the write would silently "
-                "duplicate it.")
+                "this witness's operand already appears in existing "
+                f"agreement(s): {listed}; name the one this placement "
+                "supersedes with --supersedes, or the write would "
+                "silently duplicate it. Ask which one with:\n" +
+                _discuss_command(target, name, about=_about_arg(about),
+                                 question=collision_question))
         if supersedes is not None and supersedes not in collides:
             raise Refused(
                 "SETTLE_SUPERSEDES_UNKNOWN",
@@ -9733,6 +9760,22 @@ def cmd_verify(args: argparse.Namespace) -> dict:
          "levels": resolve_levels_declaration(target, name)},
         revision, target_source)
 
+    # Computed once, before the return, and reused both inside `audit`
+    # (the bare id list) and at the top level (`toDiscuss`, one runnable
+    # command per id) -- design D1's new publication surface, spec Domain
+    # B "Verify publishes one discuss command per unwritten local remedy
+    # finding". Never `prose.staleRevisions`/`unresolvedSymbols` or
+    # `agreements.witness.unwitnessed`: both are excluded on their own
+    # documented semantics (spec), not by oversight.
+    local_remedies_not_written = [
+        f["id"] for f in findings
+        if finding_impact(f, source or "")["class"] == "local"
+        and not f.get("remedy_block")
+        and adoption_state(f, source or "")["state"] != "adopted"
+    ]
+    to_discuss = [_local_remedy_discuss_entry(target, name, finding_id)
+                  for finding_id in local_remedies_not_written]
+
     return {
         "command": "verify",
         "target": str(target),
@@ -9806,12 +9849,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             # A local remedy nobody wrote out is not a defect in the audit, but
             # it is the difference between a change that settles inline and one
             # that costs a session. Reported so it is a decision, not a silence.
-            "localRemediesNotWritten": [
-                f["id"] for f in findings
-                if finding_impact(f, source or "")["class"] == "local"
-                and not f.get("remedy_block")
-                and adoption_state(f, source or "")["state"] != "adopted"
-            ],
+            "localRemediesNotWritten": local_remedies_not_written,
             "remediesWithoutValidation": unvalidated,
             "remediesWithoutControl": uncontrolled,
             "migration": migration,
@@ -9834,6 +9872,13 @@ def cmd_verify(args: argparse.Namespace) -> dict:
                               "unexecuted": [], "errors": []}),
             "notebooks": notebooks,
         },
+        # New top-level key (design D1), never nested under `audit`:
+        # `returned_keys` reads dict literals at the top level of a
+        # function's own return, so a key buried inside `audit` would ship
+        # undocumented and invisible to `VerifyStatusRosterTests`. One
+        # entry per `audit.localRemediesNotWritten` id -- see
+        # `_local_remedy_discuss_entry`.
+        "toDiscuss": to_discuss,
     }
 
 
