@@ -14412,6 +14412,123 @@ class CommandRosterTests(unittest.TestCase):
             self.assertTrue(refuses.strip(), f"the `{command}` row names nothing it refuses on")
 
 
+class CommandRosterClosureTests(unittest.TestCase):
+    """Lock: `SKILL.md`'s `## Command Roster` states the dispatch surface as a
+    CLOSED set, and the set is read out of the document rather than trusted.
+
+    The defect this closes was written into the file as a confession and then
+    left to rot: a limitation paragraph said the CLI "accepts nine and refuses
+    everything else by naming them, so the running code holds a roster; this
+    document does not". By the time anybody measured it, `COMMANDS` bound
+    nineteen. Nothing derived the nine, so nothing went red as the surface
+    doubled underneath the sentence -- prose that outlived its mechanism, the
+    same class this file's refusal and `nextStep` rosters already close.
+
+    `CommandRosterTests` above holds the write-verbs to a documented row and
+    names the remaining commands as out of scope, but it names them *in this
+    file*: the closed set lived in a Python frozenset a reader of `SKILL.md`
+    never sees. This class moves the statement into the document and holds the
+    document to `COMMANDS`, in both directions -- a command added to the
+    dispatch table fails until it has a row, and a row no command backs fails
+    too.
+
+    `test_the_roster_derivation_finds_the_measured_nineteen` is the guard on
+    the scraper rather than on the roster, for the reason
+    `GatingRefusalRosterTests` states about its own count: a walk that silently
+    matches nothing makes the second direction pass over an empty set, and a
+    lock that passes because nothing happened is indistinguishable from one
+    that holds.
+    """
+
+    #: The two tables that together are the roster. Read by their own header
+    #: lines, so renaming a column is a red test rather than a silent halving.
+    WRITE_TABLE_HEADER = "| Command | What it writes | Refuses on |"
+    REST_TABLE_HEADER = "| Command | What it does | Where its detail lives |"
+
+    def _table(self, header):
+        skill = SKILL_MD.read_text(encoding="utf-8")
+        tables = markdown_table_rows(skill, header)
+        self.assertEqual(
+            len(tables), 1,
+            f"exactly one table is expected under {header!r} and "
+            f"{len(tables)} were found; the roster is half-read, and a "
+            "half-read roster is what this class exists to refuse")
+        rows = tables[0]
+        self.assertTrue(
+            rows, f"the table under {header!r} was read as empty")
+        for row in rows:
+            # At least three, never exactly three: `markdown_table_rows` splits
+            # on every `|`, and a cell carrying an escaped `\\|` (the
+            # `materialize` row's `<scaffold\\|objects\\|harness>`) reports
+            # extra cells. The guard that matters is that a row is not a stub.
+            self.assertGreaterEqual(
+                len(row), 3,
+                f"a row under {header!r} has fewer than three cells: {row!r}")
+        return rows
+
+    def rostered_commands(self):
+        """Column one of both tables, in document order, ungrouped."""
+        return [row[0].strip().strip("`")
+                for header in (self.WRITE_TABLE_HEADER, self.REST_TABLE_HEADER)
+                for row in self._table(header)]
+
+    def test_the_roster_derivation_finds_the_measured_nineteen(self):
+        """Sanity on the walk, not on the roster. A command added to or removed
+        from the CLI should move this number; a broken header, a renamed column
+        or a table that stopped parsing should not be able to leave it green."""
+        rostered = self.rostered_commands()
+        self.assertEqual(len(rostered), 19)
+        self.assertEqual(
+            sorted(rostered), sorted(set(rostered)),
+            "a command is rostered twice; two rows for one command is two "
+            "places to keep in agreement, which is the drift this closes")
+
+    def test_every_dispatched_command_has_a_roster_row(self):
+        rostered = set(self.rostered_commands())
+        self.assertEqual(
+            sorted(set(impl.COMMANDS) - rostered), [],
+            "`COMMANDS` dispatches these and the command roster states none "
+            "of them, so the document's closed set is not the CLI's")
+
+    def test_every_rostered_command_is_dispatched(self):
+        """The other direction, and the one an empty scrape would pass. A row
+        for a command that no longer exists teaches a reader an invocation the
+        CLI answers `invalid choice` to."""
+        rostered = set(self.rostered_commands())
+        self.assertEqual(
+            sorted(rostered - set(impl.COMMANDS)), [],
+            "the command roster states these and the CLI dispatches no such "
+            "command")
+
+    def test_the_roster_states_the_counts_it_actually_holds(self):
+        """The `nine` that rotted was a spelled number in prose with nothing
+        reading it. The counts stay in the prose -- a reader deserves to be
+        told how big the surface is -- and every one of them is derived here,
+        so re-counting is this suite's work rather than a reviewer's."""
+        skill = " ".join(SKILL_MD.read_text(encoding="utf-8").split())
+        write_rows = len(self._table(self.WRITE_TABLE_HEADER))
+        rest_rows = len(self._table(self.REST_TABLE_HEADER))
+        self.assertEqual(write_rows + rest_rows, len(impl.COMMANDS))
+        total = _english_count(len(impl.COMMANDS)).lower()
+        self.assertIn(f"`COMMANDS` binds {total} subcommands", skill)
+        self.assertIn(
+            f"The {_english_count(write_rows).lower()} above and the "
+            f"{_english_count(rest_rows).lower()} below", skill)
+
+    def test_every_rest_row_says_where_the_detail_lives(self):
+        """The third column is the whole point of the second table: these
+        commands are rostered here and documented at length elsewhere, and a
+        roster row that names no elsewhere sends the reader nowhere."""
+        for row in self._table(self.REST_TABLE_HEADER):
+            command = row[0].strip().strip("`")
+            with self.subTest(command=command):
+                self.assertTrue(
+                    row[1].strip(), f"the `{command}` row says nothing it does")
+                self.assertIn(
+                    "usage.md", row[2],
+                    f"the `{command}` row points at no worked reference")
+
+
 class PositionReconcileTests(unittest.TestCase):
     """`--reconcile` — reconstruction from a target that already has
     notebooks, job folders and a declared search, but no position section
@@ -21307,6 +21424,7 @@ class LedgerIsARequiredIgnoreTests(unittest.TestCase):
 #: are needed; anything else fails loudly rather than silently skipping the
 #: assertion that reads it.
 _ENGLISH_COUNTS = {
+    9: "Nine", 10: "Ten", 19: "Nineteen",
     26: "Twenty-six", 27: "Twenty-seven", 28: "Twenty-eight",
     29: "Twenty-nine", 30: "Thirty",
     54: "Fifty-four", 55: "Fifty-five", 56: "Fifty-six", 57: "Fifty-seven",
