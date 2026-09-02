@@ -2459,7 +2459,8 @@ def cmd_probe(args) -> dict:
          "notebooks": notebooks_state(target, name, package_name(name)),
          "smokeReady": jobs["smokeReady"], "shardsArrived": shards_arrived,
          "shardsCurrent": shards_current,
-         "levels": resolve_levels_declaration(target, name)},
+         "levels": resolve_levels_declaration(target, name),
+         "stepVerdicts": _step_verdicts(target, name)},
         args.revision,
         revision_source(args.revision) if args.revision else None)
     # Computed once and reused for both `search.costForecast` below and the
@@ -4658,6 +4659,11 @@ def source_digest(target: Path, package: str) -> str:
     checkout time and the ordering is gone. Content can, and the skill already
     settles the same question this way for the revision behind an admissibility
     ruling — the ruling stores the revision's digest and `verify` recomputes it.
+
+    Sibling to `suite_digest`, below, and never merged into it: this answers
+    whether a REPORT speaks for the code that produced it (`src/` alone); a
+    suite run additionally depends on `tests/` and the environment
+    declaration, which is exactly what `suite_digest` covers instead.
     """
     digest = hashlib.sha256()
     # All of `src/`, and nothing else. The boundary is the claim: a report depends
@@ -4697,6 +4703,13 @@ def source_digest(target: Path, package: str) -> str:
     # `package` no longer selects what is covered. It stays in the signature
     # because the two halves must be callable alike — see `report_digest.py` in
     # the kit, which the forge tests against this one over the same tree.
+    #
+    # NOT `suite_digest`, below, and never merged into it: this answers
+    # whether a REPORT speaks for the code that produced it; `suite_digest`
+    # answers whether a SUITE RUN witnessed the code, tests, and environment
+    # declaration as they stand now. Folding the two into one function would
+    # make either caller pay for a scope it never asked for — a notebook
+    # report never reads `tests/`, and a suite run always does.
     root = target / "src"
     if root.is_dir():
         for file in sorted(root.rglob("*.py")):
@@ -4704,6 +4717,61 @@ def source_digest(target: Path, package: str) -> str:
                 continue
             digest.update(str(file.relative_to(target)).encode("utf-8"))
             digest.update(file.read_bytes())
+    return digest.hexdigest()
+
+
+#: Five Python-ecosystem-standard, target-agnostic manifest paths
+#: `suite_digest` folds in beside `src/` and `tests/` -- no target's own
+#: vocabulary is read here, the same discipline `WITNESS_KINDS`
+#: (`impl_position.py`) keeps one level down for evidence classes. Each is
+#: folded through `impl_position.current_file_digest`/`ABSENT_FILE_DIGEST`,
+#: never a branching skip, so a manifest declared later moves the digest
+#: exactly as one edited does.
+SUITE_ENVIRONMENT_MANIFESTS = (
+    "requirements.txt", "pyproject.toml", "setup.cfg", "tox.ini", "pytest.ini",
+)
+
+
+def suite_digest(target: Path) -> str:
+    """One hash over everything a `step`'s suite run depends on: `src/`,
+    `tests/`, and the environment declaration that decides what runs
+    against them.
+
+    **Deliberately not `source_digest`, above, and never merged into it.**
+    `source_digest` answers "does this report speak for the code that
+    produced it" and is scoped to `src/` alone by hard-won incident (its own
+    docstring: pulling in `tests/` marked every notebook report stale the
+    moment any test changed at all, with no notebook ever importing
+    `tests/`). `suite_digest` answers the opposite-shaped question -- "did
+    the suite that just ran witness the code, the tests, and the
+    environment declaration as they stand now" -- and a suite run DOES
+    depend on `tests/`, so the two functions cannot share a scope without
+    one of them paying for a boundary it never asked for.
+
+    Walks `*.py` under both `src/` and `tests/` -- `unparsable_tests`'s own
+    `rglob("*.py")`, not `test_function_names`'s narrower `test_*.py`.
+    Measured: the narrower glob excludes `conftest.py`, which a suite run
+    depends on exactly as much as any `test_*.py` file it collects fixtures
+    for. `__pycache__` is skipped, the same exclusion `source_digest` keeps.
+    Then folds in `SUITE_ENVIRONMENT_MANIFESTS`, each through
+    `impl_position.current_file_digest`/`ABSENT_FILE_DIGEST` -- one
+    `is_file()` test producing a value whether the file exists or not,
+    never a branching skip, so declaring a manifest later moves this digest
+    exactly as creating any other tracked file does.
+    """
+    digest = hashlib.sha256()
+    for subdir in ("src", "tests"):
+        root = target / subdir
+        if root.is_dir():
+            for file in sorted(root.rglob("*.py")):
+                if "__pycache__" in file.parts:
+                    continue
+                digest.update(str(file.relative_to(target)).encode("utf-8"))
+                digest.update(file.read_bytes())
+    for name in SUITE_ENVIRONMENT_MANIFESTS:
+        digest.update(name.encode("utf-8"))
+        digest.update(
+            impl_position.current_file_digest(target / name).encode("utf-8"))
     return digest.hexdigest()
 
 
@@ -6431,6 +6499,95 @@ def _skipped_rung_detail(
         "can be sealed.")
 
 
+def _step_operand_detail(items: list[dict], steps: dict) -> str | None:
+    """Why an `@step` witness in this sequence cannot be measured, or
+    `None` when every one names a step this target's own `__steps__`
+    actually declares -- `_skipped_rung_detail`'s own shape, above, for the
+    identical reason: returns the refusal's detail rather than raising it,
+    so `POSITION_STEP_UNKNOWN` stays visible to `raised_refusal_codes` at
+    the one call site (inside `cmd_position`) that raises it, not buried
+    one call deep in a helper `GatingRefusalRosterTests`'s walk cannot see.
+
+    `parse_items` (`impl_position.py`) validates only the witness KIND --
+    that `"step"` is a member of `WITNESS_KINDS` -- never the operand
+    string against this target's own declared steps. An `@step nosuch`
+    item reaches here unblocked, and without this check would silently
+    derive `unmeasured` forever (`_derive_step`'s own missing-operand
+    branch), never telling anyone the name was never declared at all.
+
+    Assumes `steps` is non-empty: the caller raises `STEPS_UNDECLARED`
+    first (design "Second arm: reuse `STEPS_UNDECLARED` verbatim") when it
+    is not -- the identical fact `cmd_step` itself already raises that
+    code for, no new classification needed.
+    """
+    unknown = sorted({
+        item["witness"]["operand"] for item in items
+        if item["witness"]["kind"] == "step"
+        and item["witness"]["operand"] not in steps})
+    if not unknown:
+        return None
+    return (
+        f"{unknown!r} names a step this target's __steps__ does not "
+        f"declare ({sorted(steps)!r}); an `@step` witness must name one "
+        "of them.")
+
+
+def _step_verdicts(target: Path, name: str) -> dict:
+    """`evidence["stepVerdicts"]` for every caller that reads an `@step`
+    witness -- `_position_write_evidence`, `cmd_probe`'s inline dict, and
+    `cmd_verify`'s inline dict, the identical three-caller shape
+    `_resolve_shard_evidence`, above, already keeps for `@shard`. Design
+    "All three evidence builders share one fold": the proposal named only
+    `_position_write_evidence`; wiring just that one function would leave
+    `probe` and `verify` reporting `unmeasured` forever while `gate`
+    reports satisfied -- two places disagreeing about "the suite is
+    green", the same defect this codebase already refuses for a `@shard`
+    witness read only through `probe`'s own, permanently-`None` copy.
+
+    Folds `kind: "step"` events from `.implementation/position.jsonl`,
+    latest wins by ledger order (later events override earlier ones for
+    the same step name, never reordered by content). Short-circuits to
+    `{}` when the ledger holds no `kind: "step"` event at all: a fresh
+    `suite_digest(target)` is a real filesystem walk, and a target that
+    never ran `step` has nothing here worth paying for it.
+
+    **Digest is compared before outcome is read** (spec "The Ledger
+    Carries Currency, Old Events Read Safely"): a latest event whose
+    recorded `suiteDigest` no longer matches a fresh `suite_digest(target)`
+    folds to `None` regardless of whether its `outcome` was `"returned"`
+    or `"raised"` -- a stale measurement is unmeasured, never a `False`
+    asserting the suite fails now about code nobody ran under. A
+    pre-change event with no `suiteDigest` key at all reads identically:
+    `.get("suiteDigest")` is `None`, which can never equal a real hex
+    digest, so it folds to `None` exactly like a stale one -- never
+    raising, never `True`. This function reads the ledger and compares
+    digests; it does not itself decide what a `True`/`False`/`None`
+    verdict MEANS to a witness -- that reading is `_derive_step`'s
+    (`impl_position.py`), a plain dict reader one layer up.
+    """
+    events = impl_position.read_events(
+        target / name / ".implementation" / "position.jsonl")
+    step_events = [event for event in events
+                  if event.get("kind") == "step" and event.get("step")]
+    if not step_events:
+        return {}
+    latest: dict[str, dict] = {}
+    for event in step_events:
+        latest[event["step"]] = event
+    live_digest = suite_digest(target)
+    verdicts: dict[str, bool | None] = {}
+    for step_name, event in latest.items():
+        if event.get("suiteDigest") != live_digest:
+            verdicts[step_name] = None
+        elif event.get("outcome") == "returned":
+            verdicts[step_name] = True
+        elif event.get("outcome") == "raised":
+            verdicts[step_name] = False
+        else:
+            verdicts[step_name] = None
+    return verdicts
+
+
 def _position_write_evidence(
         target: Path, name: str, shards_root: str | None = None) -> dict:
     """The same evidence shape `position_state` is handed through `probe`
@@ -6480,6 +6637,7 @@ def _position_write_evidence(
         "shardsArrived": shards_arrived,
         "shardsCurrent": shards_current,
         "levels": resolve_levels_declaration(target, name),
+        "stepVerdicts": _step_verdicts(target, name),
     }
 
 
@@ -6821,6 +6979,19 @@ def cmd_position(args: argparse.Namespace) -> dict:
         existing_block["target"] if existing_block is not None else None)
     if skipped is not None:
         raise Refused("POSITION_RUNG_SKIPPED", skipped)
+    # `@step` operand validity, read fresh here rather than by `parse_items`
+    # (which validates only the witness KIND, never this string): an unknown
+    # step name must never silently derive `unmeasured` forever (spec
+    # "Unknown Step Operand Is A Classified, Roster-Visible Refusal").
+    steps = resolve_steps_declaration(target, name)
+    if not steps and any(item["witness"]["kind"] == "step" for item in items):
+        raise Refused(
+            "STEPS_UNDECLARED",
+            f"{name} declares no __steps__ at all; nothing here names a "
+            "callable this command could run.")
+    step_detail = _step_operand_detail(items, steps)
+    if step_detail is not None:
+        raise Refused("POSITION_STEP_UNKNOWN", step_detail)
     derived = impl_position.derive(items, evidence)
     wrote, left, unmeasured, unbacked = [], [], [], []
     for item, result in zip(items, derived):
@@ -9860,11 +10031,20 @@ def cmd_step(args: argparse.Namespace) -> dict:
     state machine.
 
     Every RESOLVED run — pass or fail — appends exactly one `kind: "step"`
-    event to `.implementation/position.jsonl`; an unresolvable step appends
-    nothing, because nothing ran. No digest field: `notebooks_state`
-    already recomputes `source_digest` fresh against a notebook's own
-    `DIGEST_MARKER` output, so a ledger-carried copy would be redundant and
-    could drift the moment the notebook is re-run outside this command.
+    event to `.implementation/position.jsonl`, carrying `suiteDigest`
+    (`suite_digest(target)`, computed fresh at write time); an unresolvable
+    step appends nothing, because nothing ran. Written unconditionally,
+    regardless of `outcome` — a stale-vs-fresh comparison is exactly as
+    meaningful for a suite that just failed as for one that passed, and the
+    forge cannot know in advance which steps will raise.
+
+    This reverses "no digest field" only for a step with no self-stamping
+    artifact of its own: a notebook already recomputes `source_digest`
+    fresh against its own `DIGEST_MARKER` output (`notebooks_state`), so a
+    ledger-carried copy there would be redundant and could drift the
+    moment the notebook is re-run outside this command. A bare runner step
+    — no notebook, no self-stamp — has no other record of what it ran
+    against; the ledger line is the only one there is.
 
     This never touches `gate`: it calls none of `_load_remote_execution_cli`
     or its two siblings, appends a `kind` no `gate` reader ever selects on,
@@ -9948,6 +10128,7 @@ def cmd_step(args: argparse.Namespace) -> dict:
         "interpreter": str(interpreter),
         "outcome": result["outcome"], "exitStatus": result["exitStatus"],
         "error": result["error"], "session": args.session, "at": recorded_at,
+        "suiteDigest": suite_digest(target),
     }
     impl_position.append_event(
         target / name / ".implementation" / "position.jsonl", event)
@@ -10351,7 +10532,8 @@ def cmd_verify(args: argparse.Namespace) -> dict:
          "smokeReady": remote_execution_jobs_state(target)["smokeReady"],
          "shardsArrived": merged["shardsArrived"] if merged else None,
          "shardsCurrent": merged["shardsCurrent"] if merged else None,
-         "levels": resolve_levels_declaration(target, name)},
+         "levels": resolve_levels_declaration(target, name),
+         "stepVerdicts": _step_verdicts(target, name)},
         revision, target_source)
 
     # Computed once, before the return, and reused both inside `audit`
@@ -11137,6 +11319,13 @@ GATING_REFUSALS: dict[str, str] = {
     # of the call is refused. So the exit published is the rung this target CAN
     # seal next, read from its own ladder.
     "POSITION_RUNG_SKIPPED": WORK_STATE,
+    # An `@step` operand names a position ITEM's declared step, and that
+    # declaration lives in AGREED.md, not in any argument `position` accepts
+    # -- no flag names a step; clearing this means editing the document or
+    # declaring the step in `__steps__` (design "The new refusal is a work
+    # state, raised in `cmd_position`", a measured correction to the
+    # proposal's `INVOCATION_DEFECT`).
+    "POSITION_STEP_UNKNOWN": WORK_STATE,
 }
 
 
@@ -11268,6 +11457,30 @@ def _resolve_position_rung_skipped(args) -> dict:
         "above it can be claimed, and why?" + named)
 
 
+def _resolve_position_step_unknown(args) -> dict:
+    """The steps this target's own `__steps__` actually declares, or the
+    fact that it declares none at all, read fresh at the moment of
+    refusal (`_resolve_position_rung_skipped`'s own pattern: re-derive from
+    `target`/`name` rather than thread the specific unknown operand through
+    `args`, which carries none).
+
+    A question, never a command: no flag this command accepts can name a
+    step, and clearing this means either editing AGREED.md's `@step`
+    operand or adding an entry to `__steps__` -- both decisions only a
+    human can make.
+    """
+    target = Path(str(getattr(args, "target", "")))
+    name = str(getattr(args, "name", ""))
+    steps = resolve_steps_declaration(target, name)
+    named = (f" This target currently declares: {sorted(steps)!r}."
+             if steps else " This target currently declares no __steps__ at all.")
+    return _refusal_question(
+        args,
+        "an `@step` witness in this position sequence names a step this "
+        "target's __steps__ does not declare; which callable should it "
+        "name, and does __steps__ need a new entry first?" + named)
+
+
 #: One builder per work state. Every one of them is reached only by its own
 #: code, and every one publishes something a reader runs unedited -- a code
 #: with nothing real to publish is a misclassification, not an empty field, and
@@ -11334,6 +11547,7 @@ _WORK_STATE_RESOLUTIONS = {
               "against, and why?"),
     "POSITION_DISAGREES": _resolve_position_disagrees,
     "POSITION_RUNG_SKIPPED": _resolve_position_rung_skipped,
+    "POSITION_STEP_UNKNOWN": _resolve_position_step_unknown,
     "POSITION_LEVELS_UNDECLARED": lambda args: _refusal_question(
         args, "an item in this sequence is marked as reaching a rung and the "
               "target's benchmark package declares no `__levels__` ladder for "

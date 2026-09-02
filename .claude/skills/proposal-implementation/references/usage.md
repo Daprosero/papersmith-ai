@@ -1666,13 +1666,34 @@ step ran.
 Every RESOLVED run — pass or fail — appends exactly one `kind: "step"` event
 to `.implementation/position.jsonl`: the step's name, its dotted callable,
 the interpreter path, `outcome` (`returned`/`raised`/`unknown`), exit
-status, and `error` (the raised exception, formatted once inside the
+status, `error` (the raised exception, formatted once inside the
 subprocess itself, since the step's own stdout/stderr are inherited live
-rather than captured). No digest field — `notebooks_state` already
-recomputes that fresh against the notebook's own `DIGEST_MARKER` output.
-This never touches `gate`: it calls none of the remote-execution loaders,
-and a `kind: "step"` line is invisible to `_verify_launch_authorization`,
-which selects on the exact string `"gate"`.
+rather than captured), and `suiteDigest` — `suite_digest(target)`, every
+`.py` under `src/` and `tests/` plus five fixed environment manifests
+(`requirements.txt`, `pyproject.toml`, `setup.cfg`, `tox.ini`,
+`pytest.ini`), computed fresh at write time, unconditionally regardless of
+outcome. This reverses "no digest field" only for a bare runner step with
+no self-stamping artifact of its own; a notebook still recomputes
+`source_digest` fresh against its own `DIGEST_MARKER` output, so a
+ledger-carried copy there would still be redundant. An `@step <name>`
+witness in `position`'s own sequence folds the ledger's latest event per
+name (latest wins) against a live digest: `True` for a current `returned`,
+`False` for a current `raised`, `unmeasured` for a stale digest, a
+pre-change event with no digest at all, or no event at all — never a false
+`True`/`False` over code nobody ran against. **Stated non-goal**: this does
+not distinguish a fully-executed suite from one that skipped tests —
+`pytest` exits 0 on skips, so `returned` grades green over a skipped suite
+exactly as a notebook report already does. An unknown `--step` name is
+`STEP_UNKNOWN` on this command; the identical operand named inside a
+position sequence's `@step` witness is `POSITION_STEP_UNKNOWN` instead,
+raised by `position` (an argument to `step` is an invocation the caller
+typed; a position item's operand lives in AGREED.md, so clearing it means
+editing the document or declaring the step) — `STEPS_UNDECLARED` covers
+the case where `__steps__` names nothing at all, in either command,
+verbatim. This never touches `gate`: it calls none of the remote-execution
+loaders, and a `kind: "step"` line is invisible to
+`_verify_launch_authorization`, which selects on the exact string
+`"gate"`.
 
 ## `handoff` — back to the deliberation, sized by reach
 
@@ -1783,9 +1804,10 @@ the mutual exclusion. Thirty-four codes, and nothing is published beside them:
 and the rest. Retype the call.
 
 **No — a work state.** Somebody has to act on the repository, so the payload
-carries a `resolve` key saying what. Thirty-one codes, including
+carries a `resolve` key saying what. Thirty-two codes, including
 `POSITION_DISAGREES`, `AGREEMENT_DISAGREES`, `POSITION_STALE`,
-`POSITION_RUNG_SKIPPED`, `STEPS_UNDECLARED` and `NOT_READY`:
+`POSITION_RUNG_SKIPPED`, `POSITION_STEP_UNKNOWN`, `STEPS_UNDECLARED` and
+`NOT_READY`:
 
 ```json
 { "status": "refused", "code": "POSITION_STALE",
