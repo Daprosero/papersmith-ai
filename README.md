@@ -38,9 +38,38 @@ binario. Verificar con `llama-server --version` (macOS/Linux) o
 macOS: `brew install python@3.12`. Windows: instalar desde
 <https://www.python.org/downloads/> (marcar "Add to PATH").
 
-## 2. Crear el entorno virtual
+## 2. Crear los entornos
 
-El motor vive en un entorno virtual aislado para no tocar el Python del sistema.
+Son **dos**, y hacen cosas distintas. Confundirlos es el error caro: instalar
+todo en uno solo mezcla el stack de ML de la ingesta con el intérprete que la
+forja usa para verificar repos destino, que es exactamente lo que
+`require_non_forge_interpreter()` existe para impedir.
+
+| Entorno | Qué corre | Manifiesto |
+|---------|-----------|------------|
+| `node_modules/` | El motor de `proposal-deliberation` (TypeScript vía jiti) | `package.json` |
+| `.venv/` (raíz) | Los CLI de `proposal-implementation`, `remote-execution`, `kaggle-accounts`, `skill-audit`, y la suite de tests en Python | `requirements.txt` |
+| `.claude/skills/paper-ingestion/.venv/` | Solo Marker: el stack de OCR | `.claude/skills/paper-ingestion/requirements.txt` |
+
+### 2.1 — La forja
+
+```bash
+npm install                      # jiti + typebox: el motor de deliberación
+python3.12 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+`requirements.txt` incluye `torch`, y eso sorprende hasta que se ve por qué: no
+es la dependencia del benchmark —ese corre en el repo destino, bajo el
+intérprete del destino— sino de la suite de tests de la forja, que ejecuta el
+kit bajo ESTE intérprete a propósito para probar que el guard lo rechaza. Sin
+`torch`, `benchmark.py` muere en su `import` de línea 35 antes de que el guard
+llegue a hablar, y veinte tests reportan un módulo faltante donde debían
+observar un rechazo.
+
+### 2.2 — La ingesta
+
+El motor de OCR vive en un entorno aislado para no tocar el Python del sistema.
 
 **macOS / Linux:**
 
@@ -1334,9 +1363,24 @@ flowchart TD
 
 ## Tests
 
+El repositorio declara su propio gate en `openspec/config.yaml`, en tres sitios
+que tienen que decir lo mismo (`rules.apply`, `rules.verify`, `testing.runner`).
+Ese comando, y no otro, es el que hay que correr:
+
 ```bash
-npm test   # motor de proposal-deliberation (489)
+npm test && .venv/bin/python -m unittest discover -s tests -p 'test_*.py'
 ```
+
+Son 386 tests del lado Node y 2100 del lado Python.
+
+> **Correr los módulos por nombre no es equivalente.** `python -m unittest
+> tests.test_forge_gate tests.test_remote_execution` falla un test que
+> `discover` pasa: `discover` inserta `tests/` como raíz del path, y nombrar los
+> módulos deja `adapter.py` alcanzable por dos rutas distintas, así que el
+> adaptador que un test escribe en disco se registra en una instancia del módulo
+> y se busca en la otra. El síntoma —`KeyError: no adapter registered under
+> 'zz_fixture_backend_for_test'`— apunta al registro y no al `sys.path`, que es
+> lo que lo hace caro de diagnosticar. Usar el comando declarado.
 
 Lo que prueba cada cosa: `tests/` cubre **el tooling de la forja** — el motor de
 deliberación y los helpers de ingestión. Los tests de una implementación

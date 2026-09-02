@@ -11,3 +11,27 @@ kagglesdk==0.1.37  # published standalone since 2025-07-11; NOT vendored inside
 # -- pinned at the version this was measured against; a drift is
 # locked by DoctrinePinTests in tests/test_remote_execution.py. Requires
 # Python >=3.11; this repository's own forge venv runs 3.12.
+
+# --- What the shipped kit needs, because the forge's own tests run it ---
+#
+# `proposal-implementation` ships a scaffold under `assets/kit/` that is meant to
+# run in the TARGET repository, under the target's interpreter -- `nb/benchmark.py`
+# says so in its own docstring: "with the target's interpreter and its torch --
+# never the forge's". That is true of a real benchmark run and stays true.
+#
+# It is not true of `tests/test_proposal_implementation.py`, which copies those
+# kit files into a temporary repository and executes them under THIS venv on
+# purpose, to prove what they do when the interpreter is the wrong one.
+# `InterpreterGuardTests` is the clearest case: it runs `benchmark.py` under the
+# forge interpreter and asserts the guard refuses with "refusing to run under".
+# The guard lives inside `environment()`, but `import torch` sits at module
+# level, so without torch the file dies at line 35 with ModuleNotFoundError and
+# the guard never runs -- the suite reports a missing module where the test was
+# written to observe a refusal.
+#
+# So these three are not the benchmark's dependencies borrowed by the forge;
+# they are the forge test suite's own, and leaving them undeclared cost 20
+# failures on a clean install with no hint that a `pip install` was the fix.
+numpy>=2.0
+pytest>=8.0
+torch>=2.0
