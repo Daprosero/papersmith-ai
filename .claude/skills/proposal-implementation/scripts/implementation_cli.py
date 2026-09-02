@@ -2459,7 +2459,8 @@ def cmd_probe(args) -> dict:
          "notebooks": notebooks_state(target, name, package_name(name)),
          "smokeReady": jobs["smokeReady"], "shardsArrived": shards_arrived,
          "shardsCurrent": shards_current,
-         "levels": resolve_levels_declaration(target, name)},
+         "levels": resolve_levels_declaration(target, name),
+         "stepVerdicts": _step_verdicts(target, name)},
         args.revision,
         revision_source(args.revision) if args.revision else None)
     # Computed once and reused for both `search.costForecast` below and the
@@ -4658,6 +4659,11 @@ def source_digest(target: Path, package: str) -> str:
     checkout time and the ordering is gone. Content can, and the skill already
     settles the same question this way for the revision behind an admissibility
     ruling — the ruling stores the revision's digest and `verify` recomputes it.
+
+    Sibling to `suite_digest`, below, and never merged into it: this answers
+    whether a REPORT speaks for the code that produced it (`src/` alone); a
+    suite run additionally depends on `tests/` and the environment
+    declaration, which is exactly what `suite_digest` covers instead.
     """
     digest = hashlib.sha256()
     # All of `src/`, and nothing else. The boundary is the claim: a report depends
@@ -4697,6 +4703,13 @@ def source_digest(target: Path, package: str) -> str:
     # `package` no longer selects what is covered. It stays in the signature
     # because the two halves must be callable alike — see `report_digest.py` in
     # the kit, which the forge tests against this one over the same tree.
+    #
+    # NOT `suite_digest`, below, and never merged into it: this answers
+    # whether a REPORT speaks for the code that produced it; `suite_digest`
+    # answers whether a SUITE RUN witnessed the code, tests, and environment
+    # declaration as they stand now. Folding the two into one function would
+    # make either caller pay for a scope it never asked for — a notebook
+    # report never reads `tests/`, and a suite run always does.
     root = target / "src"
     if root.is_dir():
         for file in sorted(root.rglob("*.py")):
@@ -4704,6 +4717,61 @@ def source_digest(target: Path, package: str) -> str:
                 continue
             digest.update(str(file.relative_to(target)).encode("utf-8"))
             digest.update(file.read_bytes())
+    return digest.hexdigest()
+
+
+#: Five Python-ecosystem-standard, target-agnostic manifest paths
+#: `suite_digest` folds in beside `src/` and `tests/` -- no target's own
+#: vocabulary is read here, the same discipline `WITNESS_KINDS`
+#: (`impl_position.py`) keeps one level down for evidence classes. Each is
+#: folded through `impl_position.current_file_digest`/`ABSENT_FILE_DIGEST`,
+#: never a branching skip, so a manifest declared later moves the digest
+#: exactly as one edited does.
+SUITE_ENVIRONMENT_MANIFESTS = (
+    "requirements.txt", "pyproject.toml", "setup.cfg", "tox.ini", "pytest.ini",
+)
+
+
+def suite_digest(target: Path) -> str:
+    """One hash over everything a `step`'s suite run depends on: `src/`,
+    `tests/`, and the environment declaration that decides what runs
+    against them.
+
+    **Deliberately not `source_digest`, above, and never merged into it.**
+    `source_digest` answers "does this report speak for the code that
+    produced it" and is scoped to `src/` alone by hard-won incident (its own
+    docstring: pulling in `tests/` marked every notebook report stale the
+    moment any test changed at all, with no notebook ever importing
+    `tests/`). `suite_digest` answers the opposite-shaped question -- "did
+    the suite that just ran witness the code, the tests, and the
+    environment declaration as they stand now" -- and a suite run DOES
+    depend on `tests/`, so the two functions cannot share a scope without
+    one of them paying for a boundary it never asked for.
+
+    Walks `*.py` under both `src/` and `tests/` -- `unparsable_tests`'s own
+    `rglob("*.py")`, not `test_function_names`'s narrower `test_*.py`.
+    Measured: the narrower glob excludes `conftest.py`, which a suite run
+    depends on exactly as much as any `test_*.py` file it collects fixtures
+    for. `__pycache__` is skipped, the same exclusion `source_digest` keeps.
+    Then folds in `SUITE_ENVIRONMENT_MANIFESTS`, each through
+    `impl_position.current_file_digest`/`ABSENT_FILE_DIGEST` -- one
+    `is_file()` test producing a value whether the file exists or not,
+    never a branching skip, so declaring a manifest later moves this digest
+    exactly as creating any other tracked file does.
+    """
+    digest = hashlib.sha256()
+    for subdir in ("src", "tests"):
+        root = target / subdir
+        if root.is_dir():
+            for file in sorted(root.rglob("*.py")):
+                if "__pycache__" in file.parts:
+                    continue
+                digest.update(str(file.relative_to(target)).encode("utf-8"))
+                digest.update(file.read_bytes())
+    for name in SUITE_ENVIRONMENT_MANIFESTS:
+        digest.update(name.encode("utf-8"))
+        digest.update(
+            impl_position.current_file_digest(target / name).encode("utf-8"))
     return digest.hexdigest()
 
 
@@ -6337,6 +6405,189 @@ def _resolve_shard_evidence(
     return shards_arrived, shards_current
 
 
+def _skipped_rung_detail(
+        items: list[dict], evidence: dict, levels: list[str],
+        target_level: str, recorded_level: str | None) -> str | None:
+    """Why this pass skips a rung, or `None` when it skips none: **to seal at
+    rung N, every leveled item must already grade as satisfied at rung N-1.**
+
+    Returns the refusal's detail rather than raising it, and the caller raises.
+    `GatingRefusalRosterTests` walks a gating command's own body for the
+    `Refused` literals it carries, and a code raised one call deep in a helper
+    is invisible to that walk -- so a rule this heavy would have entered the
+    engine with nobody having classified it. The refusal is kept where the
+    roster can see it; the reasoning is kept here, where it belongs.
+
+    The three checks above this one ask whether a rung was named, whether the
+    target declared it, and whether a leveled witness has a ladder to stand on.
+    None of them asks whether the rung *below* the named one was ever reached,
+    so a header could jump straight from the floor to the top of a target's own
+    ladder -- and the rung being skipped is exactly the one whose whole purpose
+    is proving the flow runs before anything is spent further up.
+
+    **Derived from state, never from history.** The obvious rule -- "was there
+    a prior pass at the rung below" -- reads the position ledger, and a target
+    that has never run this command has no ledger at all: the check would pass
+    vacuously on precisely the repositories it exists to stop, which is worse
+    than no check, because it looks like one. So the question is put to the
+    evidence instead, and put to it through `impl_position.derive` itself,
+    re-graded at the previous rung rather than by a second arithmetic beside
+    it: whatever "satisfied at rung N-1" means for a witness, it means the same
+    thing here as it does when the mark is written.
+
+    Four boundaries, each of them a decision rather than a fallout:
+
+    - **The first rung has no predecessor** (`target_index == 0`), so nothing is
+      checked there. A repository where nothing has run yet must still be able
+      to start, or the ladder has no bottom step.
+    - **Only a forward move is checked.** `recorded_level` is the rung the block
+      already on disk names, and a pass that does not climb above it -- a
+      re-seal at the same rung, a sticky refresh that restates it, a retreat to
+      a lower one -- is exempt. Two reasons, and they point the same way.
+      `position` is the instrument that measures; an instrument that refuses to
+      take a reading because the reading is bad hides the regression it exists
+      to report. And a retreat asserts less than the header already did: it
+      spends nothing and skips nothing, so there is nothing here to refuse. No
+      skip can be laundered through the exemption either, because a move that
+      does not climb cannot raise the recorded rung, and every move that does
+      climb is checked against the rung directly below its own target -- never
+      against wherever it happened to come from.
+    - **Two-state items do not participate.** Their verdict is computed without
+      the ladder and is identical at every rung (`derive`: `satisfied` *is*
+      `derived` for them), so they carry no information about which rung was
+      reached. Folding them in would refuse a legitimate advance because some
+      unrelated boolean step is still open -- whole-sequence completeness
+      wearing this rule's name. Their own ordering is already held, within a
+      rung, by `impl_availability.launch_available`'s `SEQUENCE_NOT_REACHED`.
+    - **An unmeasured leveled item is not attainment.** `satisfied is None`
+      means nobody looked, and "we did not look" is not "it has been reached" --
+      the same distinction `derive` keeps one level down by refusing to fold
+      `None` into the floor rung. This is also what separates this rule from a
+      cheaper one that merely counts positions on the ladder: a single-step
+      advance is refused too when the step below it is not shown attained.
+
+    A target that declares no ladder (`levels == []`) reaches none of this: it
+    has no rungs, so it has no progression to enforce, and `level_index` would
+    answer `None` for every name anyway.
+    """
+    target_index = impl_position.level_index(levels, target_level)
+    if not levels or not target_index:
+        # `not target_index` covers both `None` (a name off the ladder -- an
+        # undeclared ladder cannot be climbed, and a declared one already
+        # refused an unknown rung above) and `0` (the floor, which has no
+        # predecessor to attain).
+        return None
+    recorded_index = impl_position.level_index(levels, recorded_level)
+    if recorded_index is not None and target_index <= recorded_index:
+        return None
+    previous = levels[target_index - 1]
+    graded = impl_position.derive(items, {**evidence, "targetLevel": previous})
+    short = [(item, result) for item, result in zip(items, graded)
+            if not result["twostate"] and result["satisfied"] is not True]
+    if not short:
+        return None
+    named = "; ".join(
+        f"item {item['ordinal']} reached "
+        + (f"{result['derived']!r}" if result["derived"] is not None
+          else "nothing measurable")
+        for item, result in short)
+    return (
+        f"--target-level {target_level!r} sits above {previous!r} on this "
+        f"target's own declared ladder, and {previous!r} is not attained by "
+        f"the evidence as it stands ({named}); a position never skips a rung "
+        "going forward, so the rung below has to be reached before this one "
+        "can be sealed.")
+
+
+def _step_operand_detail(items: list[dict], steps: dict) -> str | None:
+    """Why an `@step` witness in this sequence cannot be measured, or
+    `None` when every one names a step this target's own `__steps__`
+    actually declares -- `_skipped_rung_detail`'s own shape, above, for the
+    identical reason: returns the refusal's detail rather than raising it,
+    so `POSITION_STEP_UNKNOWN` stays visible to `raised_refusal_codes` at
+    the one call site (inside `cmd_position`) that raises it, not buried
+    one call deep in a helper `GatingRefusalRosterTests`'s walk cannot see.
+
+    `parse_items` (`impl_position.py`) validates only the witness KIND --
+    that `"step"` is a member of `WITNESS_KINDS` -- never the operand
+    string against this target's own declared steps. An `@step nosuch`
+    item reaches here unblocked, and without this check would silently
+    derive `unmeasured` forever (`_derive_step`'s own missing-operand
+    branch), never telling anyone the name was never declared at all.
+
+    Assumes `steps` is non-empty: the caller raises `STEPS_UNDECLARED`
+    first (design "Second arm: reuse `STEPS_UNDECLARED` verbatim") when it
+    is not -- the identical fact `cmd_step` itself already raises that
+    code for, no new classification needed.
+    """
+    unknown = sorted({
+        item["witness"]["operand"] for item in items
+        if item["witness"]["kind"] == "step"
+        and item["witness"]["operand"] not in steps})
+    if not unknown:
+        return None
+    return (
+        f"{unknown!r} names a step this target's __steps__ does not "
+        f"declare ({sorted(steps)!r}); an `@step` witness must name one "
+        "of them.")
+
+
+def _step_verdicts(target: Path, name: str) -> dict:
+    """`evidence["stepVerdicts"]` for every caller that reads an `@step`
+    witness -- `_position_write_evidence`, `cmd_probe`'s inline dict, and
+    `cmd_verify`'s inline dict, the identical three-caller shape
+    `_resolve_shard_evidence`, above, already keeps for `@shard`. Design
+    "All three evidence builders share one fold": the proposal named only
+    `_position_write_evidence`; wiring just that one function would leave
+    `probe` and `verify` reporting `unmeasured` forever while `gate`
+    reports satisfied -- two places disagreeing about "the suite is
+    green", the same defect this codebase already refuses for a `@shard`
+    witness read only through `probe`'s own, permanently-`None` copy.
+
+    Folds `kind: "step"` events from `.implementation/position.jsonl`,
+    latest wins by ledger order (later events override earlier ones for
+    the same step name, never reordered by content). Short-circuits to
+    `{}` when the ledger holds no `kind: "step"` event at all: a fresh
+    `suite_digest(target)` is a real filesystem walk, and a target that
+    never ran `step` has nothing here worth paying for it.
+
+    **Digest is compared before outcome is read** (spec "The Ledger
+    Carries Currency, Old Events Read Safely"): a latest event whose
+    recorded `suiteDigest` no longer matches a fresh `suite_digest(target)`
+    folds to `None` regardless of whether its `outcome` was `"returned"`
+    or `"raised"` -- a stale measurement is unmeasured, never a `False`
+    asserting the suite fails now about code nobody ran under. A
+    pre-change event with no `suiteDigest` key at all reads identically:
+    `.get("suiteDigest")` is `None`, which can never equal a real hex
+    digest, so it folds to `None` exactly like a stale one -- never
+    raising, never `True`. This function reads the ledger and compares
+    digests; it does not itself decide what a `True`/`False`/`None`
+    verdict MEANS to a witness -- that reading is `_derive_step`'s
+    (`impl_position.py`), a plain dict reader one layer up.
+    """
+    events = impl_position.read_events(
+        target / name / ".implementation" / "position.jsonl")
+    step_events = [event for event in events
+                  if event.get("kind") == "step" and event.get("step")]
+    if not step_events:
+        return {}
+    latest: dict[str, dict] = {}
+    for event in step_events:
+        latest[event["step"]] = event
+    live_digest = suite_digest(target)
+    verdicts: dict[str, bool | None] = {}
+    for step_name, event in latest.items():
+        if event.get("suiteDigest") != live_digest:
+            verdicts[step_name] = None
+        elif event.get("outcome") == "returned":
+            verdicts[step_name] = True
+        elif event.get("outcome") == "raised":
+            verdicts[step_name] = False
+        else:
+            verdicts[step_name] = None
+    return verdicts
+
+
 def _position_write_evidence(
         target: Path, name: str, shards_root: str | None = None) -> dict:
     """The same evidence shape `position_state` is handed through `probe`
@@ -6386,6 +6637,7 @@ def _position_write_evidence(
         "shardsArrived": shards_arrived,
         "shardsCurrent": shards_current,
         "levels": resolve_levels_declaration(target, name),
+        "stepVerdicts": _step_verdicts(target, name),
     }
 
 
@@ -6718,6 +6970,28 @@ def cmd_position(args: argparse.Namespace) -> dict:
 
     evidence = _position_write_evidence(target, name, getattr(args, "shards", None))
     evidence["targetLevel"] = target_level
+    # Read before a single mark is derived, and so before a single byte is
+    # written: the three checks above decide whether the rung NAMED is a legal
+    # name, and this one decides whether the rung is legally REACHABLE from
+    # where the evidence currently stands.
+    skipped = _skipped_rung_detail(
+        items, evidence, declared_levels, target_level,
+        existing_block["target"] if existing_block is not None else None)
+    if skipped is not None:
+        raise Refused("POSITION_RUNG_SKIPPED", skipped)
+    # `@step` operand validity, read fresh here rather than by `parse_items`
+    # (which validates only the witness KIND, never this string): an unknown
+    # step name must never silently derive `unmeasured` forever (spec
+    # "Unknown Step Operand Is A Classified, Roster-Visible Refusal").
+    steps = resolve_steps_declaration(target, name)
+    if not steps and any(item["witness"]["kind"] == "step" for item in items):
+        raise Refused(
+            "STEPS_UNDECLARED",
+            f"{name} declares no __steps__ at all; nothing here names a "
+            "callable this command could run.")
+    step_detail = _step_operand_detail(items, steps)
+    if step_detail is not None:
+        raise Refused("POSITION_STEP_UNKNOWN", step_detail)
     derived = impl_position.derive(items, evidence)
     wrote, left, unmeasured, unbacked = [], [], [], []
     for item, result in zip(items, derived):
@@ -9757,11 +10031,20 @@ def cmd_step(args: argparse.Namespace) -> dict:
     state machine.
 
     Every RESOLVED run — pass or fail — appends exactly one `kind: "step"`
-    event to `.implementation/position.jsonl`; an unresolvable step appends
-    nothing, because nothing ran. No digest field: `notebooks_state`
-    already recomputes `source_digest` fresh against a notebook's own
-    `DIGEST_MARKER` output, so a ledger-carried copy would be redundant and
-    could drift the moment the notebook is re-run outside this command.
+    event to `.implementation/position.jsonl`, carrying `suiteDigest`
+    (`suite_digest(target)`, computed fresh at write time); an unresolvable
+    step appends nothing, because nothing ran. Written unconditionally,
+    regardless of `outcome` — a stale-vs-fresh comparison is exactly as
+    meaningful for a suite that just failed as for one that passed, and the
+    forge cannot know in advance which steps will raise.
+
+    This reverses "no digest field" only for a step with no self-stamping
+    artifact of its own: a notebook already recomputes `source_digest`
+    fresh against its own `DIGEST_MARKER` output (`notebooks_state`), so a
+    ledger-carried copy there would be redundant and could drift the
+    moment the notebook is re-run outside this command. A bare runner step
+    — no notebook, no self-stamp — has no other record of what it ran
+    against; the ledger line is the only one there is.
 
     This never touches `gate`: it calls none of `_load_remote_execution_cli`
     or its two siblings, appends a `kind` no `gate` reader ever selects on,
@@ -9845,6 +10128,7 @@ def cmd_step(args: argparse.Namespace) -> dict:
         "interpreter": str(interpreter),
         "outcome": result["outcome"], "exitStatus": result["exitStatus"],
         "error": result["error"], "session": args.session, "at": recorded_at,
+        "suiteDigest": suite_digest(target),
     }
     impl_position.append_event(
         target / name / ".implementation" / "position.jsonl", event)
@@ -10248,7 +10532,8 @@ def cmd_verify(args: argparse.Namespace) -> dict:
          "smokeReady": remote_execution_jobs_state(target)["smokeReady"],
          "shardsArrived": merged["shardsArrived"] if merged else None,
          "shardsCurrent": merged["shardsCurrent"] if merged else None,
-         "levels": resolve_levels_declaration(target, name)},
+         "levels": resolve_levels_declaration(target, name),
+         "stepVerdicts": _step_verdicts(target, name)},
         revision, target_source)
 
     # Computed once, before the return, and reused both inside `audit`
@@ -10901,8 +11186,17 @@ def cmd_materialize(args: argparse.Namespace) -> dict:
 #: and every one can stop a session dead. `GatingRefusalRosterTests` walks
 #: exactly these functions for the codes they raise, so adding a command here
 #: forces its refusals through the roster below.
+#:
+#: `position` is here for the reason the criterion states rather than by
+#: history: it reads the target before it will write, and every one of its
+#: refusals stops a session -- `POSITION_HOLDER_AMBIGUOUS` and
+#: `POSITION_LEVELS_UNDECLARED` sat outside this roster and therefore reached
+#: their reader as a bare code, which is the exact defect the roster exists to
+#: make impossible. It is also the only place `POSITION_RUNG_SKIPPED` can be
+#: raised: the rung is decided where the header is sealed, not where a later
+#: command reads it back.
 GATING_COMMANDS = ("apply", "admit", "gate", "offer", "close", "step",
-                   "settle", "materialize")
+                   "settle", "materialize", "position")
 
 #: The caller typed something the caller can retype. The detail already names
 #: the flag, the token or the mutual exclusion, so nothing is published beside
@@ -11000,6 +11294,38 @@ GATING_REFUSALS: dict[str, str] = {
     "MATERIALIZE_MODE_CONFLICT": INVOCATION_DEFECT,
     "PLAN_REQUIRED": INVOCATION_DEFECT,
     "SEED_REQUIRED": INVOCATION_DEFECT,
+    # --- position ----------------------------------------------------------
+    "POSITION_SEQUENCE_AND_RECONCILE": INVOCATION_DEFECT,  # drop one of the two
+    "POSITION_SEQUENCE_UNREADABLE": INVOCATION_DEFECT,     # fix the JSON typed
+    "POSITION_SEQUENCE_EMPTY": INVOCATION_DEFECT,          # pass a real sequence
+    "POSITION_BLOCK_EXISTS": INVOCATION_DEFECT,            # pass --replace
+    # The second arguable one, and it lands the other side of the line from
+    # `GATE_AUTHORIZATION_REQUIRED`: the rung names are the target's own, so a
+    # caller may have to go read `__levels__` before typing one -- but reading
+    # is not acting, nothing in the repository has to change, and the same call
+    # with the flag added goes through. `POSITION_ABSENT`'s own resolution
+    # already publishes that reading as a question, at the command that can
+    # answer it.
+    "POSITION_TARGET_LEVEL_REQUIRED": INVOCATION_DEFECT,
+    "POSITION_TARGET_LEVEL_UNKNOWN": INVOCATION_DEFECT,    # the detail lists them
+    # A ladder is declared in the target's own benchmark package, so no
+    # argument this command accepts can supply one.
+    "POSITION_LEVELS_UNDECLARED": WORK_STATE,
+    # Two files carry the block; which one holds the section is a decision
+    # about the documents, and no flag names a holder.
+    "POSITION_HOLDER_AMBIGUOUS": WORK_STATE,
+    # Nothing about the invocation clears a skipped rung: the work the rung
+    # below asks for has to actually happen, and until it does every spelling
+    # of the call is refused. So the exit published is the rung this target CAN
+    # seal next, read from its own ladder.
+    "POSITION_RUNG_SKIPPED": WORK_STATE,
+    # An `@step` operand names a position ITEM's declared step, and that
+    # declaration lives in AGREED.md, not in any argument `position` accepts
+    # -- no flag names a step; clearing this means editing the document or
+    # declaring the step in `__steps__` (design "The new refusal is a work
+    # state, raised in `cmd_position`", a measured correction to the
+    # proposal's `INVOCATION_DEFECT`).
+    "POSITION_STEP_UNKNOWN": WORK_STATE,
 }
 
 
@@ -11069,6 +11395,92 @@ def _resolve_position_disagrees(args) -> dict:
         f"{execution} && {_refusal_position_command(args)}")
 
 
+def _position_recorded_level(target: Path, name: str) -> str | None:
+    """The rung the block already on disk names, or `None` when no block does.
+
+    A read, never a second validation: `cmd_position` has already located the
+    block from its own scan by the time it refuses, and this exists only so a
+    resolution built at the `except Refused` chokepoint -- which is handed
+    nothing but `args` -- can reach the same fact without the command passing
+    it along. Ambiguity is not re-refused here (the first block wins): this is
+    a builder for a refusal that already happened, and a resolution that raised
+    on its way to being published would cost the reader both.
+    """
+    product = target / name
+    if not product.is_dir():
+        return None
+    for path in sorted(product.glob("*.md")):
+        if not path.is_file():
+            continue
+        block = impl_position.locate_block(path.read_bytes(), allow_legacy=True)
+        if block is not None:
+            return block.get("target")
+    return None
+
+
+def _resolve_position_rung_skipped(args) -> dict:
+    """The rung this target can seal next, and the question of what has to run
+    before the one above it can be claimed.
+
+    A question rather than a command, for the reason `POSITION_ABSENT`'s own
+    resolution states: the command that would clear this is the one that
+    refused, and publishing the caller's own call back to them is advice that
+    refuses on its own advice. What can be named concretely is the next rung --
+    one above whatever the block on disk already records, or the floor when
+    nothing records anything -- so that is what the question carries, together
+    with the seal command for it.
+
+    Every rung name here is read off the target's own `__levels__` at the
+    moment of refusal. The forge holds no rung vocabulary of its own (see
+    `resolve_levels_declaration`), so when a ladder cannot be read at all the
+    question still asks the same thing and simply names no rung, rather than
+    inventing one on the repository's behalf.
+    """
+    target = Path(str(getattr(args, "target", "")))
+    name = str(getattr(args, "name", ""))
+    levels = resolve_levels_declaration(target, name)
+    recorded = impl_position.level_index(
+        levels, _position_recorded_level(target, name))
+    following = None
+    if levels:
+        following = levels[0] if recorded is None else levels[
+            min(recorded + 1, len(levels) - 1)]
+    named = (
+        f" The next rung this target can seal is {following!r}: run `"
+        + _refusal_position_command(args, "--target-level", following) + "`."
+        if following else "")
+    return _refusal_question(
+        args,
+        "this pass aims at a rung whose predecessor on the target's own "
+        "ladder is not attained by anything measurable now, and a position "
+        "never skips a rung going forward; what has to run before the rung "
+        "above it can be claimed, and why?" + named)
+
+
+def _resolve_position_step_unknown(args) -> dict:
+    """The steps this target's own `__steps__` actually declares, or the
+    fact that it declares none at all, read fresh at the moment of
+    refusal (`_resolve_position_rung_skipped`'s own pattern: re-derive from
+    `target`/`name` rather than thread the specific unknown operand through
+    `args`, which carries none).
+
+    A question, never a command: no flag this command accepts can name a
+    step, and clearing this means either editing AGREED.md's `@step`
+    operand or adding an entry to `__steps__` -- both decisions only a
+    human can make.
+    """
+    target = Path(str(getattr(args, "target", "")))
+    name = str(getattr(args, "name", ""))
+    steps = resolve_steps_declaration(target, name)
+    named = (f" This target currently declares: {sorted(steps)!r}."
+             if steps else " This target currently declares no __steps__ at all.")
+    return _refusal_question(
+        args,
+        "an `@step` witness in this position sequence names a step this "
+        "target's __steps__ does not declare; which callable should it "
+        "name, and does __steps__ need a new entry first?" + named)
+
+
 #: One builder per work state. Every one of them is reached only by its own
 #: code, and every one publishes something a reader runs unedited -- a code
 #: with nothing real to publish is a misclassification, not an empty field, and
@@ -11134,6 +11546,18 @@ _WORK_STATE_RESOLUTIONS = {
               "benchmark package now, or name the directory to measure "
               "against, and why?"),
     "POSITION_DISAGREES": _resolve_position_disagrees,
+    "POSITION_RUNG_SKIPPED": _resolve_position_rung_skipped,
+    "POSITION_STEP_UNKNOWN": _resolve_position_step_unknown,
+    "POSITION_LEVELS_UNDECLARED": lambda args: _refusal_question(
+        args, "an item in this sequence is marked as reaching a rung and the "
+              "target's benchmark package declares no `__levels__` ladder for "
+              "it to reach; which rungs does this target climb, in order, and "
+              "why?"),
+    "POSITION_HOLDER_AMBIGUOUS": lambda args: _refusal_question(
+        args, "more than one markdown file under this product carries a "
+              "`<!-- position -->` block, and no argument this command takes "
+              "can tell them apart; which file holds the section, and should "
+              "the other block be removed, and why?"),
     "AGREEMENT_DISAGREES": lambda args: _refusal_question(
         args, "a ticked agreement names a witness function that is absent "
               "from a fully-parsed tests/ (the refusal detail names it); "

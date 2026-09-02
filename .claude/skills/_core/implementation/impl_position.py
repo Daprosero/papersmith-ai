@@ -78,7 +78,7 @@ ITEM_LINE = re.compile(r"^\s*-\s*\[(?P<mark>[ xX])\]\s*(?P<ordinal>\d+)\.\s*(?P<
 #: every target and learned from none of them. See `_record_scale`'s
 #: docstring (implementation_cli.py:309-341) for why the forge recognizes no
 #: target's vocabulary; this is the same discipline one level up.
-WITNESS_KINDS = frozenset({"record", "notebook", "rehearsal", "shard"})
+WITNESS_KINDS = frozenset({"record", "notebook", "rehearsal", "shard", "step"})
 
 #: The `WITNESS_KINDS` a bare `--about <kind>` (implementation_cli.py's
 #: `_resolve_discuss_about`) MUST NOT accept without an operand.
@@ -96,7 +96,7 @@ WITNESS_KINDS = frozenset({"record", "notebook", "rehearsal", "shard"})
 #: declared record, one fact per target rather than a per-artifact operand,
 #: so it is the one `WITNESS_KINDS` member legitimately operand-less — the
 #: same reading `_derive_record`'s own two-state check gives it.
-OPERAND_REQUIRED_KINDS = frozenset({"notebook", "rehearsal", "shard"})
+OPERAND_REQUIRED_KINDS = frozenset({"notebook", "rehearsal", "shard", "step"})
 
 #: Every witness-shaped token on a line, used only to COUNT them. Exactly one
 #: is required per item; a prose sentence that happens to mention another
@@ -526,10 +526,41 @@ def _derive_shard(evidence: dict, operand: str | None) -> tuple[bool | None, str
     return True, measured_by
 
 
+def _derive_step(evidence: dict, operand: str | None) -> tuple[bool | None, str]:
+    """`@step <name>` (two-state, the default) ticks against
+    `evidence["stepVerdicts"][operand]`, a plain dict reader with no ladder
+    of its own -- design "A Leveled Step Refuses, Never Derives Silently":
+    a step reports satisfied/not, never a graduated rung.
+
+    `evidence["stepVerdicts"]` is the caller's already-resolved tri-state per
+    step name (`_step_verdicts`, `implementation_cli.py`): `True` once the
+    latest `kind: "step"` ledger event for this name recorded `outcome:
+    "returned"` under a current `suite_digest`; `False` once it recorded
+    `outcome: "raised"` under a current digest; `None` for every other case
+    -- no event, a stale digest, or a pre-change event carrying no digest at
+    all (spec "The Ledger Carries Currency, Old Events Read Safely"). This
+    function itself never compares digests, never reads the ledger, never
+    walks a filesystem: that math belongs to its one caller, the identical
+    layering `_derive_shard`'s own docstring states for `shardsCurrent`.
+
+    The dict's own value is returned untouched -- `verdicts.get(operand)`,
+    never `is True`/`is False` collapsed -- so a recorded `False` (the suite
+    actually raised) reads as the definite `False` it is, never folded into
+    the same `None` an operand that never ran would produce. Only a missing
+    key, a missing dict, or a missing operand short-circuit to `None`.
+    """
+    measured_by = f"stepVerdicts[{operand}]"
+    verdicts = evidence.get("stepVerdicts")
+    if not operand or not isinstance(verdicts, dict) or operand not in verdicts:
+        return None, measured_by
+    return verdicts.get(operand), measured_by
+
+
 _DERIVERS = {
     "notebook": _derive_notebook,
     "rehearsal": _derive_rehearsal,
     "shard": _derive_shard,
+    "step": _derive_step,
 }
 
 
@@ -680,6 +711,49 @@ _LEVEL_DERIVERS = {
 }
 
 
+def _resolve_deriver(table: dict, table_name: str, kind: str, item: dict):
+    """The one place either lookup table (`_DERIVERS`, `_LEVEL_DERIVERS`) is
+    read by kind, replacing two bare subscripts that each raised an uncaught
+    `KeyError` for a kind the table does not carry -- design "The guard
+    lives at the lookup, not as a fourth special case".
+
+    A kind present in `WITNESS_KINDS` but absent from `_LEVEL_DERIVERS`
+    (`"step"`, by design: a step reports satisfied/not, never a rung) is
+    reachable from real markdown -- `@step:level <name>` parses cleanly,
+    `parse_items` validates only that the *kind* is known, never that this
+    particular kind carries a ladder. A kind absent from `_DERIVERS` is not
+    reachable the same way today (every `WITNESS_KINDS` member besides
+    `record`, special-cased above this call, has a `_DERIVERS` entry); this
+    guard exists there anyway so a *future* kind added to `WITNESS_KINDS`
+    without a two-state deriver fails the identical classified way rather
+    than a bare `KeyError` one layer up.
+
+    `POSITION_WITNESS_NOT_LEVELABLE` is deliberately not rostered in
+    `GATING_REFUSALS` (`implementation_cli.py`): `raised_refusal_codes`
+    scans `cmd_*` subtrees only, and this raise sits in `_core/`, one layer
+    below any `cmd_*` body -- the same non-rostered class `parse_items`'s own
+    `POSITION_ITEM_MALFORMED`/`POSITION_WITNESS_UNKNOWN_KIND` already belong
+    to.
+
+    `item` is read only through `.get("ordinal")`, never a bare subscript:
+    `cmd_discuss`'s own synthetic probe item (`implementation_cli.py`, built
+    to measure a bare `--about <kind>` before any sequence item exists)
+    carries no `"ordinal"` key at all -- measured after a first version of
+    this guard read `item["ordinal"]` unconditionally and crashed every
+    `discuss --about <operand-required kind> <operand>` call with an
+    uncaught `KeyError`, even on the successful path where the deriver was
+    found and this guard never had anything to report.
+    """
+    deriver = table.get(kind)
+    if deriver is None:
+        raise Refused(
+            "POSITION_WITNESS_NOT_LEVELABLE",
+            f"item {item.get('ordinal', '?')} names witness kind {kind!r}, "
+            f"which has no {table_name} deriver; kinds that do: "
+            f"{sorted(table)}")
+    return deriver
+
+
 def derive(items: list[dict], evidence: dict) -> list[dict]:
     """The measured verdict for every item's witness, and nothing else.
 
@@ -744,13 +818,15 @@ def derive(items: list[dict], evidence: dict) -> list[dict]:
             if kind == "record":
                 derived, measured_by = _derive_record(evidence)
             else:
-                derived, measured_by = _DERIVERS[kind](evidence, operand)
+                deriver = _resolve_deriver(_DERIVERS, "two-state", kind, item)
+                derived, measured_by = deriver(evidence, operand)
             satisfied = derived
         else:
             if kind == "record":
                 derived, measured_by = _record_scale_level(evidence, levels)
             else:
-                derived, measured_by = _LEVEL_DERIVERS[kind](evidence, operand, levels)
+                deriver = _resolve_deriver(_LEVEL_DERIVERS, "leveled", kind, item)
+                derived, measured_by = deriver(evidence, operand, levels)
             # `derived is None` must short-circuit straight to `satisfied =
             # None`: an `and`-chain that starts `derived_index is not None`
             # collapses to the bool `False` the moment that first condition
