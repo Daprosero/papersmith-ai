@@ -10172,6 +10172,12 @@ FORGE_LEXICON: dict[str, str] = {
                  "trying to optimize, and ordinary English besides",
     "pipeline": "ordinary English for a sequence of steps, used twice in "
                 "doctrine prose about how a construction arranges itself",
+    "pooling": "the statistical act of folding several measurements into one, "
+               "named in the doctrine sentence that says every rule governing a "
+               "measurement governs every statement derived from it. The forge "
+               "wrote it on 2026-08-13, three weeks before any target had a "
+               "module by that name, so the word is this skill's own and not a "
+               "loan from the repository that happens to share it",
     "record": "the forge's own evidence vocabulary: `@record` is one of the "
               "four witness kinds `impl_position` recognizes, and the report "
               "contract has declared `records` since before any target did",
