@@ -1,3 +1,4 @@
+import { ENGINE_MODULE_ROOT } from './_engine-module-root.mjs';
 // CREATE_SUCCESSOR locus-inference + byte-preservation coverage (proposal-deliberation-tutor-repair, tasks 1.3/1.4).
 //
 // Exercises orchestrator.ts's interactive CREATE_SUCCESSOR pipeline directly
@@ -24,7 +25,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
+const piRoot = ENGINE_MODULE_ROOT;
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),

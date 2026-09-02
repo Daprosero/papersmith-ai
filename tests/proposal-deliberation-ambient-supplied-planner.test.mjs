@@ -1,3 +1,4 @@
+import { ENGINE_MODULE_ROOT } from './_engine-module-root.mjs';
 // Ambient-supplied planner unit coverage (design `sdd/proposal-deliberation-ambient-model`,
 // SLICE 1). `createAmbientSuppliedPlanner` is a thin echo-and-VALIDATE
 // `SemanticEditPlanner`: it makes no model/network call, but it MUST carry the
@@ -12,7 +13,7 @@ import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
+const piRoot = ENGINE_MODULE_ROOT;
 const exportsPath = path.join(root, '.claude/skills/_core/deliberation/engine/exports.ts');
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti = createJiti(import.meta.url, { alias: {

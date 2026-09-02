@@ -1,3 +1,4 @@
+import { ENGINE_MODULE_ROOT } from './_engine-module-root.mjs';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -7,7 +8,7 @@ import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
+const piRoot = ENGINE_MODULE_ROOT;
 const execFileAsync = promisify(execFile);
 const exportsPath = path.join(root, '.claude/skills/_core/deliberation/engine/exports.ts');
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);

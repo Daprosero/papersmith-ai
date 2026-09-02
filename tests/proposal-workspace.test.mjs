@@ -1,3 +1,4 @@
+import { ENGINE_MODULE_ROOT } from "./_engine-module-root.mjs";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { access, link, mkdtemp, mkdir, readFile, realpath, readdir, rename, stat, symlink, writeFile } from "node:fs/promises";
@@ -6,29 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 
-async function findPiPackageRoot() {
-	for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
-		if (!directory) continue;
-		const candidate = path.join(directory, process.platform === "win32" ? "pi.cmd" : "pi");
-		try {
-			let current = path.dirname(await realpath(candidate));
-			while (current !== path.dirname(current)) {
-				try {
-					const packageJson = JSON.parse(await readFile(path.join(current, "package.json"), "utf8"));
-					if (packageJson.name === "@earendil-works/pi-coding-agent") return current;
-				} catch {
-					// Keep walking to the package root.
-				}
-				current = path.dirname(current);
-			}
-		} catch {
-			// This PATH entry does not contain Pi.
-		}
-	}
-	throw new Error("Pi executable not found on PATH; cannot load the project extension test runtime.");
-}
-
-const piRoot = await findPiPackageRoot();
+const piRoot = ENGINE_MODULE_ROOT;
 const { createJiti } = await import(
 	pathToFileURL(path.join(piRoot, "node_modules/jiti/lib/jiti.mjs")).href
 );

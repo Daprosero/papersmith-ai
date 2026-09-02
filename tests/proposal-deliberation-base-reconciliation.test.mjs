@@ -1,3 +1,4 @@
+import { ENGINE_MODULE_ROOT } from './_engine-module-root.mjs';
 // Base reconciliation: moving a newer revision aside to resume from an older one.
 //
 // The move itself is the agent's, not the engine's — SKILL.md is explicit that no operation
@@ -17,7 +18,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
+const piRoot = ENGINE_MODULE_ROOT;
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),

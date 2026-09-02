@@ -1,3 +1,4 @@
+import { ENGINE_MODULE_ROOT } from './_engine-module-root.mjs';
 // Keyless CLI invocation coverage (design `sdd/proposal-deliberation-ambient-model`, SLICE 1
 // item 3): CREATE_SUCCESSOR + resolvedDecisions must be invokable through the real
 // `node cli.mjs '<json>'` entry point WITHOUT ANTHROPIC_API_KEY, because the
@@ -21,7 +22,7 @@ const repoRoot = process.cwd();
 const engineDir = path.join(repoRoot, '.claude/skills/_core/deliberation/engine');
 const cliPath = path.join(engineDir, 'cli.mjs');
 
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
+const piRoot = ENGINE_MODULE_ROOT;
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),

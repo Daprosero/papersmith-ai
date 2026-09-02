@@ -1,3 +1,4 @@
+import { ENGINE_MODULE_ROOT } from './_engine-module-root.mjs';
 // Lever 1: amortize the engine's cold-start (jiti compiling ~63 TS files, ~0.72s)
 // by resolving a CREATE_SUCCESSOR locus INSIDE the same persistent `--serve`
 // process instead of spawning a separate jiti node per locus (the old SKILL.md
@@ -29,7 +30,7 @@ const repoRoot = process.cwd();
 const engineDir = path.join(repoRoot, '.claude/skills/_core/deliberation/engine');
 const cliPath = path.join(engineDir, 'cli.mjs');
 
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
+const piRoot = ENGINE_MODULE_ROOT;
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),

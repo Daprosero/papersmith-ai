@@ -1,3 +1,4 @@
+import { ENGINE_MODULE_ROOT } from './_engine-module-root.mjs';
 // CREATE_SUCCESSOR + resolvedDecisions coverage (design `sdd/proposal-deliberation-ambient-model`,
 // SLICE 1: ADD the ambient-supplied path; the existing model-backed CREATE_SUCCESSOR
 // path is untouched and stays covered by tests/proposal-deliberation-successor-multi-section.test.mjs).
@@ -21,7 +22,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
+const piRoot = ENGINE_MODULE_ROOT;
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),

@@ -1,3 +1,4 @@
+import { ENGINE_MODULE_ROOT } from './_engine-module-root.mjs';
 // Phase 1 (proposal-deliberation-tutor-repair): byte-safe splice + composite-engine wiring.
 //
 // These tests assert the CORRECTED behavior of the live, CLI-reachable
@@ -14,7 +15,7 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 
 const root = process.cwd();
-const piRoot = '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
+const piRoot = ENGINE_MODULE_ROOT;
 const { createJiti } = await import(pathToFileURL(path.join(piRoot, 'node_modules/jiti/lib/jiti.mjs')).href);
 const jiti = createJiti(import.meta.url, { alias: {
 	'@earendil-works/pi-coding-agent': path.join(piRoot, 'dist/index.js'),
