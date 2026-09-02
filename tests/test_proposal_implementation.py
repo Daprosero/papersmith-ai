@@ -13927,12 +13927,22 @@ class PositionRungLadderTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["targetLevel"], "floor")
 
-    def test_re_sealing_the_same_rung_survives_evidence_that_regressed(self):
-        """`position` is the instrument that measures, and an instrument that
-        refuses to read when the reading is bad hides exactly what it exists to
-        report. The block already records the middle rung; the shards it was
-        sealed against are gone, so the rung below it no longer grades as
-        attained -- and the refresh still runs, writing down what is true now."""
+    def test_a_recorded_rung_the_evidence_no_longer_attains_is_no_exemption(self):
+        """The headline of this change, and the reversal of an earlier one.
+
+        `target=` in the header states what a pass AIMS at, and an aim is
+        legitimately one rung above what is attained -- that is how a fresh
+        header at a higher rung is possible at all. The exemption here used to
+        read that same field as what had already been REACHED and use it as a
+        floor, so a rung that outlived its evidence did not merely go stale: it
+        switched the guard off for itself, permanently, and a switched-off
+        guard is indistinguishable from a green one.
+
+        The block records the middle rung and the shards it was sealed against
+        are gone, so nothing on this ladder is attained. A bare refresh is
+        still a seal at `middle`, and it still asserts that the floor is
+        reached. It is not, so it is refused -- by name, item by item.
+        """
         box = self._box()
         (box / "Method" / "AGREED.md").write_text(
             self._block(self.LEVELED, "middle", sha256=self.PROPOSAL_SHA256),
@@ -13940,20 +13950,25 @@ class PositionRungLadderTests(unittest.TestCase):
         proc = self.run_cli("position", "--target", str(box), "--name", "Method",
                             "--revision", "r1.md", "--session", "s1",
                             proposals=self._proposals())
-        self.assertEqual(proc.returncode, 0, proc.stdout)
-        self.assertEqual(json.loads(proc.stdout)["targetLevel"], "middle")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["code"], "POSITION_RUNG_SKIPPED")
+        # The regression is reported, not hidden: the detail names the rung
+        # that is short and the item that leaves it short.
+        self.assertIn("floor", payload["detail"])
+        self.assertIn("item 1", payload["detail"])
+        # And nothing was written: the header on disk is untouched.
+        self.assertIn("target=middle",
+                      (box / "Method" / "AGREED.md").read_text(encoding="utf-8"))
 
-    def test_moving_back_down_the_ladder_is_always_allowed(self):
-        """A retreat is not a skip. Re-rehearsing at a lower rung spends
-        nothing and asserts less than the header already did, and refusing it
-        would strand an operator whose remote work failed at the one honest
-        thing left to do.
+    def test_moving_down_is_refused_when_the_lower_rung_is_not_attained_either(self):
+        """A retreat is exempt from the FORWARD rule and is still a seal.
 
-        The retreat lands on the MIDDLE rung, not the floor: a retreat to the
-        floor is exempt anyway (index zero has no predecessor), so it would
-        prove nothing about the forward-only rule. This one has a predecessor,
-        and that predecessor is unmeasured here -- so only the exemption lets
-        it through.
+        Landing on the middle rung asserts that the floor is reached, exactly
+        as arriving there from below would -- where the pass came from changes
+        nothing about what the seal claims. The floor is not reached here, so
+        the retreat is refused too, and the operator is pointed at the one rung
+        that is honest (`..._never_cornered`, below, proves it exists).
         """
         box = self._box()
         (box / "Method" / "AGREED.md").write_text(
@@ -13962,8 +13977,8 @@ class PositionRungLadderTests(unittest.TestCase):
                             "--revision", "r1.md", "--session", "s1",
                             "--target-level", "middle",
                             proposals=self._proposals())
-        self.assertEqual(proc.returncode, 0, proc.stdout)
-        self.assertEqual(json.loads(proc.stdout)["targetLevel"], "middle")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_RUNG_SKIPPED")
 
     def test_retreating_all_the_way_to_the_floor_is_allowed_too(self):
         """The other retreat, kept because it is the one an operator actually
@@ -13978,6 +13993,129 @@ class PositionRungLadderTests(unittest.TestCase):
                             proposals=self._proposals())
         self.assertEqual(proc.returncode, 0, proc.stdout)
         self.assertEqual(json.loads(proc.stdout)["targetLevel"], "floor")
+
+    def test_an_operator_whose_evidence_collapsed_is_never_cornered(self):
+        """Decision 2 of `a position never skips a rung going forward`, kept
+        alive under a rule that no longer reads the header: **`position` is the
+        instrument that measures, and an instrument that refuses to take a
+        reading because the reading is bad hides the regression it exists to
+        report.** What changed is the mechanism, not the guarantee. The old
+        exemption bought "never cornered" by letting the recorded rung re-seal
+        itself forever, which is what switched the guard off; the guarantee is
+        now carried by the floor, which has no predecessor and so is exempt on
+        its own terms.
+
+        Proven by exhaustion rather than asserted in a comment: the evidence
+        attains nothing, every rung on the declared ladder is tried, and the
+        set that goes through is neither empty (the operator always has a move)
+        nor larger than the floor (the guard is not off). Every refusal names
+        the same one legal move.
+        """
+        box = self._box()
+        allowed, refused = [], {}
+        for rung in self.LADDER:
+            # Rewritten each time rather than a fresh repository each time:
+            # the block on disk is the whole of the input, and the ledger this
+            # leaves behind is deliberately not, since the rule reads the
+            # evidence and never a prior pass.
+            (box / "Method" / "AGREED.md").write_text(
+                self._block(self.LEVELED, "top"), encoding="utf-8")
+            proc = self.run_cli(
+                "position", "--target", str(box), "--name", "Method",
+                "--revision", "r1.md", "--session", "s1",
+                "--target-level", rung, proposals=self._proposals())
+            if proc.returncode == 0:
+                allowed.append(rung)
+            else:
+                payload = json.loads(proc.stdout)
+                self.assertEqual(payload["code"], "POSITION_RUNG_SKIPPED",
+                                 proc.stdout)
+                refused[rung] = payload["resolve"]["command"]
+        self.assertEqual(
+            allowed, ["floor"],
+            "the floor is the one rung nothing has to be attained for, so it "
+            "is exactly what an operator with collapsed evidence has left")
+        self.assertEqual(sorted(refused), ["middle", "top"])
+        for rung, command in refused.items():
+            self.assertIn(
+                "--target-level floor", command,
+                f"the refusal at {rung!r} has to hand back the move that "
+                "works, or 'never cornered' is true and unreachable")
+
+    def test_the_published_next_rung_is_read_from_attainment_not_the_header(self):
+        """The resolution carries the same separation the guard does.
+
+        Read from the header, the rung published would be the one above
+        whatever was last AIMED at -- `top` here, which is refused for the
+        identical reason the call being answered was, so the resolution would
+        refuse on its own advice. Read from attainment, it publishes the floor.
+
+        Proven by running the `position` invocation the question embeds, not
+        the `discuss` command beside it: `discuss` opens the decision and would
+        exit 0 whatever rung the question named, so it can witness that the
+        published text parses and nothing more.
+        """
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self._block(self.LEVELED, "middle"), encoding="utf-8")
+        proposals = self._proposals()
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "top", proposals=proposals)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        question = json.loads(proc.stdout)["resolve"]["question"]
+        self.assertIn("--target-level floor", question)
+        self.assertNotIn("--target-level top", question)
+        embedded = re.search(r"`([^`]*\bposition\b[^`]*)`", question)
+        self.assertIsNotNone(embedded, question)
+        rerun = self.run_cli(*shlex.split(embedded.group(1))[1:],
+                             proposals=proposals)
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        self.assertEqual(json.loads(rerun.stdout)["targetLevel"], "floor")
+
+    def test_the_attained_rung_is_reported_and_not_only_enforced(self):
+        """A fact nobody can see is a fact nobody acts on. `position_state`
+        already publishes `targetLevel` -- the aim -- and until now published
+        nothing about what the evidence reaches, so the only way to learn that
+        a recorded rung had outlived its evidence was to trip a refusal. The
+        two now stand side by side on the same payload.
+
+        Both poles in one reading: with the shard answer present the floor is
+        attained and reported, and with it gone the same repository reports
+        `None` while the header goes on naming the same aim. Read in-process
+        off `position_state` itself, because that is the one function every
+        publisher of this payload (`probe`, `verify`, `gate`, `close`) goes
+        through -- asserting it at one command would prove it for one command.
+        """
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self._block(self.LEVELED, "floor", sha256=self.PROPOSAL_SHA256),
+            encoding="utf-8")
+
+        def read(shards_arrived):
+            return impl.position_state(
+                box, "Method",
+                {"levels": list(self.LADDER), "shardsArrived": shards_arrived,
+                 "shardsCurrent": None},
+                None, None)
+
+        reached = read([])
+        self.assertEqual(reached["targetLevel"], "floor")
+        self.assertEqual(reached["attainedLevel"], "floor")
+
+        gone = read(None)
+        self.assertEqual(gone["targetLevel"], "floor")
+        self.assertIsNone(
+            gone["attainedLevel"],
+            "nothing measured the one leveled witness, and 'we did not look' "
+            "is not 'the floor has been reached'")
+
+        # The uniform key set every branch owes its readers: a caller must not
+        # have to know whether a block was found before it may read this.
+        absent = impl.position_state(
+            box, "Nothing", {"levels": list(self.LADDER)}, None, None)
+        self.assertEqual(absent["status"], "absent")
+        self.assertIsNone(absent["attainedLevel"])
 
     def test_a_target_that_declares_no_ladder_is_untouched(self):
         """No `__levels__`, no rungs, no progression to enforce. The header may
@@ -14020,8 +14158,19 @@ class PositionRungLadderTests(unittest.TestCase):
         """A work state publishes what unblocks it. Nothing about the
         invocation clears a skipped rung -- the work below it has to actually
         happen -- so the payload carries the rung this target can seal next,
-        read from the target's own ladder, and the `discuss` command that opens
-        the decision."""
+        read from the evidence, and the `discuss` command that opens the
+        decision.
+
+        The rung published is the floor even though this call passed
+        `--shards` and its evidence therefore attains the floor, which would
+        make `middle` reachable. The `position` command the question embeds
+        carries no `--shards` of its own (`_refusal_position_command`), so a
+        rebuild that read this call's flag would publish a rung together with a
+        command that cannot reach it -- a resolution refusing on its own
+        advice, which is the one thing this builder exists not to be. A target
+        that DECLARES `distribution.shardsRoot` is read either way, since the
+        rebuild resolves the declaration exactly as every other reader does.
+        """
         box = self._box()
         (box / "Method" / "AGREED.md").write_text(
             self._block(self.LEVELED, "floor"), encoding="utf-8")
@@ -14032,9 +14181,13 @@ class PositionRungLadderTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 2, proc.stdout)
         payload = json.loads(proc.stdout)
         self.assertEqual(payload["resolve"]["kind"], "question")
-        self.assertIn("middle", payload["resolve"]["question"])
+        self.assertIn("--target-level floor", payload["resolve"]["question"])
         self.assertIn("implementation_cli.py discuss",
                       payload["resolve"]["command"])
+        # The detail is where the operator learns they are not actually on the
+        # floor: this call DID measure the shards, so the rung attained is
+        # named there even though the safe published move is the floor.
+        self.assertIn("attains 'floor'", payload["detail"])
 
     def test_the_published_discuss_command_is_directly_runnable(self):
         """A published command that does not parse is prose in a monospace

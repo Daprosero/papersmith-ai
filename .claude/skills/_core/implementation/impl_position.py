@@ -856,6 +856,64 @@ def derive(items: list[dict], evidence: dict) -> list[dict]:
     return results
 
 
+def attained_level(items: list[dict], evidence: dict) -> str | None:
+    """Which rung the evidence currently REACHES, or `None` when it reaches
+    none: **the highest rung at which every leveled item grades `satisfied`.**
+
+    A header's `target=` states what a pass AIMS at, and an aim is legitimately
+    one rung above what has been reached — that is how a pass climbs at all.
+    Attainment is the other fact, and until this function existed the grammar
+    carried no way to say it: a reader could see the aim on every payload and
+    had to trip a refusal to learn whether anything backed it. Two meanings on
+    one field is how a recorded rung that outlived its evidence came to switch
+    off the very rule that should have caught it.
+
+    **Defined against `derive`, never beside it.** Each candidate rung is put
+    back through `derive` with that rung as `targetLevel`, so "attained at R"
+    means exactly what "satisfied at R" already means for every witness kind —
+    including the ones added after this was written. The alternative, taking
+    the minimum `level_index(derived)` across the items, is the same number
+    today and a second arithmetic to keep in step forever.
+
+    Three boundaries, each a decision:
+
+    - **`None` is not the floor.** A leveled item nobody measured grades
+      `satisfied is None`, which is not `True`, so it holds attainment below
+      every rung — including the first. "We did not look" and "it has not
+      started" stay two different facts here exactly as they do in `derive`.
+    - **Two-state items never participate.** They are graded without the ladder
+      and read identically at every rung, so they carry no information about
+      which one was reached. Folding them in would make this whole-sequence
+      completeness under another name.
+    - **A sequence with no leveled item attains the whole ladder.** Vacuously,
+      and deliberately: with nothing that could fail to reach a rung, every
+      rung grades attained and the answer is the top one. That is what keeps a
+      target whose sequence is all two-state exactly as unconstrained by rung
+      arithmetic as it was before any of it existed.
+
+    `evidence["levels"]` is the ladder, read from the same key `derive` reads
+    it from, so the two can never disagree about which ladder is in play. No
+    ladder (`[]`, or the key absent) means no rung name to answer with, and the
+    answer is `None`.
+
+    Pure: no I/O, and `evidence` is copied per candidate rather than mutated,
+    so a caller's own `targetLevel` survives the call untouched and never
+    reaches the grading — attainment is a property of the evidence, never of
+    the pass that happens to be reading it.
+    """
+    levels = evidence.get("levels") or []
+    # Top down: the first rung that grades attained is the highest one, and
+    # `satisfied` is monotone down the ladder (`derived_index >= target_index`),
+    # so there is never a lower rung that fails beneath a higher one that
+    # passed.
+    for level in reversed(levels):
+        graded = derive(items, {**evidence, "targetLevel": level})
+        if all(result["satisfied"] is True for result in graded
+               if not result["twostate"]):
+            return level
+    return None
+
+
 def render(header: dict, items: list[dict]) -> str:
     """The block's complete markdown text, opener through closer.
 

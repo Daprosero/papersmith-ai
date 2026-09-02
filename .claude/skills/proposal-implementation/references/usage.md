@@ -767,21 +767,31 @@ it exists to stop. Instead the sequence is re-graded by
 `impl_position.derive` itself at the previous rung, so "satisfied at rung
 N-1" means here exactly what it means when a mark is written.
 
-Four boundaries, each of them decided rather than fallen into:
+**The header states an aim, not an attainment.** `target=` is the rung a
+pass is *aiming at*, and an aim legitimately sits one rung above what has
+been reached — otherwise no pass could ever climb. So the rule is put to
+the evidence and never to that field: `attained_level` answers *which rung
+the evidence currently reaches* (the highest rung at which every leveled
+item grades satisfied), and an aim may reach at most one rung above it.
+Where a pass came from is not consulted at all — a retreat and a re-seal
+land on rung N and assert that N-1 is reached exactly as a climb to N
+does.
+
+That separation is also published: `position`'s state carries
+`attainedLevel` beside `targetLevel`, so the gap between what a pass aims
+at and what backs it can be read without tripping a refusal to find it.
+
+Three boundaries, each of them decided rather than fallen into:
 
 - **The first rung has no predecessor.** Sealing at `__levels__[0]` is
   always possible, including on a repository with no evidence whatsoever —
-  a ladder needs a bottom step or nothing can ever start.
-- **Only a forward move is checked.** A re-seal at the rung already
-  recorded, a bare refresh that inherits it, and a retreat to a lower rung
-  are all exempt. `position` is the instrument that measures, and an
-  instrument that refuses to take a reading because the reading is bad
-  hides the regression it exists to report; a retreat, meanwhile, asserts
-  less than the header already did — it spends nothing and skips nothing.
-  Nothing is laundered through the exemption: a move that does not climb
-  cannot raise the recorded rung, and every move that does climb is checked
-  against the rung directly below its own target, never against wherever it
-  came from.
+  a ladder needs a bottom step or nothing can ever start. This is also what
+  keeps an operator from ever being cornered: `position` is the instrument
+  that measures, and an instrument that refuses to take a reading because
+  the reading is bad hides the regression it exists to report. When
+  evidence collapses, the floor is still sealable, demoting the header to
+  it is the honest reading, and the refusal that sends an operator there
+  names every item that came up short.
 - **Two-state items do not participate.** Their verdict is computed without
   the ladder and is identical at every rung, so they say nothing about
   which rung was reached. Folding them in would refuse a legitimate advance

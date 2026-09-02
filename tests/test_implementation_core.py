@@ -566,6 +566,108 @@ class WitnessNotLevelableTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, "POSITION_WITNESS_NOT_LEVELABLE")
 
 
+class AttainedLevelTests(unittest.TestCase):
+    """`attained_level()` — which rung the evidence currently REACHES, as
+    opposed to the rung a header says a pass AIMS at.
+
+    Those are two different facts and the position grammar carried only one
+    field for them. The predicate is defined against `derive` itself, exactly
+    as the rung-skip rule already was: the highest rung at which every leveled
+    item grades `satisfied is True`. Nothing here re-implements that
+    arithmetic, so "attained" means precisely what "satisfied" means one level
+    down, and it means it for whatever witness kinds exist tomorrow too.
+
+    The ladder names are this suite's own invention. The core holds no rung
+    vocabulary — only the ordered list a target declared.
+    """
+
+    LADDER = ["one", "two", "three"]
+
+    def _shard_item(self):
+        return [{"ordinal": 1, "mark": " ", "text": "distribute",
+                 "witness": {"kind": "shard", "operand": "s1",
+                             "twostate": False}}]
+
+    def _evidence(self, **overrides):
+        evidence = {"levels": list(self.LADDER), "shardsArrived": None,
+                    "shardsCurrent": None}
+        evidence.update(overrides)
+        return evidence
+
+    def test_an_unmeasured_leveled_item_attains_no_rung_at_all(self):
+        """Not even the floor. `derived is None` means nobody looked, and the
+        floor is a reading like any other — folding "we did not look" into it
+        is the exact collapse `derive` refuses one level down."""
+        self.assertIsNone(
+            impl_position.attained_level(self._shard_item(), self._evidence()))
+
+    def test_the_highest_rung_every_leveled_item_reaches_is_the_answer(self):
+        """A shard answer that arrived puts the witness on the floor rung, and
+        the floor is where attainment stops — the rung above is not reached
+        just because the ladder has one."""
+        self.assertEqual(
+            impl_position.attained_level(
+                self._shard_item(), self._evidence(shardsArrived=[])),
+            "one")
+
+    def test_attainment_is_the_weakest_leveled_item_not_the_strongest(self):
+        """Two leveled items, one measured and one not. A predicate that
+        reported the best rung anybody reached would answer `'one'` here and
+        exempt a whole rung on the strength of a witness that says nothing."""
+        items = self._shard_item() + [
+            {"ordinal": 2, "mark": " ", "text": "rehearse",
+             "witness": {"kind": "rehearsal", "operand": "job-a",
+                         "twostate": False}}]
+        self.assertIsNone(
+            impl_position.attained_level(items, self._evidence(shardsArrived=[])))
+
+    def test_two_state_items_never_hold_a_rung_back(self):
+        """They are graded without the ladder and read identically at every
+        rung, so they carry no information about which one was reached — the
+        same exclusion the rung-skip rule states for itself. An unsatisfied
+        two-state item beside a satisfied leveled one must not drag attainment
+        to `None`, or whole-sequence completeness would be wearing this
+        predicate's name."""
+        items = self._shard_item() + [
+            {"ordinal": 2, "mark": " ", "text": "rehearse",
+             "witness": {"kind": "rehearsal", "operand": "job-a",
+                         "twostate": True}}]
+        self.assertEqual(
+            impl_position.attained_level(items, self._evidence(shardsArrived=[])),
+            "one")
+
+    def test_a_sequence_with_no_leveled_item_attains_the_whole_ladder(self):
+        """Vacuous truth, and deliberately so: with nothing that could fail to
+        reach a rung, every rung grades attained and the answer is the top.
+        This is what keeps a two-state-only target exactly as unconstrained by
+        the rung rule as it was before the rule existed."""
+        items = [{"ordinal": 1, "mark": " ", "text": "rehearse",
+                  "witness": {"kind": "rehearsal", "operand": "job-a",
+                              "twostate": True}}]
+        self.assertEqual(
+            impl_position.attained_level(items, self._evidence()), "three")
+
+    def test_a_target_with_no_declared_ladder_attains_nothing(self):
+        """`levels == []` is not a ladder with one rung on it; it is the
+        absence of a ladder, and there is no name to answer with."""
+        self.assertIsNone(
+            impl_position.attained_level(
+                self._shard_item(), self._evidence(levels=[])))
+
+    def test_the_caller_s_own_target_level_does_not_change_the_answer(self):
+        """Attainment is a property of the evidence, never of the pass reading
+        it. `derive` grades `satisfied` against `evidence["targetLevel"]`, so a
+        predicate that forgot to override it per candidate rung would report
+        whatever the caller happened to be aiming at."""
+        for aim in (None, "one", "two", "three"):
+            with self.subTest(targetLevel=aim):
+                self.assertEqual(
+                    impl_position.attained_level(
+                        self._shard_item(),
+                        self._evidence(shardsArrived=[], targetLevel=aim)),
+                    "one")
+
+
 class LaunchAvailableTests(unittest.TestCase):
     """The one rule `cmd_gate` and the state-derived action menu's publisher
     must agree on (spec "One shared availability rule"), exercised over

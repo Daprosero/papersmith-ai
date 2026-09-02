@@ -408,6 +408,15 @@ def position_state(target: Path, name: str, evidence: dict,
         # `None` on every branch that never located a block, since there is
         # no pass to name a target for.
         "targetLevel": None,
+        # And the other fact, which the header cannot carry: the rung the
+        # EVIDENCE reaches (`impl_position.attained_level`). An aim above what
+        # is attained is legitimate -- it is how a pass climbs -- so the two
+        # only mean something read side by side, and until this key existed
+        # only one of them was ever visible. A recorded rung standing over
+        # nothing attained was reported nowhere at all, while the much smaller
+        # incident of a tick over nothing measured had `unbacked` to itself;
+        # the gap is now readable without tripping a refusal to find it.
+        "attainedLevel": None,
     }
     product = target / name
     if not product.is_dir():
@@ -492,6 +501,11 @@ def position_state(target: Path, name: str, evidence: dict,
         "unbacked": unbacked,
         "lastGate": last_gate, "lastClose": last_close,
         "targetLevel": block["target"],
+        # Derived from the same `evidence` the marks above were, and pointedly
+        # not from `derived`'s own `satisfied` column: that column is graded
+        # against the header's aim, so reading attainment off it would be
+        # reading the aim back again.
+        "attainedLevel": impl_position.attained_level(items, evidence),
     }
 
 
@@ -6407,7 +6421,7 @@ def _resolve_shard_evidence(
 
 def _skipped_rung_detail(
         items: list[dict], evidence: dict, levels: list[str],
-        target_level: str, recorded_level: str | None) -> str | None:
+        target_level: str) -> str | None:
     """Why this pass skips a rung, or `None` when it skips none: **to seal at
     rung N, every leveled item must already grade as satisfied at rung N-1.**
 
@@ -6435,23 +6449,35 @@ def _skipped_rung_detail(
     it: whatever "satisfied at rung N-1" means for a witness, it means the same
     thing here as it does when the mark is written.
 
-    Four boundaries, each of them a decision rather than a fallout:
+    **Aim and attainment are two facts, and the header carries only the
+    first.** `target=` states what a pass AIMS at, legitimately one rung above
+    what has been reached -- otherwise no pass could ever climb. An earlier
+    revision of this rule exempted any seal at or below the rung the header
+    recorded, reading that field as what had already been REACHED and using it
+    as a floor. Nothing ever lowered it, so a rung that outlived its evidence
+    did not go stale: it switched this guard off for itself, permanently, and a
+    switched-off guard is indistinguishable from a green one. The exemption now
+    reads `impl_position.attained_level` -- the evidence's own answer -- and the
+    header is not consulted here at all.
+
+    Three boundaries, each of them a decision rather than a fallout:
 
     - **The first rung has no predecessor** (`target_index == 0`), so nothing is
       checked there. A repository where nothing has run yet must still be able
-      to start, or the ladder has no bottom step.
-    - **Only a forward move is checked.** `recorded_level` is the rung the block
-      already on disk names, and a pass that does not climb above it -- a
-      re-seal at the same rung, a sticky refresh that restates it, a retreat to
-      a lower one -- is exempt. Two reasons, and they point the same way.
-      `position` is the instrument that measures; an instrument that refuses to
-      take a reading because the reading is bad hides the regression it exists
-      to report. And a retreat asserts less than the header already did: it
-      spends nothing and skips nothing, so there is nothing here to refuse. No
-      skip can be laundered through the exemption either, because a move that
-      does not climb cannot raise the recorded rung, and every move that does
-      climb is checked against the rung directly below its own target -- never
-      against wherever it happened to come from.
+      to start, or the ladder has no bottom step. This is also what keeps the
+      earlier revision's decision 2 alive under a rule that no longer reads the
+      header: *`position` is the instrument that measures, and an instrument
+      that refuses to take a reading because the reading is bad hides the
+      regression it exists to report.* An operator whose evidence has collapsed
+      is never cornered, because the floor is always sealable and demoting the
+      header to it is the honest reading; and the refusal that sends them there
+      names every item that came up short, so the regression is reported louder
+      than the old exemption's silent success ever reported it.
+    - **Where a pass came from is not consulted.** A retreat and a re-seal are
+      seals like any other: landing on rung N asserts that N-1 is reached
+      whether the pass climbed to N, stayed at N, or fell back to it. Only
+      `target_level` and the evidence decide, so there is no direction a skip
+      could be laundered through.
     - **Two-state items do not participate.** Their verdict is computed without
       the ladder and is identical at every rung (`derive`: `satisfied` *is*
       `derived` for them), so they carry no information about which rung was
@@ -6477,15 +6503,21 @@ def _skipped_rung_detail(
         # refused an unknown rung above) and `0` (the floor, which has no
         # predecessor to attain).
         return None
-    recorded_index = impl_position.level_index(levels, recorded_level)
-    if recorded_index is not None and target_index <= recorded_index:
+    attained = impl_position.attained_level(items, evidence)
+    attained_index = impl_position.level_index(levels, attained)
+    if attained_index is not None and target_index <= attained_index + 1:
         return None
+    # Reached only when the rung directly below the aim is NOT attained, since
+    # `attained_level` is by definition the highest rung every leveled item
+    # grades satisfied at: `target_index > attained_index + 1` puts `previous`
+    # strictly above it, and `attained is None` puts every rung above it. So
+    # `short` is never empty here, and the sentence below never names an empty
+    # set -- it is the same grading, re-read one rung down for the item names
+    # the refusal has to carry.
     previous = levels[target_index - 1]
     graded = impl_position.derive(items, {**evidence, "targetLevel": previous})
     short = [(item, result) for item, result in zip(items, graded)
             if not result["twostate"] and result["satisfied"] is not True]
-    if not short:
-        return None
     named = "; ".join(
         f"item {item['ordinal']} reached "
         + (f"{result['derived']!r}" if result["derived"] is not None
@@ -6494,9 +6526,11 @@ def _skipped_rung_detail(
     return (
         f"--target-level {target_level!r} sits above {previous!r} on this "
         f"target's own declared ladder, and {previous!r} is not attained by "
-        f"the evidence as it stands ({named}); a position never skips a rung "
-        "going forward, so the rung below has to be reached before this one "
-        "can be sealed.")
+        f"the evidence as it stands ({named}); the evidence currently attains "
+        + (f"{attained!r}" if attained is not None else "no rung at all")
+        + ". A position names the rung it aims at, and an aim reaches at most "
+        "one rung above what is attained -- whichever rung the header happens "
+        "to record now.")
 
 
 def _step_operand_detail(items: list[dict], steps: dict) -> str | None:
@@ -6975,8 +7009,7 @@ def cmd_position(args: argparse.Namespace) -> dict:
     # name, and this one decides whether the rung is legally REACHABLE from
     # where the evidence currently stands.
     skipped = _skipped_rung_detail(
-        items, evidence, declared_levels, target_level,
-        existing_block["target"] if existing_block is not None else None)
+        items, evidence, declared_levels, target_level)
     if skipped is not None:
         raise Refused("POSITION_RUNG_SKIPPED", skipped)
     # `@step` operand validity, read fresh here rather than by `parse_items`
@@ -11395,26 +11428,56 @@ def _resolve_position_disagrees(args) -> dict:
         f"{execution} && {_refusal_position_command(args)}")
 
 
-def _position_recorded_level(target: Path, name: str) -> str | None:
-    """The rung the block already on disk names, or `None` when no block does.
+def _position_attained_level(target: Path, name: str) -> str | None:
+    """The rung the evidence reaches, rebuilt at the moment of refusal from
+    `target`/`name` alone: the `except Refused` chokepoint is handed nothing
+    but `args`, so the fact is re-read here rather than threaded out of the
+    command that already had it. Nothing raises on the way out -- a resolution
+    that failed while being built would cost the reader both it and the
+    refusal it explains.
 
-    A read, never a second validation: `cmd_position` has already located the
-    block from its own scan by the time it refuses, and this exists only so a
-    resolution built at the `except Refused` chokepoint -- which is handed
-    nothing but `args` -- can reach the same fact without the command passing
-    it along. Ambiguity is not re-refused here (the first block wins): this is
-    a builder for a refusal that already happened, and a resolution that raised
-    on its way to being published would cost the reader both.
+    This replaced a reader of the block's own recorded rung, which had no
+    caller left once the resolution stopped publishing `recorded + 1`: reading
+    the header, this builder answered a refusal about an over-reaching aim by
+    naming a rung one higher still.
+
+    `shards_root` is deliberately not threaded through from `args`. The refusal
+    being answered was raised against evidence `cmd_position` built with
+    whatever `--shards` it was given, and this rebuild sees only the target's
+    own declared `distribution.shardsRoot` -- so an explicit `--shards` that
+    named a directory the declaration does not can make this read LOWER than
+    the one that refused. Lower is the safe direction: it publishes a rung at
+    or below the one that would go through, never above it, and the published
+    command is run by the operator, who can name their own directory again.
     """
     product = target / name
     if not product.is_dir():
         return None
-    for path in sorted(product.glob("*.md")):
-        if not path.is_file():
-            continue
-        block = impl_position.locate_block(path.read_bytes(), allow_legacy=True)
-        if block is not None:
-            return block.get("target")
+    try:
+        # Found by shape, exactly as `position_state` finds it and for the
+        # same reason: no fixed filename decides which markdown file holds the
+        # block, here or anywhere else in this file. First block wins, and
+        # ambiguity is not re-refused -- this builder answers a refusal that
+        # already happened, and `POSITION_HOLDER_AMBIGUOUS` is the code for
+        # that fact when it is the one being reported.
+        for path in sorted(product.glob("*.md")):
+            if not path.is_file():
+                continue
+            block = impl_position.locate_block(path.read_bytes(),
+                                               allow_legacy=True)
+            if block is None:
+                continue
+            return impl_position.attained_level(
+                impl_position.parse_items(block["body"]),
+                _position_write_evidence(target, name))
+    except Exception:
+        # Deliberately every one of them: a block that will not parse, a
+        # benchmark package that will not import, a declaration that refuses.
+        # Each is a fact the refusal being built already carries or the next
+        # command will raise on its own; none is worth costing the reader the
+        # refusal itself, and the caller below simply names no rung when this
+        # answers nothing.
+        return None
     return None
 
 
@@ -11426,9 +11489,16 @@ def _resolve_position_rung_skipped(args) -> dict:
     resolution states: the command that would clear this is the one that
     refused, and publishing the caller's own call back to them is advice that
     refuses on its own advice. What can be named concretely is the next rung --
-    one above whatever the block on disk already records, or the floor when
-    nothing records anything -- so that is what the question carries, together
-    with the seal command for it.
+    one above what the evidence currently ATTAINS, or the floor when it attains
+    nothing -- so that is what the question carries, together with the seal
+    command for it.
+
+    Read from attainment and never from the header, the same separation the
+    refusal itself is built on. Reading the block's recorded rung, this would
+    publish the rung above whatever was last AIMED at -- and on exactly the
+    repository this refusal fires for, that rung is refused for the identical
+    reason the call being answered was. A resolution that refuses on its own
+    advice is the one thing this builder exists not to be.
 
     Every rung name here is read off the target's own `__levels__` at the
     moment of refusal. The forge holds no rung vocabulary of its own (see
@@ -11439,12 +11509,12 @@ def _resolve_position_rung_skipped(args) -> dict:
     target = Path(str(getattr(args, "target", "")))
     name = str(getattr(args, "name", ""))
     levels = resolve_levels_declaration(target, name)
-    recorded = impl_position.level_index(
-        levels, _position_recorded_level(target, name))
+    attained = impl_position.level_index(
+        levels, _position_attained_level(target, name))
     following = None
     if levels:
-        following = levels[0] if recorded is None else levels[
-            min(recorded + 1, len(levels) - 1)]
+        following = levels[0] if attained is None else levels[
+            min(attained + 1, len(levels) - 1)]
     named = (
         f" The next rung this target can seal is {following!r}: run `"
         + _refusal_position_command(args, "--target-level", following) + "`."
