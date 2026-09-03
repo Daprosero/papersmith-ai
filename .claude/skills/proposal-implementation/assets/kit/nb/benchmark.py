@@ -30,7 +30,27 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from verdict import DESCRIPTIVE, HIGHER, LOWER, judge, render, tally
+# `verdict.py` sits beside this file inside `src/<Package>_Benchmark/`, and this
+# file is reached two ways: as the script the docstring above names
+# (`python benchmark.py`, run from inside that directory, where there is no parent
+# package at all) and as the dotted module the benchmark declaration's own `entry`
+# example names (`<Package>_Benchmark.benchmark`, where there is). A flat import
+# resolves only the first, a relative one only the second, and this kit ships both
+# claims about the same file.
+#
+# Measured: a repository built exactly from this kit, with `entry` answered by the
+# example the kit itself publishes, answered `ModuleNotFoundError: No module named
+# 'verdict'` on that declared entry module -- reached before `import torch`, so the
+# forge read it as a broken environment and offered a rung that installs packages
+# and could never have fixed an import.
+#
+# `__package__` is that question asked directly, so nothing is guessed and no
+# ImportError is swallowed on the way past: a `verdict.py` that is present but
+# broken still raises, exactly as before.
+if __package__:
+    from .verdict import DESCRIPTIVE, HIGHER, LOWER, judge, render, tally
+else:
+    from verdict import DESCRIPTIVE, HIGHER, LOWER, judge, render, tally
 
 import torch
 import torch.nn as nn
@@ -319,7 +339,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         # `build_data` is part of the wiring for the same reason the builders are:
         # the data belongs to the baseline's world, not to this file.
-        from wiring import build_baseline, build_data, build_new
+        #
+        # Spelled both ways for the same reason `verdict` is above: `wiring.py` is
+        # written beside this file, so it is a sibling module under a script run and
+        # a sibling submodule under a package import.
+        if __package__:
+            from .wiring import build_baseline, build_data, build_new
+        else:
+            from wiring import build_baseline, build_data, build_new
     except ImportError as missing:
         raise SystemExit(
             "wiring.py is missing: this benchmark has nothing to compare.\n"

@@ -10,6 +10,7 @@ import argparse
 import ast
 import contextlib
 import hashlib
+import importlib.util
 import inspect
 import io
 import json
@@ -12327,6 +12328,332 @@ class EntryModuleLivenessTests(unittest.TestCase):
         result = impl.introspect(target, "Method", None,
                                   entry_module="Method_Benchmark.benchmark")
         self.assertEqual(result["status"], "ok")
+#: Every module the kit itself ships into a target's benchmark package, plus the
+#: optional `config` module the engine reads beside them. A liveness failure that
+#: names one of these is the forge failing to import its own scaffold — never the
+#: target's environment, and never something `env` could install.
+KIT_BENCHMARK_MODULES = frozenset(
+    {path.stem for path in sorted((KIT / "nb").glob("*.py"))} | {"config"})
+
+
+def _unresolvable_kit_modules(text):
+    """Which of the kit's own modules a `ModuleNotFoundError` blames, if any.
+
+    Reads the message rather than the exception because the import happens in
+    another interpreter and arrives here as one line of its stderr.
+    """
+    return sorted({name for name in re.findall(r"No module named '([^']+)'", text or "")
+                   if name.rpartition(".")[2] in KIT_BENCHMARK_MODULES})
+
+
+class KitBuiltTargetIntrospectionTests(MaterializeCommandFixture, unittest.TestCase):
+    """A repository built exactly as the kit prescribes, introspected by the same
+    engine that scaffolded it.
+
+    Measured on 2026-09-03 against a target taken through all three
+    `materialize` stages, with `entry` answered by the kit's own worked example
+    (`<Package>_Benchmark.benchmark`) and nothing hand-written beyond what
+    SKILL.md asks for:
+
+        report.live        unavailable
+        report.liveDetail  ModuleNotFoundError: No module named 'verdict'
+        nextStep           env-first
+
+    and, once that first import resolved:
+
+        report.liveDetail  ModuleNotFoundError:
+                           No module named '<Package>_Benchmark.config'
+
+    Two separate defects, reached one after the other, ending at the same rung.
+    `env-first` publishes `env --target <t>`, which installs the dev manifest;
+    it can neither add an import to a file the kit ships nor create a module the
+    kit does not. A repository built from zero looped there.
+
+    The proof is the whole chain and not an assertion about a destination list
+    on purpose. `config.py` being absent from `all_kit_destinations` is one
+    reading of one of the two defects, and it says nothing whatsoever about the
+    flat `from verdict import ...` inside the kit's own `benchmark.py` — which
+    is the one reached first.
+    """
+
+    NAME = "Kit-Built"
+    PACKAGE = "Kit_Built"
+
+    def _object_stub(self, path):
+        """The base fixture's stubs, with the implementation module computing on
+        tensors. `cmd_probe` stops at `convert` for a target whose backend is not
+        trainable, one rung above the ladder this class is about.
+        """
+        stub = super()._object_stub(path)
+        if path.endswith("module.py"):
+            stub = stub.replace("from __future__ import annotations\n",
+                                "from __future__ import annotations\n\nimport torch\n", 1)
+            assert "import torch" in stub
+        return stub
+
+    def _declare_object_map(self, box, name=None):
+        """Step 8's declaration, answered the way SKILL.md's worked example
+        answers it: the base fixture's `revision`/`premises`, plus `entry` — the
+        block this class exists for — and `report`, without which `report_state`
+        never reaches `introspect` at all.
+        """
+        super()._declare_object_map(box, name)
+        name = name or self.NAME
+        package = impl.package_name(name)
+        path = box / "src" / f"{package}_Benchmark" / "__init__.py"
+        text = path.read_text(encoding="utf-8")
+        before = text
+        text = text.replace(
+            '"entry": {"module": "", "function": ""},',
+            f'"entry": {{"module": "{package}_Benchmark.benchmark", '
+            '"function": "run"},', 1)
+        text = text.replace(
+            '"report": {},',
+            '"report": {"renderers": ["tables.render"], '
+            '"conclusions": ["tables.conclusion"], '
+            '"dimensions": {"accuracy": "higher"}},', 1)
+        # A substitution that silently matched nothing would leave the
+        # declaration blank and every assertion below would pass over a target
+        # that never declared an entry at all.
+        assert text != before and f'{package}_Benchmark.benchmark' in text
+        assert '"renderers"' in text
+        path.write_text(text, encoding="utf-8")
+
+    def _kit_built_target(self, tag=""):
+        """All three stages, a baseline to compare against, a tensor backend,
+        and an interpreter equivalent to this one."""
+        box = self._fully_materialized_all_stages(tag)
+        # `cmd_probe` answers `nothing-to-compare` with no prior work under
+        # `src/` and never reaches the ladder at all.
+        prior = box / "src" / "Prior"
+        prior.mkdir(parents=True, exist_ok=True)
+        (prior / "kernel.py").write_text("import torch\n", encoding="utf-8")
+        # The kit's own `conftest.py` and `sweep.py` compute with numpy, so a
+        # freshly scaffolded target reads `mixed` and stops at `convert`.
+        # Measured; converting them is what step 10 asks for anyway. They are
+        # scaffold destinations, so the edit is declared rather than left as
+        # drift.
+        for rel in ("tests/conftest.py", "tests/sweep.py"):
+            path = box / rel
+            path.write_text("import torch  # noqa: F401\n"
+                            + path.read_text(encoding="utf-8"), encoding="utf-8")
+            payload, code, proc = self._run_cli(
+                "materialize", "--target", str(box), "--name", self.NAME,
+                "--authored", rel)
+            self.assertEqual(code, 0, proc.stderr)
+        self._git(box, "add", "-A")
+        self._git(box, "commit", "-q", "-m", "converted")
+        self.assertTrue(impl.backend_state(box, self.NAME)["trainable"])
+        write_fixture_interpreter(
+            box / ".venv" / ("Scripts" if os.name == "nt" else "bin"))
+        return box
+
+    def _probe(self, box):
+        payload, code, proc = self._run_cli(
+            "probe", "--target", str(box), "--name", self.NAME)
+        self.assertEqual(code, 0, proc.stderr)
+        return payload
+
+    def test_the_kit_ships_no_module_a_kit_built_target_cannot_import(self):
+        """The torch-free half of the proof: whatever else the target's
+        interpreter may be missing, it is never one of the kit's own modules.
+
+        Both defects fail exactly here — `verdict` and `<Package>_Benchmark
+        .config` are both kit words — and neither one is anything `env` could
+        install.
+        """
+        box = self._kit_built_target("kitmods")
+        report = self._probe(box)["report"]
+        self.assertEqual(
+            _unresolvable_kit_modules(report["liveDetail"]), [],
+            "a target built from the kit cannot import the kit: "
+            f"{report['liveDetail']}")
+
+    def test_a_kit_built_target_is_live_and_is_never_routed_to_env_first(self):
+        """The whole chain, end to end, in the target's own interpreter."""
+        if importlib.util.find_spec("torch") is None:
+            self.skipTest("the kit's benchmark module imports torch; this "
+                          "interpreter has none, so liveness cannot be reached")
+        box = self._kit_built_target("envfirst")
+        payload = self._probe(box)
+        report = payload["report"]
+        self.assertIsNone(report["liveDetail"], report["liveDetail"])
+        self.assertEqual(report["live"], "ok")
+        self.assertNotEqual(payload["nextStep"], "env-first")
+
+    def test_the_constants_holder_introspect_actually_read_is_named(self):
+        """A check that could not look must not report an absence as an answer.
+
+        `writtenSelections` is derived from the module-level constants of one
+        module; which module that was is published, so a target reading `[]`
+        can tell "nothing is written out" from "there was nowhere to look".
+        """
+        box = self._kit_built_target("holder")
+        report = self._probe(box)["report"]
+        self.assertEqual(report["constants"], "read")
+        self.assertEqual(report["constantsHolder"],
+                         f"{self.PACKAGE}_Benchmark.benchmark")
+
+
+class IntrospectConstantsHolderTests(unittest.TestCase):
+    """Which module `introspect` reads its module-level constants from, and what
+    it says when there is none.
+
+    `writtenSelections` is derived from one module's uppercase collections. That
+    module used to be `<Package>_Benchmark.config`, imported unconditionally —
+    and the kit ships no `config.py`, so a repository built from zero raised
+    `ModuleNotFoundError` inside the liveness check, was reported `unavailable`,
+    and was routed to a rung whose only exit installs packages.
+
+    The order is the one `declared_dimension_names` already uses for the same
+    question: a target's own `config.py` first, the kit's `benchmark.py` second.
+    """
+
+    def box(self, suffix, files):
+        path = FORGE / "implementations" / f"_constants_{suffix}_{os.getpid()}"
+        package = path / "src" / "Method_Benchmark"
+        package.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, path, ignore_errors=True)
+        (package / "__init__.py").write_text(
+            "__benchmark__ = {'revision': 'r01.md'}\n", encoding="utf-8")
+        for name, source in files.items():
+            (package / name).write_text(source, encoding="utf-8")
+        write_fixture_interpreter(
+            path / ".venv" / ("Scripts" if os.name == "nt" else "bin"))
+        return path
+
+    def introspect(self, target):
+        return impl.introspect(target, "Method", None,
+                               entry_module="Method_Benchmark.entrypoint")
+
+    ENTRY = "VALUE = 1\n"
+
+    def test_a_target_own_config_module_wins_over_the_kit_template(self):
+        target = self.box("both", {
+            "entrypoint.py": self.ENTRY,
+            "config.py": "PICKED = ['a']\nWHOLE = ['a', 'b']\n",
+            "benchmark.py": "PICKED = ['z']\nWHOLE = ['z', 'y', 'x']\n"})
+        result = self.introspect(target)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["constants"], "read")
+        self.assertEqual(result["constantsHolder"], "Method_Benchmark.config")
+        # Read from `config.py` and not from `benchmark.py`: the two disagree
+        # about how big `WHOLE` is, so the reading names which file answered.
+        self.assertEqual([row["whole"] for row in result["subsets"]], [2])
+
+    def test_the_kit_template_answers_when_the_target_has_no_config(self):
+        """The kit-built state: no `config.py` anywhere, and the check still
+        looks somewhere real instead of raising."""
+        target = self.box("fallback", {
+            "entrypoint.py": self.ENTRY,
+            "benchmark.py": "PICKED = ['z']\nWHOLE = ['z', 'y', 'x']\n"})
+        result = self.introspect(target)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["constants"], "read")
+        self.assertEqual(result["constantsHolder"], "Method_Benchmark.benchmark")
+        self.assertEqual([row["whole"] for row in result["subsets"]], [3])
+
+    def test_no_holder_at_all_is_named_rather_than_reported_as_an_absence(self):
+        """The narrow state that reaches `"absent"`, spelled out: the declared
+        entry module imports (anything else answers `unavailable` and never gets
+        here), it is not the benchmark module, and neither `config.py` nor
+        `benchmark.py` exists beside it. `subsets` is then empty because there
+        was nowhere to look, and that is what the key says."""
+        target = self.box("absent", {"entrypoint.py": self.ENTRY})
+        result = self.introspect(target)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["constants"], "absent")
+        self.assertIsNone(result["constantsHolder"])
+        self.assertEqual(result["subsets"], [])
+
+    def test_a_broken_config_module_still_reads_as_unavailable(self):
+        """The guard answers the file's absence and nothing else. A `config.py`
+        that is present and cannot import is still the interpreter's verdict,
+        exactly as before — swallowing that would trade one silent pass for
+        another."""
+        target = self.box("broken", {
+            "entrypoint.py": self.ENTRY,
+            "config.py": "import _pp_constants_holder_absent_dependency\n"})
+        result = self.introspect(target)
+        self.assertEqual(result["status"], "unavailable")
+        self.assertIn("_pp_constants_holder_absent_dependency", result["detail"])
+
+
+class KitWorkedExampleResolvesTests(unittest.TestCase):
+    """The kit's own worked `entry` example, imported against the kit's own files.
+
+    Nothing joined the two halves before this. SKILL.md and
+    `assets/kit/src_benchmark/__init__.py` both give the example as a package
+    import (`Example_Method_Benchmark.benchmark`), while
+    `assets/kit/nb/benchmark.py` imported `verdict` flat — correct only for the
+    `python benchmark.py` its own docstring names, and unresolvable under the
+    dotted name the example declares. Each half was internally consistent and
+    they contradicted each other, so no test of either half could see it.
+
+    Third-party absences are deliberately tolerated here: a missing `torch` is
+    the target's environment and genuinely is `env`'s business. A missing
+    `verdict` is the forge's own scaffold, and is not.
+    """
+
+    #: A worked `entry` example, in either of the two shapes the skill writes
+    #: one: SKILL.md's fenced JSON and the kit's own `#`-prefixed comment. Scoped
+    #: to the `entry` block rather than to `"module"` alone -- the kit publishes a
+    #: second worked example beside it for `__steps__`, which names a module this
+    #: kit does not ship and is nothing to do with the entry point.
+    ENTRY_EXAMPLE_RE = re.compile(
+        r'"entry":\s*\{[\s#]*"module":\s*"([A-Za-z_][\w.]*)"')
+
+    def worked_entry_modules(self):
+        """Every worked `entry.module` example the skill publishes, by source."""
+        found = {}
+        for document in (SKILL_MD, KIT / "src_benchmark" / "__init__.py"):
+            text = document.read_text(encoding="utf-8")
+            matches = self.ENTRY_EXAMPLE_RE.findall(text)
+            self.assertTrue(matches, f"{document} publishes no worked entry example")
+            found[document] = matches
+        return found
+
+    def test_both_halves_of_the_kit_publish_the_same_worked_example(self):
+        found = self.worked_entry_modules()
+        distinct = {tuple(sorted(set(matches))) for matches in found.values()}
+        self.assertEqual(len(distinct), 1,
+                         f"the worked entry example differs by document: {found}")
+
+    def test_the_worked_example_imports_against_the_kit_own_files(self):
+        example = sorted(set(next(iter(self.worked_entry_modules().values()))))
+        self.assertEqual(len(example), 1, example)
+        dotted = example[0]
+        package_dir, _, module_name = dotted.rpartition(".")
+        self.assertTrue(package_dir.endswith("_Benchmark"), package_dir)
+
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        package = root / "src" / package_dir
+        package.mkdir(parents=True)
+        # Every kit file a materialized target places inside the benchmark
+        # package, copied under the example's own package name. `{{PKG}}` is
+        # answered exactly as `materialize --stage scaffold` answers it.
+        for source in sorted((KIT / "nb").glob("*.py")):
+            (package / source.name).write_text(
+                source.read_text(encoding="utf-8").replace(
+                    "{{PKG}}", package_dir[:-len("_Benchmark")]),
+                encoding="utf-8")
+        (package / "__init__.py").write_text(
+            (KIT / "src_benchmark" / "__init__.py").read_text(encoding="utf-8"),
+            encoding="utf-8")
+        self.assertTrue((package / f"{module_name}.py").is_file(),
+                        f"the kit ships no {module_name}.py for {dotted}")
+
+        proc = subprocess.run(
+            [sys.executable, "-c", f"import {dotted}"],
+            capture_output=True, text=True, cwd=root,
+            env={**os.environ, "PYTHONPATH": str(root / "src")})
+        # `cwd` is the tree above `src/`, never the package directory itself:
+        # running from inside it would put every sibling module on `sys.path`
+        # and the flat import would resolve, which is exactly the mistake.
+        self.assertEqual(
+            _unresolvable_kit_modules(proc.stderr), [],
+            f"the worked example cannot import the kit's own files:\n{proc.stderr}")
 
 
 class EntryModuleResolutionTests(unittest.TestCase):
