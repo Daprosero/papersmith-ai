@@ -9549,7 +9549,8 @@ def cmd_gate(args: argparse.Namespace) -> dict:
         status=position["status"], unbacked=position["unbacked"],
         disagreements=_launch_disagreements(position),
         sequence=position["sequence"], ready=smoke_ready.get(args.job),
-        job=args.job, shards_declared=evidence["shardsArrived"] is not None)
+        job=args.job, shards_declared=evidence["shardsArrived"] is not None,
+        levels=evidence["levels"], attained_level=position["attainedLevel"])
     if not verdict["available"]:
         code, facts = verdict["code"], verdict["facts"]
         if code == "POSITION_ABSENT":
@@ -9628,18 +9629,32 @@ def cmd_gate(args: argparse.Namespace) -> dict:
                 "not True); a rehearsal must actually run and be recorded "
                 "before this launch can be authorized -- readiness cannot be "
                 "asserted, only measured.")
-        # code == "SEQUENCE_NOT_REACHED"
-        if facts["reason"] == "no_witness":
+        if code == "SEQUENCE_NOT_REACHED":
+            if facts["reason"] == "no_witness":
+                raise Refused(
+                    "SEQUENCE_NOT_REACHED",
+                    f"no sequence item names `@rehearsal {args.job}` as its "
+                    "witness; gate only authorizes a launch the sequence "
+                    "already names.")
             raise Refused(
                 "SEQUENCE_NOT_REACHED",
-                f"no sequence item names `@rehearsal {args.job}` as its witness; "
-                "gate only authorizes a launch the sequence already names.")
+                f"item {facts['earliestOpenOrdinal']} in the sequence is not "
+                f"yet ticked; item {facts['jobOrdinal']} (`@rehearsal "
+                f"{args.job}`) cannot be gated ahead of it -- a launch that "
+                "skips a rung is refused.")
+        # code == "RUNG_NOT_ATTAINED" (spec "launch-rung-gate", checked
+        # strictly last by `launch_available` -- see that function's own
+        # docstring for why nothing above this branch could ever move).
         raise Refused(
-            "SEQUENCE_NOT_REACHED",
-            f"item {facts['earliestOpenOrdinal']} in the sequence is not yet "
-            f"ticked; item {facts['jobOrdinal']} (`@rehearsal {args.job}`) "
-            "cannot be gated ahead of it -- a launch that skips a rung is "
-            "refused.")
+            "RUNG_NOT_ATTAINED",
+            f"job {args.job!r}'s witness sits on a declared rung ladder "
+            f"({facts['levels']!r}), and the evidence currently attains "
+            + (f"{facts['attainedLevel']!r}" if facts["attainedLevel"] is not None
+               else "no rung at all")
+            + f", short of {facts['requiredLevel']!r} -- the rung this "
+            "launch requires. A launch is not authorized below the "
+            "ladder's own floor for attainment; run `position` again once "
+            f"the evidence reaches {facts['requiredLevel']!r}.")
 
     rcli = _load_remote_execution_cli()
     job_dir = run_config = None
@@ -9795,7 +9810,8 @@ def _offer_launch_action(target, name, args, rcli, position, evidence, job_dir):
         disagreements=_launch_disagreements(position),
         sequence=position["sequence"],
         ready=evidence["smokeReady"].get(job_name), job=job_name,
-        shards_declared=evidence["shardsArrived"] is not None)
+        shards_declared=evidence["shardsArrived"] is not None,
+        levels=evidence["levels"], attained_level=position["attainedLevel"])
     if not verdict["available"]:
         return None
 
@@ -11642,6 +11658,10 @@ GATING_REFUSALS: dict[str, str] = {
     "GATE_AUTHORIZATION_REQUIRED": WORK_STATE,
     "SEQUENCE_NOT_REACHED": WORK_STATE,
     "NOT_READY": WORK_STATE,
+    # A rung is declared in the target's own `__levels__`, not in any
+    # argument `gate` accepts -- no flag names one; clearing this means the
+    # evidence actually reaching the rung the ladder requires.
+    "RUNG_NOT_ATTAINED": WORK_STATE,
     "POSITION_ABSENT": WORK_STATE,
     "POSITION_STALE": WORK_STATE,
     "POSITION_UNBACKED": WORK_STATE,
@@ -11919,6 +11939,32 @@ def _resolve_position_step_unknown(args) -> dict:
         "name, and does __steps__ need a new entry first?" + named)
 
 
+def _resolve_rung_not_attained(args) -> dict:
+    """The rung this launch requires, read fresh at the moment of refusal
+    from the target's own `__levels__` -- `_resolve_position_rung_skipped`'s
+    own pattern (attainment, never a header, and never invented), applied to
+    the gate-time floor (`levels[-2]`) instead of `position`'s own
+    predecessor rung.
+
+    A question, never a command: the command that would clear this is the
+    one that just refused, and republishing the caller's own call back to
+    them is advice that refuses on its own advice.
+    """
+    target = Path(str(getattr(args, "target", "")))
+    name = str(getattr(args, "name", ""))
+    levels = resolve_levels_declaration(target, name)
+    attained = _position_attained_level(target, name)
+    floor = levels[len(levels) - 2] if len(levels) >= 2 else None
+    named = f" This launch requires {floor!r}." if floor is not None else ""
+    return _refusal_question(
+        args,
+        "this job's witness sits on a declared rung ladder, and the "
+        "evidence does not yet attain the rung a launch requires (the "
+        "refusal detail names it); the evidence currently attains "
+        + (f"{attained!r}" if attained is not None else "no rung at all")
+        + ". What has to run before that rung is reached, and why?" + named)
+
+
 def _resolve_position_record_unknown(args) -> dict:
     """The records this target's own `__records__` actually declares, or the
     fact that it declares none at all, read fresh at the moment of refusal
@@ -11984,6 +12030,7 @@ _WORK_STATE_RESOLUTIONS = {
               "pinned to, and readiness is measured rather than asserted; "
               "rehearse it through the remote-execution skill now, or record "
               "why the launch is deferred, and why?"),
+    "RUNG_NOT_ATTAINED": _resolve_rung_not_attained,
     # A question rather than a command, and measured rather than assumed: the
     # published `position --reconcile` was RUN, and it refused
     # `POSITION_TARGET_LEVEL_REQUIRED` -- a fresh header cannot be written

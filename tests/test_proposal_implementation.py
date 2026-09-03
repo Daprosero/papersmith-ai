@@ -18427,6 +18427,180 @@ class ProposeCommandTests(unittest.TestCase):
         self.assertEqual(proposals[1]["rationale"], "Second campaign pass.")
 
 
+class RungNotAttainedGateTests(unittest.TestCase):
+    """`RUNG_NOT_ATTAINED` -- spec "launch-rung-gate". Reuses
+    `GateCommandTests`'s own fixture machinery (`_box`, `_write_job_folder`,
+    `_write_smoke_pass`, `_mint_authorization`, `_propose`, `run_cli`)
+    rather than rebuilding it: this class exercises the identical launch
+    mechanism, only with a declared `__levels__`/`__records__` pair added.
+    """
+
+    PROPOSAL_REVISION = GateCommandTests.PROPOSAL_REVISION
+    PROPOSAL_TEXT = GateCommandTests.PROPOSAL_TEXT
+    PROPOSAL_SHA256 = GateCommandTests.PROPOSAL_SHA256
+
+    def _proposals(self):
+        return GateCommandTests._proposals(self)
+
+    def _box(self, packages=("Method",)):
+        return GateCommandTests._box(self, packages)
+
+    def _write_job_folder(self, box, commit, **kwargs):
+        return GateCommandTests._write_job_folder(self, box, commit, **kwargs)
+
+    def _write_smoke_pass(self, box, **kwargs):
+        return GateCommandTests._write_smoke_pass(self, box, **kwargs)
+
+    def _mint_authorization(self, box, proposals, **kwargs):
+        return GateCommandTests._mint_authorization(self, box, proposals, **kwargs)
+
+    def _propose(self, box, **kwargs):
+        return GateCommandTests._propose(self, box, **kwargs)
+
+    def run_cli(self, *args, proposals=None):
+        return GateCommandTests.run_cli(self, *args, proposals=proposals)
+
+    def _declare_ladder_and_record(self, box):
+        """`__levels__` and `__records__` -- neither exists in
+        `GateCommandTests._box`'s own scaffold, so this fixture declares
+        both explicitly. A blank `mark` on both sequence items throughout
+        this class (never `x`): `_launch_disagreements` filters
+        `disagrees` to ticked items only, so a blank leveled item can move
+        between rungs across a fixture's two calls (mint, then gate)
+        without ever tripping `POSITION_DISAGREES` or `POSITION_UNBACKED`
+        along the way -- the identical restraint that keeps this fixture
+        from needing a `position --reconcile` pass between the two."""
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            "__levels__ = ['floor', 'pilot', 'full']\n"
+            "__records__ = {'main': {'path': 'r.json', "
+            "'requiredScale': {'seeds': 3}}}\n",
+            encoding="utf-8")
+
+    def _write_block(self, box):
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1",
+                  "target": "full"}
+        items = [
+            {"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+             "witness": {"kind": "rehearsal", "operand": "job1"}},
+            {"ordinal": 2, "mark": " ", "text": "Reach the record.",
+             "witness": {"kind": "record", "operand": "main", "twostate": False}},
+        ]
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+
+    def test_below_floor_attainment_refuses_rung_not_attained(self):
+        """The reachability nuance, using the SIMPLE (placeholder-token)
+        entry point rather than the deliberately-constructed one below: a
+        non-empty `--authorization` reaches this check regardless of
+        whether it would ever verify, because `launch_available` runs
+        strictly before token verification."""
+        box, commit = self._box()
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        self._declare_ladder_and_record(box)
+        # No `r.json` at all -- the record derives `False`/the floor rung,
+        # below `levels[-2]` ("pilot").
+        self._write_block(box)
+        proc = self.run_cli(
+            "gate", "--target", str(box), "--name", "Method",
+            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+            "--job", "job1", "--worker", "w1",
+            "--justification", "Because it is time.",
+            "--authorization", "unminted-placeholder",
+            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["code"], "RUNG_NOT_ATTAINED")
+        self.assertIn("pilot", result["detail"])
+        self.assertEqual(result["resolve"]["kind"], "question")
+
+    def test_the_deliberately_constructed_regressed_evidence_path(self):
+        """**A3's reachability nuance, constructed rather than assumed.**
+        `GATE_AUTHORIZATION_REQUIRED` (token PRESENCE) sits before
+        `launch_available` runs; `_verify_gate_authorization` (token
+        VALIDITY) runs last, immediately before the record is appended. So
+        in production `RUNG_NOT_ATTAINED` is reachable only on the
+        regressed-evidence path: `offer` minted a token when attainment was
+        SUFFICIENT, and attainment then fell before `gate` ran. This
+        constructs exactly that sequence -- mint first, regress second,
+        gate third -- with the REAL minted token, proving the token's own
+        VALIDITY still holds (nothing about its binding depended on
+        attainment) while the newly-added check refuses anyway."""
+        box, commit = self._box()
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        self._declare_ladder_and_record(box)
+        # Attainment sufficient at mint time: the record exists, at the
+        # declared scale -- the top rung.
+        (box / "Method" / "r.json").write_text(
+            json.dumps({"seeds": 3}), encoding="utf-8")
+        self._write_block(box)
+
+        proposals = self._proposals()
+        self._propose(box, jobs=["job1"])
+        token = self._mint_authorization(box, proposals)
+
+        # Regress: the record this launch's rung depended on is gone. The
+        # minted token's own binding (job, commit, entrypoint, units, rung,
+        # revisionSha256, positionStatus, proposalDigest) names none of
+        # this, so the token itself stays exactly as valid as it was minted.
+        (box / "Method" / "r.json").unlink()
+
+        proc = self.run_cli(
+            "gate", "--target", str(box), "--name", "Method",
+            "--revision", self.PROPOSAL_REVISION, "--session", "s1",
+            "--job", "job1", "--worker", "w1",
+            "--justification", "Because it is time.",
+            "--authorization", token, "--elect", "job1",
+            proposals=proposals)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        result = json.loads(proc.stdout)
+        # Never a GATE_AUTHORIZATION_* code: the token itself is genuine
+        # and current. The refusal is the rung, not the token.
+        self.assertEqual(result["code"], "RUNG_NOT_ATTAINED")
+
+        # And nothing about the token was consumed by this refusal -- the
+        # SAME token remains presentable once the rung is actually reached
+        # (unlike a `GATE_AUTHORIZATION_CONSUMED` token, which would not).
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+        self.assertFalse(
+            any(e["kind"] == "authorization-consumed" for e in events),
+            "a refused gate call must never consume the token it was handed")
+
+    def test_offer_silently_omits_the_launch_action_on_identical_facts(self):
+        """**A2 -- one shared fixture, both callers, on identical facts.**
+        `_offer_launch_action` needs no logic change: its own `if not
+        verdict["available"]: return None` already covers this new code
+        generically. The SAME below-floor fixture `gate` refuses loudly
+        for is here handed to `cmd_offer` instead, and the `launch` action
+        for `job1` is simply absent from the published action set -- never
+        a disabled-with-a-reason entry, matching every other silent
+        omission this function already keeps."""
+        box, commit = self._box()
+        self._write_job_folder(box, commit)
+        self._write_smoke_pass(box, commit=commit)
+        self._declare_ladder_and_record(box)
+        self._write_block(box)
+        proposals = self._proposals()
+
+        rcli = impl._load_remote_execution_cli()
+        rcli.ADAPTER.register_declared_capacity("svc", lambda: (1, 1))
+        args = argparse.Namespace(
+            target=str(box), name="Method", revision=self.PROPOSAL_REVISION,
+            session="s1", answer="yes", units=None)
+        with unittest.mock.patch.dict(
+                os.environ, {"IMPLEMENTATION_PROPOSALS": str(proposals)}):
+            result = impl.cmd_offer(args)
+        launches = [a for a in result["actions"] if a["id"] == "launch"]
+        self.assertEqual(launches, [],
+                         "a below-floor rung must omit the launch action "
+                         "entirely, the identical silent-omission shape "
+                         "every other unavailable cause already keeps")
+
+
 class ProposalAndElectionGateTests(unittest.TestCase):
     """`gate`'s two Phase-3 preconditions (design D4/D5): the campaign
     proposal precondition (`_verify_gate_proposal`) and the optional-job
@@ -23168,7 +23342,7 @@ _ENGLISH_COUNTS = {
     36: "Thirty-six",
     54: "Fifty-four", 55: "Fifty-five", 56: "Fifty-six", 57: "Fifty-seven",
     63: "Sixty-three", 64: "Sixty-four", 65: "Sixty-five", 66: "Sixty-six",
-    67: "Sixty-seven",
+    67: "Sixty-seven", 68: "Sixty-eight",
 }
 
 
@@ -23250,7 +23424,7 @@ class GatingRefusalRosterTests(unittest.TestCase):
             codes |= raised_refusal_codes(CLI, f"cmd_{command}")
         return codes
 
-    def test_the_derivation_finds_the_measured_sixty_seven(self):
+    def test_the_derivation_finds_the_measured_sixty_eight(self):
         """Sanity check on the scraper itself, not on the roster: a change to a
         gating command that adds, removes or renames a refusal should move this
         number, never a typo in the walk above.
@@ -23262,8 +23436,9 @@ class GatingRefusalRosterTests(unittest.TestCase):
         -- `STEPS_UNDECLARED` is reused verbatim from `cmd_step` and adds no
         new member to this union. Sixty-seven once `POSITION_RECORD_UNKNOWN`
         joined `cmd_position` beside it (the-pilot-proves-the-science, slice
-        B)."""
-        self.assertEqual(len(self.gating_codes()), 67)
+        B). Sixty-eight once `RUNG_NOT_ATTAINED` joined `cmd_gate` (same
+        change, slice A)."""
+        self.assertEqual(len(self.gating_codes()), 68)
 
     def test_every_gating_refusal_is_classified(self):
         roster = set(impl.GATING_REFUSALS)
@@ -23320,7 +23495,23 @@ class GatingRefusalRosterTests(unittest.TestCase):
         """A count written into prose is a count that drifts. Both documents
         state the split, so both are read against the roster rather than
         proof-read: re-classifying one code moves this test, not a reviewer's
-        memory."""
+        memory.
+
+        **Trap 3, fixed (design "strengthen the degenerating split
+        assertion").** Both kinds now count 34 apiece, so a loop over
+        `set(counts.values())` collapses to the single element `{34}` and
+        checks `usage.md` for "Thirty-four codes" only once -- a stale
+        work-state sentence left reading a DIFFERENT, wrong number would
+        still pass as long as ONE of the two sentences (invocation's, which
+        never moved) still says "Thirty-four codes" somewhere in the file.
+        Two explicit per-kind assertions, each checked against its own
+        sentence, is what a collapsed set could no longer catch. Required
+        mutation: reverting only `usage.md`'s work-state sentence to
+        "Thirty-two codes" (its pre-slice-A value, while invocation's stays
+        "Thirty-four") must fail this test -- and does, because the
+        work-state assertion below reads the sentence usage.md actually
+        carries beside `POSITION_RUNG_SKIPPED`/`NOT_READY`, not merely
+        `usage.md`'s presence of ANY correct-looking count."""
         counts = {kind: sum(1 for value in impl.GATING_REFUSALS.values()
                             if value == kind)
                   for kind in (impl.INVOCATION_DEFECT, impl.WORK_STATE)}
@@ -23334,8 +23525,16 @@ class GatingRefusalRosterTests(unittest.TestCase):
         self.assertIn(
             f"a *work state*** ({counts[impl.WORK_STATE]} codes)", skill)
         usage = " ".join(USAGE_MD.read_text(encoding="utf-8").split())
-        for count in set(counts.values()):
-            self.assertIn(f"{_english_count(count)} codes", usage)
+        self.assertIn(
+            f"{_english_count(counts[impl.INVOCATION_DEFECT])} codes, and "
+            "nothing is published beside them", usage,
+            "the invocation-defect sentence must name the roster's own "
+            "invocation count, not merely some count that happens to match")
+        self.assertIn(
+            f"{_english_count(counts[impl.WORK_STATE])} codes, including", usage,
+            "the work-state sentence must name the roster's own work-state "
+            "count -- a stale number here would have passed the old "
+            "`set(counts.values())` loop the moment both kinds tied")
 
     def test_a_code_outside_the_roster_publishes_nothing(self):
         """The roster is the gating commands' own. A refusal raised anywhere

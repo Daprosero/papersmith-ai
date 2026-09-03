@@ -2345,7 +2345,7 @@ me to do that now?". That is the failure this section exists to make
 impossible. **The engine publishes what happens next. The agent never composes
 it.**
 
-Sixty-seven distinct codes are raised inside the nine gating commands — `apply`,
+Sixty-eight distinct codes are raised inside the nine gating commands — `apply`,
 `admit`, `gate`, `offer`, `close`, `step`, `settle`, `materialize`, `position`
 (`GATING_COMMANDS`). Each is classified in `GATING_REFUSALS` by one derivable
 test, and the classification is a decision somebody made rather than a shape
@@ -2358,7 +2358,7 @@ somebody noticed:
   flag, the token or the mutual exclusion. Nothing is published beside it: a
   `resolve` key on every refusal is the shape a reader learns to skip, and that
   is how a real one stops being read.
-- **No — a *work state*** (33 codes). Somebody must act on the repository, so
+- **No — a *work state*** (34 codes). Somebody must act on the repository, so
   the refused payload carries `resolve`: `{kind: "command", command}` when the
   engine can name the whole exit, or `{kind: "question", question, command}`
   when the next act is a decision, where `command` is the runnable `discuss`
