@@ -598,7 +598,7 @@ Two independent findings, reported separately:
   in `--revision`; `invariantsWithoutTest` are claims declared in code with no
   test enforcing them. Both need the user's decision before you touch anything.
 
-Six more are reported and none of them is a finding, which is exactly why
+Seven more are reported and none of them is a finding, which is exactly why
 they were easy to leave undocumented:
 
 - **`coupling`** — which notebook cells reach into the target's internals instead
@@ -653,6 +653,23 @@ they were easy to leave undocumented:
   optional field in this file already keeps. It **never gates** — an
   unanswered optional field is a legitimate resting state, not a defect;
   this only makes the option visible.
+- **`undeclaredLadder`** — the ordered rung ladder `__levels__` names, in
+  the case where it names none: `declaration`, the `path` of the file that
+  would carry it, and the exact `consequence` of leaving it empty. That
+  consequence is the point, so it is spelled out rather than named:
+  `POSITION_RUNG_SKIPPED` — the refusal that stops a pass sealing at a rung
+  whose predecessor the evidence has not reached — can never fire against an
+  empty ladder; `position.attainedLevel` stays `null` on every run, because
+  there is no rung name to answer with; every sequence item stays two-state,
+  since a `:level`-marked witness is refused outright
+  (`POSITION_LEVELS_UNDECLARED`), so a step that got part of the way has no
+  rung to be recorded at; and `--target-level` accepts any word, because
+  `POSITION_TARGET_LEVEL_UNKNOWN` compares against a declared vocabulary and
+  there is none. `null` when a ladder is declared, and `null` for a target
+  with no benchmark package to declare one in — `structure.scaffoldGaps`
+  already names that missing file. **Reported, never demanded**: a
+  repository whose steps are all two-state legitimately has no ladder, and
+  the forge never invents a rung name on its behalf. It **never gates**.
 
 Omit `--revision` and `fidelity.status` is `unknown`: the modules' declared
 revisions are still listed, but nothing is compared. Never report an
@@ -804,7 +821,10 @@ Three boundaries, each of them decided rather than fallen into:
   when the step below it is not *shown* attained.
 
 A target that declares no `__levels__` at all is entirely unaffected: no
-ladder, no rungs, no progression to enforce.
+ladder, no rungs, no progression to enforce. Unaffected is not the same as
+unremarked — nothing here ever asks a target for a ladder, so `verify`
+reports the absence and what it costs under `undeclaredLadder` above, and
+leaves the decision where it belongs.
 
 Each witness in the block's markdown may carry `:level` right after its
 kind — `` `@rehearsal:level governing-search` `` — to opt into being

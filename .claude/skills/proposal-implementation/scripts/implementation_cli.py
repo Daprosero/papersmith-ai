@@ -1366,6 +1366,101 @@ def undeclared_optional_state(search: dict, distribution: dict) -> list[dict]:
     return entries
 
 
+#: What a repository gives up by leaving `__levels__` empty, written out
+#: rather than labelled. `undeclaredOptional`'s entries earn their place by
+#: naming the cost of an absence, never the absence itself, and this follows
+#: them: an entry reading "no ladder is declared" would restate the key's own
+#: name and leave a reader who has never seen a rung exactly where they
+#: started. Four facts, each one read off code in this file or beside it --
+#: `_skipped_rung_detail`'s empty-ladder exit, `impl_position.attained_level`'s
+#: `[]` answer, `cmd_position`'s `POSITION_LEVELS_UNDECLARED`, and the
+#: `if declared_levels and ...` that guards `POSITION_TARGET_LEVEL_UNKNOWN`.
+LADDER_UNDECLARED_CONSEQUENCE = (
+    "no rung exists for another to sit above, so the whole ordering "
+    "discipline of the position section is switched off for this repository. "
+    "`POSITION_RUNG_SKIPPED` -- the refusal that stops a pass sealing at a "
+    "rung whose predecessor the evidence has not reached -- can never fire, "
+    "because an empty ladder has no predecessor to put the question to. "
+    "`position.attainedLevel` stays `null` on every run, since there is no "
+    "rung name to answer \"which one does the evidence currently reach\" "
+    "with, and a reader gets no answer rather than a low one. Every item in "
+    "the sequence is two-state, reached or not: a `:level`-marked witness "
+    "cannot be written at all (`POSITION_LEVELS_UNDECLARED` refuses it), so "
+    "a step that got part of the way -- a record found but short of its own "
+    "declared scale -- is recorded as reached or as nothing, with no rung in "
+    "between for it to rest on. And a header's own `--target-level` accepts "
+    "any word typed at it, since `POSITION_TARGET_LEVEL_UNKNOWN` compares a "
+    "named rung against a declared vocabulary and there is none to compare "
+    "against. Declaring an ordered `__levels__`, in this repository's own "
+    "words, is what turns all four back on."
+)
+
+
+def undeclared_ladder_state(target: Path, name: str,
+                            levels: list[str]) -> dict | None:
+    """The rung ladder this target never named, beside what naming none costs
+    it -- or `None` when it named one.
+
+    The gap this closes is the one `__steps__` does not have. Run a step
+    against an empty `__steps__` and `STEPS_UNDECLARED` refuses and publishes
+    the question, so nobody keeps an empty one by accident. An empty
+    `__levels__` is demanded by nothing at all:
+    `POSITION_LEVELS_UNDECLARED` fires only once a `:level`-marked witness
+    already exists in the sequence, and a target that never writes one is
+    never asked for a rung; `_skipped_rung_detail` answers `None` before it
+    grades anything at all when `levels` is empty; and the call sites of
+    `resolve_levels_declaration` pour the answer straight into
+    `evidence["levels"]`, where `[]` and
+    a ladder that was read are the same value. A repository scaffolded from
+    zero therefore has no rungs, is asked for none, and cannot be reached by
+    the rung discipline at all -- and until this existed, nothing said so.
+
+    **Reported, never demanded.** A target with genuinely no rungs is a
+    legitimate resting state, the same way an unanswered optional field is,
+    and refusing one would be the forge deciding a repository's own
+    vocabulary for it -- the one thing `resolve_levels_declaration`'s own
+    docstring exists to refuse. This never gates and never raises.
+
+    **Its own key rather than an `undeclaredOptional` entry.** Those are
+    `{section, field, consequence}`: a field inside a DECLARED
+    `search`/`distribution` block. `__levels__` is a module-level literal
+    held apart from `__benchmark__` on purpose, so it sits in no section and
+    names no field, and borrowing that shape would mean writing a `section`
+    that does not exist. Top-level in `cmd_verify`'s return for the
+    constraint that decided `toDiscuss`'s and `undeclaredOptional`'s own
+    placement: `returned_keys` reads dict-literal keys at the top level of a
+    function's own return, so a key nested anywhere at all ships invisible to
+    `VerifyStatusRosterTests`.
+
+    **A target with nowhere to write it is asked nothing**, the identical
+    restraint `undeclared_optional_state` keeps for a repository with no
+    search: no benchmark package, or a package carrying neither file
+    `resolve_levels_declaration` reads, is not a repository that left a
+    question unanswered -- `structure.scaffoldGaps` already names the file it
+    is missing, and saying it twice would turn one gap into two findings.
+
+    `levels` is passed in rather than resolved here, from the same
+    `resolve_levels_declaration` call `verify` already makes for the position
+    evidence: two reads of one declaration in one command is how the two come
+    to disagree about what the target declared.
+    """
+    if levels:
+        return None
+    bench_root = target / "src" / f"{package_name(name)}_Benchmark"
+    if not bench_root.is_dir():
+        return None
+    # The file that WOULD carry it, chosen in the order
+    # `resolve_levels_declaration` reads them, so the path named here is the
+    # one a reader's own declaration would actually be found at.
+    holder = next((candidate for candidate in ("__init__.py", "config.py")
+                   if (bench_root / candidate).is_file()), None)
+    if holder is None:
+        return None
+    return {"declaration": LEVELS_DECLARATION,
+            "path": (bench_root / holder).relative_to(target).as_posix(),
+            "consequence": LADDER_UNDECLARED_CONSEQUENCE}
+
+
 def search_cost_forecast(reduction: dict, required_scale: dict) -> dict | None:
     """What the declared search would cost, projected from what was actually measured.
 
@@ -10558,6 +10653,12 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         list((report.get("declared") or {}).get("records") or []),
         target / name, declaration_status=resolved["status"],
         digest=source_digest(target, package_name(name)))
+    # Read once and used twice: the position evidence below grades every
+    # leveled item against this ladder, and `undeclaredLadder` reports the
+    # case where there is none. Two calls for one declaration inside one
+    # command is how the two answers come to disagree about what the target
+    # declared.
+    levels = resolve_levels_declaration(target, name)
     position = position_state(
         target, name,
         {"search": search, "requiredScale": declared_required_scale(search),
@@ -10565,7 +10666,7 @@ def cmd_verify(args: argparse.Namespace) -> dict:
          "smokeReady": remote_execution_jobs_state(target)["smokeReady"],
          "shardsArrived": merged["shardsArrived"] if merged else None,
          "shardsCurrent": merged["shardsCurrent"] if merged else None,
-         "levels": resolve_levels_declaration(target, name),
+         "levels": levels,
          "stepVerdicts": _step_verdicts(target, name)},
         revision, target_source)
 
@@ -10695,6 +10796,15 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         # `undeclared_optional_state`'s own docstring for why this is
         # reported and never demanded.
         "undeclaredOptional": undeclared_optional_state(search, distribution),
+        # The same gap, one declaration over: `__levels__` is the one thing
+        # the forge offers that nothing ever asks a target for, and an empty
+        # one takes the whole rung discipline out of reach silently. Its own
+        # top-level key rather than an `undeclaredOptional` entry -- a
+        # module-level literal sits in no `section` and names no `field`, so
+        # borrowing that shape would mean writing a section that does not
+        # exist. See `undeclared_ladder_state`'s own docstring for why this
+        # is reported and never demanded.
+        "undeclaredLadder": undeclared_ladder_state(target, name, levels),
     }
 
 
