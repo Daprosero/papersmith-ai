@@ -1914,6 +1914,73 @@ class ReportContractTests(unittest.TestCase):
         self.assertEqual(state["live"], "unavailable")
         self.assertEqual(state["status"], "incomplete")
 
+    #: A benchmark module that declares its own measured universe, the way the
+    #: kit's own `benchmark.py` does. `report.dimensions` is a SECOND
+    #: declaration -- which way each of those wins -- and the two are written
+    #: by hand in two files, so one can name a column the other never does.
+    UNIVERSE = (
+        "HIGHER = 'higher'\n"
+        "DIMENSIONS = {'accuracy': HIGHER, 'auc': HIGHER}\n"
+    )
+
+    def state_with_universe(self, cells, declaration=None, universe=None):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root, cells, declaration)
+            (root / "src/Method_Benchmark/benchmark.py").write_text(
+                self.UNIVERSE if universe is None else universe, encoding="utf-8")
+            return impl.report_state(root, "Method", "Method")
+
+    #: The same well-formed section, rendering `auc` -- a column the module's own
+    #: `DIMENSIONS` carries and `report.dimensions` never does.
+    RENDERS_AUC = [
+        _cell("markdown", "Qué mide: el área bajo la curva. Más alto es mejor."),
+        _cell("code", "print(tables.objective('auc'))"),
+        _cell("code", "print(tables.render(runs, 'auc', reduction))\n"
+                      "print(tables.conclusion(runs, 'auc', reduction))"),
+    ]
+
+    def test_a_rendered_dimension_with_no_declared_direction_is_named(self):
+        """`undeclared` was declared, echoed and never written to: one Store,
+        one Load, no `.add` anywhere in the function, so `clean` passed it on
+        every run and a report rendering a column nobody gave a direction to
+        read `ok`.
+
+        The finding has to FIRE, and it has to name the right column: a lock
+        that only asked whether the key exists is satisfied by the permanently
+        empty list this replaces, and one that only asked whether the list is
+        non-empty is satisfied by reporting the DECLARED names instead.
+        """
+        state = self.state_with_universe(self.RENDERS_AUC)
+        self.assertEqual(state["undeclared"], ["auc"])
+        self.assertEqual(state["status"], "drift")
+
+    def test_declaring_the_direction_clears_it(self):
+        """The other pole. A finding that cannot come back empty is a finding
+        nobody can act on, so the same tree with `auc` given a direction has to
+        go quiet -- and `accuracy`, declared in both files, must never appear."""
+        declared = self.DECLARATION.replace(
+            "'dimensions': {'accuracy': 'higher', 'seconds': 'lower', 'fit': None},",
+            "'dimensions': {'accuracy': 'higher', 'auc': 'higher', "
+            "'seconds': 'lower', 'fit': None},")
+        state = self.state_with_universe(self.RENDERS_AUC, declared)
+        self.assertEqual(state["undeclared"], [])
+
+    def test_a_column_the_module_declares_and_no_cell_renders_stays_silent(self):
+        """It is a dimension *rendered* that has no direction. A module may
+        legitimately carry more measured columns than a given report shows, and
+        a check that fired on those would teach the reader to skip it."""
+        state = self.state_with_universe(self.WELL_FORMED)
+        self.assertEqual(state["undeclared"], [])
+
+    def test_a_package_that_declares_no_universe_is_asked_nothing(self):
+        """`declared_dimension_names` answers `None` when neither file binds
+        `DIMENSIONS` -- the universe could not be determined, which is not the
+        same as a universe of zero. Reading `None` as an empty set would be
+        silence; reading it as a finding would be inventing one."""
+        state = self.state(self.RENDERS_AUC)
+        self.assertEqual(state["undeclared"], [])
+
 
 # --------------------------------------------- run/report coupling detection
 

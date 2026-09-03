@@ -4089,7 +4089,13 @@ def report_state(target: Path, name: str, package: str) -> dict:
                         literal rather than a computed statement. A conclusion typed
                         by hand is the `proseNumbers` failure wearing a sentence.
     `undeclared`        a dimension rendered whose direction the package never
-                        declared, so nothing could have checked its framing.
+                        declared. `unframed` asks whether a paragraph precedes
+                        the table, never what it says, so the only place a
+                        direction is written down is `report.dimensions` — and
+                        a column missing from it is one no reader is ever told
+                        which way wins. Every check that reads that mapping
+                        (`componentsNotRecorded`, and the key the duplication
+                        rule buckets a rendering under) is blind to it too.
     `unrendered`        a cell that computed a declared measurement and emitted
                         nothing. The number exists and no reader ever sees it.
     `describedNotShown` a cell that emitted a description of a figure instead of
@@ -4120,6 +4126,19 @@ def report_state(target: Path, name: str, package: str) -> dict:
     conclusions = set(contract.get("conclusions") or [])
     drawings = set(contract.get("figures") or [])
     dimensions = dict(contract.get("dimensions") or {})
+    # The OTHER declaration of the same columns: the module's own `DIMENSIONS`
+    # literal, which the kit's `benchmark.py` ships and a materialized target
+    # keeps in `config.py`. `report.dimensions` says which way each one wins,
+    # and the two are written by hand in two files -- so one can carry a column
+    # the other never names, and until this crossed them nothing said so.
+    #
+    # `None` (neither file binds the name, or it is bound to something no
+    # reading can make sense of) is NOT an empty universe: it means the
+    # question could not be put, and `declared_dimension_names`' own docstring
+    # keeps the two apart for exactly this reason. Read as `()` here, so a
+    # target with nowhere to declare a universe is asked nothing -- the same
+    # restraint `undeclared_ladder_state` keeps one file over.
+    universe = declared_dimension_names(target, package) or ()
     # One declared call that states, for a dimension, which value would count as
     # the good one. An entry point rather than a list of targets, for the same
     # reason `conclusionEntry` is one: what a good value looks like is a fact about
@@ -4307,6 +4326,16 @@ def report_state(target: Path, name: str, package: str) -> dict:
             # recognised as the same table wherever it is printed.
             named = sorted(d for d in dimensions
                            if f'"{d}"' in source or f"'{d}'" in source)
+            # The complement of the line above, read off the same source with
+            # the same literal idiom: a column this cell renders that the
+            # module's own universe carries and the report contract does not.
+            # Scoped to `universe` rather than to every string literal in the
+            # cell, because which strings are dimensions is the package's claim
+            # and not this file's guess -- the one thing that would make this a
+            # finding about somebody else's vocabulary.
+            undeclared.update(d for d in universe
+                              if d not in dimensions
+                              and (f'"{d}"' in source or f"'{d}'" in source))
             if not writes_record:
                 for key in named or ["<sin dimensión>"]:
                     for call in rendered:
