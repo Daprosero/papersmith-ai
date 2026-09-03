@@ -3799,7 +3799,7 @@ def _described(produced: dict) -> str | None:
 #: It imports the target's benchmark package and nothing of this skill, runs in the
 #: target's virtualenv, and prints one JSON object. It never writes.
 INTROSPECT = r'''
-import importlib, json, random, sys
+import importlib, importlib.util, json, random, sys
 
 package = sys.argv[1]
 record = sys.argv[2]
@@ -3812,7 +3812,28 @@ entry_module = sys.argv[3] if len(sys.argv) > 3 else ""
 # read verbatim by the caller, rather than being paraphrased.
 if entry_module:
     importlib.import_module(entry_module)
-config = importlib.import_module(f"{package}_Benchmark.config")
+# Which module the constants below are read from. `config.py` is optional
+# everywhere else in this engine -- `resolve_benchmark_declaration`,
+# `resolve_levels_declaration` and `declared_dimension_names` each fall back to
+# another file and not one of them calls its absence a failure -- and the kit
+# ships no `config.py` at all. This line used to import it unconditionally, so a
+# repository built exactly as the kit prescribes raised `ModuleNotFoundError`
+# here, reported `unavailable`, and was routed to `env-first`: the one rung whose
+# exit is a command, and that command installs packages. It could never have
+# created a module.
+#
+# Resolved the way `declared_dimension_names` already resolves the same
+# question -- `config` first, where a target keeps its own contract, then
+# `benchmark`, where the kit's own template defines it. Looked up rather than
+# tried, so a `ModuleNotFoundError` raised INSIDE either file still propagates
+# untouched and still reads as the unavailability it is; only the absence of the
+# file itself is answered, and it is answered by name rather than by blaming the
+# interpreter.
+constants_holder = next(
+    (candidate for candidate in (f"{package}_Benchmark.config",
+                                 f"{package}_Benchmark.benchmark")
+     if importlib.util.find_spec(candidate) is not None), None)
+config = importlib.import_module(constants_holder) if constants_holder else None
 declaration = importlib.import_module(f"{package}_Benchmark")
 contract = getattr(declaration, "__benchmark__", {}).get("report", {})
 
@@ -3828,7 +3849,8 @@ def frozen(value):
 # Constants that are a proper subset of another constant: a selection somebody
 # wrote out. Legitimate when the rule that fixed it looks at no outcome — and that
 # is a claim a human makes, so it is declared rather than inferred.
-values = {n: frozen(getattr(config, n)) for n in dir(config) if n.isupper()}
+values = ({n: frozen(getattr(config, n)) for n in dir(config) if n.isupper()}
+          if config is not None else {})
 values = {n: v for n, v in values.items() if v}
 subsets = []
 for name, value in sorted(values.items()):
@@ -3885,7 +3907,11 @@ else:
                 inert.append({"conclusion": label,
                               "reason": "el texto no cambia cuando cambian los números"})
 
-print(json.dumps({"subsets": subsets, "inertConclusions": inert}))
+print(json.dumps({"subsets": subsets, "inertConclusions": inert,
+                  # Named, never inferred from an empty `subsets`: a check that
+                  # had nowhere to look must not report its silence as an answer.
+                  "constants": "read" if constants_holder else "absent",
+                  "constantsHolder": constants_holder}))
 '''
 
 
@@ -4499,6 +4525,18 @@ def report_state(target: Path, name: str, package: str) -> dict:
     return {"status": status,
             "live": live.get("status"),
             "liveDetail": live.get("detail"),
+            # Which module `writtenSelections` was actually derived from, and
+            # whether there was one at all. `"absent"` is not routed anywhere and
+            # deliberately does not move `status`: it is reachable only when the
+            # declared entry module imported cleanly (or this key would not exist)
+            # while neither `config.py` nor `benchmark.py` sits in the benchmark
+            # package -- and a missing `benchmark.py` is already a harness gap
+            # `harness_gaps` reports by name. A second rung for the same fact
+            # would be one fact answered twice. What it buys is that
+            # `writtenSelections: []` can be read: "nothing is written out" and
+            # "there was nowhere to look" no longer print the same.
+            "constants": live.get("constants"),
+            "constantsHolder": live.get("constantsHolder"),
             "declared": {"renderers": sorted(renderers),
                          "conclusions": sorted(conclusions),
                          # Echoed even when empty, so "declares no drawing calls"

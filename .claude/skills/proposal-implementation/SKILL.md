@@ -1210,6 +1210,18 @@ alone, which cleared the way to a run the environment could not perform. The
 entry module is what actually pulls the target's runtime in, so its own
 failure is the truthful verdict.
 
+**What this rung is never for.** `env` installs packages; it writes no module
+and edits no import, so a rung whose only exit is that command must never be
+reached by a file being absent. Two ways it was: the constants `writtenSelections`
+is derived from used to be imported from `<Package>_Benchmark.config`
+unconditionally, and the kit ships no `config.py`; and the kit's own
+`benchmark.py` imported `verdict` flat, which does not resolve under the dotted
+`entry.module` the kit's own example declares. A repository built exactly as
+step 9 prescribes hit both, in that order, and looped here. `report.constants`
+now names which module the constants were read from (`config` first, then the
+kit's `benchmark`), or says `absent` when there was none — a fact, never this
+rung.
+
 **Report it, and stop there.** Run `env` — its `nextCommand` lists the
 target's own declared manifests beside the forge's dev requirements — install
 what it prints, and probe again. There is nothing here to correct in the
