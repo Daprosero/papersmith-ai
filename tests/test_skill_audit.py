@@ -1368,10 +1368,12 @@ class NumeralCheckTests(BoxMixin, unittest.TestCase):
             FORGE / ".claude" / "skills" / "remote-execution" / "SKILL.md")
         self.assertEqual(len(found), 1, found)
         finding = found[0]
-        # This anchor has moved twice now, both times because a section was
-        # inserted ABOVE it in the live subject. The sentence is unchanged;
-        # only its line is. Inserting above shifts every anchor below.
-        self.assertEqual(finding["numeralLine"], 55)
+        # This anchor has moved three times now, every time because a
+        # section was inserted ABOVE it in the live subject. The sentence is
+        # unchanged; only its line is. Inserting above shifts every anchor
+        # below. The latest shift is four lines, from `reconcile`'s failure
+        # discipline being written into "What this skill cannot see".
+        self.assertEqual(finding["numeralLine"], 59)
         self.assertEqual(finding["stated"], 3)
         self.assertGreater(
             finding["counted"], finding["stated"],
