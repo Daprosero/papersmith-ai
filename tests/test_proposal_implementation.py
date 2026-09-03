@@ -22259,6 +22259,37 @@ class UndeclaredOptionalDeclarationTests(unittest.TestCase):
         self.assertIn("undeclaredOptional", returned_keys(CLI, "cmd_verify"))
 
 
+class NoTestClassShadowsAnotherTests(unittest.TestCase):
+    """A second class by the same name silently replaces the first, and every
+    test the first one held stops running while the suite still reports OK.
+
+    Measured, not hypothetical: `UndeclaredRecordsTests` was defined twice in
+    this file -- once for `report_state`'s own undeclared records and once for
+    the `__records__` literal -- and the five tests of the first definition had
+    not run since the second landed. The count stayed internally consistent,
+    which is exactly what kept it invisible. `unittest discover` collects
+    module ATTRIBUTES, so the loss is a plain dict rebinding with no warning
+    anywhere.
+    """
+
+    def test_no_two_test_classes_in_this_file_share_a_name(self):
+        import ast
+        import pathlib
+        for path in sorted(pathlib.Path(__file__).parent.glob("test_*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            names = [node.name for node in tree.body
+                     if isinstance(node, ast.ClassDef)]
+            assert names, f"{path.name} parsed to no classes at all"
+            duplicated = sorted({name for name in names
+                                 if names.count(name) > 1})
+            with self.subTest(file=path.name):
+                self.assertEqual(
+                    duplicated, [],
+                    f"{path.name} defines these class names twice; the later "
+                    "definition silently replaces the earlier one and every "
+                    "test the earlier one held stops running")
+
+
 class UndeclaredLadderTests(unittest.TestCase):
     """The one declaration nothing ever asks a target for.
 
@@ -22467,7 +22498,7 @@ class UndeclaredLadderTests(unittest.TestCase):
         self.assertEqual(ast.literal_eval(declared[0].value), [])
 
 
-class UndeclaredRecordsTests(unittest.TestCase):
+class NamedRecordsUndeclaredTests(unittest.TestCase):
     """The one declaration nothing ever asks a target for, one level over
     `UndeclaredLadderTests` -- `undeclared_records_state`'s own shape and
     placement (design D8): `__records__` being empty is demanded by
