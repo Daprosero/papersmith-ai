@@ -4393,6 +4393,157 @@ def _module(revision, sections, equations, imports=""):
             f"}}\n")
 
 
+class UndeclaredArmsTests(unittest.TestCase):
+    """An empty `arms` switches off the join nothing else in the flow crosses.
+
+    `unreached_mathematics`'s own docstring says it: "This is the join nothing
+    else in the flow crosses." It reads `declaration["arms"]` to build the map
+    from section to claiming arm, so with `arms: {}` the map is empty, every
+    module's `declaredBy` comes back empty, and the answer is `[]` -- whatever
+    the modules declare and whatever the harness calls. Downstream:
+    `benchmark_unfaithfulness` is `[]`, `probe`'s `wiring-first` rung can never
+    fire, `fidelity.benchmark.status` can never read `unfaithful`, and
+    `armsReached` is `null`. Nothing said so.
+
+    This is `__levels__`' own shape one block over, and it gets `__levels__`'
+    own answer: a report, never a demand. A repository legitimately has one arm
+    and nothing to compare, and refusing an absence would be the forge deciding
+    what comparison a repository is running. The precedent for the shape is
+    three functions away -- `distribution.note` names the file when
+    `DIMENSIONS` could not be found, so an empty `unpartitioned` is not read as
+    evidence the split is complete.
+    """
+
+    DECLARED = ("__benchmark__ = {\n"
+                "    'revision': 'r01.md',\n"
+                "    'arms': {'floor': {'sections': ['3']}},\n"
+                "}\n")
+    SILENT = ("__benchmark__ = {\n"
+              "    'revision': 'r01.md',\n"
+              "    'arms': {},\n"
+              "}\n")
+
+    def verify_with(self, declaration, suffix):
+        box = FORGE / "implementations" / f"_arms_{suffix}_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "src/Method_Benchmark", "tests"):
+            (box / directory).mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        # A module that declares a section, so there IS something to cross.
+        (box / "src/Method/never_called.py").write_text(
+            _module("r01.md", ["3"], ["12"]), encoding="utf-8")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            declaration, encoding="utf-8")
+        (box / "src/Method_Benchmark/wiring.py").write_text("", encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box),
+             "--name", "Method", "--revision", "r01.md"],
+            capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return json.loads(proc.stdout)["fidelity"]["benchmark"]
+
+    def test_the_join_reports_nothing_and_says_why(self):
+        """The headline. `unreachedModules` is empty and the module beside it
+        declares a section nobody claims -- so the emptiness is the absence of
+        the declaration, not the absence of a defect, and the report has to
+        tell those two apart."""
+        benchmark = self.verify_with(self.SILENT, "silent")
+        self.assertEqual(benchmark["unreachedModules"], [])
+        self.assertIsNone(benchmark["armsReached"])
+        self.assertIsNotNone(benchmark["note"], benchmark)
+        self.assertIn("arms", benchmark["note"])
+
+    def test_a_declared_arm_leaves_the_note_empty(self):
+        """The other pole, and the one a weaker lock survives: a note that
+        printed on every run would be a sentence readers learn to skip, and
+        the join it describes DOES run here -- `never_called.py` declares
+        section 3, the arm claims section 3, and nothing calls it."""
+        benchmark = self.verify_with(self.DECLARED, "named")
+        self.assertIsNone(benchmark["note"])
+        self.assertEqual([u["module"] for u in benchmark["unreachedModules"]],
+                         ["src/Method/never_called.py"])
+
+    def test_the_note_names_the_readers_the_absence_switches_off(self):
+        """`undeclaredLadder`'s doctrine: an absence read back as its own name
+        teaches nothing. Each reader that goes permanently quiet is named, and
+        so is the file the declaration belongs in."""
+        note = self.verify_with(self.SILENT, "cost")["note"]
+        self.assertIn("unreachedModules", note)
+        self.assertIn("wiring-first", note)
+        self.assertIn("unfaithful", note)
+        self.assertIn("src/Method_Benchmark/__init__.py", note)
+        self.assertGreater(len(note.split()), 40, note)
+
+    def test_a_repository_with_nothing_to_cross_is_asked_nothing(self):
+        """The restraint, and it was measured unlocked: deleting the guard
+        left every test here green. A module that declares no sections has no
+        crossing to lose, and `fidelity.missingProvenance` already names it --
+        reporting here too would turn one gap into two findings, which is the
+        identical restraint `undeclared_ladder_state` keeps for a target with
+        no benchmark package."""
+        box = FORGE / "implementations" / f"_arms_nocross_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "src/Method_Benchmark", "tests"):
+            (box / directory).mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        (box / "src/Method/sectionless.py").write_text(
+            _module("r01.md", [], ["12"]), encoding="utf-8")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            self.SILENT, encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box),
+             "--name", "Method", "--revision", "r01.md"],
+            capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        benchmark = json.loads(proc.stdout)["fidelity"]["benchmark"]
+        self.assertEqual(benchmark["status"], "ok")
+        self.assertIsNone(benchmark["note"], benchmark)
+
+    def test_the_note_counts_the_modules_that_go_uncrossed(self):
+        """A count read off the same modules the join walked, so the sentence
+        is checkable rather than general: one module here declares a section
+        and no arm can ever claim it."""
+        self.assertIn("1 module", self.verify_with(self.SILENT, "count")["note"])
+
+    def test_every_branch_of_the_benchmark_block_carries_the_key(self):
+        """`distribution_state`'s own rule, stated in its return: a key that
+        appears on some branches and not others vanishes for exactly the
+        callers that took the early ones, and nothing downstream can tell an
+        absent key from an absent answer."""
+        box = FORGE / "implementations" / f"_arms_bare_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "tests"):
+            (box / directory).mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box),
+             "--name", "Method", "--revision", "r01.md"],
+            capture_output=True, text=True, cwd=FORGE)
+        benchmark = json.loads(proc.stdout)["fidelity"]["benchmark"]
+        self.assertEqual(benchmark["status"], "absent")
+        self.assertIn("note", benchmark)
+        self.assertIsNone(benchmark["note"])
+
+    def test_the_kit_still_invents_no_arm_of_its_own(self):
+        """The decision about the scaffold, recorded so it is a position and
+        not a gap: `arms` ships empty and stays empty. A prefilled arm would
+        be the forge naming a repository's own comparison for it -- the same
+        thing `__levels__` refuses one literal over."""
+        kit = KIT / "src_benchmark" / "__init__.py"
+        tree = ast.parse(kit.read_text(encoding="utf-8"))
+        declared = next(node for node in tree.body
+                        if isinstance(node, ast.Assign)
+                        and any(isinstance(t, ast.Name) and t.id == "__benchmark__"
+                                for t in node.targets))
+        self.assertEqual(ast.literal_eval(declared.value)["arms"], {})
+
+
 class UnreachedMathematicsEndToEndTests(unittest.TestCase):
     """El brazo declara que ejercita una sección y nunca llama a lo que la implementa.
 

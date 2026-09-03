@@ -1241,6 +1241,19 @@ through another module, while at least one arm declares its sections. Each entry
 carries the equations it implements and the arms that claim them, because the section
 is where it lives and the equation is what the reader acts on.
 
+**And an empty `arms` switches the whole crossing off, silently, so
+`fidelity.benchmark.note` says so.** `unreachedModules` is built FROM `arms`:
+with none declared it answers `[]` on every run whatever the modules hold and
+whatever the harness calls, `armsReached` answers `null`, `benchmark.status` can
+never read `unfaithful`, and `wiring-first` can never be reached. `note` names
+the file, counts the modules that declare sections and go uncrossed, and names
+each reader that goes quiet. It is `null` the moment an arm is declared, and
+`null` for a repository whose modules declare no sections at all — there is no
+crossing to lose there, and `missingProvenance` already names those modules.
+Reported and never demanded: one arm and nothing to compare is a legitimate
+resting state, and which comparison a repository runs is not the forge's to
+decide.
+
 This blocks the run, ahead of an already-pending submission, a missing search
 configuration and a report in drift, and behind only a declaration that has not
 started. A wrong report describes a sound run and costs a

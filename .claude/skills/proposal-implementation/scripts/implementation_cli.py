@@ -2173,6 +2173,66 @@ def unreached_mathematics(modules: list[dict], declaration: dict,
     return unreached
 
 
+#: What a repository gives up by leaving `arms` empty, written out rather
+#: than labelled -- `LADDER_UNDECLARED_CONSEQUENCE`'s own doctrine, one block
+#: over. A format string, because the file the declaration belongs in and the
+#: number of modules that go uncrossed are what make the sentence checkable
+#: instead of general.
+ARMS_UNDECLARED_CONSEQUENCE = (
+    "{count} module{plural} under `src/{package}/` declare{verb} the sections "
+    "of a proposal, and no arm claims any of them: `{path}` names `arms` "
+    "empty. `unreachedModules` is the one join this flow makes between the "
+    "method's own provenance and the bench's declaration -- the two documents "
+    "can both be impeccable while an arm reimplements an equation instead of "
+    "calling it, and only crossing them says so. It is built FROM `arms`, so "
+    "with none declared it answers `[]` on every run whatever those modules "
+    "hold and whatever the harness calls; `armsReached` answers `null` for "
+    "the same reason; `fidelity.benchmark.status` can never read "
+    "`unfaithful`, and `fidelity.status` can never be driven to `drift` by "
+    "an unreached module; and `probe`'s own `wiring-first` rung -- the answer "
+    "that publishes the draft of how each module becomes trainable -- can "
+    "never be reached. Declaring one entry per arm, naming the sections it "
+    "exercises, is what turns all four back on. Reported and never demanded: "
+    "a repository with one arm and nothing to compare is a legitimate resting "
+    "state, and which comparison it runs is not the forge's to decide."
+)
+
+
+def undeclared_arms_note(target: Path, name: str, declaration: dict,
+                         modules: list[dict]) -> str | None:
+    """Why `unreachedModules` came back empty, when the reason is that no arm
+    was declared -- or `None` when there is nothing to explain away.
+
+    `distribution.note`'s own shape and placement (see `cmd_verify`, where a
+    missing `DIMENSIONS` literal is named so an empty `unpartitioned` is not
+    read as evidence the split is complete), applied to the other side of the
+    same silence. `unreached_mathematics`'s docstring calls itself "the join
+    nothing else in the flow crosses"; an empty `arms` switches that join off
+    entirely, and until this existed nothing said so.
+
+    **Silent when there is nothing to cross.** A repository whose modules
+    declare no sections at all has no crossing to lose, and
+    `fidelity.missingProvenance` already names a module that declares
+    nothing. Reporting here too would turn one gap into two findings -- the
+    identical restraint `undeclared_ladder_state` keeps for a target with no
+    benchmark package.
+
+    `declaration` and `modules` are both passed in, from the reads `verify`
+    already made: two reads of one declaration in one command is how the two
+    come to disagree about what the target declared.
+    """
+    if declaration.get("arms"):
+        return None
+    claimable = [module for module in modules if module.get("sections")]
+    if not claimable:
+        return None
+    package = package_name(name)
+    holder = f"src/{package}_Benchmark/__init__.py"
+    return ARMS_UNDECLARED_CONSEQUENCE.format(
+        count=len(claimable), plural="" if len(claimable) == 1 else "s",
+        verb="s" if len(claimable) == 1 else "", package=package, path=holder)
+
+
 def benchmark_unfaithfulness(target: Path, name: str) -> list[dict]:
     """The same crossing `verify` makes, for callers that do not enumerate modules."""
     package = package_name(name)
@@ -10933,10 +10993,17 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     bench_package = f"{package_name(name)}_Benchmark"
     unreached: list[dict] = []
     if resolved["status"] == "absent":
-        benchmark = {"status": "absent", "package": f"src/{bench_package}"}
+        # `note` on every branch, `distribution_state`'s own rule: a key that
+        # appears on some branches and not others vanishes for exactly the
+        # callers that took the early ones. `None` here and one line below is
+        # the honest answer -- `status` already carries the word, and
+        # `structure.scaffoldGaps` already names the file that is missing, so
+        # a second sentence would be one fact answered twice.
+        benchmark = {"status": "absent", "package": f"src/{bench_package}",
+                     "note": None}
     elif resolved["status"] == "undeclared":
         benchmark = {"status": "undeclared", "package": f"src/{bench_package}",
-                     "detail": resolved["detail"]}
+                     "detail": resolved["detail"], "note": None}
     else:
         declaration = resolved["contract"]
         built_against = declaration.get("revision")
@@ -10961,6 +11028,11 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "changedSections": moved,
             "armsReached": reached or None,
             "unreachedModules": unreached,
+            # Why `unreachedModules` is empty, where the reason is that no arm
+            # was declared to cross the modules against. Without it, "no arm
+            # reimplements what it claims" and "nobody declared an arm" print
+            # the same empty list.
+            "note": undeclared_arms_note(target, name, declaration, modules),
         }
 
     # The audit bridge: a defect in the mathematics is only reported when its
