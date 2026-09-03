@@ -1327,6 +1327,64 @@ def search_state(contract: dict, declared_records: list,
     }
 
 
+def named_records_state(target: Path, name: str, records: dict, digest: str) -> dict:
+    """`evidence["records"]`: `{name: {recordFound, recordCurrent,
+    scaleSatisfied, requiredScale}}`, one entry per `__records__` declaration
+    -- design D4, assembled from the identical primitives `search_state`
+    already reuses for the `search` block's own record (`_record_scale`,
+    `_scale_satisfied`, `_record_current`), never a new measurement of any
+    kind ("no deriver opens a file" doctrine). `_derive_record_level`
+    (`impl_position.py`) reads this dict's own entries through the identical
+    `_record_scale_level` arithmetic the `search` block's own bare
+    `@record:level` already uses, so an addressed record and the search's
+    own share one arithmetic rather than a second one drifting beside it.
+
+    Each entry's `path` is resolved relative to the product folder
+    (`target/name`), the identical layout `search_state`'s own `record`
+    field already resolves against. A declared entry naming no file yet, or
+    naming one of the wrong shape, reads `recordFound: False` (or `None`
+    when the product folder does not exist at all), exactly as an absent
+    search record does; a non-dict entry is skipped entirely, the same
+    silent-rather-than-crashing rule `resolve_records_declaration` already
+    applies one layer up.
+
+    `recordCurrent` reads `entry.get("currentWhen")` through the identical
+    `_record_current` primitive `search_state` uses -- always `None` today,
+    since `__records__`'s own declared shape carries no `currentWhen` key
+    (design's own "Recorded, not fixed here" note: `_record_scale_level`
+    reads no currency at all), but computed generically here rather than
+    hardcoded, so a target that adds the key by hand is read rather than
+    silently ignored.
+    """
+    product = target / name
+    state: dict = {}
+    for record_name, entry in records.items():
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        required_scale = entry.get("requiredScale") \
+            if isinstance(entry.get("requiredScale"), dict) else {}
+        found = None
+        expected = None
+        if isinstance(path, str) and path and product.is_dir():
+            expected = product / path
+            found = expected.is_file()
+        record_scale = _record_scale(expected, required_scale)
+        scale_satisfied = (_scale_satisfied(record_scale, required_scale)
+                           if required_scale else None)
+        record_current = _record_current(
+            expected,
+            entry.get("currentWhen") if isinstance(entry.get("currentWhen"), str) else None,
+            digest)
+        state[record_name] = {
+            "recordFound": found,
+            "recordCurrent": record_current,
+            "scaleSatisfied": scale_satisfied,
+            "requiredScale": required_scale,
+        }
+    return state
+
+
 def undeclared_optional_state(search: dict, distribution: dict) -> list[dict]:
     """Every optional key a DECLARED `search` or `distribution` block left
     unanswered, named beside the exact consequence its absence carries.
@@ -1459,6 +1517,67 @@ def undeclared_ladder_state(target: Path, name: str,
     return {"declaration": LEVELS_DECLARATION,
             "path": (bench_root / holder).relative_to(target).as_posix(),
             "consequence": LADDER_UNDECLARED_CONSEQUENCE}
+
+
+#: What a repository gives up by leaving `__records__` empty, written out for
+#: the identical reason `LADDER_UNDECLARED_CONSEQUENCE` is: an absence read as
+#: "no records are declared" restates the key's own name, and a reader who
+#: has never seen a named record is left exactly where they started.
+RECORDS_UNDECLARED_CONSEQUENCE = (
+    "no name exists for a leveled `@record:level <name>` witness to "
+    "address, so the only rung a leveled record item can reach is the "
+    "`search` block's own -- a bare `@record:level` with no operand, "
+    "unchanged since before this declaration existed. A named "
+    "`@record:level <name>` witness written into the sequence anyway "
+    "derives `None` (unmeasured), never a rung: `position` refuses "
+    "`POSITION_RECORD_UNKNOWN` before it ever writes a mark from that "
+    "state, so `verify` and `probe`, which never refuse, only ever read the "
+    "already-refused case as `unmeasured` -- never as a wrongly-satisfied "
+    "one. Declaring `__records__`, in this repository's own words, is what "
+    "gives a named witness something to reach."
+)
+
+
+def undeclared_records_state(target: Path, name: str, records: dict) -> dict | None:
+    """The named records this target never declared, beside what naming none
+    costs it -- `undeclared_ladder_state`'s own shape and placement (design
+    D8), one declaration over.
+
+    **Reported, never demanded.** A target with genuinely no named records is
+    a legitimate resting state, the same way an empty `__levels__` is: no
+    `@record:level <name>` witness is ever forced into existence by this
+    report, and refusing an absence would be the forge deciding a
+    repository's own vocabulary for it.
+
+    **Its own key rather than an `undeclaredOptional` entry**, for the
+    identical reason `undeclared_ladder_state` gives: `__records__` is a
+    module-level literal held apart from `__benchmark__`, so it sits in no
+    section and names no field, and borrowing that shape would mean writing
+    a `section` that does not exist.
+
+    **A target with nowhere to write it is asked nothing**, the identical
+    restraint `undeclared_ladder_state` keeps: no benchmark package, or a
+    package carrying neither file `resolve_records_declaration` reads, is
+    not a repository that left a question unanswered --
+    `structure.scaffoldGaps` already names the file it is missing.
+
+    `records` is passed in rather than resolved here, from the same
+    `resolve_records_declaration` call `verify` already makes for the
+    position evidence -- two reads of one declaration in one command is how
+    the two come to disagree about what the target declared.
+    """
+    if records:
+        return None
+    bench_root = target / "src" / f"{package_name(name)}_Benchmark"
+    if not bench_root.is_dir():
+        return None
+    holder = next((candidate for candidate in ("__init__.py", "config.py")
+                   if (bench_root / candidate).is_file()), None)
+    if holder is None:
+        return None
+    return {"declaration": RECORDS_DECLARATION,
+            "path": (bench_root / holder).relative_to(target).as_posix(),
+            "consequence": RECORDS_UNDECLARED_CONSEQUENCE}
 
 
 def search_cost_forecast(reduction: dict, required_scale: dict) -> dict | None:
@@ -2562,6 +2681,7 @@ def cmd_probe(args) -> dict:
     # false "did not arrive" (see `impl_position.derive`'s own docstring).
     shards_arrived, shards_current = _resolve_shard_evidence(
         target, name, resolved["contract"], None)
+    probe_digest = source_digest(target, package_name(name))
     position = position_state(
         target, name,
         {"search": search, "requiredScale": declared_required_scale(search),
@@ -2569,7 +2689,15 @@ def cmd_probe(args) -> dict:
          "smokeReady": jobs["smokeReady"], "shardsArrived": shards_arrived,
          "shardsCurrent": shards_current,
          "levels": resolve_levels_declaration(target, name),
-         "stepVerdicts": _step_verdicts(target, name)},
+         "stepVerdicts": _step_verdicts(target, name),
+         # Design B5 (evidence wiring is three sites): the identical
+         # `named_records_state` call `_position_write_evidence` and
+         # `cmd_verify`'s own inline dict make, so `probe` never reports
+         # `unmeasured` for a `@record:level <name>` witness while `gate`
+         # (which reads `_position_write_evidence`) reports it satisfied.
+         "records": named_records_state(
+             target, name, resolve_records_declaration(target, name),
+             probe_digest)},
         args.revision,
         revision_source(args.revision) if args.revision else None)
     # Computed once and reused for both `search.costForecast` below and the
@@ -4638,6 +4766,46 @@ def resolve_steps_declaration(target: Path, name: str) -> dict:
     return {}
 
 
+#: A fourth top-level literal, held apart from `__benchmark__` for the
+#: identical reason `STEPS_DECLARATION` is: a named record's own found/scale
+#: state is measured by the `search`/`records` join (`named_records_state`),
+#: never routed through `_declaration_is_blank`'s seven-block
+#: "declared"/"undeclared" verdict.
+RECORDS_DECLARATION = "__records__"
+
+
+def resolve_records_declaration(target: Path, name: str) -> dict:
+    """The `{name: {path, requiredScale}}` map `__records__` names, or `{}`
+    when nothing does.
+
+    Read exactly the way `resolve_steps_declaration` reads `__steps__`
+    (`__init__.py` first, then `config.py`, `ast`-only, no import) and held
+    just as apart from `__benchmark__`: a target may name a record long
+    before it has answered a single one of `__benchmark__`'s seven blocks,
+    or never answer any of them at all on a repository whose only leveled
+    `@record:level` witness is the bare, operand-less one.
+
+    A value of any shape other than a dict is read as nothing declared
+    (`{}`), the same silent-rather-than-crashing rule
+    `resolve_steps_declaration` already applies to a non-dict `__steps__`.
+    This function only ever answers "declared, or not", never validates
+    what one entry's own shape carries -- `named_records_state` is the one
+    reader that opens an entry, and it reads defensively rather than
+    trusting this resolver to have ruled on it.
+    """
+    package = package_name(name)
+    bench_root = target / "src" / f"{package}_Benchmark"
+    if not bench_root.is_dir():
+        return {}
+    for candidate in ("__init__.py", "config.py"):
+        result = read_declaration(bench_root / candidate, RECORDS_DECLARATION)
+        if isinstance(result, dict):
+            return result
+        if result is not None:
+            return {}
+    return {}
+
+
 def declared_dimension_names(target: Path, package: str) -> list[str] | None:
     """The shard-level dimension names a target declares, read without importing.
 
@@ -6661,6 +6829,50 @@ def _step_operand_detail(items: list[dict], steps: dict) -> str | None:
         "of them.")
 
 
+def _record_operand_detail(items: list[dict], records: dict) -> str | None:
+    """Why a leveled `@record:level <name>` witness in this sequence cannot
+    be measured, or `None` when every one names a record this target's own
+    `__records__` actually declares -- `_step_operand_detail`'s own shape,
+    above, for the identical reason: returns the refusal's detail rather
+    than raising it, so `POSITION_RECORD_UNKNOWN` stays visible to
+    `raised_refusal_codes` at the one call site (inside `cmd_position`) that
+    raises it, not buried one call deep in a helper `GatingRefusalRosterTests`'s
+    walk cannot see.
+
+    **One code covers two facts** (design D6): `__records__` declares
+    nothing at all, and `__records__` declares others but not this name.
+    `unknown` is built the identical way either way -- a name absent from
+    `records` -- so no second code (a `RECORDS_UNDECLARED` mirroring
+    `STEPS_UNDECLARED`) is needed; the detail below distinguishes the two
+    readings for a human, the classification does not need to.
+
+    Only a LEVELED `@record:level <name>` witness carrying a non-empty
+    operand is checked here: a bare, operand-less `@record` (two-state, by
+    `OPERAND_REQUIRED_KINDS`'s own exclusion) and a leveled `@record:level`
+    with no operand at all (the grammar that predates `__records__`) still
+    derive against the `search` block, unchanged -- this check has nothing
+    to say about either one, the identical restraint `derive()`'s own
+    record branch keeps (`impl_position.py`).
+    """
+    unknown = sorted({
+        item["witness"]["operand"] for item in items
+        if item["witness"]["kind"] == "record"
+        and not item["witness"].get("twostate", True)
+        and item["witness"]["operand"]
+        and item["witness"]["operand"] not in records})
+    if not unknown:
+        return None
+    if not records:
+        return (
+            f"{unknown!r} names a record, and this target's __records__ "
+            "declares none at all; declare it there before a leveled "
+            "`@record:level <name>` witness can address it.")
+    return (
+        f"{unknown!r} names a record this target's __records__ does not "
+        f"declare ({sorted(records)!r}); a leveled `@record:level <name>` "
+        "witness must name one of them.")
+
+
 def _step_verdicts(target: Path, name: str) -> dict:
     """`evidence["stepVerdicts"]` for every caller that reads an `@step`
     witness -- `_position_write_evidence`, `cmd_probe`'s inline dict, and
@@ -6758,6 +6970,7 @@ def _position_write_evidence(
     # SAME `jobs` rows `probe` classifies from, never a second walk of
     # `_discovered_job_folders()` computing its own answer.
     jobs = remote_execution_jobs_state(target)
+    digest = source_digest(target, package_name(name))
     return {
         "search": search, "requiredScale": declared_required_scale(search),
         "notebooks": notebooks_state(target, name, package_name(name)),
@@ -6767,6 +6980,12 @@ def _position_write_evidence(
         "shardsCurrent": shards_current,
         "levels": resolve_levels_declaration(target, name),
         "stepVerdicts": _step_verdicts(target, name),
+        # Design B5 (evidence wiring is three sites): the same
+        # `named_records_state` call `cmd_probe`'s and `cmd_verify`'s own
+        # inline evidence dicts make below, so a `@record:level <name>`
+        # witness reads the identical answer wherever it is measured.
+        "records": named_records_state(
+            target, name, resolve_records_declaration(target, name), digest),
     }
 
 
@@ -7095,6 +7314,21 @@ def cmd_position(args: argparse.Namespace) -> dict:
             "a leveled (non-two-state) witness exists in this sequence but "
             "__levels__ declares no ladder; a rung cannot be reached "
             "against a ladder nobody named.")
+    # Trap 1's verified placement (design D5): BEFORE `_skipped_rung_detail`
+    # is ever called, and therefore before `evidence` is even built --
+    # `_record_operand_detail` needs only `items` and this target's own
+    # `__records__`. An unknown record name derives `None`
+    # (`_derive_record_level`), which sinks `attained_level`; placed after
+    # `_skipped_rung_detail` instead (mirroring `@step`'s own position,
+    # which has no such trap because a two-state item never reaches
+    # `attained_level`), `POSITION_RUNG_SKIPPED` would fire first for any
+    # `--target-level` above the floor and this refusal would become
+    # unreachable there -- reachable only at the floor, where
+    # `_skipped_rung_detail` never intervenes regardless of order.
+    declared_records = resolve_records_declaration(target, name)
+    record_detail = _record_operand_detail(items, declared_records)
+    if record_detail is not None:
+        raise Refused("POSITION_RECORD_UNKNOWN", record_detail)
     header["target"] = target_level
 
     evidence = _position_write_evidence(target, name, getattr(args, "shards", None))
@@ -10659,6 +10893,12 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     # command is how the two answers come to disagree about what the target
     # declared.
     levels = resolve_levels_declaration(target, name)
+    # Read once and used twice, the identical constraint `levels` above
+    # states for itself: the position evidence below and `undeclaredRecords`
+    # (return, below) must read the same declaration or the two can disagree
+    # about what the target declared.
+    declared_records = resolve_records_declaration(target, name)
+    verify_digest = source_digest(target, package_name(name))
     position = position_state(
         target, name,
         {"search": search, "requiredScale": declared_required_scale(search),
@@ -10667,7 +10907,14 @@ def cmd_verify(args: argparse.Namespace) -> dict:
          "shardsArrived": merged["shardsArrived"] if merged else None,
          "shardsCurrent": merged["shardsCurrent"] if merged else None,
          "levels": levels,
-         "stepVerdicts": _step_verdicts(target, name)},
+         "stepVerdicts": _step_verdicts(target, name),
+         # Design B5 (evidence wiring is three sites): the identical
+         # `named_records_state` call `_position_write_evidence` and
+         # `cmd_probe`'s own inline dict make, so `verify` never reports
+         # `unmeasured` for a `@record:level <name>` witness while `gate`
+         # reports it satisfied.
+         "records": named_records_state(
+             target, name, declared_records, verify_digest)},
         revision, target_source)
 
     # Computed once, before the return, and reused both inside `audit`
@@ -10805,6 +11052,12 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         # exist. See `undeclared_ladder_state`'s own docstring for why this
         # is reported and never demanded.
         "undeclaredLadder": undeclared_ladder_state(target, name, levels),
+        # The same gap, one declaration over: `__records__` is the other
+        # thing the forge offers that nothing ever asks a target for. Its
+        # own top-level key rather than an `undeclaredOptional` entry, for
+        # the identical reason `undeclaredLadder`'s own is -- see
+        # `undeclared_records_state`'s own docstring.
+        "undeclaredRecords": undeclared_records_state(target, name, declared_records),
     }
 
 
@@ -11469,6 +11722,11 @@ GATING_REFUSALS: dict[str, str] = {
     # state, raised in `cmd_position`", a measured correction to the
     # proposal's `INVOCATION_DEFECT`).
     "POSITION_STEP_UNKNOWN": WORK_STATE,
+    # A named entry lives in the target's own `__records__`, not in any
+    # argument `position` accepts -- no flag names a record; clearing this
+    # means declaring the entry, the identical reasoning
+    # `POSITION_STEP_UNKNOWN` states just above.
+    "POSITION_RECORD_UNKNOWN": WORK_STATE,
 }
 
 
@@ -11661,6 +11919,31 @@ def _resolve_position_step_unknown(args) -> dict:
         "name, and does __steps__ need a new entry first?" + named)
 
 
+def _resolve_position_record_unknown(args) -> dict:
+    """The records this target's own `__records__` actually declares, or the
+    fact that it declares none at all, read fresh at the moment of refusal
+    (`_resolve_position_step_unknown`'s own pattern: re-derive from
+    `target`/`name` rather than thread the specific unknown operand through
+    `args`, which carries none).
+
+    A question, never a command: no flag this command accepts can name a
+    record, and clearing this means either editing AGREED.md's
+    `@record:level` operand or adding an entry to `__records__` -- both
+    decisions only a human can make.
+    """
+    target = Path(str(getattr(args, "target", "")))
+    name = str(getattr(args, "name", ""))
+    records = resolve_records_declaration(target, name)
+    named = (f" This target currently declares: {sorted(records)!r}."
+             if records else " This target currently declares no __records__ at all.")
+    return _refusal_question(
+        args,
+        "a leveled `@record:level` witness in this position sequence names "
+        "a record this target's __records__ does not declare; which named "
+        "record should it address, and does __records__ need a new entry "
+        "first?" + named)
+
+
 #: One builder per work state. Every one of them is reached only by its own
 #: code, and every one publishes something a reader runs unedited -- a code
 #: with nothing real to publish is a misclassification, not an empty field, and
@@ -11728,6 +12011,7 @@ _WORK_STATE_RESOLUTIONS = {
     "POSITION_DISAGREES": _resolve_position_disagrees,
     "POSITION_RUNG_SKIPPED": _resolve_position_rung_skipped,
     "POSITION_STEP_UNKNOWN": _resolve_position_step_unknown,
+    "POSITION_RECORD_UNKNOWN": _resolve_position_record_unknown,
     "POSITION_LEVELS_UNDECLARED": lambda args: _refusal_question(
         args, "an item in this sequence is marked as reaching a rung and the "
               "target's benchmark package declares no `__levels__` ladder for "

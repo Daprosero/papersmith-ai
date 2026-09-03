@@ -1834,7 +1834,7 @@ the mutual exclusion. Thirty-four codes, and nothing is published beside them:
 and the rest. Retype the call.
 
 **No — a work state.** Somebody has to act on the repository, so the payload
-carries a `resolve` key saying what. Thirty-two codes, including
+carries a `resolve` key saying what. Thirty-three codes, including
 `POSITION_DISAGREES`, `AGREEMENT_DISAGREES`, `POSITION_STALE`,
 `POSITION_RUNG_SKIPPED`, `POSITION_STEP_UNKNOWN`, `STEPS_UNDECLARED` and
 `NOT_READY`:

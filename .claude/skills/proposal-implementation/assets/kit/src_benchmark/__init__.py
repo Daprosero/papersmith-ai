@@ -157,3 +157,23 @@ __levels__: list = []
 #         },
 #     }
 __steps__: dict = {}
+
+# A target-chosen name mapped to the record it addresses -- a leveled
+# `@record:level <name>` witness in AGREED.md's position section reaches
+# exactly one entry here, deriving its rung through the identical arithmetic
+# the `search` block's own bare `@record:level` already uses
+# (`impl_position._record_scale_level`). A third, independent top-level
+# literal, held apart from `__benchmark__` for the identical reason
+# `__levels__`/`__steps__` are: see `resolve_records_declaration`'s own
+# docstring. Left empty until a record is named -- a repository whose
+# leveled `@record` witness stays the bare, operand-less form needs no
+# entry here, and one is never invented on its behalf.
+#
+# Example:
+#     __records__ = {
+#         "main": {
+#             "path": "product/results.json",
+#             "requiredScale": {"seeds": 3},
+#         },
+#     }
+__records__: dict = {}

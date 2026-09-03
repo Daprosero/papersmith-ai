@@ -463,6 +463,121 @@ class RecordCurrencyTests(unittest.TestCase):
         self.assertNotIn("recordCurrent", without["measuredBy"])
 
 
+class NamedRecordLevelTests(unittest.TestCase):
+    """`@record:level <name>` -- design D2/D4: `_derive_record_level` routes
+    a NAMED operand through the identical `_record_scale_level` arithmetic
+    the `search` block's own bare `@record:level` already uses, fed
+    `evidence["records"][name]` (`named_records_state()`'s own shape,
+    `implementation_cli.py`) instead of `evidence["search"]`.
+    """
+
+    LEVELS = ["floor", "pilot", "full"]
+
+    def _item(self, operand):
+        return [{"ordinal": 1, "mark": " ", "text": "reach the record",
+                 "witness": {"kind": "record", "operand": operand,
+                             "twostate": False}}]
+
+    def _derive(self, operand, evidence):
+        return impl_position.derive(
+            self._item(operand), {"levels": self.LEVELS, **evidence})[0]
+
+    def test_a_named_record_absent_from_declared_records_derives_none_not_false(self):
+        """The spec requirement, stated as arithmetic: a name absent from a
+        declared `__records__` is `None` (unmeasured), never `False` -- the
+        same doctrine an unlisted `@notebook` path already reads."""
+        result = self._derive("main", {"records": {}})
+        self.assertIsNone(result["derived"])
+
+    def test_a_named_record_not_found_reads_the_floor(self):
+        evidence = {"records": {"main": {
+            "recordFound": False, "recordCurrent": None,
+            "scaleSatisfied": None, "requiredScale": {}}}}
+        result = self._derive("main", evidence)
+        self.assertEqual(result["derived"], "floor")
+
+    def test_a_named_record_at_full_declared_scale_reads_the_top(self):
+        evidence = {"records": {"main": {
+            "recordFound": True, "recordCurrent": None,
+            "scaleSatisfied": True, "requiredScale": {"seeds": 3}}}}
+        result = self._derive("main", evidence)
+        self.assertEqual(result["derived"], "full")
+
+    def test_a_named_record_short_of_declared_scale_reads_one_rung_under_the_top(self):
+        evidence = {"records": {"main": {
+            "recordFound": True, "recordCurrent": None,
+            "scaleSatisfied": False, "requiredScale": {"seeds": 30}}}}
+        result = self._derive("main", evidence)
+        self.assertEqual(result["derived"], "pilot")
+
+    def test_a_bare_operand_less_leveled_record_still_reads_the_search_block(self):
+        """`operand is None` -- the grammar that predates `__records__`
+        entirely -- keeps the byte-identical search-block fallthrough (spec
+        "existing instances keep working"), even when `evidence["records"]`
+        carries entries a caller could have routed through instead."""
+        evidence = {"search": {"recordFound": True}, "requiredScale": {},
+                    "records": {"main": {"recordFound": False, "recordCurrent": None,
+                                        "scaleSatisfied": None, "requiredScale": {}}}}
+        result = self._derive(None, evidence)
+        self.assertEqual(result["derived"], "full")
+
+    def test_a_named_record_and_the_search_block_read_independently(self):
+        """Two different facts under one kind: the named entry disagrees
+        with the search block, and each `@record:level` item reads only its
+        own operand's evidence."""
+        evidence = {
+            "search": {"recordFound": False}, "requiredScale": {},
+            "records": {"main": {"recordFound": True, "recordCurrent": None,
+                                 "scaleSatisfied": True, "requiredScale": {}}}}
+        named = self._derive("main", evidence)
+        bare = self._derive(None, evidence)
+        self.assertEqual(named["derived"], "full")
+        self.assertEqual(bare["derived"], "floor")
+
+    def test_the_operand_it_read_is_named_in_measured_by(self):
+        evidence = {"records": {"main": {
+            "recordFound": True, "recordCurrent": None,
+            "scaleSatisfied": True, "requiredScale": {}}}}
+        result = self._derive("main", evidence)
+        self.assertIn("main", result["measuredBy"])
+
+    # --- B3's required mutation: measured_by binding, never discarded -----
+
+    def test_a_named_records_measured_by_names_its_own_binding_never_the_bare_one(self):
+        """**Required mutation lock** (design D2, "three explicit bindings").
+        `derive`'s own bare `@record:level` branch and `_derive_record_level`
+        both call the identical `_record_scale_level`, each passing its OWN
+        `measured_by` string -- swapping which string binds to which call
+        site is the mutation this proves against: a weaker lock that only
+        asserted the returned RUNG (never `measuredBy`) would survive that
+        swap silently, since both bindings compute the identical rung
+        arithmetic and would still return the same rung either way."""
+        evidence = {"search": {"recordFound": True}, "requiredScale": {},
+                    "records": {"main": {"recordFound": True, "recordCurrent": None,
+                                         "scaleSatisfied": True, "requiredScale": {}}}}
+        named = self._derive("main", evidence)
+        bare = self._derive(None, evidence)
+        self.assertEqual(named["measuredBy"],
+                         "records[main].recordFound+scaleSatisfied")
+        self.assertEqual(bare["measuredBy"], "search.recordFound+scaleSatisfied")
+        self.assertNotEqual(named["measuredBy"], bare["measuredBy"])
+
+    def test_derive_notebook_level_reports_its_own_measured_by_unchanged(self):
+        """B3's other call site: the notebook-level path still returns
+        `_derive_notebook_level`'s own fixed string, byte-identical to
+        before this refactor -- proving the newly-threaded `measured_by`
+        kwarg did not leak the record binding's string into this deriver."""
+        evidence = {"notebooks": {"reports": [
+            {"notebook": "n.ipynb", "status": "executed", "sourcesMatch": True}]},
+                    "search": {"recordFound": True}, "requiredScale": {}}
+        rung, measured_by = impl_position._derive_notebook_level(
+            evidence, "n.ipynb", self.LEVELS)
+        self.assertEqual(rung, "full")
+        self.assertEqual(
+            measured_by,
+            "notebooks.reports[n.ipynb].sourcesMatch+search.scaleSatisfied")
+
+
 class StepDeriveTests(unittest.TestCase):
     """`_derive_step` -- design "One field on the existing `step` event, not
     a sibling kind": a plain dict reader over `evidence["stepVerdicts"][operand]`,

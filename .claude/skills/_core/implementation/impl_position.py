@@ -584,10 +584,13 @@ def level_index(levels: list[str], level: str | None) -> int | None:
         return None
 
 
-def _record_scale_level(evidence: dict, levels: list[str]) -> tuple[str | None, str]:
+def _record_scale_level(
+        record: dict | None, required_scale: dict | None, levels: list[str], *,
+        measured_by: str) -> tuple[str | None, str]:
     """The rung a record's own scale reaches, composed from exactly the two
-    facts `search_state()` already computes — `recordFound` and, when a
-    scale is declared, `scaleSatisfied` — never a new measurement.
+    facts `search_state()` (or `named_records_state()`, one level over) already
+    computes — `recordFound` and, when a scale is declared, `scaleSatisfied` —
+    never a new measurement.
 
     This is the mechanism behind PR10's motivating defect: a record found on
     disk but short of the declared scale (sixty runs beside a declared
@@ -605,21 +608,31 @@ def _record_scale_level(evidence: dict, levels: list[str]) -> tuple[str | None, 
       ran, but not enough of it" except "not yet there".
     - `scaleSatisfied` itself unmeasured (a scale is declared but nothing
       could check it) → unmeasured, not guessed at.
+
+    **`record`, `required_scale` and `measured_by` are three explicit
+    bindings, one arithmetic body** (design D2): `derive`'s own bare
+    `@record:level` branch feeds this `evidence["search"]`/
+    `evidence["requiredScale"]`, `_derive_notebook_level` feeds it the
+    identical pair, and `_derive_record_level` feeds it one
+    `evidence["records"][name]` entry and that entry's own `requiredScale` —
+    the same arithmetic, never a second one drifting beside it. `measured_by`
+    carries no default and is never computed internally: every branch below
+    returns it unchanged, so a caller that names the wrong string reports the
+    wrong provenance for a correctly-derived rung — a caller-visible mistake,
+    not a silent one.
     """
-    measured_by = "search.recordFound+scaleSatisfied"
     if not levels:
         return None, measured_by
-    search = evidence.get("search")
-    if not isinstance(search, dict) or "recordFound" not in search:
+    if not isinstance(record, dict) or "recordFound" not in record:
         return None, measured_by
-    found = search.get("recordFound")
+    found = record.get("recordFound")
     if found is None:
         return None, measured_by
     if found is False:
         return levels[0], measured_by
-    if not evidence.get("requiredScale") or search.get("scaleSatisfied") is True:
+    if not required_scale or record.get("scaleSatisfied") is True:
         return levels[-1], measured_by
-    if search.get("scaleSatisfied") is False:
+    if record.get("scaleSatisfied") is False:
         return levels[max(0, len(levels) - 2)], measured_by
     return None, measured_by
 
@@ -650,7 +663,15 @@ def _derive_notebook_level(
         return None, measured_by
     if not (report.get("status") == "executed" and report.get("sourcesMatch") is True):
         return None, measured_by
-    level, _ = _record_scale_level(evidence, levels)
+    # `measured_by` is threaded through rather than discarded (`_`): the
+    # returned string is this same fixed value on every path
+    # `_record_scale_level` can take, so sourcing it from the call rather
+    # than reassigning it locally is what makes a swap between this
+    # binding's own string and `derive`'s own bare-record one an observable
+    # mutation — see `_record_scale_level`'s own docstring.
+    level, measured_by = _record_scale_level(
+        evidence.get("search"), evidence.get("requiredScale"), levels,
+        measured_by=measured_by)
     return level, measured_by
 
 
@@ -702,6 +723,33 @@ def _derive_shard_level(
     if current is not None and operand not in current:
         return None, measured_by
     return levels[-1], measured_by
+
+
+def _derive_record_level(
+        evidence: dict, operand: str | None, levels: list[str]) -> tuple[str | None, str]:
+    """`@record:level <name>` (leveled): the rung the NAMED entry's own
+    found/scale state reaches, routed through the identical
+    `_record_scale_level` arithmetic the `search` block's own bare
+    `@record:level` already uses (design D2) — never a second one.
+
+    `evidence["records"]` is `named_records_state()`'s own shape:
+    `{name: {recordFound, recordCurrent, scaleSatisfied, requiredScale}}`.
+    **A `name` absent from a declared `__records__` derives `None`
+    (unmeasured), never `False`** — `POSITION_RECORD_UNKNOWN` already
+    refuses this state before `position` ever writes a mark from it (see
+    `cmd_position`); `verify`/`probe`, which never refuse, read the identical
+    absence as "nothing to check", the same doctrine an unlisted `@notebook`
+    path or `@rehearsal` job already reads one level over.
+    """
+    measured_by = f"records[{operand}].recordFound+scaleSatisfied"
+    records = evidence.get("records")
+    if not operand or not isinstance(records, dict) or operand not in records:
+        return None, measured_by
+    entry = records[operand]
+    if not isinstance(entry, dict):
+        return None, measured_by
+    return _record_scale_level(
+        entry, entry.get("requiredScale"), levels, measured_by=measured_by)
 
 
 _LEVEL_DERIVERS = {
@@ -823,7 +871,17 @@ def derive(items: list[dict], evidence: dict) -> list[dict]:
             satisfied = derived
         else:
             if kind == "record":
-                derived, measured_by = _record_scale_level(evidence, levels)
+                # A named operand routes through the addressed entry
+                # (design D2/D4); an unnamed one (bare `@record:level`, the
+                # grammar that predates `__records__` entirely) keeps the
+                # search block's own byte-identical fallthrough — "existing
+                # instances keep working" (spec).
+                if operand:
+                    derived, measured_by = _derive_record_level(evidence, operand, levels)
+                else:
+                    derived, measured_by = _record_scale_level(
+                        evidence.get("search"), evidence.get("requiredScale"), levels,
+                        measured_by="search.recordFound+scaleSatisfied")
             else:
                 deriver = _resolve_deriver(_LEVEL_DERIVERS, "leveled", kind, item)
                 derived, measured_by = deriver(evidence, operand, levels)

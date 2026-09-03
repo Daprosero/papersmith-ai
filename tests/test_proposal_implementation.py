@@ -13780,6 +13780,167 @@ class StepOperandRefusalTests(unittest.TestCase):
         self.assertEqual(result["status"], "unchanged")
 
 
+class PositionRecordUnknownTests(unittest.TestCase):
+    """`POSITION_RECORD_UNKNOWN` -- design D5/D6; spec "`@record:level
+    <name>` grammar" is unaffected, this is the operand-validity refusal
+    that mirrors `POSITION_STEP_UNKNOWN`'s own shape and reasoning.
+
+    **Trap 1, the whole reason this class carries an above-the-floor
+    fixture rather than only a floor one.** `_record_operand_detail`'s
+    raise sits BEFORE `_skipped_rung_detail` is ever called (design D5): an
+    unknown record name derives `None`
+    (`impl_position._derive_record_level`), which sinks `attained_level`
+    -- so a check placed AFTER `_skipped_rung_detail` instead (mirroring
+    `@step`'s own position) would let `POSITION_RUNG_SKIPPED` fire first
+    for any `--target-level` above the floor, and `POSITION_RECORD_UNKNOWN`
+    would become unreachable there. A fixture sealing at the floor
+    (`levels[0]`) cannot tell the two placements apart -- `_skipped_rung_
+    detail` never intervenes at the floor regardless of order -- so
+    `test_an_unknown_record_above_the_floor_refuses_position_record_unknown`
+    is the one that actually proves the ordering claim; the floor-only
+    sibling beside it is the weaker lock the brief names, kept here so the
+    contrast is measured rather than merely asserted.
+    """
+
+    PROPOSAL_TEXT = PositionCommandTests.PROPOSAL_TEXT
+    PROPOSAL_SHA256 = PositionCommandTests.PROPOSAL_SHA256
+    LADDER = ["floor", "middle", "top"]
+
+    def _proposals(self):
+        return PositionCommandTests._proposals(self)
+
+    def _box(self, declare_records=None, ladder=LADDER):
+        box = FORGE / "implementations" / f"_e2e_record_operand_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        declaration = f"__levels__ = {ladder!r}\n" if ladder is not None else ""
+        if declare_records is not None:
+            declaration += f"__records__ = {declare_records!r}\n"
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            declaration, encoding="utf-8")
+        return box
+
+    def run_cli(self, *args, proposals=None):
+        env = dict(os.environ)
+        if proposals is not None:
+            env["IMPLEMENTATION_PROPOSALS"] = str(proposals)
+        return subprocess.run([sys.executable, str(CLI), *args],
+                              capture_output=True, text=True, cwd=FORGE, env=env)
+
+    def block_text(self, body, target, sha256=None):
+        return (f"<!-- position revision=r1.md sha256={sha256 or 'a' * 64} "
+                f"derivedAt=2026-08-27T00:00:00Z session=s0 target={target} -->\n"
+                f"{body}<!-- /position -->\n")
+
+    def test_an_unknown_record_above_the_floor_refuses_position_record_unknown(self):
+        """**The strong lock (trap 1).** A fixture already satisfied at the
+        floor (`item 1`, an unrelated bare rehearsal witness that is
+        two-state and always satisfied) and a target-level of `middle`
+        (above the floor): with the placement this task requires, this
+        refuses `POSITION_RECORD_UNKNOWN`, never `POSITION_RUNG_SKIPPED` --
+        proving the check runs BEFORE `_skipped_rung_detail`."""
+        box = self._box(declare_records={"main": {"path": "r.json",
+                                                    "requiredScale": {}}})
+        body = "- [ ] 1. Reach the record. `@record:level nosuch`\n"
+        (box / "Method" / "AGREED.md").write_text(
+            self.block_text(body, "floor", sha256=self.PROPOSAL_SHA256),
+            encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "middle",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["code"], "POSITION_RECORD_UNKNOWN")
+        self.assertIn("nosuch", result["detail"])
+        self.assertIn("main", result["detail"])
+
+    def test_an_unknown_record_at_the_floor_also_refuses(self):
+        """**The weaker lock.** At the floor, `_skipped_rung_detail` never
+        intervenes regardless of placement, so this fixture alone cannot
+        distinguish a correct placement from the trap; it only proves the
+        code exists and fires somewhere reachable."""
+        box = self._box(declare_records={"main": {"path": "r.json",
+                                                    "requiredScale": {}}})
+        body = "- [ ] 1. Reach the record. `@record:level nosuch`\n"
+        (box / "Method" / "AGREED.md").write_text(
+            self.block_text(body, "floor", sha256=self.PROPOSAL_SHA256),
+            encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "floor",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_RECORD_UNKNOWN")
+
+    def test_records_declaring_nothing_at_all_is_the_same_code_a_different_detail(self):
+        """Design D6: one code covers both facts. No `__records__` entries
+        at all -- the detail says so, distinctly from the "declares others"
+        case above."""
+        box = self._box(declare_records={})
+        body = "- [ ] 1. Reach the record. `@record:level main`\n"
+        (box / "Method" / "AGREED.md").write_text(
+            self.block_text(body, "floor", sha256=self.PROPOSAL_SHA256),
+            encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "floor",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["code"], "POSITION_RECORD_UNKNOWN")
+        self.assertIn("declares none at all", result["detail"])
+
+    def test_a_declared_record_operand_is_not_refused(self):
+        box = self._box(declare_records={"main": {"path": "r.json",
+                                                    "requiredScale": {}}})
+        body = "- [ ] 1. Reach the record. `@record:level main`\n"
+        (box / "Method" / "AGREED.md").write_text(
+            self.block_text(body, "floor", sha256=self.PROPOSAL_SHA256),
+            encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "floor",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+
+    def test_a_bare_operand_less_leveled_record_is_never_checked_here(self):
+        """A leveled `@record:level` with no operand at all -- the grammar
+        that predates `__records__` entirely -- is unaffected: it derives
+        against the `search` block, and `_record_operand_detail` has
+        nothing to say about it (there is no name to look up)."""
+        box = self._box(declare_records={})
+        body = "- [ ] 1. Reach the record. `@record:level`\n"
+        (box / "Method" / "AGREED.md").write_text(
+            self.block_text(body, "floor", sha256=self.PROPOSAL_SHA256),
+            encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "floor",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+
+    def test_the_roster_classifies_it_as_a_work_state_with_a_runnable_resolution(self):
+        box = self._box(declare_records={"main": {"path": "r.json",
+                                                    "requiredScale": {}}})
+        body = "- [ ] 1. Reach the record. `@record:level nosuch`\n"
+        (box / "Method" / "AGREED.md").write_text(
+            self.block_text(body, "floor", sha256=self.PROPOSAL_SHA256),
+            encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "floor",
+                            proposals=self._proposals())
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["resolve"]["kind"], "question")
+        self.assertTrue(result["resolve"]["command"].strip())
+
+
 class PositionRungLadderTests(unittest.TestCase):
     """A position may never skip a rung going forward.
 
@@ -20586,6 +20747,112 @@ class ResolveStepsDeclarationTests(unittest.TestCase):
         self.assertEqual(benchmark["status"], "undeclared")
 
 
+class ResolveRecordsDeclarationTests(unittest.TestCase):
+    """`__records__` -- read exactly the way `resolve_steps_declaration` reads
+    `__steps__` (design D1; spec "`__records__` declaration"), held apart
+    from `__benchmark__` for the identical reason.
+    """
+
+    def bench(self, root: Path) -> Path:
+        path = root / "src" / "Method_Benchmark"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def test_no_benchmark_directory_is_empty(self):
+        with tempfile.TemporaryDirectory() as raw:
+            self.assertEqual(
+                impl.resolve_records_declaration(Path(raw), "Method"), {})
+
+    def test_directory_with_no_declaration_is_empty(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.bench(root)
+            self.assertEqual(impl.resolve_records_declaration(root, "Method"), {})
+
+    def test_declared_in_init_py_is_found(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (self.bench(root) / "__init__.py").write_text(
+                "__records__ = {'main': {'path': 'product/results.json', "
+                "'requiredScale': {'seeds': 3}}}\n", encoding="utf-8")
+            resolved = impl.resolve_records_declaration(root, "Method")
+        self.assertEqual(resolved, {"main": {
+            "path": "product/results.json", "requiredScale": {"seeds": 3}}})
+
+    def test_declared_in_config_py_alone_is_found(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (self.bench(root) / "config.py").write_text(
+                "__records__ = {'a': {'path': 'p.json', 'requiredScale': {}}}\n",
+                encoding="utf-8")
+            resolved = impl.resolve_records_declaration(root, "Method")
+        self.assertEqual(resolved, {"a": {"path": "p.json", "requiredScale": {}}})
+
+    def test_init_py_wins_over_config_py(self):
+        """First file that answers wins -- the identical precedence
+        `resolve_steps_declaration`/`resolve_levels_declaration` already
+        keep."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bench = self.bench(root)
+            (bench / "__init__.py").write_text(
+                "__records__ = {'a': {'path': 'p.json', 'requiredScale': {}}}\n",
+                encoding="utf-8")
+            (bench / "config.py").write_text(
+                "__records__ = {'b': {'path': 'q.json', 'requiredScale': {}}}\n",
+                encoding="utf-8")
+            resolved = impl.resolve_records_declaration(root, "Method")
+        self.assertEqual(list(resolved), ["a"])
+
+    def test_a_non_dict_value_reads_as_nothing_declared(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (self.bench(root) / "__init__.py").write_text(
+                "__records__ = ['main']\n", encoding="utf-8")
+            self.assertEqual(impl.resolve_records_declaration(root, "Method"), {})
+
+    def test_the_annotated_form_is_read(self):
+        """The kit's own scaffold writes `__records__: dict = {}` -- an
+        `ast.AnnAssign`, not an `ast.Assign` -- so a reader that only walked
+        the plain form would never see the scaffold's own shape."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (self.bench(root) / "__init__.py").write_text(
+                "__records__: dict = {'a': {'path': 'p.json', 'requiredScale': {}}}\n",
+                encoding="utf-8")
+            resolved = impl.resolve_records_declaration(root, "Method")
+        self.assertEqual(resolved, {"a": {"path": "p.json", "requiredScale": {}}})
+
+    def test_resolves_without_reading_or_mutating_the_benchmark_declaration(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (self.bench(root) / "__init__.py").write_text(
+                "__benchmark__ = {'revision': 'r01.md'}\n"
+                "__records__ = {'a': {'path': 'p.json', 'requiredScale': {}}}\n",
+                encoding="utf-8")
+            records = impl.resolve_records_declaration(root, "Method")
+            benchmark = impl.resolve_benchmark_declaration(root, "Method")
+        self.assertEqual(records, {"a": {"path": "p.json", "requiredScale": {}}})
+        self.assertEqual(benchmark["contract"], {"revision": "r01.md"})
+
+    def test_records_never_flips_the_benchmark_verdict_when_every_block_is_blank(self):
+        """The identical arm's-length relationship `resolve_steps_declaration`
+        already keeps with `_declaration_is_blank`: `__records__` sits
+        outside `BENCHMARK_BLOCKS` entirely."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (self.bench(root) / "__init__.py").write_text(
+                "__benchmark__ = {'revision': '', 'premises': {}, 'arms': {}, "
+                "'search': {}, 'report': {}, 'distribution': {}, "
+                "'entry': {'module': '', 'function': ''}}\n"
+                "__records__ = {'a': {'path': 'p.json', 'requiredScale': {}}}\n",
+                encoding="utf-8")
+            records = impl.resolve_records_declaration(root, "Method")
+            benchmark = impl.resolve_benchmark_declaration(root, "Method")
+        self.assertEqual(records, {"a": {"path": "p.json", "requiredScale": {}}})
+        self.assertEqual(benchmark["status"], "undeclared")
+
+
 class ImplStepsVerdictStateMachineTests(unittest.TestCase):
     """`impl_steps._verdict_result` -- the five-row state machine `RUNNER`'s
     own docstring names, proven by handing it hand-written verdict dicts
@@ -22026,6 +22293,286 @@ class UndeclaredLadderTests(unittest.TestCase):
         self.assertEqual(ast.literal_eval(declared[0].value), [])
 
 
+class UndeclaredRecordsTests(unittest.TestCase):
+    """The one declaration nothing ever asks a target for, one level over
+    `UndeclaredLadderTests` -- `undeclared_records_state`'s own shape and
+    placement (design D8): `__records__` being empty is demanded by
+    nothing at all, and `verify` now says so.
+    """
+
+    def _box(self, suffix, *, declaration):
+        box = FORGE / "implementations" / f"_records_{suffix}_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "src/Method_Benchmark", "Method", "tests"):
+            (box / directory).mkdir(parents=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            declaration, encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        return box
+
+    NO_RECORDS = "__benchmark__ = {'revision': 'r1.md'}\n__records__: dict = {}\n"
+    A_RECORD = ("__benchmark__ = {'revision': 'r1.md'}\n"
+                "__records__ = {'main': {'path': 'r.json', 'requiredScale': {}}}\n")
+
+    def verify(self, box):
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box),
+             "--name", "Method"],
+            capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return json.loads(proc.stdout)
+
+    def test_a_target_that_declares_no_records_is_told_so(self):
+        """Spec scenario 'absent __records__, no witness references it'."""
+        report = self.verify(
+            self._box("silent", declaration=self.NO_RECORDS))["undeclaredRecords"]
+        self.assertIsNotNone(report, "a target with no named records is told nothing")
+        self.assertEqual(report["declaration"], impl.RECORDS_DECLARATION)
+        self.assertEqual(report["path"], "src/Method_Benchmark/__init__.py")
+
+    def test_a_witness_naming_one_still_reports_and_still_refuses_nothing(self):
+        """Spec scenario 'absent __records__, a witness names one': `verify`
+        never refuses, and the report still fires -- the witness itself
+        derives `None` (unmeasured), nothing was declared for it to check."""
+        box = self._box("witnessed", declaration=self.NO_RECORDS)
+        (box / "Method" / "AGREED.md").write_text(
+            "<!-- position revision=r1.md sha256=" + "a" * 64 + " "
+            "derivedAt=2026-08-27T00:00:00Z session=s0 target=x -->\n"
+            "- [ ] 1. Reach the record. `@record:level main`\n"
+            "<!-- /position -->\n", encoding="utf-8")
+        result = self.verify(box)
+        self.assertIsNotNone(result["undeclaredRecords"])
+        self.assertIsNone(result["position"]["sequence"][0]["derived"])
+
+    def test_a_declared_record_is_reported_nowhere(self):
+        """The other half, and the one a weaker lock would survive: a
+        report that fires whether or not a record exists is a false
+        alarm."""
+        self.assertIsNone(
+            self.verify(self._box("named", declaration=self.A_RECORD))
+            ["undeclaredRecords"])
+
+    MALFORMED_RECORDS = ("__benchmark__ = {'revision': 'r1.md'}\n"
+                        "__records__ = 'not-a-dict'\n")
+
+    def test_the_path_names_the_file_the_resolver_would_read_first(self):
+        """`resolve_records_declaration` is first-wins and stops on a
+        MALFORMED `__records__`: it returns `{}` from `__init__.py` without
+        ever reading `config.py` -- the identical proof
+        `UndeclaredLadderTests` already keeps for `__levels__`."""
+        box = self._box("ordered", declaration=self.MALFORMED_RECORDS)
+        (box / "src/Method_Benchmark/config.py").write_text(
+            "__records__ = {'main': {'path': 'r.json', 'requiredScale': {}}}\n",
+            encoding="utf-8")
+        report = self.verify(box)["undeclaredRecords"]
+        self.assertIsNotNone(
+            report, "a malformed declaration resolves to no records and must report")
+        self.assertEqual(
+            report["path"], "src/Method_Benchmark/__init__.py",
+            "the report must name the file the resolver stops at, not the "
+            "one further down the read order that it never reaches")
+
+    def test_no_benchmark_package_is_asked_nothing(self):
+        """The identical restraint `undeclared_ladder_state` keeps: no
+        benchmark package at all is not a target that left a question
+        unanswered."""
+        box = FORGE / "implementations" / f"_records_nopkg_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "Method", "tests"):
+            (box / directory).mkdir(parents=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        self.assertIsNone(self.verify(box)["undeclaredRecords"])
+
+
+class NamedRecordEvidenceParityTests(unittest.TestCase):
+    """**B5, the highest-attention task in this slice.** Evidence is built at
+    THREE sites -- `_position_write_evidence` (9 callers, including `gate`),
+    `cmd_probe`'s inline dict, and `cmd_verify`'s inline dict. Wiring only
+    the shared helper previously left `probe`/`verify` reporting
+    `unmeasured` while `gate` reported satisfied for `@shard`; this proves
+    the identical class of defect is closed for `@record`, over one shared
+    fixture read through all three builders -- not three separate
+    assertions that happen to pass.
+    """
+
+    def _box(self, suffix):
+        box = FORGE / "implementations" / f"_record_parity_{suffix}_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "src/Method_Benchmark", "Method", "tests"):
+            (box / directory).mkdir(parents=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            "__benchmark__ = {'revision': 'r1.md'}\n"
+            "__levels__ = ['floor', 'pilot', 'full']\n"
+            "__records__ = {'main': {'path': 'r.json', "
+            "'requiredScale': {'seeds': 3}}}\n",
+            encoding="utf-8")
+        # A record found on disk, exactly at the declared scale -- the top
+        # rung, so a wiring gap (an evidence site that never sees
+        # `evidence["records"]`) reads `unmeasured` (`None`) where a
+        # correctly-wired one reads `"full"`; the two are distinguishable,
+        # which is what makes this fixture prove something.
+        (box / "Method" / "r.json").write_text(
+            json.dumps({"seeds": 3}), encoding="utf-8")
+        (box / "Method" / "AGREED.md").write_text(
+            "<!-- position revision=r1.md sha256=" + "a" * 64 + " "
+            "derivedAt=2026-08-27T00:00:00Z session=s0 target=full -->\n"
+            "- [ ] 1. Reach the record. `@record:level main`\n"
+            "<!-- /position -->\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        return box
+
+    def _probe_sequence_entry(self, box):
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "probe", "--target", str(box),
+             "--name", "Method"],
+            capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return json.loads(proc.stdout)["position"]["sequence"][0]
+
+    def _verify_sequence_entry(self, box):
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box),
+             "--name", "Method"],
+            capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return json.loads(proc.stdout)["position"]["sequence"][0]
+
+    def _gate_side_evidence_entry(self, box):
+        """The identical evidence `cmd_gate` reads through
+        `_position_write_evidence` -- called directly rather than through
+        `gate` itself, since `gate` additionally demands an authorization
+        token, a rehearsal and a discovered job folder this fixture has no
+        need to build just to prove this one shared fact."""
+        evidence = impl._position_write_evidence(box, "Method")
+        block = impl_position.locate_block(
+            (box / "Method" / "AGREED.md").read_bytes())
+        items = impl_position.parse_items(block["body"])
+        evidence = {**evidence, "targetLevel": block["target"]}
+        return impl_position.derive(items, evidence)[0]
+
+    def test_all_three_evidence_sites_agree_on_the_named_record(self):
+        box = self._box("agree")
+        probe_entry = self._probe_sequence_entry(box)
+        verify_entry = self._verify_sequence_entry(box)
+        gate_entry = self._gate_side_evidence_entry(box)
+
+        # The load-bearing assertion: all three actually reach the TOP rung,
+        # not merely the same value as each other. Three sites agreeing on
+        # `None` (all silently unwired) would pass an equality-only check
+        # and hide the exact defect class this test exists to close.
+        for label, entry in (("probe", probe_entry), ("verify", verify_entry),
+                             ("gate", gate_entry)):
+            with self.subTest(site=label):
+                self.assertEqual(entry["derived"], "full")
+
+        self.assertEqual(probe_entry["derived"], verify_entry["derived"])
+        self.assertEqual(verify_entry["derived"], gate_entry["derived"])
+        self.assertEqual(probe_entry["measuredBy"], verify_entry["measuredBy"])
+        self.assertEqual(verify_entry["measuredBy"], gate_entry["measuredBy"])
+        self.assertIn("main", gate_entry["measuredBy"])
+
+
+class ExistingInstancesKeepWorkingTests(unittest.TestCase):
+    """**B8 -- the closeout regression proof for slice B.** A target with no
+    `__records__` at all, and a position block written before this change
+    existed (no `@record:level <name>` anywhere in it), must keep deriving
+    `@shard:level`, `@notebook:level` and bare `@record` exactly as before --
+    spec "existing instances keep working". Its own dedicated fixture, not
+    folded into B4's or B7's own tests, so this claim has a traceable proof
+    of its own.
+    """
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_existing_instance_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "src/Method_Benchmark", "Method", "tests"):
+            (box / directory).mkdir(parents=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        # No `__records__` at all -- a target scaffolded before this change
+        # existed never wrote one.
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            "__benchmark__ = {'revision': 'r1.md', "
+            "'search': {'record': 'r.json', 'requiredScale': {'seeds': 3}}}\n"
+            "__levels__ = ['floor', 'pilot', 'full']\n",
+            encoding="utf-8")
+        (box / "Method" / "r.json").write_text(
+            json.dumps({"seeds": 3}), encoding="utf-8")
+        # A block exactly as PR10's own grammar already wrote it: a bare
+        # `@record` (two-state) and a leveled `@record:level` with NO
+        # operand -- the only leveled `@record` shape that existed before
+        # `__records__` did.
+        (box / "Method" / "AGREED.md").write_text(
+            "<!-- position revision=r1.md "
+            f"sha256={PositionCommandTests.PROPOSAL_SHA256} "
+            "derivedAt=2026-08-27T00:00:00Z session=s0 target=full -->\n"
+            "- [ ] 1. The record is present. `@record`\n"
+            "- [ ] 2. Reach the record's own scale. `@record:level`\n"
+            "<!-- /position -->\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        return box
+
+    def test_verify_reports_and_never_refuses_with_no_records_declared(self):
+        box = self._box()
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box),
+             "--name", "Method"],
+            capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        result = json.loads(proc.stdout)
+        self.assertIsNotNone(result["undeclaredRecords"])
+        sequence = result["position"]["sequence"]
+        # The bare `@record` (two-state) reads the `search` block exactly
+        # as before -- found, at full declared scale, satisfied.
+        self.assertIs(sequence[0]["derived"], True)
+        # The operand-less leveled `@record:level` keeps its byte-identical
+        # search-block fallthrough (design D2/B4): the top rung, unaffected
+        # by an entirely-absent `__records__` declaration.
+        self.assertEqual(sequence[1]["derived"], "full")
+
+    def test_position_refresh_reports_and_never_refuses_either(self):
+        box = self._box()
+        proposals = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, proposals, ignore_errors=True)
+        (proposals / "r1.md").write_text(
+            PositionCommandTests.PROPOSAL_TEXT, encoding="utf-8")
+        env = dict(os.environ)
+        env["IMPLEMENTATION_PROPOSALS"] = str(proposals)
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "position", "--target", str(box),
+             "--name", "Method", "--revision", "r1.md", "--session", "s1"],
+            capture_output=True, text=True, cwd=FORGE, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+
+class StepWitnessDoctrineTests(unittest.TestCase):
+    """Spec "step-witness": the doctrine is written and bound by a test.
+
+    Behavior is unchanged by this change (`@step:level` already refused
+    `POSITION_WITNESS_NOT_LEVELABLE` before this slice, and
+    `WitnessNotLevelableTests` already proves it does); this is the
+    doctrine becoming documented, and a test binding SKILL.md's own prose
+    to the exact sentence the spec quotes.
+    """
+
+    def test_the_doctrine_paragraph_is_present_verbatim(self):
+        text = SKILL_MD.read_text(encoding="utf-8")
+        self.assertIn(
+            "The smoke proves the pipe. The pilot proves the science.", text)
+
+    def test_the_doctrine_names_the_reasoning_behind_it(self):
+        skill = " ".join(SKILL_MD.read_text(encoding="utf-8").split())
+        self.assertIn(
+            "the service accepted the submission, the kernel ran, the "
+            "shard came down carrying the agreed fields", skill)
+        self.assertIn("Passing one MUST NOT be read as passing the other", skill)
+
+
 class UnbackedPositionSurfaceTests(unittest.TestCase):
     """A ticked box nobody measured, wherever the position is already reported.
 
@@ -22606,13 +23153,15 @@ class LedgerIsARequiredIgnoreTests(unittest.TestCase):
 #: are needed; anything else fails loudly rather than silently skipping the
 #: assertion that reads it.
 _ENGLISH_COUNTS = {
-    # `Seven` and `Seventeen` join for the two counts outside the refusal
-    # roster this table now holds: `usage.md`'s tally of the non-finding
-    # statuses `verify` reports, and `SKILL.md`'s count of the Output
-    # Contract's own rows. Both were prose nothing was reading, and both
-    # were one short by the time anybody looked.
+    # `Seven` and `Seventeen`/`Eighteen` join for the two counts outside the
+    # refusal roster this table now holds: `usage.md`'s tally of the
+    # non-finding statuses `verify` reports, and `SKILL.md`'s count of the
+    # Output Contract's own rows. Both were prose nothing was reading, and
+    # both were one short by the time anybody looked; `Eighteen` is the
+    # Output Contract row count after `undeclaredRecords` joined it
+    # (the-pilot-proves-the-science, slice B).
     7: "Seven",
-    9: "Nine", 10: "Ten", 17: "Seventeen", 19: "Nineteen",
+    9: "Nine", 10: "Ten", 17: "Seventeen", 18: "Eighteen", 19: "Nineteen",
     26: "Twenty-six", 27: "Twenty-seven", 28: "Twenty-eight",
     29: "Twenty-nine", 30: "Thirty", 31: "Thirty-one", 32: "Thirty-two",
     33: "Thirty-three", 34: "Thirty-four", 35: "Thirty-five",
@@ -22701,7 +23250,7 @@ class GatingRefusalRosterTests(unittest.TestCase):
             codes |= raised_refusal_codes(CLI, f"cmd_{command}")
         return codes
 
-    def test_the_derivation_finds_the_measured_sixty_six(self):
+    def test_the_derivation_finds_the_measured_sixty_seven(self):
         """Sanity check on the scraper itself, not on the roster: a change to a
         gating command that adds, removes or renames a refusal should move this
         number, never a typo in the walk above.
@@ -22711,8 +23260,10 @@ class GatingRefusalRosterTests(unittest.TestCase):
         it already shared with `admit`) plus `POSITION_RUNG_SKIPPED`, for
         sixty-five. Sixty-six once `POSITION_STEP_UNKNOWN` joined `cmd_position`
         -- `STEPS_UNDECLARED` is reused verbatim from `cmd_step` and adds no
-        new member to this union."""
-        self.assertEqual(len(self.gating_codes()), 66)
+        new member to this union. Sixty-seven once `POSITION_RECORD_UNKNOWN`
+        joined `cmd_position` beside it (the-pilot-proves-the-science, slice
+        B)."""
+        self.assertEqual(len(self.gating_codes()), 67)
 
     def test_every_gating_refusal_is_classified(self):
         roster = set(impl.GATING_REFUSALS)
