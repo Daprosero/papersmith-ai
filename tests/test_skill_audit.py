@@ -13,12 +13,15 @@ named execution with a named observation is.
 """
 
 import ast
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -785,6 +788,72 @@ SELF_SPEC = PROBES / "skill-audit.subcommands.json"
 #: contend over it.
 BOXES = FORGE / "implementations"
 
+#: Every box this file creates carries this, so two copies of this suite
+#: running at the same time never name the same directory. `implementations/`
+#: is one shared working area, not a per-process sandbox: a fixed box name is
+#: a fixture shared with whoever else is running, and the second runner's
+#: cleanup deletes the first runner's tree out from under it. Measured, on two
+#: concurrent copies of this file before this suffix existed: 142 and 105
+#: failures, forty of them reading `a box survived cleanup`, sixteen of them
+#: `FileNotFoundError` raised mid-walk by a tree that had just been removed.
+#: None of it was a regression in anything.
+#:
+#: The pid, following `tests/test_proposal_implementation.py`, which has
+#: named its own scratch targets `_e2e_..._{os.getpid()}` since it hit the
+#: same wall. A pid is enough here because within one process the boxes are
+#: already told apart by name, and two live processes cannot share one.
+#:
+#: The price, stated: a box orphaned by a crashed earlier run wears that run's
+#: pid, so neither `make_box`'s pre-erase nor `_prove_erased`'s sweep will
+#: touch it any more. That is the cost of asking each run about its own boxes
+#: only, and it is the right trade -- the alternative is every run policing a
+#: namespace it does not own, which is the defect above.
+RUN_SUFFIX = f"_{os.getpid()}"
+
+
+def run_scoped(name):
+    """`name`, carrying this run's suffix exactly once.
+
+    Idempotent, because some box names are derived from an already-scoped
+    one (`StructureBoxMixin.build_script` peels a subject's name to build its
+    script box's), and a doubled pid in a path reads like a defect.
+    """
+    return name if name.endswith(RUN_SUFFIX) else f"{name}{RUN_SUFFIX}"
+
+
+def shipped_surface(spec):
+    """The surface a shipped recipe names, read from the recipe itself.
+
+    A shipped recipe's surface is fixed -- it is what the skill audits in the
+    real world -- so the box it borrows is the one name in this file that
+    cannot be run-scoped. Reading it here rather than hardcoding it keeps the
+    two in step when the shipped recipe is renamed.
+    """
+    return json.loads(spec.read_text(encoding="utf-8"))["surface"]
+
+
+#: The one lock in this file, held across any drive of a *shipped* recipe.
+#: Those recipes name their own surface, so their box is shared between
+#: concurrent runs, and the CLI refuses an occupied box outright rather than
+#: adopting it. Held in the system temporary directory and not under
+#: `implementations/`: a lock is not a fixture, and the ground the audit
+#: borrows must not gain a file this suite put there. `flock` and not a
+#: created file, so a run that dies holding it releases it on exit.
+SHIPPED_GROUND_LOCK = (
+    Path(tempfile.gettempdir()) / "papersmith-skill-audit-shipped-ground.lock")
+
+
+@contextlib.contextmanager
+def shipped_ground():
+    """Exclusive use of the boxes the shipped recipes' own surfaces name."""
+    with open(SHIPPED_GROUND_LOCK, "w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 #: The producer, declared. The documented side of any comparison may not name
 #: these: not call them, not import them, not borrow a constant from them. A
 #: declared set rather than an inferred one, because the comparison's domain has
@@ -837,7 +906,7 @@ class BoxMixin:
     """
 
     def make_box(self, name):
-        box = BOXES / f"_skill_audit_{name}"
+        box = BOXES / run_scoped(f"_skill_audit_{name}")
         self.assertEqual(
             box.parent, BOXES,
             "a box must sit directly under implementations/, never elsewhere")
@@ -855,11 +924,16 @@ class BoxMixin:
     def _prove_erased(self, box):
         if box.exists():
             self._erase(box)
-        remaining = sorted(str(p) for p in BOXES.glob("_skill_audit_*"))
+        remaining = sorted(
+            str(p) for p in BOXES.glob(f"_skill_audit_*{RUN_SUFFIX}"))
         self.assertEqual(
             remaining, [],
             "a box survived cleanup; its absence is proven by listing content, "
-            "never by `git status`, which is empty over an ignored tree")
+            "never by `git status`, which is empty over an ignored tree. The "
+            "sweep is over this run's own boxes only -- a concurrent copy of "
+            "this suite owns its own, and deleting or asserting over theirs is "
+            "how this assertion used to fail for a reason that was not a "
+            "defect in anything")
 
     def write(self, box, relative, text):
         path = box / relative
@@ -1156,7 +1230,7 @@ class NoClosedRosterTests(unittest.TestCase):
         is asserted before the assertion, and the ordering is itself enforced by
         `PlantedFixtureDisciplineTests`.
         """
-        box = BOXES / "_skill_audit_planted_prose"
+        box = BOXES / run_scoped("_skill_audit_planted_prose")
         try:
             box.mkdir(parents=True, exist_ok=True)
             needle = "no-closed-roster"
@@ -3477,15 +3551,16 @@ class NothingWasRepairedTests(unittest.TestCase):
             self.skipTest(
                 "spawns a real external `claude -p` process; opt in with "
                 "SKILL_AUDIT_LIVE_DRIVER=1")
-        ground = FORGE / "implementations"
-        occupants = lambda: sorted(e.name for e in ground.iterdir()) \
-            if ground.is_dir() else []
-        before, occupied_before = tree_digest(SKILL_ROOT), occupants()
+        borrowed = (FORGE / "implementations"
+                    / f"_structure_{shipped_surface(STRUCTURE_SPEC)}")
+        before = tree_digest(SKILL_ROOT)
         self.assertIn(
             "scripts/audit_cli.py", before,
             "the walk did not see the subject's own script, so a tree that "
             "compares equal afterwards would prove nothing")
-        structure_json(STRUCTURE_SPEC, SKILL_ROOT, repo=FORGE)
+        with shipped_ground():
+            structure_json(STRUCTURE_SPEC, SKILL_ROOT, repo=FORGE)
+            borrowed_survived = borrowed.exists()
         after = tree_digest(SKILL_ROOT)
         self.assertEqual(
             sorted(set(before) - set(after)), [], "a file was removed")
@@ -3496,10 +3571,10 @@ class NothingWasRepairedTests(unittest.TestCase):
             "structure changed a file under the audited subject; the audit "
             "reports and repairs nothing, so any difference here is a defect "
             "in the audit")
-        self.assertEqual(
-            occupants(), occupied_before,
-            "structure left its box behind; the ground it borrows must look "
-            "the same afterwards")
+        self.assertFalse(
+            borrowed_survived,
+            f"structure left {borrowed.name} behind; the box it borrows must "
+            "be gone afterwards")
 
     def test_a_walkthrough_run_leaves_the_subject_and_its_ground_untouched(self):
         """The exemption in the lock below, held by bytes instead of by prose.
@@ -3514,16 +3589,29 @@ class NothingWasRepairedTests(unittest.TestCase):
 
         The borrowed ground is checked too. A box that outlives its run is a
         mutation with a delay on it.
+
+        The check names the one box the shipped recipe borrows rather than
+        listing the whole of `implementations/` before and after, as it used
+        to. That directory is shared: a second copy of this suite, or the
+        other Python suite in this repository, creates and removes its own
+        scratch targets there throughout, and a listing taken twice around
+        this run reported *their* boxes as this run's leak. Measured -- the
+        diff that failed it named `_e2e_position_reconcile_<pid>`, a fixture
+        belonging to `tests/test_proposal_implementation.py`. Naming the box
+        gives up the ability to notice a directory this run created under
+        some other name, and buys an assertion that answers about this run
+        alone.
         """
-        ground = FORGE / "implementations"
-        occupants = lambda: sorted(e.name for e in ground.iterdir()) \
-            if ground.is_dir() else []
-        before, occupied_before = tree_digest(SKILL_ROOT), occupants()
+        borrowed = (FORGE / "implementations"
+                    / f"_walkthrough_{shipped_surface(WALKTHROUGH_SPEC)}")
+        before = tree_digest(SKILL_ROOT)
         self.assertIn(
             "scripts/audit_cli.py", before,
             "the walk did not see the subject's own script, so a tree that "
             "compares equal afterwards would prove nothing")
-        walkthrough_json(WALKTHROUGH_SPEC, SKILL_ROOT, repo=FORGE)
+        with shipped_ground():
+            walkthrough_json(WALKTHROUGH_SPEC, SKILL_ROOT, repo=FORGE)
+            borrowed_survived = borrowed.exists()
         after = tree_digest(SKILL_ROOT)
         self.assertEqual(
             sorted(set(before) - set(after)), [], "a file was removed")
@@ -3534,10 +3622,10 @@ class NothingWasRepairedTests(unittest.TestCase):
             "walkthrough changed a file under the audited subject; the audit "
             "reports and repairs nothing, so any difference here is a defect "
             "in the audit")
-        self.assertEqual(
-            occupants(), occupied_before,
-            "walkthrough left its box behind; the ground it borrows must "
-            "look the same afterwards")
+        self.assertFalse(
+            borrowed_survived,
+            f"walkthrough left {borrowed.name} behind; the box it borrows "
+            "must be gone afterwards")
 
     def test_the_auditor_names_no_write_into_the_audited_subject(self):
         """`roster` and `check-report` write nothing, anywhere, and still don't.
@@ -3909,15 +3997,19 @@ class FrozenPayloadTests(unittest.TestCase):
             self.skipTest(
                 "spawns a real external `claude -p` process; opt in with "
                 "SKILL_AUDIT_LIVE_DRIVER=1")
-        result, payload = structure_json(
-            STRUCTURE_SPEC, SKILL_ROOT, repo=FORGE, extra=("--timeout", "45"))
+        with shipped_ground():
+            result, payload = structure_json(
+                STRUCTURE_SPEC, SKILL_ROOT, repo=FORGE,
+                extra=("--timeout", "45"))
         if result.returncode == 2:
             self.assertIn("error", payload)
             return
         self._assert_frozen_shape(payload)
 
     def test_walkthrough_payload_carries_frozen(self):
-        _, payload = walkthrough_json(WALKTHROUGH_SPEC, SKILL_ROOT, repo=FORGE)
+        with shipped_ground():
+            _, payload = walkthrough_json(
+                WALKTHROUGH_SPEC, SKILL_ROOT, repo=FORGE)
         self._assert_frozen_shape(payload)
 
     def _assert_frozen_shape(self, payload):
@@ -4027,7 +4119,15 @@ class StructureBoxMixin(BoxMixin):
     """
 
     def structure_box(self, surface):
-        box = BOXES / f"_structure_{surface}"
+        """The box `structure` will build for `surface`.
+
+        The name is the CLI's to choose -- it boxes a build under
+        `implementations/_structure_<surface>` -- so the surface is what
+        carries the run scope, and `make_recipe` below scopes the identical
+        string on its way into the recipe. Both derive it from the plain
+        surface the test names, so the two cannot drift apart.
+        """
+        box = BOXES / f"_structure_{run_scoped(surface)}"
         self.addCleanup(self._erase_structure_box, box)
         return box
 
@@ -4036,7 +4136,7 @@ class StructureBoxMixin(BoxMixin):
         `subject` and the `_skill_audit_*` namespace `make_box` cleans up
         globally. See `build_script`'s docstring for why both matter.
         """
-        box = BOXES / f"_structure_scripts_{name}"
+        box = BOXES / f"_structure_scripts_{run_scoped(name)}"
         if box.exists():
             self._erase_structure_box(box)
         box.mkdir(parents=True)
@@ -4097,7 +4197,7 @@ class StructureBoxMixin(BoxMixin):
     def make_recipe(self, subject, surface, steps, exclude=()):
         spec = subject / "structure.json"
         spec.write_text(json.dumps({
-            "surface": surface,
+            "surface": run_scoped(surface),
             "declared": {"path": "STRUCTURE.md", "table": "| Path | Holds |",
                         "column": 0},
             "disk": {"root": "content"},
@@ -4663,9 +4763,11 @@ class StructureSelfProbeTests(unittest.TestCase):
         cli = audit_cli_module()
         before = {name: cli.tree_digest(SKILL_ROOT.parent / name)
                  for name in SIBLING_SKILLS_TO_CHECK}
-        result = run_cli("structure", "--subject", str(SKILL_ROOT),
-                         "--spec", str(STRUCTURE_SPEC), "--repo-root", str(FORGE),
-                         "--timeout", "45", timeout=90)
+        with shipped_ground():
+            result = run_cli("structure", "--subject", str(SKILL_ROOT),
+                             "--spec", str(STRUCTURE_SPEC),
+                             "--repo-root", str(FORGE),
+                             "--timeout", "45", timeout=90)
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -4717,7 +4819,15 @@ class WalkthroughBoxMixin(BoxMixin):
     """
 
     def walkthrough_box(self, surface):
-        box = BOXES / f"_walkthrough_{surface}"
+        """The box `walkthrough` will build for `surface`.
+
+        Run-scoped for the reason `StructureBoxMixin.structure_box` records:
+        the CLI derives the box name from the surface, so the surface is
+        where the scope has to go, and every recipe written for it -- this
+        mixin's `make_recipe` and the handful of tests that spell their own
+        `candidateGates` recipe out -- scopes the same plain string.
+        """
+        box = BOXES / f"_walkthrough_{run_scoped(surface)}"
         self.addCleanup(self._erase_walkthrough_box, box)
         return box
 
@@ -4731,7 +4841,8 @@ class WalkthroughBoxMixin(BoxMixin):
     def make_recipe(self, subject, surface, steps):
         spec = subject / "walkthrough.json"
         spec.write_text(
-            json.dumps({"surface": surface, "steps": steps}, indent=2),
+            json.dumps({"surface": run_scoped(surface), "steps": steps},
+                       indent=2),
             encoding="utf-8")
         return spec
 
@@ -4964,7 +5075,9 @@ class WalkthroughSelfProbeTests(unittest.TestCase):
         cli = audit_cli_module()
         before = {name: cli.tree_digest(SKILL_ROOT.parent / name)
                  for name in SIBLING_SKILLS_TO_CHECK}
-        result, payload = walkthrough_json(WALKTHROUGH_SPEC, SKILL_ROOT, repo=FORGE)
+        with shipped_ground():
+            result, payload = walkthrough_json(
+                WALKTHROUGH_SPEC, SKILL_ROOT, repo=FORGE)
         after = {name: cli.tree_digest(SKILL_ROOT.parent / name)
                 for name in SIBLING_SKILLS_TO_CHECK}
         self.assertEqual(result.returncode, 0, payload)
@@ -5245,7 +5358,7 @@ class EscalationHintTests(unittest.TestCase):
 
     def test_readers_rung_selected_when_recipe_declares_no_refusal_probe(self):
         cli = audit_cli_module()
-        box = BOXES / "_skill_audit_escalation_readers"
+        box = BOXES / run_scoped("_skill_audit_escalation_readers")
         try:
             box.mkdir(parents=True, exist_ok=True)
             (box / "PROSE.md").write_text(
@@ -5324,7 +5437,7 @@ class ControlGateTests(WalkthroughBoxMixin, unittest.TestCase):
         self._flag_cli(subject, "flagcli.py", refuses=True)
         spec = subject / "walkthrough.json"
         spec.write_text(json.dumps({
-            "surface": surface,
+            "surface": run_scoped(surface),
             "candidateGates": {
                 "refusal": "unrecognized arguments",
                 "argv": ["python3", "{subject}/flagcli.py", "{candidate}"],
@@ -5347,7 +5460,7 @@ class ControlGateTests(WalkthroughBoxMixin, unittest.TestCase):
         self._flag_cli(subject, "silentcli.py", refuses=False)
         spec = subject / "walkthrough.json"
         spec.write_text(json.dumps({
-            "surface": surface,
+            "surface": run_scoped(surface),
             "candidateGates": {
                 "refusal": "unrecognized arguments",
                 "argv": ["python3", "{subject}/silentcli.py", "{candidate}"],
@@ -5377,7 +5490,7 @@ class ControlGateTests(WalkthroughBoxMixin, unittest.TestCase):
         subject = self.make_box("unknown_token_subject")
         spec = subject / "walkthrough.json"
         spec.write_text(json.dumps({
-            "surface": surface,
+            "surface": run_scoped(surface),
             "candidateGates": {
                 "refusal": "unrecognized arguments",
                 "argv": ["python3", "{mystery}/x.py", "{candidate}"],
@@ -5401,7 +5514,7 @@ class ControlGateTests(WalkthroughBoxMixin, unittest.TestCase):
         marker = subject / "INJECTED"
         spec = subject / "walkthrough.json"
         spec.write_text(json.dumps({
-            "surface": surface,
+            "surface": run_scoped(surface),
             "candidateGates": {
                 "refusal": "REFUSED: nonce not recognized",
                 "argv": ["python3", "{subject}/echo_argv.py", "{candidate}"],
@@ -5454,7 +5567,7 @@ class ControlGateTests(WalkthroughBoxMixin, unittest.TestCase):
         self.walkthrough_box(surface)
         spec = box / "walkthrough.json"
         spec.write_text(json.dumps({
-            "surface": surface,
+            "surface": run_scoped(surface),
             "candidateGates": {
                 "refusal": "unrecognized arguments",
                 "argv": ["python3", "{subject}/flagcli.py", "{candidate}"],
@@ -6239,7 +6352,14 @@ class SensitivityBoxMixin(BoxMixin):
     """
 
     def sensitivity_box(self, surface):
-        box = BOXES / f"_sensitivity_{surface}"
+        """The box `sensitivity` will build for `surface`.
+
+        Run-scoped for the reason `StructureBoxMixin.structure_box` records.
+        These were the six boxes a second concurrent runner collided with
+        head-on: the CLI refuses an occupied box outright, so the other run's
+        half-built fixture came back as `a non-empty box already occupies`.
+        """
+        box = BOXES / f"_sensitivity_{run_scoped(surface)}"
         self.addCleanup(self._erase_sensitivity_box, box)
         return box
 
@@ -6262,7 +6382,7 @@ class SensitivityBoxMixin(BoxMixin):
     def make_recipe(self, subject, surface, argv=None, exclude=()):
         spec = subject / "sensitivity.json"
         spec.write_text(json.dumps({
-            "surface": surface,
+            "surface": run_scoped(surface),
             "declared": {"path": "RESULTS.md", "table": "| Metric | Value |",
                         "column": 1},
             "disk": {"root": "data"},

@@ -17489,7 +17489,15 @@ class BackendResolutionTests(unittest.TestCase):
         executed.
         """
         adapters_dir = REMOTE_CLI_SCRIPT.parent / "adapters"
-        marker = adapters_dir.parent / "zz_escape_marker_for_test.py"
+        # The pid, because this marker is planted in the shipped skill's own
+        # `scripts/` directory -- one shared location, not a per-process
+        # sandbox. Under a fixed name a second copy of this suite writes the
+        # same path, and the first runner's `unlink` below then removes the
+        # second's file, whose own cleanup dies on `FileNotFoundError`. The
+        # name is load-bearing only in that the traversal attempts below have
+        # to spell it, so they are derived from it rather than repeated.
+        marker_name = f"zz_escape_marker_for_test_{os.getpid()}"
+        marker = adapters_dir.parent / f"{marker_name}.py"
         marker.write_text(
             "raise RuntimeError('a hostile --backend value executed this')\n",
             encoding="utf-8",
@@ -17497,11 +17505,11 @@ class BackendResolutionTests(unittest.TestCase):
         self.addCleanup(marker.unlink)
 
         hostile_values = (
-            "../zz_escape_marker_for_test",
-            "../../zz_escape_marker_for_test",
+            f"../{marker_name}",
+            f"../../{marker_name}",
             "/etc/passwd",
             str(marker),
-            "kaggle/../../zz_escape_marker_for_test",
+            f"kaggle/../../{marker_name}",
             "..",
             "./kaggle",
         )
@@ -17519,9 +17527,20 @@ class BackendResolutionTests(unittest.TestCase):
         dropping it into `adapters/` under a matching filename — and both
         of its own registrations (`ADAPTER.register` AND
         `ADAPTER.register_metadata`) take effect, not only the first.
+
+        The module's name carries this run's pid. `adapters/` is the shipped
+        skill's own directory, shared by every process on this machine, and
+        the fixture used to be written there under a fixed name with an
+        `unlink` cleanup that removed whatever sat at that path rather than
+        what this run put there. Measured, before the pid, on two concurrent
+        copies of this one test looped twenty-five times: nine and five
+        `FileNotFoundError`s raised out of the cleanup, on a test whose
+        subject had done nothing wrong. The name is otherwise free -- the
+        whole point is that `remote_cli.py` never names it -- so scoping it
+        costs the assertion nothing.
         """
         adapters_dir = REMOTE_CLI_SCRIPT.parent / "adapters"
-        fixture_name = "zz_fixture_backend_for_test"
+        fixture_name = f"zz_fixture_backend_for_test_{os.getpid()}"
         fixture_path = adapters_dir / f"{fixture_name}.py"
         fixture_path.write_text(
             "import importlib.util\n"
@@ -17555,9 +17574,9 @@ class BackendResolutionTests(unittest.TestCase):
             "    def list_active(self, worker):\n"
             "        return []\n"
             "\n"
-            "ADAPTER.register('zz_fixture_backend_for_test', _FixtureAdapter)\n"
+            f"ADAPTER.register({fixture_name!r}, _FixtureAdapter)\n"
             "ADAPTER.register_metadata(\n"
-            "    'zz_fixture_backend_for_test',\n"
+            f"    {fixture_name!r},\n"
             "    lambda run_config: ('fixture-metadata.json', '{}'),\n"
             ")\n",
             encoding="utf-8",
