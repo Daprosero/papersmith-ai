@@ -10900,6 +10900,17 @@ class VerifyStatusRosterTests(unittest.TestCase):
             sorted(set(documented) - set(reported)), [],
             "the Output Contract names these and `verify` returns no such key")
 
+    def test_the_contract_counts_the_statuses_it_lists(self):
+        """The sentence above the table states how many rows follow, and
+        until this existed nothing read it: the count said `sixteen` while
+        the roster grew past it. Same doctrine as
+        `test_the_roster_states_the_counts_it_actually_holds` -- the number
+        stays in the prose, because a reader deserves to be told how big the
+        surface is, and re-counting is this suite's work."""
+        skill = " ".join(SKILL_MD.read_text(encoding="utf-8").split())
+        spelled = _english_count(len(self.status_rows())).lower()
+        self.assertIn(f"There are {spelled} of them", skill)
+
     def test_coupling_is_documented_as_reported_and_never_gating(self):
         """The row that had to exist before the roster could be honest.
 
@@ -21807,6 +21818,214 @@ class UndeclaredOptionalDeclarationTests(unittest.TestCase):
         self.assertIn("undeclaredOptional", returned_keys(CLI, "cmd_verify"))
 
 
+class UndeclaredLadderTests(unittest.TestCase):
+    """The one declaration nothing ever asks a target for.
+
+    `__steps__` being empty is demanded: run a step and `STEPS_UNDECLARED`
+    refuses and publishes the question. `__levels__` being empty is demanded
+    by nothing at all. `POSITION_LEVELS_UNDECLARED` fires only once a
+    `:level`-marked witness is already in the sequence, so a repository that
+    never writes one is never asked; `_skipped_rung_detail` answers `None`
+    before grading anything when the ladder is empty; and the call sites of
+    `resolve_levels_declaration` all pour the answer into
+    `evidence["levels"]`, where `[]` is
+    indistinguishable from a ladder that was read.
+
+    So a repository scaffolded from zero has no rungs, nobody asks it for any,
+    and the rung discipline -- the guard that refuses a forward skip -- cannot
+    apply to it at all. `verify` now says so, and says only that: a target with
+    genuinely no rungs is a legitimate resting state, exactly as an unanswered
+    optional field is, and `undeclared_optional_state` one class up is the
+    doctrinal sibling this follows -- reported, never demanded.
+
+    **Why it is its own top-level key and not an `undeclaredOptional` entry.**
+    Those entries are `{section, field, consequence}`: a field inside a
+    DECLARED `search`/`distribution` block. `__levels__` is a module-level
+    literal held apart from `__benchmark__` on purpose
+    (`resolve_levels_declaration`'s own docstring), so it belongs to no
+    section and names no field, and borrowing the shape would mean writing a
+    `section` that does not exist. Top-level, for the constraint that decided
+    `toDiscuss`'s and `undeclaredOptional`'s own placement: `returned_keys`
+    reads dict-literal keys at the top level of a function's own return, so a
+    key nested anywhere ships invisible to `VerifyStatusRosterTests`.
+    """
+
+    def _box(self, suffix, *, declaration):
+        """A target that COULD carry a ladder: a real benchmark package with a
+        real declaration file. A box without one would make every assertion
+        here vacuous -- it would have nowhere to write `__levels__` even if it
+        wanted to."""
+        box = FORGE / "implementations" / f"_ladder_{suffix}_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "src/Method_Benchmark", "Method", "tests"):
+            (box / directory).mkdir(parents=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            declaration, encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        return box
+
+    NO_LADDER = "__benchmark__ = {'revision': 'r1.md'}\n__levels__: list = []\n"
+    A_LADDER = ("__benchmark__ = {'revision': 'r1.md'}\n"
+                "__levels__ = ['first', 'second']\n")
+
+    def verify(self, box):
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box),
+             "--name", "Method"],
+            capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return json.loads(proc.stdout)
+
+    def test_a_target_that_declares_no_ladder_is_told_so(self):
+        """The measured gap: the kit ships `__levels__` empty, nothing asks
+        for a rung, and until now nothing reported the emptiness either."""
+        report = self.verify(
+            self._box("silent", declaration=self.NO_LADDER))["undeclaredLadder"]
+        self.assertIsNotNone(report, "a target with no ladder is told nothing")
+        self.assertEqual(report["declaration"], impl.LEVELS_DECLARATION)
+        self.assertEqual(report["path"], "src/Method_Benchmark/__init__.py")
+
+    def test_a_declared_ladder_is_reported_nowhere(self):
+        """The other half, and the one a weaker lock would survive: a report
+        that fires whether or not a ladder exists is a false alarm, and a
+        false alarm about a legitimate resting state is no better than the
+        silence it replaced."""
+        self.assertIsNone(
+            self.verify(self._box("named", declaration=self.A_LADDER))
+            ["undeclaredLadder"])
+
+    MALFORMED_LADDER = ("__benchmark__ = {'revision': 'r1.md'}\n"
+                        "__levels__ = 'not-a-list'\n")
+
+    def test_the_path_names_the_file_the_resolver_would_read_first(self):
+        """`path` exists to tell a reader where to write the declaration they
+        are missing, so it has to name the file the resolver actually reaches.
+        `resolve_levels_declaration` is first-wins and stops on a MALFORMED
+        `__levels__`: it returns `[]` from `__init__.py` without ever reading
+        `config.py`. A report naming `config.py` there would send someone to
+        write a declaration the resolver can never reach, and the report would
+        go on firing with nothing to explain why.
+
+        Pinned because it was measured unpinned: reversing the read order to
+        `("config.py", "__init__.py")` left all 2196 tests green.
+        """
+        box = self._box("ordered", declaration=self.MALFORMED_LADDER)
+        (box / "src/Method_Benchmark/config.py").write_text(
+            "__levels__ = ['first', 'second']\n", encoding="utf-8")
+        report = self.verify(box)["undeclaredLadder"]
+        self.assertIsNotNone(
+            report, "a malformed ladder resolves to no ladder and must report")
+        self.assertEqual(
+            report["path"], "src/Method_Benchmark/__init__.py",
+            "the report must name the file the resolver stops at, not the one "
+            "further down the read order that it never reaches")
+
+    def test_the_consequence_names_what_is_lost_and_not_merely_what_is_absent(self):
+        """`undeclaredOptional`'s entries say what the absence COSTS, and that
+        is the whole of why they are worth printing. A `consequence` reading
+        "no ladder is declared" would restate the key's own name and teach a
+        reader who has never seen a rung nothing at all, so the four things
+        an empty `__levels__` actually switches off are named one by one."""
+        report = self.verify(
+            self._box("cost", declaration=self.NO_LADDER))["undeclaredLadder"]
+        consequence = report["consequence"]
+        # The forward-skip guard, which two commits of rung discipline exist
+        # for and which an empty ladder makes structurally unreachable.
+        self.assertIn("POSITION_RUNG_SKIPPED", consequence)
+        # The fact that goes permanently unreadable: with no rung name to
+        # answer with, `attained_level` answers `None` on every run forever.
+        self.assertIn("attainedLevel", consequence)
+        # And the door that is closed in the other direction: a leveled
+        # witness cannot even be written.
+        self.assertIn("POSITION_LEVELS_UNDECLARED", consequence)
+        self.assertIn("two-state", consequence)
+        # Not a label. A bare name of the missing thing would pass every
+        # assertion a reviewer writes by eye and none of the ones above.
+        self.assertGreater(len(consequence.split()), 40, consequence)
+
+    def test_the_attained_level_it_names_is_the_one_verify_actually_reports(self):
+        """The consequence is checkable, not a claim: the same run that says
+        `attainedLevel` stays null is the run whose `position.attainedLevel`
+        is null, and the target WITH a ladder is not."""
+        silent = self.verify(
+            self._box("attained_no", declaration=self.NO_LADDER))
+        self.assertIsNotNone(silent["undeclaredLadder"])
+        self.assertIsNone(silent["position"]["attainedLevel"])
+
+    def test_a_target_with_no_benchmark_package_is_asked_nothing(self):
+        """The identical restraint `undeclared_optional_state` keeps for a
+        target with no search: a repository with nowhere to write the
+        declaration has not left a question unanswered, and
+        `structure.scaffoldGaps` already names the file it is missing."""
+        box = FORGE / "implementations" / f"_ladder_bare_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "Method", "tests"):
+            (box / directory).mkdir(parents=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        self.assertIsNone(self.verify(box)["undeclaredLadder"])
+
+    def test_the_key_is_top_level_in_verify_and_absent_from_probe(self):
+        """Both halves of the placement decision, in one assertion pair.
+
+        Top-level in `verify`, or `VerifyStatusRosterTests` never sees it and
+        it ships undocumented -- the exact defect `undeclaredOptional`'s own
+        placement test exists to keep from recurring.
+
+        Absent from `probe`, and that is a decision rather than an omission:
+        `probe` answers `nextStep` and publishes questions about work about to
+        be run, and an undeclared ladder names no work, blocks no run and
+        costs no machine time. Reporting it there would open a bucket nothing
+        retires on every single call. If `nextStep` ever grew a rung-aware
+        answer, this is the test to overturn.
+        """
+        self.assertIn("undeclaredLadder", returned_keys(CLI, "cmd_verify"))
+        self.assertNotIn("undeclaredLadder", returned_keys(CLI, "cmd_probe"))
+
+    def test_the_usage_reference_tells_a_reader_how_to_read_it(self):
+        """Same doctrine as `undeclaredOptional`'s own documentation test: a
+        status that reached the JSON is worth nothing to a reader never told
+        it exists."""
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("## Reading `verify`"):]
+        section = section[:section.index("\n## ", 1)]
+        self.assertIn("`undeclaredLadder`", section)
+
+    def test_the_usage_reference_counts_the_facts_it_actually_lists(self):
+        """A count written into prose is a count that drifts -- the doctrine
+        `test_the_roster_states_the_counts_it_actually_holds` already keeps
+        for the command roster, brought to the one sentence that tallies the
+        reported-but-never-a-finding statuses. It read "Six more" while
+        listing six, and this key is the seventh; nothing was reading it."""
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("## Reading `verify`"):]
+        section = section[:section.index("\n## ", 1)]
+        tally = section.index("more are reported and none of them is a finding")
+        listed = re.findall(r"^- \*\*`([^`]+)`\*\*", section[tally:], re.M)
+        self.assertIn("undeclaredLadder", listed)
+        self.assertIn(f"{_english_count(len(listed))} more are reported",
+                      section)
+
+    def test_the_kit_still_invents_no_rung_of_its_own(self):
+        """The decision about the scaffold, recorded so it is a position and
+        not a gap: `__levels__` ships empty and stays empty. A rung name in
+        the kit would be the forge naming a repository's own vocabulary for
+        it, which is the one thing `resolve_levels_declaration` exists to
+        refuse -- and it is the target of this whole report that must fill
+        the ladder in, never the template."""
+        kit = KIT / "src_benchmark" / "__init__.py"
+        tree = ast.parse(kit.read_text(encoding="utf-8"))
+        declared = [node for node in tree.body
+                    if isinstance(node, ast.AnnAssign)
+                    and isinstance(node.target, ast.Name)
+                    and node.target.id == "__levels__"]
+        self.assertEqual(len(declared), 1, "the kit declares no `__levels__`")
+        self.assertEqual(ast.literal_eval(declared[0].value), [])
+
+
 class UnbackedPositionSurfaceTests(unittest.TestCase):
     """A ticked box nobody measured, wherever the position is already reported.
 
@@ -22387,7 +22606,13 @@ class LedgerIsARequiredIgnoreTests(unittest.TestCase):
 #: are needed; anything else fails loudly rather than silently skipping the
 #: assertion that reads it.
 _ENGLISH_COUNTS = {
-    9: "Nine", 10: "Ten", 19: "Nineteen",
+    # `Seven` and `Seventeen` join for the two counts outside the refusal
+    # roster this table now holds: `usage.md`'s tally of the non-finding
+    # statuses `verify` reports, and `SKILL.md`'s count of the Output
+    # Contract's own rows. Both were prose nothing was reading, and both
+    # were one short by the time anybody looked.
+    7: "Seven",
+    9: "Nine", 10: "Ten", 17: "Seventeen", 19: "Nineteen",
     26: "Twenty-six", 27: "Twenty-seven", 28: "Twenty-eight",
     29: "Twenty-nine", 30: "Thirty", 31: "Thirty-one", 32: "Thirty-two",
     33: "Thirty-three", 34: "Thirty-four", 35: "Thirty-five",
