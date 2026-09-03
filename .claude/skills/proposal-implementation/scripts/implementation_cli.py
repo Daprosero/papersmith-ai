@@ -9764,8 +9764,10 @@ def cmd_gate(args: argparse.Namespace) -> dict:
                 "nothing named where a returned shard lands -- this target "
                 "declares no `distribution.shardsRoot` (see "
                 "`assets/kit/src_benchmark/__init__.py`'s `distribution` "
-                "comment). A launch is not authorized against a tick that "
-                "cannot be checked at all; declare `shardsRoot` once, or run "
+                "comment). A launch is not authorized against a witness "
+                "nothing can check at all -- ticked, so the mark asserts what "
+                "was never measured, or blank and leveled, so it holds "
+                "attainment below every rung; declare `shardsRoot` once, or run "
                 "`position --shards <dir>` against an explicit directory "
                 "before gating a launch.")
         if code == "POSITION_DISAGREES":

@@ -22685,6 +22685,145 @@ class NoTestClassShadowsAnotherTests(unittest.TestCase):
                     "test the earlier one held stops running")
 
 
+class ShardlessRungDiagnosisTests(unittest.TestCase):
+    """A refusal that was true and named the wrong thing.
+
+    A leveled `@shard` witness with no `distribution.shardsRoot` declared and
+    no `--shards` flag: `_resolve_shard_evidence` answers `(None, None)`,
+    `_derive_shard_level` reads `shardsArrived is None` and derives `None`
+    (unmeasured -- correctly, since nobody was told where to look),
+    `attained_level` therefore reaches no rung at all, and `launch_available`
+    answers `RUNG_NOT_ATTAINED`. The operator is told which rung the evidence
+    fell short of and asked what has to run before it is reached. The rung is
+    real; the answer is that nothing has to run, because one string was never
+    declared.
+
+    `POSITION_SHARDS_UNDECLARED` already exists and already names that exact
+    exit -- it just fires one check earlier, through `position_honest`, and
+    only for a TICKED item whose unbacked-ness is fully explained by the same
+    absence. An honestly-blank leveled `@shard` item never reaches it.
+
+    **Which input reaches the new branch, given everything checked before it.**
+    `position_honest`'s four checks all pass (the section is current, nothing
+    is ticked-and-unmeasured, nothing disagrees), `ready` is `True`, and the
+    job's own item is ticked and sits BEFORE the shard item -- measured:
+    with the shard item first and blank, `SEQUENCE_NOT_REACHED`
+    (`earlier_open`) fires and the rung threshold is never reached at all.
+    So the reachable shape is exactly one: a blank leveled `@shard` item
+    positioned after the job's own, with no location declared.
+    """
+
+    #: Three rungs, so the launch floor (`levels[-2]`) sits ABOVE the rung an
+    #: arrived-but-empty shard directory puts an item on. On a two-rung ladder
+    #: the floor coincides with `levels[0]` and the control below -- a location
+    #: that WAS consulted and came back silent -- would launch, which proves
+    #: nothing about the branch being measured.
+    LADDER = ["floor", "middle", "top"]
+
+    def _sequence(self, *, shard_derived=None, extra=()):
+        items = [{"ordinal": 1, "mark": "x", "text": "t", "derived": True,
+                  "witness": {"kind": "rehearsal", "operand": "job",
+                              "twostate": True}},
+                 {"ordinal": 2, "mark": " ", "text": "t",
+                  "derived": shard_derived,
+                  "witness": {"kind": "shard", "operand": "s1",
+                              "twostate": False}}]
+        return items + list(extra)
+
+    def _verdict(self, items, *, shards_declared, evidence):
+        levels = self.LADDER
+        return impl_availability.launch_available(
+            status="ok", unbacked=[], disagreements=[], sequence=items,
+            ready=True, job="job", shards_declared=shards_declared,
+            levels=levels,
+            attained_level=impl_position.attained_level(
+                items, {**evidence, "levels": levels}))
+
+    def test_an_undeclared_shard_location_is_named_instead_of_a_rung(self):
+        """The headline. The cause is one undeclared string and the refusal
+        has to say so -- naming the rung is true and unactionable."""
+        verdict = self._verdict(
+            self._sequence(), shards_declared=False,
+            evidence={"smokeReady": {"job": True}, "shardsArrived": None,
+                      "shardsCurrent": None})
+        self.assertFalse(verdict["available"])
+        self.assertEqual(verdict["code"], "POSITION_SHARDS_UNDECLARED")
+        self.assertEqual(verdict["facts"]["undeclaredOrdinals"], [2])
+
+    def test_declaring_the_location_is_the_exit_and_it_opens_the_gate(self):
+        """The other pole, and the proof the diagnosis is the right one: the
+        identical sequence with a shard directory actually consulted reaches
+        the top rung and launches. A refusal that named a cause the fix does
+        not clear is worse than the vague one it replaces."""
+        verdict = self._verdict(
+            self._sequence(shard_derived="top"), shards_declared=True,
+            evidence={"smokeReady": {"job": True}, "shardsArrived": ["s1"],
+                      "shardsCurrent": None})
+        self.assertTrue(verdict["available"], verdict)
+
+    def test_a_shortfall_the_undeclared_location_does_not_explain_keeps_its_rung(self):
+        """The narrowing that keeps this honest, and the one a weaker lock
+        would drop. A second leveled item that is unmeasured for its OWN
+        reason -- a `@notebook` naming a report that does not exist -- means
+        the shard location is not the whole story, and answering
+        `POSITION_SHARDS_UNDECLARED` there would send somebody to declare a
+        directory that clears nothing. `position_honest`'s own doctrine for
+        the ticked case, unchanged: fully explained, or not at all."""
+        extra = [{"ordinal": 3, "mark": " ", "text": "t", "derived": None,
+                  "witness": {"kind": "notebook", "operand": "absent.ipynb",
+                              "twostate": False}}]
+        verdict = self._verdict(
+            self._sequence(extra=extra), shards_declared=False,
+            evidence={"smokeReady": {"job": True}, "shardsArrived": None,
+                      "shardsCurrent": None, "notebooks": {"reports": []}})
+        self.assertEqual(verdict["code"], "RUNG_NOT_ATTAINED")
+
+    def test_a_declared_location_that_simply_found_nothing_keeps_its_rung(self):
+        """The distinction `position_honest`'s `shards_declared` exists for,
+        held here too: "nobody was told where to look" and "somebody looked
+        and found nothing" must not read as the same claim. A shard directory
+        that was consulted and came back empty puts the item on the FLOOR
+        rung, and falling short from the floor is a rung fact."""
+        verdict = self._verdict(
+            self._sequence(shard_derived="floor"), shards_declared=True,
+            evidence={"smokeReady": {"job": True}, "shardsArrived": [],
+                      "shardsCurrent": None})
+        self.assertEqual(verdict["code"], "RUNG_NOT_ATTAINED")
+
+    def test_a_two_state_shard_item_is_not_a_rung_fact_at_all(self):
+        """A two-state `@shard` item is graded without the ladder, so it can
+        never hold attainment down and never reaches this branch. Its own
+        undeclared-location story is `position_honest`'s, one check up, and
+        only once it is ticked."""
+        items = [{"ordinal": 1, "mark": "x", "text": "t", "derived": True,
+                  "witness": {"kind": "rehearsal", "operand": "job",
+                              "twostate": True}},
+                 {"ordinal": 2, "mark": " ", "text": "t", "derived": None,
+                  "witness": {"kind": "shard", "operand": "s1",
+                              "twostate": True}}]
+        verdict = self._verdict(
+            items, shards_declared=False,
+            evidence={"smokeReady": {"job": True}, "shardsArrived": None,
+                      "shardsCurrent": None})
+        self.assertTrue(verdict["available"], verdict)
+
+    def test_the_refusal_gate_raises_no_longer_claims_the_item_is_ticked(self):
+        """`POSITION_SHARDS_UNDECLARED` is now reachable from a BLANK item,
+        so its own sentence -- "a launch is not authorized against a tick
+        that cannot be checked at all" -- would be asserting a mark the
+        refusal does not check. Same defect as the two the roster already
+        carries, and it would have been introduced by this change."""
+        source = CLI.read_text(encoding="utf-8")
+        opener = source.index("def cmd_gate(")
+        body = source[source.index('"POSITION_SHARDS_UNDECLARED",', opener):]
+        message = body[:body.index('")')]
+        # Matched on the source's own fragment, not on a rendered sentence:
+        # the message is assembled from adjacent string literals, so any
+        # phrase long enough to be unambiguous straddles a boundary.
+        self.assertNotIn("a tick", message)
+        self.assertIn("`@shard` witness", message)
+
+
 class UnreachableLadderTests(unittest.TestCase):
     """A ladder long enough that no launch can ever be authorized on it.
 
