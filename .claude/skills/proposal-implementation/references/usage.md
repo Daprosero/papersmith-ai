@@ -598,7 +598,7 @@ Two independent findings, reported separately:
   in `--revision`; `invariantsWithoutTest` are claims declared in code with no
   test enforcing them. Both need the user's decision before you touch anything.
 
-Seven more are reported and none of them is a finding, which is exactly why
+Eight more are reported and none of them is a finding, which is exactly why
 they were easy to leave undocumented:
 
 - **`coupling`** — which notebook cells reach into the target's internals instead
@@ -670,6 +670,26 @@ they were easy to leave undocumented:
   already names that missing file. **Reported, never demanded**: a
   repository whose steps are all two-state legitimately has no ladder, and
   the forge never invents a rung name on its behalf. It **never gates**.
+- **`unreachableLadder`** — the other half of the same declaration, and the
+  one `undeclaredLadder` cannot reach: a ladder that WAS named, long enough
+  that the sequence beside it can never climb to the launch floor. It carries
+  `levels` (the ladder as declared), `requiredLevel` (the rung
+  `launch_available` floors a launch at, `levels[-2]`), `highestAttainable`
+  (the highest rung every leveled item in the sequence could EVER grade
+  satisfied at), `cappedBy` (the ordinals and witnesses holding it there) and
+  the `consequence`. It fires only when the second sits strictly below the
+  first — from four declared rungs up, with one leveled `@rehearsal` item
+  anywhere in the sequence: `smokeReady` is two-valued, so that item can never
+  prove more than the floor plus one rung, and `position.attainedLevel` is the
+  highest rung at which *every* leveled item grades satisfied. `gate` then
+  answers `RUNG_NOT_ATTAINED` on every call, naming a rung nothing that can
+  run will reach. Two exits, both the target's own: declare at most three
+  rungs, or drop the `:level` marker from that item and record it two-state
+  (the grammar's default). The forge takes neither on its own — a launch floor
+  that moved with whatever the sequence happens to hold would let *adding* a
+  leveled item quietly *lower* the threshold for every item beside it. `null`
+  when the ladder and the sequence can meet, and `null` below two rungs, where
+  the rung threshold does not apply at all. It **never gates**.
 
 Omit `--revision` and `fidelity.status` is `unknown`: the modules' declared
 revisions are still listed, but nothing is compared. Never report an

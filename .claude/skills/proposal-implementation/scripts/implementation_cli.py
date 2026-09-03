@@ -1519,6 +1519,102 @@ def undeclared_ladder_state(target: Path, name: str,
             "consequence": LADDER_UNDECLARED_CONSEQUENCE}
 
 
+#: What a repository gives up when its ladder and its sequence cannot meet,
+#: written out for the identical reason `LADDER_UNDECLARED_CONSEQUENCE` is: a
+#: reader handed "the ladder is unreachable" learns the key's own name and
+#: nothing else. A format string rather than a constant, because the two exits
+#: are only actionable once the actual rungs are named -- "declare at most
+#: three rungs" is advice, `"declare at most three"` beside the four this
+#: target wrote is a decision somebody can take.
+LADDER_UNREACHABLE_CONSEQUENCE = (
+    "no launch can ever be authorized for any job in this sequence. "
+    "`launch_available` floors a launch at {required!r} -- the rung below "
+    "the top of the declared ladder -- and reads `position.attainedLevel`, "
+    "which is the highest rung at which EVERY leveled item grades satisfied. "
+    "The leveled item{plural} at ordinal {ordinals} can never grade satisfied "
+    "above {ceiling!r}, whatever runs: a `@rehearsal` witness reads "
+    "`smokeReady`, which is two-valued, so a rehearsal that passed proves the "
+    "floor plus one rung and never more -- full scale is `@record`'s or "
+    "`@shard`'s evidence to speak to. So the gate answers `RUNG_NOT_ATTAINED` "
+    "on every call, naming a rung nothing that can run will reach, and the "
+    "top rungs of this ladder can never be sealed at either. Two exits, both "
+    "the target's own to take: declare a `{declaration}` of at most three "
+    "rungs, so the launch floor sits at or below what a rehearsal proves; or "
+    "drop the `:level` marker from that item and record it two-state -- the "
+    "grammar's own default -- since a two-state item is graded without the "
+    "ladder and holds no rung down. The forge changes neither on its own: a "
+    "floor that moved with whatever the sequence happens to contain would let "
+    "ADDING a leveled item quietly LOWER the launch threshold for every other "
+    "item beside it."
+)
+
+
+def unreachable_ladder_state(items: list[dict], levels: list[str]) -> dict | None:
+    """The declared ladder no evidence in this sequence can ever climb far
+    enough to open a launch on -- or `None` when it can.
+
+    `undeclared_ladder_state`'s own shape, placement and restraint (design
+    D8), one fact over: that one reports a ladder nobody named, this one a
+    ladder named longer than the sequence beside it can reach.
+
+    **The gap.** `_derive_rehearsal_level` ceilings a leveled `@rehearsal`
+    item at index 1 and `launch_available` floors a launch at
+    `levels[-2]`, and each is right on its own. Composed, they are
+    unsatisfiable from four rungs up: one leveled `@rehearsal` anywhere in
+    the sequence pins `attained_level` at index 1 forever, and
+    `RUNG_NOT_ATTAINED` then answers every launch with a rung nothing that
+    can run will reach. The operator is told which rung was not attained --
+    true, and unanswerable.
+
+    **Reported, never repaired.** The other closure on offer was to lower
+    the gate's own floor to `min(len(levels) - 2, the highest attainable)`,
+    and it is rejected: that floor would then be a function of what the
+    sequence happens to hold, so writing one more leveled `@rehearsal` item
+    would LOWER the launch threshold for every other item beside it. A gate
+    a sequence can weaken by growing is strictly worse than one that will
+    not open, because only the second is visible.
+
+    **Below two rungs, nothing is reported**: `launch_available` skips the
+    rung threshold entirely there -- there is no predecessor rung for a
+    launch to have missed -- so a finding would name a gate that does not
+    exist. The identical "structurally unreachable" restraint
+    `_skipped_rung_detail` already keeps for a ladder too short to name a
+    predecessor.
+
+    `items` is the sequence `position_state` already parsed and `levels` the
+    ladder `verify` already resolved; nothing here opens a file or measures
+    anything, so this can never disagree with the marks reported beside it.
+    """
+    if len(levels) < 2:
+        return None
+    ceiling = impl_position.attainable_ceiling(items, levels)
+    floor_index = len(levels) - 2
+    ceiling_index = impl_position.level_index(levels, ceiling)
+    if ceiling_index is None or ceiling_index >= floor_index:
+        return None
+    # Which items actually hold the ceiling down, so a reader has something to
+    # change rather than a whole sequence to re-read. Only the ones AT the
+    # minimum: naming every leveled item would name two that reach the top
+    # beside the one that does not.
+    capped = [{"ordinal": item["ordinal"], "witness": item["witness"]}
+              for item in items
+              if not item["witness"].get("twostate", True)
+              and impl_position.level_ceiling(
+                  item["witness"]["kind"], levels) == ceiling_index]
+    ordinals = ", ".join(str(row["ordinal"]) for row in capped)
+    return {
+        "declaration": LEVELS_DECLARATION,
+        "levels": list(levels),
+        "requiredLevel": levels[floor_index],
+        "highestAttainable": ceiling,
+        "cappedBy": capped,
+        "consequence": LADDER_UNREACHABLE_CONSEQUENCE.format(
+            required=levels[floor_index], ceiling=ceiling,
+            ordinals=ordinals, plural="s" if len(capped) > 1 else "",
+            declaration=LEVELS_DECLARATION),
+    }
+
+
 #: What a repository gives up by leaving `__records__` empty, written out for
 #: the identical reason `LADDER_UNDECLARED_CONSEQUENCE` is: an absence read as
 #: "no records are declared" restates the key's own name, and a reader who
@@ -11135,6 +11231,13 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         # exist. See `undeclared_ladder_state`'s own docstring for why this
         # is reported and never demanded.
         "undeclaredLadder": undeclared_ladder_state(target, name, levels),
+        # The other half of the same declaration, and the one `undeclaredLadder`
+        # cannot reach: a ladder that WAS named, long enough that the sequence
+        # beside it can never climb to the launch floor. Top-level for the
+        # identical `returned_keys` constraint, and absent from `probe` for the
+        # identical reason -- it names no work about to be run.
+        "unreachableLadder": unreachable_ladder_state(
+            position["sequence"], levels),
         # The same gap, one declaration over: `__records__` is the other
         # thing the forge offers that nothing ever asks a target for. Its
         # own top-level key rather than an `undeclaredOptional` entry, for

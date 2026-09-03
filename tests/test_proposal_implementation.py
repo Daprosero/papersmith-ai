@@ -33,6 +33,7 @@ import implementation_cli as impl  # noqa: E402  (path set above)
 # `implementation_cli`'s own import of `impl_layout` etc. already put
 # `_core/implementation` on `sys.path`; this reaches the same module the CLI
 # reads its position grammar through, never a second copy.
+import impl_availability  # noqa: E402
 import impl_position  # noqa: E402
 import impl_steps  # noqa: E402
 
@@ -22684,6 +22685,279 @@ class NoTestClassShadowsAnotherTests(unittest.TestCase):
                     "test the earlier one held stops running")
 
 
+class UnreachableLadderTests(unittest.TestCase):
+    """A ladder long enough that no launch can ever be authorized on it.
+
+    Two rules, each correct alone, compose into a lock with no key.
+    `_derive_rehearsal_level` ceilings a leveled `@rehearsal` item at index 1
+    -- `smokeReady` is two-valued, so a rehearsal that passed proves the floor
+    plus one and never more, which is exactly right. `launch_available`'s rung
+    threshold floors a launch at `levels[-2]` -- the rung below the top, which
+    is also exactly right. `attained_level` is the highest rung at which EVERY
+    leveled item grades satisfied, so one leveled `@rehearsal` anywhere in the
+    sequence pins attainment at index 1 forever.
+
+    Measured exhaustively over ladder length, with the rehearsal ready and
+    every other check passing: available at two and three rungs, and
+    `RUNG_NOT_ATTAINED` at four, five and six. The operator is told which rung
+    was not attained -- true, and unanswerable, because nothing that can run
+    will ever attain it.
+
+    **Reported, not repaired.** The other closure on offer was to lower
+    `launch_available`'s floor to `min(len - 2, the highest attainable)`, and
+    it is rejected: that floor would then depend on what the sequence happens
+    to contain, so ADDING a leveled `@rehearsal` item would LOWER the launch
+    threshold for every other item beside it. A gate a sequence can weaken by
+    growing is worse than one that will not open, because the first is silent.
+    So the arithmetic stands and `verify` says, at declaration time, that this
+    ladder and this sequence can never meet -- `undeclaredLadder`'s own shape
+    and placement, one fact over.
+    """
+
+    LADDER = ["floor", "smoke", "pilot", "campaign"]
+
+    def _box(self, suffix, *, ladder, body):
+        box = FORGE / "implementations" / f"_unreachable_{suffix}_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "src/Method_Benchmark", "Method", "tests"):
+            (box / directory).mkdir(parents=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            "__benchmark__ = {'revision': 'r1.md'}\n"
+            f"__levels__ = {ladder!r}\n", encoding="utf-8")
+        (box / "Method/AGREED.md").write_text(
+            "<!-- position revision=r1.md sha256=" + "a" * 64 + " "
+            "derivedAt=2026-08-27T00:00:00Z session=s0 target=floor -->\n"
+            + body + "<!-- /position -->\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        return box
+
+    LEVELED_REHEARSAL = "- [ ] 1. Rehearse the job. `@rehearsal:level job`\n"
+    TWOSTATE_REHEARSAL = "- [ ] 1. Rehearse the job. `@rehearsal job`\n"
+    LEVELED_SHARD = "- [ ] 1. Return the shards. `@shard:level s1`\n"
+
+    def verify(self, box):
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box),
+             "--name", "Method"],
+            capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return json.loads(proc.stdout)
+
+    # --- the arithmetic, at the level it is decided ------------------------
+
+    def test_the_ceiling_of_each_kind_is_the_rung_its_own_deriver_returns(self):
+        """The whole report rests on one claim: that `level_ceiling` states
+        the SAME rung each leveled deriver actually returns on its own best
+        evidence. Written as a join rather than as a second table, because a
+        table restated beside the derivers is a table that drifts -- and a
+        drifted one would report an unreachable ladder for a target whose
+        evidence reaches the top perfectly well.
+        """
+        levels = ["a", "b", "c", "d"]
+        best = {
+            "rehearsal": ({"smokeReady": {"j": True}}, "j"),
+            "shard": ({"shardsArrived": ["s"], "shardsCurrent": None}, "s"),
+            "notebook": ({"notebooks": {"reports": [
+                {"notebook": "n.ipynb", "status": "executed",
+                 "sourcesMatch": True}]},
+                "search": {"recordFound": True}, "requiredScale": {}}, "n.ipynb"),
+            "record": ({"records": {"r": {"recordFound": True,
+                                          "requiredScale": {}}}}, "r"),
+        }
+        for kind, (evidence, operand) in best.items():
+            with self.subTest(kind=kind):
+                items = [{"ordinal": 1, "mark": " ", "text": "t",
+                          "witness": {"kind": kind, "operand": operand,
+                                      "twostate": False}}]
+                derived = impl_position.derive(
+                    items, {**evidence, "levels": levels})[0]["derived"]
+                index = impl_position.level_ceiling(kind, levels)
+                self.assertEqual(
+                    derived, levels[index],
+                    f"{kind}'s best evidence reaches {derived!r} and its "
+                    f"declared ceiling says {levels[index]!r}")
+
+    def test_a_rehearsal_ceilings_below_the_launch_floor_from_four_rungs_on(self):
+        """The boundary, measured on both sides rather than asserted at one
+        point: a lock that only checked the four-rung case would survive a
+        ceiling of `min(2, ...)`, which still cannot open a five-rung ladder.
+        """
+        for length in range(2, 7):
+            levels = [f"L{i}" for i in range(length)]
+            items = [{"ordinal": 1, "mark": " ", "text": "t",
+                      "witness": {"kind": "rehearsal", "operand": "job",
+                                  "twostate": False}}]
+            ceiling = impl_position.attainable_ceiling(items, levels)
+            report = impl.unreachable_ladder_state(items, levels)
+            with self.subTest(length=length):
+                self.assertEqual(ceiling, "L1" if length >= 2 else "L0")
+                if length >= 4:
+                    self.assertIsNotNone(report, f"len={length} cannot launch")
+                    self.assertEqual(report["highestAttainable"], "L1")
+                    self.assertEqual(report["requiredLevel"], levels[-2])
+                else:
+                    self.assertIsNone(report, f"len={length} launches fine")
+
+    def test_a_sequence_that_can_reach_the_floor_is_reported_nowhere(self):
+        """The other pole, and the one a weaker lock survives. A leveled
+        `@shard` reaches the TOP rung on arrived, current evidence, so a
+        four-rung ladder carrying only that item is perfectly launchable and
+        must stay silent -- a report that fired on ladder length alone would
+        be a false alarm on every long ladder in existence."""
+        items = [{"ordinal": 1, "mark": " ", "text": "t",
+                  "witness": {"kind": "shard", "operand": "s1",
+                              "twostate": False}}]
+        self.assertIsNone(impl.unreachable_ladder_state(items, self.LADDER))
+
+    def test_a_two_state_rehearsal_never_caps_anything(self):
+        """Two-state items are graded without the ladder and read identically
+        at every rung, so they carry no information about which one was
+        reached -- `attained_level`'s own second boundary. The exit this
+        report names depends on that being true, so it is pinned here."""
+        items = [{"ordinal": 1, "mark": " ", "text": "t",
+                  "witness": {"kind": "rehearsal", "operand": "job",
+                              "twostate": True}}]
+        self.assertIsNone(impl.unreachable_ladder_state(items, self.LADDER))
+
+    def test_a_ladder_of_one_rung_is_asked_nothing(self):
+        """`launch_available` skips the rung threshold entirely below two
+        rungs -- there is no predecessor rung for a launch to have missed --
+        so a report there would name a gate that does not exist."""
+        items = [{"ordinal": 1, "mark": " ", "text": "t",
+                  "witness": {"kind": "rehearsal", "operand": "job",
+                              "twostate": False}}]
+        self.assertIsNone(impl.unreachable_ladder_state(items, ["only"]))
+        self.assertIsNone(impl.unreachable_ladder_state(items, []))
+
+    # --- the join: the report and the gate agree ---------------------------
+
+    def test_the_gate_it_describes_is_the_gate_that_actually_refuses(self):
+        """The report claims no launch can ever be authorized. That is a claim
+        about `launch_available`, so it is checked against `launch_available`
+        -- with every earlier check passing and the rehearsal ready, which is
+        the most favourable state this sequence can ever be in."""
+        items = [{"ordinal": 1, "mark": "x", "text": "t",
+                  "witness": {"kind": "rehearsal", "operand": "job",
+                              "twostate": False}}]
+        evidence = {"levels": self.LADDER, "smokeReady": {"job": True}}
+        verdict = impl_availability.launch_available(
+            status="ok", unbacked=[], disagreements=[], sequence=items,
+            ready=True, job="job", shards_declared=True, levels=self.LADDER,
+            attained_level=impl_position.attained_level(items, evidence))
+        self.assertFalse(verdict["available"])
+        self.assertEqual(verdict["code"], "RUNG_NOT_ATTAINED")
+        report = impl.unreachable_ladder_state(items, self.LADDER)
+        self.assertEqual(report["requiredLevel"], verdict["facts"]["requiredLevel"])
+
+    def test_shortening_the_ladder_is_an_exit_that_actually_opens_it(self):
+        """The first exit the consequence names, proven rather than asserted:
+        the same sequence on a three-rung ladder launches."""
+        items = [{"ordinal": 1, "mark": "x", "text": "t",
+                  "witness": {"kind": "rehearsal", "operand": "job",
+                              "twostate": False}}]
+        short = self.LADDER[:3]
+        evidence = {"levels": short, "smokeReady": {"job": True}}
+        verdict = impl_availability.launch_available(
+            status="ok", unbacked=[], disagreements=[], sequence=items,
+            ready=True, job="job", shards_declared=True, levels=short,
+            attained_level=impl_position.attained_level(items, evidence))
+        self.assertTrue(verdict["available"], verdict)
+        self.assertIsNone(impl.unreachable_ladder_state(items, short))
+
+    def test_dropping_the_level_marker_is_the_other_exit(self):
+        """The second exit, proven the same way: the identical four-rung
+        ladder with the rehearsal recorded two-state -- the grammar's own
+        default -- launches."""
+        items = [{"ordinal": 1, "mark": "x", "text": "t",
+                  "witness": {"kind": "rehearsal", "operand": "job",
+                              "twostate": True}}]
+        evidence = {"levels": self.LADDER, "smokeReady": {"job": True}}
+        verdict = impl_availability.launch_available(
+            status="ok", unbacked=[], disagreements=[], sequence=items,
+            ready=True, job="job", shards_declared=True, levels=self.LADDER,
+            attained_level=impl_position.attained_level(items, evidence))
+        self.assertTrue(verdict["available"], verdict)
+
+    # --- what a reader is handed -------------------------------------------
+
+    def test_the_consequence_names_the_refusal_and_both_exits(self):
+        """`undeclaredLadder`'s doctrine, one fact over: a consequence that
+        restated the key's own name would leave a reader exactly where they
+        started. What is lost is named, and so is each way out."""
+        report = impl.unreachable_ladder_state(
+            [{"ordinal": 1, "mark": " ", "text": "t",
+              "witness": {"kind": "rehearsal", "operand": "job",
+                          "twostate": False}}], self.LADDER)
+        consequence = report["consequence"]
+        self.assertIn("RUNG_NOT_ATTAINED", consequence)
+        self.assertIn(":level", consequence)
+        self.assertIn(impl.LEVELS_DECLARATION, consequence)
+        self.assertGreater(len(consequence.split()), 40, consequence)
+
+    def test_the_report_names_the_items_that_cap_the_ladder(self):
+        """A reader has to be able to find the item to change. With three
+        leveled items and only one of them capping, naming all three -- or
+        none -- is a report nobody can act on."""
+        items = [
+            {"ordinal": 1, "mark": " ", "text": "t",
+             "witness": {"kind": "shard", "operand": "s1", "twostate": False}},
+            {"ordinal": 2, "mark": " ", "text": "t",
+             "witness": {"kind": "rehearsal", "operand": "job",
+                         "twostate": False}},
+            {"ordinal": 3, "mark": " ", "text": "t",
+             "witness": {"kind": "notebook", "operand": "n.ipynb",
+                         "twostate": False}},
+        ]
+        report = impl.unreachable_ladder_state(items, self.LADDER)
+        self.assertEqual([row["ordinal"] for row in report["cappedBy"]], [2])
+        self.assertEqual(report["cappedBy"][0]["witness"]["kind"], "rehearsal")
+
+    # --- placement and doctrine --------------------------------------------
+
+    def test_verify_reports_it_from_a_real_target(self):
+        """End to end, through the CLI, on a repository that declares the
+        ladder and writes the item -- nothing here is reachable by unit call
+        alone if the key never leaves `cmd_verify`."""
+        box = self._box("e2e", ladder=self.LADDER, body=self.LEVELED_REHEARSAL)
+        report = self.verify(box)["unreachableLadder"]
+        self.assertIsNotNone(report, "the four-rung ladder cannot be launched")
+        self.assertEqual(report["levels"], self.LADDER)
+        self.assertEqual(report["highestAttainable"], "smoke")
+        self.assertEqual(report["requiredLevel"], "pilot")
+
+    def test_verify_stays_silent_on_the_same_target_written_two_state(self):
+        box = self._box("e2e_ok", ladder=self.LADDER,
+                        body=self.TWOSTATE_REHEARSAL)
+        self.assertIsNone(self.verify(box)["unreachableLadder"])
+
+    def test_the_key_is_top_level_in_verify_and_absent_from_probe(self):
+        """`undeclaredLadder`'s own placement decision, for the identical two
+        reasons: top-level or `VerifyStatusRosterTests` never sees it, and out
+        of `probe` because it names no work about to be run."""
+        self.assertIn("unreachableLadder", returned_keys(CLI, "cmd_verify"))
+        self.assertNotIn("unreachableLadder", returned_keys(CLI, "cmd_probe"))
+
+    def test_the_usage_reference_tells_a_reader_how_to_read_it(self):
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("## Reading `verify`"):]
+        section = section[:section.index("\n## ", 1)]
+        self.assertIn("`unreachableLadder`", section)
+
+    def test_the_kit_still_invents_no_rung_of_its_own(self):
+        """The report names ladder lengths and never a rung, so nothing here
+        gives the scaffold a reason to prefill `__levels__`."""
+        kit = KIT / "src_benchmark" / "__init__.py"
+        tree = ast.parse(kit.read_text(encoding="utf-8"))
+        declared = [node for node in tree.body
+                    if isinstance(node, ast.AnnAssign)
+                    and isinstance(node.target, ast.Name)
+                    and node.target.id == "__levels__"]
+        self.assertEqual(len(declared), 1)
+        self.assertEqual(ast.literal_eval(declared[0].value), [])
+
+
 class UndeclaredLadderTests(unittest.TestCase):
     """The one declaration nothing ever asks a target for.
 
@@ -23759,7 +24033,7 @@ _ENGLISH_COUNTS = {
     # both were one short by the time anybody looked; `Eighteen` is the
     # Output Contract row count after `undeclaredRecords` joined it
     # (the-pilot-proves-the-science, slice B).
-    7: "Seven",
+    7: "Seven", 8: "Eight",
     9: "Nine", 10: "Ten", 17: "Seventeen", 18: "Eighteen", 19: "Nineteen",
     26: "Twenty-six", 27: "Twenty-seven", 28: "Twenty-eight",
     29: "Twenty-nine", 30: "Thirty", 31: "Thirty-one", 32: "Thirty-two",
