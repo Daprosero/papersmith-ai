@@ -1388,6 +1388,103 @@ class ReportDigestJoinTests(unittest.TestCase):
             self.assertEqual(recovered, impl.source_digest(root, "Method"))
 
 
+class SuiteDigestTests(unittest.TestCase):
+    """`suite_digest` (design "`suite_digest` walks `*.py`, not
+    `test_*.py`", spec "Suite Digest Covers Source, Tests, and the
+    Environment Declaration") -- a sibling to `source_digest`, never merged
+    into it: `source_digest` answers whether a report speaks for the code
+    that produced it and is scoped to `src/` alone by hard-won incident
+    (`source_digest`'s own docstring); `suite_digest` answers whether the
+    suite that ran witnessed the code AND tests AND environment declaration
+    as they stand now, so it walks `src/`, `tests/`, and five fixed
+    ecosystem-standard manifest paths.
+    """
+
+    def build(self, root: Path) -> None:
+        for relative, body in (
+            ("src/Method/kernels.py", "K = 1\n"),
+            ("tests/test_smoke.py", "def test_ok():\n    assert True\n"),
+        ):
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
+
+    def test_adding_a_test_file_moves_the_suite_digest_not_the_source_digest(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root)
+            before_suite = impl.suite_digest(root)
+            before_source = impl.source_digest(root, "Method")
+            (root / "tests/test_added_later.py").write_text(
+                "def test_new():\n    assert True\n", encoding="utf-8")
+            self.assertNotEqual(impl.suite_digest(root), before_suite)
+            self.assertEqual(impl.source_digest(root, "Method"), before_source)
+
+    def test_adding_conftest_moves_the_digest_proving_the_walk_is_not_test_star(self):
+        """The mutation this locks against: swapping the walk to
+        `rglob("test_*.py")` under `tests/` would leave this scenario alone
+        -- `conftest.py` never matches that narrower glob -- while the
+        adjacent "any test file" scenario above would still pass either way.
+        Only this scenario tells the two walks apart."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root)
+            before = impl.suite_digest(root)
+            (root / "tests/conftest.py").write_text(
+                "import pytest\n", encoding="utf-8")
+            self.assertNotEqual(impl.suite_digest(root), before)
+
+    def test_creating_tox_ini_moves_the_digest_absence_was_a_value(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root)
+            before = impl.suite_digest(root)
+            (root / "tox.ini").write_text("[tox]\n", encoding="utf-8")
+            self.assertNotEqual(impl.suite_digest(root), before)
+
+    def test_creating_pytest_ini_moves_the_digest_too(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root)
+            before = impl.suite_digest(root)
+            (root / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+            self.assertNotEqual(impl.suite_digest(root), before)
+
+    def test_a_declared_manifest_present_from_the_start_still_moves_on_edit(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root)
+            (root / "requirements.txt").write_text("numpy\n", encoding="utf-8")
+            with_manifest = impl.suite_digest(root)
+            (root / "requirements.txt").write_text("numpy==2\n", encoding="utf-8")
+            self.assertNotEqual(impl.suite_digest(root), with_manifest)
+
+    def test_a_src_change_moves_the_suite_digest_same_tree_as_source_digest(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root)
+            before = impl.suite_digest(root)
+            (root / "src/Method/kernels.py").write_text("K = 2\n", encoding="utf-8")
+            self.assertNotEqual(impl.suite_digest(root), before)
+
+    def test_pycache_under_tests_is_skipped(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root)
+            before = impl.suite_digest(root)
+            cache_dir = root / "tests" / "__pycache__"
+            cache_dir.mkdir()
+            (cache_dir / "test_smoke.cpython-312.pyc").write_bytes(b"\x00\x01")
+            self.assertEqual(impl.suite_digest(root), before)
+
+    def test_the_docstrings_name_each_other(self):
+        """Spec "Suite Digest Covers Source, Tests, and the Environment
+        Declaration": `suite_digest` MUST NOT merge into `source_digest`;
+        each carries a docstring naming the other."""
+        self.assertIn("source_digest", impl.suite_digest.__doc__)
+        self.assertIn("suite_digest", impl.source_digest.__doc__)
+
+
 # ------------------------------------------------------- el contrato de informe
 
 def _stream(text="salida\n"):
@@ -11226,14 +11323,26 @@ class ProbeReportedFactsRosterTests(unittest.TestCase):
         self.assertIn("implementation_cli.py discuss", entry["command"])
         self.assertIn(str(box), entry["command"])
 
-    def test_a_non_piloted_probe_publishes_no_discuss_command(self):
-        """The pole: the fixture this whole class already relies on reaches
-        `benchmark`, not `piloted`, and must publish nothing here."""
+    def test_a_non_piloted_probe_publishes_its_own_question(self):
+        """This test used to assert `toDiscuss == []` here, and that assertion
+        WAS the defect: the offer to run is exactly the point the standing rule
+        says the flow question belongs at, and it published nothing because the
+        condition was the single literal `next_step == "piloted"`.
+
+        The pole it was serving has not been dropped -- it moved to
+        `ProbePublishesEveryStepsWorkTests.test_a_terminal_step_publishes_
+        nothing`, where a step the roster declares terminal really does publish
+        none. That is a pole about a decision; this was a pole about an
+        accident.
+        """
         box, head = self.build_target("not-piloted")
         self.write_job_folder(box, head)
         probe = self.probe(box)
         self.assertEqual(probe["nextStep"], "benchmark")
-        self.assertEqual(probe["toDiscuss"], [])
+        self.assertEqual(len(probe["toDiscuss"]), 1)
+        self.assertNotIn("ran a pilot below", probe["toDiscuss"][0]["question"],
+                         "the offer to run must ask its own question, never "
+                         "be handed the pilot's")
 
     def test_the_piloted_command_is_runnable_and_appends_the_exact_question(self):
         box, _ = self.build_piloted_target("piloted-run")
@@ -13551,6 +13660,407 @@ class PositionCommandTests(unittest.TestCase):
         self.assertFalse((box / "Method" / ".implementation" / "position.jsonl").exists())
 
 
+class StepOperandRefusalTests(unittest.TestCase):
+    """`POSITION_STEP_UNKNOWN` -- spec "Unknown Step Operand Is A
+    Classified, Roster-Visible Refusal"; design "The new refusal is a work
+    state, raised in `cmd_position`", a measured correction to the
+    proposal's `INVOCATION_DEFECT`: `--step <name>` is invocation because
+    a caller typed it; no argument `position` accepts names a position
+    ITEM's operand -- it lives in AGREED.md, so clearing this means editing
+    the document or declaring the step.
+
+    `parse_items` (`impl_position.py`) validates only the witness KIND --
+    that `"step"` is a member of `WITNESS_KINDS` -- never the operand
+    string, so an `@step nosuch` item reaches `cmd_position` unblocked
+    without this check and would otherwise silently derive `unmeasured`
+    forever.
+    """
+
+    PROPOSAL_TEXT = PositionCommandTests.PROPOSAL_TEXT
+    PROPOSAL_SHA256 = PositionCommandTests.PROPOSAL_SHA256
+
+    def _proposals(self):
+        return PositionCommandTests._proposals(self)
+
+    def _box(self, declare_steps=None):
+        box = FORGE / "implementations" / f"_e2e_step_operand_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            f"__steps__ = {declare_steps!r}\n" if declare_steps is not None else "",
+            encoding="utf-8")
+        return box
+
+    def run_cli(self, *args, proposals=None):
+        env = dict(os.environ)
+        if proposals is not None:
+            env["IMPLEMENTATION_PROPOSALS"] = str(proposals)
+        return subprocess.run([sys.executable, str(CLI), *args],
+                              capture_output=True, text=True, cwd=FORGE, env=env)
+
+    def block_text(self, body, sha256=None, target="final"):
+        return (f"<!-- position revision=r1.md sha256={sha256 or 'a' * 64} "
+                f"derivedAt=2026-08-27T00:00:00Z session=s0 target={target} -->\n"
+                f"{body}<!-- /position -->\n")
+
+    def test_an_undeclared_step_operand_refuses_position_step_unknown(self):
+        """Two `@step` items, the FIRST one valid and the SECOND one not --
+        so a check that only inspects the first `@step` item in the
+        sequence (a plausible off-by-scope bug) would silently miss the
+        second one and this test would catch it."""
+        box = self._box(declare_steps={"run_suite": {"module": "Method_Benchmark.steps",
+                                                     "function": "run_ok"}})
+        body = ("- [ ] 1. Run the suite. `@step run_suite`\n"
+                "- [ ] 2. Run something else. `@step nosuch`\n")
+        (box / "Method" / "AGREED.md").write_text(
+            self.block_text(body, sha256=self.PROPOSAL_SHA256), encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["code"], "POSITION_STEP_UNKNOWN")
+        self.assertIn("nosuch", result["detail"])
+        self.assertIn("run_suite", result["detail"])
+        # Classified and published: a WORK_STATE code carries a runnable
+        # resolution, never a bare code with nothing attached (the roster's
+        # own reason for existing).
+        self.assertEqual(result["resolve"]["kind"], "question")
+        self.assertTrue(result["resolve"]["command"].strip())
+
+    def test_steps_completely_undeclared_reuses_steps_undeclared_verbatim(self):
+        """The second arm: no new code. A target with no `__steps__` at
+        all is the identical fact `cmd_step` itself already raises
+        `STEPS_UNDECLARED` for -- reused here verbatim, not reclassified."""
+        box = self._box(declare_steps=None)
+        body = "- [ ] 1. Run the suite. `@step run_suite`\n"
+        (box / "Method" / "AGREED.md").write_text(
+            self.block_text(body, sha256=self.PROPOSAL_SHA256), encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["code"], "STEPS_UNDECLARED")
+        self.assertIn("declares no __steps__ at all", result["detail"])
+
+    def test_a_declared_step_operand_is_not_refused(self):
+        box = self._box(declare_steps={"run_suite": {"module": "Method_Benchmark.steps",
+                                                     "function": "run_ok"}})
+        body = "- [ ] 1. Run the suite. `@step run_suite`\n"
+        (box / "Method" / "AGREED.md").write_text(
+            self.block_text(body, sha256=self.PROPOSAL_SHA256), encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["status"], "unchanged")
+
+
+class PositionRungLadderTests(unittest.TestCase):
+    """A position may never skip a rung going forward.
+
+    `__levels__` names an ordered ladder and `--target-level` names the rung a
+    pass aims at. Three checks already guarded that flag -- a rung must be
+    named, it must be one the target declared, and a leveled witness needs a
+    ladder to exist -- and not one of them asks whether the rung *below* the
+    named one was ever reached. `--target-level <third rung>` was accepted on a
+    repository whose evidence had not left the floor.
+
+    **Derived from state, never from history.** The rule could have been
+    written against the position ledger -- "was there a prior pass at the rung
+    below" -- and it is deliberately not: a target that has never run this
+    command has no ledger at all, so a history check would pass vacuously on
+    exactly the repositories it exists to stop. The predicate asks the evidence
+    instead: *to seal at rung N, every leveled item in the sequence must
+    already grade as satisfied at rung N-1*, graded by `impl_position.derive`
+    itself at that previous rung rather than by a second, parallel arithmetic.
+
+    The ladder names below (`floor`/`middle`/`top`) are this test's own
+    invention. The forge holds no rung vocabulary -- it knows only the ordered
+    list a target declared -- so a fixture that borrowed a real target's rung
+    names would be teaching the suite a word the engine must never learn.
+    """
+
+    PROPOSAL_TEXT = PositionCommandTests.PROPOSAL_TEXT
+    PROPOSAL_SHA256 = PositionCommandTests.PROPOSAL_SHA256
+    LADDER = ["floor", "middle", "top"]
+
+    def _proposals(self):
+        return PositionCommandTests._proposals(self)
+
+    def _box(self, ladder=LADDER):
+        box = FORGE / "implementations" / f"_e2e_position_rung_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            "" if ladder is None else f"__levels__ = {ladder!r}\n", encoding="utf-8")
+        return box
+
+    def _shards(self, box):
+        """An empty directory of returned shards -- present, so `shardsArrived`
+        is `[]` (a definite "asked, and nothing came back") rather than `None`
+        ("nobody asked"). That is what puts a `@shard:level` witness on the
+        floor rung instead of leaving it unmeasured, and the two cases below
+        need to be told apart by exactly that difference."""
+        root = box / "shards"
+        root.mkdir(parents=True, exist_ok=True)
+        return str(root)
+
+    def run_cli(self, *args, stdin=None, proposals=None):
+        return PositionCommandTests.run_cli(self, *args, stdin=stdin,
+                                            proposals=proposals)
+
+    def _block(self, body, target, sha256=None):
+        return (f"<!-- position revision=r1.md sha256={sha256 or 'a' * 64} "
+                f"derivedAt=2026-08-27T00:00:00Z session=s0 target={target} -->\n"
+                f"{body}<!-- /position -->\n")
+
+    LEVELED = "- [ ] 1. Distribute the campaign. `@shard:level s1`\n"
+
+    # --- the rule itself -----------------------------------------------------
+
+    def test_a_pass_that_skips_a_rung_is_refused(self):
+        """The headline. The block sits at the floor, the evidence reaches the
+        floor, and the caller asks for the top -- the rung between them was
+        never attained, so the seal is refused rather than recorded."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self._block(self.LEVELED, "floor"), encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "top", "--shards", self._shards(box),
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["code"], "POSITION_RUNG_SKIPPED")
+        # The refusal names the rung that was skipped, not just the one asked
+        # for: a reader who is told only "top is refused" still does not know
+        # what to do next.
+        self.assertIn("middle", payload["detail"])
+        # And nothing was written: the header on disk still records the floor.
+        self.assertIn("target=floor",
+                      (box / "Method" / "AGREED.md").read_text(encoding="utf-8"))
+
+    def test_a_legitimate_one_rung_advance_is_still_allowed(self):
+        """The other pole, and the one that keeps the guard from being a wall.
+        Identical repository, identical evidence -- only the rung asked for
+        differs, and the one directly above the attained rung goes through."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self._block(self.LEVELED, "floor"), encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "middle", "--shards", self._shards(box),
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["status"], "written")
+        self.assertEqual(result["targetLevel"], "middle")
+
+    def test_one_rung_forward_is_refused_when_the_rung_below_is_unmeasured(self):
+        """State, not ordinals. A guard that only counted positions on the
+        ladder would wave this through -- it is a single step. The rung below
+        is not *attained*, though: without a shards directory nothing measured
+        the one leveled witness at all, and 'we did not look' is not 'it has
+        been reached'. This is the case that separates the predicate this
+        change builds from the cheaper one it is not."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self._block(self.LEVELED, "floor"), encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "middle",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["code"], "POSITION_RUNG_SKIPPED")
+
+    def test_a_fresh_header_may_seal_above_the_floor_when_the_evidence_is_there(self):
+        """History, not consulted. Nothing has ever been sealed here -- no
+        block, no ledger, nothing to read a prior pass out of -- and the second
+        rung is still reachable, because the evidence on disk currently grades
+        the sequence as satisfied at the first. A rule written against the
+        ledger would refuse this repository forever."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n- [x] 1. Something already settled.\n", encoding="utf-8")
+        sequence = json.dumps([
+            {"text": "Distribute the campaign.",
+             "witness": {"kind": "shard", "operand": "s1", "twostate": False}}])
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "middle", "--shards", self._shards(box),
+                            "--sequence", "-", stdin=sequence,
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["targetLevel"], "middle")
+
+    # --- the five boundaries the rule is defined against ---------------------
+
+    def test_the_first_rung_needs_no_predecessor_on_an_empty_repository(self):
+        """Index zero has nothing below it, and a repository where nothing has
+        run yet must still be able to start. No shards directory, so the one
+        leveled witness measures to nothing at all -- and the floor is still
+        sealable, because the check never runs there."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            "# Agreed\n\n- [x] 1. Something already settled.\n", encoding="utf-8")
+        sequence = json.dumps([
+            {"text": "Distribute the campaign.",
+             "witness": {"kind": "shard", "operand": "s1", "twostate": False}}])
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "floor",
+                            "--sequence", "-", stdin=sequence,
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["targetLevel"], "floor")
+
+    def test_re_sealing_the_same_rung_survives_evidence_that_regressed(self):
+        """`position` is the instrument that measures, and an instrument that
+        refuses to read when the reading is bad hides exactly what it exists to
+        report. The block already records the middle rung; the shards it was
+        sealed against are gone, so the rung below it no longer grades as
+        attained -- and the refresh still runs, writing down what is true now."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self._block(self.LEVELED, "middle", sha256=self.PROPOSAL_SHA256),
+            encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["targetLevel"], "middle")
+
+    def test_moving_back_down_the_ladder_is_always_allowed(self):
+        """A retreat is not a skip. Re-rehearsing at a lower rung spends
+        nothing and asserts less than the header already did, and refusing it
+        would strand an operator whose remote work failed at the one honest
+        thing left to do.
+
+        The retreat lands on the MIDDLE rung, not the floor: a retreat to the
+        floor is exempt anyway (index zero has no predecessor), so it would
+        prove nothing about the forward-only rule. This one has a predecessor,
+        and that predecessor is unmeasured here -- so only the exemption lets
+        it through.
+        """
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self._block(self.LEVELED, "top"), encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "middle",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["targetLevel"], "middle")
+
+    def test_retreating_all_the_way_to_the_floor_is_allowed_too(self):
+        """The other retreat, kept because it is the one an operator actually
+        types after a remote rung failed: back to the bottom of the ladder,
+        with nothing measurable anywhere."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self._block(self.LEVELED, "top"), encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "floor",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["targetLevel"], "floor")
+
+    def test_a_target_that_declares_no_ladder_is_untouched(self):
+        """No `__levels__`, no rungs, no progression to enforce. The header may
+        name whatever it names, exactly as it did before this rule existed --
+        the same silence `POSITION_TARGET_LEVEL_UNKNOWN` already keeps for an
+        undeclared ladder."""
+        box = self._box(ladder=None)
+        (box / "Method" / "AGREED.md").write_text(
+            self._block("- [ ] 1. Rehearse. `@rehearsal job-none`\n", "final"),
+            encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "whatever-it-likes",
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["targetLevel"], "whatever-it-likes")
+
+    def test_a_two_state_item_never_holds_the_ladder_back(self):
+        """Two-state items do not participate. Their verdict is computed
+        without the ladder and is identical at every rung, so folding them in
+        would make this refuse a legitimate advance for a reason that has
+        nothing to do with rungs -- whole-sequence completeness wearing this
+        rule's name. Here the leveled witness is on the floor and an open
+        two-state one sits beside it; the advance goes through."""
+        box = self._box()
+        body = (self.LEVELED
+                + "- [ ] 2. Rehearse. `@rehearsal job-none`\n")
+        (box / "Method" / "AGREED.md").write_text(
+            self._block(body, "floor"), encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "middle", "--shards", self._shards(box),
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(json.loads(proc.stdout)["targetLevel"], "middle")
+
+    # --- the refusal obeys the roster ----------------------------------------
+
+    def test_the_refusal_publishes_the_next_rung_this_target_can_seal(self):
+        """A work state publishes what unblocks it. Nothing about the
+        invocation clears a skipped rung -- the work below it has to actually
+        happen -- so the payload carries the rung this target can seal next,
+        read from the target's own ladder, and the `discuss` command that opens
+        the decision."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self._block(self.LEVELED, "floor"), encoding="utf-8")
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "top", "--shards", self._shards(box),
+                            proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["resolve"]["kind"], "question")
+        self.assertIn("middle", payload["resolve"]["question"])
+        self.assertIn("implementation_cli.py discuss",
+                      payload["resolve"]["command"])
+
+    def test_the_published_discuss_command_is_directly_runnable(self):
+        """A published command that does not parse is prose in a monospace
+        font. This runs the one the engine published, unedited."""
+        box = self._box()
+        (box / "Method" / "AGREED.md").write_text(
+            self._block(self.LEVELED, "floor"), encoding="utf-8")
+        proposals = self._proposals()
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", "r1.md", "--session", "s1",
+                            "--target-level", "top", "--shards", self._shards(box),
+                            proposals=proposals)
+        published = json.loads(proc.stdout)["resolve"]["command"]
+        rerun = self.run_cli(*shlex.split(published)[1:], proposals=proposals)
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+
+    def test_position_is_a_gating_command_and_the_code_is_a_work_state(self):
+        """The roster is where the decision lives. `position` refuses on the
+        repository's own state and can stop a session dead -- the criterion
+        `GATING_COMMANDS` states for itself -- so its refusals are classified
+        there, and this one is a work state."""
+        self.assertIn("position", impl.GATING_COMMANDS)
+        self.assertEqual(impl.GATING_REFUSALS["POSITION_RUNG_SKIPPED"],
+                         impl.WORK_STATE)
+
+
 class DefectCommandTests(unittest.TestCase):
     """`defect` — declares a forge file broken (design decisions 1-4,
     `maintenance-blocks-it-does-not-mix`). These tests prove only the
@@ -14398,6 +14908,123 @@ class CommandRosterTests(unittest.TestCase):
             writes, refuses = rows[command][1], rows[command][2]
             self.assertTrue(writes.strip(), f"the `{command}` row names nothing it writes")
             self.assertTrue(refuses.strip(), f"the `{command}` row names nothing it refuses on")
+
+
+class CommandRosterClosureTests(unittest.TestCase):
+    """Lock: `SKILL.md`'s `## Command Roster` states the dispatch surface as a
+    CLOSED set, and the set is read out of the document rather than trusted.
+
+    The defect this closes was written into the file as a confession and then
+    left to rot: a limitation paragraph said the CLI "accepts nine and refuses
+    everything else by naming them, so the running code holds a roster; this
+    document does not". By the time anybody measured it, `COMMANDS` bound
+    nineteen. Nothing derived the nine, so nothing went red as the surface
+    doubled underneath the sentence -- prose that outlived its mechanism, the
+    same class this file's refusal and `nextStep` rosters already close.
+
+    `CommandRosterTests` above holds the write-verbs to a documented row and
+    names the remaining commands as out of scope, but it names them *in this
+    file*: the closed set lived in a Python frozenset a reader of `SKILL.md`
+    never sees. This class moves the statement into the document and holds the
+    document to `COMMANDS`, in both directions -- a command added to the
+    dispatch table fails until it has a row, and a row no command backs fails
+    too.
+
+    `test_the_roster_derivation_finds_the_measured_nineteen` is the guard on
+    the scraper rather than on the roster, for the reason
+    `GatingRefusalRosterTests` states about its own count: a walk that silently
+    matches nothing makes the second direction pass over an empty set, and a
+    lock that passes because nothing happened is indistinguishable from one
+    that holds.
+    """
+
+    #: The two tables that together are the roster. Read by their own header
+    #: lines, so renaming a column is a red test rather than a silent halving.
+    WRITE_TABLE_HEADER = "| Command | What it writes | Refuses on |"
+    REST_TABLE_HEADER = "| Command | What it does | Where its detail lives |"
+
+    def _table(self, header):
+        skill = SKILL_MD.read_text(encoding="utf-8")
+        tables = markdown_table_rows(skill, header)
+        self.assertEqual(
+            len(tables), 1,
+            f"exactly one table is expected under {header!r} and "
+            f"{len(tables)} were found; the roster is half-read, and a "
+            "half-read roster is what this class exists to refuse")
+        rows = tables[0]
+        self.assertTrue(
+            rows, f"the table under {header!r} was read as empty")
+        for row in rows:
+            # At least three, never exactly three: `markdown_table_rows` splits
+            # on every `|`, and a cell carrying an escaped `\\|` (the
+            # `materialize` row's `<scaffold\\|objects\\|harness>`) reports
+            # extra cells. The guard that matters is that a row is not a stub.
+            self.assertGreaterEqual(
+                len(row), 3,
+                f"a row under {header!r} has fewer than three cells: {row!r}")
+        return rows
+
+    def rostered_commands(self):
+        """Column one of both tables, in document order, ungrouped."""
+        return [row[0].strip().strip("`")
+                for header in (self.WRITE_TABLE_HEADER, self.REST_TABLE_HEADER)
+                for row in self._table(header)]
+
+    def test_the_roster_derivation_finds_the_measured_nineteen(self):
+        """Sanity on the walk, not on the roster. A command added to or removed
+        from the CLI should move this number; a broken header, a renamed column
+        or a table that stopped parsing should not be able to leave it green."""
+        rostered = self.rostered_commands()
+        self.assertEqual(len(rostered), 19)
+        self.assertEqual(
+            sorted(rostered), sorted(set(rostered)),
+            "a command is rostered twice; two rows for one command is two "
+            "places to keep in agreement, which is the drift this closes")
+
+    def test_every_dispatched_command_has_a_roster_row(self):
+        rostered = set(self.rostered_commands())
+        self.assertEqual(
+            sorted(set(impl.COMMANDS) - rostered), [],
+            "`COMMANDS` dispatches these and the command roster states none "
+            "of them, so the document's closed set is not the CLI's")
+
+    def test_every_rostered_command_is_dispatched(self):
+        """The other direction, and the one an empty scrape would pass. A row
+        for a command that no longer exists teaches a reader an invocation the
+        CLI answers `invalid choice` to."""
+        rostered = set(self.rostered_commands())
+        self.assertEqual(
+            sorted(rostered - set(impl.COMMANDS)), [],
+            "the command roster states these and the CLI dispatches no such "
+            "command")
+
+    def test_the_roster_states_the_counts_it_actually_holds(self):
+        """The `nine` that rotted was a spelled number in prose with nothing
+        reading it. The counts stay in the prose -- a reader deserves to be
+        told how big the surface is -- and every one of them is derived here,
+        so re-counting is this suite's work rather than a reviewer's."""
+        skill = " ".join(SKILL_MD.read_text(encoding="utf-8").split())
+        write_rows = len(self._table(self.WRITE_TABLE_HEADER))
+        rest_rows = len(self._table(self.REST_TABLE_HEADER))
+        self.assertEqual(write_rows + rest_rows, len(impl.COMMANDS))
+        total = _english_count(len(impl.COMMANDS)).lower()
+        self.assertIn(f"`COMMANDS` binds {total} subcommands", skill)
+        self.assertIn(
+            f"The {_english_count(write_rows).lower()} above and the "
+            f"{_english_count(rest_rows).lower()} below", skill)
+
+    def test_every_rest_row_says_where_the_detail_lives(self):
+        """The third column is the whole point of the second table: these
+        commands are rostered here and documented at length elsewhere, and a
+        roster row that names no elsewhere sends the reader nowhere."""
+        for row in self._table(self.REST_TABLE_HEADER):
+            command = row[0].strip().strip("`")
+            with self.subTest(command=command):
+                self.assertTrue(
+                    row[1].strip(), f"the `{command}` row says nothing it does")
+                self.assertIn(
+                    "usage.md", row[2],
+                    f"the `{command}` row points at no worked reference")
 
 
 class PositionReconcileTests(unittest.TestCase):
@@ -19909,7 +20536,12 @@ class StepCommandTests(unittest.TestCase):
 
     # --- Spec "Record a `step` ledger event" ---
 
-    def test_a_passing_step_is_recorded_with_exit_zero_and_no_digest_field(self):
+    def test_a_passing_step_is_recorded_with_exit_zero_and_a_digest_field(self):
+        """Renamed: the event now carries `suiteDigest` (design "One field
+        on the existing `step` event, not a sibling kind"). The exact
+        digest value against a live target is `CmdStepDigestTests`'s lock;
+        this test keeps the general recorded-shape assertion it always
+        made, minus the assertion this revision deliberately reverses."""
         box = self._box("pass")
         (box / "src" / "Method_Benchmark" / "steps.py").write_text(
             "def run_ok():\n    return None\n", encoding="utf-8")
@@ -19933,10 +20565,7 @@ class StepCommandTests(unittest.TestCase):
         self.assertEqual(event["callable"], "Method_Benchmark.steps.run_ok")
         self.assertEqual(event["exitStatus"], 0)
         self.assertEqual(event["session"], "s1")
-        self.assertEqual(
-            [key for key in event if "digest" in key.lower()], [],
-            "the step ledger event carries a digest field; the spec's own "
-            "scenario requires none -- notebooks_state recomputes it fresh")
+        self.assertIn("suiteDigest", event)
 
     def test_a_raising_step_is_still_recorded_with_a_nonzero_exit(self):
         box = self._box("raise")
@@ -20278,19 +20907,323 @@ class StepCommandTests(unittest.TestCase):
             "command must never have")
 
     def test_no_reader_anywhere_selects_kind_equals_step(self):
-        """Design mechanism 2: every gate consumer selects on the exact
-        string "gate"; nothing anywhere selects on "step" -- a step line is
-        invisible to every existing ledger reader by construction, not by
-        convention."""
-        sources = [
-            (CLI.parent / "implementation_cli.py").read_text(encoding="utf-8"),
-            (FORGE / ".claude" / "skills" / "remote-execution" / "scripts"
-             / "remote_cli.py").read_text(encoding="utf-8"),
-            Path(impl_position.__file__).read_text(encoding="utf-8"),
-        ]
+        """Design mechanism 2, corrected: every `gate` consumer still
+        selects on the exact string "gate", and this ledger line remains
+        invisible to `remote_cli.py` and to `impl_position.py` entirely.
+        `implementation_cli.py` now carries exactly ONE legitimate
+        `kind == "step"` reader -- `_step_verdicts` (spec "Step Verdicts
+        Are Assembled By The Caller"), whose whole job is folding those
+        events into `stepVerdicts` for the `@step` witness. The original,
+        blanket "nowhere" was correct only until a witness kind that reads
+        this ledger's own events was ever added; this asserts the narrower,
+        still-true claim instead of a claim this change was always going to
+        have to break: the selection is pinned to exist inside
+        `_step_verdicts` and nowhere else, so a future accidental second
+        reader is still caught."""
         pattern = re.compile(r'kind[\'"]?\s*\)?\s*==\s*[\'"]step[\'"]')
-        for source in sources:
-            self.assertIsNone(pattern.search(source))
+        remote_source = (FORGE / ".claude" / "skills" / "remote-execution"
+                         / "scripts" / "remote_cli.py").read_text(encoding="utf-8")
+        self.assertIsNone(pattern.search(remote_source))
+        position_source = Path(impl_position.__file__).read_text(encoding="utf-8")
+        self.assertIsNone(pattern.search(position_source))
+
+        impl_source = (CLI.parent / "implementation_cli.py").read_text(encoding="utf-8")
+        hits = list(pattern.finditer(impl_source))
+        self.assertEqual(
+            len(hits), 1,
+            "exactly one reader may select on kind == \"step\": "
+            "_step_verdicts, folding evidence for the @step witness")
+        tree = ast.parse(impl_source)
+        step_verdicts_def = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "_step_verdicts")
+        hit_line = impl_source[:hits[0].start()].count("\n") + 1
+        self.assertTrue(
+            step_verdicts_def.lineno <= hit_line <= step_verdicts_def.end_lineno,
+            f"the kind == \"step\" selection moved outside _step_verdicts "
+            f"(now at line {hit_line})")
+
+
+class CmdStepDigestTests(unittest.TestCase):
+    """`cmd_step`'s `kind: "step"` ledger event grows one `suiteDigest`
+    field (design "One field on the existing `step` event, not a sibling
+    kind"; spec "The Ledger Carries Currency, Old Events Read Safely") --
+    written on every RESOLVED run, unconditionally, regardless of outcome.
+    The RESPONSE dict `cmd_step` returns to its caller does NOT gain the
+    key: `_step_verdicts` (Phase 4) reads the ledger line, never the
+    response, so the existing `returned_keys` shape for `cmd_step` is a
+    lock this change must not move.
+    """
+
+    def _box(self, suffix):
+        box = FORGE / "implementations" / f"_e2e_cmdstepdigest_{suffix}_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True, exist_ok=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        write_fixture_interpreter(
+            box / ".venv" / ("Scripts" if os.name == "nt" else "bin"))
+        return box
+
+    def _commit(self, box):
+        git = ["git", "-c", "user.email=forge@example.invalid",
+               "-c", "user.name=forge", "-C", str(box)]
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        subprocess.run(git + ["add", "-A"], check=True, capture_output=True)
+        subprocess.run(git + ["commit", "-qm", "toy"], check=True, capture_output=True)
+
+    def _declare(self, box, steps):
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            f"__steps__ = {steps!r}\n", encoding="utf-8")
+
+    def run_cli(self, *args):
+        return subprocess.run([sys.executable, str(CLI), *args],
+                              capture_output=True, text=True, cwd=FORGE)
+
+    def ledger_events(self, box):
+        path = box / "Method" / ".implementation" / "position.jsonl"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+    def test_a_returned_step_event_carries_the_live_suite_digest(self):
+        box = self._box("returned")
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "def run_ok():\n    return None\n", encoding="utf-8")
+        self._declare(box, {"verification": {"module": "Method_Benchmark.steps",
+                                              "function": "run_ok"}})
+        self._commit(box)
+
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        events = self.ledger_events(box)
+        self.assertEqual(events[0]["suiteDigest"], impl.suite_digest(box))
+
+    def test_a_raised_step_event_also_carries_a_suite_digest(self):
+        """The mutation this locks against: gating the digest write on
+        `outcome == "returned"` -- a plausible-looking condition, since a
+        digest usually accompanies a passing report elsewhere in this
+        codebase -- would leave this scenario's event with no
+        `suiteDigest` key at all. The design states it as unconditional
+        precisely because a stale-vs-fresh comparison is exactly as
+        meaningful for a suite that just failed."""
+        box = self._box("raised")
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "def run_bad():\n    raise ValueError('boom')\n", encoding="utf-8")
+        self._declare(box, {"verification": {"module": "Method_Benchmark.steps",
+                                              "function": "run_bad"}})
+        self._commit(box)
+
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        events = self.ledger_events(box)
+        self.assertEqual(events[0]["outcome"], "raised")
+        self.assertEqual(events[0]["suiteDigest"], impl.suite_digest(box))
+
+    def test_the_returned_response_dict_never_gains_suite_digest(self):
+        self.assertNotIn("suiteDigest", returned_keys(CLI, "cmd_step"))
+
+
+class StepVerdictsTests(unittest.TestCase):
+    """`_step_verdicts(target, name)` -- spec "Step Verdicts Are Assembled
+    By The Caller": folds `kind: "step"` ledger events per step name,
+    latest wins, ledger order; digest comparison decided BEFORE outcome is
+    read; short-circuits to `{}` when the ledger holds no `kind: "step"`
+    event at all.
+    """
+
+    def _target(self) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / "src" / "Method").mkdir(parents=True)
+        (root / "src" / "Method" / "kernels.py").write_text("K = 1\n", encoding="utf-8")
+        (root / "tests").mkdir(parents=True)
+        (root / "tests" / "test_smoke.py").write_text(
+            "def test_ok():\n    assert True\n", encoding="utf-8")
+        return root
+
+    def _write_ledger(self, root: Path, name: str, events: list[dict]) -> None:
+        path = root / name / ".implementation" / "position.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            for event in events:
+                handle.write(json.dumps(event) + "\n")
+
+    def _event(self, step, outcome, digest, at="2026-01-01T00:00:00Z"):
+        return {"kind": "step", "step": step, "outcome": outcome,
+                "suiteDigest": digest, "at": at}
+
+    def test_no_step_event_short_circuits_to_empty_dict(self):
+        """The digest is never walked for a target that never ran `step`:
+        `suite_digest` is not called at all here."""
+        root = self._target()
+        with unittest.mock.patch.object(
+                impl, "suite_digest", side_effect=AssertionError(
+                    "suite_digest must not be called with no step events")):
+            self.assertEqual(impl._step_verdicts(root, "Method"), {})
+
+    def test_a_returned_event_with_the_current_digest_is_true(self):
+        root = self._target()
+        live = impl.suite_digest(root)
+        self._write_ledger(root, "Method", [self._event("run_suite", "returned", live)])
+        self.assertIs(impl._step_verdicts(root, "Method")["run_suite"], True)
+
+    def test_a_raised_event_with_the_current_digest_is_false(self):
+        root = self._target()
+        live = impl.suite_digest(root)
+        self._write_ledger(root, "Method", [self._event("run_suite", "raised", live)])
+        self.assertIs(impl._step_verdicts(root, "Method")["run_suite"], False)
+
+    def test_latest_event_wins_ledger_order(self):
+        root = self._target()
+        live = impl.suite_digest(root)
+        self._write_ledger(root, "Method", [
+            self._event("run_suite", "raised", live, at="2026-01-01T00:00:00Z"),
+            self._event("run_suite", "returned", live, at="2026-01-02T00:00:00Z"),
+        ])
+        self.assertIs(impl._step_verdicts(root, "Method")["run_suite"], True)
+
+    def test_a_stale_digest_beats_a_returned_outcome_folds_to_none(self):
+        root = self._target()
+        self._write_ledger(root, "Method",
+                           [self._event("run_suite", "returned", "not-the-live-digest")])
+        self.assertIsNone(impl._step_verdicts(root, "Method")["run_suite"])
+
+    def test_a_stale_digest_beats_a_raised_outcome_folds_to_none(self):
+        """The mutation this locks against: reordering the fold to check
+        `outcome` before comparing digests would flip THIS scenario to
+        `False` (asserting "the suite fails now" about code nobody ran
+        against) while leaving the returned-outcome scenario above
+        correctly `None` -- only this direction of the stale-beats-red rule
+        catches that specific reorder."""
+        root = self._target()
+        self._write_ledger(root, "Method",
+                           [self._event("run_suite", "raised", "not-the-live-digest")])
+        self.assertIsNone(impl._step_verdicts(root, "Method")["run_suite"])
+
+    def test_a_pre_change_event_with_no_digest_key_folds_to_none(self):
+        root = self._target()
+        event = {"kind": "step", "step": "run_suite", "outcome": "returned"}
+        self._write_ledger(root, "Method", [event])
+        self.assertIsNone(impl._step_verdicts(root, "Method")["run_suite"])
+
+    def test_different_step_names_are_independent(self):
+        root = self._target()
+        live = impl.suite_digest(root)
+        self._write_ledger(root, "Method", [
+            self._event("a", "returned", live),
+            self._event("b", "raised", live),
+        ])
+        verdicts = impl._step_verdicts(root, "Method")
+        self.assertIs(verdicts["a"], True)
+        self.assertIs(verdicts["b"], False)
+
+
+class StepVerdictsParityTests(unittest.TestCase):
+    """Spec "Step Verdicts Are Assembled By The Caller", design "All three
+    evidence builders share one fold": `_position_write_evidence`'s,
+    `cmd_probe`'s inline dict's, and `cmd_verify`'s inline dict's
+    `stepVerdicts` must agree over one shared ledger fixture -- not merely
+    that each of `_position_write_evidence`'s own 8 callers individually
+    passes, which wiring only that one function could satisfy on its own
+    while `probe` and `verify` kept reporting `unmeasured` forever.
+    """
+
+    def _box(self):
+        box = FORGE / "implementations" / f"_e2e_stepverdicts_parity_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "tests").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        write_fixture_interpreter(
+            box / ".venv" / ("Scripts" if os.name == "nt" else "bin"))
+        return box
+
+    def _commit(self, box):
+        git = ["git", "-c", "user.email=forge@example.invalid",
+               "-c", "user.name=forge", "-C", str(box)]
+        subprocess.run(["git", "init", "-q", str(box)], check=True, capture_output=True)
+        subprocess.run(git + ["add", "-A"], check=True, capture_output=True)
+        subprocess.run(git + ["commit", "-qm", "toy"], check=True, capture_output=True)
+
+    def run_cli(self, *args):
+        return subprocess.run([sys.executable, str(CLI), *args],
+                              capture_output=True, text=True, cwd=FORGE)
+
+    def _captured_evidence(self, command, box):
+        """Calls `command`'s real body in-process, spying on the exact
+        `evidence` dict it hands to `position_state` -- the same object
+        `derive()` reads `stepVerdicts` from -- without altering what
+        `position_state` computes or returns."""
+        captured = {}
+        real_position_state = impl.position_state
+
+        def spy(target, name, evidence, *args, **kwargs):
+            captured["evidence"] = evidence
+            return real_position_state(target, name, evidence, *args, **kwargs)
+
+        with unittest.mock.patch.object(impl, "position_state", side_effect=spy):
+            command(argparse.Namespace(target=str(box), name="Method", revision=None))
+        return captured["evidence"]
+
+    def test_all_three_builders_agree_on_step_verdicts(self):
+        box = self._box()
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            "__steps__ = {'run_suite': {'module': 'Method_Benchmark.steps', "
+            "'function': 'run_ok'}}\n", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "def run_ok():\n    return None\n", encoding="utf-8")
+        self._commit(box)
+
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "run_suite")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+        from_write_evidence = impl._position_write_evidence(box, "Method")["stepVerdicts"]
+        from_probe = self._captured_evidence(impl.cmd_probe, box)["stepVerdicts"]
+        from_verify = self._captured_evidence(impl.cmd_verify, box)["stepVerdicts"]
+
+        self.assertEqual(from_write_evidence, {"run_suite": True})
+        self.assertEqual(
+            json.dumps(from_write_evidence, sort_keys=True),
+            json.dumps(from_probe, sort_keys=True))
+        self.assertEqual(
+            json.dumps(from_probe, sort_keys=True),
+            json.dumps(from_verify, sort_keys=True))
+
+    def test_wiring_only_position_write_evidence_would_leave_probe_and_verify_unmeasured(self):
+        """The defect this test exists to catch, named directly: the
+        proposal's rejected alternative 3, restated as an executable
+        check. If `stepVerdicts` were wired only into
+        `_position_write_evidence`, `cmd_probe` and `cmd_verify` would
+        still build their OWN inline evidence dicts with no `stepVerdicts`
+        key at all -- this assertion is what tells that apart from the
+        fixed state, using the same fixture as the test above."""
+        box = self._box()
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            "__steps__ = {'run_suite': {'module': 'Method_Benchmark.steps', "
+            "'function': 'run_ok'}}\n", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "def run_ok():\n    return None\n", encoding="utf-8")
+        self._commit(box)
+
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "run_suite")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+        from_probe = self._captured_evidence(impl.cmd_probe, box)
+        from_verify = self._captured_evidence(impl.cmd_verify, box)
+        self.assertIn("stepVerdicts", from_probe)
+        self.assertIn("stepVerdicts", from_verify)
+        self.assertEqual(from_probe["stepVerdicts"], {"run_suite": True})
+        self.assertEqual(from_verify["stepVerdicts"], {"run_suite": True})
 
 
 class AnnotatedDeclarationReaderTests(unittest.TestCase):
@@ -21289,3 +22222,518 @@ class LedgerIsARequiredIgnoreTests(unittest.TestCase):
     def test_a_target_carrying_every_entry_reports_nothing(self):
         box = self._target("".join(f"{e}\n" for e in impl.IGNORE_ENTRIES))
         self.assertEqual(impl.ignore_gaps(box), [])
+
+
+#: The counts doctrine spells out in words. Only the two the roster can produce
+#: are needed; anything else fails loudly rather than silently skipping the
+#: assertion that reads it.
+_ENGLISH_COUNTS = {
+    9: "Nine", 10: "Ten", 19: "Nineteen",
+    26: "Twenty-six", 27: "Twenty-seven", 28: "Twenty-eight",
+    29: "Twenty-nine", 30: "Thirty", 31: "Thirty-one", 32: "Thirty-two",
+    33: "Thirty-three", 34: "Thirty-four", 35: "Thirty-five",
+    36: "Thirty-six",
+    54: "Fifty-four", 55: "Fifty-five", 56: "Fifty-six", 57: "Fifty-seven",
+    63: "Sixty-three", 64: "Sixty-four", 65: "Sixty-five", 66: "Sixty-six",
+    67: "Sixty-seven",
+}
+
+
+def _english_count(value: int) -> str:
+    if value not in _ENGLISH_COUNTS:
+        raise AssertionError(
+            f"{value} has no spelled form here; the roster's split moved far "
+            "enough that the doctrine's own wording needs rewriting, not a "
+            "wider lookup table")
+    return _ENGLISH_COUNTS[value]
+
+
+def raised_refusal_codes(source: Path, function: str) -> set[str]:
+    """Every `Refused("<CODE>", ...)` literal raised inside one function's body.
+
+    The second half of the `returned_keys` discipline, applied to the other end
+    of a command: what it returns is doctrine's subject, and so is what it
+    refuses. A roster of refusals restated beside the code is a roster that
+    drifts, so the roster is held to a second read of the source rather than to
+    a reviewer's memory -- add a `Refused` to a gating command and the classes
+    below go red until the code has been classified.
+
+    `ast` rather than calling the command: a refusal needs a repository on disk
+    to reach, and this has to be answerable about a command nobody invoked.
+
+    Nested definitions ARE descended into here, unlike `returned_keys`: a guard
+    written as a closure inside a command still refuses for that command, and
+    skipping it would let a code escape the roster by moving one indent level.
+
+    A `Refused` whose first argument is not a string literal is invisible here.
+    None exists today (the classes below assert the total), and the limitation
+    is stated rather than guessed at.
+    """
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    definition = next(
+        (node for node in ast.walk(tree)
+         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+         and node.name == function), None)
+    if definition is None:
+        raise AssertionError(f"{source.name} defines no {function}")
+    codes = set()
+    for node in ast.walk(definition):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "Refused" and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)):
+            codes.add(node.args[0].value)
+    return codes
+
+
+class GatingRefusalRosterTests(unittest.TestCase):
+    """Lock A: every refusal a gating command raises declares how it is cleared.
+
+    The incident. `gate` refused `POSITION_DISAGREES` in a live session, the
+    payload carried a code and a sentence, and the agent driving the CLI
+    composed the next question itself -- "Do you want me to do that now?".
+    Fifty-six distinct codes are raised inside the gating commands and exactly
+    two publication points existed in the whole engine, so fifty-four of them
+    reached the user as a bare code with nothing runnable attached. A harness
+    that has to sit above the agent driving it cannot leave the next act to
+    that agent's prose.
+
+    The rule the roster encodes, and the one derivable test that separates the
+    two kinds: **can the caller clear this by changing the invocation alone,
+    without touching the repository?** Yes is an *invocation* defect -- the
+    detail already names the flag, and there is nothing to publish. No is a
+    *work state* -- somebody must act on the repository, and the engine says
+    what, as a runnable command or as the question a human answers.
+
+    Why the roster and not one hundred and sixty-five tagged call sites: the
+    same reason `VerifyStatusRosterTests` reads a table rather than proof-reads
+    a sentence. One chokepoint, one roster, and a derivation that goes red the
+    moment a new code is raised without a decision attached.
+    """
+
+    def gating_codes(self):
+        codes = set()
+        for command in impl.GATING_COMMANDS:
+            codes |= raised_refusal_codes(CLI, f"cmd_{command}")
+        return codes
+
+    def test_the_derivation_finds_the_measured_sixty_six(self):
+        """Sanity check on the scraper itself, not on the roster: a change to a
+        gating command that adds, removes or renames a refusal should move this
+        number, never a typo in the walk above.
+
+        Fifty-six until `position` joined `GATING_COMMANDS`, which brought its
+        own eight previously-unclassified codes with it (`REVISION_UNREADABLE`
+        it already shared with `admit`) plus `POSITION_RUNG_SKIPPED`, for
+        sixty-five. Sixty-six once `POSITION_STEP_UNKNOWN` joined `cmd_position`
+        -- `STEPS_UNDECLARED` is reused verbatim from `cmd_step` and adds no
+        new member to this union."""
+        self.assertEqual(len(self.gating_codes()), 66)
+
+    def test_every_gating_refusal_is_classified(self):
+        roster = set(impl.GATING_REFUSALS)
+        raised = self.gating_codes()
+        self.assertEqual(
+            sorted(raised - roster), [],
+            "these codes are raised in a gating command and the roster "
+            "classifies none of them; a refusal nobody decided about is the "
+            "defect this roster exists to make impossible")
+        self.assertEqual(
+            sorted(roster - raised), [],
+            "the roster classifies these and no gating command raises them")
+
+    def test_the_roster_names_only_the_two_kinds(self):
+        self.assertEqual(
+            sorted({kind for kind in impl.GATING_REFUSALS.values()}),
+            [impl.INVOCATION_DEFECT, impl.WORK_STATE])
+
+    def _args(self, **overrides):
+        base = {"command": "gate", "target": "implementations/box",
+                "name": "Method", "session": "s1", "revision": "r1.md",
+                "about": None, "text": None}
+        base.update(overrides)
+        return argparse.Namespace(**base)
+
+    def test_every_work_state_publishes_something_runnable(self):
+        """The point of the whole lock. A work state with nothing published is
+        a misclassification, never an empty field -- so this asserts the
+        content, not the presence of a key."""
+        for code, kind in sorted(impl.GATING_REFUSALS.items()):
+            if kind != impl.WORK_STATE:
+                continue
+            with self.subTest(code=code):
+                resolution = impl.refusal_resolution(code, self._args())
+                self.assertIsInstance(resolution, dict)
+                self.assertIn(resolution["kind"], ("command", "question"))
+                self.assertTrue(resolution["command"].strip(),
+                                "a work state must publish a runnable command")
+                if resolution["kind"] == "question":
+                    self.assertTrue(resolution["question"].strip())
+                    self.assertIn("discuss", resolution["command"])
+
+    def test_no_invocation_defect_publishes_a_resolution(self):
+        """The other pole. An invocation defect's detail already names the flag,
+        and a published `resolve` beside it would be ceremony -- the shape a
+        reader learns to skip, which is how a real one stops being read."""
+        for code, kind in sorted(impl.GATING_REFUSALS.items()):
+            if kind != impl.INVOCATION_DEFECT:
+                continue
+            with self.subTest(code=code):
+                self.assertIsNone(impl.refusal_resolution(code, self._args()))
+
+    def test_the_doctrine_states_the_split_the_roster_actually_holds(self):
+        """A count written into prose is a count that drifts. Both documents
+        state the split, so both are read against the roster rather than
+        proof-read: re-classifying one code moves this test, not a reviewer's
+        memory."""
+        counts = {kind: sum(1 for value in impl.GATING_REFUSALS.values()
+                            if value == kind)
+                  for kind in (impl.INVOCATION_DEFECT, impl.WORK_STATE)}
+        skill = " ".join(SKILL_MD.read_text(encoding="utf-8").split())
+        self.assertIn(
+            f"{_english_count(len(impl.GATING_REFUSALS))} distinct codes are "
+            "raised inside the nine gating commands", skill)
+        self.assertIn(
+            f"an *invocation* defect** ({counts[impl.INVOCATION_DEFECT]} "
+            "codes)", skill)
+        self.assertIn(
+            f"a *work state*** ({counts[impl.WORK_STATE]} codes)", skill)
+        usage = " ".join(USAGE_MD.read_text(encoding="utf-8").split())
+        for count in set(counts.values()):
+            self.assertIn(f"{_english_count(count)} codes", usage)
+
+    def test_a_code_outside_the_roster_publishes_nothing(self):
+        """The roster is the gating commands' own. A refusal raised anywhere
+        else is not silently handed a resolution it was never classified for."""
+        self.assertIsNone(
+            impl.refusal_resolution("NOT_A_GIT_REPO", self._args()))
+
+    def test_position_disagrees_publishes_the_notebook_re_execution(self):
+        """The code from the incident, and the one resolution named in the
+        brief rather than derived: re-execute the verification notebook under
+        the target's own venv with that venv's `bin` on PATH, then re-run
+        `position` to rebind the mark to what was measured.
+
+        Every part is built from what the engine already holds -- the target
+        path it was given and `PROBE_NOTEBOOK` -- so no target-specific string
+        can enter this file through it.
+        """
+        resolution = impl.refusal_resolution(
+            "POSITION_DISAGREES", self._args(target="implementations/box"))
+        self.assertEqual(resolution["kind"], "command")
+        command = resolution["command"]
+        self.assertIn("PATH=", command)
+        self.assertIn("implementations/box/.venv/bin", command)
+        self.assertIn("nbconvert", command)
+        self.assertIn(impl.PROBE_NOTEBOOK, command)
+        self.assertIn("position", command.split("&&")[-1])
+        self.assertIn("--session", command.split("&&")[-1])
+
+    def test_the_published_position_command_is_the_one_the_caller_can_run(self):
+        """`position` takes `--session`, so a published `position` command that
+        omitted it would refuse on its own advice. Every gating command that
+        raises a position code carries `--session`; this holds the join."""
+        for code in ("POSITION_STALE", "POSITION_UNBACKED"):
+            with self.subTest(code=code):
+                command = impl.refusal_resolution(code, self._args())["command"]
+                self.assertIn("position", command)
+                self.assertIn("--session s1", command)
+                self.assertIn("--target implementations/box", command)
+
+
+class RefusalPayloadPublishesItsExitTests(unittest.TestCase):
+    """The chokepoint, end to end: the refused JSON carries the resolution.
+
+    `implementation_cli.py`'s one `except Refused` is where every refusal in
+    the engine reaches a reader, so it is where the roster is read. These run
+    the real CLI against a real repository rather than calling the builder, so
+    a resolution that exists in a dict and never reaches stdout still fails.
+    """
+
+    # Borrowed whole, for the reason the probe fixture next door states: a
+    # second copy of a fixture's own constants is a second thing to keep in
+    # step with a repository this class only reads.
+    PROPOSAL_REVISION = CloseCommandTests.PROPOSAL_REVISION
+    PROPOSAL_TEXT = CloseCommandTests.PROPOSAL_TEXT
+    PROPOSAL_SHA256 = CloseCommandTests.PROPOSAL_SHA256
+
+    def _proposals(self):
+        return CloseCommandTests._proposals(self)
+
+    def _box(self, packages=("Method",)):
+        return CloseCommandTests._box(self, packages)
+
+    def _write_job_folder(self, box, commit, **kwargs):
+        return CloseCommandTests._write_job_folder(self, box, commit, **kwargs)
+
+    def run_cli(self, *args, proposals=None):
+        return CloseCommandTests.run_cli(self, *args, proposals=proposals)
+
+    def test_a_work_state_refusal_carries_its_resolution(self):
+        box, _ = self._box()
+        proc = self.run_cli("close", "--target", str(box), "--name", "Method",
+                            "--revision", CloseCommandTests.PROPOSAL_REVISION,
+                            "--session", "s1", proposals=self._proposals())
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["code"], "POSITION_ABSENT")
+        # A question, not a command, and the reason is measured: running the
+        # published `position --reconcile` refuses
+        # `POSITION_TARGET_LEVEL_REQUIRED` until a rung is named, and only the
+        # target declares its rungs. The engine publishes that open decision
+        # rather than a command that would refuse on its own advice.
+        self.assertEqual(payload["resolve"]["kind"], "question")
+        self.assertIn("--target-level", payload["resolve"]["question"])
+        self.assertIn("implementation_cli.py discuss",
+                      payload["resolve"]["command"])
+
+    def test_the_disagreement_refusal_carries_the_notebook_re_execution(self):
+        """The incident itself, reproduced through the real command."""
+        proposals = self._proposals()
+        box, commit = self._box()
+        self._write_job_folder(box, commit)
+        header = {"revision": CloseCommandTests.PROPOSAL_REVISION,
+                  "revisionSha256": CloseCommandTests.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1",
+                  "target": "final"}
+        items = [{"ordinal": 1, "mark": "x", "text": "Rehearse the job.",
+                  "witness": {"kind": "rehearsal", "operand": "job1"}}]
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+        proc = self.run_cli("close", "--target", str(box), "--name", "Method",
+                            "--revision", CloseCommandTests.PROPOSAL_REVISION,
+                            "--session", "s1", proposals=proposals)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["code"], "POSITION_DISAGREES")
+        self.assertIn("nbconvert", payload["resolve"]["command"])
+        self.assertIn(impl.PROBE_NOTEBOOK, payload["resolve"]["command"])
+
+    def test_an_invocation_defect_refusal_carries_no_resolve_key(self):
+        box, _ = self._box()
+        proc = self.run_cli("materialize", "--target", str(box), "--name", "Method")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["code"], "MATERIALIZE_MODE_REQUIRED")
+        self.assertNotIn("resolve", payload)
+
+    def test_the_published_command_is_directly_runnable(self):
+        """A published command that does not parse is prose with a monospace
+        font. This runs the one the engine published, unedited."""
+        box, _ = self._box()
+        proposals = self._proposals()
+        # A block bound to a revision whose bytes moved: `POSITION_STALE`,
+        # whose exit is a refresh of the block that is already there.
+        header = {"revision": CloseCommandTests.PROPOSAL_REVISION,
+                  "revisionSha256": "a" * 64,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1",
+                  "target": "final"}
+        items = [{"ordinal": 1, "mark": " ", "text": "Rehearse the job.",
+                  "witness": {"kind": "rehearsal", "operand": "job1"}}]
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+        proc = self.run_cli("close", "--target", str(box), "--name", "Method",
+                            "--revision", "r2.md",
+                            "--session", "s1", proposals=proposals)
+        published = json.loads(proc.stdout)["resolve"]["command"]
+        # Run in the caller's own environment, which is the only one the
+        # published command claims to run in: the revision it carries is the
+        # revision the refused call was made against.
+        tokens = shlex.split(published)
+        rerun = self.run_cli(*tokens[1:], proposals=proposals)
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        self.assertEqual(json.loads(rerun.stdout)["command"], "position")
+
+
+class NextStepPublicationRosterTests(unittest.TestCase):
+    """Lock B: every `nextStep` that names work publishes that work.
+
+    The measured defect was one literal. `probe`'s only publication fired on
+    `next_step == "piloted"` and on nothing else, so `search-first` -- which
+    launches a search, and is exactly the point the standing rule says the
+    flow question belongs at -- reported a word and published nothing. Adding
+    `"search-first"` beside `"piloted"` would have reproduced the defect one
+    value later, so the condition is a roster over every value the ladder can
+    assign, and the derivation below goes red when a new one is added without
+    a decision.
+
+    Terminal is a decision too. `nothing-to-compare` and `already-benchmarked`
+    name no work, so they publish nothing -- but they say so in the roster, the
+    same way an *invocation* refusal says so in Lock A's.
+    """
+
+    @classmethod
+    def all_next_steps(cls):
+        return NextStepSectionCoverageTests.all_next_steps()
+
+    def test_every_value_the_ladder_can_assign_is_in_the_roster(self):
+        roster = set(impl.PROBE_NEXT_STEPS)
+        assigned = self.all_next_steps()
+        self.assertEqual(
+            sorted(assigned - roster), [],
+            "the ladder can answer these and the roster classifies none of "
+            "them; a step nobody decided about publishes nothing by accident")
+        self.assertEqual(
+            sorted(roster - assigned), [],
+            "the roster classifies these and the ladder can never answer them")
+
+    def test_the_roster_names_only_the_three_kinds(self):
+        self.assertEqual(
+            sorted({entry["kind"] for entry in impl.PROBE_NEXT_STEPS.values()}),
+            sorted({impl.NEXT_STEP_EXPERIMENT, impl.NEXT_STEP_REPAIR,
+                    impl.NEXT_STEP_TERMINAL}))
+
+    def test_exactly_the_two_terminal_steps_are_declared_terminal(self):
+        """Read rather than assumed: `piloted` looks terminal (a pilot ran) and
+        is not -- its own rule keeps the question open, which is work. These
+        two are the only answers that prescribe none."""
+        terminal = sorted(step for step, entry in impl.PROBE_NEXT_STEPS.items()
+                          if entry["kind"] == impl.NEXT_STEP_TERMINAL)
+        self.assertEqual(terminal, ["already-benchmarked", "nothing-to-compare"])
+
+    def test_the_experiment_steps_are_the_ones_that_spend_machine_time(self):
+        """The predicate the standing rule needs: whenever the flow reaches the
+        point of running experiments it must ask whether to continue the flow
+        or complement them. Three answers reach that point -- the offer to run
+        (`benchmark`), the pilot already run below its declared scale
+        (`piloted`), and the declared search that has chosen nothing yet
+        (`search-first`), which launches a run of its own."""
+        experiments = sorted(step for step, entry in impl.PROBE_NEXT_STEPS.items()
+                             if entry["kind"] == impl.NEXT_STEP_EXPERIMENT)
+        self.assertEqual(experiments, ["benchmark", "piloted", "search-first"])
+
+    def test_every_non_terminal_step_publishes_something(self):
+        for step, entry in sorted(impl.PROBE_NEXT_STEPS.items()):
+            with self.subTest(step=step):
+                if entry["kind"] == impl.NEXT_STEP_TERMINAL:
+                    self.assertIsNone(entry["publish"])
+                    continue
+                self.assertIsNotNone(entry["publish"])
+
+    def test_the_wiring_draft_belongs_to_the_two_steps_the_wiring_blocks(self):
+        """The withheld payload. `wiring_proposal` had one call site, guarded
+        by `next_step == "benchmark"`, and `wiring-first` is set by an override
+        that runs BEFORE it -- so at the one answer that names missing wiring,
+        the draft of how to wire it came back `None` and the agent composed the
+        plan in prose. Both steps get it, and the roster is what says so."""
+        carrying = sorted(step for step, entry in impl.PROBE_NEXT_STEPS.items()
+                          if entry["wiring"])
+        self.assertEqual(carrying, ["benchmark", "wiring-first"])
+
+    def test_the_experiment_question_names_the_open_choice(self):
+        for step, entry in sorted(impl.PROBE_NEXT_STEPS.items()):
+            if entry["kind"] != impl.NEXT_STEP_EXPERIMENT:
+                continue
+            with self.subTest(step=step):
+                published = entry["publish"](
+                    Path("implementations/box"), "Method", {"declared": {}})
+                self.assertIn("question", published)
+                self.assertIn("implementation_cli.py discuss",
+                              published["command"])
+
+
+class ProbePublishesEveryStepsWorkTests(unittest.TestCase):
+    """Lock B end to end: `probe`'s JSON carries the publication.
+
+    Composed from `ProbeReportedFactsRosterTests`'s fixture rather than a new
+    one: that repository is already proved to reach `benchmark` with every
+    downgrade rung non-firing, which is the only way an assertion about one
+    rung can mean anything.
+    """
+
+    # Borrowed whole rather than rebuilt: the fixture's own class attributes
+    # are what `build_target` writes, and a second copy of them here is a
+    # second thing to keep in step with a repository this class only reads.
+    DECLARATION = ProbeReportedFactsRosterTests.DECLARATION
+    WIRING = ProbeReportedFactsRosterTests.WIRING
+    TABLES = ProbeReportedFactsRosterTests.TABLES
+
+    def build_target(self, suffix):
+        return ProbeReportedFactsRosterTests.build_target(self, suffix)
+
+    def build_piloted_target(self, suffix, ran=1, declared=5):
+        return ProbeReportedFactsRosterTests.build_piloted_target(
+            self, suffix, ran=ran, declared=declared)
+
+    def write_job_folder(self, box, head):
+        return ProbeReportedFactsRosterTests.write_job_folder(self, box, head)
+
+    def probe(self, box):
+        return ProbeReportedFactsRosterTests.probe(self, box)
+
+    def test_the_benchmark_offer_publishes_its_own_question(self):
+        """The old pole asserted `toDiscuss == []` here. It is the defect: the
+        offer to run is the point the standing rule names, and it published
+        nothing."""
+        box, head = self.build_target("pub-benchmark")
+        self.write_job_folder(box, head)
+        probe = self.probe(box)
+        self.assertEqual(probe["nextStep"], "benchmark")
+        self.assertEqual(probe["resolve"]["kind"], "question")
+        self.assertEqual(len(probe["toDiscuss"]), 1)
+        self.assertIn("implementation_cli.py discuss",
+                      probe["toDiscuss"][0]["command"])
+
+    def test_the_benchmark_offer_still_carries_the_wiring_draft(self):
+        box, head = self.build_target("pub-benchmark-wiring")
+        self.write_job_folder(box, head)
+        probe = self.probe(box)
+        self.assertEqual(probe["nextStep"], "benchmark")
+        self.assertEqual((probe["wiring"] or {}).get("status"), "draft")
+
+    def test_wiring_first_carries_the_draft_it_used_to_withhold(self):
+        """The sharp instance. `unreachedModules` is non-empty, the answer is
+        `wiring-first`, and the draft of how each module becomes trainable must
+        be in the payload rather than in the agent's prose."""
+        box, head = self.build_target("pub-wiring-first")
+        self.write_job_folder(box, head)
+        # The fixture's arm reaches both modules through `wiring.py`; emptying
+        # it is what leaves declared mathematics uncalled, which is the state
+        # this rung names.
+        (box / "src" / "Method_Benchmark" / "wiring.py").write_text(
+            "", encoding="utf-8")
+        probe = self.probe(box)
+        self.assertEqual(probe["nextStep"], "wiring-first")
+        self.assertTrue(probe["unreachedModules"])
+        self.assertEqual((probe["wiring"] or {}).get("status"), "draft")
+        self.assertEqual(probe["resolve"]["kind"], "question")
+
+    def test_the_piloted_payload_is_unchanged(self):
+        """The one shape this change may not move: `piloted` published a
+        working entry before it, and its question text is pinned by the
+        stability proof next door."""
+        box, _ = self.build_piloted_target("pub-piloted")
+        probe = self.probe(box)
+        self.assertEqual(probe["nextStep"], "piloted")
+        entry = probe["toDiscuss"][0]
+        self.assertIn("Method", entry["question"])
+        self.assertIn("5", entry["question"])
+        self.assertEqual(entry["about"], {"kind": "record", "operand": None})
+        self.assertEqual(probe["resolve"]["question"], entry["question"])
+
+    def test_a_terminal_step_publishes_nothing(self):
+        """The pole that replaces the old one. A repository with nothing to
+        compare against names no work, so it publishes none -- and that is a
+        roster entry, not an omission."""
+        box, _ = self.build_target("pub-terminal")
+        # Every package under `src/` that is not ours is a baseline
+        # (`previous_implementations`), the benchmark package included, so
+        # both have to go for there to be nothing to compare against.
+        shutil.rmtree(box / "src" / "Prior")
+        shutil.rmtree(box / "src" / "Method_Benchmark")
+        probe = self.probe(box)
+        self.assertEqual(probe["nextStep"], "nothing-to-compare")
+        self.assertIsNone(probe["resolve"])
+        self.assertEqual(probe["toDiscuss"], [])
+        self.assertIsNone(probe["wiring"])
+
+    def test_the_published_probe_command_is_directly_runnable(self):
+        box, head = self.build_target("pub-runnable")
+        self.write_job_folder(box, head)
+        probe = self.probe(box)
+        tokens = shlex.split(probe["resolve"]["command"])
+        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
+                              capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["asked"],
+                         probe["resolve"]["question"])

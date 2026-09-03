@@ -749,6 +749,53 @@ not one of `__levels__`'s own entries), and `POSITION_LEVELS_UNDECLARED` (a
 leveled witness exists in the sequence but `__levels__` declares no
 ladder).
 
+#### A rung is never skipped going forward
+
+Naming a declared rung is not the same as being allowed to reach it. **To
+seal at rung N, every leveled item in the sequence must already grade as
+satisfied at rung N-1** — otherwise `POSITION_RUNG_SKIPPED`, a work state
+whose published `resolve` names the rung this target *can* seal next and
+asks what has to run before the one above it can be claimed. The rung whose
+whole purpose is proving the flow runs before anything is spent further up
+is exactly the rung a jump would skip.
+
+The check reads the **evidence**, never the ledger. "Was there a prior pass
+at the rung below" would be the obvious rule and is deliberately not the
+one: a target that has never run this command has no `position.jsonl` at
+all, so a history check would pass vacuously on precisely the repositories
+it exists to stop. Instead the sequence is re-graded by
+`impl_position.derive` itself at the previous rung, so "satisfied at rung
+N-1" means here exactly what it means when a mark is written.
+
+Four boundaries, each of them decided rather than fallen into:
+
+- **The first rung has no predecessor.** Sealing at `__levels__[0]` is
+  always possible, including on a repository with no evidence whatsoever —
+  a ladder needs a bottom step or nothing can ever start.
+- **Only a forward move is checked.** A re-seal at the rung already
+  recorded, a bare refresh that inherits it, and a retreat to a lower rung
+  are all exempt. `position` is the instrument that measures, and an
+  instrument that refuses to take a reading because the reading is bad
+  hides the regression it exists to report; a retreat, meanwhile, asserts
+  less than the header already did — it spends nothing and skips nothing.
+  Nothing is laundered through the exemption: a move that does not climb
+  cannot raise the recorded rung, and every move that does climb is checked
+  against the rung directly below its own target, never against wherever it
+  came from.
+- **Two-state items do not participate.** Their verdict is computed without
+  the ladder and is identical at every rung, so they say nothing about
+  which rung was reached. Folding them in would refuse a legitimate advance
+  because some unrelated boolean step is still open. Their own ordering is
+  already held, within a rung, by `SEQUENCE_NOT_REACHED`.
+- **Unmeasured is not attained.** A leveled item nobody could measure does
+  not satisfy the rung below, because "we did not look" is not "it has been
+  reached". This is also what separates the rule from a cheaper one that
+  merely counts ladder positions: even a single-step advance is refused
+  when the step below it is not *shown* attained.
+
+A target that declares no `__levels__` at all is entirely unaffected: no
+ladder, no rungs, no progression to enforce.
+
 Each witness in the block's markdown may carry `:level` right after its
 kind — `` `@rehearsal:level governing-search` `` — to opt into being
 measured against the declared ladder instead of a plain pass/fail. Omitted
@@ -1227,11 +1274,17 @@ discovered. Everything else is required.
 `probe` runs nothing and changes nothing — `kind` says so in the output itself,
 and the exit status is `0` whatever it finds. `nextStep` is the answer and there
 is exactly one of them: the ladder is ordered, so the first thing standing in
-the way is the only thing reported. Ten values are possible. Seven prescribe
+the way is the only thing reported. Eleven values are possible. Eight prescribe
 work and each has its own section in `SKILL.md` — `convert`, `declare-first`,
-`wiring-first`, `poll-first`, `search-first`, `report-first` and `benchmark`.
-The other three prescribe none, and deliberately have no section:
-`nothing-to-compare`, `piloted` and `already-benchmarked`.
+`env-first`, `wiring-first`, `poll-first`, `search-first`, `report-first` and
+`benchmark`. The other three have no section: `nothing-to-compare` and
+`already-benchmarked` prescribe no work at all, and `piloted`'s own rule keeps
+its question open rather than handing over a list of steps.
+
+**Prescribing no section is not the same as publishing nothing.** Nine of the
+eleven publish `resolve` (below); only the two that name no work at all —
+`nothing-to-compare` and `already-benchmarked` — publish `null`, and they say so
+in `PROBE_NEXT_STEPS` rather than by omission.
 
 Never read past the answer for a reason to skip it. A rung fires because
 everything above it is already settled, so the next one down says nothing about
@@ -1302,16 +1355,41 @@ oversight: the fact as computed cannot tell a repository that is not ready apart
 from one that never sends work anywhere. `SKILL.md`'s Output Contract carries the
 argument and states what would change it.
 
-A third field is reported beside `nextStep`, present only when the answer
-itself is `piloted`:
+Two more fields are reported beside `nextStep`, and they are the answer to
+"what do I do about it" — published by the engine rather than composed by
+whoever reads the output:
 
-- **`toDiscuss`** — one directly runnable, `shlex.quote`-escaped `discuss`
-  command. The question names the target/name pair and the DECLARED scale
-  the protocol asks for — never the currently-achieved count, which climbs
-  on every poll while the pilot-vs-declared-scale decision has not changed
-  — asking whether to accept the pilot's reduced scale as final or continue
-  toward the declared one. Run it verbatim, or run `discuss` by hand. It
-  **never gates** — the same non-goal as `verify`'s own `toDiscuss` above.
+- **`resolve`** — what this answer's work actually is. `{kind: "command",
+  command}` where the flow can name the whole exit (`env-first` resolves to
+  `implementation_cli.py env --target <t>`; run it unedited). `{kind:
+  "question", question, command}` where the next act is a decision, in which
+  case `command` is the runnable `discuss` invocation that opens it. `null`
+  only at `nothing-to-compare` and `already-benchmarked`, the two answers
+  `PROBE_NEXT_STEPS` declares terminal.
+
+  **Wherever the flow reaches the point of running experiments, the question
+  is the same one**: continue the flow toward the declared scale, or complement
+  the experiments first. Three answers reach that point — `benchmark` (the
+  offer to run), `piloted` (a run already made below the scale it declared)
+  and `search-first` (a declared search that has chosen nothing yet, and a
+  search is an experiment with a scale of its own). `search-first` used to
+  publish nothing at all.
+
+- **`toDiscuss`** — the question-shaped half of `resolve`, as a list, so a
+  reader can treat every open question the same way whichever command reported
+  it. Each entry is one directly runnable, `shlex.quote`-escaped `discuss`
+  command. For `piloted` and `search-first` the question names the target/name
+  pair and the DECLARED scale the protocol asks for — never the currently-
+  achieved count, which climbs on every poll while the decision has not changed.
+  Run it verbatim, or run `discuss` by hand. It **never gates** — the same
+  non-goal as `verify`'s own `toDiscuss` above.
+
+`wiring` is reported at two answers, not one: `benchmark`, where the draft is
+the raw material the run offer is built from, and `wiring-first`, where an arm
+declares mathematics it never calls and the draft is the very thing that state
+is missing. It was guarded on `benchmark` alone, and because the `wiring-first`
+override runs before that guard, the one answer naming missing wiring came back
+with `wiring: null`.
 
 ## `propose` — the campaign proposal
 
@@ -1588,13 +1666,34 @@ step ran.
 Every RESOLVED run — pass or fail — appends exactly one `kind: "step"` event
 to `.implementation/position.jsonl`: the step's name, its dotted callable,
 the interpreter path, `outcome` (`returned`/`raised`/`unknown`), exit
-status, and `error` (the raised exception, formatted once inside the
+status, `error` (the raised exception, formatted once inside the
 subprocess itself, since the step's own stdout/stderr are inherited live
-rather than captured). No digest field — `notebooks_state` already
-recomputes that fresh against the notebook's own `DIGEST_MARKER` output.
-This never touches `gate`: it calls none of the remote-execution loaders,
-and a `kind: "step"` line is invisible to `_verify_launch_authorization`,
-which selects on the exact string `"gate"`.
+rather than captured), and `suiteDigest` — `suite_digest(target)`, every
+`.py` under `src/` and `tests/` plus five fixed environment manifests
+(`requirements.txt`, `pyproject.toml`, `setup.cfg`, `tox.ini`,
+`pytest.ini`), computed fresh at write time, unconditionally regardless of
+outcome. This reverses "no digest field" only for a bare runner step with
+no self-stamping artifact of its own; a notebook still recomputes
+`source_digest` fresh against its own `DIGEST_MARKER` output, so a
+ledger-carried copy there would still be redundant. An `@step <name>`
+witness in `position`'s own sequence folds the ledger's latest event per
+name (latest wins) against a live digest: `True` for a current `returned`,
+`False` for a current `raised`, `unmeasured` for a stale digest, a
+pre-change event with no digest at all, or no event at all — never a false
+`True`/`False` over code nobody ran against. **Stated non-goal**: this does
+not distinguish a fully-executed suite from one that skipped tests —
+`pytest` exits 0 on skips, so `returned` grades green over a skipped suite
+exactly as a notebook report already does. An unknown `--step` name is
+`STEP_UNKNOWN` on this command; the identical operand named inside a
+position sequence's `@step` witness is `POSITION_STEP_UNKNOWN` instead,
+raised by `position` (an argument to `step` is an invocation the caller
+typed; a position item's operand lives in AGREED.md, so clearing it means
+editing the document or declaring the step) — `STEPS_UNDECLARED` covers
+the case where `__steps__` names nothing at all, in either command,
+verbatim. This never touches `gate`: it calls none of the remote-execution
+loaders, and a `kind: "step"` line is invisible to
+`_verify_launch_authorization`, which selects on the exact string
+`"gate"`.
 
 ## `handoff` — back to the deliberation, sized by reach
 
@@ -1687,6 +1786,51 @@ state, alongside the scenarios — not verified by hand once.
 | `MATERIALIZE_PATH_ABSENT` | `materialize --authored`/`--adopt` named a path with no bytes on disk. |
 | `NO_RECEIPT_ENTRY` | `materialize --authored <path>` named a path the engine never wrote. There is no seal to release; use `--adopt`. |
 | `ALREADY_RECORDED` | `materialize --adopt <path>` named a path the receipt already carries. Adoption is not a re-seal; use `--authored`. |
+
+### Every refusal says how it is cleared
+
+Every refusal leaves the CLI through one handler and prints the same JSON:
+`status`, `code`, `detail`, exit `2`, nothing appended anywhere. Refusals raised
+inside the nine **gating** commands — `apply`, `admit`, `gate`, `offer`,
+`close`, `step`, `settle`, `materialize`, `position` — carry one more thing, and
+which ones carry it is itself the answer to a question:
+
+> Can the caller clear this by changing the invocation alone, without touching
+> the repository?
+
+**Yes — an invocation defect.** The detail already names the flag, the token or
+the mutual exclusion. Thirty-four codes, and nothing is published beside them:
+`SETTLE_STDIN_CONFLICT`, `OFFER_ANSWER_NOT_A_TOKEN`, `MATERIALIZE_MODE_REQUIRED`
+and the rest. Retype the call.
+
+**No — a work state.** Somebody has to act on the repository, so the payload
+carries a `resolve` key saying what. Thirty-two codes, including
+`POSITION_DISAGREES`, `AGREEMENT_DISAGREES`, `POSITION_STALE`,
+`POSITION_RUNG_SKIPPED`, `POSITION_STEP_UNKNOWN`, `STEPS_UNDECLARED` and
+`NOT_READY`:
+
+```json
+{ "status": "refused", "code": "POSITION_STALE",
+  "detail": "the position section is bound to a revision whose bytes no longer match; ...",
+  "resolve": { "kind": "command",
+               "command": "implementation_cli.py position --target implementations/repo --name Name --session s1 --revision r7.md" } }
+```
+
+`resolve.kind` is `command` when the engine can name the whole exit — run it
+unedited — and `question` when the next act is a decision nobody but a human
+can take, in which case `resolve.command` is the runnable `discuss` invocation
+that opens it and `resolve.question` is the text it will ask.
+
+`POSITION_DISAGREES` — a ticked item whose own witness contradicts the mark —
+resolves to re-executing the verification notebook under the target's own venv
+with that venv's `bin` on `PATH`, then re-running `position` to rebind. The
+`PATH` prefix is not decoration; see
+[Executing a notebook needs `PATH`](../SKILL.md#executing-a-notebook-needs-path-not-just-the-right-python).
+
+The roster lives in `implementation_cli.py` as `GATING_REFUSALS`, and the suite
+derives the gating commands' refusal codes from their own source: **a refusal
+added to a gating command fails the tests until it has been classified.** No
+code reaches a reader as a bare word again.
 
 `DESTINATION_CONFLICT` also covers a rename whose destination already exists.
 That case is not cosmetic: `git mv A B` with `B` present does not rename, it

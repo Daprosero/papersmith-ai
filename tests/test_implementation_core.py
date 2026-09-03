@@ -463,6 +463,109 @@ class RecordCurrencyTests(unittest.TestCase):
         self.assertNotIn("recordCurrent", without["measuredBy"])
 
 
+class StepDeriveTests(unittest.TestCase):
+    """`_derive_step` -- design "One field on the existing `step` event, not
+    a sibling kind": a plain dict reader over `evidence["stepVerdicts"][operand]`,
+    the same shape `_derive_rehearsal` already has against `smokeReady`.
+    Digest currency and the ledger fold are the caller's job
+    (`_step_verdicts`, `implementation_cli.py`); this module learns no path,
+    no ledger, no digest math -- `_derive_shard`'s stated layering, one level
+    up.
+    """
+
+    def _item(self, twostate=True):
+        return [{"ordinal": 1, "mark": " ", "text": "run the suite",
+                 "witness": {"kind": "step", "operand": "run_suite",
+                             "twostate": twostate}}]
+
+    def _derive(self, evidence):
+        return impl_position.derive(self._item(), evidence)[0]
+
+    def test_step_joins_witness_kinds_and_operand_required_kinds(self):
+        """`@step <name>` is operand-required, the same class as
+        `notebook`/`rehearsal`/`shard` -- never the operand-less `record`."""
+        self.assertIn("step", impl_position.WITNESS_KINDS)
+        self.assertIn("step", impl_position.OPERAND_REQUIRED_KINDS)
+
+    def test_a_step_never_run_derives_unmeasured(self):
+        """No key for the operand in `stepVerdicts` -- either the step never
+        ran, or the ledger holds no `kind: "step"` event for it at all."""
+        self.assertIsNone(self._derive({"stepVerdicts": {}})["derived"])
+
+    def test_a_returned_and_current_step_derives_true(self):
+        evidence = {"stepVerdicts": {"run_suite": True}}
+        self.assertIs(self._derive(evidence)["derived"], True)
+
+    def test_a_raised_step_derives_false_never_none(self):
+        """The mutation this locks against: a dict reader that special-cases
+        `False` into `None` (treating "the suite failed" as "unmeasured") is
+        exactly the collapse this revision's derivers refuse elsewhere --
+        `derive()`'s own docstring names it for the leveled arm; this is the
+        two-state twin of that same trap."""
+        evidence = {"stepVerdicts": {"run_suite": False}}
+        self.assertIs(self._derive(evidence)["derived"], False)
+
+    def test_a_stale_step_derives_unmeasured_not_false(self):
+        """`_step_verdicts` (`implementation_cli.py`) folds a stale digest to
+        `None` before this reader ever sees it -- `_derive_step` merely
+        preserves whatever tri-state its caller already decided, same as
+        `stepVerdicts` holding no key at all."""
+        evidence = {"stepVerdicts": {"run_suite": None}}
+        self.assertIsNone(self._derive(evidence)["derived"])
+
+    def test_the_operand_it_read_is_named_in_measured_by(self):
+        evidence = {"stepVerdicts": {"run_suite": True}}
+        self.assertIn("run_suite", self._derive(evidence)["measuredBy"])
+
+
+class WitnessNotLevelableTests(unittest.TestCase):
+    """`derive()`'s lookup guard -- design "The guard lives at the lookup,
+    not as a fourth special case": one shared `.get()`-based resolver at both
+    `_DERIVERS[kind]` and `_LEVEL_DERIVERS[kind]`, replacing a bare subscript
+    that raised an uncaught `KeyError` for any kind missing from the table it
+    hit.
+
+    **Reachability, honestly** (design, verbatim): the leveled arm is
+    reachable from real markdown -- `@step:level <name>`, since `"step"`
+    joins `WITNESS_KINDS` with no `_LEVEL_DERIVERS` entry. The two-state arm
+    is reachable only from a direct `derive()` call built by hand:
+    `parse_items` (`implementation_cli.py`) never emits an item whose kind is
+    not in `WITNESS_KINDS`, and every `WITNESS_KINDS` member besides
+    `record` (special-cased above the lookup) now has a `_DERIVERS` entry.
+    That test is structural insurance against a future kind added to
+    `WITNESS_KINDS` without a matching deriver, not a claim that today's
+    grammar can reach it.
+    """
+
+    def test_a_leveled_step_item_is_refused_not_a_keyerror(self):
+        """The scenario the spec names directly: `@step:level <name>` has no
+        rung to report. Mutation: reverting the `.get()` guard to a bare
+        `_LEVEL_DERIVERS[kind]` subscript raises an uncaught `KeyError`
+        instead of a classified `Refused` -- this assertion only passes
+        against the caught, classified exception, and its `detail` must
+        still name a kind that DOES carry a rung."""
+        item = [{"ordinal": 1, "mark": " ", "text": "run the suite",
+                 "witness": {"kind": "step", "operand": "run_suite",
+                             "twostate": False}}]
+        with self.assertRaises(impl_refusals.Refused) as ctx:
+            impl_position.derive(item, {"levels": ["one", "two"],
+                                        "targetLevel": "two"})
+        self.assertEqual(ctx.exception.code, "POSITION_WITNESS_NOT_LEVELABLE")
+        self.assertIn("notebook", ctx.exception.detail)
+
+    def test_the_two_state_lookup_guard_is_structural_not_markdown_reachable(self):
+        """Every real kind (`record` special-cased, `notebook`/`rehearsal`/
+        `shard`/`step` all present in `_DERIVERS`) already resolves on the
+        two-state arm -- this constructs the one input `parse_items` could
+        never produce, to prove the same guard exists there too."""
+        item = [{"ordinal": 1, "mark": " ", "text": "step",
+                 "witness": {"kind": "not_a_real_kind", "operand": "x",
+                             "twostate": True}}]
+        with self.assertRaises(impl_refusals.Refused) as ctx:
+            impl_position.derive(item, {})
+        self.assertEqual(ctx.exception.code, "POSITION_WITNESS_NOT_LEVELABLE")
+
+
 class LaunchAvailableTests(unittest.TestCase):
     """The one rule `cmd_gate` and the state-derived action menu's publisher
     must agree on (spec "One shared availability rule"), exercised over
@@ -875,7 +978,7 @@ class OperandRequiredKindsTests(unittest.TestCase):
 
     def test_record_is_excluded_the_rest_are_required(self):
         self.assertEqual(impl_position.OPERAND_REQUIRED_KINDS,
-                         frozenset({"notebook", "rehearsal", "shard"}))
+                         frozenset({"notebook", "rehearsal", "shard", "step"}))
         self.assertNotIn("record", impl_position.OPERAND_REQUIRED_KINDS)
         self.assertTrue(
             impl_position.OPERAND_REQUIRED_KINDS <= impl_position.WITNESS_KINDS)
