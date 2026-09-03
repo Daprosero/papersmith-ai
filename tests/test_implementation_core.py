@@ -463,6 +463,121 @@ class RecordCurrencyTests(unittest.TestCase):
         self.assertNotIn("recordCurrent", without["measuredBy"])
 
 
+class NamedRecordLevelTests(unittest.TestCase):
+    """`@record:level <name>` -- design D2/D4: `_derive_record_level` routes
+    a NAMED operand through the identical `_record_scale_level` arithmetic
+    the `search` block's own bare `@record:level` already uses, fed
+    `evidence["records"][name]` (`named_records_state()`'s own shape,
+    `implementation_cli.py`) instead of `evidence["search"]`.
+    """
+
+    LEVELS = ["floor", "pilot", "full"]
+
+    def _item(self, operand):
+        return [{"ordinal": 1, "mark": " ", "text": "reach the record",
+                 "witness": {"kind": "record", "operand": operand,
+                             "twostate": False}}]
+
+    def _derive(self, operand, evidence):
+        return impl_position.derive(
+            self._item(operand), {"levels": self.LEVELS, **evidence})[0]
+
+    def test_a_named_record_absent_from_declared_records_derives_none_not_false(self):
+        """The spec requirement, stated as arithmetic: a name absent from a
+        declared `__records__` is `None` (unmeasured), never `False` -- the
+        same doctrine an unlisted `@notebook` path already reads."""
+        result = self._derive("main", {"records": {}})
+        self.assertIsNone(result["derived"])
+
+    def test_a_named_record_not_found_reads_the_floor(self):
+        evidence = {"records": {"main": {
+            "recordFound": False, "recordCurrent": None,
+            "scaleSatisfied": None, "requiredScale": {}}}}
+        result = self._derive("main", evidence)
+        self.assertEqual(result["derived"], "floor")
+
+    def test_a_named_record_at_full_declared_scale_reads_the_top(self):
+        evidence = {"records": {"main": {
+            "recordFound": True, "recordCurrent": None,
+            "scaleSatisfied": True, "requiredScale": {"seeds": 3}}}}
+        result = self._derive("main", evidence)
+        self.assertEqual(result["derived"], "full")
+
+    def test_a_named_record_short_of_declared_scale_reads_one_rung_under_the_top(self):
+        evidence = {"records": {"main": {
+            "recordFound": True, "recordCurrent": None,
+            "scaleSatisfied": False, "requiredScale": {"seeds": 30}}}}
+        result = self._derive("main", evidence)
+        self.assertEqual(result["derived"], "pilot")
+
+    def test_a_bare_operand_less_leveled_record_still_reads_the_search_block(self):
+        """`operand is None` -- the grammar that predates `__records__`
+        entirely -- keeps the byte-identical search-block fallthrough (spec
+        "existing instances keep working"), even when `evidence["records"]`
+        carries entries a caller could have routed through instead."""
+        evidence = {"search": {"recordFound": True}, "requiredScale": {},
+                    "records": {"main": {"recordFound": False, "recordCurrent": None,
+                                        "scaleSatisfied": None, "requiredScale": {}}}}
+        result = self._derive(None, evidence)
+        self.assertEqual(result["derived"], "full")
+
+    def test_a_named_record_and_the_search_block_read_independently(self):
+        """Two different facts under one kind: the named entry disagrees
+        with the search block, and each `@record:level` item reads only its
+        own operand's evidence."""
+        evidence = {
+            "search": {"recordFound": False}, "requiredScale": {},
+            "records": {"main": {"recordFound": True, "recordCurrent": None,
+                                 "scaleSatisfied": True, "requiredScale": {}}}}
+        named = self._derive("main", evidence)
+        bare = self._derive(None, evidence)
+        self.assertEqual(named["derived"], "full")
+        self.assertEqual(bare["derived"], "floor")
+
+    def test_the_operand_it_read_is_named_in_measured_by(self):
+        evidence = {"records": {"main": {
+            "recordFound": True, "recordCurrent": None,
+            "scaleSatisfied": True, "requiredScale": {}}}}
+        result = self._derive("main", evidence)
+        self.assertIn("main", result["measuredBy"])
+
+    # --- B3's required mutation: measured_by binding, never discarded -----
+
+    def test_a_named_records_measured_by_names_its_own_binding_never_the_bare_one(self):
+        """**Required mutation lock** (design D2, "three explicit bindings").
+        `derive`'s own bare `@record:level` branch and `_derive_record_level`
+        both call the identical `_record_scale_level`, each passing its OWN
+        `measured_by` string -- swapping which string binds to which call
+        site is the mutation this proves against: a weaker lock that only
+        asserted the returned RUNG (never `measuredBy`) would survive that
+        swap silently, since both bindings compute the identical rung
+        arithmetic and would still return the same rung either way."""
+        evidence = {"search": {"recordFound": True}, "requiredScale": {},
+                    "records": {"main": {"recordFound": True, "recordCurrent": None,
+                                         "scaleSatisfied": True, "requiredScale": {}}}}
+        named = self._derive("main", evidence)
+        bare = self._derive(None, evidence)
+        self.assertEqual(named["measuredBy"],
+                         "records[main].recordFound+scaleSatisfied")
+        self.assertEqual(bare["measuredBy"], "search.recordFound+scaleSatisfied")
+        self.assertNotEqual(named["measuredBy"], bare["measuredBy"])
+
+    def test_derive_notebook_level_reports_its_own_measured_by_unchanged(self):
+        """B3's other call site: the notebook-level path still returns
+        `_derive_notebook_level`'s own fixed string, byte-identical to
+        before this refactor -- proving the newly-threaded `measured_by`
+        kwarg did not leak the record binding's string into this deriver."""
+        evidence = {"notebooks": {"reports": [
+            {"notebook": "n.ipynb", "status": "executed", "sourcesMatch": True}]},
+                    "search": {"recordFound": True}, "requiredScale": {}}
+        rung, measured_by = impl_position._derive_notebook_level(
+            evidence, "n.ipynb", self.LEVELS)
+        self.assertEqual(rung, "full")
+        self.assertEqual(
+            measured_by,
+            "notebooks.reports[n.ipynb].sourcesMatch+search.scaleSatisfied")
+
+
 class StepDeriveTests(unittest.TestCase):
     """`_derive_step` -- design "One field on the existing `step` event, not
     a sibling kind": a plain dict reader over `evidence["stepVerdicts"][operand]`,
@@ -687,7 +802,14 @@ class LaunchAvailableTests(unittest.TestCase):
     def _call(self, **overrides):
         facts = {"status": "complete", "unbacked": [], "disagreements": [],
                  "sequence": self.SEQUENCE, "ready": True, "job": "job-a",
-                 "shards_declared": True}
+                 "shards_declared": True,
+                 # A ladder too short for the rung threshold to apply at
+                 # all (spec "reachability preconditions") — every test in
+                 # this class predates the rung threshold and asserts facts
+                 # about the six checks above it; overriding `levels`/
+                 # `attained_level` explicitly is how the threshold's own
+                 # tests, below, opt into it.
+                 "levels": [], "attained_level": None}
         facts.update(overrides)
         return impl_availability.launch_available(**facts)
 
@@ -796,6 +918,111 @@ class LaunchAvailableTests(unittest.TestCase):
         self.assertTrue(verdict["available"])
         self.assertIsNone(verdict["code"])
         self.assertEqual(verdict["facts"]["jobOrdinal"], 2)
+
+    def test_omitting_levels_raises_typeerror(self):
+        """No default, the identical doctrine `disagreements` already keeps:
+        a caller that forgets `levels` fails the call itself, rather than
+        silently exempting every launch from the rung threshold."""
+        facts = {"status": "complete", "unbacked": [], "disagreements": [],
+                 "sequence": self.SEQUENCE, "ready": True, "job": "job-a",
+                 "shards_declared": True, "attained_level": None}
+        with self.assertRaises(TypeError):
+            impl_availability.launch_available(**facts)
+
+    def test_omitting_attained_level_raises_typeerror(self):
+        facts = {"status": "complete", "unbacked": [], "disagreements": [],
+                 "sequence": self.SEQUENCE, "ready": True, "job": "job-a",
+                 "shards_declared": True, "levels": []}
+        with self.assertRaises(TypeError):
+            impl_availability.launch_available(**facts)
+
+    # --- the rung threshold (spec "launch-rung-gate") -----------------------
+
+    def test_below_floor_attainment_on_a_three_rung_ladder_refuses(self):
+        verdict = self._call(levels=["floor", "pilot", "full"], attained_level=None)
+        self.assertFalse(verdict["available"])
+        self.assertEqual(verdict["code"], "RUNG_NOT_ATTAINED")
+        self.assertEqual(verdict["facts"]["requiredLevel"], "pilot")
+        self.assertIsNone(verdict["facts"]["attainedLevel"])
+
+    def test_floor_attainment_on_a_three_rung_ladder_still_refuses(self):
+        """The floor itself is below `levels[-2]` ("pilot") on a three-rung
+        ladder -- reaching the floor is not reaching the rung the launch
+        requires."""
+        verdict = self._call(levels=["floor", "pilot", "full"], attained_level="floor")
+        self.assertEqual(verdict["code"], "RUNG_NOT_ATTAINED")
+
+    def test_pilot_attainment_on_a_three_rung_ladder_is_sufficient(self):
+        verdict = self._call(levels=["floor", "pilot", "full"], attained_level="pilot")
+        self.assertTrue(verdict["available"])
+
+    def test_floor_attainment_on_a_two_rung_ladder_is_sufficient(self):
+        """A two-rung ladder is NOT exempt from the check -- there
+        `levels[-2]` coincides with `levels[0]`, so reaching the floor is
+        already reaching the rung the check demands (spec scenario "floor
+        attainment on a two-rung ladder is sufficient")."""
+        verdict = self._call(levels=["floor", "full"], attained_level="floor")
+        self.assertTrue(verdict["available"])
+
+    def test_no_attainment_on_a_two_rung_ladder_refuses(self):
+        verdict = self._call(levels=["floor", "full"], attained_level=None)
+        self.assertEqual(verdict["code"], "RUNG_NOT_ATTAINED")
+        self.assertEqual(verdict["facts"]["requiredLevel"], "floor")
+
+    def test_a_ladder_with_fewer_than_two_rungs_is_structurally_unreachable(self):
+        """`len(levels) < 2`: no predecessor rung exists for a launch to
+        have missed, so the check does not apply at all, even with
+        `attained_level=None` -- the identical doctrine
+        `_skipped_rung_detail` already keeps for a ladder too short to name
+        a predecessor."""
+        verdict = self._call(levels=["only"], attained_level=None)
+        self.assertTrue(verdict["available"])
+
+    def test_an_unknown_attained_level_is_read_as_off_the_ladder(self):
+        """`attained_level` naming a rung absent from `levels` (a ladder
+        that shrank since it was last read, most plausibly) is read
+        identically to `None` -- off the ladder is off the ladder, never a
+        crash and never a silent pass."""
+        verdict = self._call(
+            levels=["floor", "pilot", "full"], attained_level="retired-rung")
+        self.assertEqual(verdict["code"], "RUNG_NOT_ATTAINED")
+
+    def test_vacuous_attainment_at_the_top_rung_is_sufficient(self):
+        """A sequence with zero leveled items attains the ladder's top rung
+        vacuously (`impl_position.attained_level`'s own doctrine, unchanged
+        by this rule) -- passed through here as an ordinary `attained_level`
+        value, this check adds nothing new for that state and a launch
+        proceeds exactly as it would for any other rung at or above the
+        floor."""
+        verdict = self._call(levels=["floor", "pilot", "full"], attained_level="full")
+        self.assertTrue(verdict["available"])
+
+    def test_an_existing_refusal_keeps_its_code_once_levels_and_attained_level_are_supplied(self):
+        """**Required mutation lock** (design "last position cannot move an
+        existing verdict"). A call that refuses `NOT_READY` today must keep
+        refusing `NOT_READY` once a below-floor `levels`/`attained_level`
+        pair is also supplied -- proving the rung threshold truly runs
+        LAST and cannot move a verdict an earlier check already reached. A
+        weaker lock that only asserted `RUNG_NOT_ATTAINED` fires when
+        nothing else is wrong would survive the rung check being moved
+        ahead of `NOT_READY` by mistake; this one would not, because it
+        would then observe `RUNG_NOT_ATTAINED` where it asserts `NOT_READY`.
+        """
+        verdict = self._call(
+            ready=None, levels=["floor", "pilot", "full"], attained_level=None)
+        self.assertEqual(verdict["code"], "NOT_READY")
+
+    def test_sequence_not_reached_outranks_rung_not_attained_too(self):
+        """The same proof one check further down the ladder: an earlier
+        open item refuses `SEQUENCE_NOT_REACHED` even with a below-floor
+        `levels`/`attained_level` pair supplied alongside it."""
+        sequence = [
+            {"ordinal": 1, "mark": " ", "witness": {"kind": "record", "operand": None}},
+            {"ordinal": 2, "mark": "x", "witness": {"kind": "rehearsal", "operand": "job-a"}},
+        ]
+        verdict = self._call(
+            sequence=sequence, levels=["floor", "pilot", "full"], attained_level=None)
+        self.assertEqual(verdict["code"], "SEQUENCE_NOT_REACHED")
 
 
 class PositionHonestTests(unittest.TestCase):

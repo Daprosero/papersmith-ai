@@ -2117,7 +2117,7 @@ have to count rows to learn the answer.
 
 Report: the bound revision, the target path, the migration commit hash (if
 any), the object → module map, the test result, and every verification status
-`verify` returns, separately. There are seventeen of them, and a list written
+`verify` returns, separately. There are eighteen of them, and a list written
 inline is a list that loses one — two of these were computed, returned and named
 in no doctrine at all, so a reader met them first in the JSON:
 
@@ -2140,6 +2140,7 @@ in no doctrine at all, so a reader met them first in the JSON:
 | `toDiscuss` | One directly runnable, `shlex.quote`-escaped `discuss` command per `audit.localRemediesNotWritten` finding id, asking whether its local remedy is written now or deliberately deferred (and why) | **Never** — a published action naming an already-computed undecided thing, not a verdict; publishing it lowers the friction to ask, and does not prove whoever answers is the operator (see "Neither half proves who answered," below) |
 | `undeclaredOptional` | Every optional key a DECLARED `search`/`distribution` block left unanswered (`SEARCH_OPTIONAL`/`DISTRIBUTION_OPTIONAL` — `search.currentWhen`, `distribution.currentWhen`, `distribution.shardsRoot`), each entry naming its `section`, `field` and the exact `consequence` its absence carries. Reported, never demanded — a target with no search, or no split run, is asked nothing here either | **Never** — an optional field left unanswered is a legitimate resting state, not a defect; this only makes the option visible and names what it costs |
 | `undeclaredLadder` | The ordered rung ladder `__levels__` names, when it names none: the declaration, the file that would carry it, and the exact `consequence` its absence carries — `POSITION_RUNG_SKIPPED` can never fire, `position.attainedLevel` stays `null` forever, every item stays two-state because a `:level` witness is refused, and a header's `--target-level` is compared against nothing. `null` when a ladder is declared, and when the target has no benchmark package to declare one in | **Never** — a repository whose steps are all two-state needs no ladder and is not defective for having none; this only makes the option visible and names what it costs |
+| `undeclaredRecords` | The named records `__records__` names, when it names none: the declaration, the file that would carry it, and the exact `consequence` its absence carries — a leveled `@record:level <name>` witness can only ever derive `None` (unmeasured), and `position` refuses `POSITION_RECORD_UNKNOWN` outright before that state is ever written to a mark. `null` when at least one record is declared, and when the target has no benchmark package to declare one in | **Never** — a repository whose only leveled `@record` witness is the bare, operand-less one needs no named record and is not defective for having none; this only makes the option visible and names what it costs |
 
 Column one is read by the suite against `verify`'s own return, so a status added
 to the command fails the tests until it has a row here. Columns two and three are
@@ -2257,6 +2258,20 @@ remote-execution CLI at all — and permitting the rehearsal is not the same as
 branching on the fact. What routes a reader here is the Decision Gates row,
 which is prose a reader follows, not a rung the ladder computes.
 
+### The smoke proves the pipe, the pilot proves the science
+
+**The smoke proves the pipe. The pilot proves the science.** A rehearsal's
+readiness measurement — the service accepted the submission, the kernel ran,
+the shard came down carrying the agreed fields — is a different fact from a
+pilot's production: the whole flow ran, and what it produced satisfies what
+was agreed. Passing one MUST NOT be read as passing the other. This is why
+`@step:level <name>` refuses `POSITION_WITNESS_NOT_LEVELABLE` rather than
+reporting a rung: `_derive_step` reads `run_step`'s `raised`/`returned`
+outcome, which is identical whether the callable ran at pilot scale or full
+scale — it measures completion, never production. A step earns no rung this
+way, on purpose: a witness that cannot see what its own prose claims to
+describe would be worse than one that refuses to claim it at all.
+
 ## Command Roster
 
 Two tables, and together they are the whole of `implementation_cli.py`'s
@@ -2330,7 +2345,7 @@ me to do that now?". That is the failure this section exists to make
 impossible. **The engine publishes what happens next. The agent never composes
 it.**
 
-Sixty-six distinct codes are raised inside the nine gating commands — `apply`,
+Sixty-eight distinct codes are raised inside the nine gating commands — `apply`,
 `admit`, `gate`, `offer`, `close`, `step`, `settle`, `materialize`, `position`
 (`GATING_COMMANDS`). Each is classified in `GATING_REFUSALS` by one derivable
 test, and the classification is a decision somebody made rather than a shape
@@ -2343,7 +2358,7 @@ somebody noticed:
   flag, the token or the mutual exclusion. Nothing is published beside it: a
   `resolve` key on every refusal is the shape a reader learns to skip, and that
   is how a real one stops being read.
-- **No — a *work state*** (32 codes). Somebody must act on the repository, so
+- **No — a *work state*** (34 codes). Somebody must act on the repository, so
   the refused payload carries `resolve`: `{kind: "command", command}` when the
   engine can name the whole exit, or `{kind: "question", question, command}`
   when the next act is a decision, where `command` is the runnable `discuss`

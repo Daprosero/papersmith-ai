@@ -90,7 +90,8 @@ def position_honest(*, status: str, unbacked: list, disagreements: list,
 
 def launch_available(*, status: str, unbacked: list, disagreements: list,
                      sequence: list, ready: bool | None, job: str,
-                     shards_declared: bool) -> dict:
+                     shards_declared: bool, levels: list[str],
+                     attained_level: str | None) -> dict:
     """Whether a launch may proceed for `job`, and why not when it may not.
 
     `status`, `unbacked`, `disagreements`, `shards_declared` and `sequence`
@@ -111,6 +112,15 @@ def launch_available(*, status: str, unbacked: list, disagreements: list,
     forgotten keyword is exactly the kind of drift this module exists to
     make impossible between them.
 
+    `levels` (the target's own declared rung ladder) and `attained_level`
+    (`position_state(...)["attainedLevel"]`, already computed by both
+    callers and, before this, discarded) carry no default either, for the
+    identical reason: a caller that forgot to thread them through must fail
+    loudly rather than have this rule silently skip the rung threshold
+    below. Neither is recomputed here -- this module opens no file and
+    knows no ladder vocabulary of its own, the same restraint
+    `resolve_levels_declaration` keeps one layer up.
+
     The first four questions -- is there a position at all, is it current,
     does every tick say only what was measured, does every measurement
     agree with its mark -- are answered by `position_honest` above, called
@@ -123,11 +133,24 @@ def launch_available(*, status: str, unbacked: list, disagreements: list,
     Returns `{"available": bool, "code": str | None, "facts": dict}`.
     `code` is one of `POSITION_ABSENT`, `POSITION_STALE`,
     `POSITION_UNBACKED`, `POSITION_SHARDS_UNDECLARED`, `POSITION_DISAGREES`,
-    `NOT_READY`, `SEQUENCE_NOT_REACHED`, checked in that order -- the same
-    order one caller's own refusal ladder already checked the first five
-    (now six) in before this rule existed, preserved here so neither
-    caller's answer moves. `facts` carries whichever ordinals a caller's
-    own message needs to quote; it is empty wherever no caller needs one.
+    `NOT_READY`, `SEQUENCE_NOT_REACHED`, `RUNG_NOT_ATTAINED`, checked in
+    that order -- the first seven in the same order one caller's own
+    refusal ladder already checked them in before this rule existed,
+    preserved here so neither caller's answer moves; `RUNG_NOT_ATTAINED` is
+    new and checked strictly last, so it can never move an existing
+    verdict, only add one where every earlier check already passed.
+    `facts` carries whichever ordinals or rung names a caller's own message
+    needs to quote; it is empty wherever no caller needs one.
+
+    **The rung threshold.** When `len(levels) >= 2`, a launch additionally
+    requires `attained_level`'s own index on the declared ladder to sit at
+    or above `levels[-2]` -- the floor is `levels[-2]` even on a two-rung
+    ladder, where it coincides with `levels[0]`; a two-rung ladder is not
+    exempt from the check, only trivially at its own floor. When
+    `len(levels) < 2` the check does not apply at all: there is no
+    predecessor rung for a launch to have missed, the identical "structurally
+    unreachable" doctrine `_skipped_rung_detail` (`implementation_cli.py`)
+    already keeps for a ladder too short to name one.
     """
     honesty = position_honest(status=status, unbacked=unbacked,
                               disagreements=disagreements,
@@ -156,5 +179,18 @@ def launch_available(*, status: str, unbacked: list, disagreements: list,
                       "earliestOpenOrdinal": min(earlier_open),
                       "jobOrdinal": job_item["ordinal"]},
         }
+
+    if len(levels) >= 2:
+        floor_index = len(levels) - 2
+        attained_index = (levels.index(attained_level)
+                          if attained_level in levels else None)
+        if attained_index is None or attained_index < floor_index:
+            return {
+                "available": False, "code": "RUNG_NOT_ATTAINED",
+                "facts": {"levels": list(levels), "attainedLevel": attained_level,
+                          "requiredLevel": levels[floor_index],
+                          "jobOrdinal": job_item["ordinal"]},
+            }
+
     return {"available": True, "code": None,
             "facts": {"jobOrdinal": job_item["ordinal"]}}
