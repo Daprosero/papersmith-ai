@@ -1778,6 +1778,46 @@ def cmd_reconcile(
     again — never assumed to be the main one). `resolve=False`, the
     default, appends nothing at all: an orphan-remote id is reported
     without a single ledger write, on every call.
+
+    **The one remote call degrades rather than crashing, and says which
+    happened.** `adapter.list_active()` is the only expression here that
+    reaches a service, and it used to be unguarded -- so an unreachable
+    host, a refusal, a timeout or a rotated token killed the one command an
+    operator runs precisely BECAUSE something has already gone wrong.
+    `packer.plan()` wraps the identical call, degrades, and reports
+    `in_flight_source` so a live count is never mistaken for a fallback
+    estimate; this function now does the same thing in its own currency.
+
+    Degrading alone would have been worse than crashing. `orphanLocal: ()`
+    from a service that answered means "every pending submission this
+    ledger expects is still accounted for" -- the strongest all-clear this
+    command can give. From a service that could not be asked it means
+    nothing whatsoever, and it is the same empty tuple. So the difference
+    is carried by a field and never by the payload's emptiness: `remote`
+    is `{"status": "read", "reason": None}` when the service answered and
+    `{"status": "unavailable", "reason": <why>}` when it did not, the same
+    discipline `_staleness_for()` applies by returning a verdict of
+    `unknown` rather than raising, and the same one
+    `implementation_cli.prior_work_state()` applies through `recordStatus`
+    so an unreadable record can never pass for a clean one. On an
+    unavailable read both orphan tuples are empty, and the function returns
+    BEFORE the `resolve` block rather than relying on that block to iterate
+    an empty tuple: `--resolve` appends `errored` events on the strength of
+    the service having said those ids are gone, and a read that never
+    happened said nothing.
+
+    `WorkerUnauthorized` is the ONE `list_active()` failure that still
+    refuses, re-raised untouched. `plan()` re-raises it out of the identical
+    call for the reason the seam states on the exception itself: a revoked
+    or expired credential is a decision-bearing fact, not a service that is
+    merely unreachable right now. Reporting it as "could not be asked"
+    would send an operator to retry a command that cannot succeed until the
+    token is replaced, in the same words used for a transient blip.
+
+    Everything OUTSIDE that single call still refuses exactly as before. A
+    `--target` that names nothing, an unresolvable product, an unreadable
+    ledger: none of those reached the service, and answering "the service
+    could not be asked" about them would name the wrong side of the fault.
     """
     target = Path(target).resolve()
     if not target.is_dir():
@@ -1810,7 +1850,44 @@ def cmd_reconcile(
             and folded.entrypoints[(entrypoint, submission_worker)].state == "pending"
         }
 
-    remote_active = set(adapter.list_active(worker))
+    # Computed before the remote call so the degraded return below can
+    # still carry it: a job folder's staleness is read from this disk and
+    # is exactly as true whether or not the service answered.
+    staleness = _job_folder_staleness(Path(entrypoint).resolve())
+
+    try:
+        remote_active = set(adapter.list_active(worker))
+    except ADAPTER.WorkerUnauthorized:
+        # NOT degraded, for the reason the seam states on the exception:
+        # a revoked credential is a decision-bearing fact, never a mere
+        # "service unreachable" one. `packer.plan()` re-raises it out of
+        # this identical call, and reporting it here as an unavailable
+        # read would describe a dead token in the words used for a blip.
+        raise
+    except Exception as exc:
+        # Unreachable, refusing, timing out, or answering with something
+        # unusable. Bare `Exception` rather than `ADAPTER.AdapterError`
+        # deliberately, and identically to `plan()`: a concrete adapter
+        # shells out to a driver process, so a transport-level failure
+        # arrives as itself and never as the seam's own type. The single
+        # decision-bearing case is caught above, so nothing that a
+        # traceback is for is being swallowed here -- a defect inside this
+        # function's own body is outside this `try` entirely.
+        return {
+            "orphanRemote": (),
+            "orphanLocal": (),
+            "resolved": (),
+            "remote": {
+                "status": "unavailable",
+                "reason": (
+                    f"adapter.list_active({worker!r}) failed, so nothing "
+                    f"below says what the service considers active: {exc}"
+                ),
+            },
+            "staleness": staleness,
+            "arbitration": (),
+        }
+
     local_pending = _pending_ids(main_state) | _pending_ids(smoke_state)
 
     orphan_remote = tuple(sorted(remote_active - local_pending))
@@ -1835,7 +1912,8 @@ def cmd_reconcile(
         "orphanRemote": orphan_remote,
         "orphanLocal": orphan_local,
         "resolved": tuple(resolved_events),
-        "staleness": _job_folder_staleness(Path(entrypoint).resolve()),
+        "remote": {"status": "read", "reason": None},
+        "staleness": staleness,
         "arbitration": tuple(arbitrations),
     }
 

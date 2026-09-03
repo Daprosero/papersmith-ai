@@ -22,17 +22,21 @@ run at once -- and `list_active`. Neither is a time budget. `distribute` plans
 in concurrency slots, so its answer is "how many can run simultaneously",
 never "how many hours remain this week".
 
-**`reconcile` has no failure discipline, and it is the only caller without
-one.** It makes exactly one remote call, `adapter.list_active(worker)`, which
-reaches a zero-argument capacity op that issues one status request per ref the
-service enumerates -- with no per-ref exception handling. One refusal anywhere
-in that loop kills the command with no output. `packer.plan()` wraps the
-identical call, degrades to the ledger-derived count, and reports which source
-answered; `reconcile` does neither. The refusal also misattributes the fault: it
-says the enumeration failed structurally when the enumeration succeeded and a
+**A refusal inside the capacity op still misattributes the fault, and only
+the `reconcile` half of that is closed.** `reconcile` makes exactly one remote
+call, `adapter.list_active(worker)`, which reaches a zero-argument capacity op
+that issues one status request per ref the service enumerates -- with no
+per-ref exception handling. `reconcile` itself no longer dies on that: it
+degrades the way `packer.plan()` already did and reports `remote.status:
+"unavailable"` (see the `reconcile` bullet under Current Scope). What is still
+unwritten is the per-ref handling INSIDE the capacity op, in
+`adapters/kaggle.py`. One refusal anywhere in that loop is reported as the
+enumeration having failed structurally, when the enumeration succeeded and a
 downstream per-ref call did not, and it recommends a fallback a `reconcile`
-caller does not have. Reproducing it costs a service call, so the correct per-ref
-handling is named here and not yet written.
+caller does not have -- so the message a degraded `reconcile` now passes
+through is still describing the wrong side of the problem. Reproducing that
+costs a service call, so the correct per-ref handling is named here and not
+yet written.
 
 **Any plan that reasons in weekly hours takes that number from the operator.**
 Ask; do not assume, and never read one out of this repository.
@@ -369,6 +373,26 @@ Three modules exist so far, each service-blind and stdlib-only:
     `orphanLocal` — reported, and `--resolve` (human-invoked only, default
     `False`) is the one path that appends `errored(reason="not-found-at-service")`
     for it.
+
+    **Its one remote call degrades rather than crashing, and says which
+    happened.** `adapter.list_active()` failing — unreachable, refusing,
+    timing out — returns `remote: {"status": "unavailable", "reason": …}`
+    with both orphan tuples empty and `--resolve` appending nothing at all,
+    instead of killing the one command an operator runs precisely because
+    something has already gone wrong. The empty tuples alone would have
+    said the OPPOSITE of the truth — `orphanLocal: []` from a service that
+    answered is the strongest all-clear this command can give — so the
+    status field carries the difference and the payload's emptiness never
+    does, exactly as `packer.plan()` reports `in_flight_source` rather than
+    a bare number, and as `prior_work_state()` reports `recordStatus` so an
+    unreadable record cannot pass for a clean one. A service that answered
+    reports `remote: {"status": "read", "reason": null}`.
+    `WorkerUnauthorized` is the one `list_active()` failure that still
+    refuses, re-raised untouched: a revoked credential is a
+    decision-bearing fact, and `plan()` re-raises it out of the identical
+    call for the same reason. Everything outside that single call — an
+    absent `--target`, an unresolved product, an unreadable ledger — still
+    refuses exactly as before, because none of it ever reached the service.
   - `product_for(target, entrypoint, explicit=None, *, command=None)` resolves
     which product's ledger an entrypoint belongs to — explicit, never guessed.
     Replaces the narrower `name_for()`: an explicit `--product` wins over

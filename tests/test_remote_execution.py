@@ -2507,6 +2507,66 @@ class ScriptedListActiveAdapter(FakeAdapter):
         return list(self._active)
 
 
+class RefusingListActiveAdapter(FakeAdapter):
+    """A `FakeAdapter` whose `list_active()` raises the seam's own generic
+    `AdapterError` — the backend refused, timed out, or answered with
+    something unusable.
+
+    `UnreachableAdapter` above raises a bare `ConnectionError` instead, and
+    the pair is deliberate: a concrete adapter's `list_active()` can fail
+    either way, and a guard narrow enough to catch only the seam's own type
+    would let the transport-level half through untouched.
+    """
+
+    def list_active(self, worker: str) -> list:
+        raise ADAPTER.AdapterError("service refused list_active (test double)")
+
+
+class RevokedCredentialAdapter(FakeAdapter):
+    """A `FakeAdapter` whose `list_active()` raises `WorkerUnauthorized` —
+    the ONE `list_active()` failure the seam declares is a decision-bearing
+    fact rather than an unreachable service.
+
+    `packer.plan()` re-raises exactly this out of the identical call; these
+    tests hold `cmd_reconcile` to the same line.
+    """
+
+    def list_active(self, worker: str) -> list:
+        raise ADAPTER.WorkerUnauthorized(
+            f"worker {worker!r} credential was revoked (test double)"
+        )
+
+
+def _pending_reconcile_fixture(
+    tmp: str, *, submission_id: str = "s1", worker: str = "w1"
+) -> tuple[Path, Path, Path]:
+    """`<tmp>/repo` holding exactly one pending submission for `worker`,
+    the fixture every `ReconcileTests` case below starts from.
+
+    Factored out so the degraded-read cases differ from the reachable ones
+    in the ADAPTER ALONE — if the ledger fixture differed too, a degraded
+    result and a clean one could be told apart by something other than the
+    field that is supposed to distinguish them.
+    """
+    target = Path(tmp) / "repo"
+    notebooks = _make_product(target, "MIL-CREDA")
+    notebook = notebooks / "a.ipynb"
+    notebook.write_text("{}", encoding="utf-8")
+
+    ledger_path = (
+        target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+        / REMOTE_CLI.LEDGER_FILENAME
+    )
+    _append_pending_submission(
+        ledger_path,
+        entrypoint="Notebooks/a.ipynb",
+        submission_id=submission_id,
+        worker=worker,
+        source_digest="d" * 64,
+    )
+    return target, notebook, ledger_path
+
+
 class _SpySubmitAdapter(FakeAdapter):
     """A `FakeAdapter` that records the exact `Job` it was handed, so a
     test can assert what `cmd_submit()` actually constructed."""
@@ -3512,6 +3572,148 @@ class ReconcileTests(unittest.TestCase):
             appended = json.loads(lines_after_resolve[-1])
             self.assertEqual(appended["kind"], "errored")
             self.assertEqual(appended["reason"], "not-found-at-service")
+
+    def test_cmd_reconcile_degrades_when_the_service_cannot_be_asked(self) -> None:
+        """`reconcile` is the command an operator runs precisely BECAUSE
+        something already went wrong, which makes it the worst one to die
+        on the failure it exists to explain. It makes exactly one remote
+        call, and that call must not be able to kill it.
+
+        Degrading is only half of it. `orphanLocal: ()` from a service that
+        answered means "every pending submission this ledger expects is
+        still accounted for". From a service that could not be asked it
+        means nothing whatsoever — and the two are the same empty tuple.
+        So the distinction lives in `remote.status`, never in the payload's
+        emptiness: `packer.plan()` reports `in_flight_source` rather than a
+        bare number for this identical reason, and
+        `implementation_cli.prior_work_state()` reports `recordStatus` so
+        an unreadable record can never pass for a clean one.
+        """
+        for adapter in (
+            UnreachableAdapter(worker_id="w1", capacity=2),
+            RefusingListActiveAdapter(worker_id="w1", capacity=2),
+        ):
+            with self.subTest(adapter=type(adapter).__name__):
+                with tempfile.TemporaryDirectory() as tmp:
+                    target, notebook, _ = _pending_reconcile_fixture(tmp)
+
+                    degraded = REMOTE_CLI.cmd_reconcile(
+                        target=target,
+                        entrypoint=notebook,
+                        worker="w1",
+                        adapter=adapter,
+                        source_digest=lambda t, n: "d" * 64,
+                    )
+                    self.assertEqual(degraded["remote"]["status"], "unavailable")
+                    self.assertIn("w1", degraded["remote"]["reason"])
+                    self.assertEqual(degraded["orphanRemote"], ())
+                    self.assertEqual(degraded["orphanLocal"], ())
+                    self.assertEqual(degraded["resolved"], ())
+
+                    # The clean answer over the SAME ledger and the SAME
+                    # worker: the service confirms s1 is still active, so
+                    # neither direction orphans and both tuples are empty.
+                    clean = REMOTE_CLI.cmd_reconcile(
+                        target=target,
+                        entrypoint=notebook,
+                        worker="w1",
+                        adapter=ScriptedListActiveAdapter(
+                            worker_id="w1", active=("s1",)
+                        ),
+                        source_digest=lambda t, n: "d" * 64,
+                    )
+                    self.assertEqual(clean["remote"]["status"], "read")
+                    self.assertIsNone(clean["remote"]["reason"])
+                    self.assertEqual(clean["orphanRemote"], ())
+                    self.assertEqual(clean["orphanLocal"], ())
+
+                    # The mutation this stands against: a degraded result
+                    # that merely empties the tuples and says nothing else
+                    # is byte-for-byte a clean one, and would report an
+                    # unreachable service as a fully reconciled ledger.
+                    self.assertNotEqual(degraded, clean)
+
+    def test_cmd_reconcile_still_refuses_a_revoked_credential(self) -> None:
+        """The one `list_active()` failure that is NOT a degraded read.
+
+        `packer.plan()` re-raises `WorkerUnauthorized` out of the identical
+        call, for the reason the seam states on the exception itself: a
+        revoked credential is a decision-bearing fact, not a service that
+        is merely unreachable right now. Folding it into the degraded
+        branch would tell an operator to retry a command that cannot
+        succeed until the token is replaced, and would do it in the exact
+        words used for a transient blip.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook, ledger_path = _pending_reconcile_fixture(tmp)
+            before = ledger_path.read_bytes()
+
+            with self.assertRaises(ADAPTER.WorkerUnauthorized):
+                REMOTE_CLI.cmd_reconcile(
+                    target=target,
+                    entrypoint=notebook,
+                    worker="w1",
+                    adapter=RevokedCredentialAdapter(worker_id="w1", capacity=2),
+                    source_digest=lambda t, n: "d" * 64,
+                )
+
+            self.assertEqual(ledger_path.read_bytes(), before)
+
+    def test_cmd_reconcile_refuses_a_caller_side_error_rather_than_degrading(
+        self,
+    ) -> None:
+        """The degraded read covers ONE expression, `adapter.list_active()`.
+
+        A `--target` the caller typed wrong is not a service failure. A
+        guard widened to the whole function body would report it as one,
+        answering "the service could not be asked" about a problem that
+        never reached the service at all — which names the wrong side of
+        the fault, the same misattribution this command already had.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "no-such-repo"
+
+            with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
+                REMOTE_CLI.cmd_reconcile(
+                    target=missing,
+                    entrypoint=missing / "a.ipynb",
+                    worker="w1",
+                    adapter=UnreachableAdapter(worker_id="w1", capacity=2),
+                    source_digest=lambda t, n: "d" * 64,
+                )
+
+            self.assertIn("--target", str(ctx.exception))
+
+    def test_cmd_reconcile_degraded_read_appends_nothing_even_under_resolve(
+        self,
+    ) -> None:
+        """`--resolve` appends one `errored` event per `orphanLocal` id, on
+        the strength of the service having said those ids are gone. A read
+        that never happened said nothing, so it must write nothing.
+
+        The ledger is asserted byte-identical rather than merely
+        `resolved == ()`: an empty return with a line on disk, or a write
+        that reached a DIFFERENT ledger than the one this fixture holds,
+        are both failures this catches and a return-value assertion alone
+        would not.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target, notebook, ledger_path = _pending_reconcile_fixture(tmp)
+            before = ledger_path.read_bytes()
+
+            result = REMOTE_CLI.cmd_reconcile(
+                target=target,
+                entrypoint=notebook,
+                worker="w1",
+                adapter=UnreachableAdapter(worker_id="w1", capacity=2),
+                resolve=True,
+                source_digest=lambda t, n: "d" * 64,
+            )
+
+            self.assertEqual(result["remote"]["status"], "unavailable")
+            self.assertEqual(result["resolved"], ())
+            self.assertEqual(result["arbitration"], ())
+            self.assertEqual(ledger_path.read_bytes(), before)
 
     def test_cmd_reconcile_filters_per_worker(self) -> None:
         """F4: two DIFFERENT workers, `w1` and `w2`, both have a pending
