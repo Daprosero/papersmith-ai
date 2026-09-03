@@ -22644,6 +22644,119 @@ class UndeclaredOptionalDeclarationTests(unittest.TestCase):
         distribution = impl.distribution_state({}, {})
         self.assertEqual(impl.undeclared_optional_state(search, distribution), [])
 
+    # --- `record`, the key that was read and never declared ---------------
+
+    def test_the_record_key_search_state_reads_is_declared_somewhere(self):
+        """`search_state` reads `search.get("record")` and four consumers
+        hang off the answer, and the key appeared in none of the three
+        tables that state what a `search` block may carry. A target that
+        answers every documented field measures `recordFound: null`,
+        `missing: []` and `status: "ok"` -- a clean reading of a search
+        whose record nothing can find, forever."""
+        self.assertIn("record", impl.SEARCH_OPTIONAL)
+        self.assertIn("record", impl.SEARCH_SHAPE)
+        self.assertIs(impl.SEARCH_SHAPE["record"], str)
+        self.assertNotIn(
+            "record", impl.SEARCH_DECLARATION,
+            "a required key here would declare every existing target "
+            "incomplete for a question nobody had asked it")
+
+    def test_a_declared_search_with_no_record_is_named_with_its_consequence(self):
+        declared = {k: v for k, v in self.SEARCH_DECLARED.items() if k != "record"}
+        search = impl.search_state({"search": declared}, [])
+        entries = impl.undeclared_optional_state(search, impl.distribution_state({}, {}))
+        fields = sorted(e["field"] for e in entries)
+        self.assertEqual(fields, ["currentWhen", "record"])
+        entry = next(e for e in entries if e["field"] == "record")
+        self.assertEqual(entry["section"], "search")
+        self.assertEqual(entry["consequence"], impl.SEARCH_OPTIONAL["record"])
+
+    def test_an_answered_record_is_never_reported(self):
+        """The other pole: `SEARCH_DECLARED` above already answers it, and a
+        report that fired anyway would be a false alarm on every target that
+        did the right thing."""
+        search = impl.search_state({"search": self.SEARCH_DECLARED}, [])
+        entries = impl.undeclared_optional_state(search, impl.distribution_state({}, {}))
+        self.assertEqual([e["field"] for e in entries], ["currentWhen"])
+
+    def test_a_record_of_the_wrong_shape_is_malformed_and_not_missing(self):
+        """The third state `SEARCH_SHAPE` exists for. Without a shape entry
+        the key was accepted on bare truthiness, and a non-string reached
+        `product / record`."""
+        search = impl.search_state({"search": {**self.SEARCH_DECLARED,
+                                               "record": ["Results/r.json"]}}, [])
+        malformed = [m for m in search["malformed"] if m["field"] == "record"]
+        self.assertEqual(len(malformed), 1, search["malformed"])
+        self.assertEqual(malformed[0]["expected"], "str")
+        self.assertEqual(malformed[0]["found"], "list")
+        self.assertEqual([m["field"] for m in search["missing"]], [])
+
+    def test_the_consequence_names_each_reader_that_goes_permanently_blind(self):
+        """`undeclaredOptional`'s entries earn their place by naming the cost
+        of an absence, never the absence itself. Four readers hang off this
+        one key and each is named, because a reader who has never traced
+        `recordFound` learns nothing from "no record is declared"."""
+        consequence = impl.SEARCH_OPTIONAL["record"]
+        self.assertIn("recordFound", consequence)
+        self.assertIn("POSITION_UNBACKED", consequence)
+        self.assertIn("attainedLevel", consequence)
+        self.assertIn("search-first", consequence)
+        self.assertGreater(len(consequence.split()), 40, consequence)
+
+    def test_the_search_first_rung_it_names_is_the_one_probe_actually_takes(self):
+        """The consequence claims `probe` keeps answering `search-first`
+        forever. That is a claim about the ladder's own condition, so it is
+        measured against that condition rather than asserted -- with the
+        record declared and present, the same condition goes quiet."""
+        with tempfile.TemporaryDirectory() as raw:
+            product = Path(raw) / "Method"
+            (product / "Results").mkdir(parents=True)
+            (product / "Results/r.json").write_text(
+                json.dumps({"epochs": 1}), encoding="utf-8")
+            declared = {k: v for k, v in self.SEARCH_DECLARED.items()
+                        if k != "record"}
+            silent = impl.search_state({"search": declared}, [], product)
+            named = impl.search_state(
+                {"search": {**declared, "record": "Results/r.json"}},
+                ["Results/r.json"], product)
+
+        def search_first(state):
+            return bool(state["recordFound"] is False
+                        or (impl.declared_required_scale(state)
+                            and state["scaleSatisfied"] is not True))
+
+        self.assertTrue(search_first(silent),
+                        "an undeclared record can never satisfy the scale")
+        self.assertFalse(search_first(named), named)
+
+    def test_the_kit_tells_a_target_the_key_exists(self):
+        """The half `undeclared_optional_state` cannot supply: a target that
+        never learns the key exists cannot decide to answer it, and the kit's
+        `search` comment is where a target reads what the block may carry.
+        It named `what`, `requiredScale`, `role`, `tieRule` and `currentWhen`
+        and never `record` -- the one field `search_state` reads before any
+        of them."""
+        kit = (KIT / "src_benchmark" / "__init__.py").read_text(encoding="utf-8")
+        block = kit[kit.index('"search": {}') - 3000:kit.index('"search": {}')]
+        self.assertIn("record", block)
+        self.assertIn("requiredScale", block)
+
+    def test_both_documents_name_every_optional_key_the_roster_holds(self):
+        """A list of keys written into prose is a list that loses one -- the
+        exact way `record` went four years of readings without appearing in
+        any of the three tables that state what a `search` block may carry.
+        Derived from `SEARCH_OPTIONAL`/`DISTRIBUTION_OPTIONAL` rather than
+        proof-read, so adding a key here goes red until both documents name
+        it."""
+        skill = SKILL_MD.read_text(encoding="utf-8")
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        for section, roster in (("search", impl.SEARCH_OPTIONAL),
+                                ("distribution", impl.DISTRIBUTION_OPTIONAL)):
+            for field in roster:
+                with self.subTest(field=f"{section}.{field}"):
+                    self.assertIn(f"`{section}.{field}`", skill)
+                    self.assertIn(f"`{section}.{field}`", usage)
+
     def test_undeclaredOptional_is_a_top_level_verify_key(self):
         """The constraint that decided `toDiscuss`'s own placement
         (see that comment in `cmd_verify`): `returned_keys` reads

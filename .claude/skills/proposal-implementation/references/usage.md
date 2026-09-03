@@ -643,10 +643,14 @@ they were easy to leave undocumented:
   **never gates** — publishing the command lowers the friction to ask; it
   does not prove whoever answers it is the operator.
 - **`undeclaredOptional`** — every optional key a DECLARED `search` or
-  `distribution` block left unanswered: `search.currentWhen`,
-  `distribution.currentWhen`, `distribution.shardsRoot`. Each entry names
+  `distribution` block left unanswered: `search.record`,
+  `search.currentWhen`, `distribution.currentWhen`,
+  `distribution.shardsRoot`. Each entry names
   its `section`, `field` and the exact `consequence` its absence carries —
-  e.g. without `search.currentWhen`, a found record is trusted on the
+  e.g. without `search.record` nothing was ever told which artefact the
+  search writes, so `recordFound` answers `null` on every run and `probe`
+  keeps answering `search-first`; without `search.currentWhen`, a found
+  record is trusted on the
   strength of being present, never checked against the code that produced
   it. **Reported, never demanded**: a target with no search, or no split
   run, is asked nothing here either — the same restraint every other

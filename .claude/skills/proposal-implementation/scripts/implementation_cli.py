@@ -533,6 +533,22 @@ SEARCH_DECLARATION = {
 #: there would declare every existing target incomplete for a question
 #: nobody had asked it yet.
 SEARCH_OPTIONAL = {
+    "record": "the path, relative to the product folder, of the artefact this "
+              "search writes -- the one key `search_state` reads before any "
+              "of the required four, and the only one whose absence is "
+              "silent rather than reported. Undeclared, `search.recordFound` "
+              "answers `null` on every run forever, so a ticked `@record` "
+              "witness has nothing to back it and reads `POSITION_UNBACKED`; "
+              "a leveled `@record:level` witness derives no rung at all, "
+              "which sinks `position.attainedLevel` to `null` and answers "
+              "every launch `RUNG_NOT_ATTAINED`; and `probe`'s own "
+              "`search-first` rung fires on every call, since a declared "
+              "`requiredScale` can never be satisfied by a record nothing "
+              "was told to look for -- telling the operator to run a search "
+              "they may already have run. The forge never guesses the "
+              "filename: a default here would make it answer a question the "
+              "target never asked, and `undeclaredRecords` would then report "
+              "the real artefact as unaccounted for beside the invented one",
     "currentWhen": "a dotted path into the record's own file naming where it "
                    "wrote down the identity of the code that produced it -- "
                    "`distribution.currentWhen`'s own idiom, one level up "
@@ -554,6 +570,10 @@ SEARCH_OPTIONAL = {
 #: ended the process on a traceback instead of a result.
 SEARCH_SHAPE = {
     "what": str,
+    # A path, so a string. Without an entry here the key was accepted on
+    # bare truthiness and a list reached `product / record`, which is the
+    # same shape defect `requiredScale` was added to this table for.
+    "record": str,
     "requiredScale": dict,
     "role": str,
     "tieRule": str,
