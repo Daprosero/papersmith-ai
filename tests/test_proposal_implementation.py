@@ -21896,6 +21896,32 @@ class UndeclaredLadderTests(unittest.TestCase):
             self.verify(self._box("named", declaration=self.A_LADDER))
             ["undeclaredLadder"])
 
+    MALFORMED_LADDER = ("__benchmark__ = {'revision': 'r1.md'}\n"
+                        "__levels__ = 'not-a-list'\n")
+
+    def test_the_path_names_the_file_the_resolver_would_read_first(self):
+        """`path` exists to tell a reader where to write the declaration they
+        are missing, so it has to name the file the resolver actually reaches.
+        `resolve_levels_declaration` is first-wins and stops on a MALFORMED
+        `__levels__`: it returns `[]` from `__init__.py` without ever reading
+        `config.py`. A report naming `config.py` there would send someone to
+        write a declaration the resolver can never reach, and the report would
+        go on firing with nothing to explain why.
+
+        Pinned because it was measured unpinned: reversing the read order to
+        `("config.py", "__init__.py")` left all 2196 tests green.
+        """
+        box = self._box("ordered", declaration=self.MALFORMED_LADDER)
+        (box / "src/Method_Benchmark/config.py").write_text(
+            "__levels__ = ['first', 'second']\n", encoding="utf-8")
+        report = self.verify(box)["undeclaredLadder"]
+        self.assertIsNotNone(
+            report, "a malformed ladder resolves to no ladder and must report")
+        self.assertEqual(
+            report["path"], "src/Method_Benchmark/__init__.py",
+            "the report must name the file the resolver stops at, not the one "
+            "further down the read order that it never reaches")
+
     def test_the_consequence_names_what_is_lost_and_not_merely_what_is_absent(self):
         """`undeclaredOptional`'s entries say what the absence COSTS, and that
         is the whole of why they are worth printing. A `consequence` reading
