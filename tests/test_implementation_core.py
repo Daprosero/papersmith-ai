@@ -388,7 +388,7 @@ class ShardCurrencyTests(unittest.TestCase):
 class RecordCurrencyTests(unittest.TestCase):
     """A record found on disk was trusted without asking what code produced
     it -- `ShardCurrencyTests`'s own finding, one level up: `@shard` already
-    reads currency, `@record` did not. A `ceilings.json` written by code this
+    reads currency, `@record` did not. A record written by code this
     repository has since moved past used to tick its rung today, on the
     strength of `search.recordFound` alone.
 
