@@ -1409,6 +1409,26 @@ oversight: the fact as computed cannot tell a repository that is not ready apart
 from one that never sends work anywhere. `SKILL.md`'s Output Contract carries the
 argument and states what would change it.
 
+**`pilotCompleteness` is a rung, and two of them.** It answers whether the
+ordered flow the target declared has actually finished at pilot: `status:
+"undeclared"` when no `__steps__` entry carries an `advances` ordinal (the rule
+does not apply, and the ladder answers what it always did), `"incomplete"` while
+any step is short, `"complete"` once none is. `incomplete` names the steps still
+short, in declared order — read that, not a count. Each row says why: `ran` is
+the step's own ledger verdict (`null` is unmeasured, which includes a run
+recorded against a suite that has since moved), `notebook` is the file its own
+sequence item names, and `notebookCurrent` is whether that file is executed
+against these sources. Existence is not evidence — a template copied into place
+and an executed report look identical until the execution counts are read.
+
+While it is `"incomplete"` the answer is `pilot-first` and the offer of the
+declared scale is withheld: the outputs are what anybody reads to know the agreed
+thing is there, and there are none yet. Once it is `"complete"` the answer is
+`pilot-decisions` until every step has been decided — one `discuss` bucket per
+step, asking how the full run carries it. Read `remoteExecution.necessity`
+alongside those questions; it classifies job folders rather than steps, so it
+informs the decisions and never makes them.
+
 Two more fields are reported beside `nextStep`, and they are the answer to
 "what do I do about it" — published by the engine rather than composed by
 whoever reads the output:
