@@ -2205,7 +2205,7 @@ is a fact nobody reads:
 | `baselines` | The prior implementations there are to compare against | Yes — nothing to compare against outranks everything else on the ladder |
 | `comparable` | Whether that list is non-empty, stated once so nobody re-derives it | Reported whatever it says |
 | `coupling` | Which notebook cells reach into the target's internals instead of its declared surface | **Never** — a static fact, reported so somebody can decide about it |
-| `harnessStatus` | Where the target's own declaration says its harness module is: `undeclared`, present at `path`, or `declaredMissing` naming `declaredModule` and `searchedPath` | Reported whatever it says |
+| `harnessStatus` | Where the target's own declaration says its harness module is: `undeclared`, present at `path`, or `declaredMissing` naming `declaredModule` and `searchedPath`. `declaredFunction` echoes `entry.function` beside it, and `note` names what a blank one costs: nothing in this skill reads that field, but `generate-job --run-function` is a required argument with no default, and this declaration is where its value comes from | Reported whatever it says |
 | `nextStep` | The one thing to do next | This is the answer, not a fact feeding it |
 | `notebook` | Where the pilot notebook is, or `null` | Reported whatever it says |
 | `position` | The execution sequence's derived state, read from `<Name>/AGREED.md`'s own position section. `probe` takes no `--shards`, so every `@shard` witness reports `unmeasured` here, never a false "did not arrive" | **Never** — a derived fact, reported so a human can decide about it |

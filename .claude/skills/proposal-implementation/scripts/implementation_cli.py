@@ -2905,7 +2905,13 @@ def cmd_probe(args) -> dict:
         target, name, next_step,
         {"declared": (state.get("belowTargetScale") or {})
          if next_step == "piloted"
-         else (declared_required_scale(search) or {})})
+         else (declared_required_scale(search) or {}),
+         # The two facts `declare-first` is assigned from, threaded through
+         # rather than recomputed: its published sentence names the state that
+         # actually routed there, and a second read here could disagree with
+         # the branch above that published it.
+         "declarationStatus": resolved["status"],
+         "live": report.get("live")})
     # `toDiscuss` carries the question-shaped publications only -- a command
     # this flow can name completely is not a question anybody answers, and
     # putting one in a discussion list would open a bucket nothing retires.
@@ -4133,16 +4139,40 @@ def resolve_harness_status(target: Path, name: str, package: str) -> dict:
       relative to `target`.
     """
     contract = resolve_benchmark_declaration(target, name)["contract"]
-    declared = (contract.get("entry") or {}).get("module")
+    entry = contract.get("entry") or {}
+    declared = entry.get("module")
+    function = entry.get("function")
+    function = function if isinstance(function, str) and function else None
     if not declared:
+        # One absence, one fact: `entry.module` undeclared already has its own
+        # status, and naming the function beside it would turn one gap into two
+        # findings -- `undeclared_ladder_state`'s own restraint.
         return {"status": "undeclared", "declaredModule": None,
-                "path": None, "searchedPath": None}
+                "declaredFunction": None, "path": None, "searchedPath": None,
+                "note": None}
+    # The one value in `entry` nothing in this file reads -- `.module` is read
+    # twice and `.function` nowhere. That is not a stray declaration: the kit
+    # names it for `generate-job --run-function`, which `remote_cli` declares
+    # `required=True`, so the value is genuinely needed at the one handoff
+    # SKILL.md's own seam table publishes. What was missing is that a target
+    # could answer `module`, leave `function` blank, hear about it nowhere, and
+    # reach a required flag with nothing to type into it.
+    note = None if function else (
+        "`entry.function` is blank. Nothing in this skill reads it, so no "
+        "check here fails on it -- but the remote-execution handoff does: "
+        "`generate-job --run-function` is a required argument with no "
+        "default, and this declaration is where its value is supposed to "
+        "come from. Name the callable inside "
+        f"{declared!r} that a run enters through.")
     searched = target / "src" / Path(*declared.split(".")).with_suffix(".py")
     if searched.is_file():
         return {"status": "present", "declaredModule": declared,
-                "path": str(searched.relative_to(target)), "searchedPath": None}
+                "declaredFunction": function,
+                "path": str(searched.relative_to(target)), "searchedPath": None,
+                "note": note}
     return {"status": "declaredMissing", "declaredModule": declared,
-            "path": None, "searchedPath": str(searched.relative_to(target))}
+            "declaredFunction": function, "path": None,
+            "searchedPath": str(searched.relative_to(target)), "note": note}
 
 
 def target_interpreter(target: Path) -> Path:
@@ -8013,10 +8043,32 @@ def _convert_publication(target: Path, name: str, facts: dict) -> dict:
 
 
 def _declare_first_publication(target: Path, name: str, facts: dict) -> dict:
+    """Which of the three states actually routed here, said as itself.
+
+    `declare-first` is assigned from two different conditions in `cmd_probe`,
+    and this sentence described one of them. `resolved["status"]` being
+    `"absent"` is no benchmark package at all -- "has a benchmark declaration"
+    is false. `report.live == "undeclared"` is a blank `entry.module` and
+    nothing else, over a declaration that may name six blocks fully -- "names
+    nothing yet" is false there too, and the reader is sent to re-read a
+    declaration whose only gap is one field.
+
+    `facts` carries both, computed once by `cmd_probe` from the same two reads
+    it branched on: a fact recomputed here is a fact that can disagree with the
+    branch that published it.
+    """
+    if facts.get("declarationStatus") == "absent":
+        state = ("declares no benchmark package at all, and every later "
+                 "reading is read from one")
+    elif facts.get("live") == "undeclared":
+        state = ("has a benchmark declaration whose `entry.module` is blank, "
+                 "so nothing names the module that pulls its runtime in and "
+                 "no reading about the interpreter is possible")
+    else:
+        state = ("has a benchmark declaration that names nothing yet, and "
+                 "every later reading is read from it")
     return _next_step_question_entry(
-        target, name,
-        f"{name} (target {target}) has a benchmark declaration that names "
-        "nothing yet, and every later reading is read from it; "
+        target, name, f"{name} (target {target}) {state}; "
         + NEXT_STEP_REPAIR_CHOICE)
 
 
@@ -11772,12 +11824,31 @@ def _stage_objects(target: Path, name: str, seed: str) -> dict:
     read from disk — reused rather than inventing a second way to ask it.
     """
     declared = resolve_benchmark_declaration(target, name)
-    if declared["status"] != "declared":
+    contract = declared["contract"]
+    # The two blocks the message names, asked for by name. This gated on
+    # `status != "declared"`, and that status is `"undeclared"` only when
+    # `_declaration_is_blank` holds -- when ALL SEVEN blocks still carry their
+    # scaffold value. So a declaration answering any single one of them opened
+    # this gate, and `search` is exactly the block a target can answer long
+    # before step 8: measured with `revision: ""`, `premises: {}` and only
+    # `search` written, the status is `"declared"`, the gate opened, and the
+    # refusal's own sentence described the state that was true and did not
+    # refuse. The name of the code and this function's own docstring both say
+    # the object map is what is gated on, so the check moved to the message
+    # rather than the other way round.
+    unwritten = [block for block in ("revision", "premises")
+                 if not contract.get(block)]
+    if declared["status"] != "declared" or unwritten:
+        # Named one by one, never as "revision/premises": a refusal that lists
+        # a block already fully written sends somebody to re-read what is
+        # already right. On an absent or blank declaration both are unwritten
+        # and the sentence reads as it always did.
         raise Refused(
             "OBJECT_MAP_NOT_APPROVED",
             "The step-8 object map has not been approved yet: "
             f"src/{package_name(name)}_Benchmark/__init__.py declares no "
-            "revision/premises. --stage objects writes scaffolding for step "
+            + " and no ".join(unwritten or ["revision", "premises"])
+            + ". --stage objects writes scaffolding for step "
             "9's authoring, not before that approval is recorded.",
         )
 

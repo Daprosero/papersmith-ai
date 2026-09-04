@@ -12915,6 +12915,272 @@ class EntryModuleResolutionTests(unittest.TestCase):
                           "Method_Benchmark.custom_entry")
 
 
+class MessagesThatAssertWhatTheyCheckTests(unittest.TestCase):
+    """Two refusals stated a fact neither of them checks.
+
+    `OBJECT_MAP_NOT_APPROVED` says the package "declares no revision/premises"
+    and gates on `resolve_benchmark_declaration(...)["status"] != "declared"`.
+    That status is `"undeclared"` only when `_declaration_is_blank` holds --
+    when ALL SEVEN blocks still carry their scaffold value. Measured: with
+    `revision: ""`, `premises: {}` and only `search` answered, the status is
+    `"declared"`, the gate opens, and step 9's scaffolding is written over an
+    object map nobody approved -- with the refusal's own sentence describing
+    the exact state that was true and did not refuse.
+
+    `_declare_first_publication` says the target "has a benchmark declaration
+    that names nothing yet". Two branches assign `declare-first`, and only one
+    of them is that: the second fires for `report.live == "undeclared"`, which
+    is a blank `entry.module` and nothing else -- a declaration that may name
+    six blocks fully.
+
+    The direction of each repair is decided by which half is the intent.
+    `OBJECT_MAP_NOT_APPROVED` is named for the object map and its own docstring
+    cites SKILL.md step 8's requirement that `revision`/`premises` be written
+    before any step-9 code, so the CHECK was wrong and is tightened. The
+    publication's sentence is one of several the flow could truthfully say, so
+    the SENTENCE was wrong and now reads the state that actually routed there.
+    """
+
+    def _box(self, suffix, declaration, *, comparable=False):
+        """`materialize` refuses `DIRTY_WORKTREE` before any gate of its own,
+        so the box is committed; and `probe` answers `convert` long before the
+        declaration ladder unless there is something to compare against and a
+        trainable backend -- `comparable` supplies both, exactly as
+        `UnreachedMathematicsEndToEndTests.probe_with` already has to."""
+        box = FORGE / "implementations" / f"_assertcheck_{suffix}_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "src/Method_Benchmark", "Method", "tests"):
+            (box / directory).mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            declaration, encoding="utf-8")
+        if comparable:
+            (box / "src/Prior").mkdir(parents=True)
+            (box / "src/Prior/model.py").write_text("import torch\n",
+                                                    encoding="utf-8")
+            (box / "src/Method/called.py").write_text(
+                _module("r01.md", ["3"], ["11"], imports="import torch\n"),
+                encoding="utf-8")
+        for command in (["git", "add", "-A"],
+                        ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                         "commit", "-qm", "fixture"]):
+            subprocess.run(command, check=True, capture_output=True, cwd=str(box))
+        return box
+
+    SEARCH_ONLY = (
+        "__benchmark__ = {\n"
+        "    'revision': '',\n"
+        "    'premises': {},\n"
+        "    'arms': {},\n"
+        "    'search': {'what': 'a scalar', 'requiredScale': {'seeds': 3},\n"
+        "               'role': 'validation', 'tieRule': 'the smaller wins'},\n"
+        "    'report': {},\n"
+        "    'distribution': {},\n"
+        "    'entry': {'module': '', 'function': ''},\n"
+        "}\n")
+    APPROVED = (
+        "__benchmark__ = {\n"
+        "    'revision': 'r01.md',\n"
+        "    'premises': {'prediction': 'a label', 'statisticalUnit': 'subject',\n"
+        "                 'metric': 'accuracy', 'direction': 'higher'},\n"
+        "    'arms': {},\n"
+        "    'search': {},\n"
+        "    'report': {},\n"
+        "    'distribution': {},\n"
+        "    'entry': {'module': '', 'function': ''},\n"
+        "}\n")
+
+    #: A declaration nobody would call blank: bound to a revision, its
+    #: premises written, its report block answered -- and `entry.module`
+    #: empty, which is the ONLY thing `report.live == "undeclared"` means.
+    #: This is the second branch that assigns `declare-first`, and the one
+    #: the published sentence described wrongly.
+    LIVE_UNDECLARED = (
+        "__benchmark__ = {\n"
+        "    'revision': 'r01.md',\n"
+        "    'premises': {'prediction': 'a label', 'statisticalUnit': 'subject',\n"
+        "                 'metric': 'accuracy', 'direction': 'higher'},\n"
+        "    'arms': {},\n"
+        "    'search': {},\n"
+        "    'report': {'renderers': ['tables.render']},\n"
+        "    'distribution': {},\n"
+        "    'entry': {'module': '', 'function': ''},\n"
+        "}\n")
+
+    def _stage_objects(self, declaration, suffix):
+        """`_stage_objects` directly rather than through `materialize`: the
+        refusal is raised in this top-level helper, not inside
+        `cmd_materialize` (which is why `OBJECT_MAP_NOT_APPROVED` is not in
+        `GATING_REFUSALS` -- `raised_refusal_codes` walks `cmd_*` bodies
+        only), and reaching it through the CLI would mean satisfying
+        `DIRTY_WORKTREE`, `PLAN_REQUIRED` and the mode flags first, none of
+        which this gate is about."""
+        box = self._box(suffix, declaration)
+        try:
+            return None, impl._stage_objects(box, "Method", "1")
+        except impl.Refused as refused:
+            return refused, None
+
+    # --- the gate that opened on a state its own sentence describes --------
+
+    def test_a_declaration_with_no_revision_or_premises_is_refused(self):
+        """The measured hole. `_declaration_is_blank` needs all seven blocks
+        empty, so answering any one of them opens this gate -- and `search` is
+        exactly the block a target can answer long before step 8."""
+        refused, _ = self._stage_objects(self.SEARCH_ONLY, "searchonly")
+        self.assertIsNotNone(refused, "the gate opened on an unapproved map")
+        self.assertEqual(refused.code, "OBJECT_MAP_NOT_APPROVED")
+        self.assertIn("revision", refused.detail)
+        self.assertIn("premises", refused.detail)
+
+    def test_the_gate_opens_once_the_two_blocks_it_names_are_written(self):
+        """The other pole, and the one that keeps the tightening honest: the
+        gate must still open, and it must open on exactly what its sentence
+        asks for -- `revision` and `premises`, nothing else. A refusal nobody
+        can clear is the defect one over from a gate nobody can trip."""
+        refused, result = self._stage_objects(self.APPROVED, "approved")
+        self.assertIsNone(refused, refused and refused.detail)
+        self.assertEqual(result["stage"], "objects")
+
+    def test_the_detail_names_which_of_the_two_is_missing(self):
+        """A refusal that says "revision/premises" over a declaration whose
+        `premises` is fully written sends somebody to re-read a block that is
+        already right."""
+        declaration = self.APPROVED.replace("'revision': 'r01.md',", "'revision': '',")
+        refused, _ = self._stage_objects(declaration, "halfway")
+        self.assertIsNotNone(refused)
+        self.assertIn("revision", refused.detail)
+        self.assertNotIn("premises", refused.detail)
+
+    def test_a_blank_scaffold_still_refuses_the_same_code(self):
+        """The state that already refused must keep refusing under the same
+        code -- a tightening that renamed the existing refusal would be a
+        second change wearing this one's clothes."""
+        refused, _ = self._stage_objects(
+            "__benchmark__ = {'revision': '', 'premises': {}, 'arms': {}, "
+            "'search': {}, 'report': {}, 'distribution': {}, "
+            "'entry': {'module': '', 'function': ''}}\n", "blank")
+        self.assertIsNotNone(refused)
+        self.assertEqual(refused.code, "OBJECT_MAP_NOT_APPROVED")
+
+    # --- the publication that described one of two states ------------------
+
+    def test_declare_first_says_which_of_the_two_states_routed_there(self):
+        """`report.live == "undeclared"` is a blank `entry.module` and nothing
+        else. The declaration here answers six blocks and the sentence called
+        it one that "names nothing yet"."""
+        facts = {"declared": {}, "declarationStatus": "declared",
+                 "live": "undeclared"}
+        published = impl.next_step_publication(
+            Path("implementations/box"), "Method", "declare-first", facts)
+        self.assertIn("entry.module", published["question"])
+        self.assertNotIn("names nothing yet", published["question"])
+
+    def test_declare_first_still_says_it_for_the_state_where_it_is_true(self):
+        """The other pole. A declaration every block of which is still at its
+        scaffold value DOES name nothing yet, and the sentence that says so is
+        the right one there."""
+        facts = {"declared": {}, "declarationStatus": "undeclared",
+                 "live": None}
+        published = impl.next_step_publication(
+            Path("implementations/box"), "Method", "declare-first", facts)
+        self.assertIn("names nothing yet", published["question"])
+
+    def test_declare_first_never_claims_a_declaration_a_target_does_not_have(self):
+        """The third state: no benchmark package at all. "has a benchmark
+        declaration" is false there too, and it was said anyway."""
+        facts = {"declared": {}, "declarationStatus": "absent", "live": None}
+        published = impl.next_step_publication(
+            Path("implementations/box"), "Method", "declare-first", facts)
+        self.assertNotIn("has a benchmark declaration", published["question"])
+
+    def test_probe_hands_the_publication_the_state_that_routed_there(self):
+        """The join. Both sentences above are only true if `probe` actually
+        passes the state it branched on -- a fact computed and not threaded
+        through is a fact the publication has to guess at again."""
+        box = self._box("probefacts", self.LIVE_UNDECLARED, comparable=True)
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "probe", "--target", str(box),
+             "--name", "Method"],
+            capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["nextStep"], "declare-first")
+        self.assertIn("entry.module", payload["resolve"]["question"])
+
+    # --- the declaration nothing in the forge reads -------------------------
+
+    def test_a_declared_module_with_no_function_is_reported(self):
+        """`entry.function` is read by nothing in this file -- only `.module`
+        is, twice. The kit's claim about it is accurate: `generate-job`'s own
+        `--run-function` is `required=True`, so the value IS needed, by the
+        operator, at the one handoff SKILL.md's seam table names. What was
+        missing is that a target could answer `module` and leave `function`
+        blank and hear about it nowhere, then reach a required flag with
+        nothing to type into it."""
+        target = self.box_pkg(
+            "nofunction",
+            "__benchmark__ = {'revision': 'r01.md', "
+            "'entry': {'module': 'Method_Benchmark.benchmark', 'function': ''}}\n")
+        (target / "src/Method_Benchmark/benchmark.py").write_text(
+            "VALUE = 1\n", encoding="utf-8")
+        status = impl.resolve_harness_status(target, "Method", "Method")
+        self.assertEqual(status["status"], "present")
+        self.assertIsNone(status["declaredFunction"])
+        self.assertIsNotNone(status["note"])
+        self.assertIn("--run-function", status["note"])
+
+    def test_a_declared_function_is_echoed_and_the_note_is_empty(self):
+        """The other pole: a target that answered both hears nothing, and the
+        value it answered is echoed so the operator can read it off the same
+        output rather than re-opening the declaration."""
+        target = self.box_pkg(
+            "withfunction",
+            "__benchmark__ = {'revision': 'r01.md', "
+            "'entry': {'module': 'Method_Benchmark.benchmark', "
+            "'function': 'run'}}\n")
+        (target / "src/Method_Benchmark/benchmark.py").write_text(
+            "VALUE = 1\n", encoding="utf-8")
+        status = impl.resolve_harness_status(target, "Method", "Method")
+        self.assertEqual(status["declaredFunction"], "run")
+        self.assertIsNone(status["note"])
+
+    def test_an_undeclared_module_is_not_told_about_the_function_too(self):
+        """One absence, one fact. `entry.module` undeclared already has its
+        own status, and naming the function beside it would turn one gap into
+        two findings -- `undeclared_ladder_state`'s own restraint."""
+        target = self.box_pkg(
+            "neither", "__benchmark__ = {'revision': 'r01.md'}\n")
+        status = impl.resolve_harness_status(target, "Method", "Method")
+        self.assertEqual(status["status"], "undeclared")
+        self.assertIsNone(status["declaredFunction"])
+        self.assertIsNone(status["note"])
+
+    def test_every_branch_carries_both_new_keys(self):
+        """`distribution_state`'s rule again: a key on some branches only
+        cannot be told from an absent answer by anything downstream."""
+        for suffix, declaration in (
+                ("branch_undeclared", "__benchmark__ = {'revision': 'r01.md'}\n"),
+                ("branch_missing",
+                 "__benchmark__ = {'revision': 'r01.md', 'entry': "
+                 "{'module': 'Method_Benchmark.nowhere', 'function': 'run'}}\n")):
+            with self.subTest(suffix=suffix):
+                status = impl.resolve_harness_status(
+                    self.box_pkg(suffix, declaration), "Method", "Method")
+                self.assertIn("declaredFunction", status)
+                self.assertIn("note", status)
+
+    def box_pkg(self, suffix, declaration):
+        path = FORGE / "implementations" / f"_entryfn_{suffix}_{os.getpid()}_{id(self)}"
+        (path / "src" / "Method_Benchmark").mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, path, ignore_errors=True)
+        (path / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            declaration, encoding="utf-8")
+        return path
+
+
 class HarnessStatusResolutionTests(unittest.TestCase):
     """Where `probe` gets its harness's name from — the target's own
     declaration, `entry.module`, never a second hardcoded filename beside
