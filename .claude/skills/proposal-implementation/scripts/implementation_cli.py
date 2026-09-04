@@ -1962,6 +1962,65 @@ def detect_product_dir(target: Path, name: str, paths: list[str]) -> str | None:
     return candidates.pop() if len(candidates) == 1 else None
 
 
+def misnamed_product_dir(target: Path, name: str) -> str | None:
+    """The product folder a `<name>/`-rooted write is about to walk past.
+
+    `detect_product_dir` above answers "is this repository's product folder
+    merely misnamed?", and it answered it for exactly one caller -- the
+    migration plan, which proposes the rename. Every OTHER command resolves
+    `<target>/<name>/` and, when nothing is there, creates it.
+
+    Measured. An operator passed the PACKAGE spelling of a name where the
+    DIRECTORY spelling belongs -- the two are different strings by
+    construction (`normalize_name` returns both, joined by `-` and by `_`),
+    and `validate_name` accepts either. Every ledger-writing command then
+    appended into a brand-new folder holding nothing but
+    `.implementation/position.jsonl`, reported `outcome: "returned"`, and said
+    nothing; `.implementation/` is git-ignored, so `git status` showed nothing
+    either. The science ran and landed in the real product tree. Only the
+    bookkeeping went to a folder no reader ever opens, and `probe` and
+    `position` went on reporting that those steps had never run.
+
+    Two conditions, and BOTH are load-bearing:
+
+    1. `<name>/` holds none of `PRODUCT_DIRS`. Existence is not the test --
+       the phantom folder EXISTS the moment the first event is appended, so a
+       guard asking "is `<name>/` there?" would fire once and never again,
+       which is the shape that lets a split ledger keep growing.
+    2. `detect_product_dir` names exactly one differently-named candidate.
+       Zero (a genuinely new target, nothing built yet) and more than one
+       (nothing here can choose) both answer `None`, and both must keep
+       working: scaffolding a target from zero is the flow that starts with
+       no product folder at all.
+    """
+    product = target / name
+    if any((product / category).is_dir() for category in PRODUCT_DIRS):
+        return None
+    return detect_product_dir(target, name, tracked_files(target))
+
+
+def require_named_product_dir(target: Path, name: str) -> None:
+    """Refuse a `<name>/`-rooted write that would open a second product tree.
+
+    Fail closed, this skill's whole doctrine, at the one place the split
+    starts: before the first event is appended. Both exits are named in the
+    detail because the engine cannot choose between them -- the folder on disk
+    may be the right one under the wrong `--name`, or the wrong one under the
+    right `--name`, and only a human knows which.
+    """
+    detected = misnamed_product_dir(target, name)
+    if detected is None:
+        return
+    raise Refused(
+        "PRODUCT_DIR_MISNAMED",
+        f"{name}/ holds none of {list(PRODUCT_DIRS)} and {detected}/ holds "
+        f"them, so this call would open a second product tree under a name "
+        f"nothing else reads -- the ledger would land in {name}/"
+        f".implementation/ while the product stays in {detected}/. Either "
+        f"re-run with --name {detected}, or rename {detected}/ to {name}/ "
+        f"through `plan` and `apply`.")
+
+
 # `<folder>/<Category>` written inside source, notebooks or docs. Anchored so a
 # longer path segment (`.../Images/Results`) does not match on its tail.
 REFERENCE_RE = re.compile(
@@ -7876,6 +7935,7 @@ def cmd_position(args: argparse.Namespace) -> dict:
 
     target = resolve_target(args.target)
     name = validate_name(args.name)
+    require_named_product_dir(target, name)
     product = target / name
 
     source = revision_source(args.revision)
@@ -8754,6 +8814,7 @@ def cmd_discuss(args: argparse.Namespace) -> dict:
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
+    require_named_product_dir(target, name)
 
     if args.question == "-" and args.answer == "-":
         raise Refused(
@@ -9569,6 +9630,7 @@ def cmd_settle(args: argparse.Namespace) -> dict:
     target = resolve_target(args.target)
     name = validate_name(args.name)
     _require_no_open_defect(target, name)
+    require_named_product_dir(target, name)
 
     if args.text == "-" and args.supersedes == "-":
         raise Refused(
@@ -10287,6 +10349,7 @@ def cmd_propose(args: argparse.Namespace) -> dict:
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
+    require_named_product_dir(target, name)
 
     rationale = sys.stdin.read() if args.rationale == "-" else args.rationale
     rationale = rationale.strip()
@@ -10382,6 +10445,7 @@ def cmd_gate(args: argparse.Namespace) -> dict:
     target = resolve_target(args.target)
     name = validate_name(args.name)
     _require_no_open_defect(target, name)
+    require_named_product_dir(target, name)
 
     if args.units and args.worker is not None:
         raise Refused(
@@ -10945,6 +11009,7 @@ def cmd_offer(args: argparse.Namespace) -> dict:
     target = resolve_target(args.target)
     name = validate_name(args.name)
     _require_no_open_defect(target, name)
+    require_named_product_dir(target, name)
 
     source = revision_source(args.revision)
     if source is None:
@@ -11117,6 +11182,7 @@ def cmd_close(args: argparse.Namespace) -> dict:
     target = resolve_target(args.target)
     name = validate_name(args.name)
     _require_no_open_defect(target, name)
+    require_named_product_dir(target, name)
     product = target / name
 
     source = revision_source(args.revision)
@@ -11333,6 +11399,7 @@ def cmd_step(args: argparse.Namespace) -> dict:
     target = resolve_target(args.target)
     name = validate_name(args.name)
     _require_no_open_defect(target, name)
+    require_named_product_dir(target, name)
     require_clean_worktree(target)
 
     steps = resolve_steps_declaration(target, name)
@@ -11548,6 +11615,7 @@ def cmd_defect(args: argparse.Namespace) -> dict:
     """
     target = resolve_target(args.target)
     name = validate_name(args.name)
+    require_named_product_dir(target, name)
 
     resolved = Path(args.file).expanduser().resolve()
     skills_root = (FORGE_ROOT / ".claude" / "skills").resolve()
@@ -12908,6 +12976,18 @@ GATING_REFUSALS: dict[str, str] = {
     # A scaffold destination still carries a token this stage cannot answer.
     "STAGE_CANNOT_ANSWER": WORK_STATE,
 
+    # --- the ledger's own root, shared by every write verb ------------------
+    # Arguable, and decided rather than noticed. Re-typing `--name` with the
+    # detected folder's spelling DOES clear the call, which reads like an
+    # invocation defect -- but it is only one of the two exits, and it is the
+    # wrong one whenever the folder on disk is the misnamed half. Choosing
+    # between them is a reading of the repository the engine cannot take, and
+    # the detected folder's spelling is not always even a legal `--name`
+    # (`detect_product_dir` reports whatever the tree carries;
+    # `validate_name` accepts a narrower alphabet). So the repository act is
+    # published: `plan`, whose output names the rename it would propose.
+    "PRODUCT_DIR_MISNAMED": WORK_STATE,
+
     # --- the shared readers -------------------------------------------------
     # The malformed half of `NO_FINDINGS`, and a work state for the same
     # reason: the declaration is the target's, and no flag rewrites it.
@@ -13308,6 +13388,24 @@ def _abandoned_step(args) -> dict | None:
     return None
 
 
+def _resolve_product_dir_misnamed(args) -> dict:
+    """`plan`, and deliberately not a question.
+
+    A question would publish a `discuss` invocation, and `discuss` is one of
+    the nine write verbs this same guard now stands in front of -- so the
+    published exit would refuse on its own advice, the exact trap
+    `_refusal_position_command`'s `revision` argument exists for.
+
+    `plan` is the right command anyway, not merely the reachable one: it is
+    read-only, it takes only the two arguments every refused call already
+    carries, and its `renames` entry is where the detected folder is named
+    together with what renaming it would carry. The refusal detail names both
+    exits; this publishes the one that is a command.
+    """
+    return _refusal_command(_cli_command(
+        "plan", *_refusal_target_args(args)))
+
+
 def _resolve_dirty_worktree(args) -> dict:
     """The code from the incident that widened this roster. `step` refused it
     mid-flow with nothing published, and the agent driving the CLI invented
@@ -13544,6 +13642,7 @@ _WORK_STATE_RESOLUTIONS = {
               "test_<id>` before marking it done."),
 
     # --- the guards, one file over -----------------------------------------
+    "PRODUCT_DIR_MISNAMED": _resolve_product_dir_misnamed,
     "DIRTY_WORKTREE": _resolve_dirty_worktree,
     "GIT_FAILED": lambda args: _refusal_question(
         args, "git itself refused the command this skill ran, and the refusal "

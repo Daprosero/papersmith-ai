@@ -25756,7 +25756,7 @@ class GatingRefusalRosterTests(unittest.TestCase):
             {("implementation_cli.py", "cmd_name"),
              ("impl_steps.py", "_verdict_result")})
 
-    def test_the_derivation_finds_the_measured_one_hundred_and_eleven(self):
+    def test_the_derivation_finds_the_measured_one_hundred_and_twelve(self):
         """Sanity check on the derivation itself, not on the roster: a change
         that adds, removes or renames a refusal anywhere a gating command can
         reach should move this number, never a typo in the walk above.
@@ -25768,9 +25768,11 @@ class GatingRefusalRosterTests(unittest.TestCase):
         commands. One hundred and eleven is the first reading taken by
         following calls out of those bodies and out of `implementation_cli.py`
         altogether. The forty-two it gained were not added by any change; they
-        were always raised, always reachable, and never seen.
+        were always raised, always reachable, and never seen. One hundred and
+        twelve is that reading plus `PRODUCT_DIR_MISNAMED`, which nine write
+        verbs now raise before they can open a second product tree.
         """
-        self.assertEqual(len(reachable_refusal_codes()), 111)
+        self.assertEqual(len(reachable_refusal_codes()), 112)
 
     def test_the_roster_classifies_nothing_a_gating_command_cannot_raise(self):
         """The reverse direction, and the half the forward lock cannot give.
@@ -27259,3 +27261,201 @@ class PilotPublicationProseTests(unittest.TestCase):
             with self.subTest(question=question[:40]):
                 self.assertIn(impl.NEXT_STEP_REPAIR_CHOICE, question)
                 self.assertNotIn(impl.NEXT_STEP_EXPERIMENT_CHOICE, question)
+
+
+class MisnamedProductDirGuardTests(unittest.TestCase):
+    """`PRODUCT_DIR_MISNAMED` -- the write verbs refuse to open a second
+    product tree under a name nothing else reads.
+
+    The incident, measured on a real target. `normalize_name` returns TWO
+    spellings of every name -- the directory (`-`-joined) and the package
+    (`_`-joined) -- and `validate_name` accepts both, so passing the package
+    spelling where the directory spelling belongs is a legal call. Every
+    ledger-writing command then resolved `<target>/<package spelling>/`, found
+    nothing, and CREATED it: a folder holding one file,
+    `.implementation/position.jsonl`. Eight events across two steps landed
+    there, every call reported `outcome: "returned"`, and `.implementation/`
+    is a required ignore, so `git status` showed nothing either. The science
+    ran and produced real product in the correctly-named tree; only the
+    bookkeeping went to a phantom, and `probe` and `position` kept reporting
+    that those steps had never run.
+
+    `detect_product_dir` -- "Find an existing product folder that only has
+    the wrong name" -- had held the answer since the migration path was
+    written, and the migration path was its only caller.
+
+    Why the guard is not "does `<name>/` exist". Because the phantom EXISTS
+    the moment the first event is appended: an existence check fires once and
+    then goes quiet while the split ledger keeps growing.
+    `test_a_ledger_already_split_still_refuses` is that mutation, written as
+    a test.
+    """
+
+    #: The directory spelling and the package spelling of one name -- the two
+    #: strings `normalize_name` returns for the same input, which is what makes
+    #: passing the wrong one a legal call rather than a typo.
+    DIRECTORY = "Method-Two"
+    PACKAGE = "Method_Two"
+
+    def _box(self, suffix, *, product_dirs=(DIRECTORY,)):
+        box = FORGE / "implementations" / f"_e2e_misnamed_{suffix}_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / self.PACKAGE).mkdir(parents=True)
+        (box / "src" / f"{self.PACKAGE}_Benchmark").mkdir(parents=True)
+        (box / "src" / self.PACKAGE / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / f"{self.PACKAGE}_Benchmark" / "__init__.py").write_text(
+            "__steps__ = {'verification': {'module': "
+            f"'{self.PACKAGE}_Benchmark.steps', 'function': 'run_ok'}}}}\n",
+            encoding="utf-8")
+        (box / "src" / f"{self.PACKAGE}_Benchmark" / "steps.py").write_text(
+            "def run_ok():\n    return None\n", encoding="utf-8")
+        for folder in product_dirs:
+            for category in ("Notebooks", "Results", "Models"):
+                (box / folder / category).mkdir(parents=True)
+                (box / folder / category / "kept.txt").write_text(
+                    "", encoding="utf-8")
+        (box / ".gitignore").write_text(
+            ".venv/\n__pycache__/\n.ipynb_checkpoints/\n.implementation/\n",
+            encoding="utf-8")
+        write_fixture_interpreter(
+            box / ".venv" / ("Scripts" if os.name == "nt" else "bin"))
+        git = ["git", "-c", "user.email=forge@example.invalid",
+               "-c", "user.name=forge", "-C", str(box)]
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        subprocess.run(git + ["add", "-A"], check=True, capture_output=True)
+        subprocess.run(git + ["commit", "-qm", "toy"], check=True,
+                       capture_output=True)
+        return box
+
+    def run_cli(self, *args):
+        return subprocess.run([sys.executable, str(CLI), *args],
+                              capture_output=True, text=True, cwd=FORGE)
+
+    def _step(self, box, name):
+        return self.run_cli("step", "--target", str(box), "--name", name,
+                            "--session", "s1", "--step", "verification")
+
+    def test_the_package_spelling_refuses_and_creates_nothing(self):
+        """The incident itself, through the real command. The assertion that
+        matters most is the LAST one: not merely that the call refused, but
+        that the folder it would have opened is still not there."""
+        box = self._box("refuse")
+        proc = self._step(box, self.PACKAGE)
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["code"], "PRODUCT_DIR_MISNAMED")
+        self.assertIn(self.DIRECTORY, payload["detail"])
+        self.assertIn(self.PACKAGE, payload["detail"])
+        self.assertFalse((box / self.PACKAGE).exists(),
+                         "the refusal opened the very tree it exists to refuse")
+        self.assertFalse((box / self.DIRECTORY / ".implementation").exists(),
+                         "a refused call wrote into the real tree instead")
+
+    def test_the_refusal_publishes_the_command_that_names_the_folder(self):
+        """A work state, so a runnable exit is published rather than left to
+        the agent's prose -- and `plan` rather than a `discuss` question,
+        because `discuss` is itself one of the nine verbs this guard stands in
+        front of and a published question would refuse on its own advice."""
+        box = self._box("resolve")
+        payload = json.loads(self._step(box, self.PACKAGE).stdout)
+        self.assertEqual(impl.GATING_REFUSALS["PRODUCT_DIR_MISNAMED"],
+                         impl.WORK_STATE)
+        self.assertEqual(payload["resolve"]["kind"], "command")
+        self.assertIn("plan", payload["resolve"]["command"])
+        self.assertNotIn("discuss", payload["resolve"]["command"])
+
+    def test_a_ledger_already_split_still_refuses(self):
+        """The mutation a weaker guard survives, and the reason the guard asks
+        what `<name>/` HOLDS rather than whether it is there.
+
+        A guard written as `if not (target / name).exists()` passes this
+        repository -- the phantom is present, holding exactly what the
+        incident left in it -- and every further event joins the split ledger
+        it was supposed to stop.
+        """
+        box = self._box("split")
+        ledger = box / self.PACKAGE / ".implementation" / "position.jsonl"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text(
+            json.dumps({"kind": "step", "step": "verification",
+                        "outcome": "returned", "session": "s0"}) + "\n",
+            encoding="utf-8")
+        proc = self._step(box, self.PACKAGE)
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["code"],
+                         "PRODUCT_DIR_MISNAMED")
+        self.assertEqual(len(ledger.read_text(encoding="utf-8").splitlines()), 1,
+                         "the refused call appended to the split ledger anyway")
+
+    def test_the_directory_spelling_runs_into_the_one_product_tree(self):
+        """The other side of the same repository: the guard is about WHICH
+        tree, never about refusing the work."""
+        box = self._box("green")
+        proc = self._step(box, self.DIRECTORY)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["outcome"], "returned")
+        self.assertTrue(
+            (box / self.DIRECTORY / ".implementation" / "position.jsonl").exists())
+        self.assertFalse((box / self.PACKAGE).exists())
+
+    def test_a_target_with_no_product_folder_anywhere_is_untouched(self):
+        """Scaffolding from zero is the flow that legitimately starts with no
+        product folder at all, and `detect_product_dir` answers `None` for
+        zero candidates. A guard that fired here would break the one path
+        every new target begins on."""
+        box = self._box("fromzero", product_dirs=())
+        proc = self._step(box, self.PACKAGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["outcome"], "returned")
+
+    def test_two_candidate_folders_are_not_guessed_between(self):
+        """Ambiguity is not an error either: `detect_product_dir` proposes
+        only an unambiguous single candidate, and this guard inherits that
+        exactly rather than picking one."""
+        box = self._box("ambiguous", product_dirs=(self.DIRECTORY, "Method-Three"))
+        proc = self._step(box, self.PACKAGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["outcome"], "returned")
+
+    def test_every_command_that_appends_to_the_ledger_carries_the_guard(self):
+        """Derived, not listed. The defect on record is a rule written once and
+        applied to one caller, so the scope of this one is read out of the
+        source: a `cmd_*` that appends a ledger event is a `cmd_*` that can
+        open the phantom, and it must run the guard first. A tenth write verb
+        goes red here without anybody remembering to come back.
+
+        Both halves are asserted. Equality alone would pass two empty sets --
+        which is exactly what a mutation to the `append_event` detection would
+        produce -- so the derived set is also checked against the nine verbs
+        the skill documents as writing.
+        """
+        tree = ast.parse(CLI.read_text(encoding="utf-8"))
+        commands = [node for node in tree.body
+                    if isinstance(node, ast.FunctionDef)
+                    and node.name.startswith("cmd_")]
+
+        def calls(node, attribute):
+            return any(isinstance(child, ast.Call)
+                       and isinstance(child.func, ast.Attribute)
+                       and child.func.attr == attribute
+                       for child in ast.walk(node))
+
+        appending = {node.name for node in commands
+                     if calls(node, "append_event")}
+        guarded = {node.name for node in commands
+                   if any(isinstance(child, ast.Name)
+                          and child.id == "require_named_product_dir"
+                          for child in ast.walk(node))}
+        self.assertEqual(
+            appending,
+            {"cmd_position", "cmd_discuss", "cmd_propose", "cmd_gate",
+             "cmd_offer", "cmd_close", "cmd_step", "cmd_settle", "cmd_defect"},
+            "the set of ledger-appending commands moved; the guard's scope is "
+            "derived from it and this list is what proves the derivation reads "
+            "something real")
+        self.assertEqual(
+            appending, guarded,
+            "a command appends to `<name>/.implementation/` without first "
+            "refusing to open a second product tree -- the exact shape of the "
+            "defect this guard closes")
