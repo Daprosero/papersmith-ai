@@ -1886,22 +1886,23 @@ state, alongside the scenarios — not verified by hand once.
 ### Every refusal says how it is cleared
 
 Every refusal leaves the CLI through one handler and prints the same JSON:
-`status`, `code`, `detail`, exit `2`, nothing appended anywhere. Refusals raised
-inside the nine **gating** commands — `apply`, `admit`, `gate`, `offer`,
-`close`, `step`, `settle`, `materialize`, `position` — carry one more thing, and
-which ones carry it is itself the answer to a question:
+`status`, `code`, `detail`, exit `2`, nothing appended anywhere. Refusals a call
+to one of the nine **gating** commands can reach — `apply`, `admit`, `gate`,
+`offer`, `close`, `step`, `settle`, `materialize`, `position` — carry one more
+thing, and which ones carry it is itself the answer to a question:
 
 > Can the caller clear this by changing the invocation alone, without touching
 > the repository?
 
 **Yes — an invocation defect.** The detail already names the flag, the token or
-the mutual exclusion. Thirty-four codes, and nothing is published beside them:
-`SETTLE_STDIN_CONFLICT`, `OFFER_ANSWER_NOT_A_TOKEN`, `MATERIALIZE_MODE_REQUIRED`
-and the rest. Retype the call.
+the mutual exclusion. Forty-nine codes, and nothing is published beside them:
+`SETTLE_STDIN_CONFLICT`, `OFFER_ANSWER_NOT_A_TOKEN`, `MATERIALIZE_MODE_REQUIRED`,
+`NOT_A_GIT_REPO`, `GATE_ELECTION_REQUIRED` and the rest. Retype the call.
 
 **No — a work state.** Somebody has to act on the repository, so the payload
-carries a `resolve` key saying what. Thirty-five codes, including
-`POSITION_DISAGREES`, `AGREEMENT_DISAGREES`, `POSITION_STALE`,
+carries a `resolve` key saying what. Sixty-two codes, including
+`POSITION_DISAGREES`, `AGREEMENT_DISAGREES`, `POSITION_STALE`, `DIRTY_WORKTREE`,
+`GATE_AUTHORIZATION_CONSUMED`, `STEP_MODULE_MISSING`,
 `POSITION_RUNG_SKIPPED`, `POSITION_STEP_UNKNOWN`, `STEPS_UNDECLARED`,
 `POSITION_RECORD_MALFORMED` and `NOT_READY`:
 

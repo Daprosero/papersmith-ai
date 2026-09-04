@@ -2460,24 +2460,35 @@ me to do that now?". That is the failure this section exists to make
 impossible. **The engine publishes what happens next. The agent never composes
 it.**
 
-Sixty-nine distinct codes are raised inside the nine gating commands — `apply`,
-`admit`, `gate`, `offer`, `close`, `step`, `settle`, `materialize`, `position`
-(`GATING_COMMANDS`). Each is classified in `GATING_REFUSALS` by one derivable
-test, and the classification is a decision somebody made rather than a shape
-somebody noticed:
+One hundred and eleven distinct codes are reachable from the nine gating
+commands — `apply`, `admit`, `gate`, `offer`, `close`, `step`, `settle`,
+`materialize`, `position` (`GATING_COMMANDS`). **Reachable from, not raised
+inside**, and the difference cost a live session: the roster was first built
+from a walk over the `cmd_*` bodies alone, which cannot see a refusal a command
+reaches through a helper, so forty-two codes — `DIRTY_WORKTREE` among them —
+were never classified and reached users bare. The suite derives the set by
+following calls out of those bodies and out of `implementation_cli.py` into
+`_core/implementation/`. Each code is classified in `GATING_REFUSALS` by one
+derivable test, and the classification is a decision somebody made rather than a
+shape somebody noticed:
 
 > Can the caller clear this by changing the invocation alone, without touching
 > the repository?
 
-- **Yes — an *invocation* defect** (34 codes). The detail already names the
+- **Yes — an *invocation* defect** (49 codes). The detail already names the
   flag, the token or the mutual exclusion. Nothing is published beside it: a
   `resolve` key on every refusal is the shape a reader learns to skip, and that
   is how a real one stops being read.
-- **No — a *work state*** (35 codes). Somebody must act on the repository, so
+- **No — a *work state*** (62 codes). Somebody must act on the repository, so
   the refused payload carries `resolve`: `{kind: "command", command}` when the
   engine can name the whole exit, or `{kind: "question", question, command}`
   when the next act is a decision, where `command` is the runnable `discuss`
   invocation that opens it.
+
+A `resolve` is published only when the refused **call** is itself a gating one.
+The roster's reach crosses helpers that non-gating commands share — `plan` runs
+the same dirty-tree guard `apply` does — and a resolution built from arguments
+the refused command never carried would not run.
 
 `POSITION_DISAGREES` resolves to re-executing the verification notebook under
 the target's own venv with that venv's `bin` on `PATH` — see

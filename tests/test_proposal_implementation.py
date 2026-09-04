@@ -13228,11 +13228,14 @@ class MessagesThatAssertWhatTheyCheckTests(unittest.TestCase):
     def _stage_objects(self, declaration, suffix):
         """`_stage_objects` directly rather than through `materialize`: the
         refusal is raised in this top-level helper, not inside
-        `cmd_materialize` (which is why `OBJECT_MAP_NOT_APPROVED` is not in
-        `GATING_REFUSALS` -- `raised_refusal_codes` walks `cmd_*` bodies
-        only), and reaching it through the CLI would mean satisfying
-        `DIRTY_WORKTREE`, `PLAN_REQUIRED` and the mode flags first, none of
-        which this gate is about."""
+        `cmd_materialize`, and reaching it through the CLI would mean
+        satisfying `DIRTY_WORKTREE`, `PLAN_REQUIRED` and the mode flags first,
+        none of which this gate is about.
+
+        That helper hop is why `OBJECT_MAP_NOT_APPROVED` went unclassified for
+        as long as it did: `raised_refusal_codes` walks `cmd_*` bodies only, and
+        the roster was populated from it. `reachable_refusal_codes` follows the
+        call, and the code is classified now."""
         box = self._box(suffix, declaration)
         try:
             return None, impl._stage_objects(box, "Method", "1")
@@ -25068,9 +25071,15 @@ _ENGLISH_COUNTS = {
     29: "Twenty-nine", 30: "Thirty", 31: "Thirty-one", 32: "Thirty-two",
     33: "Thirty-three", 34: "Thirty-four", 35: "Thirty-five",
     36: "Thirty-six",
+    48: "Forty-eight", 49: "Forty-nine", 50: "Fifty",
     54: "Fifty-four", 55: "Fifty-five", 56: "Fifty-six", 57: "Fifty-seven",
-    63: "Sixty-three", 64: "Sixty-four", 65: "Sixty-five", 66: "Sixty-six",
+    61: "Sixty-one", 62: "Sixty-two", 63: "Sixty-three", 64: "Sixty-four",
+    65: "Sixty-five", 66: "Sixty-six",
     67: "Sixty-seven", 68: "Sixty-eight", 69: "Sixty-nine",
+    # The roster stopped being a two-digit table when it stopped being read out
+    # of the `cmd_*` bodies alone.
+    110: "One hundred and ten", 111: "One hundred and eleven",
+    112: "One hundred and twelve",
 }
 
 
@@ -25103,6 +25112,16 @@ def raised_refusal_codes(source: Path, function: str) -> set[str]:
     A `Refused` whose first argument is not a string literal is invisible here.
     None exists today (the classes below assert the total), and the limitation
     is stated rather than guessed at.
+
+    **This walks ONE function's body and stops at its own file.** A refusal
+    raised by a helper the function calls -- in this module or, far more often,
+    in `_core/implementation/` -- is not here, and reading an answer about a
+    COMMAND out of this is the measured defect that produced
+    `reachable_refusal_codes` below: `GATING_REFUSALS` was populated from a
+    union of these, so forty-two codes a gating command can raise were never
+    classified, `DIRTY_WORKTREE` (raised in `impl_guards`, reached by `apply`,
+    `step` and `materialize`) among them. Ask this only what one named body
+    spells for itself; ask `reachable_refusal_codes` what a command can raise.
     """
     tree = ast.parse(source.read_text(encoding="utf-8"))
     definition = next(
@@ -25121,17 +25140,214 @@ def raised_refusal_codes(source: Path, function: str) -> set[str]:
     return codes
 
 
+#: The forge's shared implementation modules -- the far side of the file
+#: boundary `raised_refusal_codes` stops at, and where a third of the refusals
+#: a gating command can raise actually live.
+CORE_IMPLEMENTATION = FORGE / ".claude/skills/_core/implementation"
+
+#: A refusal code as every one of them is spelled: screaming snake case, two
+#: segments or more. Used only to recognise a code-shaped string constant when
+#: a refusal's first argument is not a literal this can read.
+REFUSAL_CODE_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
+
+#: Both constructors a refusal code can be born in. `NameRefused` is here
+#: because `cmd_name` catches one and re-raises its code as a `Refused`, so a
+#: walk that knew only `Refused` would lose the four `NAME_*` codes at the one
+#: hop that converts them.
+REFUSAL_CONSTRUCTORS = ("Refused", "NameRefused")
+
+
+def _refusal_code_argument(argument) -> str | None:
+    """The code one refusal's first argument spells, or `None` when this cannot
+    read it.
+
+    Two shapes are read. A plain string constant is the code. An f-string is
+    read down to its leading constant and cut at the first `:` -- the one
+    dynamic spelling this engine uses is
+    `NameRefused(f"NAME_NOT_ALPHANUMERIC:{token}")`, and `cmd_name` partitions
+    it on exactly that colon before re-raising it, so the code is the head.
+    """
+    if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+        return argument.value.partition(":")[0]
+    if (isinstance(argument, ast.JoinedStr) and argument.values
+            and isinstance(argument.values[0], ast.Constant)
+            and isinstance(argument.values[0].value, str)):
+        head = argument.values[0].value.partition(":")[0]
+        if REFUSAL_CODE_RE.match(head):
+            return head
+    return None
+
+
+def _refusal_sites(node, owner: str) -> list[tuple[str, str | None]]:
+    """Every refusal constructed anywhere under `node`, as `(owner, code)`.
+
+    `owner` is the innermost enclosing `def`'s name, so a site this cannot read
+    can be reported by the function that holds it rather than by a line number
+    that moves under every edit. `code` is `None` for exactly those sites.
+    """
+    sites: list[tuple[str, str | None]] = []
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            sites += _refusal_sites(child, child.name)
+            continue
+        if (isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+                and child.func.id in REFUSAL_CONSTRUCTORS):
+            sites.append(
+                (owner,
+                 _refusal_code_argument(child.args[0]) if child.args else None))
+        sites += _refusal_sites(child, owner)
+    return sites
+
+
+def _module_code_constants(tree) -> set[str]:
+    """Every code-shaped string constant a module binds at its top level.
+
+    What an unreadable refusal widens to. `impl_steps` raises one refusal off a
+    lookup table (`_UNRESOLVABLE_CODES`), and this is what carries
+    `STEP_MODULE_MISSING`, `STEP_FUNCTION_MISSING` and `STEP_NOT_CALLABLE` --
+    three codes `step` really does raise, and which no walk over literals can
+    see -- into the derived set.
+    """
+    constants = set()
+    for statement in tree.body:
+        if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            continue
+        if statement.value is None:
+            continue
+        for node in ast.walk(statement.value):
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and REFUSAL_CODE_RE.match(node.value)):
+                constants.add(node.value)
+    return constants
+
+
+def _codes_from_sites(sites, constants: set[str]) -> set[str]:
+    """The codes a set of sites raises, widening every unreadable one to
+    `constants` rather than dropping it. Dropping is what an under-approximation
+    does, and an under-approximation is the defect this whole derivation
+    exists to close."""
+    codes = {code for _, code in sites if code is not None}
+    if any(code is None for _, code in sites):
+        codes |= constants
+    return codes
+
+
+def unreadable_refusal_sites() -> set[tuple[str, str]]:
+    """`(module, function)` for every refusal whose code this file cannot read.
+
+    Not a roster of codes -- a roster of the derivation's own blind spots. A
+    new dynamic site must be looked at by a human, because widening it to its
+    module's constants is only as good as those constants happen to be, so this
+    is asserted rather than tolerated.
+    """
+    sites = set()
+    for source in (CLI, *sorted(CORE_IMPLEMENTATION.glob("*.py"))):
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        sites |= {(source.name, owner)
+                  for owner, code in _refusal_sites(tree, "<module>")
+                  if code is None}
+    return sites
+
+
+def reachable_refusal_codes() -> set[str]:
+    """Every refusal code a gating command can raise, derived from source.
+
+    The lock the roster is actually held to, and the replacement for a union of
+    `raised_refusal_codes(CLI, "cmd_*")` -- which stops at the `cmd_*` body and
+    therefore could not see `DIRTY_WORKTREE`, `FORGE_DEFECT_OPEN`, the whole
+    `GATE_AUTHORIZATION_*` family or any of the position grammar's own parse
+    refusals. Forty-two codes were invisible to it while every one of them
+    could reach a user mid-flow.
+
+    How the set is built, in two halves:
+
+    1. **Inside `implementation_cli.py`, a closure from the nine `cmd_*` roots.**
+       An edge is any *reference* to a module-level `def` of the same file --
+       `helper(...)`, `{"k": helper}`, `partial(helper)` alike -- and nested
+       definitions are descended into, so a guard written as a closure still
+       belongs to the command that holds it.
+    2. **Across the file boundary, whole modules.** Every `*.py` under
+       `_core/implementation/` contributes all of its refusals.
+
+    **What this over-approximates, and why that is the safe direction.** An
+    over-approximation forces a code to be classified that perhaps no gating
+    command can actually reach; the cost is one map entry. An
+    under-approximation lets a live refusal reach a user with nothing published
+    beside it, which is the defect on record. Every widening below is chosen in
+    that direction:
+
+    - A *reference* is not a proven call. A helper merely named inside a
+      reached function is treated as reached.
+    - Modules are taken whole rather than per-symbol, because crossing the
+      boundary per-symbol would mean modelling `impl_position.<attr>` dispatch;
+      module granularity needs no such model. Every module in the directory is
+      taken, not only the ones `implementation_cli.py` imports today, so a
+      module that gains its first import does not also gain a blind spot.
+    - An unreadable refusal code widens to every code-shaped constant its own
+      module binds at the top level, rather than being dropped.
+
+    **What it still cannot see, stated rather than guessed at.** A helper
+    reached only through `globals()`, `getattr` or another runtime lookup is
+    invisible: nothing in this engine dispatches that way today, and
+    `unreadable_refusal_sites` is asserted separately so a new dynamic code
+    site cannot pass unread. And `implementation_cli.py`'s own module-level
+    constants are dominated by `GATING_REFUSALS`' keys, so a *new* unreadable
+    site inside the CLI would widen to codes already classified and prove
+    little -- which is exactly what `unreadable_refusal_sites` is for.
+    """
+    tree = ast.parse(CLI.read_text(encoding="utf-8"))
+    definitions = {node.name: node for node in tree.body
+                   if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    roots = [f"cmd_{command}" for command in impl.GATING_COMMANDS]
+    for root in roots:
+        if root not in definitions:
+            raise AssertionError(f"{CLI.name} defines no {root}")
+    constants = _module_code_constants(tree)
+    codes: set[str] = set()
+    seen: set[str] = set()
+    frontier = list(roots)
+    while frontier:
+        name = frontier.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        definition = definitions[name]
+        codes |= _codes_from_sites(_refusal_sites(definition, name), constants)
+        frontier += [node.id for node in ast.walk(definition)
+                     if isinstance(node, ast.Name)
+                     and isinstance(node.ctx, ast.Load)
+                     and node.id in definitions]
+    for source in sorted(CORE_IMPLEMENTATION.glob("*.py")):
+        module = ast.parse(source.read_text(encoding="utf-8"))
+        codes |= _codes_from_sites(_refusal_sites(module, "<module>"),
+                                   _module_code_constants(module))
+    return codes
+
+
 class GatingRefusalRosterTests(unittest.TestCase):
-    """Lock A: every refusal a gating command raises declares how it is cleared.
+    """Lock A: every refusal a gating command can REACH declares how it is
+    cleared.
 
     The incident. `gate` refused `POSITION_DISAGREES` in a live session, the
     payload carried a code and a sentence, and the agent driving the CLI
     composed the next question itself -- "Do you want me to do that now?".
-    Fifty-six distinct codes are raised inside the gating commands and exactly
-    two publication points existed in the whole engine, so fifty-four of them
+    Fifty-six codes were raised inside the gating commands and exactly two
+    publication points existed in the whole engine, so fifty-four of them
     reached the user as a bare code with nothing runnable attached. A harness
     that has to sit above the agent driving it cannot leave the next act to
     that agent's prose.
+
+    The second incident, and why "reach" replaced "raise". The roster that
+    closed the first one was populated from a union of
+    `raised_refusal_codes(CLI, "cmd_*")`, which stops at the `cmd_*` body. One
+    `step` call then refused twice in one session: `STEP_SEQUENCE_NOT_REACHED`,
+    raised in `cmd_step` and classified, with its `resolve`; and
+    `DIRTY_WORKTREE`, raised in `impl_guards` one file over, with nothing.
+    Forty-two codes were in that second condition. The mechanism had never been
+    broken -- the roster it read was -- so what changed is the derivation, not
+    the chokepoint: `reachable_refusal_codes` follows calls out of the `cmd_*`
+    bodies and out of `implementation_cli.py`, and one hundred and eleven codes
+    are now classified.
 
     The rule the roster encodes, and the one derivable test that separates the
     two kinds: **can the caller clear this by changing the invocation alone,
@@ -25147,41 +25363,106 @@ class GatingRefusalRosterTests(unittest.TestCase):
     """
 
     def gating_codes(self):
+        """Deliberately still the OLD walk, and used only by the tests that are
+        about the walks themselves. Every assertion about the ROSTER reads
+        `reachable_refusal_codes`; this is kept so the two can be compared, and
+        so a reader who finds it here sees immediately what it does not cover.
+        """
         codes = set()
         for command in impl.GATING_COMMANDS:
             codes |= raised_refusal_codes(CLI, f"cmd_{command}")
         return codes
 
-    def test_the_derivation_finds_the_measured_sixty_nine(self):
-        """Sanity check on the scraper itself, not on the roster: a change to a
-        gating command that adds, removes or renames a refusal should move this
-        number, never a typo in the walk above.
+    def test_every_refusal_reachable_from_a_gating_command_is_classified(self):
+        """The lock this roster is actually held to, and the one the roster was
+        NOT built from.
 
-        Fifty-six until `position` joined `GATING_COMMANDS`, which brought its
-        own eight previously-unclassified codes with it (`REVISION_UNREADABLE`
-        it already shared with `admit`) plus `POSITION_RUNG_SKIPPED`, for
-        sixty-five. Sixty-six once `POSITION_STEP_UNKNOWN` joined `cmd_position`
-        -- `STEPS_UNDECLARED` is reused verbatim from `cmd_step` and adds no
-        new member to this union. Sixty-seven once `POSITION_RECORD_UNKNOWN`
-        joined `cmd_position` beside it (the-pilot-proves-the-science, slice
-        B). Sixty-eight once `RUNG_NOT_ATTAINED` joined `cmd_gate` (same
-        change, slice A). Sixty-nine once `POSITION_RECORD_MALFORMED` joined
-        `cmd_position` beside `POSITION_RECORD_UNKNOWN` -- the shape half of
-        the same declaration, which `__steps__` had and `__records__` did
-        not."""
-        self.assertEqual(len(self.gating_codes()), 69)
+        The defect on record. `GATING_REFUSALS` was populated from a union of
+        `raised_refusal_codes(CLI, "cmd_*")`, which walks one function body and
+        stops at its own file, and the blind spot was documented and then
+        populated from anyway. A live session ran the declared flow and got two
+        refusals from the same `step` call's neighbourhood:
+        `STEP_SEQUENCE_NOT_REACHED`, raised in `cmd_step` and therefore
+        classified, carrying its `resolve`; and `DIRTY_WORKTREE`, raised in
+        `impl_guards.require_clean_worktree` and therefore invisible to the
+        scraper, carrying nothing. The agent driving the CLI composed the next
+        act in prose -- exactly what this mechanism exists to prevent.
 
-    def test_every_gating_refusal_is_classified(self):
-        roster = set(impl.GATING_REFUSALS)
-        raised = self.gating_codes()
+        So the set is derived by following calls OUT of the `cmd_*` bodies and
+        out of `implementation_cli.py` itself; `reachable_refusal_codes` states
+        precisely what it over-approximates and why the over-approximation is
+        the safe direction. Nothing here is a hand-written list of codes: the
+        next refusal added to a helper module goes red here without anybody
+        remembering to come back.
+        """
+        missing = sorted(reachable_refusal_codes() - set(impl.GATING_REFUSALS))
         self.assertEqual(
-            sorted(raised - roster), [],
-            "these codes are raised in a gating command and the roster "
+            missing, [],
+            "these codes are reachable from a gating command and the roster "
             "classifies none of them; a refusal nobody decided about is the "
             "defect this roster exists to make impossible")
+
+    def test_the_derivation_crosses_the_boundary_the_old_walk_stopped_at(self):
+        """The derivation is not merely wider -- it is wider in the direction
+        that was broken. Both halves are asserted: a helper-module code the
+        `cmd_*` walk cannot see IS derived here, and the `cmd_*` walk really
+        cannot see it. Asserting only the first would pass over a
+        `reachable_refusal_codes` that had quietly become the old union again.
+        """
+        for code in ("DIRTY_WORKTREE", "NOT_A_GIT_REPO", "FORGE_DEFECT_OPEN",
+                     "GATE_AUTHORIZATION_CONSUMED", "STEP_RUNNER_SILENT",
+                     "POSITION_ITEM_MALFORMED"):
+            with self.subTest(code=code):
+                self.assertIn(code, reachable_refusal_codes())
+                self.assertNotIn(code, self.gating_codes())
+
+    def test_a_refusal_code_no_literal_walk_can_read_is_still_derived(self):
+        """`impl_steps` raises one refusal whose code comes off a lookup table,
+        and `step` -- a gating command -- really does surface all three. A walk
+        over string literals sees none of them, so the unreadable site widens
+        to its module's own code-shaped constants instead of being dropped."""
+        derived = reachable_refusal_codes()
+        for code in ("STEP_MODULE_MISSING", "STEP_FUNCTION_MISSING",
+                     "STEP_NOT_CALLABLE"):
+            with self.subTest(code=code):
+                self.assertIn(code, derived)
+
+    def test_the_derivations_own_blind_spots_are_the_two_measured_ones(self):
+        """A widening is only as good as the constants it widens to, so a NEW
+        refusal whose code this file cannot read must be looked at by a human
+        rather than absorbed. Two sites exist today and both are understood:
+        `cmd_name` re-raising a `NameRefused`'s code, and `impl_steps`'
+        unresolvable-reason lookup. A third goes red here."""
         self.assertEqual(
-            sorted(roster - raised), [],
-            "the roster classifies these and no gating command raises them")
+            unreadable_refusal_sites(),
+            {("implementation_cli.py", "cmd_name"),
+             ("impl_steps.py", "_verdict_result")})
+
+    def test_the_derivation_finds_the_measured_one_hundred_and_eleven(self):
+        """Sanity check on the derivation itself, not on the roster: a change
+        that adds, removes or renames a refusal anywhere a gating command can
+        reach should move this number, never a typo in the walk above.
+
+        Sixty-nine was this number while the walk stopped at the `cmd_*`
+        bodies, and it grew one at a time in that shape -- fifty-six, then
+        sixty-five when `position` joined `GATING_COMMANDS`, then sixty-six,
+        sixty-seven, sixty-eight, sixty-nine as single codes joined single
+        commands. One hundred and eleven is the first reading taken by
+        following calls out of those bodies and out of `implementation_cli.py`
+        altogether. The forty-two it gained were not added by any change; they
+        were always raised, always reachable, and never seen.
+        """
+        self.assertEqual(len(reachable_refusal_codes()), 111)
+
+    def test_the_roster_classifies_nothing_a_gating_command_cannot_raise(self):
+        """The reverse direction, and the half the forward lock cannot give.
+        A roster that grows entries nothing raises is a roster nobody can trust
+        to be exhaustive either -- and this went red, correctly, the moment the
+        forty-two were classified against the wider derivation while this test
+        still read the `cmd_*` union."""
+        self.assertEqual(
+            sorted(set(impl.GATING_REFUSALS) - reachable_refusal_codes()), [],
+            "the roster classifies these and no gating command can reach them")
 
     def test_the_roster_names_only_the_two_kinds(self):
         self.assertEqual(
@@ -25242,14 +25523,18 @@ class GatingRefusalRosterTests(unittest.TestCase):
         "Thirty-four") must fail this test -- and does, because the
         work-state assertion below reads the sentence usage.md actually
         carries beside `POSITION_RUNG_SKIPPED`/`NOT_READY`, not merely
-        `usage.md`'s presence of ANY correct-looking count."""
+        `usage.md`'s presence of ANY correct-looking count.
+
+        The headline sentence now says *reachable from*, not *raised inside*,
+        and the wording is load-bearing rather than cosmetic: "raised inside"
+        is the false claim the roster was populated under."""
         counts = {kind: sum(1 for value in impl.GATING_REFUSALS.values()
                             if value == kind)
                   for kind in (impl.INVOCATION_DEFECT, impl.WORK_STATE)}
         skill = " ".join(SKILL_MD.read_text(encoding="utf-8").split())
         self.assertIn(
             f"{_english_count(len(impl.GATING_REFUSALS))} distinct codes are "
-            "raised inside the nine gating commands", skill)
+            "reachable from the nine gating commands", skill)
         self.assertIn(
             f"an *invocation* defect** ({counts[impl.INVOCATION_DEFECT]} "
             "codes)", skill)
@@ -25268,10 +25553,54 @@ class GatingRefusalRosterTests(unittest.TestCase):
             "`set(counts.values())` loop the moment both kinds tied")
 
     def test_a_code_outside_the_roster_publishes_nothing(self):
-        """The roster is the gating commands' own. A refusal raised anywhere
-        else is not silently handed a resolution it was never classified for."""
+        """The roster is the gating commands' own. A refusal no gating command
+        can reach is not silently handed a resolution it was never classified
+        for.
+
+        The example used to be `NOT_A_GIT_REPO`, which was a bad one and is now
+        classified: it IS reachable, through `resolve_target`, from every
+        gating command there is. `DISCUSS_STDIN_CONFLICT` is a real code raised
+        by a real command outside the nine, and the first assertion derives
+        that rather than asserting it, so this test cannot quietly become a
+        test about a code that has since joined the roster."""
+        self.assertNotIn("DISCUSS_STDIN_CONFLICT", reachable_refusal_codes())
         self.assertIsNone(
-            impl.refusal_resolution("NOT_A_GIT_REPO", self._args()))
+            impl.refusal_resolution("DISCUSS_STDIN_CONFLICT", self._args()))
+
+    def test_a_non_gating_call_publishes_nothing_for_a_shared_code(self):
+        """The other half of the same rule, and the one the widened roster made
+        load-bearing. `DIRTY_WORKTREE` is classified because `apply`, `step`
+        and `materialize` all reach it -- but `plan` runs the identical guard,
+        and `plan` carries no `--session`. Publishing off the code alone would
+        hand `plan` a `discuss` command built from arguments it never had.
+
+        Measured, not assumed: the same code and the same argument shape,
+        differing only in `command`, answer differently."""
+        self.assertIsNotNone(
+            impl.refusal_resolution("DIRTY_WORKTREE",
+                                    self._args(command="step")))
+        self.assertIsNone(
+            impl.refusal_resolution("DIRTY_WORKTREE",
+                                    self._args(command="plan")))
+
+    def test_the_dirty_worktree_resolution_names_the_tree_and_asks_the_choice(self):
+        """The refusal from the live session that widened this roster, and the
+        act the agent driving the CLI had to invent in prose.
+
+        A question rather than a command, and the reason is the one
+        `POSITION_ABSENT` already states: a commit needs a message this engine
+        must never author, and whether a change is product or scratch is a
+        reading nobody here can take. So the listing is published runnable and
+        the choice is asked. Every part is built from the target path the call
+        already carried -- nothing target-specific can enter through it."""
+        resolution = impl.refusal_resolution(
+            "DIRTY_WORKTREE", self._args(target="implementations/box"))
+        self.assertEqual(resolution["kind"], "question")
+        self.assertIn("git -C implementations/box status --porcelain",
+                      resolution["question"])
+        self.assertIn("stash", resolution["question"])
+        self.assertIn("discuss", resolution["command"])
+        self.assertEqual(leaks_in(resolution["question"]), [])
 
     def test_position_disagrees_publishes_the_notebook_re_execution(self):
         """The code from the incident, and the one resolution named in the
@@ -25298,7 +25627,8 @@ class GatingRefusalRosterTests(unittest.TestCase):
         """`position` takes `--session`, so a published `position` command that
         omitted it would refuse on its own advice. Every gating command that
         raises a position code carries `--session`; this holds the join."""
-        for code in ("POSITION_STALE", "POSITION_UNBACKED"):
+        for code in ("POSITION_STALE", "POSITION_UNBACKED",
+                     "POSITION_HOLDER_MOVED"):
             with self.subTest(code=code):
                 command = impl.refusal_resolution(code, self._args())["command"]
                 self.assertIn("position", command)
@@ -25381,6 +25711,29 @@ class RefusalPayloadPublishesItsExitTests(unittest.TestCase):
         payload = json.loads(proc.stdout)
         self.assertEqual(payload["code"], "MATERIALIZE_MODE_REQUIRED")
         self.assertNotIn("resolve", payload)
+
+    def test_a_helper_raised_refusal_reaches_stdout_with_its_resolution(self):
+        """The exact failure that widened the roster, reproduced end to end.
+
+        `step` refused `DIRTY_WORKTREE` in a live session with nothing beside
+        it, because the code is raised in `impl_guards`, one file over, and the
+        roster had been populated from a walk that stops at the `cmd_*` body.
+        The mechanism was never broken; the roster it read was.
+
+        Through the real process, not the builder: a resolution that exists in
+        a dict and never reaches stdout is the same silence to the reader.
+        """
+        box, _ = self._box()
+        (box / "untracked.txt").write_text("product\n", encoding="utf-8")
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "any")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["code"], "DIRTY_WORKTREE")
+        self.assertEqual(payload["resolve"]["kind"], "question")
+        self.assertIn("status --porcelain", payload["resolve"]["question"])
+        self.assertIn("implementation_cli.py discuss",
+                      payload["resolve"]["command"])
 
     def test_the_published_command_is_directly_runnable(self):
         """A published command that does not parse is prose with a monospace

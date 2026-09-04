@@ -12538,9 +12538,20 @@ INVOCATION_DEFECT = "invocation"
 #: next act to it.
 WORK_STATE = "work-state"
 
-#: Every refusal raised inside a gating command, classified by one derivable
+#: Every refusal REACHABLE FROM a gating command, classified by one derivable
 #: test: **can the caller clear it by changing the invocation alone, without
 #: touching the repository?**
+#:
+#: "Reachable from", not "raised inside", and the difference is a measured
+#: defect rather than a nicety. This map was first populated from a walk over
+#: the `cmd_*` bodies alone, which cannot see a refusal a command reaches
+#: through a helper -- and a third of them are raised in `_core/implementation/`
+#: or in a module-level helper of this file. A live session running the declared
+#: flow got `STEP_SEQUENCE_NOT_REACHED` with its `resolve` and `DIRTY_WORKTREE`
+#: with nothing, from the same `step` call, and the agent driving the CLI
+#: composed the next act in prose. `reachable_refusal_codes` in the suite now
+#: derives the set by following calls out of the `cmd_*` bodies and out of this
+#: file, and states exactly what it over-approximates.
 #:
 #: The "already" codes (`SETTLE_ALREADY_DONE`, `_ALREADY_WITNESSED`,
 #: `_ALREADY_REVERSED`) sit on the invocation side and the reading is worth
@@ -12663,6 +12674,126 @@ GATING_REFUSALS: dict[str, str] = {
     # The shape half of the same declaration. A work state for the identical
     # reason: nothing in the invocation can fix an entry the target wrote.
     "POSITION_RECORD_MALFORMED": WORK_STATE,
+
+    # --- the guards every gating command runs before it does anything -------
+    # `resolve_target`, `require_clean_worktree` and `require_non_forge_
+    # interpreter` live in `impl_guards`, one file over, which is why none of
+    # these was ever classified.
+    #
+    # The three that are pure argument judgements. `OUTSIDE_WORKSPACE` is made
+    # from the string alone, before anything on disk is read. `NOT_A_GIT_REPO`
+    # reads one path and reports that it is not a target; the detail names it,
+    # and a caller who meant a clone retypes the flag. `FORGE_INTERPRETER` is
+    # cleared by launching the same call with a different interpreter -- the
+    # invocation in the most literal sense, and nothing in any repository moves.
+    "OUTSIDE_WORKSPACE": INVOCATION_DEFECT,
+    "NOT_A_GIT_REPO": INVOCATION_DEFECT,
+    "FORGE_INTERPRETER": INVOCATION_DEFECT,
+    # The code from the incident this map was widened for. No spelling of the
+    # call clears somebody else's uncommitted work; the tree has to change.
+    "DIRTY_WORKTREE": WORK_STATE,
+    # `git` itself refused, and the detail carries its stderr verbatim. What
+    # that condition is, this engine does not know -- but it is a condition of
+    # the repository, never of the flags.
+    "GIT_FAILED": WORK_STATE,
+    # An open forge defect blocks the command, and it clears only when the
+    # named file's bytes stop matching the digest recorded against it.
+    "FORGE_DEFECT_OPEN": WORK_STATE,
+
+    # --- the name normalizer, reached through `impl_naming` -----------------
+    # All five judge `--name` and nothing else. `cmd_name` converts the four
+    # `NAME_*` ones out of a `NameRefused`, which is why the literal walk lost
+    # them at the conversion.
+    "INVALID_NAME": INVOCATION_DEFECT,
+    "NAME_EMPTY": INVOCATION_DEFECT,
+    "NAME_HAS_NO_WORDS": INVOCATION_DEFECT,
+    "NAME_NOT_ALPHANUMERIC": INVOCATION_DEFECT,
+    "NAME_STARTS_WITH_DIGIT": INVOCATION_DEFECT,
+
+    # --- the position grammar itself, reached through `impl_position` -------
+    # Every one of these describes a malformed declaration in a document the
+    # target owns, and no argument any command accepts edits a document.
+    "POSITION_BLOCK_NOT_UNIQUE": WORK_STATE,
+    "POSITION_BLOCK_MALFORMED": WORK_STATE,
+    "POSITION_ITEM_MALFORMED": WORK_STATE,
+    "POSITION_ITEM_WITHOUT_WITNESS": WORK_STATE,
+    "POSITION_WITNESS_NOT_LEVELABLE": WORK_STATE,
+    # The one code with two sources, and the classification follows the
+    # dominant one. It is raised both by the grammar (a witness token written
+    # into the agreement, which no flag reaches) and by `--about`'s own parse
+    # (which a flag does reach). A work state, because publishing a question
+    # over the rarer invocation case costs a sentence, while publishing nothing
+    # over the document case is the defect on record; the question names both
+    # spellings.
+    "POSITION_WITNESS_UNKNOWN_KIND": WORK_STATE,
+    # A read/write race: the holder changed between the read that located the
+    # section and the write. The tree moved, so the measurement is taken again.
+    "POSITION_HOLDER_MOVED": WORK_STATE,
+    # No document under the product holds checklist items at all -- the
+    # identical fact `SETTLE_HOLDER_ABSENT` already classifies as a work state.
+    "POSITION_HOLDER_ABSENT": WORK_STATE,
+
+    # --- `gate`'s authorization, proposal and election checks ---------------
+    # All five authorization codes fail the same way: an authorization exists
+    # only as a recorded `offer` publish over exactly this binding, and no
+    # argument `gate` accepts mints one. `GATE_AUTHORIZATION_MISMATCH` is the
+    # arguable member -- a caller COULD retype the launch to match the token it
+    # holds -- and it lands here anyway, because the honest exit is an
+    # authorization for the launch that was intended, not a launch bent to fit
+    # a token.
+    "GATE_AUTHORIZATION_UNKNOWN": WORK_STATE,
+    "GATE_AUTHORIZATION_MISMATCH": WORK_STATE,
+    "GATE_AUTHORIZATION_STALE": WORK_STATE,
+    "GATE_AUTHORIZATION_CONSUMED": WORK_STATE,
+    "GATE_AUTHORIZATION_SUPERSEDED": WORK_STATE,
+    # A campaign proposal is recorded by `propose`, which takes a rationale no
+    # argument here can supply.
+    "GATE_PROPOSAL_UNKNOWN": WORK_STATE,
+    "GATE_PROPOSAL_MISMATCH": WORK_STATE,
+    "GATE_PROPOSAL_STALE": WORK_STATE,
+    # The election pair sits the other side of the line, and the reasoning is
+    # `POSITION_TARGET_LEVEL_REQUIRED`'s exactly: an election is made fresh on
+    # every `gate` call and read back from nothing, so the same call with
+    # `--elect` added goes through and nothing in the repository has to change.
+    # That a human must DECIDE before typing it does not make it a work state
+    # -- deciding is not acting, the same way reading `__levels__` is not.
+    "GATE_ELECTION_REQUIRED": INVOCATION_DEFECT,
+    "GATE_ELECTION_MISMATCH": INVOCATION_DEFECT,
+
+    # --- `materialize`'s stage helpers --------------------------------------
+    # Three that name their own flag, so the detail is already the whole exit.
+    "NOT_A_KIT_DESTINATION": INVOCATION_DEFECT,
+    "NO_RECEIPT_ENTRY": INVOCATION_DEFECT,       # the detail says: use --adopt
+    "ALREADY_RECORDED": INVOCATION_DEFECT,       # the detail says: use --authored
+    # And one that does not: the path IS a kit destination (that check runs
+    # first) and simply has not been written, so no other spelling of the call
+    # finds a file nobody authored.
+    "MATERIALIZE_PATH_ABSENT": WORK_STATE,
+    # The approval lives in the target's own benchmark package.
+    "OBJECT_MAP_NOT_APPROVED": WORK_STATE,
+    # A scaffold destination still carries a token this stage cannot answer.
+    "STAGE_CANNOT_ANSWER": WORK_STATE,
+
+    # --- the shared readers -------------------------------------------------
+    # The malformed half of `NO_FINDINGS`, and a work state for the same
+    # reason: the declaration is the target's, and no flag rewrites it.
+    "MALFORMED_FINDINGS": WORK_STATE,
+    # `--about`'s own two parse refusals, reached from the gating commands that
+    # take one. Both details name the exact spelling that would have worked.
+    "DISCUSS_ABOUT_NOT_FOUND": INVOCATION_DEFECT,
+    "DISCUSS_ABOUT_OPERAND_REQUIRED": INVOCATION_DEFECT,
+
+    # --- `step`'s subprocess runner, reached through `impl_steps` -----------
+    # The three resolution failures are `STEP_MALFORMED`'s neighbours: a
+    # declaration in the target's own `__steps__` names something that is not
+    # there, and no argument `step` accepts supplies it. They are also the
+    # three codes NO walk over string literals can see -- `impl_steps` raises
+    # them off a lookup table.
+    "STEP_MODULE_MISSING": WORK_STATE,
+    "STEP_FUNCTION_MISSING": WORK_STATE,
+    "STEP_NOT_CALLABLE": WORK_STATE,
+    # The process died without a verdict. Nothing typed here makes it write one.
+    "STEP_RUNNER_SILENT": WORK_STATE,
 }
 
 
@@ -12906,6 +13037,79 @@ def _resolve_position_record_unknown(args) -> dict:
         "first?" + named)
 
 
+def _refusal_git_command(args, *parts: str) -> str:
+    """A `git -C <target> ...` a reader pastes unedited.
+
+    The same `shlex.quote` discipline `_cli_command` keeps, for the one exit
+    that is not this CLI's own: the guard that refuses a dirty tree is git's
+    reading of the tree, so the command that shows the reader what it saw is
+    git's too.
+    """
+    return " ".join(shlex.quote(str(part)) for part in
+                    ("git", "-C", str(getattr(args, "target", "")), *parts))
+
+
+def _resolve_dirty_worktree(args) -> dict:
+    """The code from the incident that widened this roster. `step` refused it
+    mid-flow with nothing published, and the agent driving the CLI invented
+    "commit or stash" in prose.
+
+    A question rather than a command, and the reason is the same one
+    `POSITION_ABSENT` states: the engine cannot author the decision. Which of
+    those changes is product that belongs in the history, and which is scratch,
+    is a reading of the tree nobody here can take -- and a commit needs a
+    message this file must never write. So the tree is published (git's own
+    listing, runnable) and the decision is asked.
+    """
+    return _refusal_question(
+        args, "the target's working tree carries uncommitted or untracked "
+              "changes, and this skill never mutates a dirty repository -- "
+              "`" + _refusal_git_command(args, "status", "--porcelain")
+              + "` lists them. Commit what belongs in the history and stash "
+                "or drop the rest now, or record why the tree stays dirty, "
+                "and why?")
+
+
+def _gate_authorization_question(reason: str):
+    """One builder shape for the five ways a launch authorization fails.
+
+    Five separate entries rather than one shared code, because the reader has
+    to know WHICH of the five happened to know whether anything but a fresh
+    `offer` is called for -- but the exit is identical in all five, so it is
+    written once. The tail is `GATE_AUTHORIZATION_REQUIRED`'s own, verbatim in
+    shape: an authorization is minted by a publish, never by a flag.
+    """
+    return lambda args: _refusal_question(
+        args, reason + " An authorization is minted only by an `offer` publish "
+        "over exactly this binding, and no argument this command accepts can "
+        "supply one; does every declared pilot run before this campaign is "
+        "gated? Answer here, then run `offer --answer <yes|no>` and pass the "
+        "token its launch action names.")
+
+
+def _gate_proposal_question(reason: str):
+    """The same shape for the three ways a campaign proposal fails. `propose`
+    takes a human-legible rationale (`EMPTY_RATIONALE` is how it says so), so
+    the published exit is the question that rationale answers, never a
+    `propose` command with the rationale left blank."""
+    return lambda args: _refusal_question(
+        args, reason + " A campaign proposal is recorded only by `propose`, "
+        "which takes a human-legible rationale no argument here can supply; "
+        "what is this campaign for, and why is it being run now? Answer here, "
+        "then run `propose` with that rationale.")
+
+
+def _step_declaration_question(reason: str):
+    """The three resolution failures `impl_steps` raises off its lookup table,
+    published in `STEP_MALFORMED`'s own shape: the declaration is the target's,
+    so the exit is either the missing thing or a corrected declaration."""
+    return lambda args: _refusal_question(
+        args, reason + " A step names a module and a function in the target's "
+        "own `__steps__`, and no argument this command accepts substitutes for "
+        "either; provide what is missing now, or correct the declaration, and "
+        "why?")
+
+
 #: One builder per work state. Every one of them is reached only by its own
 #: code, and every one publishes something a reader runs unedited -- a code
 #: with nothing real to publish is a misclassification, not an empty field, and
@@ -13052,6 +13256,133 @@ _WORK_STATE_RESOLUTIONS = {
               "line is not marked done until it does; which `test_<id>` "
               "witnesses it? Bind it with `settle --attach --witness "
               "test_<id>` before marking it done."),
+
+    # --- the guards, one file over -----------------------------------------
+    "DIRTY_WORKTREE": _resolve_dirty_worktree,
+    "GIT_FAILED": lambda args: _refusal_question(
+        args, "git itself refused the command this skill ran, and the refusal "
+              "detail carries git's own stderr verbatim; clear that condition "
+              "in the target repository now, or record why it cannot be "
+              "cleared, and why?"),
+    "FORGE_DEFECT_OPEN": lambda args: _refusal_question(
+        args, "an open, un-cleared forge defect declaration blocks this "
+              "command (the refusal detail names the file(s)); a defect clears "
+              "only when the named file's current bytes stop matching the "
+              "digest recorded against it, so fix the forge file now, or "
+              "record why the defect stays open, and why?"),
+
+    # --- the position grammar ----------------------------------------------
+    "POSITION_HOLDER_ABSENT": lambda args: _refusal_question(
+        args, "no markdown file under this product holds checklist items, and "
+              "the position section is never written into a file this command "
+              "invents; which file holds it, and why?"),
+    # A retry, and the only one in this table. The tree moved under a read that
+    # had already located the section, so the section is measured again -- the
+    # same command `POSITION_STALE` and `POSITION_UNBACKED` publish, for the
+    # same reason: it is the write that re-derives the block.
+    "POSITION_HOLDER_MOVED": lambda args: _refusal_command(
+        _refusal_position_command(args)),
+    "POSITION_BLOCK_NOT_UNIQUE": lambda args: _refusal_question(
+        args, "one document carries more than one `<!-- position ... -->` "
+              "opener and this delimiter must occur exactly once; which one is "
+              "the section, and should the others be removed, and why?"),
+    "POSITION_BLOCK_MALFORMED": lambda args: _refusal_question(
+        args, "the position block's own delimiters do not parse -- a missing "
+              "field in the opener, or no matching closer (the refusal detail "
+              "names which); repair the block now, or say why it should be "
+              "re-derived from scratch, and why?"),
+    "POSITION_ITEM_MALFORMED": lambda args: _refusal_question(
+        args, "a line inside the position block does not parse as a sequence "
+              "item (the refusal detail carries the line); correct it now, or "
+              "say why the block should be re-derived, and why?"),
+    "POSITION_ITEM_WITHOUT_WITNESS": lambda args: _refusal_question(
+        args, "a sequence item does not carry exactly one witness token "
+              "anchored to the end of its line (the refusal detail names it), "
+              "and an item nothing measures is not an item; which witness "
+              "holds it, and why?"),
+    "POSITION_WITNESS_UNKNOWN_KIND": lambda args: _refusal_question(
+        args, "a witness names a kind this engine does not know (the refusal "
+              "detail lists the kinds it does); correct the witness -- in the "
+              "agreement, or in the `--about` spelling that named it -- now, "
+              "or say why that kind should exist, and why?"),
+    "POSITION_WITNESS_NOT_LEVELABLE": lambda args: _refusal_question(
+        args, "an item is marked as reaching a rung and its witness kind has "
+              "no deriver for that reading (the refusal detail lists the kinds "
+              "that do); change the witness now, or drop the rung claim from "
+              "the item, and why?"),
+
+    # --- `gate`'s authorization and proposal bindings ----------------------
+    "GATE_AUTHORIZATION_UNKNOWN": _gate_authorization_question(
+        "no authorization event on this target's ledger vouches for the token "
+        "this launch carries -- either nothing minted it, or the event that "
+        "once did has been edited since and no longer re-digests to its own "
+        "token."),
+    "GATE_AUTHORIZATION_MISMATCH": _gate_authorization_question(
+        "the token this launch carries was minted for a different job or a "
+        "different set of units (the refusal detail names both), and a token "
+        "authorizes one exact launch."),
+    "GATE_AUTHORIZATION_STALE": _gate_authorization_question(
+        "a fact the token was minted against -- pin, entrypoint, rung, "
+        "revision or position status -- has moved since, so the token no "
+        "longer describes this launch."),
+    "GATE_AUTHORIZATION_CONSUMED": _gate_authorization_question(
+        "the token this launch carries already authorized one successful "
+        "`gate` call, and an authorization is single-use."),
+    "GATE_AUTHORIZATION_SUPERSEDED": _gate_authorization_question(
+        "the token this launch carries predates the current authorization "
+        "binding and re-digests only under the older shape -- legitimate, not "
+        "tampered, and refused exactly as hard."),
+    "GATE_PROPOSAL_UNKNOWN": _gate_proposal_question(
+        "the authorization names no campaign proposal this target's ledger "
+        "still vouches for -- either the token predates any proposal covering "
+        "this job, or the proposal event that once did has been edited since."),
+    "GATE_PROPOSAL_MISMATCH": _gate_proposal_question(
+        "the bound proposal names other jobs than this one (the refusal detail "
+        "names both), and a proposal authorizes only the jobs it explicitly "
+        "names."),
+    "GATE_PROPOSAL_STALE": _gate_proposal_question(
+        "the proposal's own campaign identity -- commit, job set -- no longer "
+        "matches what this call just re-derived from live disk."),
+
+    # --- `materialize`'s stage helpers --------------------------------------
+    "MATERIALIZE_PATH_ABSENT": lambda args: _refusal_question(
+        args, "this kit destination is a legal one and has not been written, "
+              "and nothing here declares an absent file authored or adopts "
+              "one; write it now, or name the destination that was written, "
+              "and why?"),
+    "OBJECT_MAP_NOT_APPROVED": lambda args: _refusal_question(
+        args, "the object map is not approved -- the target's benchmark "
+              "package declares no revision or premises (the refusal detail "
+              "names which) -- and this stage writes scaffolding for the "
+              "authoring that follows that approval; record the approval now, "
+              "or say why the scaffolding runs ahead of it, and why?"),
+    "STAGE_CANNOT_ANSWER": lambda args: _refusal_question(
+        args, "a scaffold destination still carries an unresolved token after "
+              "this stage substituted everything it can answer (the refusal "
+              "detail names the destination); which later step answers that "
+              "token, and should this stage run before it, and why?"),
+
+    # --- the shared readers -------------------------------------------------
+    "MALFORMED_FINDINGS": lambda args: _refusal_question(
+        args, "tests/findings.py does not read as a findings declaration (the "
+              "refusal detail names how); correct it now, or record why "
+              "admissibility is deferred, and why?"),
+
+    # --- `step`'s subprocess runner ----------------------------------------
+    "STEP_MODULE_MISSING": _step_declaration_question(
+        "the declared step names a module that does not import under the "
+        "target's own interpreter (the refusal detail names it)."),
+    "STEP_FUNCTION_MISSING": _step_declaration_question(
+        "the declared step names a function its module does not define (the "
+        "refusal detail names it)."),
+    "STEP_NOT_CALLABLE": _step_declaration_question(
+        "the declared step resolves to an attribute that is not callable (the "
+        "refusal detail names it)."),
+    "STEP_RUNNER_SILENT": lambda args: _refusal_question(
+        args, "the step's own process exited without ever writing a verdict, "
+              "so nothing here can say whether the step ran (the refusal "
+              "detail names how it ended); find what kills it and make it "
+              "write one, or record why the step cannot run, and why?"),
 }
 
 
@@ -13062,15 +13393,26 @@ def refusal_resolution(code: str, args) -> dict | None:
     through, so a code is answered once rather than at each of the hundred and
     sixty-five sites that raise one. `None` on three separate grounds, all of
     them deliberate: the code is an invocation defect (its detail already names
-    the flag), the code belongs to a command outside `GATING_COMMANDS` (this
-    roster is the gating commands' own and never hands a resolution to a
-    refusal it was not classified for), or `args` is not a shape this can read.
+    the flag), the refused CALL is not a gating one (this roster is the gating
+    commands' own and never hands a resolution to a refusal it was not
+    classified for), or `args` is not a shape this can read.
+
+    The command is checked rather than assumed, and that is not decoration.
+    The roster is derived from what a gating command can REACH, and reach
+    crosses helpers that non-gating commands share: `plan` runs the same
+    dirty-tree guard `apply` does, `compose` reads findings through the same
+    reader `admit` does, and `cmd_name` -- the one command with no `--target`
+    at all -- raises `INVALID_NAME` out of the same module. Publishing off the
+    code alone would hand those calls a `discuss` command built from arguments
+    they never carried, which is a published exit that does not run.
 
     Never raises. A crash inside a refusal handler would turn a clean exit 2
     into a traceback, and the reader would lose both the refusal and the
     resolution -- so the whole build is guarded, and a resolution that could
     not be built is simply not published.
     """
+    if getattr(args, "command", None) not in GATING_COMMANDS:
+        return None
     if GATING_REFUSALS.get(code) != WORK_STATE:
         return None
     builder = _WORK_STATE_RESOLUTIONS.get(code)
