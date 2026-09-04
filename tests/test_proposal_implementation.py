@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -22319,6 +22320,22 @@ class StepCommandTests(unittest.TestCase):
             return []
         return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
+    def refusal_pair(self, box):
+        """The two outcomes a TARGET-SIDE refusal leaves behind: the
+        pre-spawn `started` line and the `refused` terminal line naming the
+        code. Returned as `(first outcome, refusal code)` so the assertion
+        reads as the pairing invariant rather than as a length.
+
+        A target-side refusal used to append nothing at all. It cannot any
+        more: silence is now reserved for "this command never started", and
+        a lone `started` is reserved for "it started and was killed". A
+        refusal that appended nothing would wear the killed run's shape.
+        """
+        events = self.ledger_events(box)
+        self.assertEqual(len(events), 2, events)
+        self.assertEqual(events[-1]["outcome"], "refused", events)
+        return events[0]["outcome"], events[-1]["refusalCode"]
+
     # --- Spec "Record a `step` ledger event" ---
 
     def test_a_passing_step_is_recorded_with_exit_zero_and_a_digest_field(self):
@@ -22343,8 +22360,13 @@ class StepCommandTests(unittest.TestCase):
         self.assertIsNone(result["error"])
 
         events = self.ledger_events(box)
-        self.assertEqual(len(events), 1)
-        event = events[0]
+        self.assertEqual([e["outcome"] for e in events], ["started", "returned"])
+        started, event = events
+        self.assertEqual(started["kind"], "step")
+        self.assertEqual(started["step"], "verification")
+        self.assertEqual(started["callable"], "Method_Benchmark.steps.run_ok")
+        self.assertNotIn("suiteDigest", started)
+        self.assertNotIn("exitStatus", started)
         self.assertEqual(event["kind"], "step")
         self.assertEqual(event["step"], "verification")
         self.assertEqual(event["callable"], "Method_Benchmark.steps.run_ok")
@@ -22369,9 +22391,8 @@ class StepCommandTests(unittest.TestCase):
         self.assertIn("boom", result["error"])
 
         events = self.ledger_events(box)
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["outcome"], "raised")
-        self.assertNotEqual(events[0]["exitStatus"], 0)
+        self.assertEqual([e["outcome"] for e in events], ["started", "raised"])
+        self.assertNotEqual(events[-1]["exitStatus"], 0)
 
     def test_a_step_that_hard_exits_mid_call_is_recorded_as_unknown_not_silent(self):
         """`RUNNER` writes the verdict file TWICE -- the instant resolution
@@ -22396,8 +22417,55 @@ class StepCommandTests(unittest.TestCase):
         self.assertEqual(result["exitStatus"], 9)
 
         events = self.ledger_events(box)
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["outcome"], "unknown")
+        self.assertEqual([e["outcome"] for e in events], ["started", "unknown"])
+
+    def test_a_step_killed_mid_run_leaves_a_started_line_with_no_partner(self):
+        """The measured incident friction 1 came from, reproduced: the
+        `step` PROCESS is killed while its callable is still running, the
+        way a harness timeout kills it. Nothing in `impl_steps` can report
+        that -- `STEP_RUNNER_SILENT` is raised inside `_verdict_result`,
+        which is only reached once this process is alive and its child has
+        already exited -- so the only record that the step ever started is
+        the ledger line written before the subprocess spawns.
+
+        Without that pre-spawn line the ledger after a kill is byte-
+        identical to the ledger of a step nobody ever ran, and the flow
+        cannot tell "never ran" from "ran and was killed" from "ran and
+        returned". The mutation this locks against is deleting that one
+        `append_event` call: every other test in this class still passes
+        under it, because they all run to completion and get their terminal
+        line anyway.
+        """
+        box = self._box("killed")
+        sentinel = box / "entered.marker"
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "import time\n"
+            "def run_slow():\n"
+            f"    open({str(sentinel)!r}, 'w').write('yes')\n"
+            "    time.sleep(120)\n",
+            encoding="utf-8")
+        self._declare(box, {"verification": {"module": "Method_Benchmark.steps",
+                                              "function": "run_slow"}})
+        self._commit(box)
+
+        child = subprocess.Popen(
+            [sys.executable, str(CLI), "step", "--target", str(box),
+             "--name", "Method", "--session", "s1", "--step", "verification"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=FORGE)
+        try:
+            deadline = time.time() + 60
+            while time.time() < deadline and not sentinel.exists():
+                time.sleep(0.05)
+            self.assertTrue(sentinel.exists(),
+                            "the step's callable never entered; nothing was killed")
+        finally:
+            child.kill()
+            child.communicate()
+
+        events = self.ledger_events(box)
+        self.assertEqual([e["outcome"] for e in events], ["started"], events)
+        self.assertEqual(events[0]["step"], "verification")
+        self.assertEqual(events[0]["callable"], "Method_Benchmark.steps.run_slow")
 
     # --- Spec "Refuse an unresolvable step" ---
 
@@ -22462,7 +22530,7 @@ class StepCommandTests(unittest.TestCase):
                             "--session", "s1", "--step", "verification")
         self.assertEqual(proc.returncode, 2)
         self.assertEqual(json.loads(proc.stdout)["code"], "STEP_MODULE_MISSING")
-        self.assertEqual(self.ledger_events(box), [])
+        self.assertEqual(self.refusal_pair(box), ("started", "STEP_MODULE_MISSING"))
 
     def test_missing_function_refuses_step_function_missing(self):
         box = self._box("funcmissing")
@@ -22474,7 +22542,7 @@ class StepCommandTests(unittest.TestCase):
                             "--session", "s1", "--step", "verification")
         self.assertEqual(proc.returncode, 2)
         self.assertEqual(json.loads(proc.stdout)["code"], "STEP_FUNCTION_MISSING")
-        self.assertEqual(self.ledger_events(box), [])
+        self.assertEqual(self.refusal_pair(box), ("started", "STEP_FUNCTION_MISSING"))
 
     def test_a_non_callable_attribute_refuses_step_not_callable(self):
         box = self._box("notcallable")
@@ -22487,7 +22555,7 @@ class StepCommandTests(unittest.TestCase):
                             "--session", "s1", "--step", "verification")
         self.assertEqual(proc.returncode, 2)
         self.assertEqual(json.loads(proc.stdout)["code"], "STEP_NOT_CALLABLE")
-        self.assertEqual(self.ledger_events(box), [])
+        self.assertEqual(self.refusal_pair(box), ("started", "STEP_NOT_CALLABLE"))
 
     # --- Spec "Refuse on a dirty target worktree" ---
 
@@ -22580,8 +22648,7 @@ class StepCommandTests(unittest.TestCase):
         self.assertIsNone(dumped["virtualEnv"])
 
         events = self.ledger_events(box)
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["outcome"], "returned")
+        self.assertEqual([e["outcome"] for e in events], ["started", "returned"])
 
     # --- Threat matrix "Argument composition" (added row) ---
 
@@ -22607,7 +22674,7 @@ class StepCommandTests(unittest.TestCase):
             "a hostile function-name string reached a shell and created a "
             "marker file; argv must never be interpolated into a command "
             "line (list argv, shell=False)")
-        self.assertEqual(self.ledger_events(box), [])
+        self.assertEqual(self.refusal_pair(box), ("started", "STEP_FUNCTION_MISSING"))
 
     # --- Spec "Remote launch stays structurally unreachable" ---
 
@@ -22667,7 +22734,15 @@ class StepCommandTests(unittest.TestCase):
             lines[0], gate_line_before,
             "the recorded gate event's own bytes moved after a step ran")
         self.assertEqual(
-            [json.loads(line)["kind"] for line in lines[1:]], ["step", "step"])
+            [json.loads(line)["kind"] for line in lines[1:]],
+            ["step", "step", "step", "step"])
+        # Two runs, four lines: each one appends its pre-spawn `started`
+        # line and its terminal line (the pairing invariant `cmd_step`'s
+        # own two-write comment states). The `kind` is what this test is
+        # about and it is `step` for all four -- no `gate` kind appears.
+        self.assertEqual(
+            [json.loads(line)["outcome"] for line in lines[1:]],
+            ["started", "returned", "started", "raised"])
         assert_still_authorized()  # still accepted after two steps ran
 
     def test_cmd_step_calls_none_of_the_remote_execution_loaders(self):
@@ -22786,7 +22861,7 @@ class CmdStepDigestTests(unittest.TestCase):
                             "--session", "s1", "--step", "verification")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         events = self.ledger_events(box)
-        self.assertEqual(events[0]["suiteDigest"], impl.suite_digest(box))
+        self.assertEqual(events[-1]["suiteDigest"], impl.suite_digest(box))
 
     def test_a_raised_step_event_also_carries_a_suite_digest(self):
         """The mutation this locks against: gating the digest write on
@@ -22807,8 +22882,8 @@ class CmdStepDigestTests(unittest.TestCase):
                             "--session", "s1", "--step", "verification")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         events = self.ledger_events(box)
-        self.assertEqual(events[0]["outcome"], "raised")
-        self.assertEqual(events[0]["suiteDigest"], impl.suite_digest(box))
+        self.assertEqual(events[-1]["outcome"], "raised")
+        self.assertEqual(events[-1]["suiteDigest"], impl.suite_digest(box))
 
     def test_the_returned_response_dict_never_gains_suite_digest(self):
         self.assertNotIn("suiteDigest", returned_keys(CLI, "cmd_step"))
@@ -22907,6 +22982,46 @@ class StepVerdictsTests(unittest.TestCase):
         verdicts = impl._step_verdicts(root, "Method")
         self.assertIs(verdicts["a"], True)
         self.assertIs(verdicts["b"], False)
+
+    def test_a_step_that_passed_and_was_then_killed_stops_reading_as_a_pass(self):
+        """The incident this fold has to survive: a step ran green, was run
+        again, and the second run was killed by a harness timeout partway
+        through. `cmd_step` writes its `started` line before the subprocess
+        spawns, so the ledger's LAST event for that step is a bare
+        `started` with no partner -- and the honest reading of it is
+        `unmeasured`, because nobody knows what the killed run did to the
+        product.
+
+        The mutation this locks against, and which a weaker "latest wins"
+        test cannot see: folding only the events that carry a verdict
+        (`latest[...] = event` guarded on `outcome in {"returned",
+        "raised"}`). Every other case in this class still passes under it --
+        the earlier `returned` would simply survive -- and this one flips to
+        `True`, reporting a green suite for a run that was killed.
+        """
+        root = self._target()
+        live = impl.suite_digest(root)
+        self._write_ledger(root, "Method", [
+            self._event("run_suite", "returned", live, at="2026-01-01T00:00:00Z"),
+            {"kind": "step", "step": "run_suite", "outcome": "started",
+             "at": "2026-01-02T00:00:00Z"},
+        ])
+        self.assertIsNone(impl._step_verdicts(root, "Method")["run_suite"])
+
+    def test_a_refused_terminal_event_never_reads_as_a_verdict(self):
+        """A target-side resolution refusal now leaves a `refused` terminal
+        event where it used to leave nothing. It carries no `suiteDigest`,
+        so it folds at the digest comparison before its outcome is ever
+        read -- `None`, never `False`. A refusal is not a measurement that
+        the suite fails."""
+        root = self._target()
+        live = impl.suite_digest(root)
+        self._write_ledger(root, "Method", [
+            self._event("run_suite", "returned", live, at="2026-01-01T00:00:00Z"),
+            {"kind": "step", "step": "run_suite", "outcome": "refused",
+             "refusalCode": "STEP_MODULE_MISSING", "at": "2026-01-02T00:00:00Z"},
+        ])
+        self.assertIsNone(impl._step_verdicts(root, "Method")["run_suite"])
 
 
 class StepVerdictsParityTests(unittest.TestCase):

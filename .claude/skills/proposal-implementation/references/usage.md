@@ -1757,10 +1757,24 @@ missing `module` or `function`; `INTERPRETER_ABSENT` when the target has no
 the declared callable does not resolve inside the venv, or
 `STEP_RUNNER_SILENT` when the process exited without ever writing a verdict
 — died before resolution even began, so nothing here can say whether the
-step ran.
+step ran. Those four target-side refusals each leave a `refused` terminal
+event in the ledger naming the code; the forge-side refusals above them
+(`FORGE_DEFECT_OPEN` through `INTERPRETER_ABSENT`) leave nothing at all,
+which is what keeps "no event" meaning exactly one thing.
 
-Every RESOLVED run — pass or fail — appends exactly one `kind: "step"` event
-to `.implementation/position.jsonl`: the step's name, its dotted callable,
+Every run past `INTERPRETER_ABSENT` appends a **pair** of `kind: "step"`
+events to `.implementation/position.jsonl`. The first, `outcome:
+"started"`, is written the instant before the subprocess spawns and carries
+the step's name, its dotted callable, the interpreter path and the session —
+nothing else. So the ledger's *shape* answers the question an exit code
+cannot: **no event at all means this command never started** (a mis-resolved
+invocation, a wrong working directory — nothing here ever ran); **a
+`started` with no partner after it means it started and was killed** (a
+harness timeout, a `SIGKILL`) and its product is partial; **a terminal event
+means it ran and reported**. Do not read a step's success off an exit status
+or off stdout: read it off this pair.
+
+The terminal event carries the step's name, its dotted callable,
 the interpreter path, `outcome` (`returned`/`raised`/`unknown`), exit
 status, `error` (the raised exception, formatted once inside the
 subprocess itself, since the step's own stdout/stderr are inherited live

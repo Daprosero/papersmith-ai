@@ -7307,7 +7307,15 @@ def _step_verdicts(target: Path, name: str) -> dict:
     pre-change event with no `suiteDigest` key at all reads identically:
     `.get("suiteDigest")` is `None`, which can never equal a real hex
     digest, so it folds to `None` exactly like a stale one -- never
-    raising, never `True`. This function reads the ledger and compares
+    raising, never `True`. `cmd_step`'s two non-verdict events
+    (`outcome: "started"`, written before the subprocess spawns, and
+    `outcome: "refused"`, written when a target-side resolution refusal
+    propagates) carry no digest for exactly this reason: a killed run whose
+    latest event is a bare `started` folds to `None` here at the digest
+    comparison, before its outcome is ever read, and a step that PASSED
+    earlier and was then re-run and killed stops reading as a pass --
+    which is the honest answer, since nobody knows what the killed run
+    did. This function reads the ledger and compares
     digests; it does not itself decide what a `True`/`False`/`None`
     verdict MEANS to a witness -- that reading is `_derive_step`'s
     (`impl_position.py`), a plain dict reader one layer up.
@@ -11266,15 +11274,28 @@ def cmd_step(args: argparse.Namespace) -> dict:
     and its own three target-side refusals (`STEP_MODULE_MISSING`/
     `STEP_FUNCTION_MISSING`/`STEP_NOT_CALLABLE`) and `STEP_RUNNER_SILENT`
     propagate unchanged — see its docstring for the full five-row verdict
-    state machine.
+    state machine. Unchanged in code and detail; what they now leave behind
+    is a `refused` terminal ledger event rather than silence.
 
-    Every RESOLVED run — pass or fail — appends exactly one `kind: "step"`
-    event to `.implementation/position.jsonl`, carrying `suiteDigest`
-    (`suite_digest(target)`, computed fresh at write time); an unresolvable
-    step appends nothing, because nothing ran. Written unconditionally,
-    regardless of `outcome` — a stale-vs-fresh comparison is exactly as
-    meaningful for a suite that just failed as for one that passed, and the
-    forge cannot know in advance which steps will raise.
+    Every run past `INTERPRETER_ABSENT` appends a PAIR of `kind: "step"`
+    events to `.implementation/position.jsonl`: `outcome: "started"` the
+    instant before the subprocess spawns, and a terminal event once it
+    reports. The terminal event is `returned`/`raised`/`unknown` for a
+    resolved run — carrying `suiteDigest` (`suite_digest(target)`, computed
+    fresh at write time, unconditionally regardless of `outcome`, because a
+    stale-vs-fresh comparison is exactly as meaningful for a suite that just
+    failed as for one that passed) — or `refused` for one of the three
+    target-side resolution refusals, carrying `refusalCode` and no digest.
+
+    So the ledger's SHAPE, not only its content, is readable: no event at all
+    means this command never started; a `started` with no terminal event
+    after it means it started and was killed; a terminal event means it ran
+    and reported. See the two-write comment in the body for the incident that
+    made ambiguous silence unaffordable.
+
+    Every forge-side refusal above — `FORGE_DEFECT_OPEN` through
+    `INTERPRETER_ABSENT` — still appends nothing at all, which is what makes
+    "no event" mean one thing rather than two.
 
     This reverses "no digest field" only for a step with no self-stamping
     artifact of its own: a notebook already recomputes `source_digest`
@@ -11355,21 +11376,62 @@ def cmd_step(args: argparse.Namespace) -> dict:
             "INTERPRETER_ABSENT",
             f"no interpreter at {interpreter}: run `env` first.")
 
-    result = impl_steps.run_step(
-        interpreter, entry["module"], entry["function"],
-        cwd=target, pythonpath=target / "src")
+    ledger_path = target / name / ".implementation" / "position.jsonl"
+    identity = {
+        "kind": "step", "step": args.step,
+        "callable": f"{entry['module']}.{entry['function']}",
+        "interpreter": str(interpreter), "session": args.session,
+    }
+
+    # The ledger is written TWICE, and that is the whole design -- the same
+    # two-write discipline `impl_steps.RUNNER` already keeps for its own
+    # verdict file ("a killed process still leaves this line behind"), lifted
+    # one level up to the ledger every other check in this skill rests on.
+    #
+    # Measured: a `step` invocation that never reached this line at all --
+    # a mis-resolved command that started no process, a harness timeout that
+    # killed this one mid-run -- left the ledger byte-identical to a step
+    # nobody ever asked for, and the flow read the missing line as nothing at
+    # all. `STEP_RUNNER_SILENT` cannot close that: it is raised inside
+    # `_verdict_result`, reached only once THIS process is alive and its
+    # child has already exited, so it answers "the child died before
+    # resolving" and never "the parent never got here".
+    #
+    # With the pre-spawn line the ledger says exactly one thing per shape:
+    # no event at all means the command never started; a `started` with no
+    # terminal event after it means it started and was killed; a terminal
+    # event means it ran and reported. Silence stops being ambiguous, which
+    # is the only reason it is worth an extra line.
+    impl_position.append_event(
+        ledger_path, {**identity, "outcome": "started", "at": _now_iso8601()})
+
+    try:
+        result = impl_steps.run_step(
+            interpreter, entry["module"], entry["function"],
+            cwd=target, pythonpath=target / "src")
+    except Refused as refused:
+        # Reverses "an unresolvable step appends nothing, because nothing
+        # ran", and for the reason above rather than a change of mind about
+        # what ran: a target-side refusal that appended nothing would leave
+        # the `started` line above with no partner, which is the exact shape
+        # a killed run leaves. The pairing invariant is worth more than the
+        # silence was. A refusal is not a measurement, so this event carries
+        # no `suiteDigest` -- `_step_verdicts` compares the digest BEFORE it
+        # reads the outcome, so a refusal folds to `None` there twice over.
+        impl_position.append_event(ledger_path, {
+            **identity, "outcome": "refused", "refusalCode": refused.code,
+            "error": refused.detail, "at": _now_iso8601(),
+        })
+        raise
 
     recorded_at = _now_iso8601()
     event = {
-        "kind": "step", "step": args.step,
-        "callable": f"{entry['module']}.{entry['function']}",
-        "interpreter": str(interpreter),
+        **identity,
         "outcome": result["outcome"], "exitStatus": result["exitStatus"],
-        "error": result["error"], "session": args.session, "at": recorded_at,
+        "error": result["error"], "at": recorded_at,
         "suiteDigest": suite_digest(target),
     }
-    impl_position.append_event(
-        target / name / ".implementation" / "position.jsonl", event)
+    impl_position.append_event(ledger_path, event)
 
     return {
         "command": "step", "target": str(target), "name": name,
