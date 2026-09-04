@@ -84,6 +84,30 @@ REMOTE_EXECUTION_SHARD_IO_SCRIPT = (
     FORGE_ROOT / ".claude" / "skills" / "remote-execution" / "scripts" / "shard_io.py"
 )
 
+#: This script's own absolute path, resolved once.
+CLI_PATH = Path(__file__).resolve()
+
+#: The prefix EVERY command this engine publishes carries, and the reason it
+#: is not simply `implementation_cli.py`.
+#:
+#: Measured. Every published command was a bare relative script name -- no
+#: interpreter, no directory -- and the file ships mode 644 with no execute
+#: bit, so not one of them was runnable as printed. Whether a pasted command
+#: worked at all depended entirely on the reader's current directory, and a
+#: reader whose shell answered "command not found" got that on stdout with
+#: exit status 0 from the harness around it: a step launched from the wrong
+#: directory, an hour spent, and nothing anywhere saying the command had never
+#: run.
+#:
+#: `sys.executable` rather than a bare `python3`, for the same reason
+#: `impl_steps.run_step` prefixes the target's own `.venv/bin`: the
+#: interpreter that is running this process is the one demonstrably able to
+#: run this file, and whatever a reader's `PATH` resolves `python3` to is a
+#: different question. Both halves are `shlex.quote`d, so a forge installed
+#: under a path with a space publishes a command that still runs.
+CLI_INVOCATION = " ".join(
+    shlex.quote(part) for part in (sys.executable or "python3", str(CLI_PATH)))
+
 PRODUCT_DIRS = ("Notebooks", "Data", "Results", "Models")
 
 #: Where a tracked `.py` may live. Anything else is a stray module.
@@ -8832,24 +8856,22 @@ def _discuss_command(target: Path, name: str, *, about: str, question: str,
     fixed text carries no apostrophe -- left alone, out of scope, rather
     than migrated to this builder.
     """
-    parts = ["implementation_cli.py", "discuss",
-             "--target", str(target), "--name", name,
+    parts = ["discuss", "--target", str(target), "--name", name,
              "--about", about, "--question", question]
     if answer is not None:
         parts += ["--answer", answer]
-    return " ".join(shlex.quote(part) for part in parts)
+    return _cli_command(*parts)
 
 
 def _cli_command(*parts: str) -> str:
-    """One directly runnable `implementation_cli.py` invocation.
+    """One directly runnable invocation of this CLI.
 
     The same `shlex.quote` discipline `_discuss_command` keeps, generalized:
     every publication point this file has now publishes a command a reader
     pastes unedited, and a naive interpolation is how one of them stops being
     that the first time a path carries a space.
     """
-    return " ".join(shlex.quote(str(part))
-                    for part in ("implementation_cli.py", *parts))
+    return " ".join([CLI_INVOCATION, *(shlex.quote(str(part)) for part in parts)])
 
 
 def _about_arg(about: dict) -> str:
@@ -11316,7 +11338,7 @@ def _offer_launch_action(target, name, args, rcli, position, evidence, job_dir):
     return {
         "id": "launch",
         "command": (
-            "implementation_cli.py gate "
+            f"{CLI_INVOCATION} gate "
             f"--target {target} --name {name} --revision {args.revision} "
             f"--session {args.session} --job {job_name} {gate_flags} "
             "--justification -"
@@ -11543,7 +11565,7 @@ def cmd_offer(args: argparse.Namespace) -> dict:
         actions.append({
             "id": "run-step",
             "command": (
-                "implementation_cli.py step "
+                f"{CLI_INVOCATION} step "
                 f"--target {target} --name {name} --session {args.session} "
                 "--step <step id>"
             ),
@@ -11578,7 +11600,7 @@ def cmd_offer(args: argparse.Namespace) -> dict:
         actions.append({
             "id": "expand-contract",
             "command": (
-                "implementation_cli.py discuss "
+                f"{CLI_INVOCATION} discuss "
                 f"--target {target} --name {name} --about record "
                 "--question 'what should the experiment contract still "
                 "add before a campaign may be gated?'"

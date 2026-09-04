@@ -2009,8 +2009,10 @@ carries a `resolve` key saying what. Sixty-three codes, including
 { "status": "refused", "code": "POSITION_STALE",
   "detail": "the position section is bound to a revision whose bytes no longer match; ...",
   "resolve": { "kind": "command",
-               "command": "implementation_cli.py position --target implementations/repo --name Name --session s1 --revision r7.md" } }
+               "command": "/usr/bin/python3 /abs/path/to/implementation_cli.py position --target /abs/path/to/implementations/repo --name Name --session s1 --revision r7.md" } }
 ```
+
+Every published command is runnable **verbatim, from any directory**: it begins with the absolute path of the interpreter running this CLI and the absolute path of the CLI itself, both `shlex.quote`d, and every embedded path is absolute too. That is not decoration — the script ships mode 644 with no execute bit, so a bare relative `implementation_cli.py …` was runnable only from one directory, and a shell that answers `command not found` can hand a harness that text on stdout with exit status 0. Do not shorten a published command before pasting it.
 
 `resolve.kind` is `command` when the engine can name the whole exit — run it
 unedited — and `question` when the next act is a decision nobody but a human

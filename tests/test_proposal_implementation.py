@@ -165,6 +165,28 @@ def markdown_table_rows(text, header):
     return tables
 
 
+def published_flags(command: str) -> list[str]:
+    """A published command's ARGUMENTS, with its runnable prefix removed.
+
+    Every command this engine publishes now begins with the absolute path of
+    the interpreter running the CLI and the absolute path of the CLI itself
+    (`impl.CLI_INVOCATION`), so a reader pastes it unedited from any
+    directory. A test that only wants the flags -- to feed them through a
+    helper that supplies its own environment -- takes them off the string by
+    matching that prefix rather than by dropping a hardcoded number of
+    tokens, which is exactly the assumption this change moved.
+
+    The prefix is asserted, never assumed: a published string that stopped
+    carrying it would otherwise silently lose its first flag here.
+    """
+    prefix = shlex.split(impl.CLI_INVOCATION)
+    tokens = shlex.split(command)
+    if tokens[:len(prefix)] != prefix:
+        raise AssertionError(
+            f"published command carries no runnable prefix: {command!r}")
+    return tokens[len(prefix):]
+
+
 def returned_keys(source: Path, function: str) -> list[str]:
     """The top-level keys a function's dict returns are built from.
 
@@ -11803,8 +11825,8 @@ class ProbeReportedFactsRosterTests(unittest.TestCase):
         probe = self.probe(box)
         entry = probe["toDiscuss"][0]
         tokens = shlex.split(entry["command"])
-        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
-                              capture_output=True, text=True, cwd=FORGE)
+        proc = subprocess.run(tokens, capture_output=True, text=True,
+                              cwd=tempfile.gettempdir())
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertEqual(json.loads(proc.stdout)["asked"], entry["question"])
 
@@ -15422,7 +15444,7 @@ class PositionRungLadderTests(unittest.TestCase):
         self.assertNotIn("--target-level top", question)
         embedded = re.search(r"`([^`]*\bposition\b[^`]*)`", question)
         self.assertIsNotNone(embedded, question)
-        rerun = self.run_cli(*shlex.split(embedded.group(1))[1:],
+        rerun = self.run_cli(*published_flags(embedded.group(1)),
                              proposals=proposals)
         self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
         self.assertEqual(json.loads(rerun.stdout)["targetLevel"], "floor")
@@ -15555,7 +15577,7 @@ class PositionRungLadderTests(unittest.TestCase):
                             "--target-level", "top", "--shards", self._shards(box),
                             proposals=proposals)
         published = json.loads(proc.stdout)["resolve"]["command"]
-        rerun = self.run_cli(*shlex.split(published)[1:], proposals=proposals)
+        rerun = self.run_cli(*published_flags(published), proposals=proposals)
         self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
 
     def test_position_is_a_gating_command_and_the_code_is_a_work_state(self):
@@ -16771,13 +16793,17 @@ class DiscussCommandBuilderTests(unittest.TestCase):
             answer="yes, it still holds")
 
         tokens = shlex.split(command)
-        self.assertTrue(tokens[0].endswith("implementation_cli.py"), command)
-        self.assertEqual(tokens[1], "discuss", command)
+        self.assertEqual(tokens[1], str(CLI), command)
+        self.assertEqual(tokens[2], "discuss", command)
 
         # Executed as a subprocess, not merely read as text -- inspection
-        # alone cannot see a quoting defect an apostrophe would trigger.
-        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
-                              capture_output=True, text=True, cwd=FORGE)
+        # alone cannot see a quoting defect an apostrophe would trigger --
+        # and executed UNREPAIRED, from a directory that is not the forge:
+        # the published string used to be a bare relative script name, so
+        # every earlier version of this test had to prepend an interpreter
+        # and a path the string did not carry.
+        proc = subprocess.run(tokens, capture_output=True, text=True,
+                              cwd=tempfile.gettempdir())
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         result = json.loads(proc.stdout)
         self.assertEqual(result["asked"], question)
@@ -16790,8 +16816,8 @@ class DiscussCommandBuilderTests(unittest.TestCase):
         tokens = shlex.split(command)
         self.assertNotIn("--answer", tokens, command)
 
-        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
-                              capture_output=True, text=True, cwd=FORGE)
+        proc = subprocess.run(tokens, capture_output=True, text=True,
+                              cwd=tempfile.gettempdir())
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertEqual(json.loads(proc.stdout)["status"], "open")
 
@@ -17305,7 +17331,7 @@ class SettleCommandTests(unittest.TestCase):
         self.assertIn(first, question)
         self.assertIn(second, question)
 
-        run = self.run_cli(*tokens[1:])
+        run = self.run_cli(*published_flags(line))
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertEqual(json.loads(run.stdout)["asked"], question)
 
@@ -17327,7 +17353,7 @@ class SettleCommandTests(unittest.TestCase):
         line = next(l for l in body["detail"].splitlines()
                     if "implementation_cli.py discuss" in l)
         tokens = shlex.split(line)
-        run = self.run_cli(*tokens[1:])
+        run = self.run_cli(*published_flags(line))
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertIn(first, json.loads(run.stdout)["asked"])
 
@@ -17600,8 +17626,8 @@ class VerifyToDiscussTests(unittest.TestCase):
         result = self._verify(box)
         entry = result["toDiscuss"][0]
         tokens = shlex.split(entry["command"])
-        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
-                              capture_output=True, text=True, cwd=FORGE)
+        proc = subprocess.run(tokens, capture_output=True, text=True,
+                              cwd=tempfile.gettempdir())
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertEqual(json.loads(proc.stdout)["asked"], entry["question"])
 
@@ -17614,8 +17640,8 @@ class VerifyToDiscussTests(unittest.TestCase):
         result = self._verify(box)
         entry = result["toDiscuss"][0]
         tokens = shlex.split(entry["command"])
-        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
-                              capture_output=True, text=True, cwd=FORGE)
+        proc = subprocess.run(tokens, capture_output=True, text=True,
+                              cwd=tempfile.gettempdir())
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("the target's finding", json.loads(proc.stdout)["asked"])
 
@@ -20937,21 +20963,24 @@ class OfferCommandTests(unittest.TestCase):
         command = expand_contract["command"]
 
         tokens = shlex.split(command)
-        self.assertTrue(tokens[0].endswith("implementation_cli.py"), command)
+        self.assertEqual(tokens[1], str(CLI), command)
 
-        # Execute the published string verbatim, dropping only the leading
-        # script-name token -- the same seam `run_cli` itself uses to turn
-        # a documented invocation into a real subprocess call. This runs
-        # UNCONDITIONALLY, before any assertion on the token shape below,
-        # so the check is never satisfied by inspecting the string alone.
+        # Execute the published string VERBATIM -- nothing dropped, nothing
+        # prepended -- and from a directory that is not the forge. This test
+        # used to repair the string first, prepending the interpreter and the
+        # path a bare relative script name did not carry; a published command
+        # that only runs after the reader repairs it is not a published
+        # command. It runs UNCONDITIONALLY, before any assertion on the token
+        # shape below, so the check is never satisfied by inspecting the
+        # string alone.
         child = subprocess.run(
-            [sys.executable, str(CLI), *tokens[1:]],
-            capture_output=True, text=True, cwd=FORGE, env=os.environ.copy())
+            tokens, capture_output=True, text=True,
+            cwd=tempfile.gettempdir(), env=os.environ.copy())
         after = agreed_path.read_bytes()
 
         self.assertEqual(child.returncode, 0, child.stdout + child.stderr)
         self.assertEqual(before, after)
-        self.assertEqual(tokens[1], "discuss", command)
+        self.assertEqual(tokens[2], "discuss", command)
         self.assertNotIn("--session", tokens, command)
 
     # --- ACTION_IDS: pinned three ways ---------------------------------
@@ -21952,8 +21981,8 @@ class CloseCommandTests(unittest.TestCase):
         # command must never carry the stdin form, which retires nothing.
         self.assertNotEqual(tokens[tokens.index("--answer") + 1], "-", line)
         tokens[tokens.index("--answer") + 1] = "yes, it still holds"
-        retire = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
-                                capture_output=True, text=True, cwd=FORGE)
+        retire = subprocess.run(tokens, capture_output=True, text=True,
+                                cwd=tempfile.gettempdir())
         self.assertEqual(retire.returncode, 0, retire.stdout + retire.stderr)
 
         second = self.run_cli("close", "--target", str(box), "--name", "Method",
@@ -25285,12 +25314,14 @@ class StepSequenceOrderTests(unittest.TestCase):
         self.assertIn("--revision r01.md", command)
 
         tokens = shlex.split(command)
-        self.assertTrue(tokens[0].endswith("implementation_cli.py"), command)
+        self.assertEqual(tokens[1], str(CLI), command)
         env = dict(os.environ)
         env["IMPLEMENTATION_PROPOSALS"] = str(proposals)
-        rederive = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
-                                  capture_output=True, text=True,
-                                  cwd=FORGE, env=env)
+        # Verbatim, from a directory that is not the forge: the exit this
+        # refusal publishes has to run for the reader who pastes it, not for
+        # the one who knows where the script lives.
+        rederive = subprocess.run(tokens, capture_output=True, text=True,
+                                  cwd=tempfile.gettempdir(), env=env)
         self.assertEqual(rederive.returncode, 0,
                          rederive.stdout + rederive.stderr)
         self._commit(box)
@@ -26169,8 +26200,7 @@ class RefusalPayloadPublishesItsExitTests(unittest.TestCase):
         # Run in the caller's own environment, which is the only one the
         # published command claims to run in: the revision it carries is the
         # revision the refused call was made against.
-        tokens = shlex.split(published)
-        rerun = self.run_cli(*tokens[1:], proposals=proposals)
+        rerun = self.run_cli(*published_flags(published), proposals=proposals)
         self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
         self.assertEqual(json.loads(rerun.stdout)["command"], "position")
 
@@ -26362,8 +26392,8 @@ class ProbePublishesEveryStepsWorkTests(unittest.TestCase):
         self.write_job_folder(box, head)
         probe = self.probe(box)
         tokens = shlex.split(probe["resolve"]["command"])
-        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
-                              capture_output=True, text=True, cwd=FORGE)
+        proc = subprocess.run(tokens, capture_output=True, text=True,
+                              cwd=tempfile.gettempdir())
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertEqual(json.loads(proc.stdout)["asked"],
                          probe["resolve"]["question"])
@@ -27070,10 +27100,10 @@ class PilotGatesTheDeclaredScaleTests(unittest.TestCase):
     def answer(self, box, entry):
         """Run the entry's own published `discuss` command, with an answer
         appended -- the operator's act, not a hand-written ledger line."""
-        tokens = shlex.split(entry["command"])[1:]
+        tokens = shlex.split(entry["command"])
         proc = subprocess.run(
-            [sys.executable, str(CLI), *tokens, "--answer", "a decision"],
-            capture_output=True, text=True, cwd=FORGE)
+            [*tokens, "--answer", "a decision"],
+            capture_output=True, text=True, cwd=tempfile.gettempdir())
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         return json.loads(proc.stdout)
 
@@ -28094,3 +28124,106 @@ class FlowWalkReportTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, box, ignore_errors=True)
         (box / "Method").mkdir(parents=True)
         self.assertEqual(impl.product_artefacts(box, "Method"), [])
+
+
+class PublishedCommandsRunVerbatimTests(unittest.TestCase):
+    """Every command this engine publishes runs as printed, from anywhere.
+
+    Measured. Every published command was a bare relative `implementation_cli.py
+    …` — no interpreter, no directory — and the script ships mode 644 with no
+    execute bit, so not one of them was runnable as printed: correctness rested
+    entirely on the reader's current directory. That is the failure class that
+    cost an hour, because a step launched from the wrong directory produced a
+    shell's `command not found` on stdout with exit status 0, and a harness
+    reading exit status alone recorded a step that never ran as a step that
+    did.
+
+    The three tests that already ran a published string as a subprocess each
+    had to REPAIR it first — drop the leading script-name token, prepend
+    `[sys.executable, CLI]` — and that repair was the defect, written into the
+    tests as a convention. They now run the tokens unrepaired, from a directory
+    that is not the forge.
+    """
+
+    def _args(self, **overrides):
+        base = {"command": "step", "target": "implementations/box",
+                "name": "Method", "session": "s1", "revision": "r1.md",
+                "about": None, "text": None, "step": "one"}
+        base.update(overrides)
+        return argparse.Namespace(**base)
+
+    def test_the_prefix_names_a_real_interpreter_and_this_exact_script(self):
+        tokens = shlex.split(impl.CLI_INVOCATION)
+        self.assertEqual(len(tokens), 2, impl.CLI_INVOCATION)
+        self.assertTrue(Path(tokens[0]).is_absolute(), tokens[0])
+        self.assertTrue(Path(tokens[0]).exists(),
+                        "the published interpreter does not exist")
+        self.assertEqual(Path(tokens[1]), CLI)
+        self.assertTrue(Path(tokens[1]).is_absolute(), tokens[1])
+
+    def test_the_script_is_not_executable_so_the_interpreter_is_load_bearing(self):
+        """The fact that decides the design rather than an aesthetic
+        preference. If this ever gains an execute bit and a shebang, the
+        interpreter token becomes belt-and-braces rather than the only thing
+        making the string run — and this test is where somebody finds that
+        out."""
+        self.assertFalse(os.access(CLI, os.X_OK),
+                         "the CLI is executable now; the published prefix's "
+                         "reasoning has changed and its docstring has not")
+
+    def test_no_publication_point_still_builds_a_bare_script_name(self):
+        """Derived, not listed. Three command strings were hardcoded beside
+        the two builders, and a fourth added later would ship the old,
+        unrunnable shape with nothing noticing."""
+        source = CLI.read_text(encoding="utf-8")
+        self.assertNotIn('"implementation_cli.py', source)
+        self.assertNotIn("'implementation_cli.py", source)
+
+    def test_every_builder_routes_through_the_one_prefix(self):
+        for command in (impl._cli_command("verify", "--target", "/tmp/x"),
+                        impl._discuss_command(Path("/tmp/x"), "Method",
+                                              about="record", question="q?")):
+            with self.subTest(command=command[:40]):
+                self.assertTrue(command.startswith(impl.CLI_INVOCATION + " "),
+                                command)
+
+    def test_a_published_resolution_runs_unrepaired_from_another_directory(self):
+        """The end-to-end proof, and the one that would have caught the
+        incident: the string is executed exactly as a reader would paste it,
+        with the working directory deliberately somewhere else."""
+        box = FORGE / "implementations" / f"_e2e_verbatim_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            "__steps__ = {'one': {'module': 'Method_Benchmark.steps',"
+            " 'function': 'f'}}\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        git = ["git", "-c", "user.email=forge@example.invalid",
+               "-c", "user.name=forge", "-C", str(box)]
+        subprocess.run(git + ["add", "-A"], check=True, capture_output=True)
+        subprocess.run(git + ["commit", "-qm", "toy"], check=True,
+                       capture_output=True)
+
+        refused = subprocess.run(
+            [sys.executable, str(CLI), "step", "--target", str(box), "--name",
+             "Method", "--session", "s1", "--step", "one"],
+            capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(refused.returncode, 2, refused.stdout)
+        payload = json.loads(refused.stdout)
+        self.assertEqual(payload["code"], "INTERPRETER_ABSENT")
+        published = payload["resolve"]["command"]
+
+        # Verbatim: no token dropped, none prepended, and from a directory
+        # with no relationship to the forge whatsoever.
+        elsewhere = tempfile.mkdtemp(prefix=f"verbatim_{os.getpid()}_")
+        self.addCleanup(shutil.rmtree, elsewhere, ignore_errors=True)
+        ran = subprocess.run(shlex.split(published), capture_output=True,
+                             text=True, cwd=elsewhere)
+        self.assertNotIn("command not found", ran.stderr + ran.stdout)
+        self.assertTrue(ran.stdout.strip().startswith("{"),
+                        f"the published exit printed no JSON: {ran.stdout!r} "
+                        f"{ran.stderr!r}")

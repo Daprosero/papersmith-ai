@@ -2487,6 +2487,8 @@ shape somebody noticed:
   when the next act is a decision, where `command` is the runnable `discuss`
   invocation that opens it.
 
+Every published command — a `resolve`, a `next` act, an `offer` action, a `toDiscuss` entry — is runnable **verbatim from any directory**: it carries the absolute path of the interpreter running this CLI and the absolute path of the CLI itself (`CLI_INVOCATION`), both `shlex.quote`d, and every embedded path is absolute. The script ships mode 644 with no execute bit, so a bare relative script name was runnable from exactly one directory and silently not from any other — a shell's `command not found` reaches a harness on stdout with exit status 0, which is a step that never ran reported as a step that did.
+
 A `resolve` is published only when the refused **call** is itself a gating one.
 The roster's reach crosses helpers that non-gating commands share — `plan` runs
 the same dirty-tree guard `apply` does — and a resolution built from arguments
