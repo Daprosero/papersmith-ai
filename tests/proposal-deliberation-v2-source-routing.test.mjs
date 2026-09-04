@@ -15,6 +15,11 @@ const jiti = createJiti(import.meta.url, { alias: {
 } });
 const workspaceModule = await jiti.import(path.resolve('.claude/skills/_core/deliberation/engine/proposal-workspace.ts'));
 const v2 = await jiti.import(path.resolve('.claude/skills/_core/deliberation/engine/exports.ts'));
+// The name of the one file `derive` accepts belongs to the host-chosen domain
+// profile, not to this suite. Read it off the profile so the routing this test
+// pins stays the same test under any domain.
+const { DOMAIN } = await jiti.import(path.resolve('.claude/skills/_core/deliberation/engine/domain-profile.ts'));
+const deriveBase = DOMAIN.deriveBase;
 
 test('explicit sourceFilename routes exact composite selection only through its managed document state', async () => {
  const root = await mkdtemp(path.join(os.tmpdir(), 'pp-v2-source-routing-'));
@@ -24,8 +29,8 @@ test('explicit sourceFilename routes exact composite selection only through its 
  const second = '$$\nB_{r01}=2.\n$$';
  const target = `${first}\n\n${second}\n`;
  const replacement = '$$\nC_{r01}=3.\n$$\n';
- const creDa = '# CREDA default\n\nCREDA_ONLY\n\n$$\nA_{creda}=99.\n$$\n';
- await writeFile(path.join(proposals, 'matematica_propuesta_CREDA.md'), creDa);
+ const unroutedBase = '# Sediment transport base\n\nUNROUTED_ONLY\n\n$$\nA_{bed}=99.\n$$\n';
+ await writeFile(path.join(proposals, deriveBase), unroutedBase);
  const bootstrap = workspaceModule.createProposalWorkspaceTool(root);
  await bootstrap.execute('seed', { action: 'write', resource: 'proposal', slug: 'r01', content: `# R01\n\nR01_ONLY\n\n${target}\n` });
  const r01Path = path.join(proposals, 'research-concept-r01.md');
@@ -43,12 +48,12 @@ test('explicit sourceFilename routes exact composite selection only through its 
   assert.equal(input.context.documentSha256, r01State.documentSha256);
   assert.equal(input.target.type, 'composite');
   assert.equal(input.target.composite.entryIds.length, 2);
-  assert.ok(input.context.fragments.every(fragment => !fragment.text.includes('CREDA_ONLY')));
+  assert.ok(input.context.fragments.every(fragment => !fragment.text.includes('UNROUTED_ONLY')));
   return { actions: [{ kind: 'replace', targetEntryId: input.target.entryId, replacementText: replacement }], unresolvedQuestions: [] };
  } };
  const orchestrator = new v2.ProposalDeliberationOrchestrator(root, adapter, undefined, planner, {}, stateLoader);
  let latestCalls = 0;
- orchestrator.latest = async () => { latestCalls++; return 'matematica_propuesta_CREDA.md'; };
+ orchestrator.latest = async () => { latestCalls++; return deriveBase; };
  const result = await orchestrator.execute({ sourceFilename: 'research-concept-r01.md', instruction: 'Modifica el bloque seleccionado.', selectedEntryId: target });
  assert.equal(result.status, 'published', JSON.stringify(result));
  assert.equal(result.plannerCalls, 1);
@@ -61,7 +66,7 @@ test('explicit sourceFilename routes exact composite selection only through its 
  assert.equal(result.compiled.patches.length, 1);
  assert.equal(result.published.patchCount, 1);
  assert.deepEqual(await readFile(r01Path), r01Before);
- assert.deepEqual(await readFile(path.join(proposals, 'matematica_propuesta_CREDA.md')), Buffer.from(creDa));
+ assert.deepEqual(await readFile(path.join(proposals, deriveBase)), Buffer.from(unroutedBase));
  const published = await readFile(path.join(proposals, 'research-concept-r02.md'), 'utf8');
  assert.ok(published.includes(replacement));
  assert.ok(!published.includes('A_{r01}=1.'));

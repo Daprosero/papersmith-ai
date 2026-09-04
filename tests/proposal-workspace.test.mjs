@@ -42,8 +42,20 @@ const jiti = createJiti(import.meta.url, {
 });
 const extensionPath = path.resolve(".claude/skills/_core/deliberation/engine/proposal-workspace.ts");
 const extension = await jiti.import(extensionPath);
+// The engine accepts exactly one derive base and names it in its own refusals,
+// and both values belong to the host-chosen domain profile rather than to this
+// suite. Read them off the profile: a literal here would be one research
+// project's file name spelled a hundred times in a general forge's test suite,
+// and `tests/proposal-deliberation-domain-profile-lock.test.mjs` now refuses it.
+const { DOMAIN } = await jiti.import(
+	path.resolve(".claude/skills/_core/deliberation/engine/domain-profile.ts"),
+);
+const deriveBase = DOMAIN.deriveBase;
+//: `DOMAIN.baseLabel` as it appears inside an engine refusal, escaped so the
+//: label can be matched literally inside the assertions' larger patterns.
+const baseLabel = DOMAIN.baseLabel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const artifactMarker = "<!-- proposal-workspace:artifact:v1 -->\n";
-const fixedCredaBase = String.raw`# CREDA base
+const fixedBase = String.raw`# Sediment transport base
 
 Inline source math \(x + 1\) must normalize.
 
@@ -64,11 +76,11 @@ $$
 a &= b + c\\
 d &= e
 \end{aligned}
-\label{eq:ksc}
+\label{eq:settling}
 \tag{2}
 $$
 `;
-const movableDisplayCredaBase = String.raw`# CREDA display moves
+const movableDisplayBase = String.raw`# Sediment transport display moves
 
 ## Section 2.3
 
@@ -124,7 +136,7 @@ q_{24} = 24.
 \tag{24}
 $$
 `;
-const tripleDisplayMoveBase = String.raw`# CREDA triple display move
+const tripleDisplayMoveBase = String.raw`# Sediment transport triple display move
 
 ## Source
 
@@ -205,21 +217,26 @@ $$
 
 Source prose moves after the displays.
 `;
-const flatDomainCredaBase = String.raw`# CREDA flat domains
+// The two symbols below are not this fixture's choice of notation. The engine's
+// `FLAT_DOMAIN_SYMBOLS` guards exactly `\mathcal D^s` and `\mathcal D^t`, so a
+// fixture that spelled the sample sets any other way would exercise nothing.
+// What each set collects -- velocity/concentration pairs, velocity/bed-elevation
+// pairs -- is this document's own, and is what the guard reads around.
+const flatDomainBase = String.raw`# Sediment transport flat domains
 
-## Flat domain definitions
+## Guarded sample-set definitions
 
 $$
-\mathcal D^s = \{(x_i^s,y_i^s)\}_{i=1}^{n_s}.
+\mathcal D^s = \{(u_k,c_k)\}_{k=1}^{m}.
 \tag{10}
 $$
 
 $$
-\mathcal D^t = \{x_j^t\}_{j=1}^{n_t}.
+\mathcal D^t = \{(u_l,h_l)\}_{l=1}^{n}.
 \tag{11}
 $$
 
-The retained construction maps \mathcal D^s into \mathcal D^t.
+The retained settling law reads \mathcal D^s and \mathcal D^t together.
 
 ## Remaining model
 
@@ -228,10 +245,10 @@ f(x)=x.
 \tag{12}
 $$
 `;
-const flatSourceDisplay = "$$\n\\mathcal D^s = \\{(x_i^s,y_i^s)\\}_{i=1}^{n_s}.\n\\tag{10}\n$$\n";
-const flatTargetDisplay = "$$\n\\mathcal D^t = \\{x_j^t\\}_{j=1}^{n_t}.\n\\tag{11}\n$$\n";
+const flatSourceDisplay = "$$\n\\mathcal D^s = \\{(u_k,c_k)\\}_{k=1}^{m}.\n\\tag{10}\n$$\n";
+const flatTargetDisplay = "$$\n\\mathcal D^t = \\{(u_l,h_l)\\}_{l=1}^{n}.\n\\tag{11}\n$$\n";
 
-const sectionedCredaBase = String.raw`# CREDA sections
+const sectionedBase = String.raw`# Sediment transport sections
 
 Introductory bytes stay exact.
 
@@ -297,15 +314,15 @@ async function fixture() {
 	await writeFile(path.join(root, "guidance/paper-guide/guide/guide.md"), "eligible guide\n", "utf8");
 	await writeFile(path.join(root, "guidance/reference-papers/secret.md"), "forbidden corpus\n", "utf8");
 	await writeFile(path.join(root, "proposals/base.md"), "immutable base\n", "utf8");
-	await writeFile(path.join(root, "proposals/matematica_propuesta_CREDA.md"), fixedCredaBase, "utf8");
+	await writeFile(path.join(root, `proposals/${deriveBase}`), fixedBase, "utf8");
 	return root;
 }
 
 async function sectionFixture() {
 	const root = await fixture();
 	await writeFile(
-		path.join(root, "proposals/matematica_propuesta_CREDA.md"),
-		sectionedCredaBase,
+		path.join(root, `proposals/${deriveBase}`),
+		sectionedBase,
 		"utf8",
 	);
 	return root;
@@ -372,11 +389,11 @@ test("reads only a marker-owned generated draft with its exact complete-file SHA
 	const root = await fixture();
 	const tool = toolFor(root);
 	const body = `# Managed draft\n\n${"mathematics\n".repeat(6_000)}`;
-	const name = "research-concept-subject-bag-creda-integrated-r03.md";
+	const name = "research-concept-truncated-managed-read-r03.md";
 	await execute(tool, {
 		action: "write",
 		resource: "proposal",
-		slug: "subject-bag-creda-integrated-r03",
+		slug: "truncated-managed-read-r03",
 		content: body,
 	});
 	const sourceBytes = await readFile(path.join(root, "proposals", name));
@@ -542,10 +559,10 @@ test("creates only a valid new research-concept target without authorization", a
 	await access(target);
 });
 
-test("atomically derives the fixed CREDA base with base-only inline normalization and an additive insertion", async () => {
+test("atomically derives the fixed base with base-only inline normalization and an additive insertion", async () => {
 	const root = await fixture();
 	const tool = toolFor(root);
-	const target = path.join(root, "proposals/research-concept-creda-exact-r06.md");
+	const target = path.join(root, "proposals/research-concept-exact-r06.md");
 	const insertion = String.raw`
 ### Additive note
 
@@ -555,8 +572,8 @@ Inserted inline syntax \(z\) stays byte-exact.
 	const result = await execute(tool, {
 		action: "derive",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
-		slug: "creda-exact-r06",
+		base: deriveBase,
+		slug: "exact-r06",
 		insertions: [
 			{
 				id: "additive-note",
@@ -574,7 +591,7 @@ Inserted inline syntax \(z\) stays byte-exact.
 	assert.ok(output.includes(`## Unique insertion section\n${insertion}`));
 	assert.ok(output.includes(String.raw`Inserted inline syntax \(z\) stays byte-exact.`));
 	assert.equal(result.details.operation, "derive");
-	assert.equal(result.details.base, "proposals/matematica_propuesta_CREDA.md");
+	assert.equal(result.details.base, `proposals/${deriveBase}`);
 	assert.equal(result.details.inlineNormalizationCount, 2);
 	assert.equal(result.details.displayBlocksPreserved, 2);
 	assert.equal(result.details.numberedEquationsPreserved, 2);
@@ -594,7 +611,7 @@ test("derive rejects omission of an exact block protected by the latest managed 
 		root,
 		tool,
 		"continuity-required-r01",
-		`${fixedCredaBase}\n${protectedBlock}`,
+		`${fixedBase}\n${protectedBlock}`,
 	);
 	manifest.required = [{ id: "retained-current-block", block: protectedBlock }];
 	const target = path.join(root, "proposals/research-concept-continuity-required-r02.md");
@@ -603,7 +620,7 @@ test("derive rejects omission of an exact block protected by the latest managed 
 		execute(tool, {
 			action: "derive",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
+			base: deriveBase,
 			slug: "continuity-required-r02",
 			insertions: [{ id: "unrelated-note", position: "end", content: "\nUnrelated new note.\n" }],
 			continuityManifest: manifest,
@@ -621,11 +638,11 @@ test("derive rejects reintroduction of an exact block removed from the latest ma
 	const tool = toolFor(root);
 	const removedBlock = "Previously removed current-state block.\n";
 	await writeFile(
-		path.join(root, "proposals/matematica_propuesta_CREDA.md"),
-		`${fixedCredaBase}\n${removedBlock}`,
+		path.join(root, `proposals/${deriveBase}`),
+		`${fixedBase}\n${removedBlock}`,
 		"utf8",
 	);
-	const manifest = await createManagedLatest(root, tool, "continuity-forbidden-r01", fixedCredaBase);
+	const manifest = await createManagedLatest(root, tool, "continuity-forbidden-r01", fixedBase);
 	manifest.forbidden = [{ id: "prior-removal", block: removedBlock }];
 	const target = path.join(root, "proposals/research-concept-continuity-forbidden-r02.md");
 
@@ -633,7 +650,7 @@ test("derive rejects reintroduction of an exact block removed from the latest ma
 		execute(tool, {
 			action: "derive",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
+			base: deriveBase,
 			slug: "continuity-forbidden-r02",
 			insertions: [{ id: "unrelated-note", position: "end", content: "\nUnrelated new note.\n" }],
 			continuityManifest: manifest,
@@ -651,7 +668,7 @@ test("derive_revision accepts an exact supersession bound to the latest managed 
 	const tool = toolFor(root);
 	const priorBlock = "Repeated prose anchor.\nRepeated prose anchor.\n";
 	const successorBlock = "Accepted successor prose block.\n";
-	const manifest = await createManagedLatest(root, tool, "continuity-supersession-r01", fixedCredaBase);
+	const manifest = await createManagedLatest(root, tool, "continuity-supersession-r01", fixedBase);
 	manifest.supersessions = [
 		{ id: "accepted-supersession", priorBlock, successorBlock },
 	];
@@ -659,7 +676,7 @@ test("derive_revision accepts an exact supersession bound to the latest managed 
 	const result = await execute(tool, {
 		action: "derive_revision",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
+		base: deriveBase,
 		slug: "continuity-supersession-r02",
 		replacements: [
 			{
@@ -694,7 +711,7 @@ test("continuity manifests reject unsafe, stale, unowned, and duplicate-id sourc
 			execute(tool, {
 				action: "derive",
 				resource: "proposal",
-				base: "matematica_propuesta_CREDA.md",
+				base: deriveBase,
 				slug: "continuity-unsafe-r02",
 				insertions: [{ id: "note", position: "end", content: "\nNote.\n" }],
 				continuityManifest: {
@@ -711,15 +728,15 @@ test("continuity manifests reject unsafe, stale, unowned, and duplicate-id sourc
 	{
 		const root = await fixture();
 		const tool = toolFor(root);
-		const manifest = await createManagedLatest(root, tool, "continuity-stale-r01", fixedCredaBase);
+		const manifest = await createManagedLatest(root, tool, "continuity-stale-r01", fixedBase);
 		manifest.source.sha256 = "0".repeat(64);
-		manifest.required = [{ id: "base-heading", block: "# CREDA base\n" }];
+		manifest.required = [{ id: "base-heading", block: "# Sediment transport base\n" }];
 		const target = path.join(root, "proposals/research-concept-continuity-stale-r02.md");
 		const failure = await candidateFailure(
 			execute(tool, {
 				action: "derive",
 				resource: "proposal",
-				base: "matematica_propuesta_CREDA.md",
+				base: deriveBase,
 				slug: "continuity-stale-r02",
 				insertions: [{ id: "note", position: "end", content: "\nNote.\n" }],
 				continuityManifest: manifest,
@@ -733,15 +750,15 @@ test("continuity manifests reject unsafe, stale, unowned, and duplicate-id sourc
 	{
 		const root = await fixture();
 		const tool = toolFor(root);
-		const manifest = await createManagedLatest(root, tool, "continuity-old-r01", fixedCredaBase);
-		await createManagedLatest(root, tool, "continuity-old-r02", `${fixedCredaBase}\nNewer accepted state.\n`);
-		manifest.required = [{ id: "base-heading", block: "# CREDA base\n" }];
+		const manifest = await createManagedLatest(root, tool, "continuity-old-r01", fixedBase);
+		await createManagedLatest(root, tool, "continuity-old-r02", `${fixedBase}\nNewer accepted state.\n`);
+		manifest.required = [{ id: "base-heading", block: "# Sediment transport base\n" }];
 		const target = path.join(root, "proposals/research-concept-continuity-old-r03.md");
 		const failure = await candidateFailure(
 			execute(tool, {
 				action: "derive",
 				resource: "proposal",
-				base: "matematica_propuesta_CREDA.md",
+				base: deriveBase,
 				slug: "continuity-old-r03",
 				insertions: [{ id: "note", position: "end", content: "\nNote.\n" }],
 				continuityManifest: manifest,
@@ -764,7 +781,7 @@ test("continuity manifests reject unsafe, stale, unowned, and duplicate-id sourc
 			execute(tool, {
 				action: "derive",
 				resource: "proposal",
-				base: "matematica_propuesta_CREDA.md",
+				base: deriveBase,
 				slug: "continuity-unowned-r02",
 				insertions: [{ id: "note", position: "end", content: "\nNote.\n" }],
 				continuityManifest: {
@@ -781,15 +798,15 @@ test("continuity manifests reject unsafe, stale, unowned, and duplicate-id sourc
 	{
 		const root = await fixture();
 		const tool = toolFor(root);
-		const manifest = await createManagedLatest(root, tool, "continuity-duplicate-r01", fixedCredaBase);
-		manifest.required = [{ id: "duplicate-item", block: "# CREDA base\n" }];
+		const manifest = await createManagedLatest(root, tool, "continuity-duplicate-r01", fixedBase);
+		manifest.required = [{ id: "duplicate-item", block: "# Sediment transport base\n" }];
 		manifest.forbidden = [{ id: "duplicate-item", block: "Never present.\n" }];
 		const target = path.join(root, "proposals/research-concept-continuity-duplicate-r02.md");
 		const failure = await candidateFailure(
 			execute(tool, {
 				action: "derive",
 				resource: "proposal",
-				base: "matematica_propuesta_CREDA.md",
+				base: deriveBase,
 				slug: "continuity-duplicate-r02",
 				insertions: [{ id: "note", position: "end", content: "\nNote.\n" }],
 				continuityManifest: manifest,
@@ -1164,7 +1181,7 @@ test("derive_successor rejects no-op patches and target collisions without chang
 
 test("derive accepts sanctioned inline delimiter normalization in a surviving inherited ATX heading", async () => {
 	const root = await fixture();
-	const basePath = path.join(root, "proposals/matematica_propuesta_CREDA.md");
+	const basePath = path.join(root, `proposals/${deriveBase}`);
 	const inheritedHeading = `${String.raw`## Objective for \(x + 1\)`}\n`;
 	await writeFile(
 		basePath,
@@ -1178,8 +1195,8 @@ test("derive accepts sanctioned inline delimiter normalization in a surviving in
 	const result = await execute(toolFor(root), {
 		action: "derive",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
-		slug: "creda-inline-heading-r94",
+		base: deriveBase,
+		slug: "inline-heading-r94",
 		insertions: [
 			{
 				id: "heading-note",
@@ -1191,7 +1208,7 @@ test("derive accepts sanctioned inline delimiter normalization in a surviving in
 	});
 
 	const output = await readFile(
-		path.join(root, "proposals/research-concept-creda-inline-heading-r94.md"),
+		path.join(root, "proposals/research-concept-inline-heading-r94.md"),
 		"utf8",
 	);
 	assert.match(output, /^## Objective for \$x \+ 1\$$/m);
@@ -1201,7 +1218,7 @@ test("derive accepts sanctioned inline delimiter normalization in a surviving in
 
 test("derive_revision still rejects arbitrary text edits in inherited headings with normalized inline math", async () => {
 	const root = await fixture();
-	const basePath = path.join(root, "proposals/matematica_propuesta_CREDA.md");
+	const basePath = path.join(root, `proposals/${deriveBase}`);
 	const inheritedHeading = `${String.raw`## Objective for \(x + 1\)`}\n`;
 	await writeFile(
 		basePath,
@@ -1211,13 +1228,13 @@ test("derive_revision still rejects arbitrary text edits in inherited headings w
 		),
 		"utf8",
 	);
-	const slug = "creda-edited-inline-heading-r95";
+	const slug = "edited-inline-heading-r95";
 
 	await candidateFailure(
 		execute(toolFor(root), {
 			action: "derive_revision",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
+			base: deriveBase,
 			slug,
 			replacements: [
 				{
@@ -1234,7 +1251,7 @@ test("derive_revision still rejects arbitrary text edits in inherited headings w
 
 test("derive rejects a duplicate inherited heading that uses the pre-normalized inline delimiters", async () => {
 	const root = await fixture();
-	const basePath = path.join(root, "proposals/matematica_propuesta_CREDA.md");
+	const basePath = path.join(root, `proposals/${deriveBase}`);
 	const inheritedHeading = `${String.raw`## Objective for \(x + 1\)`}\n`;
 	await writeFile(
 		basePath,
@@ -1244,13 +1261,13 @@ test("derive rejects a duplicate inherited heading that uses the pre-normalized 
 		),
 		"utf8",
 	);
-	const slug = "creda-duplicate-inline-heading-r96";
+	const slug = "duplicate-inline-heading-r96";
 
 	await candidateFailure(
 		execute(toolFor(root), {
 			action: "derive",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
+			base: deriveBase,
 			slug,
 			insertions: [
 				{
@@ -1268,13 +1285,13 @@ test("derive rejects a duplicate inherited heading that uses the pre-normalized 
 
 test("derive rejects a fully composed candidate that fuses an inherited ATX heading at an insertion boundary", async () => {
 	const root = await fixture();
-	const slug = "creda-fused-insertion-heading-r84";
+	const slug = "fused-insertion-heading-r84";
 	const target = path.join(root, `proposals/research-concept-${slug}.md`);
 	const failure = await candidateFailure(
 		execute(toolFor(root), {
 			action: "derive",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
+			base: deriveBase,
 			slug,
 			insertions: [
 				{
@@ -1294,12 +1311,12 @@ test("derive rejects a fully composed candidate that fuses an inherited ATX head
 
 test("derive rejects a newly authored ATX-like heading fused inside an otherwise separated insertion block", async () => {
 	const root = await fixture();
-	const slug = "creda-fused-new-heading-r92";
+	const slug = "fused-new-heading-r92";
 	await candidateFailure(
 		execute(toolFor(root), {
 			action: "derive",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
+			base: deriveBase,
 			slug,
 			insertions: [
 				{
@@ -1318,16 +1335,16 @@ test("derive rejects a newly authored ATX-like heading fused inside an otherwise
 test("derive_revision rejects a fully composed replacement that fuses an inherited ATX heading", async () => {
 	const root = await fixture();
 	await writeFile(
-		path.join(root, "proposals/matematica_propuesta_CREDA.md"),
-		movableDisplayCredaBase,
+		path.join(root, `proposals/${deriveBase}`),
+		movableDisplayBase,
 		"utf8",
 	);
-	const slug = "creda-fused-replacement-heading-r85";
+	const slug = "fused-replacement-heading-r85";
 	await candidateFailure(
 		execute(toolFor(root), {
 			action: "derive_revision",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
+			base: deriveBase,
 			slug,
 			replacements: [
 				{
@@ -1345,16 +1362,16 @@ test("derive_revision rejects a fully composed replacement that fuses an inherit
 test("derive_revision rejects replacement bytes that lack trailing Markdown block separation", async () => {
 	const root = await fixture();
 	await writeFile(
-		path.join(root, "proposals/matematica_propuesta_CREDA.md"),
-		movableDisplayCredaBase,
+		path.join(root, `proposals/${deriveBase}`),
+		movableDisplayBase,
 		"utf8",
 	);
-	const slug = "creda-unseparated-replacement-r93";
+	const slug = "unseparated-replacement-r93";
 	await candidateFailure(
 		execute(toolFor(root), {
 			action: "derive_revision",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
+			base: deriveBase,
 			slug,
 			replacements: [
 				{
@@ -1372,16 +1389,16 @@ test("derive_revision rejects replacement bytes that lack trailing Markdown bloc
 test("derive_revision rejects removed flat-domain definitions while retained output references their exact symbols", async () => {
 	const root = await fixture();
 	await writeFile(
-		path.join(root, "proposals/matematica_propuesta_CREDA.md"),
-		flatDomainCredaBase,
+		path.join(root, `proposals/${deriveBase}`),
+		flatDomainBase,
 		"utf8",
 	);
-	const slug = "creda-removed-flat-domains-r86";
+	const slug = "removed-flat-domains-r86";
 	const failure = await candidateFailure(
 		execute(toolFor(root), {
 			action: "derive_revision",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
+			base: deriveBase,
 			slug,
 			replacements: [
 				{
@@ -1407,17 +1424,17 @@ test("derive_revision rejects removed flat-domain definitions while retained out
 test("derive_revision accepts narrow replacement definitions for retained flat-domain references", async () => {
 	const root = await fixture();
 	await writeFile(
-		path.join(root, "proposals/matematica_propuesta_CREDA.md"),
-		flatDomainCredaBase,
+		path.join(root, `proposals/${deriveBase}`),
+		flatDomainBase,
 		"utf8",
 	);
-	const replacementSource = "$$\n\\mathcal{D}^s \\coloneqq \\{(z_i^s,y_i^s)\\}_{i=1}^{m_s}.\n\\tag{10}\n$$\n";
-	const replacementTarget = "$$\n\\mathcal{D}^t := \\{z_j^t\\}_{j=1}^{m_t}.\n\\tag{11}\n$$\n";
+	const replacementSource = "$$\n\\mathcal{D}^s \\coloneqq \\{(u_k,\\bar c_k)\\}_{k=1}^{m_0}.\n\\tag{10}\n$$\n";
+	const replacementTarget = "$$\n\\mathcal{D}^t := \\{(u_l,\\bar h_l)\\}_{l=1}^{n_0}.\n\\tag{11}\n$$\n";
 	const result = await execute(toolFor(root), {
 		action: "derive_revision",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
-		slug: "creda-redefined-flat-domains-r87",
+		base: deriveBase,
+		slug: "redefined-flat-domains-r87",
 		replacements: [
 			{
 				id: "replace-source-flat-domain",
@@ -1441,17 +1458,17 @@ test("derive_revision accepts narrow replacement definitions for retained flat-d
 test("derive_revision applies an explicitly authorized equation replacement to a new immutable derivative", async () => {
 	const root = await fixture();
 	const tool = toolFor(root);
-	const basePath = path.join(root, "proposals/matematica_propuesta_CREDA.md");
+	const basePath = path.join(root, `proposals/${deriveBase}`);
 	const baseBefore = await readFile(basePath);
-	const target = path.join(root, "proposals/research-concept-creda-correction-r32.md");
+	const target = path.join(root, "proposals/research-concept-correction-r32.md");
 	const inheritedEquation = "$$\nE = mc^2.\n\\tag{1}\n$$\n";
 	const correctedEquation = "$$\nE = mc^2 + \\varepsilon.\n\\tag{1}\n$$\n";
 
 	const result = await execute(tool, {
 		action: "derive_revision",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
-		slug: "creda-correction-r32",
+		base: deriveBase,
+		slug: "correction-r32",
 		replacements: [
 			{
 				id: "correct-energy-equation",
@@ -1479,15 +1496,15 @@ test("derive_revision applies an explicitly authorized equation replacement to a
 
 test("derive_revision atomically moves exact prose-plus-display blocks when every moved display is selected", async () => {
 	const root = await fixture();
-	const basePath = path.join(root, "proposals/matematica_propuesta_CREDA.md");
-	await writeFile(basePath, movableDisplayCredaBase, "utf8");
+	const basePath = path.join(root, `proposals/${deriveBase}`);
+	await writeFile(basePath, movableDisplayBase, "utf8");
 	const targetAnchor = "Target anchor paragraph.\n";
 
 	const result = await execute(toolFor(root), {
 		action: "derive_revision",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
-		slug: "creda-adjacent-display-move-r66",
+		base: deriveBase,
+		slug: "adjacent-display-move-r66",
 		replacements: [
 			{
 				id: "remove-selected-source-block",
@@ -1510,7 +1527,7 @@ test("derive_revision atomically moves exact prose-plus-display blocks when ever
 	});
 
 	const output = await readFile(
-		path.join(root, "proposals/research-concept-creda-adjacent-display-move-r66.md"),
+		path.join(root, "proposals/research-concept-adjacent-display-move-r66.md"),
 		"utf8",
 	);
 	assert.ok(!output.includes(`## Section 2.3\n\n${movableSourceBlock}`));
@@ -1526,8 +1543,8 @@ test("derive_revision atomically moves exact prose-plus-display blocks when ever
 
 test("derive_revision admits explicit empty authorization only for wholly display-free replacements", async () => {
 	const successRoot = await fixture();
-	const successBase = path.join(successRoot, "proposals/matematica_propuesta_CREDA.md");
-	await writeFile(successBase, movableDisplayCredaBase, "utf8");
+	const successBase = path.join(successRoot, `proposals/${deriveBase}`);
+	await writeFile(successBase, movableDisplayBase, "utf8");
 	const successTool = toolFor(successRoot);
 	const authorizedEquationsSchema =
 		successTool.parameters.properties.replacements.items.properties.authorizedEquations;
@@ -1536,8 +1553,8 @@ test("derive_revision admits explicit empty authorization only for wholly displa
 	const successResult = await execute(successTool, {
 		action: "derive_revision",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
-		slug: "creda-display-free-empty-auth-r81",
+		base: deriveBase,
+		slug: "display-free-empty-auth-r81",
 		replacements: [
 			{
 				id: "update-display-free-target",
@@ -1550,7 +1567,7 @@ test("derive_revision admits explicit empty authorization only for wholly displa
 	assert.equal(successResult.details.authorizedEquationCount, 0);
 	assert.match(
 		await readFile(
-			path.join(successRoot, "proposals/research-concept-creda-display-free-empty-auth-r81.md"),
+			path.join(successRoot, "proposals/research-concept-display-free-empty-auth-r81.md"),
 			"utf8",
 		),
 		/Updated target anchor paragraph\./,
@@ -1558,16 +1575,16 @@ test("derive_revision admits explicit empty authorization only for wholly displa
 
 	const displayTargetRoot = await fixture();
 	await writeFile(
-		path.join(displayTargetRoot, "proposals/matematica_propuesta_CREDA.md"),
-		movableDisplayCredaBase,
+		path.join(displayTargetRoot, `proposals/${deriveBase}`),
+		movableDisplayBase,
 		"utf8",
 	);
 	await assert.rejects(
 		execute(toolFor(displayTargetRoot), {
 			action: "derive_revision",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
-			slug: "creda-display-target-empty-auth-r82",
+			base: deriveBase,
+			slug: "display-target-empty-auth-r82",
 			replacements: [
 				{
 					id: "remove-selected-source-for-empty-target",
@@ -1588,16 +1605,16 @@ test("derive_revision admits explicit empty authorization only for wholly displa
 
 	const displaySourceRoot = await fixture();
 	await writeFile(
-		path.join(displaySourceRoot, "proposals/matematica_propuesta_CREDA.md"),
-		movableDisplayCredaBase,
+		path.join(displaySourceRoot, `proposals/${deriveBase}`),
+		movableDisplayBase,
 		"utf8",
 	);
 	await assert.rejects(
 		execute(toolFor(displaySourceRoot), {
 			action: "derive_revision",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
-			slug: "creda-display-source-empty-auth-r83",
+			base: deriveBase,
+			slug: "display-source-empty-auth-r83",
 			replacements: [
 				{
 					id: "remove-display-source-with-empty-auth",
@@ -1619,7 +1636,7 @@ test("derive_revision admits explicit empty authorization only for wholly displa
 test("derive_revision moves one exact mixed source block containing three individually authorized displays", async () => {
 	const root = await fixture();
 	await writeFile(
-		path.join(root, "proposals/matematica_propuesta_CREDA.md"),
+		path.join(root, `proposals/${deriveBase}`),
 		tripleDisplayMoveBase,
 		"utf8",
 	);
@@ -1628,8 +1645,8 @@ test("derive_revision moves one exact mixed source block containing three indivi
 	const result = await execute(toolFor(root), {
 		action: "derive_revision",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
-		slug: "creda-triple-display-move-r73",
+		base: deriveBase,
+		slug: "triple-display-move-r73",
 		replacements: [
 			{
 				id: "remove-triple-display-source-block",
@@ -1656,7 +1673,7 @@ test("derive_revision moves one exact mixed source block containing three indivi
 	});
 
 	const output = await readFile(
-		path.join(root, "proposals/research-concept-creda-triple-display-move-r73.md"),
+		path.join(root, "proposals/research-concept-triple-display-move-r73.md"),
 		"utf8",
 	);
 	assert.ok(!output.includes(`## Source\n\nSource introduction stays.\n\n${tripleDisplaySourceBlock}`));
@@ -1678,16 +1695,16 @@ test("derive_revision moves one exact mixed source block containing three indivi
 test("derive_revision rejects cross-group reorder even when each moved group preserves its own relative order", async () => {
 	const root = await fixture();
 	await writeFile(
-		path.join(root, "proposals/matematica_propuesta_CREDA.md"),
+		path.join(root, `proposals/${deriveBase}`),
 		tripleDisplayMoveBase,
 		"utf8",
 	);
-	const slug = "creda-cross-group-display-reorder-r89";
+	const slug = "cross-group-display-reorder-r89";
 	await candidateFailure(
 		execute(toolFor(root), {
 			action: "derive_revision",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
+			base: deriveBase,
 			slug,
 			replacements: [
 				{
@@ -1727,16 +1744,16 @@ test("derive_revision rejects cross-group reorder even when each moved group pre
 test("derive_revision fails closed when inherited display copies lack explicit relocation authorization", async () => {
 	const root = await fixture();
 	await writeFile(
-		path.join(root, "proposals/matematica_propuesta_CREDA.md"),
+		path.join(root, `proposals/${deriveBase}`),
 		tripleDisplayMoveBase,
 		"utf8",
 	);
-	const slug = "creda-implicit-triple-display-move-r88";
+	const slug = "implicit-triple-display-move-r88";
 	await candidateFailure(
 		execute(toolFor(root), {
 			action: "derive_revision",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
+			base: deriveBase,
 			slug,
 			replacements: [
 				{
@@ -1765,7 +1782,7 @@ test("derive_revision accepts multiple stable display IDs for one exact mixed so
 	const root = await fixture();
 	const tool = toolFor(root);
 	await writeFile(
-		path.join(root, "proposals/matematica_propuesta_CREDA.md"),
+		path.join(root, `proposals/${deriveBase}`),
 		tripleDisplayMoveBase,
 		"utf8",
 	);
@@ -1780,8 +1797,8 @@ test("derive_revision accepts multiple stable display IDs for one exact mixed so
 	await execute(tool, {
 		action: "derive_revision",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
-		slug: "creda-triple-display-id-move-r74",
+		base: deriveBase,
+		slug: "triple-display-id-move-r74",
 		replacements: [
 			{
 				id: "remove-id-selected-source-block",
@@ -1807,7 +1824,7 @@ test("derive_revision accepts multiple stable display IDs for one exact mixed so
 test("derive_revision triple-display mixed blocks fail closed for missing auth, preserved-display auth, partial selection, and overlap", async () => {
 	const cases = [
 		{
-			slug: "creda-triple-missing-auth-r75",
+			slug: "triple-missing-auth-r75",
 			replacements: [
 				{
 					id: "remove-under-authorized-triple-block",
@@ -1819,7 +1836,7 @@ test("derive_revision triple-display mixed blocks fail closed for missing auth, 
 			error: /omits or alters an inherited display block without matching authorization/i,
 		},
 		{
-			slug: "creda-triple-preserved-auth-r76",
+			slug: "triple-preserved-auth-r76",
 			replacements: [
 				{
 					id: "authorize-preserved-triple-display",
@@ -1831,7 +1848,7 @@ test("derive_revision triple-display mixed blocks fail closed for missing auth, 
 			error: /authorization for a byte-preserved display block/i,
 		},
 		{
-			slug: "creda-triple-partial-block-r77",
+			slug: "triple-partial-block-r77",
 			replacements: [
 				{
 					id: "select-partial-triple-block",
@@ -1847,7 +1864,7 @@ test("derive_revision triple-display mixed blocks fail closed for missing auth, 
 			error: /does not select complete Markdown blocks|intersects only part of an inherited display block/i,
 		},
 		{
-			slug: "creda-triple-overlap-r78",
+			slug: "triple-overlap-r78",
 			replacements: [
 				{
 					id: "remove-overlapping-triple-block",
@@ -1873,7 +1890,7 @@ test("derive_revision triple-display mixed blocks fail closed for missing auth, 
 	for (const candidate of cases) {
 		const root = await fixture();
 		await writeFile(
-			path.join(root, "proposals/matematica_propuesta_CREDA.md"),
+			path.join(root, `proposals/${deriveBase}`),
 			tripleDisplayMoveBase,
 			"utf8",
 		);
@@ -1881,7 +1898,7 @@ test("derive_revision triple-display mixed blocks fail closed for missing auth, 
 			execute(toolFor(root), {
 				action: "derive_revision",
 				resource: "proposal",
-				base: "matematica_propuesta_CREDA.md",
+				base: deriveBase,
 				slug: candidate.slug,
 				replacements: candidate.replacements,
 			}),
@@ -1896,7 +1913,7 @@ test("derive_revision rejects reordered moved displays and target-side unapprove
 	const display12 = "$$\nq_{12} = 12.\n\\tag{12}\n$$\n";
 	const cases = [
 		{
-			slug: "creda-triple-reordered-target-r79",
+			slug: "triple-reordered-target-r79",
 			targetBlock: tripleDisplaySourceBlock.replace(
 				`${display10}\n${display11}`,
 				() => `${display11}\n${display10}`,
@@ -1904,17 +1921,17 @@ test("derive_revision rejects reordered moved displays and target-side unapprove
 			error: /preserve.*display.*order|reorders individually authorized moved displays/i,
 		},
 		{
-			slug: "creda-triple-unapproved-target-r80",
+			slug: "triple-unapproved-target-r80",
 			targetBlock: `${tripleDisplaySourceBlock}\n$$\nq_{99} = 99.\n\\tag{99}\n$$\n`,
 			error: /target-side unapproved display/i,
 		},
 		{
-			slug: "creda-triple-omitted-target-r90",
+			slug: "triple-omitted-target-r90",
 			targetBlock: tripleDisplaySourceBlock.replace(`${display12}\n`, ""),
 			error: /duplicates, omits, or reorders selected displays/i,
 		},
 		{
-			slug: "creda-triple-duplicated-target-r91",
+			slug: "triple-duplicated-target-r91",
 			targetBlock: `${tripleDisplaySourceBlock}\n${display12}`,
 			error: /duplicates, omits, or reorders selected displays|duplicates an authorized|duplicate numbered tag/i,
 		},
@@ -1923,7 +1940,7 @@ test("derive_revision rejects reordered moved displays and target-side unapprove
 	for (const candidate of cases) {
 		const root = await fixture();
 		await writeFile(
-			path.join(root, "proposals/matematica_propuesta_CREDA.md"),
+			path.join(root, `proposals/${deriveBase}`),
 			tripleDisplayMoveBase,
 			"utf8",
 		);
@@ -1931,7 +1948,7 @@ test("derive_revision rejects reordered moved displays and target-side unapprove
 			execute(toolFor(root), {
 				action: "derive_revision",
 				resource: "proposal",
-				base: "matematica_propuesta_CREDA.md",
+				base: deriveBase,
 				slug: candidate.slug,
 				replacements: [
 					{
@@ -1964,13 +1981,13 @@ test("derive_revision rejects reordered moved displays and target-side unapprove
 
 test("derive_revision safely removes selected adjacent prose and displays while prose-only removal needs no equation authorization", async () => {
 	const selectedRoot = await fixture();
-	const selectedBase = path.join(selectedRoot, "proposals/matematica_propuesta_CREDA.md");
-	await writeFile(selectedBase, movableDisplayCredaBase, "utf8");
+	const selectedBase = path.join(selectedRoot, `proposals/${deriveBase}`);
+	await writeFile(selectedBase, movableDisplayBase, "utf8");
 	const selectedResult = await execute(toolFor(selectedRoot), {
 		action: "derive_revision",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
-		slug: "creda-adjacent-display-removal-r67",
+		base: deriveBase,
+		slug: "adjacent-display-removal-r67",
 		replacements: [
 			{
 				id: "remove-selected-source-block",
@@ -1981,20 +1998,20 @@ test("derive_revision safely removes selected adjacent prose and displays while 
 		],
 	});
 	const selectedOutput = await readFile(
-		path.join(selectedRoot, "proposals/research-concept-creda-adjacent-display-removal-r67.md"),
+		path.join(selectedRoot, "proposals/research-concept-adjacent-display-removal-r67.md"),
 		"utf8",
 	);
 	assert.ok(!selectedOutput.includes(movableSourceBlock));
 	assert.equal(selectedResult.details.authorizedEquationCount, 2);
 
 	const proseRoot = await fixture();
-	const proseBase = path.join(proseRoot, "proposals/matematica_propuesta_CREDA.md");
-	await writeFile(proseBase, movableDisplayCredaBase, "utf8");
+	const proseBase = path.join(proseRoot, `proposals/${deriveBase}`);
+	await writeFile(proseBase, movableDisplayBase, "utf8");
 	const proseResult = await execute(toolFor(proseRoot), {
 		action: "derive_revision",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
-		slug: "creda-prose-only-removal-r68",
+		base: deriveBase,
+		slug: "prose-only-removal-r68",
 		replacements: [
 			{
 				id: "remove-source-introduction",
@@ -2004,7 +2021,7 @@ test("derive_revision safely removes selected adjacent prose and displays while 
 		],
 	});
 	const proseOutput = await readFile(
-		path.join(proseRoot, "proposals/research-concept-creda-prose-only-removal-r68.md"),
+		path.join(proseRoot, "proposals/research-concept-prose-only-removal-r68.md"),
 		"utf8",
 	);
 	assert.ok(!proseOutput.includes("Source introduction stays."));
@@ -2015,7 +2032,7 @@ test("derive_revision safely removes selected adjacent prose and displays while 
 test("derive_revision block moves reject partial, mismatched, unselected, and byte-preserved display authorization", async () => {
 	const cases = [
 		{
-			slug: "creda-partial-adjacent-display-r69",
+			slug: "partial-adjacent-display-r69",
 			replacements: [
 				{
 					id: "partial-selected-source-block",
@@ -2027,7 +2044,7 @@ test("derive_revision block moves reject partial, mismatched, unselected, and by
 			error: /does not select complete Markdown blocks|intersects only part of an inherited display block/i,
 		},
 		{
-			slug: "creda-mismatched-adjacent-display-r70",
+			slug: "mismatched-adjacent-display-r70",
 			replacements: [
 				{
 					id: "mismatched-selected-source-block",
@@ -2039,7 +2056,7 @@ test("derive_revision block moves reject partial, mismatched, unselected, and by
 			error: /does not match a display block completely selected/i,
 		},
 		{
-			slug: "creda-unselected-adjacent-display-r71",
+			slug: "unselected-adjacent-display-r71",
 			replacements: [
 				{
 					id: "under-authorized-source-block",
@@ -2051,7 +2068,7 @@ test("derive_revision block moves reject partial, mismatched, unselected, and by
 			error: /omits or alters an inherited display block without matching authorization/i,
 		},
 		{
-			slug: "creda-byte-preserved-adjacent-display-r72",
+			slug: "byte-preserved-adjacent-display-r72",
 			replacements: [
 				{
 					id: "authorize-unchanged-source-block",
@@ -2067,15 +2084,15 @@ test("derive_revision block moves reject partial, mismatched, unselected, and by
 	for (const candidate of cases) {
 		const root = await fixture();
 		await writeFile(
-			path.join(root, "proposals/matematica_propuesta_CREDA.md"),
-			movableDisplayCredaBase,
+			path.join(root, `proposals/${deriveBase}`),
+			movableDisplayBase,
 			"utf8",
 		);
 		await assert.rejects(
 			execute(toolFor(root), {
 				action: "derive_revision",
 				resource: "proposal",
-				base: "matematica_propuesta_CREDA.md",
+				base: deriveBase,
 				slug: candidate.slug,
 				replacements: candidate.replacements,
 			}),
@@ -2089,7 +2106,7 @@ test("derive_revision authorizes exact unnumbered display-block replacement and 
 	const correctedDisplay = "$$\nH(X) = -\\sum_x p(x) \\log_2 p(x).\n$$\n";
 
 	const replacementRoot = await fixture();
-	const replacementBase = path.join(replacementRoot, "proposals/matematica_propuesta_CREDA.md");
+	const replacementBase = path.join(replacementRoot, `proposals/${deriveBase}`);
 	await writeFile(
 		replacementBase,
 		(await readFile(replacementBase, "utf8")).replace(
@@ -2101,8 +2118,8 @@ test("derive_revision authorizes exact unnumbered display-block replacement and 
 	const replacementResult = await execute(toolFor(replacementRoot), {
 		action: "derive_revision",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
-		slug: "creda-unnumbered-replacement-r41",
+		base: deriveBase,
+		slug: "unnumbered-replacement-r41",
 		replacements: [
 			{
 				id: "correct-entropy-display",
@@ -2113,7 +2130,7 @@ test("derive_revision authorizes exact unnumbered display-block replacement and 
 		],
 	});
 	const replacementOutput = await readFile(
-		path.join(replacementRoot, "proposals/research-concept-creda-unnumbered-replacement-r41.md"),
+		path.join(replacementRoot, "proposals/research-concept-unnumbered-replacement-r41.md"),
 		"utf8",
 	);
 	assert.ok(replacementOutput.includes(correctedDisplay));
@@ -2123,7 +2140,7 @@ test("derive_revision authorizes exact unnumbered display-block replacement and 
 	assert.equal(replacementResult.details.resultingDisplayBlockCount, 3);
 
 	const removalRoot = await fixture();
-	const removalBase = path.join(removalRoot, "proposals/matematica_propuesta_CREDA.md");
+	const removalBase = path.join(removalRoot, `proposals/${deriveBase}`);
 	await writeFile(
 		removalBase,
 		(await readFile(removalBase, "utf8")).replace(
@@ -2135,8 +2152,8 @@ test("derive_revision authorizes exact unnumbered display-block replacement and 
 	const removalResult = await execute(toolFor(removalRoot), {
 		action: "derive_revision",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
-		slug: "creda-unnumbered-removal-r42",
+		base: deriveBase,
+		slug: "unnumbered-removal-r42",
 		replacements: [
 			{
 				id: "remove-domain-display",
@@ -2147,7 +2164,7 @@ test("derive_revision authorizes exact unnumbered display-block replacement and 
 		],
 	});
 	const removalOutput = await readFile(
-		path.join(removalRoot, "proposals/research-concept-creda-unnumbered-removal-r42.md"),
+		path.join(removalRoot, "proposals/research-concept-unnumbered-removal-r42.md"),
 		"utf8",
 	);
 	assert.ok(!removalOutput.includes(inheritedDisplay));
@@ -2159,7 +2176,7 @@ test("derive_revision authorizes exact unnumbered display-block replacement and 
 test("inventories and reads parser-exact fixed-base displays, then replaces an unnumbered display by stable ID", async () => {
 	const root = await fixture();
 	const tool = toolFor(root);
-	const basePath = path.join(root, "proposals/matematica_propuesta_CREDA.md");
+	const basePath = path.join(root, `proposals/${deriveBase}`);
 	const inheritedDisplay = "$$\nH(X) = -\\sum_x p(x) \\log p(x).\n$$\n";
 	const correctedDisplay = "$$\nH(X) = -\\sum_x p(x) \\log_2 p(x).\n$$\n";
 	await writeFile(
@@ -2191,7 +2208,7 @@ test("inventories and reads parser-exact fixed-base displays, then replaces an u
 		await text(await execute(tool, { action: "inventory", resource: "displays", offset: 0, limit: 3 })),
 	);
 	assert.deepEqual(fullInventory.displays[0].numberedTags, [1]);
-	assert.deepEqual(fullInventory.displays[2].equationLabels, ["eq:ksc"]);
+	assert.deepEqual(fullInventory.displays[2].equationLabels, ["eq:settling"]);
 	assert.deepEqual(fullInventory.displays[2].numberedTags, [2]);
 
 	const displayId = page.displays[0].displayId;
@@ -2204,8 +2221,8 @@ test("inventories and reads parser-exact fixed-base displays, then replaces an u
 	const result = await execute(tool, {
 		action: "derive_revision",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
-		slug: "creda-display-id-r50",
+		base: deriveBase,
+		slug: "display-id-r50",
 		replacements: [
 			{
 				id: "correct-section-two-display",
@@ -2215,7 +2232,7 @@ test("inventories and reads parser-exact fixed-base displays, then replaces an u
 		],
 	});
 	const output = await readFile(
-		path.join(root, "proposals/research-concept-creda-display-id-r50.md"),
+		path.join(root, "proposals/research-concept-display-id-r50.md"),
 		"utf8",
 	);
 	assert.ok(output.includes(correctedDisplay));
@@ -2242,7 +2259,7 @@ test("inventories fixed-base Markdown sections with stable IDs and bounded exten
 	assert.deepEqual(
 		payload.sections.map(({ headingText, headingLevel }) => [headingText, headingLevel]),
 		[
-			["CREDA sections", 1],
+			["Sediment transport sections", 1],
 			["Section 3", 2],
 			["Section 4", 2],
 			["Section 4.1", 3],
@@ -2260,7 +2277,7 @@ test("inventories fixed-base Markdown sections with stable IDs and bounded exten
 	}
 	const section4 = payload.sections.find((section) => section.headingText === "Section 4");
 	const section5 = payload.sections.find((section) => section.headingText === "Section 5");
-	const baseBytes = Buffer.from(sectionedCredaBase, "utf8");
+	const baseBytes = Buffer.from(sectionedBase, "utf8");
 	assert.equal(section4.endByte, section5.startByte);
 	assert.match(baseBytes.subarray(section4.startByte, section4.endByte).toString("utf8"), /^## Section 4\n/);
 	assert.match(baseBytes.subarray(section4.startByte, section4.endByte).toString("utf8"), /### Section 4\.1/);
@@ -2280,7 +2297,7 @@ test("inventories fixed-base Markdown sections with stable IDs and bounded exten
 test("derive_revision removes multiple authorized sibling sections and preserves surviving displays in order", async () => {
 	const root = await sectionFixture();
 	const tool = toolFor(root);
-	const basePath = path.join(root, "proposals/matematica_propuesta_CREDA.md");
+	const basePath = path.join(root, `proposals/${deriveBase}`);
 	const baseBefore = await readFile(basePath);
 	const inventory = JSON.parse(
 		await text(await execute(tool, { action: "inventory", resource: "sections", limit: 16 })),
@@ -2291,13 +2308,13 @@ test("derive_revision removes multiple authorized sibling sections and preserves
 	const result = await execute(tool, {
 		action: "derive_revision",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
-		slug: "creda-remove-sections-r08",
+		base: deriveBase,
+		slug: "remove-sections-r08",
 		authorizedSectionRemovals: removed.map(({ sectionId }) => ({ sectionId })),
 	});
 
 	const output = await readFile(
-		path.join(root, "proposals/research-concept-creda-remove-sections-r08.md"),
+		path.join(root, "proposals/research-concept-remove-sections-r08.md"),
 	);
 	const orderedExtents = [...removed].sort((left, right) => left.startByte - right.startByte);
 	const expectedChunks = [];
@@ -2332,12 +2349,12 @@ test("derive_revision removes multiple authorized sibling sections and preserves
 test("derive_revision section selectors fail closed for unknown, ambiguous, duplicate, nested, and cross-overlapping selections", async () => {
 	const cases = [
 		{
-			slug: "creda-unknown-section-r61",
+			slug: "unknown-section-r61",
 			build: () => [{ sectionId: `section-sha256-${"0".repeat(64)}-occurrence-1` }],
-			error: /sectionId.*unknown.*current fixed CREDA base/i,
+			error: new RegExp(`sectionId.*unknown.*current ${baseLabel}`, "i"),
 		},
 		{
-			slug: "creda-ambiguous-section-r62",
+			slug: "ambiguous-section-r62",
 			build: (sections) => [
 				{
 					sectionId: sections.find((section) => section.headingText === "Section 4").sectionId,
@@ -2347,7 +2364,7 @@ test("derive_revision section selectors fail closed for unknown, ambiguous, dupl
 			error: /authorized section removal.*ambiguous or contains unknown fields/i,
 		},
 		{
-			slug: "creda-duplicate-section-r63",
+			slug: "duplicate-section-r63",
 			build: (sections) => {
 				const sectionId = sections.find((section) => section.headingText === "Section 5").sectionId;
 				return [{ sectionId }, { sectionId }];
@@ -2355,7 +2372,7 @@ test("derive_revision section selectors fail closed for unknown, ambiguous, dupl
 			error: /repeats sectionId/i,
 		},
 		{
-			slug: "creda-nested-section-r64",
+			slug: "nested-section-r64",
 			build: (sections) => [
 				{ sectionId: sections.find((section) => section.headingText === "Section 4").sectionId },
 				{ sectionId: sections.find((section) => section.headingText === "Section 4.1").sectionId },
@@ -2374,7 +2391,7 @@ test("derive_revision section selectors fail closed for unknown, ambiguous, dupl
 			execute(tool, {
 				action: "derive_revision",
 				resource: "proposal",
-				base: "matematica_propuesta_CREDA.md",
+				base: deriveBase,
 				slug: candidate.slug,
 				authorizedSectionRemovals: candidate.build(inventory.sections),
 			}),
@@ -2399,8 +2416,8 @@ test("derive_revision section selectors fail closed for unknown, ambiguous, dupl
 		execute(overlapTool, {
 			action: "derive_revision",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
-			slug: "creda-overlap-section-replacement-r65",
+			base: deriveBase,
+			slug: "overlap-section-replacement-r65",
 			authorizedSectionRemovals: [{ sectionId: section4Id }],
 			replacements: [
 				{
@@ -2414,7 +2431,7 @@ test("derive_revision section selectors fail closed for unknown, ambiguous, dupl
 		/mutations.*overlap or are nested/i,
 	);
 	await assert.rejects(
-		readFile(path.join(overlapRoot, "proposals/research-concept-creda-overlap-section-replacement-r65.md")),
+		readFile(path.join(overlapRoot, "proposals/research-concept-overlap-section-replacement-r65.md")),
 		(error) => error?.code === "ENOENT",
 	);
 });
@@ -2424,7 +2441,7 @@ test("derive_revision display IDs fail closed for unknown, ambiguous, and partia
 	const correctedDisplay = "$$\nH(X) = -\\sum_x p(x) \\log_2 p(x).\n$$\n";
 	const cases = [
 		{
-			slug: "creda-unknown-display-id-r51",
+			slug: "unknown-display-id-r51",
 			replacement: {
 				id: "unknown-display",
 				newText: correctedDisplay,
@@ -2432,10 +2449,10 @@ test("derive_revision display IDs fail closed for unknown, ambiguous, and partia
 					{ displayId: `display-sha256-${"0".repeat(64)}-occurrence-1` },
 				],
 			},
-			error: /displayId.*unknown.*current fixed CREDA base/i,
+			error: new RegExp(`displayId.*unknown.*current ${baseLabel}`, "i"),
 		},
 		{
-			slug: "creda-ambiguous-display-id-r52",
+			slug: "ambiguous-display-id-r52",
 			buildReplacement: (displayId) => ({
 				id: "ambiguous-display",
 				newText: correctedDisplay,
@@ -2444,7 +2461,7 @@ test("derive_revision display IDs fail closed for unknown, ambiguous, and partia
 			error: /display authorization.*ambiguous/i,
 		},
 		{
-			slug: "creda-partial-display-id-r53",
+			slug: "partial-display-id-r53",
 			buildReplacement: (displayId) => ({
 				id: "partial-display",
 				oldText: inheritedDisplay.slice(3, -3),
@@ -2457,7 +2474,7 @@ test("derive_revision display IDs fail closed for unknown, ambiguous, and partia
 
 	for (const candidate of cases) {
 		const root = await fixture();
-		const basePath = path.join(root, "proposals/matematica_propuesta_CREDA.md");
+		const basePath = path.join(root, `proposals/${deriveBase}`);
 		await writeFile(
 			basePath,
 			(await readFile(basePath, "utf8")).replace(
@@ -2478,7 +2495,7 @@ test("derive_revision display IDs fail closed for unknown, ambiguous, and partia
 			execute(tool, {
 				action: "derive_revision",
 				resource: "proposal",
-				base: "matematica_propuesta_CREDA.md",
+				base: deriveBase,
 				slug: candidate.slug,
 				replacements: [replacement],
 			}),
@@ -2497,32 +2514,32 @@ test("derive_revision rejects unsafe exact display-block authorization selectors
 	const numberedDisplay = "$$\nE = mc^2.\n\\tag{1}\n$$\n";
 	const cases = [
 		{
-			slug: "creda-partial-display-selector-r43",
+			slug: "partial-display-selector-r43",
 			authorizations: [{ displayBlock: "H(X) = -\\sum_x p(x) \\log p(x)." }],
 			error: /overlaps.*not its exact complete parsed block/i,
 		},
 		{
-			slug: "creda-overlap-display-selector-r44",
+			slug: "overlap-display-selector-r44",
 			authorizations: [{ displayBlock: `## Entropy\n\n${inheritedDisplay}` }],
 			error: /overlaps.*not its exact complete parsed block/i,
 		},
 		{
-			slug: "creda-missing-display-selector-r45",
+			slug: "missing-display-selector-r45",
 			authorizations: [{ displayBlock: "$$\nI(X;Y) = 0.\n$$\n" }],
-			error: /displayBlock authorization.*missing.*fixed CREDA base/i,
+			error: new RegExp(`displayBlock authorization.*missing.*${baseLabel}`, "i"),
 		},
 		{
-			slug: "creda-nondisplay-selector-r46",
+			slug: "nondisplay-selector-r46",
 			authorizations: [{ displayBlock: "Repeated prose anchor." }],
 			error: /selects non-display text/i,
 		},
 		{
-			slug: "creda-oldtext-selector-mismatch-r47",
+			slug: "oldtext-selector-mismatch-r47",
 			authorizations: [{ displayBlock: numberedDisplay }],
 			error: /does not match.*exact oldText/i,
 		},
 		{
-			slug: "creda-overlapping-display-authorizations-r48",
+			slug: "overlapping-display-authorizations-r48",
 			authorizations: [
 				{ displayBlock: inheritedDisplay },
 				{ displayBlock: inheritedDisplay },
@@ -2533,7 +2550,7 @@ test("derive_revision rejects unsafe exact display-block authorization selectors
 
 	for (const candidate of cases) {
 		const root = await fixture();
-		const basePath = path.join(root, "proposals/matematica_propuesta_CREDA.md");
+		const basePath = path.join(root, `proposals/${deriveBase}`);
 		await writeFile(
 			basePath,
 			(await readFile(basePath, "utf8")).replace(
@@ -2546,7 +2563,7 @@ test("derive_revision rejects unsafe exact display-block authorization selectors
 			execute(toolFor(root), {
 				action: "derive_revision",
 				resource: "proposal",
-				base: "matematica_propuesta_CREDA.md",
+				base: deriveBase,
 				slug: candidate.slug,
 				replacements: [
 					{
@@ -2566,7 +2583,7 @@ test("derive_revision rejects unsafe exact display-block authorization selectors
 	}
 
 	const ambiguousRoot = await fixture();
-	const ambiguousBasePath = path.join(ambiguousRoot, "proposals/matematica_propuesta_CREDA.md");
+	const ambiguousBasePath = path.join(ambiguousRoot, `proposals/${deriveBase}`);
 	await writeFile(
 		ambiguousBasePath,
 		`${await readFile(ambiguousBasePath, "utf8")}\n## Entropy\n\n${inheritedDisplay}\n## Duplicate display\n\n${inheritedDisplay}`,
@@ -2576,8 +2593,8 @@ test("derive_revision rejects unsafe exact display-block authorization selectors
 		execute(toolFor(ambiguousRoot), {
 			action: "derive_revision",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
-			slug: "creda-ambiguous-display-selector-r49",
+			base: deriveBase,
+			slug: "ambiguous-display-selector-r49",
 			replacements: [
 				{
 					id: "correct-first-duplicate-display",
@@ -2594,23 +2611,23 @@ test("derive_revision rejects unsafe exact display-block authorization selectors
 test("derive_revision fails closed when an inherited display is omitted without its matching authorization", async () => {
 	const root = await fixture();
 	const tool = toolFor(root);
-	const basePath = path.join(root, "proposals/matematica_propuesta_CREDA.md");
+	const basePath = path.join(root, `proposals/${deriveBase}`);
 	const baseBefore = await readFile(basePath);
 	const secondEquation =
-		"$$\n\\begin{aligned}\na &= b + c\\\\\nd &= e\n\\end{aligned}\n\\label{eq:ksc}\n\\tag{2}\n$$\n";
+		"$$\n\\begin{aligned}\na &= b + c\\\\\nd &= e\n\\end{aligned}\n\\label{eq:settling}\n\\tag{2}\n$$\n";
 
 	await assert.rejects(
 		execute(tool, {
 			action: "derive_revision",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
-			slug: "creda-unauthorized-removal-r33",
-			replacements: [{ id: "remove-ksc", oldText: secondEquation, newText: "" }],
+			base: deriveBase,
+			slug: "unauthorized-removal-r33",
+			replacements: [{ id: "remove-settling", oldText: secondEquation, newText: "" }],
 		}),
 		/omits or alters an inherited display block without matching authorization/i,
 	);
 	await assert.rejects(
-		readFile(path.join(root, "proposals/research-concept-creda-unauthorized-removal-r33.md")),
+		readFile(path.join(root, "proposals/research-concept-unauthorized-removal-r33.md")),
 		(error) => error?.code === "ENOENT",
 	);
 	assert.deepEqual(await readFile(basePath), baseBefore);
@@ -2622,16 +2639,16 @@ test("derive_revision rejects overlapping and ambiguous exact replacements", asy
 		execute(toolFor(overlapRoot), {
 			action: "derive_revision",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
-			slug: "creda-overlap-r34",
+			base: deriveBase,
+			slug: "overlap-r34",
 			replacements: [
 			{
 				id: "heading-and-inline",
-				oldText: String.raw`# CREDA base
+				oldText: String.raw`# Sediment transport base
 
 Inline source math \(x + 1\) must normalize.
 `,
-				newText: "# Corrected CREDA base\n",
+				newText: "# Corrected sediment transport base\n",
 			},
 			{
 				id: "inline-only",
@@ -2649,8 +2666,8 @@ Inline source math \(x + 1\) must normalize.
 		execute(toolFor(ambiguousRoot), {
 			action: "derive_revision",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
-			slug: "creda-ambiguous-replacement-r35",
+			base: deriveBase,
+			slug: "ambiguous-replacement-r35",
 			replacements: [
 				{
 					id: "ambiguous-prose",
@@ -2665,13 +2682,13 @@ Inline source math \(x + 1\) must normalize.
 	const reorderRoot = await fixture();
 	const firstBlock = "$$\nE = mc^2.\n\\tag{1}\n$$\n";
 	const secondBlock =
-		"$$\n\\begin{aligned}\na &= b + c\\\\\nd &= e\n\\end{aligned}\n\\label{eq:ksc}\n\\tag{2}\n$$\n";
+		"$$\n\\begin{aligned}\na &= b + c\\\\\nd &= e\n\\end{aligned}\n\\label{eq:settling}\n\\tag{2}\n$$\n";
 	await assert.rejects(
 		execute(toolFor(reorderRoot), {
 			action: "derive_revision",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
-			slug: "creda-reordered-r39",
+			base: deriveBase,
+			slug: "reordered-r39",
 			replacements: [
 				{
 					id: "move-second-first",
@@ -2683,7 +2700,7 @@ Inline source math \(x + 1\) must normalize.
 					id: "move-first-second",
 					oldText: secondBlock,
 					newText: firstBlock,
-					authorizedEquations: [{ equationLabel: "eq:ksc" }],
+					authorizedEquations: [{ equationLabel: "eq:settling" }],
 				},
 			],
 		}),
@@ -2695,8 +2712,8 @@ Inline source math \(x + 1\) must normalize.
 		execute(toolFor(malformedRoot), {
 			action: "derive_revision",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
-			slug: "creda-malformed-r40",
+			base: deriveBase,
+			slug: "malformed-r40",
 			replacements: [
 				{
 					id: "malformed-equation",
@@ -2715,20 +2732,20 @@ test("derive_revision preserves non-authorized equation bytes and order around a
 	const tool = toolFor(root);
 	const equationInsertion = "\nResearcher note after equation one.\n";
 	const inheritedSecondBlock =
-		"$$\n\\begin{aligned}\na &= b + c\\\\\nd &= e\n\\end{aligned}\n\\label{eq:ksc}\n\\tag{2}\n$$\n";
+		"$$\n\\begin{aligned}\na &= b + c\\\\\nd &= e\n\\end{aligned}\n\\label{eq:settling}\n\\tag{2}\n$$\n";
 	const correctedSecondBlock =
-		"$$\n\\begin{aligned}\na &= b + c\\\\\nd &= e + 1\n\\end{aligned}\n\\label{eq:ksc}\n\\tag{2}\n$$\n";
+		"$$\n\\begin{aligned}\na &= b + c\\\\\nd &= e + 1\n\\end{aligned}\n\\label{eq:settling}\n\\tag{2}\n$$\n";
 	await execute(tool, {
 		action: "derive_revision",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
-		slug: "creda-order-r36",
+		base: deriveBase,
+		slug: "order-r36",
 		replacements: [
 			{
-				id: "correct-ksc-equation",
+				id: "correct-settling-equation",
 				oldText: inheritedSecondBlock,
 				newText: correctedSecondBlock,
-				authorizedEquations: [{ equationLabel: "eq:ksc" }],
+				authorizedEquations: [{ equationLabel: "eq:settling" }],
 			},
 		],
 		insertions: [
@@ -2742,7 +2759,7 @@ test("derive_revision preserves non-authorized equation bytes and order around a
 	});
 
 	const output = await readFile(
-		path.join(root, "proposals/research-concept-creda-order-r36.md"),
+		path.join(root, "proposals/research-concept-order-r36.md"),
 		"utf8",
 	);
 	const firstBlock = "$$\nE = mc^2.\n\\tag{1}\n$$\n";
@@ -2768,22 +2785,22 @@ test("derive_revision accepts only the fixed base and never replaces an existing
 		execute(tool, {
 			action: "derive_revision",
 			resource: "proposal",
-			base: "../matematica_propuesta_CREDA.md",
-			slug: "creda-wrong-base-r37",
+			base: `../${deriveBase}`,
+			slug: "wrong-base-r37",
 			replacements: [replacement],
 		}),
 		/accepts only the fixed base/i,
 	);
 
-	const target = path.join(root, "proposals/research-concept-creda-existing-revision-r38.md");
+	const target = path.join(root, "proposals/research-concept-existing-revision-r38.md");
 	const existing = Buffer.from(`${artifactMarker}# Existing revision\n`, "utf8");
 	await writeFile(target, existing);
 	await assert.rejects(
 		execute(tool, {
 			action: "derive_revision",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
-			slug: "creda-existing-revision-r38",
+			base: deriveBase,
+			slug: "existing-revision-r38",
 			replacements: [replacement],
 		}),
 		/requires a new proposal target.*never replaces/i,
@@ -2794,7 +2811,7 @@ test("derive_revision accepts only the fixed base and never replaces an existing
 test("derive appends the single final pending-obligations section through an unanchored end insertion", async () => {
 	const root = await fixture();
 	const tool = toolFor(root);
-	const target = path.join(root, "proposals/research-concept-creda-pending-r13.md");
+	const target = path.join(root, "proposals/research-concept-pending-r13.md");
 	const anchoredInsertion = "\nAnchored addition.\n";
 	const endInsertion =
 		"\n## Supuestos y obligaciones matemáticas pendientes\n\n- Confirmar la condición de frontera final.\n";
@@ -2802,25 +2819,25 @@ test("derive appends the single final pending-obligations section through an una
 	const result = await execute(tool, {
 		action: "derive",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
-		slug: "creda-pending-r13",
+		base: deriveBase,
+		slug: "pending-r13",
 		insertions: [
 			{ id: "pending-obligations", position: "end", content: endInsertion },
 			{
 				id: "anchored-addition",
-				anchor: "# CREDA base\n",
+				anchor: "# Sediment transport base\n",
 				position: "after",
 				content: anchoredInsertion,
 			},
 		],
 	});
 
-	const normalizedBase = fixedCredaBase
+	const normalizedBase = fixedBase
 		.replace(String.raw`\(x + 1\)`, "$x + 1$")
 		.replace(String.raw`\(\alpha = 2\)`, "$\\alpha = 2$");
 	const expectedCopiedResult = normalizedBase.replace(
-		"# CREDA base\n",
-		`# CREDA base\n${anchoredInsertion}`,
+		"# Sediment transport base\n",
+		`# Sediment transport base\n${anchoredInsertion}`,
 	);
 	const output = await readFile(target, "utf8");
 	assert.equal(output, `${artifactMarker}${expectedCopiedResult}${endInsertion}`);
@@ -2838,7 +2855,7 @@ test("derive rejects multiple, anchored, duplicate, oversized, marker-bearing, a
 	const tool = toolFor(root);
 	const cases = [
 		{
-			slug: "creda-two-ends-r14",
+			slug: "two-ends-r14",
 			insertions: [
 				{ id: "first-end", position: "end", content: "First pending section.\n" },
 				{ id: "second-end", position: "end", content: "Second pending section.\n" },
@@ -2846,11 +2863,11 @@ test("derive rejects multiple, anchored, duplicate, oversized, marker-bearing, a
 			error: /at most one end insertion/i,
 		},
 		{
-			slug: "creda-anchored-end-r15",
+			slug: "anchored-end-r15",
 			insertions: [
 				{
 					id: "anchored-end",
-					anchor: "# CREDA base\n",
+					anchor: "# Sediment transport base\n",
 					position: "end",
 					content: "Pending section.\n",
 				},
@@ -2858,15 +2875,15 @@ test("derive rejects multiple, anchored, duplicate, oversized, marker-bearing, a
 			error: /end insertion.*must not include an anchor/i,
 		},
 		{
-			slug: "creda-duplicate-end-r16",
+			slug: "duplicate-end-r16",
 			insertions: [
 				{ id: "same", position: "end", content: "Pending section.\n" },
-				{ id: "same", anchor: "# CREDA base\n", position: "after", content: "Addition.\n" },
+				{ id: "same", anchor: "# Sediment transport base\n", position: "after", content: "Addition.\n" },
 			],
 			error: /duplicate insertion id/i,
 		},
 		{
-			slug: "creda-marker-end-r17",
+			slug: "marker-end-r17",
 			insertions: [
 				{
 					id: "unsafe-marker",
@@ -2877,7 +2894,7 @@ test("derive rejects multiple, anchored, duplicate, oversized, marker-bearing, a
 			error: /invalid content/i,
 		},
 		{
-			slug: "creda-oversized-end-r18",
+			slug: "oversized-end-r18",
 			insertions: [{ id: "oversized", position: "end", content: "x".repeat(64 * 1024 + 1) }],
 			error: /invalid content/i,
 		},
@@ -2888,7 +2905,7 @@ test("derive rejects multiple, anchored, duplicate, oversized, marker-bearing, a
 			execute(tool, {
 				action: "derive",
 				resource: "proposal",
-				base: "matematica_propuesta_CREDA.md",
+				base: deriveBase,
 				slug: candidate.slug,
 				insertions: candidate.insertions,
 			}),
@@ -2904,7 +2921,7 @@ test("derive rejects multiple, anchored, duplicate, oversized, marker-bearing, a
 		execute(tool, {
 			action: "derive",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
+			base: deriveBase,
 			slug: "../escape-r19",
 			insertions: [{ id: "safe-end", position: "end", content: "Pending section.\n" }],
 		}),
@@ -2918,24 +2935,24 @@ test("derive preserves every base display block and numbered equation byte-for-b
 	await execute(tool, {
 		action: "derive",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
-		slug: "creda-equations-r07",
+		base: deriveBase,
+		slug: "equations-r07",
 		insertions: [
 			{
 				id: "preface",
-				anchor: "# CREDA base\n",
+				anchor: "# Sediment transport base\n",
 				position: "after",
 				content: "\nDerived preface.\n",
 			},
 		],
 	});
 	const output = await readFile(
-		path.join(root, "proposals/research-concept-creda-equations-r07.md"),
+		path.join(root, "proposals/research-concept-equations-r07.md"),
 		"utf8",
 	);
 	const firstBlock = "$$\nE = mc^2.\n\\tag{1}\n$$\n";
 	const secondBlock =
-		"$$\n\\begin{aligned}\na &= b + c\\\\\nd &= e\n\\end{aligned}\n\\label{eq:ksc}\n\\tag{2}\n$$\n";
+		"$$\n\\begin{aligned}\na &= b + c\\\\\nd &= e\n\\end{aligned}\n\\label{eq:settling}\n\\tag{2}\n$$\n";
 	const firstIndex = output.indexOf(firstBlock);
 	const secondIndex = output.indexOf(secondBlock);
 	assert.ok(firstIndex > artifactMarker.length);
@@ -2952,8 +2969,8 @@ test("derive inserts equation anchors only after their complete parsed base disp
 	await execute(tool, {
 		action: "derive",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
-		slug: "creda-equation-anchors-r24",
+		base: deriveBase,
+		slug: "equation-anchors-r24",
 		insertions: [
 			{
 				id: "tag-adaptation",
@@ -2963,7 +2980,7 @@ test("derive inserts equation anchors only after their complete parsed base disp
 			},
 			{
 				id: "align-adaptation",
-				anchor: { equationLabel: "eq:ksc" },
+				anchor: { equationLabel: "eq:settling" },
 				position: "after",
 				content: alignInsertion,
 			},
@@ -2971,12 +2988,12 @@ test("derive inserts equation anchors only after their complete parsed base disp
 	});
 
 	const output = await readFile(
-		path.join(root, "proposals/research-concept-creda-equation-anchors-r24.md"),
+		path.join(root, "proposals/research-concept-equation-anchors-r24.md"),
 		"utf8",
 	);
 	const firstBlock = "$$\nE = mc^2.\n\\tag{1}\n$$\n";
 	const alignBlock =
-		"$$\n\\begin{aligned}\na &= b + c\\\\\nd &= e\n\\end{aligned}\n\\label{eq:ksc}\n\\tag{2}\n$$\n";
+		"$$\n\\begin{aligned}\na &= b + c\\\\\nd &= e\n\\end{aligned}\n\\label{eq:settling}\n\\tag{2}\n$$\n";
 	assert.ok(output.includes(`${firstBlock}${firstInsertion}`));
 	assert.ok(output.includes(`${alignBlock}${alignInsertion}`));
 	assert.equal(output.slice(output.indexOf(alignBlock), output.indexOf(alignBlock) + alignBlock.length), alignBlock);
@@ -2985,41 +3002,41 @@ test("derive inserts equation anchors only after their complete parsed base disp
 test("derive rejects unsafe, unknown, duplicate, ambiguous, non-display, and non-after equation anchors", async () => {
 	const cases = [
 		{
-			slug: "creda-unknown-label-r25",
+			slug: "unknown-label-r25",
 			anchor: { equationLabel: "eq:not-in-fixed-base" },
-			error: /equation label.*unknown.*fixed CREDA base/i,
+			error: new RegExp(`equation label.*unknown.*${baseLabel}`, "i"),
 		},
 		{
-			slug: "creda-duplicate-label-r26",
-			anchor: { equationLabel: "eq:ksc" },
-			mutate: (base) => base.replace("\\tag{1}", "\\label{eq:ksc}\n\\tag{1}"),
+			slug: "duplicate-label-r26",
+			anchor: { equationLabel: "eq:settling" },
+			mutate: (base) => base.replace("\\tag{1}", "\\label{eq:settling}\n\\tag{1}"),
 			error: /equation label.*duplicate or ambiguous/i,
 		},
 		{
-			slug: "creda-outside-label-r27",
+			slug: "outside-label-r27",
 			anchor: { equationLabel: "eq:outside" },
 			mutate: (base) => `${base}\nOutside display \\label{eq:outside}.\n`,
 			error: /equation label.*not within display math/i,
 		},
 		{
-			slug: "creda-ambiguous-equation-r28",
-			anchor: { equationLabel: "eq:ksc", numberedTag: 2 },
+			slug: "ambiguous-equation-r28",
+			anchor: { equationLabel: "eq:settling", numberedTag: 2 },
 			error: /equation anchor.*ambiguous/i,
 		},
 		{
-			slug: "creda-invalid-tag-r29",
+			slug: "invalid-tag-r29",
 			anchor: { numberedTag: 0 },
 			error: /invalid numbered tag selector/i,
 		},
 		{
-			slug: "creda-duplicate-tag-r30",
+			slug: "duplicate-tag-r30",
 			anchor: { numberedTag: 2 },
 			mutate: (base) => base.replace("\\tag{1}", "\\tag{2}"),
 			error: /numbered tag.*duplicate or ambiguous/i,
 		},
 		{
-			slug: "creda-before-equation-r31",
-			anchor: { equationLabel: "eq:ksc" },
+			slug: "before-equation-r31",
+			anchor: { equationLabel: "eq:settling" },
 			position: "before",
 			error: /equation anchor.*only supports position after/i,
 		},
@@ -3028,14 +3045,14 @@ test("derive rejects unsafe, unknown, duplicate, ambiguous, non-display, and non
 	for (const candidate of cases) {
 		const root = await fixture();
 		if (candidate.mutate) {
-			const basePath = path.join(root, "proposals/matematica_propuesta_CREDA.md");
+			const basePath = path.join(root, `proposals/${deriveBase}`);
 			await writeFile(basePath, candidate.mutate(await readFile(basePath, "utf8")), "utf8");
 		}
 		await assert.rejects(
 			execute(toolFor(root), {
 				action: "derive",
 				resource: "proposal",
-				base: "matematica_propuesta_CREDA.md",
+				base: deriveBase,
 				slug: candidate.slug,
 				insertions: [
 					{
@@ -3059,16 +3076,16 @@ test("derive fails closed on missing, non-unique, and display-block-splitting an
 	const root = await fixture();
 	const tool = toolFor(root);
 	const cases = [
-		{ slug: "creda-missing-r08", id: "missing", anchor: "## Not in the base\n", error: /anchor.*missing/i },
-		{ slug: "creda-duplicate-r09", id: "duplicate", anchor: "Repeated prose anchor.", error: /anchor.*not unique/i },
-		{ slug: "creda-split-r10", id: "split", anchor: "E = mc^2.", error: /split a base display-math block/i },
+		{ slug: "missing-r08", id: "missing", anchor: "## Not in the base\n", error: /anchor.*missing/i },
+		{ slug: "duplicate-r09", id: "duplicate", anchor: "Repeated prose anchor.", error: /anchor.*not unique/i },
+		{ slug: "split-r10", id: "split", anchor: "E = mc^2.", error: /split a base display-math block/i },
 	];
 	for (const candidate of cases) {
 		await assert.rejects(
 			execute(tool, {
 				action: "derive",
 				resource: "proposal",
-				base: "matematica_propuesta_CREDA.md",
+				base: deriveBase,
 				slug: candidate.slug,
 				insertions: [
 					{ id: candidate.id, anchor: candidate.anchor, position: "after", content: "\nAddition.\n" },
@@ -3086,32 +3103,32 @@ test("derive fails closed on missing, non-unique, and display-block-splitting an
 test("derive rejects a base with missing display blocks and never replaces an existing revision target", async () => {
 	const damagedRoot = await fixture();
 	await writeFile(
-		path.join(damagedRoot, "proposals/matematica_propuesta_CREDA.md"),
-		"# Damaged CREDA base\n\nInline only \\(x\\).\n",
+		path.join(damagedRoot, `proposals/${deriveBase}`),
+		"# Damaged sediment transport base\n\nInline only \\(x\\).\n",
 		"utf8",
 	);
 	await assert.rejects(
 		execute(toolFor(damagedRoot), {
 			action: "derive",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
-			slug: "creda-damaged-r11",
-			insertions: [{ id: "note", anchor: "# Damaged CREDA base\n", position: "after", content: "note\n" }],
+			base: deriveBase,
+			slug: "damaged-r11",
+			insertions: [{ id: "note", anchor: "# Damaged sediment transport base\n", position: "after", content: "note\n" }],
 		}),
 		/missing its display-math blocks/i,
 	);
 
 	const existingRoot = await fixture();
-	const existingTarget = path.join(existingRoot, "proposals/research-concept-creda-existing-r12.md");
+	const existingTarget = path.join(existingRoot, "proposals/research-concept-existing-r12.md");
 	const existingBytes = Buffer.from(`${artifactMarker}# Existing revision\n`, "utf8");
 	await writeFile(existingTarget, existingBytes);
 	await assert.rejects(
 		execute(toolFor(existingRoot), {
 			action: "derive",
 			resource: "proposal",
-			base: "matematica_propuesta_CREDA.md",
-			slug: "creda-existing-r12",
-			insertions: [{ id: "note", anchor: "# CREDA base\n", position: "after", content: "note\n" }],
+			base: deriveBase,
+			slug: "existing-r12",
+			insertions: [{ id: "note", anchor: "# Sediment transport base\n", position: "after", content: "note\n" }],
 		}),
 		/requires a new proposal target.*never replaces/i,
 	);
@@ -3124,14 +3141,14 @@ test("derive rejects duplicate insertion ids, reserved content, arbitrary bases,
 	const common = {
 		action: "derive",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
-		slug: "creda-validation-r11",
+		base: deriveBase,
+		slug: "validation-r11",
 	};
 	await assert.rejects(
 		execute(tool, {
 			...common,
 			insertions: [
-				{ id: "same", anchor: "# CREDA base\n", position: "after", content: "one\n" },
+				{ id: "same", anchor: "# Sediment transport base\n", position: "after", content: "one\n" },
 				{ id: "same", anchor: "## Unique insertion section\n", position: "after", content: "two\n" },
 			],
 		}),
@@ -3143,7 +3160,7 @@ test("derive rejects duplicate insertion ids, reserved content, arbitrary bases,
 			insertions: [
 				{
 					id: "reserved",
-					anchor: "# CREDA base\n",
+					anchor: "# Sediment transport base\n",
 					position: "after",
 					content: "<!-- proposal-workspace:artifact:v1 -->\n",
 				},
@@ -3151,22 +3168,22 @@ test("derive rejects duplicate insertion ids, reserved content, arbitrary bases,
 		}),
 		/invalid content/i,
 	);
-	for (const base of ["../matematica_propuesta_CREDA.md", "/tmp/matematica_propuesta_CREDA.md", "base.md"]) {
+	for (const base of [`../${deriveBase}`, `/tmp/${deriveBase}`, "base.md"]) {
 		await assert.rejects(
 			execute(tool, {
 				...common,
 				base,
-				insertions: [{ id: "safe", anchor: "# CREDA base\n", position: "after", content: "safe\n" }],
+				insertions: [{ id: "safe", anchor: "# Sediment transport base\n", position: "after", content: "safe\n" }],
 			}),
 			/accepts only the fixed base/i,
 		);
 	}
-	for (const slug of ["../escape-r01", "creda-r1"]) {
+	for (const slug of ["../escape-r01", "r1"]) {
 		await assert.rejects(
 			execute(tool, {
 				...common,
 				slug,
-				insertions: [{ id: "safe", anchor: "# CREDA base\n", position: "after", content: "safe\n" }],
+				insertions: [{ id: "safe", anchor: "# Sediment transport base\n", position: "after", content: "safe\n" }],
 			}),
 			/proposal_workspace blocked:.*slug/i,
 		);
@@ -3616,11 +3633,11 @@ test("accepts lowercase-suffixed numbered tags and rejects malformed tag values"
 		"",
 		...validTags.flatMap((tag, index) => ["$$", `q_${index + 1} = ${index + 1}.`, `\\tag{${tag}}`, "$$", ""]),
 	].join("\n");
-	await writeFile(path.join(validRoot, "proposals/matematica_propuesta_CREDA.md"), validBase, "utf8");
+	await writeFile(path.join(validRoot, `proposals/${deriveBase}`), validBase, "utf8");
 	const validResult = await execute(toolFor(validRoot), {
 		action: "derive",
 		resource: "proposal",
-		base: "matematica_propuesta_CREDA.md",
+		base: deriveBase,
 		slug: "tag-values-valid-r01",
 		insertions: [{ id: "tag-note", position: "end", content: "\nAccepted tags remain valid.\n" }],
 	});
@@ -3630,12 +3647,12 @@ test("accepts lowercase-suffixed numbered tags and rejects malformed tag values"
 	for (const [index, tag] of invalidTags.entries()) {
 		const root = await fixture();
 		const base = `# Invalid tag\n\n$$\nq = 1.\n\\tag{${tag}}\n$$\n`;
-		await writeFile(path.join(root, "proposals/matematica_propuesta_CREDA.md"), base, "utf8");
+		await writeFile(path.join(root, `proposals/${deriveBase}`), base, "utf8");
 		await assert.rejects(
 			execute(toolFor(root), {
 				action: "derive",
 				resource: "proposal",
-				base: "matematica_propuesta_CREDA.md",
+				base: deriveBase,
 				slug: `tag-value-invalid-${index}-r01`,
 				insertions: [{ id: "tag-note", position: "end", content: "\nRejected tag.\n" }],
 			}),
@@ -3646,12 +3663,12 @@ test("accepts lowercase-suffixed numbered tags and rejects malformed tag values"
 	for (const [index, malformed] of [String.raw`\tag{15`, String.raw`\tag 15}`, String.raw`\tag15`].entries()) {
 		const root = await fixture();
 		const base = `# Incomplete tag\n\n$$\nq = 1.\n${malformed}\n$$\n`;
-		await writeFile(path.join(root, "proposals/matematica_propuesta_CREDA.md"), base, "utf8");
+		await writeFile(path.join(root, `proposals/${deriveBase}`), base, "utf8");
 		await assert.rejects(
 			execute(toolFor(root), {
 				action: "derive",
 				resource: "proposal",
-				base: "matematica_propuesta_CREDA.md",
+				base: deriveBase,
 				slug: `tag-braces-invalid-${index}-r01`,
 				insertions: [{ id: "tag-note", position: "end", content: "\nRejected tag.\n" }],
 			}),
