@@ -32,6 +32,10 @@ CLI = SKILL_ROOT / "scripts" / "audit_cli.py"
 USAGE_MD = SKILL_ROOT / "references" / "usage.md"
 PROBES = SKILL_ROOT / "references" / "probes"
 
+# The forge's vocabulary floor, defined in one place beside the suites.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from forge_vocabulary import FORGE_VOCABULARY_FLOOR  # noqa: E402
+
 #: The one file the four derivation helpers below were copied out of. Copied and
 #: not shared: sharing means editing a 75-class suite from inside a change about
 #: a different skill, which is the exact scope creep two archive reports flagged.
@@ -45,14 +49,11 @@ REPORT_HEADER = "| Item | Required content | Rejected when |"
 STAGES_HEADER = "| Stage | Models | Demands |"
 ADJUDICATION_HEADER = "| Adjudication | Means | Remedy |"
 
-#: Words a target owns that the forge is forbidden to borrow — the floor the
-#: derived guard stands on. Being a fixed list, it can only ever hold leaks
-#: somebody already found; that is why the derived rules exist beside it rather
-#: than instead of it, and why a word here may never be admitted to
-#: `FORGE_LEXICON`. Stated once, because two spellings of a floor is how a floor
-#: drifts.
-FORGE_VOCABULARY_FLOOR = ("kaggle", "t4", "ceiling", "ramp", "transfer",
-                          "creda", "milcreda", "latent")
+#: The floor, and the pattern every guard below reads it through, imported from
+#: `tests/forge_vocabulary.py` rather than spelled again here. The floor's own
+#: comment demanded a single spelling from the day it was written and was
+#: nonetheless written twice; `ForgeVocabularyDefinitionTests` is what makes a
+#: second spelling a red instead of a later discovery.
 
 #: Words `skill-audit` owns outright, each with the argument for why. A set would
 #: let this grow by one comma per inconvenient failure; a sentence is something a

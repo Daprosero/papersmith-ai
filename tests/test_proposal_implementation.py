@@ -37,6 +37,11 @@ import impl_availability  # noqa: E402
 import impl_position  # noqa: E402
 import impl_steps  # noqa: E402
 
+# The forge's vocabulary floor, defined in one place beside the suites.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from forge_vocabulary import (  # noqa: E402  (path set above)
+    FORGE_VOCABULARY_FLOOR, leak_pattern, leaks_in)
+
 SKILL_ROOT = CLI.parent.parent
 KIT = SKILL_ROOT / "assets" / "kit"
 PYPROJECT_TEMPLATE = SKILL_ROOT / "assets" / "pyproject.template.toml"
@@ -71,14 +76,11 @@ CACHES = ("__pycache__", ".pytest_cache", ".ipynb_checkpoints")
 BINARY_SUFFIXES = (".pyc", ".pyo", ".png", ".jpg", ".jpeg", ".gif", ".pdf",
                    ".pth", ".npz", ".npy", ".zip", ".ico")
 
-#: Words a target owns that the forge is forbidden to borrow — the floor the
-#: derived guard stands on. Being a fixed list, it can only ever hold leaks
-#: somebody already found; that is why the derived rules exist beside it rather
-#: than instead of it, and why a word here may never be admitted to
-#: `FORGE_LEXICON`. Stated once, because two spellings of a floor is how a floor
-#: drifts.
-FORGE_VOCABULARY_FLOOR = ("kaggle", "t4", "ceiling", "ramp", "transfer",
-                          "creda", "milcreda", "latent")
+#: The floor, and the pattern every guard below reads it through, imported from
+#: `tests/forge_vocabulary.py` rather than spelled again here. The floor's own
+#: comment demanded a single spelling from the day it was written and was
+#: nonetheless written twice; `ForgeVocabularyDefinitionTests` is what makes a
+#: second spelling a red instead of a later discovery.
 
 
 def write_fixture_interpreter(bin_dir):
@@ -5672,6 +5674,84 @@ class NextStepSectionCoverageTests(unittest.TestCase):
         self.assertEqual(dangling, [], f"referenced but never defined: {dangling}")
 
 
+class ForgeVocabularyDefinitionTests(unittest.TestCase):
+    """The floor is written down once, and a second writing is a red.
+
+    The floor's own comment has said "stated once, because two spellings of a
+    floor is how a floor drifts" since the day it was written -- in both of the
+    two files that spelled it. Two byte-identical tuples read as agreement, so
+    there was never a moment where looking at them said anything was wrong.
+    That is the whole failure mode: copies agree right up until one is edited,
+    and the edit that breaks them is the one nobody thinks to make twice.
+
+    Measured, at the moment this test was written: the floor was spelled at
+    `tests/test_proposal_implementation.py:80` and `tests/test_skill_audit.py:54`,
+    byte for byte, and `CopiedHelperFidelityTests.COPIES` -- the mechanism that
+    exists to turn exactly this drift into a red -- locked four FUNCTIONS
+    between those two files and not the constant. A third, partial spelling sat
+    inline in `test_it_names_no_service_or_method_of_its_own`: six of the eight
+    words, and it had already drifted, missing `milcreda` and `latent`. Nothing
+    in the suite could see it, because a shorter list is not a different list to
+    anything that never compares them.
+
+    Not "the copies are equal". That assertion passes on the day a copy is made
+    and goes red only after the drift has shipped, which is one edit too late.
+    This one asserts there is nothing to compare.
+
+    The rule is derived, not a threshold somebody picked: a sequence of string
+    literals that holds MORE THAN HALF the floor is the floor being written
+    down again. A guard that legitimately names a few of these words for its own
+    narrower purpose -- `test_shard_io_source_names_no_service_and_no_domain_term`
+    names three of the eight, for the one module whose job is reading
+    dimension-keyed trees -- is naming words, not restating the floor, and the
+    majority rule is what tells the two apart without a list of exceptions.
+    """
+
+    #: The one module allowed to write the floor down, because it is where the
+    #: floor is defined. Named rather than inferred: "the file that happens to
+    #: contain the biggest copy" would bless whichever copy grew last.
+    DEFINITION = FORGE / "tests" / "forge_vocabulary.py"
+
+    def suite_modules(self):
+        """Every Python module under `tests/`, derived from the directory.
+
+        `*.py` and not `test_*.py`: a copy of the floor parked in a helper
+        module beside the suites is the same drift, and a roster that only
+        looks at files named like suites would not see it.
+        """
+        modules = sorted((FORGE / "tests").glob("*.py"))
+        self.assertGreater(len(modules), 1, "tests/ holds one module or none")
+        return modules
+
+    def literal_word_sequences(self, source):
+        """Every tuple/list/set of string literals in `source`, as word sets."""
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+                continue
+            words = {element.value.strip().lower() for element in node.elts
+                     if isinstance(element, ast.Constant)
+                     and isinstance(element.value, str)}
+            if words:
+                yield node.lineno, words
+
+    def test_the_floor_is_written_down_in_exactly_one_place(self):
+        floor = set(FORGE_VOCABULARY_FLOOR)
+        offenders = []
+        for module in self.suite_modules():
+            if module == self.DEFINITION:
+                continue
+            source = module.read_text(encoding="utf-8")
+            for lineno, words in self.literal_word_sequences(source):
+                shared = words & floor
+                if len(shared) * 2 > len(floor):
+                    offenders.append(
+                        f"{module.name}:{lineno} respells {sorted(shared)}")
+        self.assertEqual(
+            offenders, [],
+            "the floor is written down somewhere other than "
+            f"{self.DEFINITION.name}, so the two can drift apart: {offenders}")
+
+
 class ReportFirstSectionProseTests(unittest.TestCase):
     """The `report-first` section's own examples must stay generic: this is a
     forge for papers, not for one benchmark.
@@ -5756,9 +5836,16 @@ class ReportFirstSectionProseTests(unittest.TestCase):
         return match.group(0).lower()
 
     def test_it_names_no_service_or_method_of_its_own(self):
+        """Read through `leaks_in`, so this walks the whole floor.
+
+        It used to carry its own inline list of six words. Two of the floor's
+        eight — `milcreda` and `latent` — were never in it, so this check had a
+        hole in it that nothing could see, which is the drift
+        `ForgeVocabularyDefinitionTests` now turns into a red.
+        """
         section = self.section_text()
-        for leaked in ("kaggle", "t4", "ceiling", "ramp", "transfer", "creda"):
-            self.assertIsNone(re.search(rf"\b{leaked}\b", section), leaked)
+        self.assertEqual(leaks_in(section), [],
+                         "the report-first section borrows a target's words")
 
     def test_the_whole_forge_borrows_no_repository_s_vocabulary(self):
         """The guard covers every surface, not the paragraph written last.
