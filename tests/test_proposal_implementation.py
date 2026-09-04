@@ -40,7 +40,9 @@ import impl_steps  # noqa: E402
 # The forge's vocabulary floor, defined in one place beside the suites.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from forge_vocabulary import (  # noqa: E402  (path set above)
-    FORGE_VOCABULARY_FLOOR, leak_pattern, leaks_in)
+    FORGE_SERVICE_VOCABULARY, FORGE_TARGET_DOMAIN_WORDS,
+    FORGE_TARGET_PROPER_NOUNS, FORGE_VOCABULARY_FLOOR, DEFINITION_MODULE,
+    leak_pattern, leaks_in, scannable_suite_text, suite_modules)
 
 SKILL_ROOT = CLI.parent.parent
 KIT = SKILL_ROOT / "assets" / "kit"
@@ -5690,9 +5692,9 @@ class ForgeVocabularyDefinitionTests(unittest.TestCase):
     exists to turn exactly this drift into a red -- locked four FUNCTIONS
     between those two files and not the constant. A third, partial spelling sat
     inline in `test_it_names_no_service_or_method_of_its_own`: six of the eight
-    words, and it had already drifted, missing `milcreda` and `latent`. Nothing
-    in the suite could see it, because a shorter list is not a different list to
-    anything that never compares them.
+    words, and it had already drifted, missing one word from each of the two
+    halves the floor is split into. Nothing in the suite could see it, because a
+    shorter list is not a different list to anything that never compares them.
 
     Not "the copies are equal". That assertion passes on the day a copy is made
     and goes red only after the drift has shipped, which is one edit too late.
@@ -5710,16 +5712,11 @@ class ForgeVocabularyDefinitionTests(unittest.TestCase):
     #: The one module allowed to write the floor down, because it is where the
     #: floor is defined. Named rather than inferred: "the file that happens to
     #: contain the biggest copy" would bless whichever copy grew last.
-    DEFINITION = FORGE / "tests" / "forge_vocabulary.py"
+    DEFINITION = DEFINITION_MODULE
 
     def suite_modules(self):
-        """Every Python module under `tests/`, derived from the directory.
-
-        `*.py` and not `test_*.py`: a copy of the floor parked in a helper
-        module beside the suites is the same drift, and a roster that only
-        looks at files named like suites would not see it.
-        """
-        modules = sorted((FORGE / "tests").glob("*.py"))
+        """The shared roster, with the one thing a roster must never be: empty."""
+        modules = suite_modules()
         self.assertGreater(len(modules), 1, "tests/ holds one module or none")
         return modules
 
@@ -5839,9 +5836,9 @@ class ReportFirstSectionProseTests(unittest.TestCase):
         """Read through `leaks_in`, so this walks the whole floor.
 
         It used to carry its own inline list of six words. Two of the floor's
-        eight — `milcreda` and `latent` — were never in it, so this check had a
-        hole in it that nothing could see, which is the drift
-        `ForgeVocabularyDefinitionTests` now turns into a red.
+        eight were never in it, so this check had a hole nothing could see,
+        which is the drift `ForgeVocabularyDefinitionTests` now turns into a
+        red.
         """
         section = self.section_text()
         self.assertEqual(leaks_in(section), [],
@@ -5955,29 +5952,120 @@ class ReportFirstSectionProseTests(unittest.TestCase):
                 f"# the record lands in {self.PLANTED}s.json"),
             {"scripts/leaky.py": [self.PLANTED]})
 
-    def test_the_tests_stay_unguarded_and_it_is_measured(self):
-        """Why the widening stops at `scripts/`.
+    def guarded_suites(self):
+        """The forge's own suite, as a guarded surface — split by word.
 
-        `remote-execution` ships an adapter for one hosted service, so the suite
-        that tests it names that service constantly and legitimately. Guarding
-        `tests/` would mean exempting the file that most needs its vocabulary,
-        which is not a guard. Measured rather than asserted, so the day the
-        number goes to zero somebody can reconsider.
+        The widening used to stop at `scripts/`, and the reason it gave was
+        entirely about ONE word: `remote-execution` ships an adapter for one
+        hosted service, so the suite that tests it names that service
+        constantly and legitimately. Guarding `tests/` wholesale would mean
+        exempting the file that most needs its vocabulary, which is not a
+        guard.
+
+        Every word of that is true, and it is an argument for exempting a WORD,
+        not a TREE. A hosted service is something any research project could
+        rent; the name of one project's product is not. The whole suite tree
+        went unscanned because one word in one file needed an exemption, and
+        the words no file needs went unscanned with it. The test that stated
+        the exemption said as much itself — "measured rather than asserted, so
+        the day the number goes to zero somebody can reconsider" — and both
+        measurements below are kept, because both exemptions are still real and
+        both still cost something.
+
+        The split is declared where the floor is, in `tests/forge_vocabulary.py`,
+        with the argument for each half beside it.
         """
-        suite_root = FORGE / "tests"
-        self.assertEqual(
-            [str(path) for path in self.guarded_documents()
-             if suite_root in path.parents], [],
-            "the forge's own suite is not a guarded surface")
+        return suite_modules()
 
-        suite = suite_root / "test_remote_execution.py"
+    def test_a_target_s_proper_nouns_do_not_reach_the_forge_s_own_suite(self):
+        """The half of the floor that has no legitimate use anywhere.
+
+        These words mean nothing in ordinary English, so there is no usage to
+        weigh against the guard: every hit is a leak. This is the assertion the
+        tree-shaped exemption was hiding, and it had real work to do the day it
+        was written — the suites carried a target's product name in prose in
+        three separate files, describing one project's spellings as if they
+        were neutral illustration.
+        """
+        for module in self.guarded_suites():
+            with self.subTest(module=module.name):
+                hits = leaks_in(
+                    scannable_suite_text(module.read_text(encoding="utf-8")),
+                    FORGE_TARGET_PROPER_NOUNS)
+                self.assertEqual(
+                    hits, [],
+                    f"{hits} names a target the forge is not allowed to know")
+
+    def test_the_guard_s_own_machinery_is_exempt_by_its_shape(self):
+        """The mechanism has to be able to name what it forbids.
+
+        Proven on two modules built for it rather than on the suite as it
+        stands, and one line apart: the same word quoted alone is the guard
+        naming it, and the same word in a comment is a leak. A checkout that
+        happens to be clean today would prove only the first half, and an
+        exemption that let the second half through would be a guard that
+        cannot fail.
+
+        Neither string below spells a word: both take it from the floor, which
+        is the same rule the planted-leak fixtures follow, and the reason this
+        test is not itself the thing it forbids.
+        """
+        word = FORGE_TARGET_PROPER_NOUNS[0]
+        named = f'WATCHED = ("{word}",)\n'
+        self.assertEqual(
+            leaks_in(scannable_suite_text(named), FORGE_TARGET_PROPER_NOUNS), [],
+            "a word quoted alone is the guard naming it, not a leak")
+        used = f'WATCHED = ("{word}",)\n# one {word} run wrote this\n'
+        self.assertEqual(
+            leaks_in(scannable_suite_text(used), FORGE_TARGET_PROPER_NOUNS),
+            [word],
+            "quoting one line above does not buy the next line an exemption")
+
+    def test_the_service_vocabulary_stays_exempt_here_and_it_is_measured(self):
+        """The original exemption, kept, and kept measured.
+
+        The skill under test ships an adapter for one hosted service; its suite
+        names that service hundreds of times, and every one of them is the
+        suite doing its job. The day this number goes to zero the service half
+        can join the guarded half.
+        """
+        suite = FORGE / "tests" / "test_remote_execution.py"
         self.assertTrue(suite.is_file())
-        occurrences = len(re.findall(
-            r"\bkaggle\b", suite.read_text(encoding="utf-8").lower()))
+        text = suite.read_text(encoding="utf-8").lower()
+        occurrences = sum(len(leak_pattern(word).findall(text))
+                          for word in FORGE_SERVICE_VOCABULARY)
         self.assertGreater(
             occurrences, 100,
-            "one test file names the service hundreds of times because the "
-            "skill under test ships an adapter for it")
+            "the adapter's own suite no longer names the service it adapts, "
+            "so the exemption that spared it has nothing left to spare")
+
+    def test_the_domain_words_stay_exempt_here_and_it_is_measured(self):
+        """The new exemption, measured on exactly the same terms.
+
+        A target's science words are also ordinary English, and the suites use
+        them as ordinary English: a bulk download whose size a remote job
+        decides, git's own word for what a `fetch --dry-run` still moves, a
+        bound in seconds on one subprocess. Guarding them here would fail that
+        usage rather than catch a leak.
+
+        The module that DECLARES the split is excluded from the count. It
+        argues for the exemption in prose, so counting it would let this
+        measurement be satisfied by its own justification — a measurement that
+        can only ever agree with itself.
+        """
+        found = {}
+        for module in self.guarded_suites():
+            if module == DEFINITION_MODULE:
+                continue
+            hits = leaks_in(
+                scannable_suite_text(module.read_text(encoding="utf-8")),
+                FORGE_TARGET_DOMAIN_WORDS)
+            if hits:
+                found[module.name] = hits
+        self.assertNotEqual(
+            found, {},
+            "no suite uses a domain word as ordinary English any more, so "
+            "nothing is being spared and these words can be guarded here too")
 
 
 class MaterializeBenchmarkDeclarationTests(unittest.TestCase):

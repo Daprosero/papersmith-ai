@@ -768,12 +768,13 @@ class AccountVocabularyLeakTests(unittest.TestCase):
     machine that never authenticated one.
 
     Past the literal usernames, this generalizes the same way
-    `TargetVocabularyLeakTests` generalized `creda` past its exact spelling
+    `TargetVocabularyLeakTests` generalized a target's product name past its
+    exact spelling
     — but only when the generalization is corroborated by the store itself.
     Two or more stored usernames that share a digit-stripped stem (`Trayec-
     toria51` and `Trayectoria50` both stem to `Trayectoria`) prove that the
     stem is the human-meaningful, reused part, the same way multiple real
-    spellings of one product proved `creda` was. A singleton account's stem
+    spellings of one product proved that one was. A singleton account's stem
     is deliberately NOT added on its own — `Diego9901` stems to `Diego`, a
     common first name, and banning it unconditionally would flag ordinary
     prose (a citation, an example name) that has nothing to do with this

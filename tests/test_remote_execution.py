@@ -12937,8 +12937,8 @@ class UndeclaredReadDetectionTests(unittest.TestCase):
     fails with `KeyError` on the very first call.
 
     Fixture module/package names deliberately avoid every string in
-    `TargetVocabularyLeakTests.TARGET_LITERALS`
-    (`creda`/`mnist`/`usps`/`svhn`) — `pkg_a` through `pkg_l` instead.
+    `TargetVocabularyLeakTests.TARGET_LITERALS`, which is the one place this
+    suite writes those names down — `pkg_a` through `pkg_l` instead.
     Expected values are written as the literal relative-posix string an
     operator would type into `--clone-path`, never recomputed by
     re-invoking `resolve_clone_paths()` on itself.
@@ -16792,17 +16792,18 @@ class TargetVocabularyLeakTests(unittest.TestCase):
     """The `*_module_names_no_service` family above (eight tests) forbids
     naming a SERVICE outside `adapters/kaggle.py`. Nothing forbade naming a
     TARGET repository's own product, and that gap is exactly how two
-    mentions of `MIL_CREDA_Benchmark` — this forge's real target package —
-    reached `jobfolder.py` unnoticed: every existing guard above was blind
-    to that literal, since none of them looked for it.
+    mentions of one target's real benchmark package reached `jobfolder.py`
+    unnoticed: every existing guard above was blind to that literal, since
+    none of them looked for it.
 
     Scoped to the literal that actually leaked, generalized past its exact
-    spelling — `CREDA`, `MIL-CREDA`, `MIL_CREDA_Benchmark` and `MilCreda`
-    all share the substring `creda`, so any casing or punctuation variant
-    is caught, not only the one string seen today — plus this forge's real
+    spelling — the four spellings that product wears across this forge's
+    history (upper-cased, hyphenated, suffixed and camel-cased) all reduce
+    to the one lowercase stem below, so any casing or punctuation variant is
+    caught, not only the one string seen today — plus this forge's real
     target dataset names, added on the same reasoning even though none has
     leaked yet: proper nouns with no ordinary-English collision, exactly
-    like `creda`.
+    like that stem.
 
     Deliberately NOT extended to generic ML/benchmark vocabulary (`epoch`,
     `seed`, `checkpoint`, `arm`, `transfer`, `ceiling`): this skill's own
