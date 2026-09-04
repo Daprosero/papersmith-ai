@@ -1748,7 +1748,13 @@ python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py ste
 Runs exactly one step per call — no flag sequences or dispatches more than
 one, and this never consults `probe`'s `nextStep`. Refuses `DIRTY_WORKTREE`
 before any subprocess spawns (a step mutates the target, same guard
-`plan`/`apply` already call); `STEPS_UNDECLARED` when the target's
+`plan`/`apply` already call). When the ledger's latest `step` event is a
+bare `started`, that refusal's published question says so: it names the
+step that was killed, when it started, that what it left behind is partial
+product a re-run does not resume, and it publishes `git clean -nd` — a dry
+run listing exactly which untracked paths a cleanup would remove, removing
+none of them. Which of them are the dead run's leftovers stays the
+operator's reading; the engine never authors the removal. Also refuses `STEPS_UNDECLARED` when the target's
 `__steps__` names nothing at all, `STEP_UNKNOWN` when it names something and
 `--step` is not one of them, `STEP_MALFORMED` when the named entry is
 missing `module` or `function`; `INTERPRETER_ABSENT` when the target has no

@@ -7279,6 +7279,27 @@ def _record_shape_detail(items: list[dict], records: dict) -> str | None:
             "is a declaration nobody can measure against.")
 
 
+def _ledger_step_events(events: list[dict]) -> list[dict]:
+    """Every `kind: "step"` event in `events`, in ledger order.
+
+    THE one place in this file that selects the `kind: "step"` ledger line,
+    and the reason it is a function rather than a comprehension twice: the
+    suite pins that selection to exactly one site (design mechanism 2 --
+    "every `gate` consumer still selects on the exact string `gate`, and this
+    ledger line stays invisible to them"). Two readers legitimately need the
+    same events -- `_step_verdicts`, folding evidence for the `@step`
+    witness, and `_abandoned_step`, telling a dirty tree caused by a killed
+    step from an ordinary one -- and a second literal selection beside the
+    first is indistinguishable, to any scanner, from an accidental third.
+
+    `event.get("step")` is part of the selection, not a separate filter: an
+    event carrying no step name identifies no step, and every caller here
+    keys by that name.
+    """
+    return [event for event in events
+            if event.get("kind") == "step" and event.get("step")]
+
+
 def _step_verdicts(target: Path, name: str) -> dict:
     """`evidence["stepVerdicts"]` for every caller that reads an `@step`
     witness -- `_position_write_evidence`, `cmd_probe`'s inline dict, and
@@ -7322,8 +7343,7 @@ def _step_verdicts(target: Path, name: str) -> dict:
     """
     events = impl_position.read_events(
         target / name / ".implementation" / "position.jsonl")
-    step_events = [event for event in events
-                  if event.get("kind") == "step" and event.get("step")]
+    step_events = _ledger_step_events(events)
     if not step_events:
         return {}
     latest: dict[str, dict] = {}
@@ -13111,6 +13131,37 @@ def _refusal_git_command(args, *parts: str) -> str:
                     ("git", "-C", str(getattr(args, "target", "")), *parts))
 
 
+def _abandoned_step(args) -> dict | None:
+    """The `step` run that started and never reported, or `None`.
+
+    Read from the ledger's own shape rather than from anything a target
+    declares: `cmd_step` writes `outcome: "started"` before its subprocess
+    spawns and a terminal event once it reports, so the LATEST `kind: "step"`
+    event being a bare `started` is exactly the state "a step was killed
+    partway through" and nothing else. A ledger whose latest step event is
+    terminal answers `None` here even when an earlier run was abandoned --
+    that earlier partial has already been superseded by a run that reported.
+
+    Nothing raises on the way out, `_position_attained_level`'s own rule: a
+    resolution that failed while being built would cost the reader both it and
+    the refusal it explains.
+    """
+    try:
+        target = Path(str(getattr(args, "target", "")))
+        name = str(getattr(args, "name", ""))
+        events = impl_position.read_events(
+            target / name / ".implementation" / "position.jsonl")
+    except Exception:
+        # A path that will not resolve, a ledger line that will not parse.
+        # Either way the diagnosis below is simply not offered; the refusal
+        # it would have decorated is published unchanged.
+        return None
+    steps = _ledger_step_events(events)
+    if steps and steps[-1].get("outcome") == "started":
+        return steps[-1]
+    return None
+
+
 def _resolve_dirty_worktree(args) -> dict:
     """The code from the incident that widened this roster. `step` refused it
     mid-flow with nothing published, and the agent driving the CLI invented
@@ -13122,11 +13173,41 @@ def _resolve_dirty_worktree(args) -> dict:
     is a reading of the tree nobody here can take -- and a commit needs a
     message this file must never write. So the tree is published (git's own
     listing, runnable) and the decision is asked.
+
+    **Two questions, because the tree is dirty for two different reasons and
+    only one of them is work.** The measured incident: a campaign step was
+    killed by a timeout at 48 runs of 60, leaving an unsealed shard behind;
+    the next command refused this code, and the operator had to work out on
+    their own that the tree was dirty BECAUSE a step had died, that the
+    product was partial rather than finished, and that a relaunch would not
+    resume it. Every one of those facts is in this skill's own ledger
+    (`_abandoned_step`), so when it is there the question names the step,
+    says the product is partial, and publishes `git clean -nd` -- a DRY RUN,
+    listing exactly what a cleanup would remove and removing nothing. The
+    engine still never authors the removal itself: which of those paths is
+    salvage and which is debris is the same reading it cannot take above.
     """
+    listing = _refusal_git_command(args, "status", "--porcelain")
+    abandoned = _abandoned_step(args)
+    if abandoned is not None:
+        return _refusal_question(
+            args, "the target's working tree carries uncommitted or untracked "
+                  "changes, and this skill never mutates a dirty repository. "
+                  f"The ledger says why: step {abandoned.get('step')!r} "
+                  f"({abandoned.get('callable')}) started at "
+                  f"{abandoned.get('at')} and never recorded an outcome, so "
+                  "it was killed partway through and what it left behind is "
+                  "PARTIAL product, not finished product -- re-running the "
+                  "step does not resume it, so the partial has to go before "
+                  "it can be run again. `" + listing + "` lists the tree and "
+                  "`" + _refusal_git_command(args, "clean", "-nd")
+                  + "` dry-runs exactly which untracked paths a cleanup would "
+                    "remove, without removing any of them. Which of them is "
+                    "that dead run's leftovers, and why?")
     return _refusal_question(
         args, "the target's working tree carries uncommitted or untracked "
               "changes, and this skill never mutates a dirty repository -- "
-              "`" + _refusal_git_command(args, "status", "--porcelain")
+              "`" + listing
               + "` lists them. Commit what belongs in the history and stash "
                 "or drop the rest now, or record why the tree stays dirty, "
                 "and why?")

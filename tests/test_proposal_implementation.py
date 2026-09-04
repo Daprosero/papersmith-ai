@@ -22770,16 +22770,22 @@ class StepCommandTests(unittest.TestCase):
         """Design mechanism 2, corrected: every `gate` consumer still
         selects on the exact string "gate", and this ledger line remains
         invisible to `remote_cli.py` and to `impl_position.py` entirely.
-        `implementation_cli.py` now carries exactly ONE legitimate
-        `kind == "step"` reader -- `_step_verdicts` (spec "Step Verdicts
-        Are Assembled By The Caller"), whose whole job is folding those
-        events into `stepVerdicts` for the `@step` witness. The original,
+        `implementation_cli.py` now carries exactly ONE selection of that
+        ledger kind, and it lives in `_ledger_step_events`. The original,
         blanket "nowhere" was correct only until a witness kind that reads
-        this ledger's own events was ever added; this asserts the narrower,
-        still-true claim instead of a claim this change was always going to
-        have to break: the selection is pinned to exist inside
-        `_step_verdicts` and nowhere else, so a future accidental second
-        reader is still caught."""
+        this ledger's own events was ever added; a later revision pinned it
+        inside `_step_verdicts`, and a second legitimate reader
+        (`_abandoned_step`, telling a dirty tree caused by a killed step
+        from an ordinary one) made even that too narrow. Pinning the
+        SELECTION rather than its one caller keeps the strong form of the
+        claim: however many readers need those events, there is one place
+        that decides what "a step event" is, and a future accidental
+        second selection anywhere in this file is still caught.
+
+        Both legitimate readers are asserted to go through it by name, so
+        a reader that re-derives the selection under a different spelling
+        (`.get("kind") in {"step"}`, say) fails this test at the caller
+        assertion even where the regex above cannot see it."""
         pattern = re.compile(r'kind[\'"]?\s*\)?\s*==\s*[\'"]step[\'"]')
         remote_source = (FORGE / ".claude" / "skills" / "remote-execution"
                          / "scripts" / "remote_cli.py").read_text(encoding="utf-8")
@@ -22794,15 +22800,26 @@ class StepCommandTests(unittest.TestCase):
             "exactly one reader may select on kind == \"step\": "
             "_step_verdicts, folding evidence for the @step witness")
         tree = ast.parse(impl_source)
-        step_verdicts_def = next(
+        selector_def = next(
             node for node in ast.walk(tree)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == "_step_verdicts")
+            and node.name == "_ledger_step_events")
         hit_line = impl_source[:hits[0].start()].count("\n") + 1
         self.assertTrue(
-            step_verdicts_def.lineno <= hit_line <= step_verdicts_def.end_lineno,
-            f"the kind == \"step\" selection moved outside _step_verdicts "
+            selector_def.lineno <= hit_line <= selector_def.end_lineno,
+            f"the step-kind selection moved outside _ledger_step_events "
             f"(now at line {hit_line})")
+
+        callers = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for inner in ast.walk(node):
+                if (isinstance(inner, ast.Call)
+                        and isinstance(inner.func, ast.Name)
+                        and inner.func.id == "_ledger_step_events"):
+                    callers.add(node.name)
+        self.assertEqual(callers, {"_step_verdicts", "_abandoned_step"})
 
 
 class CmdStepDigestTests(unittest.TestCase):
@@ -25716,6 +25733,88 @@ class GatingRefusalRosterTests(unittest.TestCase):
         self.assertIn("stash", resolution["question"])
         self.assertIn("discuss", resolution["command"])
         self.assertEqual(leaks_in(resolution["question"]), [])
+
+    def _ledger_box(self, events):
+        """A throwaway product folder carrying one `.implementation/
+        position.jsonl`. Only the ledger matters here: `_abandoned_step`
+        reads nothing else, and the refusal being decorated has already
+        been raised by the time a resolution is built."""
+        root = Path(tempfile.mkdtemp(prefix=f"forgeabandon{os.getpid()}"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        path = root / "Method" / ".implementation" / "position.jsonl"
+        path.parent.mkdir(parents=True)
+        path.write_text("".join(json.dumps(e) + "\n" for e in events),
+                        encoding="utf-8")
+        return root
+
+    @staticmethod
+    def _step_event(outcome, at, **extra):
+        return {"kind": "step", "step": "campaign",
+                "callable": "Method_Benchmark.steps.run_campaign",
+                "outcome": outcome, "at": at, **extra}
+
+    def test_a_dirty_tree_after_a_killed_step_says_the_product_is_partial(self):
+        """The measured incident: a campaign step was killed by a timeout at
+        48 runs of 60, the next command refused `DIRTY_WORKTREE`, and the
+        operator had to work out on their own that the tree was dirty
+        BECAUSE a step had died, that the leftovers were partial rather than
+        finished, and that a relaunch would not resume them.
+
+        Every one of those facts is in this skill's own ledger, so the
+        published question carries them: the step's name, when it started,
+        that the product is partial, that re-running does not resume it, and
+        a `git clean -nd` DRY RUN listing exactly what a cleanup would
+        remove without removing any of it."""
+        root = self._ledger_box([
+            self._step_event("started", "2026-09-04T09:00:00Z")])
+        resolution = impl.refusal_resolution(
+            "DIRTY_WORKTREE", self._args(command="step", target=str(root)))
+        question = resolution["question"]
+        self.assertEqual(resolution["kind"], "question")
+        self.assertIn("'campaign'", question)
+        self.assertIn("2026-09-04T09:00:00Z", question)
+        self.assertIn("PARTIAL", question)
+        self.assertIn("does not resume", question)
+        self.assertIn(f"git -C {root} clean -nd", question)
+        self.assertIn(f"git -C {root} status --porcelain", question)
+        self.assertEqual(leaks_in(question), [])
+
+    def test_a_dirty_tree_after_a_step_that_reported_claims_no_killed_step(self):
+        """The half a one-sided test cannot see. `_abandoned_step` answers
+        only when the LATEST step event is a bare `started`; a ledger that
+        holds an abandoned run and then a run that REPORTED describes a
+        partial that has already been superseded, and claiming a dead run
+        there would send the operator hunting for leftovers that are not
+        leftovers.
+
+        The mutation this locks against, which the test above survives:
+        `any(event["outcome"] == "started" for event in steps)` instead of
+        reading the last one. Both ledgers below then produce the killed-step
+        diagnosis, and only this test notices."""
+        root = self._ledger_box([
+            self._step_event("started", "2026-09-04T09:00:00Z"),
+            self._step_event("returned", "2026-09-04T09:10:00Z",
+                             exitStatus=0, suiteDigest="0" * 64),
+        ])
+        resolution = impl.refusal_resolution(
+            "DIRTY_WORKTREE", self._args(command="step", target=str(root)))
+        question = resolution["question"]
+        self.assertNotIn("PARTIAL", question)
+        self.assertNotIn("campaign", question)
+        self.assertIn("Commit what belongs in the history", question)
+        self.assertIn(f"git -C {root} status --porcelain", question)
+
+    def test_a_ledger_with_no_step_event_keeps_the_plain_dirty_tree_question(self):
+        """A dirty tree with no `step` event behind it at all -- `apply` or
+        `materialize` refusing on somebody's uncommitted edit -- must keep
+        the question it always had, with no diagnosis invented for it."""
+        root = self._ledger_box([
+            {"kind": "gate", "jobName": "job", "at": "2026-09-04T09:00:00Z"}])
+        resolution = impl.refusal_resolution(
+            "DIRTY_WORKTREE", self._args(command="step", target=str(root)))
+        self.assertNotIn("PARTIAL", resolution["question"])
+        self.assertIn("Commit what belongs in the history",
+                      resolution["question"])
 
     def test_position_disagrees_publishes_the_notebook_re_execution(self):
         """The code from the incident, and the one resolution named in the
