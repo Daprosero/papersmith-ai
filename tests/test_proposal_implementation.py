@@ -5864,11 +5864,10 @@ class ReportFirstSectionProseTests(unittest.TestCase):
         """
         for document in self.guarded_documents():
             with self.subTest(document=str(document.relative_to(self.SKILL_ROOT))):
-                text = self.scannable_text(document)
-                for leaked in FORGE_VOCABULARY_FLOOR:
-                    self.assertIsNone(
-                        re.search(rf"\b{leaked}\b", text),
-                        f"{leaked!r} is some target's vocabulary, not the forge's")
+                hits = leaks_in(self.scannable_text(document))
+                self.assertEqual(
+                    hits, [],
+                    f"{hits} is some target's vocabulary, not the forge's")
 
     def test_the_guard_scans_the_scripts_this_forge_ships(self):
         """The surface that changes most often was the one never scanned.
@@ -5888,12 +5887,19 @@ class ReportFirstSectionProseTests(unittest.TestCase):
         self.assertTrue(expected, "the forge ships no scripts, which cannot be")
         self.assertEqual(sorted(expected - scanned), [])
 
-    def test_a_leak_into_a_script_is_caught(self):
-        """Proven against a tree built for it, not against a clean checkout.
+    #: The word the planted-leak fixtures below plant, taken from the floor
+    #: rather than spelled. A fixture that exists to demonstrate a leak must not
+    #: be one: the suite these fixtures live in is a guarded surface too, and a
+    #: fixture that respelled a target's word could only be let through by line
+    #: number — a list that goes stale on the next edit above it.
+    PLANTED = FORGE_VOCABULARY_FLOOR[0]
 
-        A guard that passes because nothing is wrong today has not been shown to
-        do anything. This builds the forge's shape, plants one leak in a script
-        and one in a comment, and reads what the guard would scan.
+    def caught_in_a_forge_shaped_tree(self, comment):
+        """Build the forge's shape, plant `comment` in one script of two, and
+        report what the guard catches, keyed by path.
+
+        Two scripts and not one, so a guard that reported every file it looked
+        at would be told apart from a guard that reported the file that leaks.
         """
         base = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, base, ignore_errors=True)
@@ -5903,17 +5909,51 @@ class ReportFirstSectionProseTests(unittest.TestCase):
         (base / "SKILL.md").write_text("Generic doctrine.\n", encoding="utf-8")
         (base / "references" / "usage.md").write_text("Generic.\n", encoding="utf-8")
         (base / "scripts" / "leaky.py").write_text(
-            "# reached only by the ramp\nVALUE = 1\n", encoding="utf-8")
+            f"{comment}\nVALUE = 1\n", encoding="utf-8")
         (base / "scripts" / "clean.py").write_text("VALUE = 2\n", encoding="utf-8")
 
         caught = {}
         for document in self.guarded_documents(base):
-            text = self.scannable_text(document)
-            hits = [word for word in FORGE_VOCABULARY_FLOOR
-                    if re.search(rf"\b{word}\b", text)]
+            hits = leaks_in(self.scannable_text(document))
             if hits:
                 caught[str(document.relative_to(base))] = hits
-        self.assertEqual(caught, {"scripts/leaky.py": ["ramp"]})
+        return caught
+
+    def test_a_leak_into_a_script_is_caught(self):
+        """Proven against a tree built for it, not against a clean checkout.
+
+        A guard that passes because nothing is wrong today has not been shown to
+        do anything. This builds the forge's shape, plants one leak in a script,
+        and reads what the guard would scan.
+        """
+        self.assertEqual(
+            self.caught_in_a_forge_shaped_tree(
+                f"# reached only by the {self.PLANTED}"),
+            {"scripts/leaky.py": [self.PLANTED]})
+
+    def test_a_pluralised_leak_into_a_script_is_caught(self):
+        """A leak arrives in the plural more often than in the singular.
+
+        A word on the floor names a thing, and a thing gets counted and gets
+        written to a file: the artefact a target's search leaves behind is
+        `<word>s.json`, and the sentence that leaks is "how many <word>s there
+        are". `\\b<word>\\b` matches neither, so the guard read clean over
+        exactly the spelling a leak is likeliest to wear. Measured, by
+        execution, before this test existed:
+
+            \\bceiling\\b   vs 'ceilings.json' -> no match
+            \\bceilings?\\b vs 'ceilings.json' -> match
+
+        This is the lock and not the pattern string: asserting that
+        `leak_pattern` spells `s?` would pass on any regex containing those two
+        characters and says nothing about what the guard does with a document.
+        `remote-execution`'s own `shard_io` guard has spelled it `s?` since it
+        was written, for this reason; the rule was never carried across to here.
+        """
+        self.assertEqual(
+            self.caught_in_a_forge_shaped_tree(
+                f"# the record lands in {self.PLANTED}s.json"),
+            {"scripts/leaky.py": [self.PLANTED]})
 
     def test_the_tests_stay_unguarded_and_it_is_measured(self):
         """Why the widening stops at `scripts/`.

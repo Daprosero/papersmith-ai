@@ -429,7 +429,7 @@ def _shadowed_names(tree: ast.Module) -> set[str]:
 
 # ---------------------------------------------------------------------------
 # Cross-module attribute resolution (Unit 2) — `module.CONSTANT` reads
-# (`config.CEILINGS_RECORD.read_text()`, `harness.py:784`). Chosen as
+# (`config.<RECORD>.read_text()`, read from a target's own harness). Chosen as
 # LAZY-FOLD-ON-DEMAND, not two-pass: `_classify_import()` (already reused
 # unchanged) resolves a dotted module name to a file purely from the
 # filesystem, independent of anything the walk's own queue has visited —
@@ -783,7 +783,7 @@ def _scan_read_call_sites(
 ) -> tuple[set[Path], list[str], set[Path]]:
     """Walk every `ast.Call` in `tree` once, classifying each one against
     the read/write/neutral roster (design decision 6). `source`/`cache`
-    (Unit 2), when given, let a receiver such as `config.CEILINGS_RECORD`
+    (Unit 2), when given, let a receiver such as `config.<RECORD>`
     fold through `_fold_path_expr()`'s cross-module branch — `imports`
     (`_import_alias_map()`) is computed fresh from THIS `tree`, same
     reasoning as `_fold_module_constants()`.

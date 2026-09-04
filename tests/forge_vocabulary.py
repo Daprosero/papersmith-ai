@@ -40,8 +40,20 @@ def leak_pattern(word: str) -> re.Pattern:
     `harm` and `alarm`, and a guard that fails on an innocent word is a guard
     the next contributor deletes rather than reads — which leaves the boundary
     it protects with nothing watching it at all.
+
+    The optional plural is not a nicety. A word on the floor names a thing, and
+    a thing gets counted and gets written to a file, so a leak arrives as
+    `<word>s.json` or as "how many <word>s there are" far more often than as
+    the bare singular. Measured, by execution:
+
+        \\bceiling\\b   vs 'ceilings.json' -> no match
+        \\bceilings?\\b vs 'ceilings.json' -> match
+
+    `remote-execution`'s `test_shard_io_source_names_no_service_and_no_domain_term`
+    has spelled it `s?` since it was written; the rule had never been carried
+    to the guard that scans the kit, which is the surface a leak ships from.
     """
-    return re.compile(rf"\b{re.escape(word)}\b")
+    return re.compile(rf"\b{re.escape(word)}s?\b")
 
 
 def leaks_in(text: str, words=FORGE_VOCABULARY_FLOOR) -> list[str]:

@@ -922,7 +922,7 @@ executable — no test in this suite reaches the network or a real account).
   **The generation-deadlock CRITICAL, and why `producedReadsNotDeclared`
   exists.** A job whose own purpose is to PRODUCE a file it also reads
   back (a resumable record, exactly the real target's
-  `config.CEILINGS_RECORD` shape: written by `search_record()`'s own run,
+  `config.<RECORD>` shape: written by `search_record()`'s own run,
   read back by a later one) could not be generated at all under Unit 1 +
   Unit 2 alone: leaving the read undeclared refused unconditionally via
   `computedReadsNotDeclared` (no hatch); declaring it as the file or its
@@ -1025,14 +1025,14 @@ executable — no test in this suite reaches the network or a real account).
   than this. All five of one real target's `shard_paths()` consumers are
   write-first: `write_shard_stamp` writes; `seal_shard_stamp` reads back
   what it just wrote; `_partial_path` takes the static branch;
-  `search_ceilings` reads a resume artifact a prior run of the same shard
+  `<search_entrypoint>` reads a resume artifact a prior run of the same shard
   wrote (this one becomes an `unresolvedReads` entry, not a silent miss);
   `campaign`/`smoke` `mkdir` then open for writing.
 
   **Cross-module attribute reads (Unit 2).** `sibling.CONSTANT.read_text()`
   — a constant folded in a DIFFERENT file than the one doing the read
   (the real, cited target's own `search_record()` reading
-  `config.CEILINGS_RECORD.read_text()`, the constant folded in `config.py`
+  `config.<RECORD>.read_text()`, the constant folded in `config.py`
   rather than the file calling it) — now resolves too. Chosen as
   LAZY-FOLD-ON-DEMAND, not two-pass: `_resolve_module_constant()` reuses
   `_classify_import()` UNCHANGED (the same function import classification
