@@ -309,7 +309,7 @@ class AppendTests(unittest.TestCase):
 
     def test_append_writes_a_gitignore_the_first_time_it_creates_the_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            ledger_dir = Path(tmp) / "repo" / "MIL-CREDA" / ".remote-execution"
+            ledger_dir = Path(tmp) / "repo" / "FEM-TOLLA" / ".remote-execution"
             path = ledger_dir / "ledger.jsonl"
             self.assertFalse(ledger_dir.exists())
 
@@ -321,7 +321,7 @@ class AppendTests(unittest.TestCase):
 
     def test_append_never_overwrites_an_existing_gitignore_in_that_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            ledger_dir = Path(tmp) / "repo" / "MIL-CREDA" / ".remote-execution"
+            ledger_dir = Path(tmp) / "repo" / "FEM-TOLLA" / ".remote-execution"
             ledger_dir.mkdir(parents=True)
             gitignore = ledger_dir / ".gitignore"
             gitignore.write_text("a-human-or-earlier-run-wrote-this\n", encoding="utf-8")
@@ -1576,13 +1576,13 @@ def _write_job_folder_run_config(job_dir: Path, **overrides: object) -> dict:
     """
     run_config = {
         "schemaVersion": 1,
-        "product": "MIL-CREDA",
+        "product": "FEM-TOLLA",
         "service": "kaggle",
         "jobName": job_dir.name,
         "commit": "a" * 40,
         "repo": {"url": "https://example.invalid/repo.git", "ref": "main"},
-        "clonePaths": ["src/MIL_CREDA_Benchmark"],
-        "run": {"module": "MIL_CREDA_Benchmark.harness", "function": "campaign"},
+        "clonePaths": ["src/FEM_TOLLA_Benchmark"],
+        "run": {"module": "FEM_TOLLA_Benchmark.harness", "function": "campaign"},
         "runnerTemplate": [],
     }
     run_config.update(overrides)
@@ -1705,7 +1705,7 @@ class PathGuardTests(unittest.TestCase):
     def test_symlink_escaping_the_product_notebooks_dir_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             outside = Path(tmp) / "outside.ipynb"
             outside.write_text("{}", encoding="utf-8")
 
@@ -1724,7 +1724,7 @@ class PathGuardTests(unittest.TestCase):
     def test_non_ipynb_path_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             not_a_notebook = notebooks / "notes.txt"
             not_a_notebook.write_text("plain text", encoding="utf-8")
 
@@ -1734,7 +1734,7 @@ class PathGuardTests(unittest.TestCase):
     def test_path_legitimately_under_notebooks_dir_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
@@ -1824,7 +1824,7 @@ class ProductForTests(unittest.TestCase):
     def test_explicit_product_wins_over_a_declared_one(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            (target / "MIL-CREDA").mkdir(parents=True)
+            (target / "FEM-TOLLA").mkdir(parents=True)
             job_dir = _make_job_folder(target, "kaggle", "search-a")
             notebook = job_dir / "runner.ipynb"
             notebook.write_text("{}", encoding="utf-8")
@@ -1833,33 +1833,33 @@ class ProductForTests(unittest.TestCase):
             )
 
             product = REMOTE_CLI.product_for(
-                target.resolve(), notebook, explicit="MIL-CREDA"
+                target.resolve(), notebook, explicit="FEM-TOLLA"
             )
-            self.assertEqual(product, "MIL-CREDA")
+            self.assertEqual(product, "FEM-TOLLA")
 
     def test_job_folder_shape_reads_the_declared_product_from_run_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            (target / "MIL-CREDA").mkdir(parents=True)
+            (target / "FEM-TOLLA").mkdir(parents=True)
             job_dir = _make_job_folder(target, "kaggle", "search-a")
             notebook = job_dir / "runner.ipynb"
             notebook.write_text("{}", encoding="utf-8")
             (job_dir / "run-config.json").write_text(
-                json.dumps({"product": "MIL-CREDA"}), encoding="utf-8"
+                json.dumps({"product": "FEM-TOLLA"}), encoding="utf-8"
             )
 
             product = REMOTE_CLI.product_for(target.resolve(), notebook)
-            self.assertEqual(product, "MIL-CREDA")
+            self.assertEqual(product, "FEM-TOLLA")
 
     def test_legacy_shape_falls_back_to_the_first_path_component(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
             product = REMOTE_CLI.product_for(target.resolve(), notebook)
-            self.assertEqual(product, "MIL-CREDA")
+            self.assertEqual(product, "FEM-TOLLA")
 
     def test_job_folder_shape_with_no_run_config_at_all_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2010,7 +2010,7 @@ class RealDigestLoaderTests(unittest.TestCase):
     def test_the_real_loader_returns_a_working_digest_function(self) -> None:
         digest = REMOTE_CLI._load_source_digest()
         self.assertTrue(callable(digest))
-        computed = digest(REPOSITORY_ROOT, "MIL_CREDA_Benchmark")
+        computed = digest(REPOSITORY_ROOT, "FEM_TOLLA_Benchmark")
         self.assertRegex(computed, r"^[0-9a-f]{64}$")
 
     def test_the_loader_fails_loudly_when_its_target_is_gone(self) -> None:
@@ -2054,7 +2054,7 @@ class SubmitTests(unittest.TestCase):
     def test_submit_appends_exactly_one_submitted_event_with_a_fresh_digest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
@@ -2083,7 +2083,7 @@ class SubmitTests(unittest.TestCase):
             # target.resolve(), not the raw tmp path: on darwin, tempfile's
             # own /var/folders path is itself a symlink to /private/var, so
             # only the resolved form matches what cmd_submit actually wrote.
-            ledger_path = target.resolve() / "MIL-CREDA" / ".remote-execution" / "ledger.jsonl"
+            ledger_path = target.resolve() / "FEM-TOLLA" / ".remote-execution" / "ledger.jsonl"
             self.assertEqual(result["ledgerPath"], ledger_path)
             lines = ledger_path.read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(lines), 1)
@@ -2097,12 +2097,12 @@ class SubmitTests(unittest.TestCase):
             # Computed fresh at submit time — called exactly once, with the
             # resolved target this call actually used.
             self.assertEqual(len(digest_calls), 1)
-            self.assertEqual(digest_calls[0], (target.resolve(), "MIL-CREDA"))
+            self.assertEqual(digest_calls[0], (target.resolve(), "FEM-TOLLA"))
 
     def test_submit_refuses_a_symlink_escaping_notebooks_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             outside = Path(tmp) / "outside.ipynb"
             outside.write_text("{}", encoding="utf-8")
             link = notebooks / "evil.ipynb"
@@ -2119,7 +2119,7 @@ class SubmitTests(unittest.TestCase):
                     source_digest=lambda t, n: "d" * 64,
                 )
 
-            ledger_path = target / "MIL-CREDA" / ".remote-execution" / "ledger.jsonl"
+            ledger_path = target / "FEM-TOLLA" / ".remote-execution" / "ledger.jsonl"
             self.assertFalse(ledger_path.exists())
 
     def test_target_must_resolve_to_an_existing_dir_before_any_write(self) -> None:
@@ -2130,7 +2130,7 @@ class SubmitTests(unittest.TestCase):
             with self.assertRaises(REMOTE_CLI.RemoteCLIError):
                 REMOTE_CLI.cmd_submit(
                     target=missing_target,
-                    entrypoint=missing_target / "MIL-CREDA" / "Notebooks" / "a.ipynb",
+                    entrypoint=missing_target / "FEM-TOLLA" / "Notebooks" / "a.ipynb",
                     worker="w1",
                     requested=1,
                     adapter=adapter,
@@ -2142,7 +2142,7 @@ class SubmitTests(unittest.TestCase):
     def test_relative_target_is_resolved_before_any_write(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
@@ -2152,13 +2152,13 @@ class SubmitTests(unittest.TestCase):
                 adapter = FakeAdapter(worker_id="w1", capacity=2)
                 token = _mint_launch_consent(
                     target=Path("repo"),
-                    entrypoint=Path("repo/MIL-CREDA/Notebooks/a.ipynb"),
+                    entrypoint=Path("repo/FEM-TOLLA/Notebooks/a.ipynb"),
                     adapter=adapter, source_digest=lambda t, n: "d" * 64,
                     worker="w1",
                 )
                 result = REMOTE_CLI.cmd_submit(
                     target=Path("repo"),  # relative to the tmp dir just chdir'd into
-                    entrypoint=Path("repo/MIL-CREDA/Notebooks/a.ipynb"),
+                    entrypoint=Path("repo/FEM-TOLLA/Notebooks/a.ipynb"),
                     worker="w1",
                     requested=1,
                     adapter=adapter,
@@ -2169,7 +2169,7 @@ class SubmitTests(unittest.TestCase):
                 os.chdir(original_cwd)
 
             # Written under the resolved absolute target...
-            expected_ledger = (target / "MIL-CREDA" / ".remote-execution" / "ledger.jsonl").resolve()
+            expected_ledger = (target / "FEM-TOLLA" / ".remote-execution" / "ledger.jsonl").resolve()
             self.assertEqual(result["ledgerPath"], expected_ledger)
             self.assertTrue(expected_ledger.exists())
 
@@ -2200,7 +2200,7 @@ class SubmitTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            (target / "MIL-CREDA").mkdir(parents=True)
+            (target / "FEM-TOLLA").mkdir(parents=True)
             job_dir = _make_job_folder(target, "kaggle", "search-a")
             notebook = job_dir / "runner.ipynb"
             notebook.write_text("{}", encoding="utf-8")
@@ -2209,7 +2209,7 @@ class SubmitTests(unittest.TestCase):
             # PR7 (design §4): a job-folder launch also needs a matching
             # `gate` record now -- consent alone is no longer enough.
             _mint_launch_authorization(
-                target=target, product="MIL-CREDA", pin_commit="a" * 40,
+                target=target, product="FEM-TOLLA", pin_commit="a" * 40,
                 relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
                 worker="w1",
             )
@@ -2247,7 +2247,7 @@ class SubmitTests(unittest.TestCase):
             # And it landed under the declared product, not under "tools".
             self.assertEqual(
                 Path(result["ledgerPath"]),
-                (target.resolve() / "MIL-CREDA" / ".remote-execution" / "ledger.jsonl"),
+                (target.resolve() / "FEM-TOLLA" / ".remote-execution" / "ledger.jsonl"),
             )
 
     def test_job_folder_submit_with_declared_product_lands_under_that_product_not_tools(
@@ -2261,7 +2261,7 @@ class SubmitTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            (target / "MIL-CREDA").mkdir(parents=True)
+            (target / "FEM-TOLLA").mkdir(parents=True)
             job_dir = _make_job_folder(target, "kaggle", "search-a")
             notebook = job_dir / "runner.ipynb"
             notebook.write_text("{}", encoding="utf-8")
@@ -2282,7 +2282,7 @@ class SubmitTests(unittest.TestCase):
             # PR7 (design §4): a job-folder launch also needs a matching
             # `gate` record now -- consent alone is no longer enough.
             _mint_launch_authorization(
-                target=target, product="MIL-CREDA", pin_commit="a" * 40,
+                target=target, product="FEM-TOLLA", pin_commit="a" * 40,
                 relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
                 worker="w1",
             )
@@ -2297,7 +2297,7 @@ class SubmitTests(unittest.TestCase):
             )
 
             ledger_path = (
-                target.resolve() / "MIL-CREDA" / ".remote-execution" / "ledger.jsonl"
+                target.resolve() / "FEM-TOLLA" / ".remote-execution" / "ledger.jsonl"
             )
             self.assertEqual(result["ledgerPath"], ledger_path)
             self.assertTrue(ledger_path.exists())
@@ -2316,7 +2316,7 @@ class SubmitTests(unittest.TestCase):
 
             # The digest is computed over the resolved product's own tree,
             # never over "tools".
-            self.assertEqual(digest_calls, [(target.resolve(), "MIL-CREDA")])
+            self.assertEqual(digest_calls, [(target.resolve(), "FEM-TOLLA")])
 
     def test_submit_explicit_product_override_wins_over_the_declared_one(self) -> None:
         """Triangulates the job-folder case above with a DIFFERENT product,
@@ -2330,7 +2330,7 @@ class SubmitTests(unittest.TestCase):
             notebook = job_dir / "runner.ipynb"
             notebook.write_text("{}", encoding="utf-8")
             _write_job_folder_run_config(job_dir)
-            # "MIL-CREDA" is deliberately never created under target: if the
+            # "FEM-TOLLA" is deliberately never created under target: if the
             # declared value were used instead of the override, product_for
             # would refuse for a not-existing-directory reason, not silently
             # succeed under the wrong product.
@@ -2412,10 +2412,10 @@ class SubmitTests(unittest.TestCase):
                 "--entrypoint", "/tmp/does-not-need-to-exist/a.ipynb",
                 "--worker", "w1",
                 "--backend", "fake",
-                "--product", "MIL-CREDA",
+                "--product", "FEM-TOLLA",
             ]
         )
-        self.assertEqual(args.product, "MIL-CREDA")
+        self.assertEqual(args.product, "FEM-TOLLA")
 
     def test_submit_parser_product_flag_defaults_to_none(self) -> None:
         parser = REMOTE_CLI._build_parser()
@@ -2549,12 +2549,12 @@ def _pending_reconcile_fixture(
     field that is supposed to distinguish them.
     """
     target = Path(tmp) / "repo"
-    notebooks = _make_product(target, "MIL-CREDA")
+    notebooks = _make_product(target, "FEM-TOLLA")
     notebook = notebooks / "a.ipynb"
     notebook.write_text("{}", encoding="utf-8")
 
     ledger_path = (
-        target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+        target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
         / REMOTE_CLI.LEDGER_FILENAME
     )
     _append_pending_submission(
@@ -2614,12 +2614,12 @@ class StatusTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
             ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
             )
             _append_pending_submission(
                 ledger_path,
@@ -2666,11 +2666,11 @@ class StatusTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
             ledger_path = (
-                target.resolve() / "MIL-CREDA"
+                target.resolve() / "FEM-TOLLA"
                 / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
             )
             _append_pending_submission(
@@ -2701,12 +2701,12 @@ class StatusTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
             ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.LEDGER_FILENAME
             )
             for worker in ("w1", "w2", "w3"):
@@ -2737,12 +2737,12 @@ class FetchTests(unittest.TestCase):
     def test_fetch_renames_into_place_and_appends_returned_only_on_complete(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
             ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
             )
             _append_pending_submission(
                 ledger_path,
@@ -2755,7 +2755,7 @@ class FetchTests(unittest.TestCase):
             adapter = FakeAdapter(worker_id="w1", capacity=2)
             # target.resolve(), not the raw tmp path — see the darwin
             # /var/folders-is-a-symlink gotcha noted elsewhere in this file.
-            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+            dest = target.resolve() / "FEM-TOLLA" / "Results" / "shards" / "a"
 
             result = REMOTE_CLI.cmd_fetch(
                 target=target,
@@ -2784,12 +2784,12 @@ class FetchTests(unittest.TestCase):
     def test_crash_mid_fetch_leaves_pending_and_appends_no_returned_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
             ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
             )
             _append_pending_submission(
                 ledger_path,
@@ -2801,7 +2801,7 @@ class FetchTests(unittest.TestCase):
             lines_before = ledger_path.read_text(encoding="utf-8")
 
             adapter = CrashingFetchAdapter(worker_id="w1", capacity=2)
-            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+            dest = target.resolve() / "FEM-TOLLA" / "Results" / "shards" / "a"
 
             with self.assertRaises(ConnectionError):
                 REMOTE_CLI.cmd_fetch(
@@ -2830,12 +2830,12 @@ class FetchTests(unittest.TestCase):
     def test_incomplete_fetch_renames_nothing_and_appends_no_returned_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
             ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
             )
             _append_pending_submission(
                 ledger_path,
@@ -2847,7 +2847,7 @@ class FetchTests(unittest.TestCase):
             lines_before = ledger_path.read_text(encoding="utf-8")
 
             adapter = IncompleteFetchAdapter(worker_id="w1", capacity=2)
-            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+            dest = target.resolve() / "FEM-TOLLA" / "Results" / "shards" / "a"
 
             result = REMOTE_CLI.cmd_fetch(
                 target=target,
@@ -2871,12 +2871,12 @@ class FetchTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
             ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
             )
             _append_pending_submission(
                 ledger_path,
@@ -2887,7 +2887,7 @@ class FetchTests(unittest.TestCase):
             )
 
             adapter = FakeAdapter(worker_id="w1", capacity=2)
-            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+            dest = target.resolve() / "FEM-TOLLA" / "Results" / "shards" / "a"
 
             REMOTE_CLI.cmd_fetch(
                 target=target,
@@ -2927,12 +2927,12 @@ class FetchTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
             ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
             )
             _append_pending_submission(
                 ledger_path,
@@ -2943,7 +2943,7 @@ class FetchTests(unittest.TestCase):
             )
 
             adapter = FakeAdapter(worker_id="w1", capacity=2)
-            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+            dest = target.resolve() / "FEM-TOLLA" / "Results" / "shards" / "a"
 
             REMOTE_CLI.cmd_fetch(
                 target=target,
@@ -2994,12 +2994,12 @@ class FetchTests(unittest.TestCase):
         verdict routes a fetch to.
         """
         target = Path(tmp) / "repo"
-        notebooks = _make_product(target, "MIL-CREDA")
+        notebooks = _make_product(target, "FEM-TOLLA")
         notebook = notebooks / "a.ipynb"
         notebook.write_text("{}", encoding="utf-8")
 
         ledger_path = (
-            target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+            target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
         )
         _append_pending_submission(
             ledger_path,
@@ -3008,7 +3008,7 @@ class FetchTests(unittest.TestCase):
             worker="w1",
             source_digest="d" * 64,
         )
-        dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+        dest = target.resolve() / "FEM-TOLLA" / "Results" / "shards" / "a"
         return target, notebook, ledger_path, dest
 
     def test_retry_after_crash_refuses_instead_of_merging_into_the_leftover_partial(
@@ -3166,7 +3166,7 @@ class FetchTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
@@ -3181,7 +3181,7 @@ class FetchTests(unittest.TestCase):
             self.assertEqual(plan.granted, 2)
 
             ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
             )
             _append_pending_submission(
                 ledger_path,
@@ -3191,7 +3191,7 @@ class FetchTests(unittest.TestCase):
                 source_digest="d" * 64,
             )
 
-            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+            dest = target.resolve() / "FEM-TOLLA" / "Results" / "shards" / "a"
             result = REMOTE_CLI.cmd_fetch(
                 target=target,
                 entrypoint=notebook,
@@ -3207,12 +3207,12 @@ class FetchTests(unittest.TestCase):
     def test_stale_result_is_quarantined_and_never_enumerable_under_results_shards(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
             ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
             )
             _append_pending_submission(
                 ledger_path,
@@ -3231,7 +3231,7 @@ class FetchTests(unittest.TestCase):
 
             # A real, enumerable tree standing in for what a shard reader
             # walks in the actual target repository.
-            shards_dir = target.resolve() / "MIL-CREDA" / "Results" / "shards"
+            shards_dir = target.resolve() / "FEM-TOLLA" / "Results" / "shards"
             shards_dir.mkdir(parents=True)
 
             adapter = FakeAdapter(worker_id="w1", capacity=2)
@@ -3330,7 +3330,7 @@ class RehearsalPlacementTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
@@ -3355,13 +3355,13 @@ class RehearsalPlacementTests(unittest.TestCase):
 
             self.assertTrue(fetch_result["complete"])
             expected = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.REHEARSAL_DIRNAME / submission_id
             )
             self.assertEqual(fetch_result["path"], expected)
             self.assertTrue((expected / "result.txt").exists())
 
-            shards_dir = target.resolve() / "MIL-CREDA" / "Results" / "shards"
+            shards_dir = target.resolve() / "FEM-TOLLA" / "Results" / "shards"
             self.assertFalse(shards_dir.exists())
 
     def test_rehearsal_fetch_preserves_the_8_step_ordering_contract(self) -> None:
@@ -3374,7 +3374,7 @@ class RehearsalPlacementTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
@@ -3391,7 +3391,7 @@ class RehearsalPlacementTests(unittest.TestCase):
             )
             submission_id = submit_result["submission"].id
             smoke_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.SMOKE_LEDGER_FILENAME
             )
 
@@ -3446,12 +3446,12 @@ class RehearsalPlacementTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
             smoke_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.SMOKE_LEDGER_FILENAME
             )
             malicious_id = "../../../etc/evil"
@@ -3474,7 +3474,7 @@ class RehearsalPlacementTests(unittest.TestCase):
             # ledger directory tree.
             outside = Path(tmp) / "etc" / "evil"
             self.assertFalse(outside.exists())
-            ledger_root = target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+            ledger_root = target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
             for path in ledger_root.rglob("*"):
                 self.assertTrue(str(path.resolve()).startswith(str(ledger_root)))
 
@@ -3483,12 +3483,12 @@ class ReconcileTests(unittest.TestCase):
     def test_reconcile_reports_orphan_remote_without_fabricating_a_submitted_line(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
             ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
             )
             _append_pending_submission(
                 ledger_path,
@@ -3523,12 +3523,12 @@ class ReconcileTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
             ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
             )
             _append_pending_submission(
                 ledger_path,
@@ -3725,12 +3725,12 @@ class ReconcileTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
             ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME / REMOTE_CLI.LEDGER_FILENAME
             )
             _append_pending_submission(
                 ledger_path, entrypoint="Notebooks/a.ipynb",
@@ -3774,7 +3774,7 @@ class FiveAccountFanoutTests(unittest.TestCase):
     def test_five_account_fanout_all_land_at_dest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
@@ -3797,7 +3797,7 @@ class FiveAccountFanoutTests(unittest.TestCase):
                               "five accounts must produce five distinct submission ids")
 
             for worker in workers:
-                dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / worker
+                dest = target.resolve() / "FEM-TOLLA" / "Results" / "shards" / worker
                 fetch_result = REMOTE_CLI.cmd_fetch(
                     target=target, entrypoint=notebook,
                     submission_id=submission_ids[worker], dest=dest,
@@ -3814,7 +3814,7 @@ class FiveAccountFanoutTests(unittest.TestCase):
             # None quarantined: the quarantine directory was never created
             # at all, for any of the five.
             quarantine_dir = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.QUARANTINE_DIRNAME
             )
             self.assertFalse(quarantine_dir.exists())
@@ -3822,7 +3822,7 @@ class FiveAccountFanoutTests(unittest.TestCase):
             # And every returned event confirms it: five `returned` lines,
             # one per worker's own submission id.
             ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.LEDGER_FILENAME
             )
             lines = ledger_path.read_text(encoding="utf-8").splitlines()
@@ -4196,7 +4196,7 @@ class KaggleAdapterTests(unittest.TestCase):
         completes both in a staged copy (see below).
         """
         assembler = ADAPTER.resolve_metadata("kaggle")
-        filename, text = assembler({"jobName": "domain-adaptation-2ep"})
+        filename, text = assembler({"jobName": "bell-tuning-2ep"})
         self.assertEqual(filename, "kernel-metadata.json")
         payload = json.loads(text)
         self.assertEqual(payload["machine_shape"], KAGGLE.KAGGLE_MACHINE_SHAPE)
@@ -4276,7 +4276,7 @@ class KaggleAdapterTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            notebooks = _make_product(tmp_path / "repo", "MIL-CREDA")
+            notebooks = _make_product(tmp_path / "repo", "FEM-TOLLA")
             entrypoint = notebooks / "a.ipynb"
             entrypoint.write_text("{}", encoding="utf-8")
             # No metadata file beside it, and none is required.
@@ -4305,7 +4305,7 @@ class KaggleAdapterTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            notebooks = _make_product(tmp_path / "repo", "MIL-CREDA")
+            notebooks = _make_product(tmp_path / "repo", "FEM-TOLLA")
             entrypoint = notebooks / "a.ipynb"
             entrypoint.write_text("{}", encoding="utf-8")
 
@@ -4341,7 +4341,7 @@ class KaggleAdapterTests(unittest.TestCase):
         to receive a second, different `id` later.
 
         The slug in `id` is derived from the metadata's own `title`
-        (`"papersmith-domain-adaptation"` here), never from the
+        (`"papersmith-bell-tuning"` here), never from the
         entrypoint's filename: confirmed against a real Kaggle account
         that a newly-created kernel's actual slug is the one the service
         derives from `title`, and every generated job folder's entrypoint
@@ -4358,7 +4358,7 @@ class KaggleAdapterTests(unittest.TestCase):
             original_metadata = json.dumps(
                 {
                     "id": "",
-                    "title": "papersmith-domain-adaptation",
+                    "title": "papersmith-bell-tuning",
                     "code_file": "",
                     "language": "python",
                     "kernel_type": "notebook",
@@ -4383,10 +4383,10 @@ class KaggleAdapterTests(unittest.TestCase):
             job = ADAPTER.Job(entrypoint=entrypoint, run_config={}, worker="w1")
             submission = adapter.submit(job)
 
-            self.assertEqual(submission.id, "w1/papersmith-domain-adaptation")
+            self.assertEqual(submission.id, "w1/papersmith-bell-tuning")
             self.assertTrue(captured_metadata.is_file())
             pushed = json.loads(captured_metadata.read_text(encoding="utf-8"))
-            self.assertEqual(pushed["id"], "w1/papersmith-domain-adaptation")
+            self.assertEqual(pushed["id"], "w1/papersmith-bell-tuning")
             self.assertEqual(pushed["code_file"], "runner.ipynb")
             self.assertIs(pushed["enable_gpu"], True)
 
@@ -4401,9 +4401,9 @@ class KaggleAdapterTests(unittest.TestCase):
         """A GENERATED job folder's `kernel-metadata.json` written before
         `machine_shape` existed carries no such key at all -- exactly the
         fixture the test directly above this one already uses, and exactly
-        the real file this repository shipped at
-        `tools/kaggle/ceiling-search/kernel-metadata.json`. Pushing it
-        unmodified lands on whatever the service defaults to, silently,
+        the shape of the versioned `kernel-metadata.json` a target's own
+        search job was shipping before F7. Pushing it unmodified lands on
+        whatever the service defaults to, silently,
         which is the entire class of waste F7 exists to prevent. The
         staged copy must carry `machine_shape` even though the versioned
         file on disk never does.
@@ -4419,7 +4419,7 @@ class KaggleAdapterTests(unittest.TestCase):
             original_metadata = json.dumps(
                 {
                     "id": "",
-                    "title": "papersmith-ceiling-search",
+                    "title": "papersmith-undercut-search",
                     "code_file": "",
                     "language": "python",
                     "kernel_type": "notebook",
@@ -4469,7 +4469,7 @@ class KaggleAdapterTests(unittest.TestCase):
             original_metadata = json.dumps(
                 {
                     "id": "",
-                    "title": "papersmith-domain-adaptation",
+                    "title": "papersmith-bell-tuning",
                     "code_file": "",
                     "language": "python",
                     "kernel_type": "notebook",
@@ -4746,7 +4746,7 @@ class KaggleAdapterTests(unittest.TestCase):
         that file never carries a `mode` key, so `select_block()` in the
         pushed kernel always saw the normal `run` block, never `smoke`.
         Confirmed on real hardware: six `--smoke` submissions ran the full
-        `run` block instead of the one-transfer rehearsal.
+        `run` block instead of the one-unit rehearsal.
 
         This test spans the two pieces every prior test proved separately
         while the bug stayed live: that `cmd_submit` sets the field on the
@@ -4864,7 +4864,7 @@ class KaggleAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             target = tmp_path / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
@@ -4923,7 +4923,7 @@ class KaggleAdapterTests(unittest.TestCase):
 
                 submission_id = submit_result["submission"].id
                 ledger_path = submit_result["ledgerPath"]
-                dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+                dest = target.resolve() / "FEM-TOLLA" / "Results" / "shards" / "a"
 
                 # A different live digest at fetch time than at submit time
                 # forces `fromStaleSubmission`, exercising the quarantine
@@ -5465,7 +5465,7 @@ class CredentialSecurityTests(unittest.TestCase):
         driver = _write_fake_driver(tmp_path / "driver")
 
         target = tmp_path / "repo"
-        notebooks = _make_product(target, "MIL-CREDA")
+        notebooks = _make_product(target, "FEM-TOLLA")
         notebook = notebooks / "a.ipynb"
         notebook.write_text("{}", encoding="utf-8")
 
@@ -5504,7 +5504,7 @@ class CredentialSecurityTests(unittest.TestCase):
 
             REMOTE_CLI.cmd_poll(submission_id=submission_id, adapter=adapter)
 
-            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+            dest = target.resolve() / "FEM-TOLLA" / "Results" / "shards" / "a"
             # A different live digest at fetch time than at submit time
             # forces `fromStaleSubmission`, exercising the quarantine path
             # too, not only the ledger.
@@ -8318,7 +8318,7 @@ class DistributeCliTests(unittest.TestCase):
 
     def _target_and_notebook(self, tmp: str) -> tuple[Path, Path]:
         target = Path(tmp) / "repo"
-        notebooks = _make_product(target, "MIL-CREDA")
+        notebooks = _make_product(target, "FEM-TOLLA")
         notebook = notebooks / "a.ipynb"
         notebook.write_text("{}", encoding="utf-8")
         return target, notebook
@@ -8506,7 +8506,7 @@ class CampaignSubmitTests(unittest.TestCase):
     down -- never asserted by reading `cmd_submit`'s own source.
     """
 
-    def _target_and_notebook(self, tmp: str, name: str = "MIL-CREDA") -> tuple[Path, Path]:
+    def _target_and_notebook(self, tmp: str, name: str = "FEM-TOLLA") -> tuple[Path, Path]:
         target = Path(tmp) / "repo"
         notebooks = _make_product(target, name)
         notebook = notebooks / "a.ipynb"
@@ -8778,7 +8778,7 @@ class ConsentGateTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def _target_and_notebook(self, tmp: str, name: str = "MIL-CREDA") -> tuple[Path, Path]:
+    def _target_and_notebook(self, tmp: str, name: str = "FEM-TOLLA") -> tuple[Path, Path]:
         target = Path(tmp) / "repo"
         notebooks = _make_product(target, name)
         notebook = notebooks / "a.ipynb"
@@ -8789,7 +8789,7 @@ class ConsentGateTests(unittest.TestCase):
         self, tmp: str, *, commit: str,
     ) -> tuple[Path, Path, Path]:
         target = Path(tmp) / "repo"
-        (target / "MIL-CREDA").mkdir(parents=True)
+        (target / "FEM-TOLLA").mkdir(parents=True)
         job_dir = _make_job_folder(target, "kaggle", "search-a")
         notebook = job_dir / "runner.ipynb"
         notebook.write_text("{}", encoding="utf-8")
@@ -8961,28 +8961,48 @@ class ConsentGateTests(unittest.TestCase):
             self.assertIsInstance(result, dict)
 
     def test_campaign_token_derivation_byte_identical_to_pre_change(self) -> None:
-        """Hash-pinned against the PRE-CHANGE derivation (no `worker` key
-        in the payload at all): campaign/auto-select tokens must remain
-        byte-for-byte identical to what this function computed before F2,
-        proving the new `worker` parameter is additive, never a reshape of
-        the existing payload.
+        """Hash-pinned against the derivation with NO `worker` key in the
+        payload at all: campaign/auto-select tokens must stay byte-for-byte
+        what this function computed before F2, proving the `worker`
+        parameter is additive, never a reshape of the existing payload.
+
+        The constant was re-derived once, when this fixture's entrypoint
+        stopped naming one target's product -- the digest is a function of
+        that string, so no rename of it could leave the old value standing.
+        What the pin locks is unchanged, and it is now checked twice: by
+        the opaque constant below, and by an INDEPENDENT recomputation
+        from the payload spelled out by hand. The second is what makes the
+        first readable -- an opaque hex says only "something changed"; a
+        payload written out in full says exactly which three keys, sorted,
+        are hashed, and fails loudly the day a fourth one appears.
         """
         token = REMOTE_CLI.campaign_consent_token(
             pin_commit="deadbeef",
-            relative_entrypoint="MIL-CREDA/Notebooks/a.ipynb",
+            relative_entrypoint="FEM-TOLLA/Notebooks/a.ipynb",
             units=("u0", "u1"),
         )
         self.assertEqual(
             token,
-            "856dd56193c0804e2d7758f58e5fc0041ca2af308437a0ec02985eb446e4edf4",
+            "39618b6a19a9c019d550dcb5dbee97c75a161cd5ada18e0e0231e33f01e528f3",
         )
+        # Written out rather than re-invoked: `worker` appears nowhere,
+        # `units` keeps the given order, and the keys are sorted.
+        expected = hashlib.sha256(
+            json.dumps(
+                {"entrypoint": "FEM-TOLLA/Notebooks/a.ipynb",
+                 "pin": "deadbeef",
+                 "units": ["u0", "u1"]},
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(token, expected)
         # And explicitly passing `worker=None` (auto-select's own shape)
         # must derive the identical token -- the parameter's ABSENCE and
         # its explicit `None` are the same input to this function.
         self.assertEqual(
             REMOTE_CLI.campaign_consent_token(
                 pin_commit="deadbeef",
-                relative_entrypoint="MIL-CREDA/Notebooks/a.ipynb",
+                relative_entrypoint="FEM-TOLLA/Notebooks/a.ipynb",
                 units=("u0", "u1"),
                 worker=None,
             ),
@@ -9001,7 +9021,7 @@ class ConsentGateTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks_a = _make_product(target, "MIL-CREDA")
+            notebooks_a = _make_product(target, "FEM-TOLLA")
             notebook_a = notebooks_a / "a.ipynb"
             notebook_a.write_text("{}", encoding="utf-8")
             notebooks_b = _make_product(target, "OtherProduct")
@@ -9161,7 +9181,7 @@ class ConsentGateTests(unittest.TestCase):
     def test_a_token_minted_for_a_different_entrypoint_refuses(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks_a = _make_product(target, "MIL-CREDA")
+            notebooks_a = _make_product(target, "FEM-TOLLA")
             notebook_a = notebooks_a / "a.ipynb"
             notebook_a.write_text("{}", encoding="utf-8")
             notebooks_b = _make_product(target, "OtherProduct")
@@ -9317,14 +9337,14 @@ class AuthorizationGateTests(unittest.TestCase):
         self, tmp: str, *, commit: str = "a" * 40,
     ) -> tuple[Path, Path, Path]:
         target = Path(tmp) / "repo"
-        (target / "MIL-CREDA").mkdir(parents=True)
+        (target / "FEM-TOLLA").mkdir(parents=True)
         job_dir = _make_job_folder(target, "kaggle", "search-a")
         notebook = job_dir / "runner.ipynb"
         notebook.write_text("{}", encoding="utf-8")
         _write_job_folder_run_config(job_dir, commit=commit)
         return target, job_dir, notebook
 
-    def _target_and_notebook(self, tmp: str, name: str = "MIL-CREDA") -> tuple[Path, Path]:
+    def _target_and_notebook(self, tmp: str, name: str = "FEM-TOLLA") -> tuple[Path, Path]:
         target = Path(tmp) / "repo"
         notebooks = _make_product(target, name)
         notebook = notebooks / "a.ipynb"
@@ -9400,7 +9420,7 @@ class AuthorizationGateTests(unittest.TestCase):
                 source_digest=lambda t, n: "d" * 64, worker="w1",
             )
             _mint_launch_authorization(
-                target=target, product="MIL-CREDA", pin_commit="a" * 40,
+                target=target, product="FEM-TOLLA", pin_commit="a" * 40,
                 relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
                 worker="w1",
             )
@@ -9453,7 +9473,7 @@ class AuthorizationGateTests(unittest.TestCase):
             )
             # Gated at a DIFFERENT commit than the job folder's current one.
             _mint_launch_authorization(
-                target=target, product="MIL-CREDA", pin_commit="b" * 40,
+                target=target, product="FEM-TOLLA", pin_commit="b" * 40,
                 relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
                 worker="w1",
             )
@@ -9475,7 +9495,7 @@ class AuthorizationGateTests(unittest.TestCase):
                 source_digest=lambda t, n: "d" * 64, worker="w1",
             )
             _mint_launch_authorization(
-                target=target, product="MIL-CREDA", pin_commit="a" * 40,
+                target=target, product="FEM-TOLLA", pin_commit="a" * 40,
                 relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
                 worker="w2",
             )
@@ -9620,7 +9640,7 @@ class AuthorizationGateTests(unittest.TestCase):
             )
             token = distribute_result["consentToken"]
             _mint_launch_authorization(
-                target=target, product="MIL-CREDA", pin_commit="a" * 40,
+                target=target, product="FEM-TOLLA", pin_commit="a" * 40,
                 relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
                 worker=None, units=units,
             )
@@ -9654,7 +9674,7 @@ class AuthorizationGateTests(unittest.TestCase):
             # Gated against a DIFFERENT ordered unit list than this
             # invocation's own.
             _mint_launch_authorization(
-                target=target, product="MIL-CREDA", pin_commit="a" * 40,
+                target=target, product="FEM-TOLLA", pin_commit="a" * 40,
                 relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
                 worker=None, units=("u0", "u2"),
             )
@@ -9684,7 +9704,7 @@ class AuthorizationGateTests(unittest.TestCase):
             )
             token = distribute_result["consentToken"]
             _mint_launch_authorization(
-                target=target, product="MIL-CREDA", pin_commit="a" * 40,
+                target=target, product="FEM-TOLLA", pin_commit="a" * 40,
                 relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
                 worker="w1",
             )
@@ -9774,7 +9794,7 @@ class AcceleratorRequestDoctrineTests(unittest.TestCase):
     """
 
     def test_assemble_metadata_emits_keys_the_installed_client_recognizes(self) -> None:
-        _, text = ADAPTER.resolve_metadata("kaggle")({"jobName": "domain-adaptation-2ep"})
+        _, text = ADAPTER.resolve_metadata("kaggle")({"jobName": "bell-tuning-2ep"})
         payload = json.loads(text)
 
         self.assertIs(payload["enable_gpu"], True)
@@ -9928,14 +9948,14 @@ class JobFolderTests(unittest.TestCase):
         return bootstrap, invoke
 
     def _ensure_default_source_tree(self, target: Path) -> None:
-        """`_generate()`'s default `clone_paths=["src/MIL_CREDA_Benchmark"]`
-        and `run_module="MIL_CREDA_Benchmark.harness"` now have to resolve
+        """`_generate()`'s default `clone_paths=["src/FEM_TOLLA_Benchmark"]`
+        and `run_module="FEM_TOLLA_Benchmark.harness"` now have to resolve
         to a real file on disk under `target`, since `generate_job()` runs
         `resolve_clone_paths()`. A no-further-imports module is enough:
         exactly what makes the declared clone path match the computed one
         with nothing left over.
         """
-        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
         if not harness.exists():
             harness.parent.mkdir(parents=True, exist_ok=True)
             harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
@@ -9947,12 +9967,12 @@ class JobFolderTests(unittest.TestCase):
             target=target,
             service=self.FAKE_SERVICE,
             job_name="search-a",
-            product="MIL-CREDA",
+            product="FEM-TOLLA",
             commit="a" * 40,
             repo_url="https://example.invalid/repo.git",
             repo_ref="main",
-            clone_paths=["src/MIL_CREDA_Benchmark"],
-            run_module="MIL_CREDA_Benchmark.harness",
+            clone_paths=["src/FEM_TOLLA_Benchmark"],
+            run_module="FEM_TOLLA_Benchmark.harness",
             run_function="campaign",
             bootstrap_asset=bootstrap,
             invoke_asset=invoke,
@@ -9976,8 +9996,8 @@ class JobFolderTests(unittest.TestCase):
 
             run_config = json.loads((job_dir / "run-config.json").read_text(encoding="utf-8"))
             self.assertEqual(run_config["schemaVersion"], 1)
-            self.assertEqual(run_config["product"], "MIL-CREDA")
-            self.assertEqual(run_config["run"]["module"], "MIL_CREDA_Benchmark.harness")
+            self.assertEqual(run_config["product"], "FEM-TOLLA")
+            self.assertEqual(run_config["run"]["module"], "FEM_TOLLA_Benchmark.harness")
 
     def test_generated_notebook_declares_a_kernelspec_papermill_can_resolve(self) -> None:
         """Confirmed against a real Kaggle kernel run: with no `kernelspec`
@@ -10206,12 +10226,12 @@ class JobFolderTests(unittest.TestCase):
                     "--target", str(target),
                     "--service", self.FAKE_SERVICE,
                     "--job-name", "cli-job",
-                    "--product", "MIL-CREDA",
+                    "--product", "FEM-TOLLA",
                     "--commit", "a" * 40,
                     "--repo-url", "https://example.invalid/repo.git",
                     "--repo-ref", "main",
-                    "--clone-path", "src/MIL_CREDA_Benchmark",
-                    "--run-module", "MIL_CREDA_Benchmark.harness",
+                    "--clone-path", "src/FEM_TOLLA_Benchmark",
+                    "--run-module", "FEM_TOLLA_Benchmark.harness",
                     "--run-function", "campaign",
                 ])
 
@@ -10238,12 +10258,12 @@ class JobFolderTests(unittest.TestCase):
                 "--target", str(target),
                 "--service", self.FAKE_SERVICE,
                 "--job-name", "cli-job",
-                "--product", "MIL-CREDA",
+                "--product", "FEM-TOLLA",
                 "--commit", "a" * 40,
                 "--repo-url", "https://example.invalid/repo.git",
                 "--repo-ref", "main",
-                "--clone-path", "src/MIL_CREDA_Benchmark",
-                "--run-module", "MIL_CREDA_Benchmark.harness",
+                "--clone-path", "src/FEM_TOLLA_Benchmark",
+                "--run-module", "FEM_TOLLA_Benchmark.harness",
                 "--run-function", "campaign",
             ])
 
@@ -10260,7 +10280,7 @@ class JobFolderTests(unittest.TestCase):
             target = Path(tmp) / "repo"
             target.mkdir()
             self._ensure_default_source_tree(target)
-            (target / "src" / "MIL_CREDA_Benchmark" / "harness.py").write_text(
+            (target / "src" / "FEM_TOLLA_Benchmark" / "harness.py").write_text(
                 "import Extra.helper\n\n\ndef campaign(*args, **kwargs):\n    pass\n",
                 encoding="utf-8",
             )
@@ -10278,7 +10298,7 @@ class JobFolderTests(unittest.TestCase):
             target = Path(tmp) / "repo"
             target.mkdir()
             self._ensure_default_source_tree(target)
-            (target / "src" / "MIL_CREDA_Benchmark" / "harness.py").write_text(
+            (target / "src" / "FEM_TOLLA_Benchmark" / "harness.py").write_text(
                 "import sys\nsys.path.append('/tmp/extra')\n\n\n"
                 "def campaign(*args, **kwargs):\n    pass\n",
                 encoding="utf-8",
@@ -10294,7 +10314,7 @@ class JobFolderTests(unittest.TestCase):
             target = Path(tmp) / "repo"
             target.mkdir()
             self._ensure_default_source_tree(target)
-            (target / "src" / "MIL_CREDA_Benchmark" / "harness.py").write_text(
+            (target / "src" / "FEM_TOLLA_Benchmark" / "harness.py").write_text(
                 "import sys\nsys.path.append('/tmp/extra')\n\n\n"
                 "def campaign(*args, **kwargs):\n    pass\n",
                 encoding="utf-8",
@@ -10311,8 +10331,8 @@ class JobFolderTests(unittest.TestCase):
             target = Path(tmp) / "repo"
             target.mkdir()
             self._ensure_default_source_tree(target)
-            (target / "src" / "MIL_CREDA_Benchmark" / "harness.py").write_text(
-                "mod = __import__('MIL_CREDA_Benchmark.harness')\n\n\n"
+            (target / "src" / "FEM_TOLLA_Benchmark" / "harness.py").write_text(
+                "mod = __import__('FEM_TOLLA_Benchmark.harness')\n\n\n"
                 "def campaign(*args, **kwargs):\n    pass\n",
                 encoding="utf-8",
             )
@@ -10326,12 +10346,12 @@ class JobFolderTests(unittest.TestCase):
                     "--target", str(target),
                     "--service", self.FAKE_SERVICE,
                     "--job-name", "cli-accept",
-                    "--product", "MIL-CREDA",
+                    "--product", "FEM-TOLLA",
                     "--commit", "a" * 40,
                     "--repo-url", "https://example.invalid/repo.git",
                     "--repo-ref", "main",
-                    "--clone-path", "src/MIL_CREDA_Benchmark",
-                    "--run-module", "MIL_CREDA_Benchmark.harness",
+                    "--clone-path", "src/FEM_TOLLA_Benchmark",
+                    "--run-module", "FEM_TOLLA_Benchmark.harness",
                     "--run-function", "campaign",
                     "--accept-unresolved",
                 ])
@@ -10397,7 +10417,7 @@ class DefaultAcceleratorProvisioningTests(unittest.TestCase):
         return bootstrap, invoke
 
     def _ensure_default_source_tree(self, target: Path) -> None:
-        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
         if not harness.exists():
             harness.parent.mkdir(parents=True, exist_ok=True)
             harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
@@ -10409,12 +10429,12 @@ class DefaultAcceleratorProvisioningTests(unittest.TestCase):
             target=target,
             service=service,
             job_name="search-a",
-            product="MIL-CREDA",
+            product="FEM-TOLLA",
             commit="a" * 40,
             repo_url="https://example.invalid/repo.git",
             repo_ref="main",
-            clone_paths=["src/MIL_CREDA_Benchmark"],
-            run_module="MIL_CREDA_Benchmark.harness",
+            clone_paths=["src/FEM_TOLLA_Benchmark"],
+            run_module="FEM_TOLLA_Benchmark.harness",
             run_function="campaign",
             bootstrap_asset=bootstrap,
             invoke_asset=invoke,
@@ -10458,7 +10478,7 @@ class DefaultAcceleratorProvisioningTests(unittest.TestCase):
                 self.assertNotIn(name, arch)
 
     # The arch list a real submission reported from the service on
-    # 2026-08-24 (kernel `papersmith-ceiling-search`, fetched log). It is a
+    # 2026-08-24 (read out of the fetched log of a live search kernel). It is a
     # MEASUREMENT, not a pin: this repository installs no torch of its own
     # for a remote run, so the only honest ground for the shipped default
     # is what the service's own image was observed to carry. Revise it by
@@ -10608,12 +10628,12 @@ class DefaultAcceleratorProvisioningTests(unittest.TestCase):
                     "--target", str(target),
                     "--service", self.FAKE_SERVICE_NO_DEFAULT,
                     "--job-name", "cli-explicit-accel",
-                    "--product", "MIL-CREDA",
+                    "--product", "FEM-TOLLA",
                     "--commit", "a" * 40,
                     "--repo-url", "https://example.invalid/repo.git",
                     "--repo-ref", "main",
-                    "--clone-path", "src/MIL_CREDA_Benchmark",
-                    "--run-module", "MIL_CREDA_Benchmark.harness",
+                    "--clone-path", "src/FEM_TOLLA_Benchmark",
+                    "--run-module", "FEM_TOLLA_Benchmark.harness",
                     "--run-function", "campaign",
                     "--accelerator-kind", "cuda",
                     "--accelerator-architecture", "sm_90",
@@ -10650,12 +10670,12 @@ class DefaultAcceleratorProvisioningTests(unittest.TestCase):
                     "--target", str(target),
                     "--service", self.FAKE_SERVICE_WITH_DEFAULT,
                     "--job-name", "cli-from-zero",
-                    "--product", "MIL-CREDA",
+                    "--product", "FEM-TOLLA",
                     "--commit", "a" * 40,
                     "--repo-url", "https://example.invalid/repo.git",
                     "--repo-ref", "main",
-                    "--clone-path", "src/MIL_CREDA_Benchmark",
-                    "--run-module", "MIL_CREDA_Benchmark.harness",
+                    "--clone-path", "src/FEM_TOLLA_Benchmark",
+                    "--run-module", "FEM_TOLLA_Benchmark.harness",
                     "--run-function", "campaign",
                 ])
 
@@ -10706,7 +10726,7 @@ class LocalBudgetDeclarationTests(unittest.TestCase):
         return bootstrap, invoke
 
     def _ensure_default_source_tree(self, target: Path) -> None:
-        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
         if not harness.exists():
             harness.parent.mkdir(parents=True, exist_ok=True)
             harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
@@ -10718,12 +10738,12 @@ class LocalBudgetDeclarationTests(unittest.TestCase):
             target=target,
             service=self.FAKE_SERVICE,
             job_name="search-a",
-            product="MIL-CREDA",
+            product="FEM-TOLLA",
             commit="a" * 40,
             repo_url="https://example.invalid/repo.git",
             repo_ref="main",
-            clone_paths=["src/MIL_CREDA_Benchmark"],
-            run_module="MIL_CREDA_Benchmark.harness",
+            clone_paths=["src/FEM_TOLLA_Benchmark"],
+            run_module="FEM_TOLLA_Benchmark.harness",
             run_function="campaign",
             bootstrap_asset=bootstrap,
             invoke_asset=invoke,
@@ -10807,12 +10827,12 @@ class LocalBudgetDeclarationTests(unittest.TestCase):
                     "--target", str(target),
                     "--service", self.FAKE_SERVICE,
                     "--job-name", "cli-local-budget",
-                    "--product", "MIL-CREDA",
+                    "--product", "FEM-TOLLA",
                     "--commit", "a" * 40,
                     "--repo-url", "https://example.invalid/repo.git",
                     "--repo-ref", "main",
-                    "--clone-path", "src/MIL_CREDA_Benchmark",
-                    "--run-module", "MIL_CREDA_Benchmark.harness",
+                    "--clone-path", "src/FEM_TOLLA_Benchmark",
+                    "--run-module", "FEM_TOLLA_Benchmark.harness",
                     "--run-function", "campaign",
                     "--local-budget-seconds", "600",
                 ])
@@ -10836,12 +10856,12 @@ class LocalBudgetDeclarationTests(unittest.TestCase):
                     "--target", str(target),
                     "--service", self.FAKE_SERVICE,
                     "--job-name", "cli-no-local-budget",
-                    "--product", "MIL-CREDA",
+                    "--product", "FEM-TOLLA",
                     "--commit", "a" * 40,
                     "--repo-url", "https://example.invalid/repo.git",
                     "--repo-ref", "main",
-                    "--clone-path", "src/MIL_CREDA_Benchmark",
-                    "--run-module", "MIL_CREDA_Benchmark.harness",
+                    "--clone-path", "src/FEM_TOLLA_Benchmark",
+                    "--run-module", "FEM_TOLLA_Benchmark.harness",
                     "--run-function", "campaign",
                 ])
 
@@ -10894,13 +10914,13 @@ class CommitShapeTests(unittest.TestCase):
     def _run_config(self, commit: str) -> dict:
         return {
             "schemaVersion": 1,
-            "product": "MIL-CREDA",
+            "product": "FEM-TOLLA",
             "service": self.FAKE_SERVICE,
             "jobName": "search-a",
             "commit": commit,
             "repo": {"url": "https://example.invalid/repo.git", "ref": "main"},
-            "clonePaths": ["src/MIL_CREDA_Benchmark"],
-            "run": {"module": "MIL_CREDA_Benchmark.harness", "function": "campaign"},
+            "clonePaths": ["src/FEM_TOLLA_Benchmark"],
+            "run": {"module": "FEM_TOLLA_Benchmark.harness", "function": "campaign"},
             "runnerTemplate": [],
         }
 
@@ -10909,19 +10929,19 @@ class CommitShapeTests(unittest.TestCase):
         invoke = Path(tmp) / "fixture_invoke.py"
         bootstrap.write_text("# cell-0\n", encoding="utf-8")
         invoke.write_text("# cell-1\n", encoding="utf-8")
-        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
         harness.parent.mkdir(parents=True, exist_ok=True)
         harness.write_text("def campaign(*a, **k):\n    pass\n", encoding="utf-8")
         return JOBFOLDER.generate_job(
             target=target,
             service=self.FAKE_SERVICE,
             job_name="search-a",
-            product="MIL-CREDA",
+            product="FEM-TOLLA",
             commit=commit,
             repo_url="https://example.invalid/repo.git",
             repo_ref="main",
-            clone_paths=["src/MIL_CREDA_Benchmark"],
-            run_module="MIL_CREDA_Benchmark.harness",
+            clone_paths=["src/FEM_TOLLA_Benchmark"],
+            run_module="FEM_TOLLA_Benchmark.harness",
             run_function="campaign",
             bootstrap_asset=bootstrap,
             invoke_asset=invoke,
@@ -11063,7 +11083,7 @@ class CommitReachabilityTests(unittest.TestCase):
         return bootstrap, invoke
 
     def _ensure_default_source_tree(self, target: Path) -> None:
-        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
         if not harness.exists():
             harness.parent.mkdir(parents=True, exist_ok=True)
             harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
@@ -11075,12 +11095,12 @@ class CommitReachabilityTests(unittest.TestCase):
             target=target,
             service=self.FAKE_SERVICE,
             job_name="search-a",
-            product="MIL-CREDA",
+            product="FEM-TOLLA",
             commit="c" * 40,
             repo_url="https://example.invalid/repo.git",
             repo_ref="main",
-            clone_paths=["src/MIL_CREDA_Benchmark"],
-            run_module="MIL_CREDA_Benchmark.harness",
+            clone_paths=["src/FEM_TOLLA_Benchmark"],
+            run_module="FEM_TOLLA_Benchmark.harness",
             run_function="campaign",
             bootstrap_asset=bootstrap,
             invoke_asset=invoke,
@@ -11482,12 +11502,12 @@ class CommitReachabilityTests(unittest.TestCase):
                         target=target,
                         service=self.FAKE_SERVICE,
                         job_name="search-a",
-                        product="MIL-CREDA",
+                        product="FEM-TOLLA",
                         commit="c" * 40,
                         repo_url="https://example.invalid/repo.git",
                         repo_ref="main",
-                        clone_paths=["src/MIL_CREDA_Benchmark"],
-                        run_module="MIL_CREDA_Benchmark.harness",
+                        clone_paths=["src/FEM_TOLLA_Benchmark"],
+                        run_module="FEM_TOLLA_Benchmark.harness",
                         run_function="campaign",
                         bootstrap_asset=self._fixture_assets(tmp)[0],
                         invoke_asset=self._fixture_assets(tmp)[1],
@@ -11735,7 +11755,7 @@ class CleanWorkingTreeTests(unittest.TestCase):
     def _init_repo(self, target: Path) -> str:
         target.mkdir(parents=True, exist_ok=True)
         self._git(target, "init", "-q")
-        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
         harness.parent.mkdir(parents=True, exist_ok=True)
         harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
         (target / "README.md").write_text("outside every clone path\n", encoding="utf-8")
@@ -11747,7 +11767,7 @@ class CleanWorkingTreeTests(unittest.TestCase):
         JOBFOLDER.verify_pin_preconditions(
             target=target,
             commit=commit,
-            clone_paths=["src/MIL_CREDA_Benchmark"],
+            clone_paths=["src/FEM_TOLLA_Benchmark"],
             repo_url="https://example.invalid/repo.git",
             repo_ref="main",
             decision=decision,
@@ -11805,7 +11825,7 @@ class CleanWorkingTreeTests(unittest.TestCase):
 
             self.assertEqual(recorded["decision"], "generation")
             self.assertEqual(recorded["commit"], head)
-            self.assertEqual(list(recorded["clone_paths"]), ["src/MIL_CREDA_Benchmark"])
+            self.assertEqual(list(recorded["clone_paths"]), ["src/FEM_TOLLA_Benchmark"])
             self.assertEqual(recorded["repo_url"], "https://example.invalid/repo.git")
             self.assertEqual(recorded["repo_ref"], "main")
 
@@ -11822,12 +11842,12 @@ class CleanWorkingTreeTests(unittest.TestCase):
             target=target,
             service=self.FAKE_SERVICE,
             job_name="search-a",
-            product="MIL-CREDA",
+            product="FEM-TOLLA",
             commit=commit,
             repo_url="https://example.invalid/repo.git",
             repo_ref="main",
-            clone_paths=["src/MIL_CREDA_Benchmark"],
-            run_module="MIL_CREDA_Benchmark.harness",
+            clone_paths=["src/FEM_TOLLA_Benchmark"],
+            run_module="FEM_TOLLA_Benchmark.harness",
             run_function="campaign",
             bootstrap_asset=bootstrap,
             invoke_asset=invoke,
@@ -11839,13 +11859,13 @@ class CleanWorkingTreeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
             head = self._init_repo(target)
-            harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+            harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
             harness.write_text("def campaign():\n    return 'edited'\n", encoding="utf-8")
 
             with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
                 self._verify(target, head)
 
-            self.assertIn("src/MIL_CREDA_Benchmark/harness.py", str(caught.exception))
+            self.assertIn("src/FEM_TOLLA_Benchmark/harness.py", str(caught.exception))
 
     def test_an_untracked_non_ignored_file_under_a_clone_path_refuses_naming_it(self) -> None:
         """The case `git diff` cannot see, and the reason this condition
@@ -11855,13 +11875,13 @@ class CleanWorkingTreeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
             head = self._init_repo(target)
-            new_module = target / "src" / "MIL_CREDA_Benchmark" / "run_search.py"
+            new_module = target / "src" / "FEM_TOLLA_Benchmark" / "run_search.py"
             new_module.write_text("def search():\n    pass\n", encoding="utf-8")
 
             with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
                 self._verify(target, head)
 
-            self.assertIn("src/MIL_CREDA_Benchmark/run_search.py", str(caught.exception))
+            self.assertIn("src/FEM_TOLLA_Benchmark/run_search.py", str(caught.exception))
 
     def test_git_diff_would_not_have_seen_the_untracked_file(self) -> None:
         """Not a test of this module — a test of the instrument choice,
@@ -11873,17 +11893,17 @@ class CleanWorkingTreeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
             self._init_repo(target)
-            harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+            harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
             harness.write_text("def campaign():\n    return 'edited'\n", encoding="utf-8")
-            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+            (target / "src" / "FEM_TOLLA_Benchmark" / "run_search.py").write_text(
                 "def search():\n    pass\n", encoding="utf-8"
             )
 
             diffed = self._git(
-                target, "diff", "--name-only", "--", "src/MIL_CREDA_Benchmark"
+                target, "diff", "--name-only", "--", "src/FEM_TOLLA_Benchmark"
             ).stdout
             statused = self._git(
-                target, "status", "--porcelain", "--", "src/MIL_CREDA_Benchmark"
+                target, "status", "--porcelain", "--", "src/FEM_TOLLA_Benchmark"
             ).stdout
 
             self.assertIn("harness.py", diffed)
@@ -11895,14 +11915,14 @@ class CleanWorkingTreeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
             head = self._init_repo(target)
-            staged = target / "src" / "MIL_CREDA_Benchmark" / "staged.py"
+            staged = target / "src" / "FEM_TOLLA_Benchmark" / "staged.py"
             staged.write_text("STAGED = 1\n", encoding="utf-8")
-            self._git(target, "add", "src/MIL_CREDA_Benchmark/staged.py")
+            self._git(target, "add", "src/FEM_TOLLA_Benchmark/staged.py")
 
             with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
                 self._verify(target, head)
 
-            self.assertIn("src/MIL_CREDA_Benchmark/staged.py", str(caught.exception))
+            self.assertIn("src/FEM_TOLLA_Benchmark/staged.py", str(caught.exception))
 
     def test_an_ignored_file_under_a_clone_path_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -11913,7 +11933,7 @@ class CleanWorkingTreeTests(unittest.TestCase):
             self._git(target, "add", ".gitignore")
             self._git(target, "commit", "-q", "-m", "ignore pyc")
             head = self._git(target, "rev-parse", "HEAD").stdout.strip()
-            (target / "src" / "MIL_CREDA_Benchmark" / "harness.pyc").write_bytes(b"\x00")
+            (target / "src" / "FEM_TOLLA_Benchmark" / "harness.pyc").write_bytes(b"\x00")
 
             self._verify(target, head)
 
@@ -11929,7 +11949,7 @@ class CleanWorkingTreeTests(unittest.TestCase):
     def test_a_target_that_is_not_a_repository_refuses_carrying_gits_words(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "plain"
-            (target / "src" / "MIL_CREDA_Benchmark").mkdir(parents=True)
+            (target / "src" / "FEM_TOLLA_Benchmark").mkdir(parents=True)
 
             with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
                 self._verify(target, "a" * 40)
@@ -11939,7 +11959,7 @@ class CleanWorkingTreeTests(unittest.TestCase):
     def test_a_repository_with_no_commits_refuses_carrying_gits_words(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            (target / "src" / "MIL_CREDA_Benchmark").mkdir(parents=True)
+            (target / "src" / "FEM_TOLLA_Benchmark").mkdir(parents=True)
             self._git(target, "init", "-q")
 
             with self.assertRaises(JOBFOLDER.JobFolderError) as caught:
@@ -11951,7 +11971,7 @@ class CleanWorkingTreeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
             head = self._init_repo(target)
-            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+            (target / "src" / "FEM_TOLLA_Benchmark" / "run_search.py").write_text(
                 "x = 1\n", encoding="utf-8"
             )
 
@@ -11969,7 +11989,7 @@ class CleanWorkingTreeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
             head = self._init_repo(target)
-            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+            (target / "src" / "FEM_TOLLA_Benchmark" / "run_search.py").write_text(
                 "x = 1\n", encoding="utf-8"
             )
 
@@ -11989,10 +12009,10 @@ class CleanWorkingTreeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
             head = self._init_repo(target)
-            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+            (target / "src" / "FEM_TOLLA_Benchmark" / "run_search.py").write_text(
                 "x = 1\n", encoding="utf-8"
             )
-            harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+            harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
             harness.write_text("def campaign():\n    return 'edited'\n", encoding="utf-8")
             before = self._tree_fingerprint(target)
 
@@ -12007,7 +12027,7 @@ class CleanWorkingTreeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
             head = self._init_repo(target)
-            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+            (target / "src" / "FEM_TOLLA_Benchmark" / "run_search.py").write_text(
                 "def search():\n    pass\n", encoding="utf-8"
             )
 
@@ -12091,7 +12111,7 @@ class PinIsHeadTests(unittest.TestCase):
     def _init_repo(self, target: Path) -> str:
         target.mkdir(parents=True, exist_ok=True)
         self._git(target, "init", "-q")
-        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
         harness.parent.mkdir(parents=True, exist_ok=True)
         harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
         (target / "README.md").write_text("outside every clone path\n", encoding="utf-8")
@@ -12108,7 +12128,7 @@ class PinIsHeadTests(unittest.TestCase):
         JOBFOLDER.verify_pin_preconditions(
             target=target,
             commit=commit,
-            clone_paths=["src/MIL_CREDA_Benchmark"],
+            clone_paths=["src/FEM_TOLLA_Benchmark"],
             repo_url="https://example.invalid/repo.git",
             repo_ref="main",
             decision=decision,
@@ -12135,7 +12155,7 @@ class PinIsHeadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
             pinned = self._init_repo(target)
-            harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+            harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
             harness.write_text("def campaign():\n    return 2\n", encoding="utf-8")
             head = self._commit_all(target, "move the harness on")
 
@@ -12143,7 +12163,7 @@ class PinIsHeadTests(unittest.TestCase):
                 self._verify(target, pinned)
 
             message = str(caught.exception)
-            self.assertIn("src/MIL_CREDA_Benchmark/harness.py", message)
+            self.assertIn("src/FEM_TOLLA_Benchmark/harness.py", message)
             self.assertIn(pinned, message)
             self.assertIn(head, message)
 
@@ -12189,7 +12209,7 @@ class PinIsHeadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
             pinned = self._init_repo(target)
-            harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+            harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
             harness.write_text("def campaign():\n    return 2\n", encoding="utf-8")
             self._commit_all(target, "move the harness on")
             before = self._git(target, "rev-parse", "HEAD").stdout.strip()
@@ -12212,10 +12232,10 @@ class PinIsHeadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
             pinned = self._init_repo(target)
-            harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+            harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
             harness.write_text("def campaign():\n    return 2\n", encoding="utf-8")
             self._commit_all(target, "move the harness on")
-            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+            (target / "src" / "FEM_TOLLA_Benchmark" / "run_search.py").write_text(
                 "x = 1\n", encoding="utf-8"
             )
 
@@ -12244,7 +12264,7 @@ class PinIsHeadTests(unittest.TestCase):
             ):
                 self._verify(target, pinned)
 
-            self.assertEqual(calls, [(pinned, ["src/MIL_CREDA_Benchmark"])])
+            self.assertEqual(calls, [(pinned, ["src/FEM_TOLLA_Benchmark"])])
 
     # -- the asymmetry: refuse at a decision point, report at read() ------
 
@@ -12261,12 +12281,12 @@ class PinIsHeadTests(unittest.TestCase):
             target=target,
             service=self.FAKE_SERVICE,
             job_name="search-a",
-            product="MIL-CREDA",
+            product="FEM-TOLLA",
             commit=commit,
             repo_url="https://example.invalid/repo.git",
             repo_ref="main",
-            clone_paths=["src/MIL_CREDA_Benchmark"],
-            run_module="MIL_CREDA_Benchmark.harness",
+            clone_paths=["src/FEM_TOLLA_Benchmark"],
+            run_module="FEM_TOLLA_Benchmark.harness",
             run_function="campaign",
             bootstrap_asset=bootstrap,
             invoke_asset=invoke,
@@ -12278,7 +12298,7 @@ class PinIsHeadTests(unittest.TestCase):
             head = self._init_repo(target)
             job_dir = self._generate(tmp, target, commit=head)
 
-            harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+            harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
             harness.write_text("def campaign():\n    return 2\n", encoding="utf-8")
             self._commit_all(target, "move the harness on")
 
@@ -12286,7 +12306,7 @@ class PinIsHeadTests(unittest.TestCase):
 
             self.assertEqual(job_folder.staleness["status"], "drift")
             self.assertIn(
-                "src/MIL_CREDA_Benchmark/harness.py",
+                "src/FEM_TOLLA_Benchmark/harness.py",
                 job_folder.staleness["changedPaths"],
             )
 
@@ -12294,7 +12314,7 @@ class PinIsHeadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
             pinned = self._init_repo(target)
-            harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+            harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
             harness.write_text("def campaign():\n    return 2\n", encoding="utf-8")
             self._commit_all(target, "move the harness on")
 
@@ -12453,7 +12473,7 @@ class CommitDefaultTests(unittest.TestCase):
 
     def _init_repo(self, target: Path) -> str:
         target.mkdir(parents=True, exist_ok=True)
-        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
         harness.parent.mkdir(parents=True, exist_ok=True)
         harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
         self._git(target, "init", "-q")
@@ -12474,11 +12494,11 @@ class CommitDefaultTests(unittest.TestCase):
             target=target,
             service=self.FAKE_SERVICE,
             job_name="search-a",
-            product="MIL-CREDA",
+            product="FEM-TOLLA",
             repo_url="https://example.invalid/repo.git",
             repo_ref="main",
-            clone_paths=["src/MIL_CREDA_Benchmark"],
-            run_module="MIL_CREDA_Benchmark.harness",
+            clone_paths=["src/FEM_TOLLA_Benchmark"],
+            run_module="FEM_TOLLA_Benchmark.harness",
             run_function="campaign",
             bootstrap_asset=bootstrap,
             invoke_asset=invoke,
@@ -12499,11 +12519,11 @@ class CommitDefaultTests(unittest.TestCase):
                 "--target", str(target),
                 "--service", self.FAKE_SERVICE,
                 "--job-name", "cli-job",
-                "--product", "MIL-CREDA",
+                "--product", "FEM-TOLLA",
                 "--repo-url", "https://example.invalid/repo.git",
                 "--repo-ref", "main",
-                "--clone-path", "src/MIL_CREDA_Benchmark",
-                "--run-module", "MIL_CREDA_Benchmark.harness",
+                "--clone-path", "src/FEM_TOLLA_Benchmark",
+                "--run-module", "FEM_TOLLA_Benchmark.harness",
                 "--run-function", "campaign",
                 *extra,
             ])
@@ -12578,7 +12598,7 @@ class CommitDefaultTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
             self._init_repo(target)
-            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+            (target / "src" / "FEM_TOLLA_Benchmark" / "run_search.py").write_text(
                 "def search():\n    pass\n", encoding="utf-8"
             )
 
@@ -12606,8 +12626,8 @@ class CommitDefaultTests(unittest.TestCase):
     def test_defaulting_in_a_target_with_no_history_refuses_with_gits_words(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            (target / "src" / "MIL_CREDA_Benchmark").mkdir(parents=True)
-            (target / "src" / "MIL_CREDA_Benchmark" / "harness.py").write_text(
+            (target / "src" / "FEM_TOLLA_Benchmark").mkdir(parents=True)
+            (target / "src" / "FEM_TOLLA_Benchmark" / "harness.py").write_text(
                 "def campaign():\n    pass\n", encoding="utf-8"
             )
             self._git(target, "init", "-q")
@@ -12736,11 +12756,11 @@ class ResolveClonePathsTests(unittest.TestCase):
         submodule FILE rather than an attribute `__init__.py` itself
         defines. `A/sub.py`'s own imports were then never walked at
         all — confirmed as a real production gap: a job folder generated
-        for `from MIL_CREDA_Benchmark import bags, config, report_digest,
+        for `from FEM_TOLLA_Benchmark import partials, config, report_digest,
         wiring` (an empty `__init__.py`) let `wiring.py`'s own `from
-        MIL_CREDA.attention import ...` slip through undeclared, and the
+        FEM_TOLLA.spectra import ...` slip through undeclared, and the
         clone failed at runtime with `ModuleNotFoundError: No module named
-        'MIL_CREDA'` — exactly the silent gap `computedNotDeclared` exists
+        'FEM_TOLLA'` — exactly the silent gap `computedNotDeclared` exists
         to refuse.
 
         The fix must stay conservative: `A.sub` is enqueued ONLY when it
@@ -12988,16 +13008,14 @@ class UndeclaredReadDetectionTests(unittest.TestCase):
     def test_undeclared_four_link_chain_read_refuses_naming_the_resolved_path(
         self,
     ) -> None:
-        """Transcribed from the real, cited target shape
-        (`implementations/Domain_Adaptation/src/MIL_CREDA_Benchmark/config.py`
-        lines 459-469, read-only): `REPOSITORY = Path(__file__).resolve()
+        """Transcribed from a real target's own `config.py` (lines 459-469,
+        read as-is, never re-derived): `REPOSITORY = Path(__file__).resolve()
         .parents[2]`, then `PRODUCT`, `RESULTS`, and finally the record
         constant, each one a `Name` lookup into the constant folded just
-        above it, with a `.read_text()` call inside a function body
-        (mirrors `config.py`'s `ceilings_on_record()`). Only `src/pkg_a` is
-        declared; the resolved record path lands OUTSIDE `src/` entirely
-        (a sibling of it, exactly like the real `MIL-CREDA/Results/
-        Benchmark/ceilings.json` sitting beside `src/`), so it is a real,
+        above it, with a `.read_text()` call inside a function body that
+        returns the record. Only `src/pkg_a` is declared; the resolved record
+        path lands OUTSIDE `src/` entirely -- a sibling of it, the way a
+        product folder's `Results/` sits beside `src/` -- so it is a real,
         contained, undeclared read.
         """
         with tempfile.TemporaryDirectory() as tmp:
@@ -13301,7 +13319,7 @@ class UndeclaredReadDetectionTests(unittest.TestCase):
 
     def test_write_only_fixture_both_lists_stay_empty(self) -> None:
         """Mirrors `harness.py`'s real resume-record write site
-        (`config.CEILINGS_RECORD.parent.mkdir(parents=True,
+        (the folded record constant's `.parent.mkdir(parents=True,
         exist_ok=True)` then `.write_text(...)`, `harness.py:1019-1020`),
         transcribed same-file: a folded, target-contained path is
         `mkdir`'d and `write_text`'d, never read. Both lists must stay
@@ -13338,8 +13356,8 @@ class UndeclaredReadDetectionTests(unittest.TestCase):
         self,
     ) -> None:
         """Mirrors the real target's resumable-record shape exactly,
-        same-file (`search_record()` reading `config.CEILINGS_RECORD`
-        that a PRIOR run of `harness.py:1019-1020` wrote): `RECORD` is
+        same-file (`search_record()` reading the record constant that a
+        PRIOR run of `harness.py:1019-1020` wrote): `RECORD` is
         BOTH read (`resume_on_record()`) AND written
         (`seal_record()`, `mkdir` + `write_text`) by the same walked file
         set. The read is undeclared and outside `src/`, same shape as
@@ -13580,12 +13598,12 @@ class UndeclaredReadDetectionTests(unittest.TestCase):
                 "REPOSITORY = Path(__file__).resolve().parents[2]\n"
                 'PRODUCT = REPOSITORY / "product-out"\n'
                 'RESULTS = PRODUCT / "Results" / "Stage"\n'
-                'RECORD = RESULTS / "ceilings.json"\n',
+                'RECORD = RESULTS / "undercuts.json"\n',
             )
             self._write(
                 target, "src/pkg_i/harness.py",
                 "from pkg_i import config\n\n\n"
-                "def ceilings_on_record():\n"
+                "def undercuts_on_record():\n"
                 "    if not config.RECORD.exists():\n"
                 "        return {}\n"
                 "    return config.RECORD.read_text(encoding='utf-8')\n",
@@ -13597,7 +13615,7 @@ class UndeclaredReadDetectionTests(unittest.TestCase):
 
             self.assertEqual(
                 result["computedReadsNotDeclared"],
-                ["product-out/Results/Stage/ceilings.json"],
+                ["product-out/Results/Stage/undercuts.json"],
             )
             self.assertEqual(result["unresolvedReads"], [])
 
@@ -13607,7 +13625,7 @@ class UndeclaredReadDetectionTests(unittest.TestCase):
         self,
     ) -> None:
         """Mirrors `harness.py`'s real `search_record()`-shaped read of
-        `config.CEILINGS_RECORD.read_text()` (`harness.py:784`): the
+        a record constant off `config` (`harness.py:784`): the
         constant folds in a DIFFERENT file (`pkg_j.config`) than the one
         holding the read call site (`pkg_j.harness`), reached only via the
         walk's own module->file map, reused (not duplicated) from import
@@ -13623,15 +13641,15 @@ class UndeclaredReadDetectionTests(unittest.TestCase):
                 "REPOSITORY = Path(__file__).resolve().parents[2]\n"
                 'PRODUCT = REPOSITORY / "product-out"\n'
                 'RESULTS = PRODUCT / "Results" / "Stage"\n'
-                'CEILINGS_RECORD = RESULTS / "ceilings.json"\n',
+                'UNDERCUTS_RECORD = RESULTS / "undercuts.json"\n',
             )
             self._write(
                 target, "src/pkg_j/harness.py",
                 "from pkg_j import config\n\n\n"
                 "def search_record():\n"
-                "    if not config.CEILINGS_RECORD.exists():\n"
+                "    if not config.UNDERCUTS_RECORD.exists():\n"
                 "        return {}\n"
-                "    return config.CEILINGS_RECORD.read_text(encoding='utf-8')\n",
+                "    return config.UNDERCUTS_RECORD.read_text(encoding='utf-8')\n",
             )
 
             result = JOBFOLDER.resolve_clone_paths(
@@ -13640,7 +13658,7 @@ class UndeclaredReadDetectionTests(unittest.TestCase):
 
             self.assertEqual(
                 result["computedReadsNotDeclared"],
-                ["product-out/Results/Stage/ceilings.json"],
+                ["product-out/Results/Stage/undercuts.json"],
             )
             self.assertEqual(result["unresolvedReads"], [])
 
@@ -13651,7 +13669,7 @@ class UndeclaredReadDetectionTests(unittest.TestCase):
                     run_module="pkg_j.harness",
                     run_function="search_record",
                 )
-            self.assertIn("product-out/Results/Stage/ceilings.json", str(ctx.exception))
+            self.assertIn("product-out/Results/Stage/undercuts.json", str(ctx.exception))
 
     # -- Test 13 (Unit 2, Phase 8 — unresolved sibling module) ---------
 
@@ -13737,7 +13755,7 @@ class StalenessTests(unittest.TestCase):
         """
         target.mkdir(parents=True, exist_ok=True)
         self._git(target, "init", "-q")
-        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
         harness.parent.mkdir(parents=True, exist_ok=True)
         harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
         (target / "README.md").write_text("scratch fixture\n", encoding="utf-8")
@@ -13753,7 +13771,7 @@ class StalenessTests(unittest.TestCase):
         return bootstrap, invoke
 
     def _ensure_source_tree(self, target: Path) -> None:
-        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
         if not harness.exists():
             harness.parent.mkdir(parents=True, exist_ok=True)
             harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
@@ -13765,12 +13783,12 @@ class StalenessTests(unittest.TestCase):
             target=target,
             service=self.FAKE_SERVICE,
             job_name=job_name,
-            product="MIL-CREDA",
+            product="FEM-TOLLA",
             commit=commit,
             repo_url="https://example.invalid/repo.git",
             repo_ref="main",
-            clone_paths=["src/MIL_CREDA_Benchmark"],
-            run_module="MIL_CREDA_Benchmark.harness",
+            clone_paths=["src/FEM_TOLLA_Benchmark"],
+            run_module="FEM_TOLLA_Benchmark.harness",
             run_function="campaign",
             bootstrap_asset=bootstrap,
             invoke_asset=invoke,
@@ -13804,7 +13822,7 @@ class StalenessTests(unittest.TestCase):
             self.assertEqual(still_not_stale.staleness["status"], "fresh")
 
             # Advance HEAD again, this time touching the DECLARED clone path.
-            (target / "src" / "MIL_CREDA_Benchmark" / "harness.py").write_text(
+            (target / "src" / "FEM_TOLLA_Benchmark" / "harness.py").write_text(
                 "def campaign(*args, **kwargs):\n    return 1\n", encoding="utf-8"
             )
             self._git(target, "add", "-A")
@@ -13813,7 +13831,7 @@ class StalenessTests(unittest.TestCase):
             drifted = JOBFOLDER.read(job_dir)
             self.assertEqual(drifted.staleness["status"], "drift")
             self.assertIn(
-                "src/MIL_CREDA_Benchmark/harness.py", drifted.staleness["changedPaths"]
+                "src/FEM_TOLLA_Benchmark/harness.py", drifted.staleness["changedPaths"]
             )
 
     def test_drift_is_never_a_refusal(self) -> None:
@@ -13825,7 +13843,7 @@ class StalenessTests(unittest.TestCase):
             initial_commit = self._init_repo(target)
             job_dir = self._generate(tmp, target, commit=initial_commit)
 
-            (target / "src" / "MIL_CREDA_Benchmark" / "harness.py").write_text(
+            (target / "src" / "FEM_TOLLA_Benchmark" / "harness.py").write_text(
                 "def campaign(*args, **kwargs):\n    return 2\n", encoding="utf-8"
             )
             self._git(target, "add", "-A")
@@ -13893,7 +13911,7 @@ class StalenessTests(unittest.TestCase):
 
             outside = Path(tmp) / "outside"
             outside.mkdir()
-            real_dir = target / "src" / "MIL_CREDA_Benchmark"
+            real_dir = target / "src" / "FEM_TOLLA_Benchmark"
             shutil.rmtree(real_dir)
             real_dir.symlink_to(outside)
 
@@ -14014,7 +14032,7 @@ class StalenessTests(unittest.TestCase):
                     JOBFOLDER.subprocess, "run", side_effect=recording_run
                 ):
                     staleness = JOBFOLDER._staleness_for(
-                        target.resolve(), malicious, ["src/MIL_CREDA_Benchmark"]
+                        target.resolve(), malicious, ["src/FEM_TOLLA_Benchmark"]
                     )
 
                 self.assertEqual(staleness["status"], "unknown")
@@ -14082,9 +14100,9 @@ class SubmitPinGateTests(unittest.TestCase):
 
     def _init_repo(self, target: Path) -> str:
         target.mkdir(parents=True, exist_ok=True)
-        (target / "MIL-CREDA").mkdir(parents=True, exist_ok=True)
-        (target / "MIL-CREDA" / ".keep").write_text("", encoding="utf-8")
-        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        (target / "FEM-TOLLA").mkdir(parents=True, exist_ok=True)
+        (target / "FEM-TOLLA" / ".keep").write_text("", encoding="utf-8")
+        harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
         harness.parent.mkdir(parents=True, exist_ok=True)
         harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
         self._git(target, "init", "-q")
@@ -14109,12 +14127,12 @@ class SubmitPinGateTests(unittest.TestCase):
                 target=target,
                 service=self.FAKE_SERVICE,
                 job_name="search-a",
-                product="MIL-CREDA",
+                product="FEM-TOLLA",
                 commit=commit,
                 repo_url="https://example.invalid/repo.git",
                 repo_ref="main",
-                clone_paths=["src/MIL_CREDA_Benchmark"],
-                run_module="MIL_CREDA_Benchmark.harness",
+                clone_paths=["src/FEM_TOLLA_Benchmark"],
+                run_module="FEM_TOLLA_Benchmark.harness",
                 run_function="campaign",
                 bootstrap_asset=bootstrap,
                 invoke_asset=invoke,
@@ -14143,7 +14161,7 @@ class SubmitPinGateTests(unittest.TestCase):
         )
 
     def _ledger_path(self, target: Path) -> Path:
-        return target.resolve() / "MIL-CREDA" / ".remote-execution" / "ledger.jsonl"
+        return target.resolve() / "FEM-TOLLA" / ".remote-execution" / "ledger.jsonl"
 
     # -- the three conditions, at submit time ----------------------------
 
@@ -14152,7 +14170,7 @@ class SubmitPinGateTests(unittest.TestCase):
             target = Path(tmp) / "repo"
             head = self._init_repo(target)
             job_dir = self._generate(tmp, target, commit=head)
-            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+            (target / "src" / "FEM_TOLLA_Benchmark" / "run_search.py").write_text(
                 "def search():\n    pass\n", encoding="utf-8"
             )
             adapter = self._SpyAdapter(worker_id="w1", capacity=2)
@@ -14174,7 +14192,7 @@ class SubmitPinGateTests(unittest.TestCase):
             target = Path(tmp) / "repo"
             head = self._init_repo(target)
             job_dir = self._generate(tmp, target, commit=head)
-            harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+            harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
             harness.write_text("def campaign():\n    return 2\n", encoding="utf-8")
             self._commit_all(target, "move the harness on")
             adapter = self._SpyAdapter(worker_id="w1", capacity=2)
@@ -14226,7 +14244,7 @@ class SubmitPinGateTests(unittest.TestCase):
             target = Path(tmp) / "repo"
             head = self._init_repo(target)
             job_dir = self._generate(tmp, target, commit=head)
-            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+            (target / "src" / "FEM_TOLLA_Benchmark" / "run_search.py").write_text(
                 "x = 1\n", encoding="utf-8"
             )
 
@@ -14261,7 +14279,7 @@ class SubmitPinGateTests(unittest.TestCase):
                 # matching `gate` record now -- consent alone is no
                 # longer enough.
                 _mint_launch_authorization(
-                    target=target, product="MIL-CREDA", pin_commit=head,
+                    target=target, product="FEM-TOLLA", pin_commit=head,
                     relative_entrypoint=f"tools/{self.FAKE_SERVICE}/search-a/runner.ipynb",
                     worker="w1",
                 )
@@ -14282,7 +14300,7 @@ class SubmitPinGateTests(unittest.TestCase):
             target = Path(tmp) / "repo"
             head = self._init_repo(target)
             job_dir = self._generate(tmp, target, commit=head)
-            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+            (target / "src" / "FEM_TOLLA_Benchmark" / "run_search.py").write_text(
                 "x = 1\n", encoding="utf-8"
             )
             digest_calls = []
@@ -14311,7 +14329,7 @@ class SubmitPinGateTests(unittest.TestCase):
             target = Path(tmp) / "repo"
             head = self._init_repo(target)
             job_dir = self._generate(tmp, target, commit=head)
-            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+            (target / "src" / "FEM_TOLLA_Benchmark" / "run_search.py").write_text(
                 "x = 1\n", encoding="utf-8"
             )
             adapter = self._SpyAdapter(worker_id="w1", capacity=2)
@@ -14338,14 +14356,14 @@ class SubmitPinGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
             self._init_repo(target)
-            notebooks = target / "MIL-CREDA" / "Notebooks"
+            notebooks = target / "FEM-TOLLA" / "Notebooks"
             notebooks.mkdir(parents=True)
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
             # Deliberately dirty, and deliberately not a job folder: there
             # is no declared pin, no declared clone paths and no declared
             # remote here, so there is nothing for the gate to check.
-            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+            (target / "src" / "FEM_TOLLA_Benchmark" / "run_search.py").write_text(
                 "x = 1\n", encoding="utf-8"
             )
             adapter = self._SpyAdapter(worker_id="w1", capacity=2)
@@ -14374,7 +14392,7 @@ class SubmitPinGateTests(unittest.TestCase):
             head = self._init_repo(target)
             job_dir = self._generate(tmp, target, commit=head)
             (job_dir / "run-config.json").write_text(
-                json.dumps({"product": "MIL-CREDA"}), encoding="utf-8"
+                json.dumps({"product": "FEM-TOLLA"}), encoding="utf-8"
             )
             adapter = self._SpyAdapter(worker_id="w1", capacity=2)
 
@@ -14415,7 +14433,7 @@ class SubmitPinGateTests(unittest.TestCase):
             target = Path(tmp) / "repo"
             head = self._init_repo(target)
             job_dir = self._generate(tmp, target, commit=head)
-            (target / "src" / "MIL_CREDA_Benchmark" / "run_search.py").write_text(
+            (target / "src" / "FEM_TOLLA_Benchmark" / "run_search.py").write_text(
                 "x = 1\n", encoding="utf-8"
             )
             stderr = io.StringIO()
@@ -14482,10 +14500,10 @@ class StalenessRoutingTests(unittest.TestCase):
     def _init_repo(self, target: Path) -> str:
         target.mkdir(parents=True, exist_ok=True)
         self._git(target, "init", "-q")
-        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
         harness.parent.mkdir(parents=True, exist_ok=True)
         harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
-        (target / "MIL-CREDA").mkdir(parents=True, exist_ok=True)
+        (target / "FEM-TOLLA").mkdir(parents=True, exist_ok=True)
         self._git(target, "add", "-A")
         self._git(target, "commit", "-q", "-m", "initial")
         return self._git(target, "rev-parse", "HEAD").stdout.strip()
@@ -14503,12 +14521,12 @@ class StalenessRoutingTests(unittest.TestCase):
             target=target,
             service=self.FAKE_SERVICE,
             job_name="search-a",
-            product="MIL-CREDA",
+            product="FEM-TOLLA",
             commit=commit,
             repo_url="https://example.invalid/repo.git",
             repo_ref="main",
-            clone_paths=["src/MIL_CREDA_Benchmark"],
-            run_module="MIL_CREDA_Benchmark.harness",
+            clone_paths=["src/FEM_TOLLA_Benchmark"],
+            run_module="FEM_TOLLA_Benchmark.harness",
             run_function="campaign",
             bootstrap_asset=bootstrap,
             invoke_asset=invoke,
@@ -14521,7 +14539,7 @@ class StalenessRoutingTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
@@ -14561,7 +14579,7 @@ class StalenessRoutingTests(unittest.TestCase):
             # PR7 (design §4): a job-folder launch also needs a matching
             # `gate` record now -- consent alone is no longer enough.
             _mint_launch_authorization(
-                target=target, product="MIL-CREDA", pin_commit=initial_commit,
+                target=target, product="FEM-TOLLA", pin_commit=initial_commit,
                 relative_entrypoint=f"tools/{self.FAKE_SERVICE}/search-a/runner.ipynb",
                 worker="w1",
             )
@@ -14604,12 +14622,12 @@ class StalenessRoutingTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            (target / "MIL-CREDA").mkdir(parents=True)
+            (target / "FEM-TOLLA").mkdir(parents=True)
             job_dir = _make_job_folder(target, "kaggle", "search-a")
             notebook = job_dir / "runner.ipynb"
             notebook.write_text("{}", encoding="utf-8")
             (job_dir / "run-config.json").write_text(
-                json.dumps({"product": "MIL-CREDA"}), encoding="utf-8"
+                json.dumps({"product": "FEM-TOLLA"}), encoding="utf-8"
             )
 
             adapter = FakeAdapter(worker_id="w1", capacity=2)
@@ -14624,7 +14642,7 @@ class StalenessRoutingTests(unittest.TestCase):
                 )
 
             self.assertFalse(
-                (target.resolve() / "MIL-CREDA" / ".remote-execution").exists()
+                (target.resolve() / "FEM-TOLLA" / ".remote-execution").exists()
             )
 
     def test_the_staleness_helper_itself_stays_tolerant(self) -> None:
@@ -14635,12 +14653,12 @@ class StalenessRoutingTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            (target / "MIL-CREDA").mkdir(parents=True)
+            (target / "FEM-TOLLA").mkdir(parents=True)
             job_dir = _make_job_folder(target, "kaggle", "search-a")
             notebook = job_dir / "runner.ipynb"
             notebook.write_text("{}", encoding="utf-8")
             (job_dir / "run-config.json").write_text(
-                json.dumps({"product": "MIL-CREDA"}), encoding="utf-8"
+                json.dumps({"product": "FEM-TOLLA"}), encoding="utf-8"
             )
 
             self.assertIsNone(REMOTE_CLI._job_folder_staleness(notebook))
@@ -14661,7 +14679,7 @@ class StalenessRoutingTests(unittest.TestCase):
             # PR7 (design §4): a job-folder launch also needs a matching
             # `gate` record now -- consent alone is no longer enough.
             _mint_launch_authorization(
-                target=target, product="MIL-CREDA", pin_commit=initial_commit,
+                target=target, product="FEM-TOLLA", pin_commit=initial_commit,
                 relative_entrypoint=f"tools/{self.FAKE_SERVICE}/search-a/runner.ipynb",
                 worker="w1",
             )
@@ -14675,7 +14693,7 @@ class StalenessRoutingTests(unittest.TestCase):
                 consent=token,
             )
 
-            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "search-a"
+            dest = target.resolve() / "FEM-TOLLA" / "Results" / "shards" / "search-a"
             fetch_result = REMOTE_CLI.cmd_fetch(
                 target=target,
                 entrypoint=notebook,
@@ -14724,12 +14742,12 @@ class StalenessRoutingTests(unittest.TestCase):
                     "--target", str(target),
                     "--service", self.FAKE_SERVICE,
                     "--job-name", "cli-job",
-                    "--product", "MIL-CREDA",
+                    "--product", "FEM-TOLLA",
                     "--commit", initial_commit,
                     "--repo-url", "https://example.invalid/repo.git",
                     "--repo-ref", "main",
-                    "--clone-path", "src/MIL_CREDA_Benchmark",
-                    "--run-module", "MIL_CREDA_Benchmark.harness",
+                    "--clone-path", "src/FEM_TOLLA_Benchmark",
+                    "--run-module", "FEM_TOLLA_Benchmark.harness",
                     "--run-function", "campaign",
                 ])
 
@@ -15885,7 +15903,7 @@ class SmokeTests(unittest.TestCase):
 
     def _init_repo(self, target: Path) -> str:
         target.mkdir(parents=True, exist_ok=True)
-        harness = target / "src" / "MIL_CREDA_Benchmark" / "harness.py"
+        harness = target / "src" / "FEM_TOLLA_Benchmark" / "harness.py"
         harness.parent.mkdir(parents=True, exist_ok=True)
         harness.write_text("def campaign(*args, **kwargs):\n    pass\n", encoding="utf-8")
         self._git(target, "init", "-q")
@@ -15910,20 +15928,20 @@ class SmokeTests(unittest.TestCase):
         required_evidence=("evidence.commit", "evidence.outputs"),
         regenerate: bool = False,
     ) -> Path:
-        (target / "MIL-CREDA").mkdir(parents=True, exist_ok=True)
+        (target / "FEM-TOLLA").mkdir(parents=True, exist_ok=True)
         bootstrap, invoke = self._fixture_assets(tmp)
         return JOBFOLDER.generate_job(
             target=target,
             service=self.FAKE_SERVICE,
             job_name=job_name,
-            product="MIL-CREDA",
+            product="FEM-TOLLA",
             commit=commit,
             repo_url="https://example.invalid/repo.git",
             repo_ref="main",
-            clone_paths=["src/MIL_CREDA_Benchmark"],
-            run_module="MIL_CREDA_Benchmark.harness",
+            clone_paths=["src/FEM_TOLLA_Benchmark"],
+            run_module="FEM_TOLLA_Benchmark.harness",
             run_function="campaign",
-            smoke_module="MIL_CREDA_Benchmark.harness",
+            smoke_module="FEM_TOLLA_Benchmark.harness",
             smoke_function="campaign",
             smoke_required_evidence=list(required_evidence) if required_evidence else None,
             bootstrap_asset=bootstrap,
@@ -15939,7 +15957,7 @@ class SmokeTests(unittest.TestCase):
         full run as superseded (design #744 section 7's own rejection)."""
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            (target / "MIL-CREDA").mkdir(parents=True)
+            (target / "FEM-TOLLA").mkdir(parents=True)
             job_dir = _make_job_folder(target, "kaggle", "search-a")
             notebook = job_dir / "runner.ipynb"
             notebook.write_text("{}", encoding="utf-8")
@@ -15961,7 +15979,7 @@ class SmokeTests(unittest.TestCase):
             # stays exempt (design §4.2: gating a rehearsal would deadlock
             # the very mechanism that makes readiness measurable).
             _mint_launch_authorization(
-                target=target, product="MIL-CREDA", pin_commit="a" * 40,
+                target=target, product="FEM-TOLLA", pin_commit="a" * 40,
                 relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
                 worker="w1",
             )
@@ -15999,7 +16017,7 @@ class SmokeTests(unittest.TestCase):
         prevent the real one from becoming this entrypoint's latest."""
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            (target / "MIL-CREDA").mkdir(parents=True)
+            (target / "FEM-TOLLA").mkdir(parents=True)
             job_dir = _make_job_folder(target, "kaggle", "search-a")
             notebook = job_dir / "runner.ipynb"
             notebook.write_text("{}", encoding="utf-8")
@@ -16021,7 +16039,7 @@ class SmokeTests(unittest.TestCase):
             # a matching `gate` record now -- the rehearsal above stays
             # exempt (design §4.2).
             _mint_launch_authorization(
-                target=target, product="MIL-CREDA", pin_commit="a" * 40,
+                target=target, product="FEM-TOLLA", pin_commit="a" * 40,
                 relative_entrypoint="tools/kaggle/search-a/runner.ipynb",
                 worker="w1",
             )
@@ -16044,7 +16062,7 @@ class SmokeTests(unittest.TestCase):
     def test_submit_smoke_sets_run_config_mode_full_submit_keeps_it_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
@@ -16108,7 +16126,7 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual(result["smokeLedgerPath"].name, "smoke.jsonl")
             self.assertEqual(
                 result["smokeLedgerPath"].parent,
-                target.resolve() / "MIL-CREDA" / ".remote-execution",
+                target.resolve() / "FEM-TOLLA" / ".remote-execution",
             )
 
             lines = result["smokeLedgerPath"].read_text(encoding="utf-8").splitlines()
@@ -16458,7 +16476,7 @@ class SmokeTests(unittest.TestCase):
                 REMOTE_CLI.cmd_readiness(job_dir=job_dir, worker="w1")["ready"]
             )
 
-            (target / "src" / "MIL_CREDA_Benchmark" / "harness.py").write_text(
+            (target / "src" / "FEM_TOLLA_Benchmark" / "harness.py").write_text(
                 "def campaign(*args, **kwargs):\n    return 1\n", encoding="utf-8"
             )
             self._git(target, "add", "-A")
@@ -16522,7 +16540,7 @@ class SmokeTests(unittest.TestCase):
             job_dir = self._generate(tmp, target, commit=commit)
 
             smoke_ledger_path = (
-                target.resolve() / "MIL-CREDA" / ".remote-execution" / "smoke.jsonl"
+                target.resolve() / "FEM-TOLLA" / ".remote-execution" / "smoke.jsonl"
             )
             LEDGER.append(
                 smoke_ledger_path,
@@ -17094,7 +17112,7 @@ class DoctrinePinTests(unittest.TestCase):
         """`kaggle_driver.py` is production code this change added, and the
         no-target-vocabulary guard must scan it exactly like every other
         module in the skill -- omission here is precisely how
-        `MIL_CREDA_Benchmark` once reached `jobfolder.py` unnoticed, per
+        `FEM_TOLLA_Benchmark` once reached `jobfolder.py` unnoticed, per
         `TargetVocabularyLeakTests`'s own docstring.
         """
         self.assertIn(KAGGLE_DRIVER_SCRIPT, TargetVocabularyLeakTests.MODULE_SCRIPTS)
@@ -17150,12 +17168,12 @@ class ClonePathExistenceTests(unittest.TestCase):
     def test_a_declared_path_absent_from_the_pin_refuses_and_names_it(self):
         with tempfile.TemporaryDirectory() as raw:
             origin, target, _ = self.target_with_remote(Path(raw))
-            completed = self.generate(target, origin, "Results/ceilings.json")
+            completed = self.generate(target, origin, "Results/undercuts.json")
             output = completed.stdout + completed.stderr
             self.assertNotEqual(completed.returncode, 0,
                                 "generation declared a path the pin does not "
                                 "contain: " + output.strip()[:300])
-            self.assertIn("Results/ceilings.json", output)
+            self.assertIn("Results/undercuts.json", output)
             self.assertFalse((target / "tools").exists(),
                              "a job folder was written for an absent clone path")
 
@@ -17168,12 +17186,12 @@ class ClonePathExistenceTests(unittest.TestCase):
             origin, target, _ = self.target_with_remote(Path(raw))
             data = target / "Results"
             data.mkdir()
-            (data / "ceilings.json").write_text("{}\n", encoding="utf-8")
-            completed = self.generate(target, origin, "Results/ceilings.json")
+            (data / "undercuts.json").write_text("{}\n", encoding="utf-8")
+            completed = self.generate(target, origin, "Results/undercuts.json")
             output = completed.stdout + completed.stderr
             self.assertNotEqual(completed.returncode, 0,
                                 "an uncommitted file passed as a declared path")
-            self.assertIn("Results/ceilings.json", output)
+            self.assertIn("Results/undercuts.json", output)
 
     def test_a_declared_path_present_in_the_pin_is_accepted(self):
         """Non-vacuity: the check must pass for a committed data path, or it is
@@ -17183,12 +17201,12 @@ class ClonePathExistenceTests(unittest.TestCase):
             origin, target, git = self.target_with_remote(Path(raw))
             data = target / "Results"
             data.mkdir()
-            (data / "ceilings.json").write_text("{}\n", encoding="utf-8")
+            (data / "undercuts.json").write_text("{}\n", encoding="utf-8")
             subprocess.run([*git, "add", "-A"], check=True)
             subprocess.run([*git, "commit", "-q", "-m", "record"], check=True)
             subprocess.run([*git, "push", "-q", "origin", "HEAD:refs/heads/main"],
                            check=True)
-            completed = self.generate(target, origin, "Results/ceilings.json")
+            completed = self.generate(target, origin, "Results/undercuts.json")
             self.assertEqual(completed.returncode, 0,
                              (completed.stdout + completed.stderr).strip()[:300])
 
@@ -17206,7 +17224,7 @@ class ClonePathExistenceTests(unittest.TestCase):
         one real `generate-job` invocation.
 
         `harness.py` both READS and WRITES the same not-yet-existing file
-        (the `search_record()`/`config.CEILINGS_RECORD` resumable-record
+        (the `search_record()`/record-constant resumable-record
         shape): before this corrective batch, no invocation could ever
         succeed for a job's first-ever run — declaring the path refused
         via `_refuse_absent_clone_paths` (no tree object at the pin, since
@@ -17295,9 +17313,9 @@ class PublishedPinResolutionTests(unittest.TestCase):
     author is told to push a commit whose entire content is the job folder they
     are in the middle of regenerating.
 
-    Measured on the live target rather than imagined: `03ac154` changed only
-    `tools/kaggle/ceiling-search/`, and `git diff d903d14 03ac154 -- <every
-    clone path>` came back empty. The runner would have received byte-identical
+    Measured on a live target rather than imagined: `03ac154` changed only
+    that target's own job folder under `tools/`, and `git diff d903d14 03ac154
+    -- <every clone path>` came back empty. The runner would have received byte-identical
     code from the published commit.
 
     So the default narrows: when HEAD is unpublished and the declared ref's
@@ -17669,16 +17687,16 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
     def test_status_reports_a_parallel_smoke_section_without_merging_it(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
             main_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.LEDGER_FILENAME
             )
             smoke_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.SMOKE_LEDGER_FILENAME
             )
             _append_pending_submission(
@@ -17719,7 +17737,7 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
@@ -17737,7 +17755,7 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
             submission_id = submit_result["submission"].id
             self.assertTrue(submit_result["ledgerPath"].name, "smoke.jsonl")
 
-            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+            dest = target.resolve() / "FEM-TOLLA" / "Results" / "shards" / "a"
             fetch_result = REMOTE_CLI.cmd_fetch(
                 target=target, entrypoint=notebook, submission_id=submission_id,
                 dest=dest, adapter=adapter, source_digest=lambda t, n: "d" * 64,
@@ -17748,11 +17766,11 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
             self.assertTrue((dest / "result.txt").exists())
 
             smoke_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.SMOKE_LEDGER_FILENAME
             )
             main_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.LEDGER_FILENAME
             )
             smoke_lines = smoke_ledger_path.read_text(encoding="utf-8").splitlines()
@@ -17776,16 +17794,16 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
             main_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.LEDGER_FILENAME
             )
             smoke_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.SMOKE_LEDGER_FILENAME
             )
             _append_pending_submission(
@@ -17811,7 +17829,7 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
             self.assertTrue(fetch_result["complete"])
             self.assertIsNone(fetch_result["arbitration"])
             expected = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.REHEARSAL_DIRNAME / "both-1"
             )
             self.assertEqual(fetch_result["path"], expected)
@@ -17830,12 +17848,12 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
             adapter = FakeAdapter(worker_id="w1", capacity=2)
-            dest = target.resolve() / "MIL-CREDA" / "Results" / "shards" / "a"
+            dest = target.resolve() / "FEM-TOLLA" / "Results" / "shards" / "a"
             with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
                 REMOTE_CLI.cmd_fetch(
                     target=target, entrypoint=notebook, submission_id="ghost",
@@ -17859,15 +17877,15 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             (notebooks / "a.ipynb").write_text("{}", encoding="utf-8")
 
             main_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.LEDGER_FILENAME
             )
             smoke_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.SMOKE_LEDGER_FILENAME
             )
             _append_pending_submission(
@@ -17881,7 +17899,7 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
 
             with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
                 REMOTE_CLI.resolve_submission_ledger(
-                    target.resolve(), "MIL-CREDA", "dup-1", "d" * 64,
+                    target.resolve(), "FEM-TOLLA", "dup-1", "d" * 64,
                 )
             message = str(ctx.exception)
             self.assertIn("worker", message)
@@ -17893,16 +17911,16 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             (notebooks / "a.ipynb").write_text("{}", encoding="utf-8")
             (notebooks / "b.ipynb").write_text("{}", encoding="utf-8")
 
             main_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.LEDGER_FILENAME
             )
             smoke_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.SMOKE_LEDGER_FILENAME
             )
             _append_pending_submission(
@@ -17916,7 +17934,7 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
 
             with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
                 REMOTE_CLI.resolve_submission_ledger(
-                    target.resolve(), "MIL-CREDA", "dup-2", "d" * 64,
+                    target.resolve(), "FEM-TOLLA", "dup-2", "d" * 64,
                 )
             message = str(ctx.exception)
             self.assertIn("entrypoint", message)
@@ -17928,15 +17946,15 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             (notebooks / "a.ipynb").write_text("{}", encoding="utf-8")
 
             main_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.LEDGER_FILENAME
             )
             smoke_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.SMOKE_LEDGER_FILENAME
             )
             _append_pending_submission(
@@ -17949,7 +17967,7 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
             )
 
             path, state, note = REMOTE_CLI.resolve_submission_ledger(
-                target.resolve(), "MIL-CREDA", "agree-1", "d" * 64,
+                target.resolve(), "FEM-TOLLA", "agree-1", "d" * 64,
             )
 
             self.assertEqual(path, main_ledger_path)
@@ -17966,15 +17984,15 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             (notebooks / "a.ipynb").write_text("{}", encoding="utf-8")
 
             main_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.LEDGER_FILENAME
             )
             smoke_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.SMOKE_LEDGER_FILENAME
             )
             _append_pending_submission(
@@ -17987,7 +18005,7 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
             )
 
             path, state, note = REMOTE_CLI.resolve_submission_ledger(
-                target.resolve(), "MIL-CREDA", "agree-2", "d" * 64, smoke=True,
+                target.resolve(), "FEM-TOLLA", "agree-2", "d" * 64, smoke=True,
             )
 
             self.assertEqual(path, smoke_ledger_path)
@@ -18003,15 +18021,15 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             (notebooks / "a.ipynb").write_text("{}", encoding="utf-8")
 
             main_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.LEDGER_FILENAME
             )
             smoke_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.SMOKE_LEDGER_FILENAME
             )
             _append_pending_submission(
@@ -18025,7 +18043,7 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
 
             with self.assertRaises(REMOTE_CLI.RemoteCLIError) as ctx:
                 REMOTE_CLI.resolve_submission_ledger(
-                    target.resolve(), "MIL-CREDA", "dup-3", "d" * 64, smoke=True,
+                    target.resolve(), "FEM-TOLLA", "dup-3", "d" * 64, smoke=True,
                 )
             self.assertIn("worker", str(ctx.exception))
 
@@ -18039,16 +18057,16 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
             main_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.LEDGER_FILENAME
             )
             smoke_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.SMOKE_LEDGER_FILENAME
             )
             _append_pending_submission(
@@ -18080,17 +18098,17 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
             (notebooks / "b.ipynb").write_text("{}", encoding="utf-8")
 
             main_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.LEDGER_FILENAME
             )
             smoke_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.SMOKE_LEDGER_FILENAME
             )
             _append_pending_submission(
@@ -18119,12 +18137,12 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
             smoke_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.SMOKE_LEDGER_FILENAME
             )
             _append_pending_submission(
@@ -18146,16 +18164,16 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
             smoke_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.SMOKE_LEDGER_FILENAME
             )
             main_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.LEDGER_FILENAME
             )
             _append_pending_submission(
@@ -18193,16 +18211,16 @@ class SmokeLedgerResolutionTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
-            notebooks = _make_product(target, "MIL-CREDA")
+            notebooks = _make_product(target, "FEM-TOLLA")
             notebook = notebooks / "a.ipynb"
             notebook.write_text("{}", encoding="utf-8")
 
             main_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.LEDGER_FILENAME
             )
             smoke_ledger_path = (
-                target.resolve() / "MIL-CREDA" / REMOTE_CLI.LEDGER_DIRNAME
+                target.resolve() / "FEM-TOLLA" / REMOTE_CLI.LEDGER_DIRNAME
                 / REMOTE_CLI.SMOKE_LEDGER_FILENAME
             )
             _append_pending_submission(
