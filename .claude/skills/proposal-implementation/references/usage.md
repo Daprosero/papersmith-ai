@@ -1799,6 +1799,19 @@ harness timeout, a `SIGKILL`) and its product is partial; **a terminal event
 means it ran and reported**. Do not read a step's success off an exit status
 or off stdout: read it off this pair.
 
+That same pair is also the only cost figure this skill has, and `step`
+publishes it: `lastRun` on every successful call carries the elapsed seconds
+of the LAST completed run of the step being run, folded from its own
+`started` -> terminal stamps. It is a measurement of that run and never a
+budget for this one — the same step over a larger scale costs what it now
+costs — and it is deliberately not an `expectedMinutes` a target declares:
+a field this skill reads is a field a repository built from zero would have
+to be made to ship, and nobody chose that obligation. The limit is stated in
+the payload rather than implied. `status: "unmeasured"` is what a step
+nobody has run yet reports, which is exactly the run whose cost surprises
+somebody; a run that started and never reported measured nothing and is
+skipped, so the field says the same thing the ledger's own shape does.
+
 The terminal event carries the step's name, its dotted callable,
 the interpreter path, `outcome` (`returned`/`raised`/`unknown`), exit
 status, `error` (the raised exception, formatted once inside the

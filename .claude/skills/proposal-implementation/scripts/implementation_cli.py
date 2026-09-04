@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import calendar
 import fnmatch
 import hashlib
 import importlib.util
@@ -7359,6 +7360,106 @@ def _ledger_step_events(events: list[dict]) -> list[dict]:
             if event.get("kind") == "step" and event.get("step")]
 
 
+#: A terminal `step` outcome that MEASURED something: the callable was
+#: resolved, a process ran, and it reported. `refused` is terminal too and is
+#: deliberately not here -- it is one of `impl_steps`' three resolution
+#: refusals, raised before the callable is ever entered, so its elapsed time
+#: is the cost of failing to find a function and not the cost of the step.
+MEASURED_STEP_OUTCOMES = ("returned", "raised", "unknown")
+
+
+def _elapsed_seconds(start: str, end: str) -> int | None:
+    """Whole seconds between two `_now_iso8601` stamps, or `None`.
+
+    `None` for anything that is not two readable stamps in order: a ledger
+    line written by an older shape with no `at`, a hand-edited one, or a pair
+    whose end precedes its start (a clock moved between the two writes). A
+    forecast built on an unreadable pair would be worse than no forecast --
+    the whole point is that this number is MEASURED.
+    """
+    try:
+        first = calendar.timegm(time.strptime(start, "%Y-%m-%dT%H:%M:%SZ"))
+        last = calendar.timegm(time.strptime(end, "%Y-%m-%dT%H:%M:%SZ"))
+    except (TypeError, ValueError):
+        return None
+    return None if last < first else int(last - first)
+
+
+def _last_measured_run(events: list[dict], step: str) -> dict | None:
+    """How long this step took the last time it ran to a verdict, or `None`.
+
+    Free, and that is the whole argument for it. `cmd_step` already writes a
+    PAIR of ledger events -- `outcome: "started"` the instant before the
+    subprocess spawns, a terminal event once it reports -- so the elapsed
+    time of every completed run is already on disk. Nothing new is declared,
+    nothing new is measured, and no target gains an obligation: a duration a
+    target would have had to declare (`expectedMinutes` in `__steps__`) would
+    bind the from-zero rule, and this deliberately does not.
+
+    The pairing is read exactly the way `_abandoned_step` reads it, and the
+    two agree by construction: a `started` with no terminal event after it is
+    a killed run, so it measures nothing and a LATER `started` supersedes it.
+    Only the most recent completed pair is returned -- an older one describes
+    a step whose code has since moved.
+    """
+    pending: dict | None = None
+    measured: dict | None = None
+    for event in _ledger_step_events(events):
+        if event.get("step") != step:
+            continue
+        outcome = event.get("outcome")
+        if outcome == "started":
+            pending = event
+            continue
+        if pending is None or outcome not in MEASURED_STEP_OUTCOMES:
+            pending = None
+            continue
+        seconds = _elapsed_seconds(pending.get("at"), event.get("at"))
+        pending = None
+        if seconds is not None:
+            measured = {"seconds": seconds, "outcome": outcome,
+                        "at": event.get("at"), "session": event.get("session")}
+    return measured
+
+
+#: Said on the first run of a step, and said rather than omitted. The limit is
+#: the honest half of this whole field: the run that surprises an operator is
+#: the one nobody has measured yet, and that is precisely the run this cannot
+#: describe. A reader who meets the field only when it carries a number never
+#: learns which half they are standing in.
+STEP_LAST_RUN_UNMEASURED = (
+    "no completed run of this step is on this target's ledger, so nothing "
+    "here says what it costs. This publishes a measurement, never an "
+    "estimate -- and the first run of a step is exactly the one no "
+    "measurement exists for.")
+
+#: Said whenever there is a number. A measurement of one past run, not a
+#: budget: the same step over a larger scale costs what it now costs, and
+#: nothing here claims otherwise.
+STEP_LAST_RUN_MEASURED = (
+    "elapsed seconds of the LAST completed run of this step, read off its own "
+    "ledger pair (`started` -> terminal). It describes that run, not this "
+    "one: a step whose scale or input has moved since costs what it now "
+    "costs. Runs that never reported are not measurements and are skipped.")
+
+
+def _step_last_run(measured: dict | None) -> dict:
+    """The measured-cost field, published on every run in both states.
+
+    Deliberately NOT a declared `expectedMinutes` in `__steps__`. A duration
+    the target declares is a duration this skill READS, and anything it reads
+    it must also demand from a repository built from zero -- the kit would
+    have to ship the field and the from-zero check would have to refuse its
+    absence. That is an obligation nobody chose. The `started`/terminal pair
+    already on the ledger costs no declaration at all.
+    """
+    if measured is None:
+        return {"status": "unmeasured", "seconds": None, "outcome": None,
+                "at": None, "session": None,
+                "note": STEP_LAST_RUN_UNMEASURED}
+    return {"status": "measured", **measured, "note": STEP_LAST_RUN_MEASURED}
+
+
 def _step_verdicts(target: Path, name: str) -> dict:
     """`evidence["stepVerdicts"]` for every caller that reads an `@step`
     witness -- `_position_write_evidence`, `cmd_probe`'s inline dict, and
@@ -11391,6 +11492,18 @@ def cmd_step(args: argparse.Namespace) -> dict:
     — no notebook, no self-stamp — has no other record of what it ran
     against; the ledger line is the only one there is.
 
+    That pair also pays for the one cost figure this command publishes.
+    `lastRun` folds the LAST completed `started` -> terminal pair for THIS
+    step name and reports its elapsed seconds, read before this call appends
+    anything of its own. Free, in the sense that matters here: nothing new is
+    declared and no target gains an obligation. A declared `expectedMinutes`
+    in `__steps__` would be a field this skill READS, and a field it reads is
+    one a repository built from zero must be made to ship -- kit template and
+    from-zero demand both -- which is an obligation nobody chose. Its limit is
+    published rather than implied (`status: "unmeasured"`): the run whose cost
+    surprises an operator is the first one, and the first one is exactly the
+    run no measurement exists for.
+
     This never touches `gate`: it calls none of `_load_remote_execution_cli`
     or its two siblings, appends a `kind` no `gate` reader ever selects on,
     and reads no `gate` event either. A step's ledger line is invisible to
@@ -11469,6 +11582,11 @@ def cmd_step(args: argparse.Namespace) -> dict:
         "callable": f"{entry['module']}.{entry['function']}",
         "interpreter": str(interpreter), "session": args.session,
     }
+    # Read BEFORE this call appends anything of its own, so the published
+    # figure is the LAST completed run of this step and never a fold over
+    # events this invocation just wrote.
+    last_run = _step_last_run(
+        _last_measured_run(impl_position.read_events(ledger_path), args.step))
 
     # The ledger is written TWICE, and that is the whole design -- the same
     # two-write discipline `impl_steps.RUNNER` already keeps for its own
@@ -11526,6 +11644,7 @@ def cmd_step(args: argparse.Namespace) -> dict:
         "interpreter": event["interpreter"], "outcome": result["outcome"],
         "exitStatus": result["exitStatus"], "error": result["error"],
         "session": args.session, "recordedAt": recorded_at,
+        "lastRun": last_run,
         "next": _step_next_acts(target, name, args),
     }
 

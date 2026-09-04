@@ -22908,7 +22908,13 @@ class StepCommandTests(unittest.TestCase):
                         and isinstance(inner.func, ast.Name)
                         and inner.func.id == "_ledger_step_events"):
                     callers.add(node.name)
-        self.assertEqual(callers, {"_step_verdicts", "_abandoned_step"})
+        # `_last_measured_run` is the third legitimate reader and joins for the
+        # reason the selector is a function at all: it needs the same events,
+        # to fold the elapsed time of the last completed `started` -> terminal
+        # pair, and a second literal `kind == "step"` selection beside the
+        # first is indistinguishable from an accidental one.
+        self.assertEqual(callers, {"_step_verdicts", "_abandoned_step",
+                                   "_last_measured_run"})
 
 
 class CmdStepDigestTests(unittest.TestCase):
@@ -27459,3 +27465,170 @@ class MisnamedProductDirGuardTests(unittest.TestCase):
             "a command appends to `<name>/.implementation/` without first "
             "refusing to open a second product tree -- the exact shape of the "
             "defect this guard closes")
+
+
+class StepMeasuredLastRunTests(unittest.TestCase):
+    """`lastRun` -- the only cost figure this skill can honestly publish.
+
+    The complaint. An operator discovered a twelve-minute step by having it
+    killed at ten. Nothing in the flow said what a step costs, and the obvious
+    fix -- a declared `expectedMinutes` in `__steps__` -- is the wrong one:
+    a field this skill READS is a field a repository built from zero must be
+    made to ship, kit template and from-zero demand both, and nobody chose
+    that obligation.
+
+    `bc78905` had already made the honest version free. `cmd_step` writes a
+    PAIR of ledger events, `outcome: "started"` before the spawn and a
+    terminal event once the child reports, so the elapsed time of every
+    completed run is already on disk. This folds it and says so.
+
+    The limit is asserted here as hard as the number is, because the limit is
+    the honest half: this says nothing before a step's first run, which is
+    precisely the run whose cost surprises somebody.
+    """
+
+    def events(self, *rows):
+        return [dict(row) for row in rows]
+
+    def started(self, step, at, **extra):
+        return {"kind": "step", "step": step, "outcome": "started",
+                "at": at, **extra}
+
+    def terminal(self, step, at, outcome="returned", **extra):
+        return {"kind": "step", "step": step, "outcome": outcome,
+                "at": at, "session": "s1", **extra}
+
+    def test_a_completed_pair_measures_its_own_elapsed_seconds(self):
+        measured = impl._last_measured_run(
+            self.events(self.started("one", "2026-09-04T10:00:00Z"),
+                        self.terminal("one", "2026-09-04T10:12:30Z")), "one")
+        self.assertEqual(measured["seconds"], 750)
+        self.assertEqual(measured["outcome"], "returned")
+
+    def test_a_started_line_with_no_partner_measures_nothing(self):
+        """A killed run is the one shape the ledger exists to make legible, and
+        it is not a measurement of what the step costs -- it is a measurement
+        of when somebody's timeout fired."""
+        self.assertIsNone(impl._last_measured_run(
+            self.events(self.started("one", "2026-09-04T10:00:00Z")), "one"))
+
+    def test_a_killed_run_does_not_pair_with_the_next_run_s_terminal(self):
+        """The trap in the naive fold. `started`, killed, `started`, returned
+        would measure from the FIRST start if the pairing carried across, and
+        would report a step as costing however long the operator waited before
+        relaunching it."""
+        measured = impl._last_measured_run(
+            self.events(self.started("one", "2026-09-04T10:00:00Z"),
+                        self.started("one", "2026-09-04T11:00:00Z"),
+                        self.terminal("one", "2026-09-04T11:00:20Z")), "one")
+        self.assertEqual(measured["seconds"], 20)
+
+    def test_a_refused_terminal_is_not_a_measurement(self):
+        """`refused` is one of `impl_steps`' resolution refusals: the callable
+        was never entered, so the elapsed time is the cost of failing to find
+        a function."""
+        self.assertIsNone(impl._last_measured_run(
+            self.events(self.started("one", "2026-09-04T10:00:00Z"),
+                        self.terminal("one", "2026-09-04T10:00:01Z",
+                                      outcome="refused")), "one"))
+
+    def test_only_this_step_s_own_runs_are_folded(self):
+        measured = impl._last_measured_run(
+            self.events(self.started("other", "2026-09-04T10:00:00Z"),
+                        self.terminal("other", "2026-09-04T10:30:00Z"),
+                        self.started("one", "2026-09-04T11:00:00Z"),
+                        self.terminal("one", "2026-09-04T11:00:05Z")), "one")
+        self.assertEqual(measured["seconds"], 5)
+
+    def test_the_latest_completed_pair_supersedes_an_older_one(self):
+        measured = impl._last_measured_run(
+            self.events(self.started("one", "2026-09-04T10:00:00Z"),
+                        self.terminal("one", "2026-09-04T10:30:00Z"),
+                        self.started("one", "2026-09-04T11:00:00Z"),
+                        self.terminal("one", "2026-09-04T11:00:07Z")), "one")
+        self.assertEqual(measured["seconds"], 7)
+
+    def test_an_unreadable_or_reversed_pair_measures_nothing(self):
+        for start, end in (("not-a-stamp", "2026-09-04T10:00:00Z"),
+                           ("2026-09-04T10:00:00Z", None),
+                           ("2026-09-04T11:00:00Z", "2026-09-04T10:00:00Z")):
+            with self.subTest(start=start, end=end):
+                self.assertIsNone(impl._elapsed_seconds(start, end))
+
+    def test_the_unmeasured_state_is_published_rather_than_omitted(self):
+        """The honest half. A reader who meets this field only when it carries
+        a number never learns which of the two halves they are standing in."""
+        field = impl._step_last_run(None)
+        self.assertEqual(field["status"], "unmeasured")
+        self.assertIsNone(field["seconds"])
+        self.assertEqual(field["note"], impl.STEP_LAST_RUN_UNMEASURED)
+        self.assertIn("first run", field["note"])
+
+    def test_the_measured_state_says_it_describes_the_past_run(self):
+        field = impl._step_last_run(
+            {"seconds": 90, "outcome": "returned", "at": "2026-09-04T10:00:00Z",
+             "session": "s1"})
+        self.assertEqual(field["status"], "measured")
+        self.assertEqual(field["seconds"], 90)
+        self.assertEqual(field["note"], impl.STEP_LAST_RUN_MEASURED)
+
+    def test_no_step_declaration_field_was_added_for_this(self):
+        """Constraint, asserted rather than promised: this publishes a number
+        the ledger already held, so `__steps__` gains nothing a repository
+        built from zero would have to be made to ship. A future
+        `expectedMinutes` read anywhere in the engine goes red here."""
+        source = CLI.read_text(encoding="utf-8")
+        for invented in ("expectedMinutes", "expectedSeconds", "budgetMinutes"):
+            for quoted in (f'"{invented}"', f"'{invented}'"):
+                with self.subTest(key=quoted):
+                    self.assertNotIn(
+                        quoted, source,
+                        "a declaration key read here is a key a from-zero "
+                        "repository must be made to ship")
+
+    def test_step_publishes_the_field_on_a_real_run_in_both_states(self):
+        box = FORGE / "implementations" / f"_e2e_lastrun_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            "__steps__ = {'verification': {'module': 'Method_Benchmark.steps',"
+            " 'function': 'run_ok'}}\n", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "def run_ok():\n    return None\n", encoding="utf-8")
+        # This fixture is the only one that runs `step` TWICE against one box,
+        # so it is the only one that has to survive its own first run: a step
+        # leaves `__pycache__/` and the product folder behind, and the second
+        # call refuses `DIRTY_WORKTREE` without the ignores every real target
+        # is scaffolded with.
+        (box / ".gitignore").write_text(
+            "__pycache__/\n.ipynb_checkpoints/\n.implementation/\n",
+            encoding="utf-8")
+        write_fixture_interpreter(
+            box / ".venv" / ("Scripts" if os.name == "nt" else "bin"))
+        git = ["git", "-c", "user.email=forge@example.invalid",
+               "-c", "user.name=forge", "-C", str(box)]
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        subprocess.run(git + ["add", "-A"], check=True, capture_output=True)
+        subprocess.run(git + ["commit", "-qm", "toy"], check=True,
+                       capture_output=True)
+
+        def run(session):
+            proc = subprocess.run(
+                [sys.executable, str(CLI), "step", "--target", str(box),
+                 "--name", "Method", "--session", session, "--step",
+                 "verification"], capture_output=True, text=True, cwd=FORGE)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            return json.loads(proc.stdout)["lastRun"]
+
+        first = run("s1")
+        self.assertEqual(first["status"], "unmeasured",
+                         "the first run of a step cannot have been measured")
+        second = run("s2")
+        self.assertEqual(second["status"], "measured")
+        self.assertIsInstance(second["seconds"], int)
+        self.assertEqual(second["session"], "s1",
+                         "the figure describes the PREVIOUS run, not this one")
