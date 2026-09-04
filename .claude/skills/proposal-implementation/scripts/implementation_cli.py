@@ -2970,9 +2970,17 @@ def cmd_probe(args) -> dict:
     position = position_state(
         target, name, probe_evidence, args.revision,
         revision_source(args.revision) if args.revision else None)
+    # Resolved once and handed to both readers, the identical restraint
+    # `probe_evidence` itself keeps: two reads of one declaration in one
+    # command is how the two come to disagree about what the target declared.
+    probe_steps = resolve_steps_declaration(target, name)
     pilot = pilot_completeness_state(
-        resolve_steps_declaration(target, name), position["sequence"],
-        probe_evidence)
+        probe_steps, position["sequence"], probe_evidence)
+    walk = walk_state(
+        probe_steps, position["sequence"], probe_evidence,
+        _ledger_step_events(impl_position.read_events(
+            target / name / ".implementation" / "position.jsonl")),
+        probe_evidence["levels"], product_artefacts(target, name))
     # Which of the flow's own steps still owes a decision about how it is
     # carried out in the full run. Never "which are open": a step nobody has
     # asked about yet appears in no open bucket either, and reading that as
@@ -3154,6 +3162,13 @@ def cmd_probe(args) -> dict:
         # are still short" is exactly what a reader needs in order to act on
         # either answer. See `pilot_completeness_state`.
         "pilotCompleteness": pilot,
+        # Where this repository stands in its own declared flow, step by step,
+        # and what each artefact's state is by inheritance. A description of a
+        # position, never a list of findings: an absence report answers "what
+        # is broken" and this answers "where am I", which is the question
+        # somebody opening a clean repository to run the flow from the top
+        # actually has. Gates nothing. See `walk_state`.
+        "walk": walk,
         # What went out to a remote worker (the ledger), plus what job
         # folders exist right now (the filesystem), plus — purely additive,
         # this slice refuses nothing on it — whether each job classifies as
@@ -7850,6 +7865,203 @@ def pilot_completeness_state(steps: dict, sequence: list[dict],
     incomplete = [row["step"] for row in rows if not row["complete"]]
     return {"status": "incomplete" if incomplete else "complete",
             "steps": rows, "incomplete": incomplete}
+
+
+#: What the walk report is, said in the payload rather than left to a reader
+#: to infer from the field names. Reported on every run, in every state --
+#: `priorWork`'s own doctrine: a report met only when something is wrong is a
+#: report nobody has learnt to read by the time it matters.
+WALK_NOTE = (
+    "where this repository stands in its own declared flow, step by step. "
+    "Nothing here is a finding: a step nobody has walked yet is a state, an "
+    "artefact no declared step renders is a description of that artefact and "
+    "not an accusation about it, and a flow that has not started is where "
+    "every repository begins. Every input is one this skill already holds -- "
+    "the ledger's own step events, the position sequence and its rungs, and "
+    "each step's declared output roots -- and no target declares anything "
+    "for it that it does not already declare.")
+
+#: An artefact under a category the skill understands, which no declared step
+#: names among its own output roots. A description, and the reason it is worth
+#: making is that the alternative reading is silence: an artefact nobody
+#: renders sits in the product folder looking exactly like one that is current.
+WALK_OUTSIDE = "outsideTheWalk"
+
+#: The three states a step can stand in, ordered least-walked first. An
+#: artefact claimed by more than one step is only as walked as the least
+#: walked of them -- an artefact is not produced until everything that writes
+#: into it has run.
+WALK_ORDER = ("notWalked", "unfinished", "walked")
+
+
+def product_artefacts(target: Path, name: str) -> list[str]:
+    """The result-rendering artefacts the product folder holds, product-relative.
+
+    Notebooks, and only notebooks, because they are the artefacts this skill
+    already understands as rendering a result: it parses their cells, reads
+    whether they executed, and digests the sources they ran against
+    (`notebooks_state`). Enumerating every file under `Results/` and `Models/`
+    instead would list a step's whole output rather than the things a reader
+    opens, and the incident this serves was three notebooks with empty cells
+    sitting beside four that were named.
+
+    `IGNORED_DIRS` is dropped for the reason every other reader here drops it
+    -- `.ipynb_checkpoints/` in particular holds copies, not artefacts.
+    """
+    product = target / name
+    notebooks = product / "Notebooks"
+    if not notebooks.is_dir():
+        return []
+    return sorted(
+        path.relative_to(product).as_posix()
+        for path in notebooks.rglob("*.ipynb")
+        if path.is_file()
+        and not set(path.relative_to(product).parts) & IGNORED_DIRS)
+
+
+def _walk_rung(item: dict | None, evidence: dict, levels: list[str]) -> str | None:
+    """The rung this step's own position item grades at, or `None`.
+
+    Graded through `impl_position.derive`, never by a second arithmetic
+    beside it -- `pilot_completeness_state`'s own stated discipline, for the
+    same reason: whatever a rung means when a mark is written, it means the
+    same thing here.
+
+    The probe is built LEVELED whatever the item declared itself, because the
+    question this report asks is "at which rung", and a two-state item answers
+    that with a bool. A witness kind with no level deriver answers `None`
+    rather than raising: not every kind can be read as a rung, and a report
+    that fell over on one would take the whole walk with it.
+    """
+    witness = (item or {}).get("witness") or {}
+    if not witness.get("kind") or not levels:
+        return None
+    probe = [{"witness": {"kind": witness["kind"],
+                          "operand": witness.get("operand"),
+                          "twostate": False}, "mark": " "}]
+    try:
+        graded = impl_position.derive(
+            probe, {**evidence, "levels": levels})
+    except Exception:                        # noqa: BLE001 -- see docstring
+        return None
+    derived = graded[0].get("derived")
+    return derived if isinstance(derived, str) else None
+
+
+def walk_state(steps: dict, sequence: list[dict], evidence: dict,
+               step_events: list[dict], levels: list[str],
+               artefacts: list[str]) -> dict:
+    """Where this repository stands in its own declared flow.
+
+    **A walk report, not an absence report, and the difference is the whole
+    design.** An absence report answers "what is broken"; this answers "where
+    am I". The state an operator is usually in when they read it is opening a
+    clean repository to run the flow from the top, and at that moment a list
+    of things to worry about turns normal, expected states into things that
+    read as defects -- a whole side axis of legitimate work arriving as
+    findings on the first clean run. So nothing here is a finding, every line
+    is reported whatever it says, and the reader decides.
+
+    Three facts per step, each read off something the skill already holds:
+
+    - **`walk`**, from the ledger's own step events. `bc78905` made a run's
+      shape legible -- no event at all, a `started` with no partner, a
+      terminal event -- and those are exactly `notWalked`, `unfinished` and
+      `walked`. Collapsing the first two is the ambiguity that pair was built
+      to remove, so they stay apart here too.
+    - **`rung`**, from the position sequence and the declared ladder, through
+      `impl_position.derive`. A step walked at the floor and a step walked at
+      the top are two different states of the same `walked`.
+    - **`renders`**, from the step's own declared output roots (`produces`).
+
+    An artefact inherits the state of the step that renders it. One claimed by
+    more than one step is only as walked as the LEAST walked of them -- it is
+    not produced until everything writing into it has run. One no declared
+    step renders is described as exactly that, `outsideTheWalk`, which is a
+    description of the artefact and not an accusation about it: a repository
+    legitimately carries work outside what its agreement adjudicates.
+
+    **No new target declaration.** Every input is already declared or already
+    derived: `__steps__` (with the `produces` roots), the position sequence,
+    the declared ladder, and the ledger this skill writes itself. Nothing here
+    asks a repository built from zero for anything it is not already asked
+    for.
+
+    **What no declaration can carry, said rather than faked.** An artefact
+    outside the walk carries no *reason* for being outside it, because nothing
+    a target declares today can state one -- there is no witness kind for an
+    artefact, and no block of `__benchmark__` holds a per-artefact note.
+    Inventing one would be a new declaration, and a declaration this skill
+    reads is one a from-zero repository must be made to ship. So the fact is
+    reported and the reason is not guessed at.
+
+    Pure: no I/O, no filesystem walk, no ledger read. Every argument is
+    already computed by the caller -- `pilot_completeness_state`'s own
+    restraint, so two callers asking this cannot answer it differently.
+    """
+    if not steps:
+        return {"status": "undeclared", "note": WALK_NOTE, "levels": list(levels),
+                "topRung": levels[-1] if levels else None,
+                "steps": [], "artefacts": []}
+
+    by_ordinal = {item["ordinal"]: item for item in sequence
+                  if isinstance(item.get("ordinal"), int)}
+    latest: dict[str, dict] = {}
+    for event in step_events:
+        latest[event["step"]] = event
+
+    top = levels[-1] if levels else None
+    rows = []
+    for step_name, entry in sorted(steps.items()):
+        entry = entry if isinstance(entry, dict) else {}
+        advances = entry.get("advances")
+        advances = advances if isinstance(advances, int) else None
+        last = latest.get(step_name)
+        if last is None:
+            walk, outcome, at = "notWalked", None, None
+        elif last.get("outcome") == "started":
+            walk, outcome, at = "unfinished", None, last.get("at")
+        else:
+            walk, outcome, at = "walked", last.get("outcome"), last.get("at")
+        rung = _walk_rung(by_ordinal.get(advances), evidence, levels)
+        renders = [root for root in entry.get(PRODUCES_KEY) or []
+                   if isinstance(root, str)]
+        rows.append({
+            "step": step_name, "advances": advances, "walk": walk,
+            "lastOutcome": outcome, "lastAt": at, "rung": rung,
+            "atTopRung": None if top is None or rung is None else rung == top,
+            "renders": renders,
+        })
+
+    witnessed = {item["witness"]["operand"] for item in sequence
+                 if isinstance(item.get("witness"), dict)
+                 and item["witness"].get("kind") == "notebook"
+                 and item["witness"].get("operand")}
+    artefact_rows = []
+    for artefact in artefacts:
+        rendered_by = sorted(
+            row["step"] for row in rows
+            if _owns(artefact, row["renders"]))
+        if rendered_by:
+            claimed = [row for row in rows if row["step"] in rendered_by]
+            least = min(claimed, key=lambda row: WALK_ORDER.index(row["walk"]))
+            walk, rung = least["walk"], least["rung"]
+        else:
+            walk, rung = WALK_OUTSIDE, None
+        artefact_rows.append({
+            "path": artefact, "renderedBy": rendered_by, "walk": walk,
+            "rung": rung, "witnessed": artefact in witnessed,
+        })
+
+    walks = {row["walk"] for row in rows}
+    if walks == {"notWalked"}:
+        status = "notStarted"
+    elif walks == {"walked"}:
+        status = "walked"
+    else:
+        status = "walking"
+    return {"status": status, "note": WALK_NOTE, "levels": list(levels),
+            "topRung": top, "steps": rows, "artefacts": artefact_rows}
 
 
 #: What a repository gives up when its own ordered flow and its own declared

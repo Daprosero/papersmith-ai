@@ -22908,13 +22908,14 @@ class StepCommandTests(unittest.TestCase):
                         and isinstance(inner.func, ast.Name)
                         and inner.func.id == "_ledger_step_events"):
                     callers.add(node.name)
-        # `_last_measured_run` is the third legitimate reader and joins for the
-        # reason the selector is a function at all: it needs the same events,
-        # to fold the elapsed time of the last completed `started` -> terminal
-        # pair, and a second literal `kind == "step"` selection beside the
-        # first is indistinguishable from an accidental one.
+        # Two more legitimate readers joined, and both for the reason the
+        # selector is a function at all: they need the same events -- to fold
+        # the elapsed time of the last completed `started` -> terminal pair,
+        # and to say where each step stands in the walk -- and a second
+        # literal `kind == "step"` selection beside the first is
+        # indistinguishable, to any scanner, from an accidental one.
         self.assertEqual(callers, {"_step_verdicts", "_abandoned_step",
-                                   "_last_measured_run"})
+                                   "_last_measured_run", "cmd_probe"})
 
 
 class CmdStepDigestTests(unittest.TestCase):
@@ -27901,3 +27902,195 @@ class UndeclaredProducesReportTests(unittest.TestCase):
                                     "| Status | What it reports | Gates? |")[0]}
         self.assertIn("undeclaredProduces", rows)
         self.assertIn("never", rows["undeclaredProduces"].lower())
+
+
+class FlowWalkReportTests(unittest.TestCase):
+    """`probe.walk` -- where this repository stands in its own declared flow.
+
+    The reframing this exists under, recorded because it decided the shape.
+    The first design was an absence report: enumerate artefacts, subtract the
+    ones a witness names, report the remainder. Measured against a real
+    repository that produced two false alarms out of three -- a legitimate
+    side axis of work, present and current, arriving as findings on an
+    operator's first clean run after a long repair session. An absence report
+    answers "what is broken"; the question somebody opening a clean repository
+    to run the flow from the top actually has is "where am I".
+
+    So nothing here is a finding, every line is reported whatever it says, and
+    the three inputs are ones the skill already holds: the ledger's own
+    `started`/terminal step events, the position sequence with its rungs, and
+    each step's declared output roots. **No target declaration is introduced.**
+
+    The three mutations, each written as a test below:
+    `test_a_killed_run_is_not_the_same_state_as_a_run_nobody_started`,
+    `test_a_step_walked_at_the_floor_does_not_read_as_one_walked_at_the_top`,
+    and `test_an_artefact_no_step_renders_is_described_never_accused`.
+    """
+
+    LEVELS = ["floor", "top"]
+
+    def _steps(self, **overrides):
+        steps = {
+            "one": {"module": "m", "function": "f", "advances": 1,
+                    "produces": ["Notebooks/one.ipynb"]},
+            "two": {"module": "m", "function": "g", "advances": 2,
+                    "produces": ["Notebooks/two.ipynb"]},
+        }
+        for step, patch in overrides.items():
+            if patch is None:
+                steps.pop(step, None)
+            else:
+                steps[step].update(patch)
+        return steps
+
+    def _sequence(self):
+        return [{"ordinal": 1, "mark": " ",
+                 "witness": {"kind": "shard", "operand": "s1"}},
+                {"ordinal": 2, "mark": " ",
+                 "witness": {"kind": "shard", "operand": "s2"}}]
+
+    def _evidence(self, arrived=("s1",)):
+        return {"levels": self.LEVELS, "targetLevel": "top",
+                "shardsArrived": list(arrived), "shardsCurrent": None}
+
+    def _events(self, *rows):
+        return [{"kind": "step", "step": step, "outcome": outcome,
+                 "at": "2026-09-04T10:00:00Z"} for step, outcome in rows]
+
+    def _walk(self, *, steps=None, events=(), evidence=None,
+              artefacts=("Notebooks/one.ipynb", "Notebooks/two.ipynb")):
+        return impl.walk_state(
+            self._steps() if steps is None else steps,
+            self._sequence(), evidence or self._evidence(),
+            list(events), self.LEVELS, list(artefacts))
+
+    def test_a_killed_run_is_not_the_same_state_as_a_run_nobody_started(self):
+        """The first mutation, and the one `bc78905`'s ledger pair exists for.
+        A report that collapses `unfinished` into `notWalked` re-introduces
+        exactly the ambiguity that pair was built to remove: a step that was
+        killed left partial product behind, and one nobody started left
+        none."""
+        walk = self._walk(events=self._events(("one", "started")))
+        rows = {row["step"]: row for row in walk["steps"]}
+        self.assertEqual(rows["one"]["walk"], "unfinished")
+        self.assertEqual(rows["two"]["walk"], "notWalked")
+        self.assertNotEqual(rows["one"]["walk"], rows["two"]["walk"])
+        self.assertIsNone(rows["one"]["lastOutcome"],
+                          "a killed run reported no outcome and none is invented")
+        self.assertIsNotNone(rows["one"]["lastAt"],
+                             "a killed run still stamped when it started")
+
+    def test_a_terminal_event_after_a_started_one_reads_as_walked(self):
+        walk = self._walk(events=self._events(("one", "started"),
+                                              ("one", "returned")))
+        rows = {row["step"]: row for row in walk["steps"]}
+        self.assertEqual(rows["one"]["walk"], "walked")
+        self.assertEqual(rows["one"]["lastOutcome"], "returned")
+
+    def test_a_step_walked_at_the_floor_does_not_read_as_one_walked_at_the_top(self):
+        """The second mutation. Both steps ran and returned; a report that
+        only read the ledger would call them identical. The rung comes from
+        the position sequence, graded through `impl_position.derive` rather
+        than by a second arithmetic beside it."""
+        walk = self._walk(events=self._events(("one", "returned"),
+                                              ("two", "returned")))
+        rows = {row["step"]: row for row in walk["steps"]}
+        self.assertEqual(rows["one"]["walk"], rows["two"]["walk"])
+        self.assertEqual(rows["one"]["rung"], "top")
+        self.assertEqual(rows["two"]["rung"], "floor")
+        self.assertNotEqual(rows["one"]["rung"], rows["two"]["rung"])
+        self.assertTrue(rows["one"]["atTopRung"])
+        self.assertFalse(rows["two"]["atTopRung"])
+
+    def test_an_artefact_no_step_renders_is_described_never_accused(self):
+        """The third mutation, in both halves. Removing the step that renders
+        an artefact must move it to `outsideTheWalk`, and must produce nothing
+        that reads as an error: no finding list, no status change, no refusal.
+        """
+        walk = self._walk(
+            steps=self._steps(two=None),
+            events=self._events(("one", "returned")),
+            artefacts=("Notebooks/one.ipynb", "Notebooks/two.ipynb"))
+        artefacts = {row["path"]: row for row in walk["artefacts"]}
+        self.assertEqual(artefacts["Notebooks/two.ipynb"]["walk"],
+                         impl.WALK_OUTSIDE)
+        self.assertEqual(artefacts["Notebooks/two.ipynb"]["renderedBy"], [])
+        self.assertEqual(walk["status"], "walked",
+                         "an artefact outside the walk moved the flow's own "
+                         "status, which would make it a finding in effect")
+        for key in ("findings", "unvalidated", "missing", "errors"):
+            self.assertNotIn(key, walk)
+
+    def test_an_artefact_inherits_the_state_of_the_step_that_renders_it(self):
+        walk = self._walk(events=self._events(("one", "returned")))
+        artefacts = {row["path"]: row for row in walk["artefacts"]}
+        self.assertEqual(artefacts["Notebooks/one.ipynb"]["walk"], "walked")
+        self.assertEqual(artefacts["Notebooks/one.ipynb"]["renderedBy"], ["one"])
+        self.assertEqual(artefacts["Notebooks/two.ipynb"]["walk"], "notWalked")
+
+    def test_an_artefact_two_steps_claim_is_as_walked_as_the_least_walked(self):
+        """It is not produced until everything writing into it has run."""
+        steps = self._steps(two={"produces": ["Notebooks/one.ipynb"]})
+        walk = self._walk(steps=steps,
+                          events=self._events(("one", "returned")),
+                          artefacts=("Notebooks/one.ipynb",))
+        artefact = walk["artefacts"][0]
+        self.assertEqual(artefact["renderedBy"], ["one", "two"])
+        self.assertEqual(artefact["walk"], "notWalked")
+
+    def test_the_flow_status_reads_the_walk_and_not_a_defect(self):
+        for events, expected in (
+                ((), "notStarted"),
+                (self._events(("one", "returned")), "walking"),
+                (self._events(("one", "returned"), ("two", "returned")),
+                 "walked")):
+            with self.subTest(expected=expected):
+                self.assertEqual(self._walk(events=events)["status"], expected)
+
+    def test_a_target_declaring_no_steps_has_no_walk_to_report(self):
+        walk = impl.walk_state({}, [], {}, [], [], [])
+        self.assertEqual(walk["status"], "undeclared")
+        self.assertEqual((walk["steps"], walk["artefacts"]), ([], []))
+
+    def test_the_note_says_what_the_report_is_on_every_run(self):
+        """`priorWork`'s doctrine: a report met only when something is wrong is
+        a report nobody has learnt to read by the time it matters."""
+        for walk in (self._walk(), impl.walk_state({}, [], {}, [], [], [])):
+            with self.subTest(status=walk["status"]):
+                self.assertEqual(walk["note"], impl.WALK_NOTE)
+        self.assertIn("Nothing here is a finding", impl.WALK_NOTE)
+
+    def test_no_new_target_declaration_is_read_for_the_walk(self):
+        """Constraint (b), asserted rather than promised. Every input is one
+        the skill already holds; a new declaration name appearing in
+        `walk_state`'s own source goes red here."""
+        source = inspect.getsource(impl.walk_state)
+        for invented in ("__artefacts__", "__renders__", "__walk__",
+                         "excluded", "notRun"):
+            with self.subTest(name=invented):
+                self.assertNotIn(invented, source)
+
+    def test_the_walk_never_gates_probe(self):
+        rows = {row[0].strip("`"): row[2] for row in
+                markdown_table_rows(SKILL_MD.read_text(encoding="utf-8"),
+                                    "| Fact | What it reports | Gates? |")[0]}
+        self.assertIn("walk", rows)
+        self.assertIn("never", rows["walk"].lower())
+
+    def test_the_artefacts_enumerated_are_the_ones_the_skill_understands(self):
+        box = FORGE / "implementations" / f"_e2e_walkart_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "Method" / "Notebooks" / ".ipynb_checkpoints").mkdir(parents=True)
+        (box / "Method" / "Results").mkdir(parents=True)
+        (box / "Method" / "Notebooks" / "one.ipynb").write_text("{}", encoding="utf-8")
+        (box / "Method" / "Notebooks" / ".ipynb_checkpoints" / "one.ipynb"
+         ).write_text("{}", encoding="utf-8")
+        (box / "Method" / "Results" / "bulk.csv").write_text("a\n", encoding="utf-8")
+        self.assertEqual(impl.product_artefacts(box, "Method"),
+                         ["Notebooks/one.ipynb"])
+
+    def test_a_target_with_no_notebooks_folder_enumerates_nothing(self):
+        box = FORGE / "implementations" / f"_e2e_walkbare_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "Method").mkdir(parents=True)
+        self.assertEqual(impl.product_artefacts(box, "Method"), [])

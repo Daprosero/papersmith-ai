@@ -1499,6 +1499,24 @@ is missing. It was guarded on `benchmark` alone, and because the `wiring-first`
 override runs before that guard, the one answer naming missing wiring came back
 with `wiring: null`.
 
+- **`walk`** — where this repository stands in its own declared flow. Read it
+  when you are opening a clean repository to run the flow from the top: it
+  answers *where am I*, not *what is broken*, and nothing in it is a finding.
+  Each declared step reads `notWalked`, `unfinished` (a `started` ledger event
+  with no terminal partner — a run that was killed, whose product is partial)
+  or `walked`, beside the `rung` its position item grades at, so a step walked
+  at the floor and one walked at the top are not the same answer. Each
+  result-rendering artefact in the product tree inherits the state of the step
+  that renders it, through that step's own `produces` roots; one claimed by
+  several steps is only as walked as the least walked of them. An artefact no
+  declared step renders reads `outsideTheWalk` — that is a description of the
+  artefact, not an accusation: a repository legitimately carries a whole side
+  axis of work its agreement does not adjudicate. `witnessed` says whether some
+  position item names that artefact, as a fact and never as a verdict. No
+  reason is offered for an artefact being outside the walk, because nothing a
+  target declares today can state one and this skill never invents a
+  declaration to fill a field.
+
 ## `propose` — the campaign proposal
 
 Appends one `proposal` event to `.implementation/position.jsonl`, scoped to
