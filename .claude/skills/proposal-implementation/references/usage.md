@@ -1754,7 +1754,18 @@ target's own `AGREED.md`, which a step that just ran does not update.
 it; the refusal publishes the exact `position` refresh instead, bound to the
 revision the block already names, as a command run unedited. That pair —
 **run the step, commit its product, re-derive `position`, run the next
-step** — is the whole loop between two ordered steps. Refuses `DIRTY_WORKTREE`
+step** — is the whole loop between two ordered steps.
+
+Every successful call publishes that loop for itself, in `next`, so it is
+read where it is needed rather than remembered from here. `next[0]` is the
+`git status --porcelain` listing of what this step just left in the tree:
+**a step's product must be committed before the next step runs**, because
+every step dirties the target and the next one refuses `DIRTY_WORKTREE`
+until it is clean. The commit message is the operator's; this skill never
+writes one. `next[1]`, when the product carries a readable position block,
+is the exact `position` refresh, bound to the block's own revision. A
+six-step flow is therefore six `step` calls, five commits and five
+refreshes — not one command repeated six times. Refuses `DIRTY_WORKTREE`
 before any subprocess spawns (a step mutates the target, same guard
 `plan`/`apply` already call). When the ledger's latest `step` event is a
 bare `started`, that refusal's published question says so: it names the

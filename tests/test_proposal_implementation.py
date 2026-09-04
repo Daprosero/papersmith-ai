@@ -22467,6 +22467,95 @@ class StepCommandTests(unittest.TestCase):
         self.assertEqual(events[0]["step"], "verification")
         self.assertEqual(events[0]["callable"], "Method_Benchmark.steps.run_slow")
 
+    # --- The loop between two steps, published where it is needed ---
+
+    def _write_block(self, box, revision="r01.md"):
+        header = {"revision": revision, "revisionSha256": "a" * 64,
+                  "derivedAt": "2026-01-01T00:00:00Z", "session": "s1",
+                  "target": "pilot"}
+        items = [{"mark": " ", "ordinal": 1, "text": "rung 1",
+                  "witness": {"kind": "step", "operand": "verification",
+                              "twostate": True}}]
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+
+    def test_a_returned_step_publishes_the_commit_and_the_re_derivation(self):
+        """The measured friction: every step dirties the target's tree with
+        its own product, so the next step refuses `DIRTY_WORKTREE`; and
+        nothing re-derives the position marks, so an ordered next step
+        refuses `STEP_SEQUENCE_NOT_REACHED`. A six-step flow therefore needed
+        five hand-made commits and six hand-made `position` calls, and the
+        skill said so nowhere -- an agent composed both acts in prose every
+        time.
+
+        Both refusals publish their own exits, but only after they fire. This
+        publishes them one command earlier, where the reader is actually
+        standing. The commit itself is never authored here: the listing is
+        published and the message stays the operator's."""
+        box = self._box("nextacts")
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "def run_ok():\n    return None\n", encoding="utf-8")
+        self._declare(box, {"verification": {"module": "Method_Benchmark.steps",
+                                              "function": "run_ok"}})
+        self._write_block(box)
+        self._commit(box)
+
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        acts = json.loads(proc.stdout)["next"]
+        self.assertEqual([act["kind"] for act in acts], ["command", "command"])
+        self.assertEqual(acts[0]["command"],
+                         f"git -C {box} status --porcelain")
+        self.assertIn("DIRTY_WORKTREE", acts[0]["establishes"])
+        self.assertIn("never writes one", acts[0]["establishes"])
+        self.assertIn("implementation_cli.py position", acts[1]["command"])
+        self.assertIn("--revision r01.md", acts[1]["command"])
+        self.assertIn("STEP_SEQUENCE_NOT_REACHED", acts[1]["establishes"])
+        # Never a commit: the engine publishes the listing and nothing that
+        # would need a message it must not author.
+        self.assertNotIn("commit", " ".join(a["command"] for a in acts))
+
+    def test_a_raised_step_publishes_the_same_acts(self):
+        """The mutation this locks against, which the passing case above
+        survives: gating the publication on `outcome == "returned"`. A step
+        that failed still left whatever it wrote in the tree, and the next
+        step still refuses on it -- the acts are about the tree, never about
+        the verdict."""
+        box = self._box("nextactsraised")
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "def run_bad():\n    raise ValueError('boom')\n", encoding="utf-8")
+        self._declare(box, {"verification": {"module": "Method_Benchmark.steps",
+                                              "function": "run_bad"}})
+        self._write_block(box)
+        self._commit(box)
+
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        body = json.loads(proc.stdout)
+        self.assertEqual(body["outcome"], "raised")
+        self.assertEqual(len(body["next"]), 2, body["next"])
+
+    def test_a_product_with_no_block_publishes_the_commit_act_alone(self):
+        """A `position` command with no revision refuses
+        `REVISION_UNREADABLE`, and there is no block to refresh anyway. The
+        act is omitted rather than published broken."""
+        box = self._box("noblock")
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "def run_ok():\n    return None\n", encoding="utf-8")
+        self._declare(box, {"verification": {"module": "Method_Benchmark.steps",
+                                              "function": "run_ok"}})
+        self._commit(box)
+
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        acts = json.loads(proc.stdout)["next"]
+        self.assertEqual(len(acts), 1, acts)
+        self.assertIn("status --porcelain", acts[0]["command"])
+
     # --- Spec "Refuse an unresolvable step" ---
 
     def test_undeclared_target_refuses_steps_undeclared(self):

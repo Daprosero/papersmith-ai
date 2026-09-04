@@ -11459,7 +11459,59 @@ def cmd_step(args: argparse.Namespace) -> dict:
         "interpreter": event["interpreter"], "outcome": result["outcome"],
         "exitStatus": result["exitStatus"], "error": result["error"],
         "session": args.session, "recordedAt": recorded_at,
+        "next": _step_next_acts(target, name, args),
     }
+
+
+def _step_next_acts(target: Path, name: str, args) -> list[dict]:
+    """What has to happen between this step and the next one, published where
+    the operator is standing when they need it.
+
+    The measured friction: every step leaves the target's tree dirty with its
+    own product, so the next step refuses `DIRTY_WORKTREE`; and nothing
+    re-derives the position marks, so an ordered next step refuses
+    `STEP_SEQUENCE_NOT_REACHED`. A declared six-step flow therefore needed
+    five hand-made commits and six hand-made `position` calls, and the skill
+    said so nowhere -- an agent composed both acts in prose, every time.
+
+    Both refusals already publish their own exits, but only AFTER they fire.
+    A reader who has just watched a step return is one command away from both,
+    and this is the only surface standing there. Published on every run,
+    including `raised` and `unknown`: a step that failed still left whatever
+    it wrote in the tree, and a step that was killed left MORE of it.
+
+    Commands, never a commit. `git status --porcelain` lists what the tree
+    now carries and the operator decides what belongs in the history --
+    the same division `_resolve_dirty_worktree` states, for the same reason:
+    a commit needs a message this file must never author.
+
+    The `position` act is omitted rather than faked when the product carries
+    no readable block: `cmd_position` refuses `REVISION_UNREADABLE` without a
+    revision, and there is no block to refresh anyway.
+    """
+    acts = [{
+        "kind": "command",
+        "command": _refusal_git_command(args, "status", "--porcelain"),
+        "establishes": "what this step left in the target's tree. Commit what "
+                       "belongs in the history before the next step -- every "
+                       "step dirties the tree with its own product, and the "
+                       "next one refuses DIRTY_WORKTREE until it is clean. "
+                       "The commit message is yours; this skill never writes "
+                       "one.",
+    }]
+    revision = _position_block_revision(target, name)
+    if revision is not None:
+        acts.append({
+            "kind": "command",
+            "command": _refusal_position_command(args, revision=revision),
+            "establishes": "re-derives the position marks against what this "
+                           "step just produced. `position` is the only writer "
+                           "into that section, so nothing else updates it -- "
+                           "and an ordered next step refuses "
+                           "STEP_SEQUENCE_NOT_REACHED while an earlier item's "
+                           "mark is still the one written before this run.",
+        })
+    return acts
 
 
 def cmd_defect(args: argparse.Namespace) -> dict:
