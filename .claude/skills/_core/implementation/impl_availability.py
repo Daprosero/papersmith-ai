@@ -88,6 +88,57 @@ def position_honest(*, status: str, unbacked: list, disagreements: list,
     return {"honest": True, "code": None, "facts": {}}
 
 
+def _shortfall_is_undeclared_shards(*, sequence: list, shards_declared: bool,
+                                    attained_index: int | None) -> list:
+    """The ordinals of the leveled `@shard` items that account for the whole
+    rung shortfall because nothing was ever told where a shard lands -- or
+    `[]` when the shortfall is anything else.
+
+    `position_honest`'s own `shards_declared` doctrine, moved one check
+    further down the ladder. That one separates "nobody was told where to
+    look" from "somebody looked and found nothing" for a TICKED item, whose
+    unbacked-ness it explains. This separates the identical two facts for a
+    leveled item that is honestly BLANK: a `@shard:level` witness with no
+    declared location derives `None`, `attained_level` then reaches no rung
+    at all, and the launch was refused `RUNG_NOT_ATTAINED` -- naming a rung
+    the evidence fell short of, which is true, and asking what has to run
+    before it is reached, which has no answer, because nothing has to run.
+    One string was never declared.
+
+    **Fully explained, or not at all** -- the identical rule
+    `position_honest` keeps. Three conditions, each of which narrows a
+    misdiagnosis the other two would let through:
+
+    - `attained_index is None`. A shortfall from a rung that WAS reached is
+      not the work of an unmeasured item; something graded, and lower than
+      the launch needs.
+    - `not shards_declared`. A directory that was consulted and came back
+      silent puts a `@shard` item on the FLOOR rung, definitely, and falling
+      short from the floor is a rung fact with a rung answer.
+    - every leveled item this call can see as unmeasured is one of these
+      shard items. A second leveled item unmeasured for its own reason means
+      declaring `shardsRoot` clears only half the shortfall, and a refusal
+      naming a fix that does not fix it is worse than the vague one.
+
+    `derived` is read through `.get`, never a bare subscript: a caller
+    handing raw `parse_items` output carries no such key, and every leveled
+    item then reads unmeasured -- which can only ENLARGE the set the shard
+    items must exhaust, so the redirect narrows rather than widens for such a
+    caller. Two-state items are skipped for the reason `attained_level`'s own
+    second boundary gives: graded without the ladder, they hold no rung down
+    and cannot be part of a rung shortfall.
+    """
+    if attained_index is not None or shards_declared:
+        return []
+    leveled = [item for item in sequence
+               if not item["witness"].get("twostate", True)]
+    unmeasured = [item for item in leveled if item.get("derived") is None]
+    shards = [item for item in unmeasured if item["witness"]["kind"] == "shard"]
+    if not shards or len(shards) != len(unmeasured):
+        return []
+    return [item["ordinal"] for item in shards]
+
+
 def launch_available(*, status: str, unbacked: list, disagreements: list,
                      sequence: list, ready: bool | None, job: str,
                      shards_declared: bool, levels: list[str],
@@ -134,7 +185,13 @@ def launch_available(*, status: str, unbacked: list, disagreements: list,
     `code` is one of `POSITION_ABSENT`, `POSITION_STALE`,
     `POSITION_UNBACKED`, `POSITION_SHARDS_UNDECLARED`, `POSITION_DISAGREES`,
     `NOT_READY`, `SEQUENCE_NOT_REACHED`, `RUNG_NOT_ATTAINED`, checked in
-    that order -- the first seven in the same order one caller's own
+    that order. `POSITION_SHARDS_UNDECLARED` has a second reaching point at
+    the rung threshold itself (`_shortfall_is_undeclared_shards`, above):
+    the same absence that explains a ticked item's unbacked-ness explains a
+    blank leveled one's unmeasured rung, and answering `RUNG_NOT_ATTAINED`
+    there names a rung when the cause is one undeclared string. It renames a
+    refusal that already existed and never converts one into a launch -- both
+    verdicts are `available: False` -- the first seven in the same order one caller's own
     refusal ladder already checked them in before this rule existed,
     preserved here so neither caller's answer moves; `RUNG_NOT_ATTAINED` is
     new and checked strictly last, so it can never move an existing
@@ -185,6 +242,14 @@ def launch_available(*, status: str, unbacked: list, disagreements: list,
         attained_index = (levels.index(attained_level)
                           if attained_level in levels else None)
         if attained_index is None or attained_index < floor_index:
+            undeclared_shards = _shortfall_is_undeclared_shards(
+                sequence=sequence, shards_declared=shards_declared,
+                attained_index=attained_index)
+            if undeclared_shards:
+                return {
+                    "available": False, "code": "POSITION_SHARDS_UNDECLARED",
+                    "facts": {"undeclaredOrdinals": undeclared_shards},
+                }
             return {
                 "available": False, "code": "RUNG_NOT_ATTAINED",
                 "facts": {"levels": list(levels), "attainedLevel": attained_level,

@@ -33,6 +33,7 @@ import implementation_cli as impl  # noqa: E402  (path set above)
 # `implementation_cli`'s own import of `impl_layout` etc. already put
 # `_core/implementation` on `sys.path`; this reaches the same module the CLI
 # reads its position grammar through, never a second copy.
+import impl_availability  # noqa: E402
 import impl_position  # noqa: E402
 import impl_steps  # noqa: E402
 
@@ -1913,6 +1914,73 @@ class ReportContractTests(unittest.TestCase):
         state = self.state(self.WELL_FORMED)
         self.assertEqual(state["live"], "unavailable")
         self.assertEqual(state["status"], "incomplete")
+
+    #: A benchmark module that declares its own measured universe, the way the
+    #: kit's own `benchmark.py` does. `report.dimensions` is a SECOND
+    #: declaration -- which way each of those wins -- and the two are written
+    #: by hand in two files, so one can name a column the other never does.
+    UNIVERSE = (
+        "HIGHER = 'higher'\n"
+        "DIMENSIONS = {'accuracy': HIGHER, 'auc': HIGHER}\n"
+    )
+
+    def state_with_universe(self, cells, declaration=None, universe=None):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.build(root, cells, declaration)
+            (root / "src/Method_Benchmark/benchmark.py").write_text(
+                self.UNIVERSE if universe is None else universe, encoding="utf-8")
+            return impl.report_state(root, "Method", "Method")
+
+    #: The same well-formed section, rendering `auc` -- a column the module's own
+    #: `DIMENSIONS` carries and `report.dimensions` never does.
+    RENDERS_AUC = [
+        _cell("markdown", "Qué mide: el área bajo la curva. Más alto es mejor."),
+        _cell("code", "print(tables.objective('auc'))"),
+        _cell("code", "print(tables.render(runs, 'auc', reduction))\n"
+                      "print(tables.conclusion(runs, 'auc', reduction))"),
+    ]
+
+    def test_a_rendered_dimension_with_no_declared_direction_is_named(self):
+        """`undeclared` was declared, echoed and never written to: one Store,
+        one Load, no `.add` anywhere in the function, so `clean` passed it on
+        every run and a report rendering a column nobody gave a direction to
+        read `ok`.
+
+        The finding has to FIRE, and it has to name the right column: a lock
+        that only asked whether the key exists is satisfied by the permanently
+        empty list this replaces, and one that only asked whether the list is
+        non-empty is satisfied by reporting the DECLARED names instead.
+        """
+        state = self.state_with_universe(self.RENDERS_AUC)
+        self.assertEqual(state["undeclared"], ["auc"])
+        self.assertEqual(state["status"], "drift")
+
+    def test_declaring_the_direction_clears_it(self):
+        """The other pole. A finding that cannot come back empty is a finding
+        nobody can act on, so the same tree with `auc` given a direction has to
+        go quiet -- and `accuracy`, declared in both files, must never appear."""
+        declared = self.DECLARATION.replace(
+            "'dimensions': {'accuracy': 'higher', 'seconds': 'lower', 'fit': None},",
+            "'dimensions': {'accuracy': 'higher', 'auc': 'higher', "
+            "'seconds': 'lower', 'fit': None},")
+        state = self.state_with_universe(self.RENDERS_AUC, declared)
+        self.assertEqual(state["undeclared"], [])
+
+    def test_a_column_the_module_declares_and_no_cell_renders_stays_silent(self):
+        """It is a dimension *rendered* that has no direction. A module may
+        legitimately carry more measured columns than a given report shows, and
+        a check that fired on those would teach the reader to skip it."""
+        state = self.state_with_universe(self.WELL_FORMED)
+        self.assertEqual(state["undeclared"], [])
+
+    def test_a_package_that_declares_no_universe_is_asked_nothing(self):
+        """`declared_dimension_names` answers `None` when neither file binds
+        `DIMENSIONS` -- the universe could not be determined, which is not the
+        same as a universe of zero. Reading `None` as an empty set would be
+        silence; reading it as a finding would be inventing one."""
+        state = self.state(self.RENDERS_AUC)
+        self.assertEqual(state["undeclared"], [])
 
 
 # --------------------------------------------- run/report coupling detection
@@ -4323,6 +4391,157 @@ def _module(revision, sections, equations, imports=""):
             f"    'equations': {equations!r},\n"
             f"    'invariants': [],\n"
             f"}}\n")
+
+
+class UndeclaredArmsTests(unittest.TestCase):
+    """An empty `arms` switches off the join nothing else in the flow crosses.
+
+    `unreached_mathematics`'s own docstring says it: "This is the join nothing
+    else in the flow crosses." It reads `declaration["arms"]` to build the map
+    from section to claiming arm, so with `arms: {}` the map is empty, every
+    module's `declaredBy` comes back empty, and the answer is `[]` -- whatever
+    the modules declare and whatever the harness calls. Downstream:
+    `benchmark_unfaithfulness` is `[]`, `probe`'s `wiring-first` rung can never
+    fire, `fidelity.benchmark.status` can never read `unfaithful`, and
+    `armsReached` is `null`. Nothing said so.
+
+    This is `__levels__`' own shape one block over, and it gets `__levels__`'
+    own answer: a report, never a demand. A repository legitimately has one arm
+    and nothing to compare, and refusing an absence would be the forge deciding
+    what comparison a repository is running. The precedent for the shape is
+    three functions away -- `distribution.note` names the file when
+    `DIMENSIONS` could not be found, so an empty `unpartitioned` is not read as
+    evidence the split is complete.
+    """
+
+    DECLARED = ("__benchmark__ = {\n"
+                "    'revision': 'r01.md',\n"
+                "    'arms': {'floor': {'sections': ['3']}},\n"
+                "}\n")
+    SILENT = ("__benchmark__ = {\n"
+              "    'revision': 'r01.md',\n"
+              "    'arms': {},\n"
+              "}\n")
+
+    def verify_with(self, declaration, suffix):
+        box = FORGE / "implementations" / f"_arms_{suffix}_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "src/Method_Benchmark", "tests"):
+            (box / directory).mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        # A module that declares a section, so there IS something to cross.
+        (box / "src/Method/never_called.py").write_text(
+            _module("r01.md", ["3"], ["12"]), encoding="utf-8")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            declaration, encoding="utf-8")
+        (box / "src/Method_Benchmark/wiring.py").write_text("", encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box),
+             "--name", "Method", "--revision", "r01.md"],
+            capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return json.loads(proc.stdout)["fidelity"]["benchmark"]
+
+    def test_the_join_reports_nothing_and_says_why(self):
+        """The headline. `unreachedModules` is empty and the module beside it
+        declares a section nobody claims -- so the emptiness is the absence of
+        the declaration, not the absence of a defect, and the report has to
+        tell those two apart."""
+        benchmark = self.verify_with(self.SILENT, "silent")
+        self.assertEqual(benchmark["unreachedModules"], [])
+        self.assertIsNone(benchmark["armsReached"])
+        self.assertIsNotNone(benchmark["note"], benchmark)
+        self.assertIn("arms", benchmark["note"])
+
+    def test_a_declared_arm_leaves_the_note_empty(self):
+        """The other pole, and the one a weaker lock survives: a note that
+        printed on every run would be a sentence readers learn to skip, and
+        the join it describes DOES run here -- `never_called.py` declares
+        section 3, the arm claims section 3, and nothing calls it."""
+        benchmark = self.verify_with(self.DECLARED, "named")
+        self.assertIsNone(benchmark["note"])
+        self.assertEqual([u["module"] for u in benchmark["unreachedModules"]],
+                         ["src/Method/never_called.py"])
+
+    def test_the_note_names_the_readers_the_absence_switches_off(self):
+        """`undeclaredLadder`'s doctrine: an absence read back as its own name
+        teaches nothing. Each reader that goes permanently quiet is named, and
+        so is the file the declaration belongs in."""
+        note = self.verify_with(self.SILENT, "cost")["note"]
+        self.assertIn("unreachedModules", note)
+        self.assertIn("wiring-first", note)
+        self.assertIn("unfaithful", note)
+        self.assertIn("src/Method_Benchmark/__init__.py", note)
+        self.assertGreater(len(note.split()), 40, note)
+
+    def test_a_repository_with_nothing_to_cross_is_asked_nothing(self):
+        """The restraint, and it was measured unlocked: deleting the guard
+        left every test here green. A module that declares no sections has no
+        crossing to lose, and `fidelity.missingProvenance` already names it --
+        reporting here too would turn one gap into two findings, which is the
+        identical restraint `undeclared_ladder_state` keeps for a target with
+        no benchmark package."""
+        box = FORGE / "implementations" / f"_arms_nocross_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "src/Method_Benchmark", "tests"):
+            (box / directory).mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        (box / "src/Method/sectionless.py").write_text(
+            _module("r01.md", [], ["12"]), encoding="utf-8")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            self.SILENT, encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box),
+             "--name", "Method", "--revision", "r01.md"],
+            capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        benchmark = json.loads(proc.stdout)["fidelity"]["benchmark"]
+        self.assertEqual(benchmark["status"], "ok")
+        self.assertIsNone(benchmark["note"], benchmark)
+
+    def test_the_note_counts_the_modules_that_go_uncrossed(self):
+        """A count read off the same modules the join walked, so the sentence
+        is checkable rather than general: one module here declares a section
+        and no arm can ever claim it."""
+        self.assertIn("1 module", self.verify_with(self.SILENT, "count")["note"])
+
+    def test_every_branch_of_the_benchmark_block_carries_the_key(self):
+        """`distribution_state`'s own rule, stated in its return: a key that
+        appears on some branches and not others vanishes for exactly the
+        callers that took the early ones, and nothing downstream can tell an
+        absent key from an absent answer."""
+        box = FORGE / "implementations" / f"_arms_bare_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "tests"):
+            (box / directory).mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box),
+             "--name", "Method", "--revision", "r01.md"],
+            capture_output=True, text=True, cwd=FORGE)
+        benchmark = json.loads(proc.stdout)["fidelity"]["benchmark"]
+        self.assertEqual(benchmark["status"], "absent")
+        self.assertIn("note", benchmark)
+        self.assertIsNone(benchmark["note"])
+
+    def test_the_kit_still_invents_no_arm_of_its_own(self):
+        """The decision about the scaffold, recorded so it is a position and
+        not a gap: `arms` ships empty and stays empty. A prefilled arm would
+        be the forge naming a repository's own comparison for it -- the same
+        thing `__levels__` refuses one literal over."""
+        kit = KIT / "src_benchmark" / "__init__.py"
+        tree = ast.parse(kit.read_text(encoding="utf-8"))
+        declared = next(node for node in tree.body
+                        if isinstance(node, ast.Assign)
+                        and any(isinstance(t, ast.Name) and t.id == "__benchmark__"
+                                for t in node.targets))
+        self.assertEqual(ast.literal_eval(declared.value)["arms"], {})
 
 
 class UnreachedMathematicsEndToEndTests(unittest.TestCase):
@@ -12696,6 +12915,272 @@ class EntryModuleResolutionTests(unittest.TestCase):
                           "Method_Benchmark.custom_entry")
 
 
+class MessagesThatAssertWhatTheyCheckTests(unittest.TestCase):
+    """Two refusals stated a fact neither of them checks.
+
+    `OBJECT_MAP_NOT_APPROVED` says the package "declares no revision/premises"
+    and gates on `resolve_benchmark_declaration(...)["status"] != "declared"`.
+    That status is `"undeclared"` only when `_declaration_is_blank` holds --
+    when ALL SEVEN blocks still carry their scaffold value. Measured: with
+    `revision: ""`, `premises: {}` and only `search` answered, the status is
+    `"declared"`, the gate opens, and step 9's scaffolding is written over an
+    object map nobody approved -- with the refusal's own sentence describing
+    the exact state that was true and did not refuse.
+
+    `_declare_first_publication` says the target "has a benchmark declaration
+    that names nothing yet". Two branches assign `declare-first`, and only one
+    of them is that: the second fires for `report.live == "undeclared"`, which
+    is a blank `entry.module` and nothing else -- a declaration that may name
+    six blocks fully.
+
+    The direction of each repair is decided by which half is the intent.
+    `OBJECT_MAP_NOT_APPROVED` is named for the object map and its own docstring
+    cites SKILL.md step 8's requirement that `revision`/`premises` be written
+    before any step-9 code, so the CHECK was wrong and is tightened. The
+    publication's sentence is one of several the flow could truthfully say, so
+    the SENTENCE was wrong and now reads the state that actually routed there.
+    """
+
+    def _box(self, suffix, declaration, *, comparable=False):
+        """`materialize` refuses `DIRTY_WORKTREE` before any gate of its own,
+        so the box is committed; and `probe` answers `convert` long before the
+        declaration ladder unless there is something to compare against and a
+        trainable backend -- `comparable` supplies both, exactly as
+        `UnreachedMathematicsEndToEndTests.probe_with` already has to."""
+        box = FORGE / "implementations" / f"_assertcheck_{suffix}_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "src/Method_Benchmark", "Method", "tests"):
+            (box / directory).mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            declaration, encoding="utf-8")
+        if comparable:
+            (box / "src/Prior").mkdir(parents=True)
+            (box / "src/Prior/model.py").write_text("import torch\n",
+                                                    encoding="utf-8")
+            (box / "src/Method/called.py").write_text(
+                _module("r01.md", ["3"], ["11"], imports="import torch\n"),
+                encoding="utf-8")
+        for command in (["git", "add", "-A"],
+                        ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                         "commit", "-qm", "fixture"]):
+            subprocess.run(command, check=True, capture_output=True, cwd=str(box))
+        return box
+
+    SEARCH_ONLY = (
+        "__benchmark__ = {\n"
+        "    'revision': '',\n"
+        "    'premises': {},\n"
+        "    'arms': {},\n"
+        "    'search': {'what': 'a scalar', 'requiredScale': {'seeds': 3},\n"
+        "               'role': 'validation', 'tieRule': 'the smaller wins'},\n"
+        "    'report': {},\n"
+        "    'distribution': {},\n"
+        "    'entry': {'module': '', 'function': ''},\n"
+        "}\n")
+    APPROVED = (
+        "__benchmark__ = {\n"
+        "    'revision': 'r01.md',\n"
+        "    'premises': {'prediction': 'a label', 'statisticalUnit': 'subject',\n"
+        "                 'metric': 'accuracy', 'direction': 'higher'},\n"
+        "    'arms': {},\n"
+        "    'search': {},\n"
+        "    'report': {},\n"
+        "    'distribution': {},\n"
+        "    'entry': {'module': '', 'function': ''},\n"
+        "}\n")
+
+    #: A declaration nobody would call blank: bound to a revision, its
+    #: premises written, its report block answered -- and `entry.module`
+    #: empty, which is the ONLY thing `report.live == "undeclared"` means.
+    #: This is the second branch that assigns `declare-first`, and the one
+    #: the published sentence described wrongly.
+    LIVE_UNDECLARED = (
+        "__benchmark__ = {\n"
+        "    'revision': 'r01.md',\n"
+        "    'premises': {'prediction': 'a label', 'statisticalUnit': 'subject',\n"
+        "                 'metric': 'accuracy', 'direction': 'higher'},\n"
+        "    'arms': {},\n"
+        "    'search': {},\n"
+        "    'report': {'renderers': ['tables.render']},\n"
+        "    'distribution': {},\n"
+        "    'entry': {'module': '', 'function': ''},\n"
+        "}\n")
+
+    def _stage_objects(self, declaration, suffix):
+        """`_stage_objects` directly rather than through `materialize`: the
+        refusal is raised in this top-level helper, not inside
+        `cmd_materialize` (which is why `OBJECT_MAP_NOT_APPROVED` is not in
+        `GATING_REFUSALS` -- `raised_refusal_codes` walks `cmd_*` bodies
+        only), and reaching it through the CLI would mean satisfying
+        `DIRTY_WORKTREE`, `PLAN_REQUIRED` and the mode flags first, none of
+        which this gate is about."""
+        box = self._box(suffix, declaration)
+        try:
+            return None, impl._stage_objects(box, "Method", "1")
+        except impl.Refused as refused:
+            return refused, None
+
+    # --- the gate that opened on a state its own sentence describes --------
+
+    def test_a_declaration_with_no_revision_or_premises_is_refused(self):
+        """The measured hole. `_declaration_is_blank` needs all seven blocks
+        empty, so answering any one of them opens this gate -- and `search` is
+        exactly the block a target can answer long before step 8."""
+        refused, _ = self._stage_objects(self.SEARCH_ONLY, "searchonly")
+        self.assertIsNotNone(refused, "the gate opened on an unapproved map")
+        self.assertEqual(refused.code, "OBJECT_MAP_NOT_APPROVED")
+        self.assertIn("revision", refused.detail)
+        self.assertIn("premises", refused.detail)
+
+    def test_the_gate_opens_once_the_two_blocks_it_names_are_written(self):
+        """The other pole, and the one that keeps the tightening honest: the
+        gate must still open, and it must open on exactly what its sentence
+        asks for -- `revision` and `premises`, nothing else. A refusal nobody
+        can clear is the defect one over from a gate nobody can trip."""
+        refused, result = self._stage_objects(self.APPROVED, "approved")
+        self.assertIsNone(refused, refused and refused.detail)
+        self.assertEqual(result["stage"], "objects")
+
+    def test_the_detail_names_which_of_the_two_is_missing(self):
+        """A refusal that says "revision/premises" over a declaration whose
+        `premises` is fully written sends somebody to re-read a block that is
+        already right."""
+        declaration = self.APPROVED.replace("'revision': 'r01.md',", "'revision': '',")
+        refused, _ = self._stage_objects(declaration, "halfway")
+        self.assertIsNotNone(refused)
+        self.assertIn("revision", refused.detail)
+        self.assertNotIn("premises", refused.detail)
+
+    def test_a_blank_scaffold_still_refuses_the_same_code(self):
+        """The state that already refused must keep refusing under the same
+        code -- a tightening that renamed the existing refusal would be a
+        second change wearing this one's clothes."""
+        refused, _ = self._stage_objects(
+            "__benchmark__ = {'revision': '', 'premises': {}, 'arms': {}, "
+            "'search': {}, 'report': {}, 'distribution': {}, "
+            "'entry': {'module': '', 'function': ''}}\n", "blank")
+        self.assertIsNotNone(refused)
+        self.assertEqual(refused.code, "OBJECT_MAP_NOT_APPROVED")
+
+    # --- the publication that described one of two states ------------------
+
+    def test_declare_first_says_which_of_the_two_states_routed_there(self):
+        """`report.live == "undeclared"` is a blank `entry.module` and nothing
+        else. The declaration here answers six blocks and the sentence called
+        it one that "names nothing yet"."""
+        facts = {"declared": {}, "declarationStatus": "declared",
+                 "live": "undeclared"}
+        published = impl.next_step_publication(
+            Path("implementations/box"), "Method", "declare-first", facts)
+        self.assertIn("entry.module", published["question"])
+        self.assertNotIn("names nothing yet", published["question"])
+
+    def test_declare_first_still_says_it_for_the_state_where_it_is_true(self):
+        """The other pole. A declaration every block of which is still at its
+        scaffold value DOES name nothing yet, and the sentence that says so is
+        the right one there."""
+        facts = {"declared": {}, "declarationStatus": "undeclared",
+                 "live": None}
+        published = impl.next_step_publication(
+            Path("implementations/box"), "Method", "declare-first", facts)
+        self.assertIn("names nothing yet", published["question"])
+
+    def test_declare_first_never_claims_a_declaration_a_target_does_not_have(self):
+        """The third state: no benchmark package at all. "has a benchmark
+        declaration" is false there too, and it was said anyway."""
+        facts = {"declared": {}, "declarationStatus": "absent", "live": None}
+        published = impl.next_step_publication(
+            Path("implementations/box"), "Method", "declare-first", facts)
+        self.assertNotIn("has a benchmark declaration", published["question"])
+
+    def test_probe_hands_the_publication_the_state_that_routed_there(self):
+        """The join. Both sentences above are only true if `probe` actually
+        passes the state it branched on -- a fact computed and not threaded
+        through is a fact the publication has to guess at again."""
+        box = self._box("probefacts", self.LIVE_UNDECLARED, comparable=True)
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "probe", "--target", str(box),
+             "--name", "Method"],
+            capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["nextStep"], "declare-first")
+        self.assertIn("entry.module", payload["resolve"]["question"])
+
+    # --- the declaration nothing in the forge reads -------------------------
+
+    def test_a_declared_module_with_no_function_is_reported(self):
+        """`entry.function` is read by nothing in this file -- only `.module`
+        is, twice. The kit's claim about it is accurate: `generate-job`'s own
+        `--run-function` is `required=True`, so the value IS needed, by the
+        operator, at the one handoff SKILL.md's seam table names. What was
+        missing is that a target could answer `module` and leave `function`
+        blank and hear about it nowhere, then reach a required flag with
+        nothing to type into it."""
+        target = self.box_pkg(
+            "nofunction",
+            "__benchmark__ = {'revision': 'r01.md', "
+            "'entry': {'module': 'Method_Benchmark.benchmark', 'function': ''}}\n")
+        (target / "src/Method_Benchmark/benchmark.py").write_text(
+            "VALUE = 1\n", encoding="utf-8")
+        status = impl.resolve_harness_status(target, "Method", "Method")
+        self.assertEqual(status["status"], "present")
+        self.assertIsNone(status["declaredFunction"])
+        self.assertIsNotNone(status["note"])
+        self.assertIn("--run-function", status["note"])
+
+    def test_a_declared_function_is_echoed_and_the_note_is_empty(self):
+        """The other pole: a target that answered both hears nothing, and the
+        value it answered is echoed so the operator can read it off the same
+        output rather than re-opening the declaration."""
+        target = self.box_pkg(
+            "withfunction",
+            "__benchmark__ = {'revision': 'r01.md', "
+            "'entry': {'module': 'Method_Benchmark.benchmark', "
+            "'function': 'run'}}\n")
+        (target / "src/Method_Benchmark/benchmark.py").write_text(
+            "VALUE = 1\n", encoding="utf-8")
+        status = impl.resolve_harness_status(target, "Method", "Method")
+        self.assertEqual(status["declaredFunction"], "run")
+        self.assertIsNone(status["note"])
+
+    def test_an_undeclared_module_is_not_told_about_the_function_too(self):
+        """One absence, one fact. `entry.module` undeclared already has its
+        own status, and naming the function beside it would turn one gap into
+        two findings -- `undeclared_ladder_state`'s own restraint."""
+        target = self.box_pkg(
+            "neither", "__benchmark__ = {'revision': 'r01.md'}\n")
+        status = impl.resolve_harness_status(target, "Method", "Method")
+        self.assertEqual(status["status"], "undeclared")
+        self.assertIsNone(status["declaredFunction"])
+        self.assertIsNone(status["note"])
+
+    def test_every_branch_carries_both_new_keys(self):
+        """`distribution_state`'s rule again: a key on some branches only
+        cannot be told from an absent answer by anything downstream."""
+        for suffix, declaration in (
+                ("branch_undeclared", "__benchmark__ = {'revision': 'r01.md'}\n"),
+                ("branch_missing",
+                 "__benchmark__ = {'revision': 'r01.md', 'entry': "
+                 "{'module': 'Method_Benchmark.nowhere', 'function': 'run'}}\n")):
+            with self.subTest(suffix=suffix):
+                status = impl.resolve_harness_status(
+                    self.box_pkg(suffix, declaration), "Method", "Method")
+                self.assertIn("declaredFunction", status)
+                self.assertIn("note", status)
+
+    def box_pkg(self, suffix, declaration):
+        path = FORGE / "implementations" / f"_entryfn_{suffix}_{os.getpid()}_{id(self)}"
+        (path / "src" / "Method_Benchmark").mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, path, ignore_errors=True)
+        (path / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            declaration, encoding="utf-8")
+        return path
+
+
 class HarnessStatusResolutionTests(unittest.TestCase):
     """Where `probe` gets its harness's name from — the target's own
     declaration, `entry.module`, never a second hardcoded filename beside
@@ -14105,6 +14590,150 @@ class StepOperandRefusalTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout)
         result = json.loads(proc.stdout)
         self.assertEqual(result["status"], "unchanged")
+
+
+class PositionRecordMalformedTests(unittest.TestCase):
+    """`__steps__` has a shape refusal; `__records__` had none.
+
+    `cmd_step` raises `STEP_MALFORMED` the moment an entry lacks `module` or
+    `function`. `POSITION_RECORD_UNKNOWN` checks only membership in the raw
+    dict, so a declared entry of any shape at all passes it. Measured:
+
+    - `{"main": {"file": ..., "requiredScale": ...}}` (a typo'd `path`):
+      `POSITION_RECORD_UNKNOWN` passes, `named_records_state` keeps the entry
+      with `recordFound: None`, and the item derives no rung ever.
+    - `{"main": "Results/r.json"}` (not a mapping at all):
+      `POSITION_RECORD_UNKNOWN` passes because `main` IS a key, and
+      `named_records_state` drops the entry entirely -- so the refusal says
+      `main` is declared and the reader says it does not exist, and the two
+      never meet.
+
+    Either way a ticked witness becomes `POSITION_UNBACKED` and a leveled one
+    sinks `attained_level` forever, with nothing naming the declaration as the
+    cause. `STEP_MALFORMED`'s own answer, one literal over.
+
+    **Which input reaches it, given every check that already runs first.** The
+    refusal sits immediately after `POSITION_RECORD_UNKNOWN` and therefore
+    still ahead of `_skipped_rung_detail` -- the same trap-1 placement D5
+    established, and for the same reason: a malformed entry derives `None`
+    too, which sinks `attained_level`, so a check placed after the rung guard
+    would be unreachable for any `--target-level` above the floor. It is
+    reached by a leveled `@record:level <name>` witness whose name IS a key of
+    `__records__` (or `POSITION_RECORD_UNKNOWN` would have fired) and whose
+    entry `named_records_state` cannot read.
+    """
+
+    PROPOSAL_TEXT = PositionCommandTests.PROPOSAL_TEXT
+    PROPOSAL_SHA256 = PositionCommandTests.PROPOSAL_SHA256
+    LADDER = ["floor", "middle", "top"]
+
+    def _proposals(self):
+        return PositionCommandTests._proposals(self)
+
+    def _box(self, records):
+        box = FORGE / "implementations" / f"_e2e_record_shape_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "src/Method_Benchmark", "tests", "Method"):
+            (box / directory).mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            f"__levels__ = {self.LADDER!r}\n__records__ = {records!r}\n",
+            encoding="utf-8")
+        (box / "Method/AGREED.md").write_text(
+            f"<!-- position revision=r1.md sha256={self.PROPOSAL_SHA256} "
+            "derivedAt=2026-08-27T00:00:00Z session=s0 target=floor -->\n"
+            "- [ ] 1. Reach the record. `@record:level main`\n"
+            "<!-- /position -->\n", encoding="utf-8")
+        return box
+
+    def _position(self, records, target_level="floor"):
+        box = self._box(records)
+        env = dict(os.environ)
+        env["IMPLEMENTATION_PROPOSALS"] = str(self._proposals())
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "position", "--target", str(box),
+             "--name", "Method", "--revision", "r1.md", "--session", "s1",
+             "--target-level", target_level],
+            capture_output=True, text=True, cwd=FORGE, env=env)
+        return proc
+
+    GOOD = {"main": {"path": "Results/r.json", "requiredScale": {}}}
+    TYPO = {"main": {"file": "Results/r.json", "requiredScale": {}}}
+    NOT_A_MAPPING = {"main": "Results/r.json"}
+
+    def test_an_entry_that_is_not_a_mapping_refuses(self):
+        """The sharp one. `named_records_state` skips a non-dict entry
+        entirely, so `evidence["records"]` has no `main` at all while
+        `POSITION_RECORD_UNKNOWN` says `main` is declared -- the refusal and
+        the reader disagreeing about the same name, with nothing crossing
+        them."""
+        proc = self._position(self.NOT_A_MAPPING)
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["code"], "POSITION_RECORD_MALFORMED")
+        self.assertIn("main", result["detail"])
+
+    def test_an_entry_with_no_usable_path_refuses(self):
+        """The quiet one. A dict entry survives every existing check, keeps
+        its place in `evidence["records"]`, and derives `recordFound: None`
+        forever -- so a ticked witness reads `POSITION_UNBACKED` and a leveled
+        one sinks `attainedLevel`, neither of them naming the typo."""
+        proc = self._position(self.TYPO)
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["code"], "POSITION_RECORD_MALFORMED")
+        self.assertIn("path", result["detail"])
+
+    def test_a_well_formed_entry_is_never_refused(self):
+        """The other pole, and the one a weaker lock survives: a refusal that
+        fired on every declared record would close the door this declaration
+        exists to open."""
+        proc = self._position(self.GOOD)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_it_refuses_above_the_floor_too(self):
+        """The trap-1 ordering claim, measured the way
+        `PositionRecordUnknownTests` measures its own: a malformed entry
+        derives `None` and sinks `attained_level`, so a check placed after
+        `_skipped_rung_detail` would answer `POSITION_RUNG_SKIPPED` here and
+        never be reachable above the floor at all."""
+        proc = self._position(self.NOT_A_MAPPING, target_level="middle")
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["code"],
+                         "POSITION_RECORD_MALFORMED")
+
+    def test_a_name_no_witness_addresses_is_not_this_command_s_business(self):
+        """The narrowing `STEP_MALFORMED` already keeps: it refuses the step
+        it was asked to run, never every entry of `__steps__`. A repository
+        may legitimately carry a half-written entry it has not wired a witness
+        to yet, and refusing every position write until every entry is perfect
+        would be the forge deciding when a declaration is finished."""
+        box = self._box({"main": {"path": "Results/r.json", "requiredScale": {}},
+                         "spare": "not-a-mapping"})
+        env = dict(os.environ)
+        env["IMPLEMENTATION_PROPOSALS"] = str(self._proposals())
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "position", "--target", str(box),
+             "--name", "Method", "--revision", "r1.md", "--session", "s1",
+             "--target-level", "floor"],
+            capture_output=True, text=True, cwd=FORGE, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_the_code_is_classified_and_publishes_something_runnable(self):
+        """`GatingRefusalRosterTests`' own rule, asserted here too so the
+        classification travels with the refusal rather than being noticed by
+        a roster count moving."""
+        self.assertEqual(impl.GATING_REFUSALS["POSITION_RECORD_MALFORMED"],
+                         impl.WORK_STATE)
+        resolution = impl.refusal_resolution(
+            "POSITION_RECORD_MALFORMED",
+            argparse.Namespace(command="position", target="implementations/box",
+                               name="Method", session="s1", revision="r1.md",
+                               about=None, text=None))
+        self.assertEqual(resolution["kind"], "question")
+        self.assertIn("__records__", resolution["question"])
 
 
 class PositionRecordUnknownTests(unittest.TestCase):
@@ -22576,6 +23205,119 @@ class UndeclaredOptionalDeclarationTests(unittest.TestCase):
         distribution = impl.distribution_state({}, {})
         self.assertEqual(impl.undeclared_optional_state(search, distribution), [])
 
+    # --- `record`, the key that was read and never declared ---------------
+
+    def test_the_record_key_search_state_reads_is_declared_somewhere(self):
+        """`search_state` reads `search.get("record")` and four consumers
+        hang off the answer, and the key appeared in none of the three
+        tables that state what a `search` block may carry. A target that
+        answers every documented field measures `recordFound: null`,
+        `missing: []` and `status: "ok"` -- a clean reading of a search
+        whose record nothing can find, forever."""
+        self.assertIn("record", impl.SEARCH_OPTIONAL)
+        self.assertIn("record", impl.SEARCH_SHAPE)
+        self.assertIs(impl.SEARCH_SHAPE["record"], str)
+        self.assertNotIn(
+            "record", impl.SEARCH_DECLARATION,
+            "a required key here would declare every existing target "
+            "incomplete for a question nobody had asked it")
+
+    def test_a_declared_search_with_no_record_is_named_with_its_consequence(self):
+        declared = {k: v for k, v in self.SEARCH_DECLARED.items() if k != "record"}
+        search = impl.search_state({"search": declared}, [])
+        entries = impl.undeclared_optional_state(search, impl.distribution_state({}, {}))
+        fields = sorted(e["field"] for e in entries)
+        self.assertEqual(fields, ["currentWhen", "record"])
+        entry = next(e for e in entries if e["field"] == "record")
+        self.assertEqual(entry["section"], "search")
+        self.assertEqual(entry["consequence"], impl.SEARCH_OPTIONAL["record"])
+
+    def test_an_answered_record_is_never_reported(self):
+        """The other pole: `SEARCH_DECLARED` above already answers it, and a
+        report that fired anyway would be a false alarm on every target that
+        did the right thing."""
+        search = impl.search_state({"search": self.SEARCH_DECLARED}, [])
+        entries = impl.undeclared_optional_state(search, impl.distribution_state({}, {}))
+        self.assertEqual([e["field"] for e in entries], ["currentWhen"])
+
+    def test_a_record_of_the_wrong_shape_is_malformed_and_not_missing(self):
+        """The third state `SEARCH_SHAPE` exists for. Without a shape entry
+        the key was accepted on bare truthiness, and a non-string reached
+        `product / record`."""
+        search = impl.search_state({"search": {**self.SEARCH_DECLARED,
+                                               "record": ["Results/r.json"]}}, [])
+        malformed = [m for m in search["malformed"] if m["field"] == "record"]
+        self.assertEqual(len(malformed), 1, search["malformed"])
+        self.assertEqual(malformed[0]["expected"], "str")
+        self.assertEqual(malformed[0]["found"], "list")
+        self.assertEqual([m["field"] for m in search["missing"]], [])
+
+    def test_the_consequence_names_each_reader_that_goes_permanently_blind(self):
+        """`undeclaredOptional`'s entries earn their place by naming the cost
+        of an absence, never the absence itself. Four readers hang off this
+        one key and each is named, because a reader who has never traced
+        `recordFound` learns nothing from "no record is declared"."""
+        consequence = impl.SEARCH_OPTIONAL["record"]
+        self.assertIn("recordFound", consequence)
+        self.assertIn("POSITION_UNBACKED", consequence)
+        self.assertIn("attainedLevel", consequence)
+        self.assertIn("search-first", consequence)
+        self.assertGreater(len(consequence.split()), 40, consequence)
+
+    def test_the_search_first_rung_it_names_is_the_one_probe_actually_takes(self):
+        """The consequence claims `probe` keeps answering `search-first`
+        forever. That is a claim about the ladder's own condition, so it is
+        measured against that condition rather than asserted -- with the
+        record declared and present, the same condition goes quiet."""
+        with tempfile.TemporaryDirectory() as raw:
+            product = Path(raw) / "Method"
+            (product / "Results").mkdir(parents=True)
+            (product / "Results/r.json").write_text(
+                json.dumps({"epochs": 1}), encoding="utf-8")
+            declared = {k: v for k, v in self.SEARCH_DECLARED.items()
+                        if k != "record"}
+            silent = impl.search_state({"search": declared}, [], product)
+            named = impl.search_state(
+                {"search": {**declared, "record": "Results/r.json"}},
+                ["Results/r.json"], product)
+
+        def search_first(state):
+            return bool(state["recordFound"] is False
+                        or (impl.declared_required_scale(state)
+                            and state["scaleSatisfied"] is not True))
+
+        self.assertTrue(search_first(silent),
+                        "an undeclared record can never satisfy the scale")
+        self.assertFalse(search_first(named), named)
+
+    def test_the_kit_tells_a_target_the_key_exists(self):
+        """The half `undeclared_optional_state` cannot supply: a target that
+        never learns the key exists cannot decide to answer it, and the kit's
+        `search` comment is where a target reads what the block may carry.
+        It named `what`, `requiredScale`, `role`, `tieRule` and `currentWhen`
+        and never `record` -- the one field `search_state` reads before any
+        of them."""
+        kit = (KIT / "src_benchmark" / "__init__.py").read_text(encoding="utf-8")
+        block = kit[kit.index('"search": {}') - 3000:kit.index('"search": {}')]
+        self.assertIn("record", block)
+        self.assertIn("requiredScale", block)
+
+    def test_both_documents_name_every_optional_key_the_roster_holds(self):
+        """A list of keys written into prose is a list that loses one -- the
+        exact way `record` went four years of readings without appearing in
+        any of the three tables that state what a `search` block may carry.
+        Derived from `SEARCH_OPTIONAL`/`DISTRIBUTION_OPTIONAL` rather than
+        proof-read, so adding a key here goes red until both documents name
+        it."""
+        skill = SKILL_MD.read_text(encoding="utf-8")
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        for section, roster in (("search", impl.SEARCH_OPTIONAL),
+                                ("distribution", impl.DISTRIBUTION_OPTIONAL)):
+            for field in roster:
+                with self.subTest(field=f"{section}.{field}"):
+                    self.assertIn(f"`{section}.{field}`", skill)
+                    self.assertIn(f"`{section}.{field}`", usage)
+
     def test_undeclaredOptional_is_a_top_level_verify_key(self):
         """The constraint that decided `toDiscuss`'s own placement
         (see that comment in `cmd_verify`): `returned_keys` reads
@@ -22615,6 +23357,418 @@ class NoTestClassShadowsAnotherTests(unittest.TestCase):
                     f"{path.name} defines these class names twice; the later "
                     "definition silently replaces the earlier one and every "
                     "test the earlier one held stops running")
+
+
+class ShardlessRungDiagnosisTests(unittest.TestCase):
+    """A refusal that was true and named the wrong thing.
+
+    A leveled `@shard` witness with no `distribution.shardsRoot` declared and
+    no `--shards` flag: `_resolve_shard_evidence` answers `(None, None)`,
+    `_derive_shard_level` reads `shardsArrived is None` and derives `None`
+    (unmeasured -- correctly, since nobody was told where to look),
+    `attained_level` therefore reaches no rung at all, and `launch_available`
+    answers `RUNG_NOT_ATTAINED`. The operator is told which rung the evidence
+    fell short of and asked what has to run before it is reached. The rung is
+    real; the answer is that nothing has to run, because one string was never
+    declared.
+
+    `POSITION_SHARDS_UNDECLARED` already exists and already names that exact
+    exit -- it just fires one check earlier, through `position_honest`, and
+    only for a TICKED item whose unbacked-ness is fully explained by the same
+    absence. An honestly-blank leveled `@shard` item never reaches it.
+
+    **Which input reaches the new branch, given everything checked before it.**
+    `position_honest`'s four checks all pass (the section is current, nothing
+    is ticked-and-unmeasured, nothing disagrees), `ready` is `True`, and the
+    job's own item is ticked and sits BEFORE the shard item -- measured:
+    with the shard item first and blank, `SEQUENCE_NOT_REACHED`
+    (`earlier_open`) fires and the rung threshold is never reached at all.
+    So the reachable shape is exactly one: a blank leveled `@shard` item
+    positioned after the job's own, with no location declared.
+    """
+
+    #: Three rungs, so the launch floor (`levels[-2]`) sits ABOVE the rung an
+    #: arrived-but-empty shard directory puts an item on. On a two-rung ladder
+    #: the floor coincides with `levels[0]` and the control below -- a location
+    #: that WAS consulted and came back silent -- would launch, which proves
+    #: nothing about the branch being measured.
+    LADDER = ["floor", "middle", "top"]
+
+    def _sequence(self, *, shard_derived=None, extra=()):
+        items = [{"ordinal": 1, "mark": "x", "text": "t", "derived": True,
+                  "witness": {"kind": "rehearsal", "operand": "job",
+                              "twostate": True}},
+                 {"ordinal": 2, "mark": " ", "text": "t",
+                  "derived": shard_derived,
+                  "witness": {"kind": "shard", "operand": "s1",
+                              "twostate": False}}]
+        return items + list(extra)
+
+    def _verdict(self, items, *, shards_declared, evidence):
+        levels = self.LADDER
+        return impl_availability.launch_available(
+            status="ok", unbacked=[], disagreements=[], sequence=items,
+            ready=True, job="job", shards_declared=shards_declared,
+            levels=levels,
+            attained_level=impl_position.attained_level(
+                items, {**evidence, "levels": levels}))
+
+    def test_an_undeclared_shard_location_is_named_instead_of_a_rung(self):
+        """The headline. The cause is one undeclared string and the refusal
+        has to say so -- naming the rung is true and unactionable."""
+        verdict = self._verdict(
+            self._sequence(), shards_declared=False,
+            evidence={"smokeReady": {"job": True}, "shardsArrived": None,
+                      "shardsCurrent": None})
+        self.assertFalse(verdict["available"])
+        self.assertEqual(verdict["code"], "POSITION_SHARDS_UNDECLARED")
+        self.assertEqual(verdict["facts"]["undeclaredOrdinals"], [2])
+
+    def test_declaring_the_location_is_the_exit_and_it_opens_the_gate(self):
+        """The other pole, and the proof the diagnosis is the right one: the
+        identical sequence with a shard directory actually consulted reaches
+        the top rung and launches. A refusal that named a cause the fix does
+        not clear is worse than the vague one it replaces."""
+        verdict = self._verdict(
+            self._sequence(shard_derived="top"), shards_declared=True,
+            evidence={"smokeReady": {"job": True}, "shardsArrived": ["s1"],
+                      "shardsCurrent": None})
+        self.assertTrue(verdict["available"], verdict)
+
+    def test_a_shortfall_the_undeclared_location_does_not_explain_keeps_its_rung(self):
+        """The narrowing that keeps this honest, and the one a weaker lock
+        would drop. A second leveled item that is unmeasured for its OWN
+        reason -- a `@notebook` naming a report that does not exist -- means
+        the shard location is not the whole story, and answering
+        `POSITION_SHARDS_UNDECLARED` there would send somebody to declare a
+        directory that clears nothing. `position_honest`'s own doctrine for
+        the ticked case, unchanged: fully explained, or not at all."""
+        extra = [{"ordinal": 3, "mark": " ", "text": "t", "derived": None,
+                  "witness": {"kind": "notebook", "operand": "absent.ipynb",
+                              "twostate": False}}]
+        verdict = self._verdict(
+            self._sequence(extra=extra), shards_declared=False,
+            evidence={"smokeReady": {"job": True}, "shardsArrived": None,
+                      "shardsCurrent": None, "notebooks": {"reports": []}})
+        self.assertEqual(verdict["code"], "RUNG_NOT_ATTAINED")
+
+    def test_a_declared_location_that_simply_found_nothing_keeps_its_rung(self):
+        """The distinction `position_honest`'s `shards_declared` exists for,
+        held here too: "nobody was told where to look" and "somebody looked
+        and found nothing" must not read as the same claim. A shard directory
+        that was consulted and came back empty puts the item on the FLOOR
+        rung, and falling short from the floor is a rung fact."""
+        verdict = self._verdict(
+            self._sequence(shard_derived="floor"), shards_declared=True,
+            evidence={"smokeReady": {"job": True}, "shardsArrived": [],
+                      "shardsCurrent": None})
+        self.assertEqual(verdict["code"], "RUNG_NOT_ATTAINED")
+
+    def test_a_two_state_shard_item_is_not_a_rung_fact_at_all(self):
+        """A two-state `@shard` item is graded without the ladder, so it can
+        never hold attainment down and never reaches this branch. Its own
+        undeclared-location story is `position_honest`'s, one check up, and
+        only once it is ticked."""
+        items = [{"ordinal": 1, "mark": "x", "text": "t", "derived": True,
+                  "witness": {"kind": "rehearsal", "operand": "job",
+                              "twostate": True}},
+                 {"ordinal": 2, "mark": " ", "text": "t", "derived": None,
+                  "witness": {"kind": "shard", "operand": "s1",
+                              "twostate": True}}]
+        verdict = self._verdict(
+            items, shards_declared=False,
+            evidence={"smokeReady": {"job": True}, "shardsArrived": None,
+                      "shardsCurrent": None})
+        self.assertTrue(verdict["available"], verdict)
+
+    def test_the_refusal_gate_raises_no_longer_claims_the_item_is_ticked(self):
+        """`POSITION_SHARDS_UNDECLARED` is now reachable from a BLANK item,
+        so its own sentence -- "a launch is not authorized against a tick
+        that cannot be checked at all" -- would be asserting a mark the
+        refusal does not check. Same defect as the two the roster already
+        carries, and it would have been introduced by this change."""
+        source = CLI.read_text(encoding="utf-8")
+        opener = source.index("def cmd_gate(")
+        body = source[source.index('"POSITION_SHARDS_UNDECLARED",', opener):]
+        message = body[:body.index('")')]
+        # Matched on the source's own fragment, not on a rendered sentence:
+        # the message is assembled from adjacent string literals, so any
+        # phrase long enough to be unambiguous straddles a boundary.
+        self.assertNotIn("a tick", message)
+        self.assertIn("`@shard` witness", message)
+
+
+class UnreachableLadderTests(unittest.TestCase):
+    """A ladder long enough that no launch can ever be authorized on it.
+
+    Two rules, each correct alone, compose into a lock with no key.
+    `_derive_rehearsal_level` bounds a leveled `@rehearsal` item at index 1
+    -- `smokeReady` is two-valued, so a rehearsal that passed proves the floor
+    plus one and never more, which is exactly right. `launch_available`'s rung
+    threshold floors a launch at `levels[-2]` -- the rung below the top, which
+    is also exactly right. `attained_level` is the highest rung at which EVERY
+    leveled item grades satisfied, so one leveled `@rehearsal` anywhere in the
+    sequence pins attainment at index 1 forever.
+
+    Measured exhaustively over ladder length, with the rehearsal ready and
+    every other check passing: available at two and three rungs, and
+    `RUNG_NOT_ATTAINED` at four, five and six. The operator is told which rung
+    was not attained -- true, and unanswerable, because nothing that can run
+    will ever attain it.
+
+    **Reported, not repaired.** The other closure on offer was to lower
+    `launch_available`'s floor to `min(len - 2, the highest attainable)`, and
+    it is rejected: that floor would then depend on what the sequence happens
+    to contain, so ADDING a leveled `@rehearsal` item would LOWER the launch
+    threshold for every other item beside it. A gate a sequence can weaken by
+    growing is worse than one that will not open, because the first is silent.
+    So the arithmetic stands and `verify` says, at declaration time, that this
+    ladder and this sequence can never meet -- `undeclaredLadder`'s own shape
+    and placement, one fact over.
+    """
+
+    LADDER = ["floor", "smoke", "pilot", "campaign"]
+
+    def _box(self, suffix, *, ladder, body):
+        box = FORGE / "implementations" / f"_unreachable_{suffix}_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "src/Method_Benchmark", "Method", "tests"):
+            (box / directory).mkdir(parents=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            "__benchmark__ = {'revision': 'r1.md'}\n"
+            f"__levels__ = {ladder!r}\n", encoding="utf-8")
+        (box / "Method/AGREED.md").write_text(
+            "<!-- position revision=r1.md sha256=" + "a" * 64 + " "
+            "derivedAt=2026-08-27T00:00:00Z session=s0 target=floor -->\n"
+            + body + "<!-- /position -->\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        return box
+
+    LEVELED_REHEARSAL = "- [ ] 1. Rehearse the job. `@rehearsal:level job`\n"
+    TWOSTATE_REHEARSAL = "- [ ] 1. Rehearse the job. `@rehearsal job`\n"
+    LEVELED_SHARD = "- [ ] 1. Return the shards. `@shard:level s1`\n"
+
+    def verify(self, box):
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box),
+             "--name", "Method"],
+            capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return json.loads(proc.stdout)
+
+    # --- the arithmetic, at the level it is decided ------------------------
+
+    def test_the_bound_of_each_kind_is_the_rung_its_own_deriver_returns(self):
+        """The whole report rests on one claim: that `highest_rung` states
+        the SAME rung each leveled deriver actually returns on its own best
+        evidence. Written as a join rather than as a second table, because a
+        table restated beside the derivers is a table that drifts -- and a
+        drifted one would report an unreachable ladder for a target whose
+        evidence reaches the top perfectly well.
+        """
+        levels = ["a", "b", "c", "d"]
+        best = {
+            "rehearsal": ({"smokeReady": {"j": True}}, "j"),
+            "shard": ({"shardsArrived": ["s"], "shardsCurrent": None}, "s"),
+            "notebook": ({"notebooks": {"reports": [
+                {"notebook": "n.ipynb", "status": "executed",
+                 "sourcesMatch": True}]},
+                "search": {"recordFound": True}, "requiredScale": {}}, "n.ipynb"),
+            "record": ({"records": {"r": {"recordFound": True,
+                                          "requiredScale": {}}}}, "r"),
+        }
+        for kind, (evidence, operand) in best.items():
+            with self.subTest(kind=kind):
+                items = [{"ordinal": 1, "mark": " ", "text": "t",
+                          "witness": {"kind": kind, "operand": operand,
+                                      "twostate": False}}]
+                derived = impl_position.derive(
+                    items, {**evidence, "levels": levels})[0]["derived"]
+                index = impl_position.highest_rung(kind, levels)
+                self.assertEqual(
+                    derived, levels[index],
+                    f"{kind}'s best evidence reaches {derived!r} and its "
+                    f"declared bound says {levels[index]!r}")
+
+    def test_a_rehearsal_is_bounded_below_the_launch_floor_from_four_rungs_on(self):
+        """The boundary, measured on both sides rather than asserted at one
+        point: a lock that only checked the four-rung case would survive a
+        bound of `min(2, ...)`, which still cannot open a five-rung ladder.
+        """
+        for length in range(2, 7):
+            levels = [f"L{i}" for i in range(length)]
+            items = [{"ordinal": 1, "mark": " ", "text": "t",
+                      "witness": {"kind": "rehearsal", "operand": "job",
+                                  "twostate": False}}]
+            reach = impl_position.attainable_rung(items, levels)
+            report = impl.unreachable_ladder_state(items, levels)
+            with self.subTest(length=length):
+                self.assertEqual(reach, "L1" if length >= 2 else "L0")
+                if length >= 4:
+                    self.assertIsNotNone(report, f"len={length} cannot launch")
+                    self.assertEqual(report["highestAttainable"], "L1")
+                    self.assertEqual(report["requiredLevel"], levels[-2])
+                else:
+                    self.assertIsNone(report, f"len={length} launches fine")
+
+    def test_a_sequence_that_can_reach_the_floor_is_reported_nowhere(self):
+        """The other pole, and the one a weaker lock survives. A leveled
+        `@shard` reaches the TOP rung on arrived, current evidence, so a
+        four-rung ladder carrying only that item is perfectly launchable and
+        must stay silent -- a report that fired on ladder length alone would
+        be a false alarm on every long ladder in existence."""
+        items = [{"ordinal": 1, "mark": " ", "text": "t",
+                  "witness": {"kind": "shard", "operand": "s1",
+                              "twostate": False}}]
+        self.assertIsNone(impl.unreachable_ladder_state(items, self.LADDER))
+
+    def test_a_two_state_rehearsal_never_caps_anything(self):
+        """Two-state items are graded without the ladder and read identically
+        at every rung, so they carry no information about which one was
+        reached -- `attained_level`'s own second boundary. The exit this
+        report names depends on that being true, so it is pinned here."""
+        items = [{"ordinal": 1, "mark": " ", "text": "t",
+                  "witness": {"kind": "rehearsal", "operand": "job",
+                              "twostate": True}}]
+        self.assertIsNone(impl.unreachable_ladder_state(items, self.LADDER))
+
+    def test_a_ladder_of_one_rung_is_asked_nothing(self):
+        """`launch_available` skips the rung threshold entirely below two
+        rungs -- there is no predecessor rung for a launch to have missed --
+        so a report there would name a gate that does not exist."""
+        items = [{"ordinal": 1, "mark": " ", "text": "t",
+                  "witness": {"kind": "rehearsal", "operand": "job",
+                              "twostate": False}}]
+        self.assertIsNone(impl.unreachable_ladder_state(items, ["only"]))
+        self.assertIsNone(impl.unreachable_ladder_state(items, []))
+
+    # --- the join: the report and the gate agree ---------------------------
+
+    def test_the_gate_it_describes_is_the_gate_that_actually_refuses(self):
+        """The report claims no launch can ever be authorized. That is a claim
+        about `launch_available`, so it is checked against `launch_available`
+        -- with every earlier check passing and the rehearsal ready, which is
+        the most favourable state this sequence can ever be in."""
+        items = [{"ordinal": 1, "mark": "x", "text": "t",
+                  "witness": {"kind": "rehearsal", "operand": "job",
+                              "twostate": False}}]
+        evidence = {"levels": self.LADDER, "smokeReady": {"job": True}}
+        verdict = impl_availability.launch_available(
+            status="ok", unbacked=[], disagreements=[], sequence=items,
+            ready=True, job="job", shards_declared=True, levels=self.LADDER,
+            attained_level=impl_position.attained_level(items, evidence))
+        self.assertFalse(verdict["available"])
+        self.assertEqual(verdict["code"], "RUNG_NOT_ATTAINED")
+        report = impl.unreachable_ladder_state(items, self.LADDER)
+        self.assertEqual(report["requiredLevel"], verdict["facts"]["requiredLevel"])
+
+    def test_shortening_the_ladder_is_an_exit_that_actually_opens_it(self):
+        """The first exit the consequence names, proven rather than asserted:
+        the same sequence on a three-rung ladder launches."""
+        items = [{"ordinal": 1, "mark": "x", "text": "t",
+                  "witness": {"kind": "rehearsal", "operand": "job",
+                              "twostate": False}}]
+        short = self.LADDER[:3]
+        evidence = {"levels": short, "smokeReady": {"job": True}}
+        verdict = impl_availability.launch_available(
+            status="ok", unbacked=[], disagreements=[], sequence=items,
+            ready=True, job="job", shards_declared=True, levels=short,
+            attained_level=impl_position.attained_level(items, evidence))
+        self.assertTrue(verdict["available"], verdict)
+        self.assertIsNone(impl.unreachable_ladder_state(items, short))
+
+    def test_dropping_the_level_marker_is_the_other_exit(self):
+        """The second exit, proven the same way: the identical four-rung
+        ladder with the rehearsal recorded two-state -- the grammar's own
+        default -- launches."""
+        items = [{"ordinal": 1, "mark": "x", "text": "t",
+                  "witness": {"kind": "rehearsal", "operand": "job",
+                              "twostate": True}}]
+        evidence = {"levels": self.LADDER, "smokeReady": {"job": True}}
+        verdict = impl_availability.launch_available(
+            status="ok", unbacked=[], disagreements=[], sequence=items,
+            ready=True, job="job", shards_declared=True, levels=self.LADDER,
+            attained_level=impl_position.attained_level(items, evidence))
+        self.assertTrue(verdict["available"], verdict)
+
+    # --- what a reader is handed -------------------------------------------
+
+    def test_the_consequence_names_the_refusal_and_both_exits(self):
+        """`undeclaredLadder`'s doctrine, one fact over: a consequence that
+        restated the key's own name would leave a reader exactly where they
+        started. What is lost is named, and so is each way out."""
+        report = impl.unreachable_ladder_state(
+            [{"ordinal": 1, "mark": " ", "text": "t",
+              "witness": {"kind": "rehearsal", "operand": "job",
+                          "twostate": False}}], self.LADDER)
+        consequence = report["consequence"]
+        self.assertIn("RUNG_NOT_ATTAINED", consequence)
+        self.assertIn(":level", consequence)
+        self.assertIn(impl.LEVELS_DECLARATION, consequence)
+        self.assertGreater(len(consequence.split()), 40, consequence)
+
+    def test_the_report_names_the_items_that_cap_the_ladder(self):
+        """A reader has to be able to find the item to change. With three
+        leveled items and only one of them capping, naming all three -- or
+        none -- is a report nobody can act on."""
+        items = [
+            {"ordinal": 1, "mark": " ", "text": "t",
+             "witness": {"kind": "shard", "operand": "s1", "twostate": False}},
+            {"ordinal": 2, "mark": " ", "text": "t",
+             "witness": {"kind": "rehearsal", "operand": "job",
+                         "twostate": False}},
+            {"ordinal": 3, "mark": " ", "text": "t",
+             "witness": {"kind": "notebook", "operand": "n.ipynb",
+                         "twostate": False}},
+        ]
+        report = impl.unreachable_ladder_state(items, self.LADDER)
+        self.assertEqual([row["ordinal"] for row in report["cappedBy"]], [2])
+        self.assertEqual(report["cappedBy"][0]["witness"]["kind"], "rehearsal")
+
+    # --- placement and doctrine --------------------------------------------
+
+    def test_verify_reports_it_from_a_real_target(self):
+        """End to end, through the CLI, on a repository that declares the
+        ladder and writes the item -- nothing here is reachable by unit call
+        alone if the key never leaves `cmd_verify`."""
+        box = self._box("e2e", ladder=self.LADDER, body=self.LEVELED_REHEARSAL)
+        report = self.verify(box)["unreachableLadder"]
+        self.assertIsNotNone(report, "the four-rung ladder cannot be launched")
+        self.assertEqual(report["levels"], self.LADDER)
+        self.assertEqual(report["highestAttainable"], "smoke")
+        self.assertEqual(report["requiredLevel"], "pilot")
+
+    def test_verify_stays_silent_on_the_same_target_written_two_state(self):
+        box = self._box("e2e_ok", ladder=self.LADDER,
+                        body=self.TWOSTATE_REHEARSAL)
+        self.assertIsNone(self.verify(box)["unreachableLadder"])
+
+    def test_the_key_is_top_level_in_verify_and_absent_from_probe(self):
+        """`undeclaredLadder`'s own placement decision, for the identical two
+        reasons: top-level or `VerifyStatusRosterTests` never sees it, and out
+        of `probe` because it names no work about to be run."""
+        self.assertIn("unreachableLadder", returned_keys(CLI, "cmd_verify"))
+        self.assertNotIn("unreachableLadder", returned_keys(CLI, "cmd_probe"))
+
+    def test_the_usage_reference_tells_a_reader_how_to_read_it(self):
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("## Reading `verify`"):]
+        section = section[:section.index("\n## ", 1)]
+        self.assertIn("`unreachableLadder`", section)
+
+    def test_the_kit_still_invents_no_rung_of_its_own(self):
+        """The report names ladder lengths and never a rung, so nothing here
+        gives the scaffold a reason to prefill `__levels__`."""
+        kit = KIT / "src_benchmark" / "__init__.py"
+        tree = ast.parse(kit.read_text(encoding="utf-8"))
+        declared = [node for node in tree.body
+                    if isinstance(node, ast.AnnAssign)
+                    and isinstance(node.target, ast.Name)
+                    and node.target.id == "__levels__"]
+        self.assertEqual(len(declared), 1)
+        self.assertEqual(ast.literal_eval(declared[0].value), [])
 
 
 class UndeclaredLadderTests(unittest.TestCase):
@@ -23692,7 +24846,7 @@ _ENGLISH_COUNTS = {
     # both were one short by the time anybody looked; `Eighteen` is the
     # Output Contract row count after `undeclaredRecords` joined it
     # (the-pilot-proves-the-science, slice B).
-    7: "Seven",
+    7: "Seven", 8: "Eight",
     9: "Nine", 10: "Ten", 17: "Seventeen", 18: "Eighteen", 19: "Nineteen",
     26: "Twenty-six", 27: "Twenty-seven", 28: "Twenty-eight",
     29: "Twenty-nine", 30: "Thirty", 31: "Thirty-one", 32: "Thirty-two",
@@ -23700,7 +24854,7 @@ _ENGLISH_COUNTS = {
     36: "Thirty-six",
     54: "Fifty-four", 55: "Fifty-five", 56: "Fifty-six", 57: "Fifty-seven",
     63: "Sixty-three", 64: "Sixty-four", 65: "Sixty-five", 66: "Sixty-six",
-    67: "Sixty-seven", 68: "Sixty-eight",
+    67: "Sixty-seven", 68: "Sixty-eight", 69: "Sixty-nine",
 }
 
 
@@ -23782,7 +24936,7 @@ class GatingRefusalRosterTests(unittest.TestCase):
             codes |= raised_refusal_codes(CLI, f"cmd_{command}")
         return codes
 
-    def test_the_derivation_finds_the_measured_sixty_eight(self):
+    def test_the_derivation_finds_the_measured_sixty_nine(self):
         """Sanity check on the scraper itself, not on the roster: a change to a
         gating command that adds, removes or renames a refusal should move this
         number, never a typo in the walk above.
@@ -23795,8 +24949,11 @@ class GatingRefusalRosterTests(unittest.TestCase):
         new member to this union. Sixty-seven once `POSITION_RECORD_UNKNOWN`
         joined `cmd_position` beside it (the-pilot-proves-the-science, slice
         B). Sixty-eight once `RUNG_NOT_ATTAINED` joined `cmd_gate` (same
-        change, slice A)."""
-        self.assertEqual(len(self.gating_codes()), 68)
+        change, slice A). Sixty-nine once `POSITION_RECORD_MALFORMED` joined
+        `cmd_position` beside `POSITION_RECORD_UNKNOWN` -- the shape half of
+        the same declaration, which `__steps__` had and `__records__` did
+        not."""
+        self.assertEqual(len(self.gating_codes()), 69)
 
     def test_every_gating_refusal_is_classified(self):
         roster = set(impl.GATING_REFUSALS)

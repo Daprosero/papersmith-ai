@@ -598,7 +598,7 @@ Two independent findings, reported separately:
   in `--revision`; `invariantsWithoutTest` are claims declared in code with no
   test enforcing them. Both need the user's decision before you touch anything.
 
-Seven more are reported and none of them is a finding, which is exactly why
+Eight more are reported and none of them is a finding, which is exactly why
 they were easy to leave undocumented:
 
 - **`coupling`** — which notebook cells reach into the target's internals instead
@@ -643,10 +643,14 @@ they were easy to leave undocumented:
   **never gates** — publishing the command lowers the friction to ask; it
   does not prove whoever answers it is the operator.
 - **`undeclaredOptional`** — every optional key a DECLARED `search` or
-  `distribution` block left unanswered: `search.currentWhen`,
-  `distribution.currentWhen`, `distribution.shardsRoot`. Each entry names
+  `distribution` block left unanswered: `search.record`,
+  `search.currentWhen`, `distribution.currentWhen`,
+  `distribution.shardsRoot`. Each entry names
   its `section`, `field` and the exact `consequence` its absence carries —
-  e.g. without `search.currentWhen`, a found record is trusted on the
+  e.g. without `search.record` nothing was ever told which artefact the
+  search writes, so `recordFound` answers `null` on every run and `probe`
+  keeps answering `search-first`; without `search.currentWhen`, a found
+  record is trusted on the
   strength of being present, never checked against the code that produced
   it. **Reported, never demanded**: a target with no search, or no split
   run, is asked nothing here either — the same restraint every other
@@ -670,6 +674,26 @@ they were easy to leave undocumented:
   already names that missing file. **Reported, never demanded**: a
   repository whose steps are all two-state legitimately has no ladder, and
   the forge never invents a rung name on its behalf. It **never gates**.
+- **`unreachableLadder`** — the other half of the same declaration, and the
+  one `undeclaredLadder` cannot reach: a ladder that WAS named, long enough
+  that the sequence beside it can never climb to the launch floor. It carries
+  `levels` (the ladder as declared), `requiredLevel` (the rung
+  `launch_available` floors a launch at, `levels[-2]`), `highestAttainable`
+  (the highest rung every leveled item in the sequence could EVER grade
+  satisfied at), `cappedBy` (the ordinals and witnesses holding it there) and
+  the `consequence`. It fires only when the second sits strictly below the
+  first — from four declared rungs up, with one leveled `@rehearsal` item
+  anywhere in the sequence: `smokeReady` is two-valued, so that item can never
+  prove more than the floor plus one rung, and `position.attainedLevel` is the
+  highest rung at which *every* leveled item grades satisfied. `gate` then
+  answers `RUNG_NOT_ATTAINED` on every call, naming a rung nothing that can
+  run will reach. Two exits, both the target's own: declare at most three
+  rungs, or drop the `:level` marker from that item and record it two-state
+  (the grammar's default). The forge takes neither on its own — a launch floor
+  that moved with whatever the sequence happens to hold would let *adding* a
+  leveled item quietly *lower* the threshold for every item beside it. `null`
+  when the ladder and the sequence can meet, and `null` below two rungs, where
+  the rung threshold does not apply at all. It **never gates**.
 
 Omit `--revision` and `fidelity.status` is `unknown`: the modules' declared
 revisions are still listed, but nothing is compared. Never report an
@@ -1809,7 +1833,7 @@ state, alongside the scenarios — not verified by hand once.
 | `PLAN_REQUIRED` | `materialize --stage` needs `--plan <approved plan JSON>`. |
 | `SEED_REQUIRED` | `materialize --stage scaffold` needs `--seed`, substituted into `{{SEED}}`. |
 | `STAGE_CANNOT_ANSWER` | A scaffold-stage `.py` destination still fails `ast.parse` after `{{PKG}}`/`{{SEED}}` substitution — its remaining token answers a later step. Names the file. Never raised by `objects`/`harness`: their three destinations are either written with tokens deliberately left standing (`objects`) or already parse cleanly (`harness`'s two `.py` files). |
-| `OBJECT_MAP_NOT_APPROVED` | `materialize --stage objects` ran before step 8's `revision`/`premises` were recorded in `src/<Package>_Benchmark/__init__.py`. Get that declaration approved and written first. |
+| `OBJECT_MAP_NOT_APPROVED` | `materialize --stage objects` ran before step 8's `revision`/`premises` were recorded in `src/<Package>_Benchmark/__init__.py`. The detail names whichever of the two is still blank, so a half-written map does not send you back to re-read the half that is already right. Get that declaration approved and written first. |
 | `SCAFFOLD_DRIFT` | (`verify`, reported in `structure.scaffoldDrift`, never raised) A receipt-recorded scaffold destination's on-disk bytes no longer match its `writtenSha256`. Release the seal with `materialize --authored <path>` after declaring the edit. `objects`/`harness` destinations get the identical check under `structure.objectDrift`/`structure.harnessDrift`. |
 | `UNRECORDED_SCAFFOLD` | (`verify`, reported in `structure.unrecordedScaffold`, never raised) A scaffold destination exists on disk with no receipt entry — most often because the target was scaffolded before this command existed. Remedy: `materialize --adopt <path>`, one path at a time, deliberately. **This degrades the guarantee**: adoption records who is responsible for the bytes, never that they came from the kit — the record names who wrote them, not that the engine owns them. `objects`/`harness` destinations get the identical check under `structure.unrecordedObjects`/`structure.unrecordedHarness`. |
 | `NOT_A_KIT_DESTINATION` | `materialize --authored`/`--adopt` named a path outside the seventeen kit destinations (eleven scaffold, three objects, three harness). The receipt is not a general-purpose ledger. |
@@ -1834,10 +1858,10 @@ the mutual exclusion. Thirty-four codes, and nothing is published beside them:
 and the rest. Retype the call.
 
 **No — a work state.** Somebody has to act on the repository, so the payload
-carries a `resolve` key saying what. Thirty-four codes, including
+carries a `resolve` key saying what. Thirty-five codes, including
 `POSITION_DISAGREES`, `AGREEMENT_DISAGREES`, `POSITION_STALE`,
-`POSITION_RUNG_SKIPPED`, `POSITION_STEP_UNKNOWN`, `STEPS_UNDECLARED` and
-`NOT_READY`:
+`POSITION_RUNG_SKIPPED`, `POSITION_STEP_UNKNOWN`, `STEPS_UNDECLARED`,
+`POSITION_RECORD_MALFORMED` and `NOT_READY`:
 
 ```json
 { "status": "refused", "code": "POSITION_STALE",

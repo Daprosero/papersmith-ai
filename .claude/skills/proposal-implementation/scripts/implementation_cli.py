@@ -533,6 +533,22 @@ SEARCH_DECLARATION = {
 #: there would declare every existing target incomplete for a question
 #: nobody had asked it yet.
 SEARCH_OPTIONAL = {
+    "record": "the path, relative to the product folder, of the artefact this "
+              "search writes -- the one key `search_state` reads before any "
+              "of the required four, and the only one whose absence is "
+              "silent rather than reported. Undeclared, `search.recordFound` "
+              "answers `null` on every run forever, so a ticked `@record` "
+              "witness has nothing to back it and reads `POSITION_UNBACKED`; "
+              "a leveled `@record:level` witness derives no rung at all, "
+              "which sinks `position.attainedLevel` to `null` and answers "
+              "every launch `RUNG_NOT_ATTAINED`; and `probe`'s own "
+              "`search-first` rung fires on every call, since a declared "
+              "`requiredScale` can never be satisfied by a record nothing "
+              "was told to look for -- telling the operator to run a search "
+              "they may already have run. The forge never guesses the "
+              "filename: a default here would make it answer a question the "
+              "target never asked, and `undeclaredRecords` would then report "
+              "the real artefact as unaccounted for beside the invented one",
     "currentWhen": "a dotted path into the record's own file naming where it "
                    "wrote down the identity of the code that produced it -- "
                    "`distribution.currentWhen`'s own idiom, one level up "
@@ -554,6 +570,10 @@ SEARCH_OPTIONAL = {
 #: ended the process on a traceback instead of a result.
 SEARCH_SHAPE = {
     "what": str,
+    # A path, so a string. Without an entry here the key was accepted on
+    # bare truthiness and a list reached `product / record`, which is the
+    # same shape defect `requiredScale` was added to this table for.
+    "record": str,
     "requiredScale": dict,
     "role": str,
     "tieRule": str,
@@ -1519,6 +1539,102 @@ def undeclared_ladder_state(target: Path, name: str,
             "consequence": LADDER_UNDECLARED_CONSEQUENCE}
 
 
+#: What a repository gives up when its ladder and its sequence cannot meet,
+#: written out for the identical reason `LADDER_UNDECLARED_CONSEQUENCE` is: a
+#: reader handed "the ladder is unreachable" learns the key's own name and
+#: nothing else. A format string rather than a constant, because the two exits
+#: are only actionable once the actual rungs are named -- "declare at most
+#: three rungs" is advice, `"declare at most three"` beside the four this
+#: target wrote is a decision somebody can take.
+LADDER_UNREACHABLE_CONSEQUENCE = (
+    "no launch can ever be authorized for any job in this sequence. "
+    "`launch_available` floors a launch at {required!r} -- the rung below "
+    "the top of the declared ladder -- and reads `position.attainedLevel`, "
+    "which is the highest rung at which EVERY leveled item grades satisfied. "
+    "The leveled item{plural} at ordinal {ordinals} can never grade satisfied "
+    "above {bound!r}, whatever runs: a `@rehearsal` witness reads "
+    "`smokeReady`, which is two-valued, so a rehearsal that passed proves the "
+    "floor plus one rung and never more -- full scale is `@record`'s or "
+    "`@shard`'s evidence to speak to. So the gate answers `RUNG_NOT_ATTAINED` "
+    "on every call, naming a rung nothing that can run will reach, and the "
+    "top rungs of this ladder can never be sealed at either. Two exits, both "
+    "the target's own to take: declare a `{declaration}` of at most three "
+    "rungs, so the launch floor sits at or below what a rehearsal proves; or "
+    "drop the `:level` marker from that item and record it two-state -- the "
+    "grammar's own default -- since a two-state item is graded without the "
+    "ladder and holds no rung down. The forge changes neither on its own: a "
+    "floor that moved with whatever the sequence happens to contain would let "
+    "ADDING a leveled item quietly LOWER the launch threshold for every other "
+    "item beside it."
+)
+
+
+def unreachable_ladder_state(items: list[dict], levels: list[str]) -> dict | None:
+    """The declared ladder no evidence in this sequence can ever climb far
+    enough to open a launch on -- or `None` when it can.
+
+    `undeclared_ladder_state`'s own shape, placement and restraint (design
+    D8), one fact over: that one reports a ladder nobody named, this one a
+    ladder named longer than the sequence beside it can reach.
+
+    **The gap.** `_derive_rehearsal_level` bounds a leveled `@rehearsal`
+    item at index 1 and `launch_available` floors a launch at
+    `levels[-2]`, and each is right on its own. Composed, they are
+    unsatisfiable from four rungs up: one leveled `@rehearsal` anywhere in
+    the sequence pins `attained_level` at index 1 forever, and
+    `RUNG_NOT_ATTAINED` then answers every launch with a rung nothing that
+    can run will reach. The operator is told which rung was not attained --
+    true, and unanswerable.
+
+    **Reported, never repaired.** The other closure on offer was to lower
+    the gate's own floor to `min(len(levels) - 2, the highest attainable)`,
+    and it is rejected: that floor would then be a function of what the
+    sequence happens to hold, so writing one more leveled `@rehearsal` item
+    would LOWER the launch threshold for every other item beside it. A gate
+    a sequence can weaken by growing is strictly worse than one that will
+    not open, because only the second is visible.
+
+    **Below two rungs, nothing is reported**: `launch_available` skips the
+    rung threshold entirely there -- there is no predecessor rung for a
+    launch to have missed -- so a finding would name a gate that does not
+    exist. The identical "structurally unreachable" restraint
+    `_skipped_rung_detail` already keeps for a ladder too short to name a
+    predecessor.
+
+    `items` is the sequence `position_state` already parsed and `levels` the
+    ladder `verify` already resolved; nothing here opens a file or measures
+    anything, so this can never disagree with the marks reported beside it.
+    """
+    if len(levels) < 2:
+        return None
+    bound = impl_position.attainable_rung(items, levels)
+    floor_index = len(levels) - 2
+    highest_index = impl_position.level_index(levels, bound)
+    if highest_index is None or highest_index >= floor_index:
+        return None
+    # Which items actually hold the bound down, so a reader has something to
+    # change rather than a whole sequence to re-read. Only the ones AT the
+    # minimum: naming every leveled item would name two that reach the top
+    # beside the one that does not.
+    capped = [{"ordinal": item["ordinal"], "witness": item["witness"]}
+              for item in items
+              if not item["witness"].get("twostate", True)
+              and impl_position.highest_rung(
+                  item["witness"]["kind"], levels) == highest_index]
+    ordinals = ", ".join(str(row["ordinal"]) for row in capped)
+    return {
+        "declaration": LEVELS_DECLARATION,
+        "levels": list(levels),
+        "requiredLevel": levels[floor_index],
+        "highestAttainable": bound,
+        "cappedBy": capped,
+        "consequence": LADDER_UNREACHABLE_CONSEQUENCE.format(
+            required=levels[floor_index], bound=bound,
+            ordinals=ordinals, plural="s" if len(capped) > 1 else "",
+            declaration=LEVELS_DECLARATION),
+    }
+
+
 #: What a repository gives up by leaving `__records__` empty, written out for
 #: the identical reason `LADDER_UNDECLARED_CONSEQUENCE` is: an absence read as
 #: "no records are declared" restates the key's own name, and a reader who
@@ -2055,6 +2171,66 @@ def unreached_mathematics(modules: list[dict], declaration: dict,
             "declaredBy": declared_by,
         })
     return unreached
+
+
+#: What a repository gives up by leaving `arms` empty, written out rather
+#: than labelled -- `LADDER_UNDECLARED_CONSEQUENCE`'s own doctrine, one block
+#: over. A format string, because the file the declaration belongs in and the
+#: number of modules that go uncrossed are what make the sentence checkable
+#: instead of general.
+ARMS_UNDECLARED_CONSEQUENCE = (
+    "{count} module{plural} under `src/{package}/` declare{verb} the sections "
+    "of a proposal, and no arm claims any of them: `{path}` names `arms` "
+    "empty. `unreachedModules` is the one join this flow makes between the "
+    "method's own provenance and the bench's declaration -- the two documents "
+    "can both be impeccable while an arm reimplements an equation instead of "
+    "calling it, and only crossing them says so. It is built FROM `arms`, so "
+    "with none declared it answers `[]` on every run whatever those modules "
+    "hold and whatever the harness calls; `armsReached` answers `null` for "
+    "the same reason; `fidelity.benchmark.status` can never read "
+    "`unfaithful`, and `fidelity.status` can never be driven to `drift` by "
+    "an unreached module; and `probe`'s own `wiring-first` rung -- the answer "
+    "that publishes the draft of how each module becomes trainable -- can "
+    "never be reached. Declaring one entry per arm, naming the sections it "
+    "exercises, is what turns all four back on. Reported and never demanded: "
+    "a repository with one arm and nothing to compare is a legitimate resting "
+    "state, and which comparison it runs is not the forge's to decide."
+)
+
+
+def undeclared_arms_note(target: Path, name: str, declaration: dict,
+                         modules: list[dict]) -> str | None:
+    """Why `unreachedModules` came back empty, when the reason is that no arm
+    was declared -- or `None` when there is nothing to explain away.
+
+    `distribution.note`'s own shape and placement (see `cmd_verify`, where a
+    missing `DIMENSIONS` literal is named so an empty `unpartitioned` is not
+    read as evidence the split is complete), applied to the other side of the
+    same silence. `unreached_mathematics`'s docstring calls itself "the join
+    nothing else in the flow crosses"; an empty `arms` switches that join off
+    entirely, and until this existed nothing said so.
+
+    **Silent when there is nothing to cross.** A repository whose modules
+    declare no sections at all has no crossing to lose, and
+    `fidelity.missingProvenance` already names a module that declares
+    nothing. Reporting here too would turn one gap into two findings -- the
+    identical restraint `undeclared_ladder_state` keeps for a target with no
+    benchmark package.
+
+    `declaration` and `modules` are both passed in, from the reads `verify`
+    already made: two reads of one declaration in one command is how the two
+    come to disagree about what the target declared.
+    """
+    if declaration.get("arms"):
+        return None
+    claimable = [module for module in modules if module.get("sections")]
+    if not claimable:
+        return None
+    package = package_name(name)
+    holder = f"src/{package}_Benchmark/__init__.py"
+    return ARMS_UNDECLARED_CONSEQUENCE.format(
+        count=len(claimable), plural="" if len(claimable) == 1 else "s",
+        verb="s" if len(claimable) == 1 else "", package=package, path=holder)
 
 
 def benchmark_unfaithfulness(target: Path, name: str) -> list[dict]:
@@ -2729,7 +2905,13 @@ def cmd_probe(args) -> dict:
         target, name, next_step,
         {"declared": (state.get("belowTargetScale") or {})
          if next_step == "piloted"
-         else (declared_required_scale(search) or {})})
+         else (declared_required_scale(search) or {}),
+         # The two facts `declare-first` is assigned from, threaded through
+         # rather than recomputed: its published sentence names the state that
+         # actually routed there, and a second read here could disagree with
+         # the branch above that published it.
+         "declarationStatus": resolved["status"],
+         "live": report.get("live")})
     # `toDiscuss` carries the question-shaped publications only -- a command
     # this flow can name completely is not a question anybody answers, and
     # putting one in a discussion list would open a bucket nothing retires.
@@ -3957,16 +4139,40 @@ def resolve_harness_status(target: Path, name: str, package: str) -> dict:
       relative to `target`.
     """
     contract = resolve_benchmark_declaration(target, name)["contract"]
-    declared = (contract.get("entry") or {}).get("module")
+    entry = contract.get("entry") or {}
+    declared = entry.get("module")
+    function = entry.get("function")
+    function = function if isinstance(function, str) and function else None
     if not declared:
+        # One absence, one fact: `entry.module` undeclared already has its own
+        # status, and naming the function beside it would turn one gap into two
+        # findings -- `undeclared_ladder_state`'s own restraint.
         return {"status": "undeclared", "declaredModule": None,
-                "path": None, "searchedPath": None}
+                "declaredFunction": None, "path": None, "searchedPath": None,
+                "note": None}
+    # The one value in `entry` nothing in this file reads -- `.module` is read
+    # twice and `.function` nowhere. That is not a stray declaration: the kit
+    # names it for `generate-job --run-function`, which `remote_cli` declares
+    # `required=True`, so the value is genuinely needed at the one handoff
+    # SKILL.md's own seam table publishes. What was missing is that a target
+    # could answer `module`, leave `function` blank, hear about it nowhere, and
+    # reach a required flag with nothing to type into it.
+    note = None if function else (
+        "`entry.function` is blank. Nothing in this skill reads it, so no "
+        "check here fails on it -- but the remote-execution handoff does: "
+        "`generate-job --run-function` is a required argument with no "
+        "default, and this declaration is where its value is supposed to "
+        "come from. Name the callable inside "
+        f"{declared!r} that a run enters through.")
     searched = target / "src" / Path(*declared.split(".")).with_suffix(".py")
     if searched.is_file():
         return {"status": "present", "declaredModule": declared,
-                "path": str(searched.relative_to(target)), "searchedPath": None}
+                "declaredFunction": function,
+                "path": str(searched.relative_to(target)), "searchedPath": None,
+                "note": note}
     return {"status": "declaredMissing", "declaredModule": declared,
-            "path": None, "searchedPath": str(searched.relative_to(target))}
+            "declaredFunction": function, "path": None,
+            "searchedPath": str(searched.relative_to(target)), "note": note}
 
 
 def target_interpreter(target: Path) -> Path:
@@ -4089,7 +4295,13 @@ def report_state(target: Path, name: str, package: str) -> dict:
                         literal rather than a computed statement. A conclusion typed
                         by hand is the `proseNumbers` failure wearing a sentence.
     `undeclared`        a dimension rendered whose direction the package never
-                        declared, so nothing could have checked its framing.
+                        declared. `unframed` asks whether a paragraph precedes
+                        the table, never what it says, so the only place a
+                        direction is written down is `report.dimensions` — and
+                        a column missing from it is one no reader is ever told
+                        which way wins. Every check that reads that mapping
+                        (`componentsNotRecorded`, and the key the duplication
+                        rule buckets a rendering under) is blind to it too.
     `unrendered`        a cell that computed a declared measurement and emitted
                         nothing. The number exists and no reader ever sees it.
     `describedNotShown` a cell that emitted a description of a figure instead of
@@ -4120,6 +4332,19 @@ def report_state(target: Path, name: str, package: str) -> dict:
     conclusions = set(contract.get("conclusions") or [])
     drawings = set(contract.get("figures") or [])
     dimensions = dict(contract.get("dimensions") or {})
+    # The OTHER declaration of the same columns: the module's own `DIMENSIONS`
+    # literal, which the kit's `benchmark.py` ships and a materialized target
+    # keeps in `config.py`. `report.dimensions` says which way each one wins,
+    # and the two are written by hand in two files -- so one can carry a column
+    # the other never names, and until this crossed them nothing said so.
+    #
+    # `None` (neither file binds the name, or it is bound to something no
+    # reading can make sense of) is NOT an empty universe: it means the
+    # question could not be put, and `declared_dimension_names`' own docstring
+    # keeps the two apart for exactly this reason. Read as `()` here, so a
+    # target with nowhere to declare a universe is asked nothing -- the same
+    # restraint `undeclared_ladder_state` keeps one file over.
+    universe = declared_dimension_names(target, package) or ()
     # One declared call that states, for a dimension, which value would count as
     # the good one. An entry point rather than a list of targets, for the same
     # reason `conclusionEntry` is one: what a good value looks like is a fact about
@@ -4307,6 +4532,16 @@ def report_state(target: Path, name: str, package: str) -> dict:
             # recognised as the same table wherever it is printed.
             named = sorted(d for d in dimensions
                            if f'"{d}"' in source or f"'{d}'" in source)
+            # The complement of the line above, read off the same source with
+            # the same literal idiom: a column this cell renders that the
+            # module's own universe carries and the report contract does not.
+            # Scoped to `universe` rather than to every string literal in the
+            # cell, because which strings are dimensions is the package's claim
+            # and not this file's guess -- the one thing that would make this a
+            # finding about somebody else's vocabulary.
+            undeclared.update(d for d in universe
+                              if d not in dimensions
+                              and (f'"{d}"' in source or f"'{d}'" in source))
             if not writes_record:
                 for key in named or ["<sin dimensión>"]:
                     for call in rendered:
@@ -6911,6 +7146,69 @@ def _record_operand_detail(items: list[dict], records: dict) -> str | None:
         "witness must name one of them.")
 
 
+def _record_shape_detail(items: list[dict], records: dict) -> str | None:
+    """Why an ADDRESSED `__records__` entry cannot be read at all, or `None`
+    when every addressed one carries the shape `named_records_state`
+    expects -- `_record_operand_detail`'s own shape, one question further in,
+    and `cmd_step`'s `STEP_MALFORMED` one literal over.
+
+    `POSITION_RECORD_UNKNOWN` above checks membership in the raw dict and
+    nothing else, so a declared entry of ANY shape passes it. Two shapes
+    reach here, and each fails a different way downstream:
+
+    - **Not a mapping at all.** `named_records_state` skips it entirely, so
+      `evidence["records"]` carries no entry for the name while the refusal
+      above has already agreed the name is declared. The reader and the
+      refusal disagree about the same name and nothing crosses them.
+    - **A mapping with no usable `path`.** The entry survives, and
+      `named_records_state` answers `recordFound: None` forever, since the
+      only branch that can look at a file is guarded on `path` being a
+      non-empty string.
+
+    Either way a ticked witness becomes `POSITION_UNBACKED` and a leveled one
+    derives no rung, sinking `attained_level` -- and neither says the
+    declaration is the cause. `STEP_MALFORMED` already refuses exactly this
+    for `__steps__`; there was no sibling here.
+
+    **Only entries a witness in THIS sequence addresses**, the identical
+    narrowing `cmd_step` keeps by refusing the step it was asked to run
+    rather than auditing every `__steps__` entry. A repository may carry a
+    half-written entry it has not wired a witness to yet, and refusing every
+    position write until every entry is finished would be the forge deciding
+    when a declaration is done.
+
+    Returns the detail and never raises, for the reason
+    `_record_operand_detail` states in full: a code raised one call deep in a
+    helper is invisible to `raised_refusal_codes`' walk over the `cmd_*`
+    body, so a refusal this heavy would enter the engine unclassified.
+    """
+    broken = []
+    for operand in sorted({
+            item["witness"]["operand"] for item in items
+            if item["witness"]["kind"] == "record"
+            and not item["witness"].get("twostate", True)
+            and item["witness"]["operand"]
+            and item["witness"]["operand"] in records}):
+        entry = records[operand]
+        if not isinstance(entry, dict):
+            broken.append(
+                f"{operand!r} is declared as {type(entry).__name__}, not a "
+                "mapping: the reader that measures a named record skips a "
+                "non-mapping entry entirely, so this name reads as declared "
+                "here and as absent there")
+        elif not isinstance(entry.get("path"), str) or not entry.get("path"):
+            broken.append(
+                f"{operand!r} declares no usable `path` (found "
+                f"{entry.get('path')!r}, and the keys present are "
+                f"{sorted(entry)!r}): without one, nothing can be looked "
+                "for, and the witness derives unmeasured on every run")
+    if not broken:
+        return None
+    return ("; ".join(broken) + ". A `@record:level <name>` witness "
+            "addresses one __records__ entry, and an entry it cannot read "
+            "is a declaration nobody can measure against.")
+
+
 def _step_verdicts(target: Path, name: str) -> dict:
     """`evidence["stepVerdicts"]` for every caller that reads an `@step`
     witness -- `_position_write_evidence`, `cmd_probe`'s inline dict, and
@@ -7367,6 +7665,16 @@ def cmd_position(args: argparse.Namespace) -> dict:
     record_detail = _record_operand_detail(items, declared_records)
     if record_detail is not None:
         raise Refused("POSITION_RECORD_UNKNOWN", record_detail)
+    # Immediately after the membership check and therefore still ahead of
+    # `_skipped_rung_detail`, for the identical trap-1 reason (design D5): a
+    # malformed entry derives `None` too, which sinks `attained_level`, so a
+    # check placed after the rung guard would answer `POSITION_RUNG_SKIPPED`
+    # first for any `--target-level` above the floor and be reachable only at
+    # the floor. What reaches it: a name that IS a key of `__records__` -- or
+    # the refusal above would have fired -- whose entry the reader cannot use.
+    record_shape = _record_shape_detail(items, declared_records)
+    if record_shape is not None:
+        raise Refused("POSITION_RECORD_MALFORMED", record_shape)
     header["target"] = target_level
 
     evidence = _position_write_evidence(target, name, getattr(args, "shards", None))
@@ -7735,10 +8043,32 @@ def _convert_publication(target: Path, name: str, facts: dict) -> dict:
 
 
 def _declare_first_publication(target: Path, name: str, facts: dict) -> dict:
+    """Which of the three states actually routed here, said as itself.
+
+    `declare-first` is assigned from two different conditions in `cmd_probe`,
+    and this sentence described one of them. `resolved["status"]` being
+    `"absent"` is no benchmark package at all -- "has a benchmark declaration"
+    is false. `report.live == "undeclared"` is a blank `entry.module` and
+    nothing else, over a declaration that may name six blocks fully -- "names
+    nothing yet" is false there too, and the reader is sent to re-read a
+    declaration whose only gap is one field.
+
+    `facts` carries both, computed once by `cmd_probe` from the same two reads
+    it branched on: a fact recomputed here is a fact that can disagree with the
+    branch that published it.
+    """
+    if facts.get("declarationStatus") == "absent":
+        state = ("declares no benchmark package at all, and every later "
+                 "reading is read from one")
+    elif facts.get("live") == "undeclared":
+        state = ("has a benchmark declaration whose `entry.module` is blank, "
+                 "so nothing names the module that pulls its runtime in and "
+                 "no reading about the interpreter is possible")
+    else:
+        state = ("has a benchmark declaration that names nothing yet, and "
+                 "every later reading is read from it")
     return _next_step_question_entry(
-        target, name,
-        f"{name} (target {target}) has a benchmark declaration that names "
-        "nothing yet, and every later reading is read from it; "
+        target, name, f"{name} (target {target}) {state}; "
         + NEXT_STEP_REPAIR_CHOICE)
 
 
@@ -9639,8 +9969,10 @@ def cmd_gate(args: argparse.Namespace) -> dict:
                 "nothing named where a returned shard lands -- this target "
                 "declares no `distribution.shardsRoot` (see "
                 "`assets/kit/src_benchmark/__init__.py`'s `distribution` "
-                "comment). A launch is not authorized against a tick that "
-                "cannot be checked at all; declare `shardsRoot` once, or run "
+                "comment). A launch is not authorized against a witness "
+                "nothing can check at all -- ticked, so the mark asserts what "
+                "was never measured, or blank and leveled, so it holds "
+                "attainment below every rung; declare `shardsRoot` once, or run "
                 "`position --shards <dir>` against an explicit directory "
                 "before gating a launch.")
         if code == "POSITION_DISAGREES":
@@ -10786,10 +11118,17 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     bench_package = f"{package_name(name)}_Benchmark"
     unreached: list[dict] = []
     if resolved["status"] == "absent":
-        benchmark = {"status": "absent", "package": f"src/{bench_package}"}
+        # `note` on every branch, `distribution_state`'s own rule: a key that
+        # appears on some branches and not others vanishes for exactly the
+        # callers that took the early ones. `None` here and one line below is
+        # the honest answer -- `status` already carries the word, and
+        # `structure.scaffoldGaps` already names the file that is missing, so
+        # a second sentence would be one fact answered twice.
+        benchmark = {"status": "absent", "package": f"src/{bench_package}",
+                     "note": None}
     elif resolved["status"] == "undeclared":
         benchmark = {"status": "undeclared", "package": f"src/{bench_package}",
-                     "detail": resolved["detail"]}
+                     "detail": resolved["detail"], "note": None}
     else:
         declaration = resolved["contract"]
         built_against = declaration.get("revision")
@@ -10814,6 +11153,11 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "changedSections": moved,
             "armsReached": reached or None,
             "unreachedModules": unreached,
+            # Why `unreachedModules` is empty, where the reason is that no arm
+            # was declared to cross the modules against. Without it, "no arm
+            # reimplements what it claims" and "nobody declared an arm" print
+            # the same empty list.
+            "note": undeclared_arms_note(target, name, declaration, modules),
         }
 
     # The audit bridge: a defect in the mathematics is only reported when its
@@ -11106,6 +11450,13 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         # exist. See `undeclared_ladder_state`'s own docstring for why this
         # is reported and never demanded.
         "undeclaredLadder": undeclared_ladder_state(target, name, levels),
+        # The other half of the same declaration, and the one `undeclaredLadder`
+        # cannot reach: a ladder that WAS named, long enough that the sequence
+        # beside it can never climb to the launch floor. Top-level for the
+        # identical `returned_keys` constraint, and absent from `probe` for the
+        # identical reason -- it names no work about to be run.
+        "unreachableLadder": unreachable_ladder_state(
+            position["sequence"], levels),
         # The same gap, one declaration over: `__records__` is the other
         # thing the forge offers that nothing ever asks a target for. Its
         # own top-level key rather than an `undeclaredOptional` entry, for
@@ -11473,12 +11824,31 @@ def _stage_objects(target: Path, name: str, seed: str) -> dict:
     read from disk — reused rather than inventing a second way to ask it.
     """
     declared = resolve_benchmark_declaration(target, name)
-    if declared["status"] != "declared":
+    contract = declared["contract"]
+    # The two blocks the message names, asked for by name. This gated on
+    # `status != "declared"`, and that status is `"undeclared"` only when
+    # `_declaration_is_blank` holds -- when ALL SEVEN blocks still carry their
+    # scaffold value. So a declaration answering any single one of them opened
+    # this gate, and `search` is exactly the block a target can answer long
+    # before step 8: measured with `revision: ""`, `premises: {}` and only
+    # `search` written, the status is `"declared"`, the gate opened, and the
+    # refusal's own sentence described the state that was true and did not
+    # refuse. The name of the code and this function's own docstring both say
+    # the object map is what is gated on, so the check moved to the message
+    # rather than the other way round.
+    unwritten = [block for block in ("revision", "premises")
+                 if not contract.get(block)]
+    if declared["status"] != "declared" or unwritten:
+        # Named one by one, never as "revision/premises": a refusal that lists
+        # a block already fully written sends somebody to re-read what is
+        # already right. On an absent or blank declaration both are unwritten
+        # and the sentence reads as it always did.
         raise Refused(
             "OBJECT_MAP_NOT_APPROVED",
             "The step-8 object map has not been approved yet: "
             f"src/{package_name(name)}_Benchmark/__init__.py declares no "
-            "revision/premises. --stage objects writes scaffolding for step "
+            + " and no ".join(unwritten or ["revision", "premises"])
+            + ". --stage objects writes scaffolding for step "
             "9's authoring, not before that approval is recorded.",
         )
 
@@ -11785,6 +12155,9 @@ GATING_REFUSALS: dict[str, str] = {
     # means declaring the entry, the identical reasoning
     # `POSITION_STEP_UNKNOWN` states just above.
     "POSITION_RECORD_UNKNOWN": WORK_STATE,
+    # The shape half of the same declaration. A work state for the identical
+    # reason: nothing in the invocation can fix an entry the target wrote.
+    "POSITION_RECORD_MALFORMED": WORK_STATE,
 }
 
 
@@ -12097,6 +12470,13 @@ _WORK_STATE_RESOLUTIONS = {
     "POSITION_RUNG_SKIPPED": _resolve_position_rung_skipped,
     "POSITION_STEP_UNKNOWN": _resolve_position_step_unknown,
     "POSITION_RECORD_UNKNOWN": _resolve_position_record_unknown,
+    "POSITION_RECORD_MALFORMED": lambda args: _refusal_question(
+        args, "a leveled `@record:level <name>` witness addresses a "
+              "__records__ entry the reader cannot use -- not a mapping, or "
+              "a mapping with no `path` string (the refusal detail names "
+              "which); write the entry as `{\"path\": ..., "
+              "\"requiredScale\": {...}}` now, or say why that record is "
+              "not addressable yet, and why?"),
     "POSITION_LEVELS_UNDECLARED": lambda args: _refusal_question(
         args, "an item in this sequence is marked as reaching a rung and the "
               "target's benchmark package declares no `__levels__` ladder for "

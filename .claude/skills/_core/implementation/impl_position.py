@@ -584,6 +584,70 @@ def level_index(levels: list[str], level: str | None) -> int | None:
         return None
 
 
+def highest_rung(kind: str, levels: list[str]) -> int | None:
+    """The highest index on `levels` a leveled witness of this kind could
+    EVER derive, whatever runs next -- `None` for a kind that carries no
+    ladder at all, and for an empty ladder, which has no index to name.
+
+    A bound is not a measurement: it is what the evidence CLASS can prove
+    at its very best. `smokeReady` is two-valued, so a `@rehearsal` that
+    passed proves the floor plus one and nothing further -- reaching past
+    that is `@record`'s or `@shard`'s evidence to speak to. Every other
+    leveled kind can reach the top: an arrived, current shard is full-scale
+    evidence in its own right, and a record that meets its own declared
+    scale was asked nothing further.
+
+    **The derivers read this rather than restating it.**
+    `_derive_rehearsal_level` and `_derive_shard_level` below return
+    `levels[highest_rung(...)]` on their own best branch, so the bound
+    and the derivation are one expression and not two that can drift. That
+    matters because a report is built on this: a bound that claimed less
+    than a deriver actually reaches would tell a repository its ladder can
+    never be climbed when it can.
+
+    A kind absent from the table answers `None` and contributes no bound.
+    `"step"` is the one such kind today and is unreachable here anyway:
+    `_resolve_deriver` refuses `@step:level` outright
+    (`POSITION_WITNESS_NOT_LEVELABLE`) before anything can ask it for a rung.
+    """
+    if not levels:
+        return None
+    if kind == "rehearsal":
+        return min(1, len(levels) - 1)
+    if kind in ("notebook", "shard", "record"):
+        return len(levels) - 1
+    return None
+
+
+def attainable_rung(items: list[dict], levels: list[str]) -> str | None:
+    """The highest rung this sequence could EVER attain, on evidence nobody
+    has measured yet -- `attained_level`'s own question asked about the
+    future instead of the present.
+
+    `attained_level` is the highest rung at which every leveled item grades
+    satisfied NOW; this is the highest rung at which every leveled item
+    COULD grade satisfied, taking each one's evidence class at its best
+    (`highest_rung`). The minimum, because attainment is whole-sequence:
+    one item that can never pass rung N holds the whole sequence below it,
+    exactly as it does in `attained_level`.
+
+    **A sequence with no leveled item attains the whole ladder**, vacuously
+    and deliberately -- the identical third boundary `attained_level`'s own
+    docstring states, for the identical reason: with nothing that could fail
+    to reach a rung, every rung is reachable.
+
+    Pure: no I/O, no evidence read at all. It answers a question about the
+    grammar and the ladder, never about what has run.
+    """
+    if not levels:
+        return None
+    caps = [bound for bound in
+            (highest_rung(item["witness"]["kind"], levels) for item in items
+             if not item["witness"].get("twostate", True))
+            if bound is not None]
+    return levels[min(caps)] if caps else levels[-1]
+
+
 def _record_scale_level(
         record: dict | None, required_scale: dict | None, levels: list[str], *,
         measured_by: str) -> tuple[str | None, str]:
@@ -690,7 +754,12 @@ def _derive_rehearsal_level(
     if not operand or not isinstance(smoke_ready, dict) or operand not in smoke_ready:
         return None, measured_by
     if smoke_ready.get(operand) is True:
-        return levels[min(1, len(levels) - 1)], measured_by
+        # `highest_rung`, never a second `min(1, ...)` written beside it:
+        # `unreachable_ladder_state` (`implementation_cli.py`) reports a
+        # ladder no launch can ever reach BECAUSE of this bound, and a copy
+        # of the arithmetic is how the report and the derivation come to
+        # disagree about what a rehearsal proves.
+        return levels[highest_rung("rehearsal", levels)], measured_by
     return levels[0], measured_by
 
 
@@ -722,7 +791,9 @@ def _derive_shard_level(
         return levels[0], measured_by
     if current is not None and operand not in current:
         return None, measured_by
-    return levels[-1], measured_by
+    # Read from the same table `_derive_rehearsal_level` reads its own bound
+    # from, for the same reason: one expression, never two.
+    return levels[highest_rung("shard", levels)], measured_by
 
 
 def _derive_record_level(

@@ -48,7 +48,18 @@ __benchmark__ = {
     #         "tieRule": "smallest value within one standard error of the best",
     #     }
     #
-    # One further key is OPTIONAL and asked of nobody: `currentWhen`, a
+    # One key is OPTIONAL and asked of nobody, and it is the one every
+    # later reading hangs off: `record`, the path -- relative to the
+    # product folder -- of the artefact this search writes, e.g.:
+    #     "record": "Results/ceilings.json"
+    # Leave it out and `search.recordFound` answers `null` forever: a
+    # ticked `@record` witness has nothing behind it, a leveled
+    # `@record:level` one reaches no rung, and `probe` keeps answering
+    # `search-first` because a declared `requiredScale` cannot be
+    # satisfied by a record nothing was told to look for. The forge never
+    # guesses the filename; you name it, and it only looks.
+    #
+    # A second key is likewise OPTIONAL: `currentWhen`, a
     # dotted path into the record's own file naming where it wrote down the
     # identity of the code that produced it, e.g.:
     #     "currentWhen": "evidence.sourcesDigest"
