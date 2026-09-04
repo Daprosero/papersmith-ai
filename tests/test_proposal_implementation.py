@@ -23502,7 +23502,7 @@ class UnreachableLadderTests(unittest.TestCase):
     """A ladder long enough that no launch can ever be authorized on it.
 
     Two rules, each correct alone, compose into a lock with no key.
-    `_derive_rehearsal_level` ceilings a leveled `@rehearsal` item at index 1
+    `_derive_rehearsal_level` bounds a leveled `@rehearsal` item at index 1
     -- `smokeReady` is two-valued, so a rehearsal that passed proves the floor
     plus one and never more, which is exactly right. `launch_available`'s rung
     threshold floors a launch at `levels[-2]` -- the rung below the top, which
@@ -23560,8 +23560,8 @@ class UnreachableLadderTests(unittest.TestCase):
 
     # --- the arithmetic, at the level it is decided ------------------------
 
-    def test_the_ceiling_of_each_kind_is_the_rung_its_own_deriver_returns(self):
-        """The whole report rests on one claim: that `level_ceiling` states
+    def test_the_bound_of_each_kind_is_the_rung_its_own_deriver_returns(self):
+        """The whole report rests on one claim: that `highest_rung` states
         the SAME rung each leveled deriver actually returns on its own best
         evidence. Written as a join rather than as a second table, because a
         table restated beside the derivers is a table that drifts -- and a
@@ -23586,26 +23586,26 @@ class UnreachableLadderTests(unittest.TestCase):
                                       "twostate": False}}]
                 derived = impl_position.derive(
                     items, {**evidence, "levels": levels})[0]["derived"]
-                index = impl_position.level_ceiling(kind, levels)
+                index = impl_position.highest_rung(kind, levels)
                 self.assertEqual(
                     derived, levels[index],
                     f"{kind}'s best evidence reaches {derived!r} and its "
-                    f"declared ceiling says {levels[index]!r}")
+                    f"declared bound says {levels[index]!r}")
 
-    def test_a_rehearsal_ceilings_below_the_launch_floor_from_four_rungs_on(self):
+    def test_a_rehearsal_is_bounded_below_the_launch_floor_from_four_rungs_on(self):
         """The boundary, measured on both sides rather than asserted at one
         point: a lock that only checked the four-rung case would survive a
-        ceiling of `min(2, ...)`, which still cannot open a five-rung ladder.
+        bound of `min(2, ...)`, which still cannot open a five-rung ladder.
         """
         for length in range(2, 7):
             levels = [f"L{i}" for i in range(length)]
             items = [{"ordinal": 1, "mark": " ", "text": "t",
                       "witness": {"kind": "rehearsal", "operand": "job",
                                   "twostate": False}}]
-            ceiling = impl_position.attainable_ceiling(items, levels)
+            reach = impl_position.attainable_rung(items, levels)
             report = impl.unreachable_ladder_state(items, levels)
             with self.subTest(length=length):
-                self.assertEqual(ceiling, "L1" if length >= 2 else "L0")
+                self.assertEqual(reach, "L1" if length >= 2 else "L0")
                 if length >= 4:
                     self.assertIsNotNone(report, f"len={length} cannot launch")
                     self.assertEqual(report["highestAttainable"], "L1")

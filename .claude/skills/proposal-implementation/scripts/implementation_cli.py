@@ -1552,7 +1552,7 @@ LADDER_UNREACHABLE_CONSEQUENCE = (
     "the top of the declared ladder -- and reads `position.attainedLevel`, "
     "which is the highest rung at which EVERY leveled item grades satisfied. "
     "The leveled item{plural} at ordinal {ordinals} can never grade satisfied "
-    "above {ceiling!r}, whatever runs: a `@rehearsal` witness reads "
+    "above {bound!r}, whatever runs: a `@rehearsal` witness reads "
     "`smokeReady`, which is two-valued, so a rehearsal that passed proves the "
     "floor plus one rung and never more -- full scale is `@record`'s or "
     "`@shard`'s evidence to speak to. So the gate answers `RUNG_NOT_ATTAINED` "
@@ -1577,7 +1577,7 @@ def unreachable_ladder_state(items: list[dict], levels: list[str]) -> dict | Non
     D8), one fact over: that one reports a ladder nobody named, this one a
     ladder named longer than the sequence beside it can reach.
 
-    **The gap.** `_derive_rehearsal_level` ceilings a leveled `@rehearsal`
+    **The gap.** `_derive_rehearsal_level` bounds a leveled `@rehearsal`
     item at index 1 and `launch_available` floors a launch at
     `levels[-2]`, and each is right on its own. Composed, they are
     unsatisfiable from four rungs up: one leveled `@rehearsal` anywhere in
@@ -1607,29 +1607,29 @@ def unreachable_ladder_state(items: list[dict], levels: list[str]) -> dict | Non
     """
     if len(levels) < 2:
         return None
-    ceiling = impl_position.attainable_ceiling(items, levels)
+    bound = impl_position.attainable_rung(items, levels)
     floor_index = len(levels) - 2
-    ceiling_index = impl_position.level_index(levels, ceiling)
-    if ceiling_index is None or ceiling_index >= floor_index:
+    highest_index = impl_position.level_index(levels, bound)
+    if highest_index is None or highest_index >= floor_index:
         return None
-    # Which items actually hold the ceiling down, so a reader has something to
+    # Which items actually hold the bound down, so a reader has something to
     # change rather than a whole sequence to re-read. Only the ones AT the
     # minimum: naming every leveled item would name two that reach the top
     # beside the one that does not.
     capped = [{"ordinal": item["ordinal"], "witness": item["witness"]}
               for item in items
               if not item["witness"].get("twostate", True)
-              and impl_position.level_ceiling(
-                  item["witness"]["kind"], levels) == ceiling_index]
+              and impl_position.highest_rung(
+                  item["witness"]["kind"], levels) == highest_index]
     ordinals = ", ".join(str(row["ordinal"]) for row in capped)
     return {
         "declaration": LEVELS_DECLARATION,
         "levels": list(levels),
         "requiredLevel": levels[floor_index],
-        "highestAttainable": ceiling,
+        "highestAttainable": bound,
         "cappedBy": capped,
         "consequence": LADDER_UNREACHABLE_CONSEQUENCE.format(
-            required=levels[floor_index], ceiling=ceiling,
+            required=levels[floor_index], bound=bound,
             ordinals=ordinals, plural="s" if len(capped) > 1 else "",
             declaration=LEVELS_DECLARATION),
     }
