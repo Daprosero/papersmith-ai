@@ -7116,6 +7116,69 @@ def _record_operand_detail(items: list[dict], records: dict) -> str | None:
         "witness must name one of them.")
 
 
+def _record_shape_detail(items: list[dict], records: dict) -> str | None:
+    """Why an ADDRESSED `__records__` entry cannot be read at all, or `None`
+    when every addressed one carries the shape `named_records_state`
+    expects -- `_record_operand_detail`'s own shape, one question further in,
+    and `cmd_step`'s `STEP_MALFORMED` one literal over.
+
+    `POSITION_RECORD_UNKNOWN` above checks membership in the raw dict and
+    nothing else, so a declared entry of ANY shape passes it. Two shapes
+    reach here, and each fails a different way downstream:
+
+    - **Not a mapping at all.** `named_records_state` skips it entirely, so
+      `evidence["records"]` carries no entry for the name while the refusal
+      above has already agreed the name is declared. The reader and the
+      refusal disagree about the same name and nothing crosses them.
+    - **A mapping with no usable `path`.** The entry survives, and
+      `named_records_state` answers `recordFound: None` forever, since the
+      only branch that can look at a file is guarded on `path` being a
+      non-empty string.
+
+    Either way a ticked witness becomes `POSITION_UNBACKED` and a leveled one
+    derives no rung, sinking `attained_level` -- and neither says the
+    declaration is the cause. `STEP_MALFORMED` already refuses exactly this
+    for `__steps__`; there was no sibling here.
+
+    **Only entries a witness in THIS sequence addresses**, the identical
+    narrowing `cmd_step` keeps by refusing the step it was asked to run
+    rather than auditing every `__steps__` entry. A repository may carry a
+    half-written entry it has not wired a witness to yet, and refusing every
+    position write until every entry is finished would be the forge deciding
+    when a declaration is done.
+
+    Returns the detail and never raises, for the reason
+    `_record_operand_detail` states in full: a code raised one call deep in a
+    helper is invisible to `raised_refusal_codes`' walk over the `cmd_*`
+    body, so a refusal this heavy would enter the engine unclassified.
+    """
+    broken = []
+    for operand in sorted({
+            item["witness"]["operand"] for item in items
+            if item["witness"]["kind"] == "record"
+            and not item["witness"].get("twostate", True)
+            and item["witness"]["operand"]
+            and item["witness"]["operand"] in records}):
+        entry = records[operand]
+        if not isinstance(entry, dict):
+            broken.append(
+                f"{operand!r} is declared as {type(entry).__name__}, not a "
+                "mapping: the reader that measures a named record skips a "
+                "non-mapping entry entirely, so this name reads as declared "
+                "here and as absent there")
+        elif not isinstance(entry.get("path"), str) or not entry.get("path"):
+            broken.append(
+                f"{operand!r} declares no usable `path` (found "
+                f"{entry.get('path')!r}, and the keys present are "
+                f"{sorted(entry)!r}): without one, nothing can be looked "
+                "for, and the witness derives unmeasured on every run")
+    if not broken:
+        return None
+    return ("; ".join(broken) + ". A `@record:level <name>` witness "
+            "addresses one __records__ entry, and an entry it cannot read "
+            "is a declaration nobody can measure against.")
+
+
 def _step_verdicts(target: Path, name: str) -> dict:
     """`evidence["stepVerdicts"]` for every caller that reads an `@step`
     witness -- `_position_write_evidence`, `cmd_probe`'s inline dict, and
@@ -7572,6 +7635,16 @@ def cmd_position(args: argparse.Namespace) -> dict:
     record_detail = _record_operand_detail(items, declared_records)
     if record_detail is not None:
         raise Refused("POSITION_RECORD_UNKNOWN", record_detail)
+    # Immediately after the membership check and therefore still ahead of
+    # `_skipped_rung_detail`, for the identical trap-1 reason (design D5): a
+    # malformed entry derives `None` too, which sinks `attained_level`, so a
+    # check placed after the rung guard would answer `POSITION_RUNG_SKIPPED`
+    # first for any `--target-level` above the floor and be reachable only at
+    # the floor. What reaches it: a name that IS a key of `__records__` -- or
+    # the refusal above would have fired -- whose entry the reader cannot use.
+    record_shape = _record_shape_detail(items, declared_records)
+    if record_shape is not None:
+        raise Refused("POSITION_RECORD_MALFORMED", record_shape)
     header["target"] = target_level
 
     evidence = _position_write_evidence(target, name, getattr(args, "shards", None))
@@ -12011,6 +12084,9 @@ GATING_REFUSALS: dict[str, str] = {
     # means declaring the entry, the identical reasoning
     # `POSITION_STEP_UNKNOWN` states just above.
     "POSITION_RECORD_UNKNOWN": WORK_STATE,
+    # The shape half of the same declaration. A work state for the identical
+    # reason: nothing in the invocation can fix an entry the target wrote.
+    "POSITION_RECORD_MALFORMED": WORK_STATE,
 }
 
 
@@ -12323,6 +12399,13 @@ _WORK_STATE_RESOLUTIONS = {
     "POSITION_RUNG_SKIPPED": _resolve_position_rung_skipped,
     "POSITION_STEP_UNKNOWN": _resolve_position_step_unknown,
     "POSITION_RECORD_UNKNOWN": _resolve_position_record_unknown,
+    "POSITION_RECORD_MALFORMED": lambda args: _refusal_question(
+        args, "a leveled `@record:level <name>` witness addresses a "
+              "__records__ entry the reader cannot use -- not a mapping, or "
+              "a mapping with no `path` string (the refusal detail names "
+              "which); write the entry as `{\"path\": ..., "
+              "\"requiredScale\": {...}}` now, or say why that record is "
+              "not addressable yet, and why?"),
     "POSITION_LEVELS_UNDECLARED": lambda args: _refusal_question(
         args, "an item in this sequence is marked as reaching a rung and the "
               "target's benchmark package declares no `__levels__` ladder for "

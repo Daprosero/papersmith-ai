@@ -14326,6 +14326,150 @@ class StepOperandRefusalTests(unittest.TestCase):
         self.assertEqual(result["status"], "unchanged")
 
 
+class PositionRecordMalformedTests(unittest.TestCase):
+    """`__steps__` has a shape refusal; `__records__` had none.
+
+    `cmd_step` raises `STEP_MALFORMED` the moment an entry lacks `module` or
+    `function`. `POSITION_RECORD_UNKNOWN` checks only membership in the raw
+    dict, so a declared entry of any shape at all passes it. Measured:
+
+    - `{"main": {"file": ..., "requiredScale": ...}}` (a typo'd `path`):
+      `POSITION_RECORD_UNKNOWN` passes, `named_records_state` keeps the entry
+      with `recordFound: None`, and the item derives no rung ever.
+    - `{"main": "Results/r.json"}` (not a mapping at all):
+      `POSITION_RECORD_UNKNOWN` passes because `main` IS a key, and
+      `named_records_state` drops the entry entirely -- so the refusal says
+      `main` is declared and the reader says it does not exist, and the two
+      never meet.
+
+    Either way a ticked witness becomes `POSITION_UNBACKED` and a leveled one
+    sinks `attained_level` forever, with nothing naming the declaration as the
+    cause. `STEP_MALFORMED`'s own answer, one literal over.
+
+    **Which input reaches it, given every check that already runs first.** The
+    refusal sits immediately after `POSITION_RECORD_UNKNOWN` and therefore
+    still ahead of `_skipped_rung_detail` -- the same trap-1 placement D5
+    established, and for the same reason: a malformed entry derives `None`
+    too, which sinks `attained_level`, so a check placed after the rung guard
+    would be unreachable for any `--target-level` above the floor. It is
+    reached by a leveled `@record:level <name>` witness whose name IS a key of
+    `__records__` (or `POSITION_RECORD_UNKNOWN` would have fired) and whose
+    entry `named_records_state` cannot read.
+    """
+
+    PROPOSAL_TEXT = PositionCommandTests.PROPOSAL_TEXT
+    PROPOSAL_SHA256 = PositionCommandTests.PROPOSAL_SHA256
+    LADDER = ["floor", "middle", "top"]
+
+    def _proposals(self):
+        return PositionCommandTests._proposals(self)
+
+    def _box(self, records):
+        box = FORGE / "implementations" / f"_e2e_record_shape_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "src/Method_Benchmark", "tests", "Method"):
+            (box / directory).mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            f"__levels__ = {self.LADDER!r}\n__records__ = {records!r}\n",
+            encoding="utf-8")
+        (box / "Method/AGREED.md").write_text(
+            f"<!-- position revision=r1.md sha256={self.PROPOSAL_SHA256} "
+            "derivedAt=2026-08-27T00:00:00Z session=s0 target=floor -->\n"
+            "- [ ] 1. Reach the record. `@record:level main`\n"
+            "<!-- /position -->\n", encoding="utf-8")
+        return box
+
+    def _position(self, records, target_level="floor"):
+        box = self._box(records)
+        env = dict(os.environ)
+        env["IMPLEMENTATION_PROPOSALS"] = str(self._proposals())
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "position", "--target", str(box),
+             "--name", "Method", "--revision", "r1.md", "--session", "s1",
+             "--target-level", target_level],
+            capture_output=True, text=True, cwd=FORGE, env=env)
+        return proc
+
+    GOOD = {"main": {"path": "Results/r.json", "requiredScale": {}}}
+    TYPO = {"main": {"file": "Results/r.json", "requiredScale": {}}}
+    NOT_A_MAPPING = {"main": "Results/r.json"}
+
+    def test_an_entry_that_is_not_a_mapping_refuses(self):
+        """The sharp one. `named_records_state` skips a non-dict entry
+        entirely, so `evidence["records"]` has no `main` at all while
+        `POSITION_RECORD_UNKNOWN` says `main` is declared -- the refusal and
+        the reader disagreeing about the same name, with nothing crossing
+        them."""
+        proc = self._position(self.NOT_A_MAPPING)
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["code"], "POSITION_RECORD_MALFORMED")
+        self.assertIn("main", result["detail"])
+
+    def test_an_entry_with_no_usable_path_refuses(self):
+        """The quiet one. A dict entry survives every existing check, keeps
+        its place in `evidence["records"]`, and derives `recordFound: None`
+        forever -- so a ticked witness reads `POSITION_UNBACKED` and a leveled
+        one sinks `attainedLevel`, neither of them naming the typo."""
+        proc = self._position(self.TYPO)
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["code"], "POSITION_RECORD_MALFORMED")
+        self.assertIn("path", result["detail"])
+
+    def test_a_well_formed_entry_is_never_refused(self):
+        """The other pole, and the one a weaker lock survives: a refusal that
+        fired on every declared record would close the door this declaration
+        exists to open."""
+        proc = self._position(self.GOOD)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_it_refuses_above_the_floor_too(self):
+        """The trap-1 ordering claim, measured the way
+        `PositionRecordUnknownTests` measures its own: a malformed entry
+        derives `None` and sinks `attained_level`, so a check placed after
+        `_skipped_rung_detail` would answer `POSITION_RUNG_SKIPPED` here and
+        never be reachable above the floor at all."""
+        proc = self._position(self.NOT_A_MAPPING, target_level="middle")
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["code"],
+                         "POSITION_RECORD_MALFORMED")
+
+    def test_a_name_no_witness_addresses_is_not_this_command_s_business(self):
+        """The narrowing `STEP_MALFORMED` already keeps: it refuses the step
+        it was asked to run, never every entry of `__steps__`. A repository
+        may legitimately carry a half-written entry it has not wired a witness
+        to yet, and refusing every position write until every entry is perfect
+        would be the forge deciding when a declaration is finished."""
+        box = self._box({"main": {"path": "Results/r.json", "requiredScale": {}},
+                         "spare": "not-a-mapping"})
+        env = dict(os.environ)
+        env["IMPLEMENTATION_PROPOSALS"] = str(self._proposals())
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "position", "--target", str(box),
+             "--name", "Method", "--revision", "r1.md", "--session", "s1",
+             "--target-level", "floor"],
+            capture_output=True, text=True, cwd=FORGE, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_the_code_is_classified_and_publishes_something_runnable(self):
+        """`GatingRefusalRosterTests`' own rule, asserted here too so the
+        classification travels with the refusal rather than being noticed by
+        a roster count moving."""
+        self.assertEqual(impl.GATING_REFUSALS["POSITION_RECORD_MALFORMED"],
+                         impl.WORK_STATE)
+        resolution = impl.refusal_resolution(
+            "POSITION_RECORD_MALFORMED",
+            argparse.Namespace(command="position", target="implementations/box",
+                               name="Method", session="s1", revision="r1.md",
+                               about=None, text=None))
+        self.assertEqual(resolution["kind"], "question")
+        self.assertIn("__records__", resolution["question"])
+
+
 class PositionRecordUnknownTests(unittest.TestCase):
     """`POSITION_RECORD_UNKNOWN` -- design D5/D6; spec "`@record:level
     <name>` grammar" is unaffected, this is the operand-validity refusal
@@ -24444,7 +24588,7 @@ _ENGLISH_COUNTS = {
     36: "Thirty-six",
     54: "Fifty-four", 55: "Fifty-five", 56: "Fifty-six", 57: "Fifty-seven",
     63: "Sixty-three", 64: "Sixty-four", 65: "Sixty-five", 66: "Sixty-six",
-    67: "Sixty-seven", 68: "Sixty-eight",
+    67: "Sixty-seven", 68: "Sixty-eight", 69: "Sixty-nine",
 }
 
 
@@ -24526,7 +24670,7 @@ class GatingRefusalRosterTests(unittest.TestCase):
             codes |= raised_refusal_codes(CLI, f"cmd_{command}")
         return codes
 
-    def test_the_derivation_finds_the_measured_sixty_eight(self):
+    def test_the_derivation_finds_the_measured_sixty_nine(self):
         """Sanity check on the scraper itself, not on the roster: a change to a
         gating command that adds, removes or renames a refusal should move this
         number, never a typo in the walk above.
@@ -24539,8 +24683,11 @@ class GatingRefusalRosterTests(unittest.TestCase):
         new member to this union. Sixty-seven once `POSITION_RECORD_UNKNOWN`
         joined `cmd_position` beside it (the-pilot-proves-the-science, slice
         B). Sixty-eight once `RUNG_NOT_ATTAINED` joined `cmd_gate` (same
-        change, slice A)."""
-        self.assertEqual(len(self.gating_codes()), 68)
+        change, slice A). Sixty-nine once `POSITION_RECORD_MALFORMED` joined
+        `cmd_position` beside `POSITION_RECORD_UNKNOWN` -- the shape half of
+        the same declaration, which `__steps__` had and `__records__` did
+        not."""
+        self.assertEqual(len(self.gating_codes()), 69)
 
     def test_every_gating_refusal_is_classified(self):
         roster = set(impl.GATING_REFUSALS)
