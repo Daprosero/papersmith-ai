@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -162,6 +163,28 @@ def markdown_table_rows(text, header):
             rows.append([cell.strip() for cell in row.strip("|").split("|")])
         tables.append(rows)
     return tables
+
+
+def published_flags(command: str) -> list[str]:
+    """A published command's ARGUMENTS, with its runnable prefix removed.
+
+    Every command this engine publishes now begins with the absolute path of
+    the interpreter running the CLI and the absolute path of the CLI itself
+    (`impl.CLI_INVOCATION`), so a reader pastes it unedited from any
+    directory. A test that only wants the flags -- to feed them through a
+    helper that supplies its own environment -- takes them off the string by
+    matching that prefix rather than by dropping a hardcoded number of
+    tokens, which is exactly the assumption this change moved.
+
+    The prefix is asserted, never assumed: a published string that stopped
+    carrying it would otherwise silently lose its first flag here.
+    """
+    prefix = shlex.split(impl.CLI_INVOCATION)
+    tokens = shlex.split(command)
+    if tokens[:len(prefix)] != prefix:
+        raise AssertionError(
+            f"published command carries no runnable prefix: {command!r}")
+    return tokens[len(prefix):]
 
 
 def returned_keys(source: Path, function: str) -> list[str]:
@@ -11802,8 +11825,8 @@ class ProbeReportedFactsRosterTests(unittest.TestCase):
         probe = self.probe(box)
         entry = probe["toDiscuss"][0]
         tokens = shlex.split(entry["command"])
-        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
-                              capture_output=True, text=True, cwd=FORGE)
+        proc = subprocess.run(tokens, capture_output=True, text=True,
+                              cwd=tempfile.gettempdir())
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertEqual(json.loads(proc.stdout)["asked"], entry["question"])
 
@@ -13228,11 +13251,14 @@ class MessagesThatAssertWhatTheyCheckTests(unittest.TestCase):
     def _stage_objects(self, declaration, suffix):
         """`_stage_objects` directly rather than through `materialize`: the
         refusal is raised in this top-level helper, not inside
-        `cmd_materialize` (which is why `OBJECT_MAP_NOT_APPROVED` is not in
-        `GATING_REFUSALS` -- `raised_refusal_codes` walks `cmd_*` bodies
-        only), and reaching it through the CLI would mean satisfying
-        `DIRTY_WORKTREE`, `PLAN_REQUIRED` and the mode flags first, none of
-        which this gate is about."""
+        `cmd_materialize`, and reaching it through the CLI would mean
+        satisfying `DIRTY_WORKTREE`, `PLAN_REQUIRED` and the mode flags first,
+        none of which this gate is about.
+
+        That helper hop is why `OBJECT_MAP_NOT_APPROVED` went unclassified for
+        as long as it did: `raised_refusal_codes` walks `cmd_*` bodies only, and
+        the roster was populated from it. `reachable_refusal_codes` follows the
+        call, and the code is classified now."""
         box = self._box(suffix, declaration)
         try:
             return None, impl._stage_objects(box, "Method", "1")
@@ -15418,7 +15444,7 @@ class PositionRungLadderTests(unittest.TestCase):
         self.assertNotIn("--target-level top", question)
         embedded = re.search(r"`([^`]*\bposition\b[^`]*)`", question)
         self.assertIsNotNone(embedded, question)
-        rerun = self.run_cli(*shlex.split(embedded.group(1))[1:],
+        rerun = self.run_cli(*published_flags(embedded.group(1)),
                              proposals=proposals)
         self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
         self.assertEqual(json.loads(rerun.stdout)["targetLevel"], "floor")
@@ -15551,7 +15577,7 @@ class PositionRungLadderTests(unittest.TestCase):
                             "--target-level", "top", "--shards", self._shards(box),
                             proposals=proposals)
         published = json.loads(proc.stdout)["resolve"]["command"]
-        rerun = self.run_cli(*shlex.split(published)[1:], proposals=proposals)
+        rerun = self.run_cli(*published_flags(published), proposals=proposals)
         self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
 
     def test_position_is_a_gating_command_and_the_code_is_a_work_state(self):
@@ -16767,13 +16793,17 @@ class DiscussCommandBuilderTests(unittest.TestCase):
             answer="yes, it still holds")
 
         tokens = shlex.split(command)
-        self.assertTrue(tokens[0].endswith("implementation_cli.py"), command)
-        self.assertEqual(tokens[1], "discuss", command)
+        self.assertEqual(tokens[1], str(CLI), command)
+        self.assertEqual(tokens[2], "discuss", command)
 
         # Executed as a subprocess, not merely read as text -- inspection
-        # alone cannot see a quoting defect an apostrophe would trigger.
-        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
-                              capture_output=True, text=True, cwd=FORGE)
+        # alone cannot see a quoting defect an apostrophe would trigger --
+        # and executed UNREPAIRED, from a directory that is not the forge:
+        # the published string used to be a bare relative script name, so
+        # every earlier version of this test had to prepend an interpreter
+        # and a path the string did not carry.
+        proc = subprocess.run(tokens, capture_output=True, text=True,
+                              cwd=tempfile.gettempdir())
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         result = json.loads(proc.stdout)
         self.assertEqual(result["asked"], question)
@@ -16786,8 +16816,8 @@ class DiscussCommandBuilderTests(unittest.TestCase):
         tokens = shlex.split(command)
         self.assertNotIn("--answer", tokens, command)
 
-        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
-                              capture_output=True, text=True, cwd=FORGE)
+        proc = subprocess.run(tokens, capture_output=True, text=True,
+                              cwd=tempfile.gettempdir())
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertEqual(json.loads(proc.stdout)["status"], "open")
 
@@ -17301,7 +17331,7 @@ class SettleCommandTests(unittest.TestCase):
         self.assertIn(first, question)
         self.assertIn(second, question)
 
-        run = self.run_cli(*tokens[1:])
+        run = self.run_cli(*published_flags(line))
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertEqual(json.loads(run.stdout)["asked"], question)
 
@@ -17323,7 +17353,7 @@ class SettleCommandTests(unittest.TestCase):
         line = next(l for l in body["detail"].splitlines()
                     if "implementation_cli.py discuss" in l)
         tokens = shlex.split(line)
-        run = self.run_cli(*tokens[1:])
+        run = self.run_cli(*published_flags(line))
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertIn(first, json.loads(run.stdout)["asked"])
 
@@ -17596,8 +17626,8 @@ class VerifyToDiscussTests(unittest.TestCase):
         result = self._verify(box)
         entry = result["toDiscuss"][0]
         tokens = shlex.split(entry["command"])
-        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
-                              capture_output=True, text=True, cwd=FORGE)
+        proc = subprocess.run(tokens, capture_output=True, text=True,
+                              cwd=tempfile.gettempdir())
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertEqual(json.loads(proc.stdout)["asked"], entry["question"])
 
@@ -17610,8 +17640,8 @@ class VerifyToDiscussTests(unittest.TestCase):
         result = self._verify(box)
         entry = result["toDiscuss"][0]
         tokens = shlex.split(entry["command"])
-        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
-                              capture_output=True, text=True, cwd=FORGE)
+        proc = subprocess.run(tokens, capture_output=True, text=True,
+                              cwd=tempfile.gettempdir())
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("the target's finding", json.loads(proc.stdout)["asked"])
 
@@ -20933,21 +20963,24 @@ class OfferCommandTests(unittest.TestCase):
         command = expand_contract["command"]
 
         tokens = shlex.split(command)
-        self.assertTrue(tokens[0].endswith("implementation_cli.py"), command)
+        self.assertEqual(tokens[1], str(CLI), command)
 
-        # Execute the published string verbatim, dropping only the leading
-        # script-name token -- the same seam `run_cli` itself uses to turn
-        # a documented invocation into a real subprocess call. This runs
-        # UNCONDITIONALLY, before any assertion on the token shape below,
-        # so the check is never satisfied by inspecting the string alone.
+        # Execute the published string VERBATIM -- nothing dropped, nothing
+        # prepended -- and from a directory that is not the forge. This test
+        # used to repair the string first, prepending the interpreter and the
+        # path a bare relative script name did not carry; a published command
+        # that only runs after the reader repairs it is not a published
+        # command. It runs UNCONDITIONALLY, before any assertion on the token
+        # shape below, so the check is never satisfied by inspecting the
+        # string alone.
         child = subprocess.run(
-            [sys.executable, str(CLI), *tokens[1:]],
-            capture_output=True, text=True, cwd=FORGE, env=os.environ.copy())
+            tokens, capture_output=True, text=True,
+            cwd=tempfile.gettempdir(), env=os.environ.copy())
         after = agreed_path.read_bytes()
 
         self.assertEqual(child.returncode, 0, child.stdout + child.stderr)
         self.assertEqual(before, after)
-        self.assertEqual(tokens[1], "discuss", command)
+        self.assertEqual(tokens[2], "discuss", command)
         self.assertNotIn("--session", tokens, command)
 
     # --- ACTION_IDS: pinned three ways ---------------------------------
@@ -21948,8 +21981,8 @@ class CloseCommandTests(unittest.TestCase):
         # command must never carry the stdin form, which retires nothing.
         self.assertNotEqual(tokens[tokens.index("--answer") + 1], "-", line)
         tokens[tokens.index("--answer") + 1] = "yes, it still holds"
-        retire = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
-                                capture_output=True, text=True, cwd=FORGE)
+        retire = subprocess.run(tokens, capture_output=True, text=True,
+                                cwd=tempfile.gettempdir())
         self.assertEqual(retire.returncode, 0, retire.stdout + retire.stderr)
 
         second = self.run_cli("close", "--target", str(box), "--name", "Method",
@@ -22316,6 +22349,22 @@ class StepCommandTests(unittest.TestCase):
             return []
         return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
+    def refusal_pair(self, box):
+        """The two outcomes a TARGET-SIDE refusal leaves behind: the
+        pre-spawn `started` line and the `refused` terminal line naming the
+        code. Returned as `(first outcome, refusal code)` so the assertion
+        reads as the pairing invariant rather than as a length.
+
+        A target-side refusal used to append nothing at all. It cannot any
+        more: silence is now reserved for "this command never started", and
+        a lone `started` is reserved for "it started and was killed". A
+        refusal that appended nothing would wear the killed run's shape.
+        """
+        events = self.ledger_events(box)
+        self.assertEqual(len(events), 2, events)
+        self.assertEqual(events[-1]["outcome"], "refused", events)
+        return events[0]["outcome"], events[-1]["refusalCode"]
+
     # --- Spec "Record a `step` ledger event" ---
 
     def test_a_passing_step_is_recorded_with_exit_zero_and_a_digest_field(self):
@@ -22340,8 +22389,13 @@ class StepCommandTests(unittest.TestCase):
         self.assertIsNone(result["error"])
 
         events = self.ledger_events(box)
-        self.assertEqual(len(events), 1)
-        event = events[0]
+        self.assertEqual([e["outcome"] for e in events], ["started", "returned"])
+        started, event = events
+        self.assertEqual(started["kind"], "step")
+        self.assertEqual(started["step"], "verification")
+        self.assertEqual(started["callable"], "Method_Benchmark.steps.run_ok")
+        self.assertNotIn("suiteDigest", started)
+        self.assertNotIn("exitStatus", started)
         self.assertEqual(event["kind"], "step")
         self.assertEqual(event["step"], "verification")
         self.assertEqual(event["callable"], "Method_Benchmark.steps.run_ok")
@@ -22366,9 +22420,8 @@ class StepCommandTests(unittest.TestCase):
         self.assertIn("boom", result["error"])
 
         events = self.ledger_events(box)
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["outcome"], "raised")
-        self.assertNotEqual(events[0]["exitStatus"], 0)
+        self.assertEqual([e["outcome"] for e in events], ["started", "raised"])
+        self.assertNotEqual(events[-1]["exitStatus"], 0)
 
     def test_a_step_that_hard_exits_mid_call_is_recorded_as_unknown_not_silent(self):
         """`RUNNER` writes the verdict file TWICE -- the instant resolution
@@ -22393,8 +22446,144 @@ class StepCommandTests(unittest.TestCase):
         self.assertEqual(result["exitStatus"], 9)
 
         events = self.ledger_events(box)
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["outcome"], "unknown")
+        self.assertEqual([e["outcome"] for e in events], ["started", "unknown"])
+
+    def test_a_step_killed_mid_run_leaves_a_started_line_with_no_partner(self):
+        """The measured incident friction 1 came from, reproduced: the
+        `step` PROCESS is killed while its callable is still running, the
+        way a harness timeout kills it. Nothing in `impl_steps` can report
+        that -- `STEP_RUNNER_SILENT` is raised inside `_verdict_result`,
+        which is only reached once this process is alive and its child has
+        already exited -- so the only record that the step ever started is
+        the ledger line written before the subprocess spawns.
+
+        Without that pre-spawn line the ledger after a kill is byte-
+        identical to the ledger of a step nobody ever ran, and the flow
+        cannot tell "never ran" from "ran and was killed" from "ran and
+        returned". The mutation this locks against is deleting that one
+        `append_event` call: every other test in this class still passes
+        under it, because they all run to completion and get their terminal
+        line anyway.
+        """
+        box = self._box("killed")
+        sentinel = box / "entered.marker"
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "import time\n"
+            "def run_slow():\n"
+            f"    open({str(sentinel)!r}, 'w').write('yes')\n"
+            "    time.sleep(120)\n",
+            encoding="utf-8")
+        self._declare(box, {"verification": {"module": "Method_Benchmark.steps",
+                                              "function": "run_slow"}})
+        self._commit(box)
+
+        child = subprocess.Popen(
+            [sys.executable, str(CLI), "step", "--target", str(box),
+             "--name", "Method", "--session", "s1", "--step", "verification"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=FORGE)
+        try:
+            deadline = time.time() + 60
+            while time.time() < deadline and not sentinel.exists():
+                time.sleep(0.05)
+            self.assertTrue(sentinel.exists(),
+                            "the step's callable never entered; nothing was killed")
+        finally:
+            child.kill()
+            child.communicate()
+
+        events = self.ledger_events(box)
+        self.assertEqual([e["outcome"] for e in events], ["started"], events)
+        self.assertEqual(events[0]["step"], "verification")
+        self.assertEqual(events[0]["callable"], "Method_Benchmark.steps.run_slow")
+
+    # --- The loop between two steps, published where it is needed ---
+
+    def _write_block(self, box, revision="r01.md"):
+        header = {"revision": revision, "revisionSha256": "a" * 64,
+                  "derivedAt": "2026-01-01T00:00:00Z", "session": "s1",
+                  "target": "pilot"}
+        items = [{"mark": " ", "ordinal": 1, "text": "rung 1",
+                  "witness": {"kind": "step", "operand": "verification",
+                              "twostate": True}}]
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+
+    def test_a_returned_step_publishes_the_commit_and_the_re_derivation(self):
+        """The measured friction: every step dirties the target's tree with
+        its own product, so the next step refuses `DIRTY_WORKTREE`; and
+        nothing re-derives the position marks, so an ordered next step
+        refuses `STEP_SEQUENCE_NOT_REACHED`. A six-step flow therefore needed
+        five hand-made commits and six hand-made `position` calls, and the
+        skill said so nowhere -- an agent composed both acts in prose every
+        time.
+
+        Both refusals publish their own exits, but only after they fire. This
+        publishes them one command earlier, where the reader is actually
+        standing. The commit itself is never authored here: the listing is
+        published and the message stays the operator's."""
+        box = self._box("nextacts")
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "def run_ok():\n    return None\n", encoding="utf-8")
+        self._declare(box, {"verification": {"module": "Method_Benchmark.steps",
+                                              "function": "run_ok"}})
+        self._write_block(box)
+        self._commit(box)
+
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        acts = json.loads(proc.stdout)["next"]
+        self.assertEqual([act["kind"] for act in acts], ["command", "command"])
+        self.assertEqual(acts[0]["command"],
+                         f"git -C {box} status --porcelain")
+        self.assertIn("DIRTY_WORKTREE", acts[0]["establishes"])
+        self.assertIn("never writes one", acts[0]["establishes"])
+        self.assertIn("implementation_cli.py position", acts[1]["command"])
+        self.assertIn("--revision r01.md", acts[1]["command"])
+        self.assertIn("STEP_SEQUENCE_NOT_REACHED", acts[1]["establishes"])
+        # Never a commit: the engine publishes the listing and nothing that
+        # would need a message it must not author.
+        self.assertNotIn("commit", " ".join(a["command"] for a in acts))
+
+    def test_a_raised_step_publishes_the_same_acts(self):
+        """The mutation this locks against, which the passing case above
+        survives: gating the publication on `outcome == "returned"`. A step
+        that failed still left whatever it wrote in the tree, and the next
+        step still refuses on it -- the acts are about the tree, never about
+        the verdict."""
+        box = self._box("nextactsraised")
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "def run_bad():\n    raise ValueError('boom')\n", encoding="utf-8")
+        self._declare(box, {"verification": {"module": "Method_Benchmark.steps",
+                                              "function": "run_bad"}})
+        self._write_block(box)
+        self._commit(box)
+
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        body = json.loads(proc.stdout)
+        self.assertEqual(body["outcome"], "raised")
+        self.assertEqual(len(body["next"]), 2, body["next"])
+
+    def test_a_product_with_no_block_publishes_the_commit_act_alone(self):
+        """A `position` command with no revision refuses
+        `REVISION_UNREADABLE`, and there is no block to refresh anyway. The
+        act is omitted rather than published broken."""
+        box = self._box("noblock")
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "def run_ok():\n    return None\n", encoding="utf-8")
+        self._declare(box, {"verification": {"module": "Method_Benchmark.steps",
+                                              "function": "run_ok"}})
+        self._commit(box)
+
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "verification")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        acts = json.loads(proc.stdout)["next"]
+        self.assertEqual(len(acts), 1, acts)
+        self.assertIn("status --porcelain", acts[0]["command"])
 
     # --- Spec "Refuse an unresolvable step" ---
 
@@ -22459,7 +22648,7 @@ class StepCommandTests(unittest.TestCase):
                             "--session", "s1", "--step", "verification")
         self.assertEqual(proc.returncode, 2)
         self.assertEqual(json.loads(proc.stdout)["code"], "STEP_MODULE_MISSING")
-        self.assertEqual(self.ledger_events(box), [])
+        self.assertEqual(self.refusal_pair(box), ("started", "STEP_MODULE_MISSING"))
 
     def test_missing_function_refuses_step_function_missing(self):
         box = self._box("funcmissing")
@@ -22471,7 +22660,7 @@ class StepCommandTests(unittest.TestCase):
                             "--session", "s1", "--step", "verification")
         self.assertEqual(proc.returncode, 2)
         self.assertEqual(json.loads(proc.stdout)["code"], "STEP_FUNCTION_MISSING")
-        self.assertEqual(self.ledger_events(box), [])
+        self.assertEqual(self.refusal_pair(box), ("started", "STEP_FUNCTION_MISSING"))
 
     def test_a_non_callable_attribute_refuses_step_not_callable(self):
         box = self._box("notcallable")
@@ -22484,7 +22673,7 @@ class StepCommandTests(unittest.TestCase):
                             "--session", "s1", "--step", "verification")
         self.assertEqual(proc.returncode, 2)
         self.assertEqual(json.loads(proc.stdout)["code"], "STEP_NOT_CALLABLE")
-        self.assertEqual(self.ledger_events(box), [])
+        self.assertEqual(self.refusal_pair(box), ("started", "STEP_NOT_CALLABLE"))
 
     # --- Spec "Refuse on a dirty target worktree" ---
 
@@ -22577,8 +22766,7 @@ class StepCommandTests(unittest.TestCase):
         self.assertIsNone(dumped["virtualEnv"])
 
         events = self.ledger_events(box)
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["outcome"], "returned")
+        self.assertEqual([e["outcome"] for e in events], ["started", "returned"])
 
     # --- Threat matrix "Argument composition" (added row) ---
 
@@ -22604,7 +22792,7 @@ class StepCommandTests(unittest.TestCase):
             "a hostile function-name string reached a shell and created a "
             "marker file; argv must never be interpolated into a command "
             "line (list argv, shell=False)")
-        self.assertEqual(self.ledger_events(box), [])
+        self.assertEqual(self.refusal_pair(box), ("started", "STEP_FUNCTION_MISSING"))
 
     # --- Spec "Remote launch stays structurally unreachable" ---
 
@@ -22664,7 +22852,15 @@ class StepCommandTests(unittest.TestCase):
             lines[0], gate_line_before,
             "the recorded gate event's own bytes moved after a step ran")
         self.assertEqual(
-            [json.loads(line)["kind"] for line in lines[1:]], ["step", "step"])
+            [json.loads(line)["kind"] for line in lines[1:]],
+            ["step", "step", "step", "step"])
+        # Two runs, four lines: each one appends its pre-spawn `started`
+        # line and its terminal line (the pairing invariant `cmd_step`'s
+        # own two-write comment states). The `kind` is what this test is
+        # about and it is `step` for all four -- no `gate` kind appears.
+        self.assertEqual(
+            [json.loads(line)["outcome"] for line in lines[1:]],
+            ["started", "returned", "started", "raised"])
         assert_still_authorized()  # still accepted after two steps ran
 
     def test_cmd_step_calls_none_of_the_remote_execution_loaders(self):
@@ -22692,16 +22888,22 @@ class StepCommandTests(unittest.TestCase):
         """Design mechanism 2, corrected: every `gate` consumer still
         selects on the exact string "gate", and this ledger line remains
         invisible to `remote_cli.py` and to `impl_position.py` entirely.
-        `implementation_cli.py` now carries exactly ONE legitimate
-        `kind == "step"` reader -- `_step_verdicts` (spec "Step Verdicts
-        Are Assembled By The Caller"), whose whole job is folding those
-        events into `stepVerdicts` for the `@step` witness. The original,
+        `implementation_cli.py` now carries exactly ONE selection of that
+        ledger kind, and it lives in `_ledger_step_events`. The original,
         blanket "nowhere" was correct only until a witness kind that reads
-        this ledger's own events was ever added; this asserts the narrower,
-        still-true claim instead of a claim this change was always going to
-        have to break: the selection is pinned to exist inside
-        `_step_verdicts` and nowhere else, so a future accidental second
-        reader is still caught."""
+        this ledger's own events was ever added; a later revision pinned it
+        inside `_step_verdicts`, and a second legitimate reader
+        (`_abandoned_step`, telling a dirty tree caused by a killed step
+        from an ordinary one) made even that too narrow. Pinning the
+        SELECTION rather than its one caller keeps the strong form of the
+        claim: however many readers need those events, there is one place
+        that decides what "a step event" is, and a future accidental
+        second selection anywhere in this file is still caught.
+
+        Both legitimate readers are asserted to go through it by name, so
+        a reader that re-derives the selection under a different spelling
+        (`.get("kind") in {"step"}`, say) fails this test at the caller
+        assertion even where the regex above cannot see it."""
         pattern = re.compile(r'kind[\'"]?\s*\)?\s*==\s*[\'"]step[\'"]')
         remote_source = (FORGE / ".claude" / "skills" / "remote-execution"
                          / "scripts" / "remote_cli.py").read_text(encoding="utf-8")
@@ -22716,15 +22918,33 @@ class StepCommandTests(unittest.TestCase):
             "exactly one reader may select on kind == \"step\": "
             "_step_verdicts, folding evidence for the @step witness")
         tree = ast.parse(impl_source)
-        step_verdicts_def = next(
+        selector_def = next(
             node for node in ast.walk(tree)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == "_step_verdicts")
+            and node.name == "_ledger_step_events")
         hit_line = impl_source[:hits[0].start()].count("\n") + 1
         self.assertTrue(
-            step_verdicts_def.lineno <= hit_line <= step_verdicts_def.end_lineno,
-            f"the kind == \"step\" selection moved outside _step_verdicts "
+            selector_def.lineno <= hit_line <= selector_def.end_lineno,
+            f"the step-kind selection moved outside _ledger_step_events "
             f"(now at line {hit_line})")
+
+        callers = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for inner in ast.walk(node):
+                if (isinstance(inner, ast.Call)
+                        and isinstance(inner.func, ast.Name)
+                        and inner.func.id == "_ledger_step_events"):
+                    callers.add(node.name)
+        # Two more legitimate readers joined, and both for the reason the
+        # selector is a function at all: they need the same events -- to fold
+        # the elapsed time of the last completed `started` -> terminal pair,
+        # and to say where each step stands in the walk -- and a second
+        # literal `kind == "step"` selection beside the first is
+        # indistinguishable, to any scanner, from an accidental one.
+        self.assertEqual(callers, {"_step_verdicts", "_abandoned_step",
+                                   "_last_measured_run", "cmd_probe"})
 
 
 class CmdStepDigestTests(unittest.TestCase):
@@ -22783,7 +23003,7 @@ class CmdStepDigestTests(unittest.TestCase):
                             "--session", "s1", "--step", "verification")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         events = self.ledger_events(box)
-        self.assertEqual(events[0]["suiteDigest"], impl.suite_digest(box))
+        self.assertEqual(events[-1]["suiteDigest"], impl.suite_digest(box))
 
     def test_a_raised_step_event_also_carries_a_suite_digest(self):
         """The mutation this locks against: gating the digest write on
@@ -22804,8 +23024,8 @@ class CmdStepDigestTests(unittest.TestCase):
                             "--session", "s1", "--step", "verification")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         events = self.ledger_events(box)
-        self.assertEqual(events[0]["outcome"], "raised")
-        self.assertEqual(events[0]["suiteDigest"], impl.suite_digest(box))
+        self.assertEqual(events[-1]["outcome"], "raised")
+        self.assertEqual(events[-1]["suiteDigest"], impl.suite_digest(box))
 
     def test_the_returned_response_dict_never_gains_suite_digest(self):
         self.assertNotIn("suiteDigest", returned_keys(CLI, "cmd_step"))
@@ -22904,6 +23124,46 @@ class StepVerdictsTests(unittest.TestCase):
         verdicts = impl._step_verdicts(root, "Method")
         self.assertIs(verdicts["a"], True)
         self.assertIs(verdicts["b"], False)
+
+    def test_a_step_that_passed_and_was_then_killed_stops_reading_as_a_pass(self):
+        """The incident this fold has to survive: a step ran green, was run
+        again, and the second run was killed by a harness timeout partway
+        through. `cmd_step` writes its `started` line before the subprocess
+        spawns, so the ledger's LAST event for that step is a bare
+        `started` with no partner -- and the honest reading of it is
+        `unmeasured`, because nobody knows what the killed run did to the
+        product.
+
+        The mutation this locks against, and which a weaker "latest wins"
+        test cannot see: folding only the events that carry a verdict
+        (`latest[...] = event` guarded on `outcome in {"returned",
+        "raised"}`). Every other case in this class still passes under it --
+        the earlier `returned` would simply survive -- and this one flips to
+        `True`, reporting a green suite for a run that was killed.
+        """
+        root = self._target()
+        live = impl.suite_digest(root)
+        self._write_ledger(root, "Method", [
+            self._event("run_suite", "returned", live, at="2026-01-01T00:00:00Z"),
+            {"kind": "step", "step": "run_suite", "outcome": "started",
+             "at": "2026-01-02T00:00:00Z"},
+        ])
+        self.assertIsNone(impl._step_verdicts(root, "Method")["run_suite"])
+
+    def test_a_refused_terminal_event_never_reads_as_a_verdict(self):
+        """A target-side resolution refusal now leaves a `refused` terminal
+        event where it used to leave nothing. It carries no `suiteDigest`,
+        so it folds at the digest comparison before its outcome is ever
+        read -- `None`, never `False`. A refusal is not a measurement that
+        the suite fails."""
+        root = self._target()
+        live = impl.suite_digest(root)
+        self._write_ledger(root, "Method", [
+            self._event("run_suite", "returned", live, at="2026-01-01T00:00:00Z"),
+            {"kind": "step", "step": "run_suite", "outcome": "refused",
+             "refusalCode": "STEP_MODULE_MISSING", "at": "2026-01-02T00:00:00Z"},
+        ])
+        self.assertIsNone(impl._step_verdicts(root, "Method")["run_suite"])
 
 
 class StepVerdictsParityTests(unittest.TestCase):
@@ -24984,6 +25244,105 @@ class StepSequenceOrderTests(unittest.TestCase):
         return self.run_cli("step", "--target", str(box), "--name", "Method",
                             "--session", "t", "--step", "later")
 
+    # --- The refusal publishes the act the operator had to compose ---
+
+    def _proposals(self, revision="r01.md"):
+        """A proposals root holding the exact revision `_position`'s block
+        names, so a published `position` command can actually be run against
+        it. `cmd_position` refuses `REVISION_UNREADABLE` for a revision it
+        cannot read, and a published command that refuses on its own advice
+        is the trap this whole publication exists to avoid."""
+        root = Path(tempfile.mkdtemp(prefix=f"forgeprop{os.getpid()}"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / revision).write_text("# proposal\n", encoding="utf-8")
+        return root
+
+    def test_the_refusal_publishes_a_position_command_that_clears_it(self):
+        """The friction this closes, reproduced whole: a step ran and
+        returned, and the NEXT step refused because the sequence check reads
+        the literal `mark` in the target's own AGREED.md, which nothing had
+        re-derived since the run. The operator called `position` by hand
+        between every pair of six steps, and the flow said that nowhere.
+
+        `step` does not re-derive it itself because `cmd_position` is the
+        only writer into that section -- a single-writer invariant, stated in
+        its own first line -- so the exit is PUBLISHED instead, runnable
+        unedited, bound to the revision the block already names.
+
+        Run, not inspected. The mutation this locks against, which an
+        assertion on `resolve["kind"]` alone survives: publishing
+        `_refusal_position_command(args)` without the revision. `step`
+        registers no `--revision` flag, so the command would be well-formed,
+        would parse, and would refuse `REVISION_UNREADABLE` the moment
+        anybody ran it.
+        """
+        box = self._box("published")
+        proposals = self._proposals()
+        (box / "src" / "Method_Benchmark").mkdir(parents=True, exist_ok=True)
+        (box / "src" / "Method_Benchmark" / "work.py").write_text(
+            "def run():\n    return 'ran'\n", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            "__steps__ = {\n"
+            "  'early': {'module': 'Method_Benchmark.work', "
+            "'function': 'run', 'advances': 1},\n"
+            "  'later': {'module': 'Method_Benchmark.work', "
+            "'function': 'run', 'advances': 2},\n"
+            "}\n", encoding="utf-8")
+        header = {"revision": "r01.md", "revisionSha256": "a" * 64,
+                  "derivedAt": "2026-01-01T00:00:00Z", "session": "t",
+                  "target": "pilot"}
+        items = [{"mark": " ", "ordinal": n, "text": f"rung {n}",
+                  "witness": {"kind": "step", "operand": operand,
+                              "twostate": True}}
+                 for n, operand in enumerate(("early", "later"), start=1)]
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+        self._commit(box)
+
+        early = self.run_cli("step", "--target", str(box), "--name", "Method",
+                             "--session", "t", "--step", "early")
+        self.assertEqual(early.returncode, 0, early.stdout + early.stderr)
+        self._commit(box)
+
+        blocked = self._run(box)
+        self.assertEqual(blocked.returncode, 2, blocked.stdout)
+        payload = json.loads(blocked.stdout)
+        self.assertEqual(payload["code"], "STEP_SEQUENCE_NOT_REACHED")
+        self.assertEqual(payload["resolve"]["kind"], "command")
+        command = payload["resolve"]["command"]
+        self.assertIn("--revision r01.md", command)
+
+        tokens = shlex.split(command)
+        self.assertEqual(tokens[1], str(CLI), command)
+        env = dict(os.environ)
+        env["IMPLEMENTATION_PROPOSALS"] = str(proposals)
+        # Verbatim, from a directory that is not the forge: the exit this
+        # refusal publishes has to run for the reader who pastes it, not for
+        # the one who knows where the script lives.
+        rederive = subprocess.run(tokens, capture_output=True, text=True,
+                                  cwd=tempfile.gettempdir(), env=env)
+        self.assertEqual(rederive.returncode, 0,
+                         rederive.stdout + rederive.stderr)
+        self._commit(box)
+
+        cleared = self._run(box)
+        self.assertEqual(cleared.returncode, 0, cleared.stdout + cleared.stderr)
+        self.assertEqual(json.loads(cleared.stdout)["outcome"], "returned")
+
+    def test_no_readable_block_falls_back_to_the_question(self):
+        """A revision cannot be derived from a product that holds no block,
+        and a `position` command with no `--revision` refuses on its own
+        advice -- so that call gets the question instead, which needs
+        nothing from the document."""
+        resolution = impl.refusal_resolution(
+            "STEP_SEQUENCE_NOT_REACHED",
+            argparse.Namespace(command="step", target="implementations/absent",
+                               name="Method", session="t", about=None))
+        self.assertEqual(resolution["kind"], "question")
+        self.assertIn("no readable position block", resolution["question"])
+        self.assertIn("discuss", resolution["command"])
+
     def test_an_earlier_open_rung_refuses_the_step(self):
         box = self._box("behind")
         self._declare(box, advances=3)
@@ -25063,14 +25422,23 @@ _ENGLISH_COUNTS = {
     # (the-pilot-proves-the-science, slice B).
     7: "Seven", 8: "Eight",
     9: "Nine", 10: "Ten", 17: "Seventeen", 18: "Eighteen", 19: "Nineteen",
-    20: "Twenty",
+    # `Twenty-one` is `verify`'s status count once `undeclaredProduces` joined
+    # it -- the per-step half of the same "reported, never demanded" family
+    # `undeclaredLadder` and `undeclaredRecords` already sit in.
+    20: "Twenty", 21: "Twenty-one",
     26: "Twenty-six", 27: "Twenty-seven", 28: "Twenty-eight",
     29: "Twenty-nine", 30: "Thirty", 31: "Thirty-one", 32: "Thirty-two",
     33: "Thirty-three", 34: "Thirty-four", 35: "Thirty-five",
     36: "Thirty-six",
+    48: "Forty-eight", 49: "Forty-nine", 50: "Fifty",
     54: "Fifty-four", 55: "Fifty-five", 56: "Fifty-six", 57: "Fifty-seven",
-    63: "Sixty-three", 64: "Sixty-four", 65: "Sixty-five", 66: "Sixty-six",
+    61: "Sixty-one", 62: "Sixty-two", 63: "Sixty-three", 64: "Sixty-four",
+    65: "Sixty-five", 66: "Sixty-six",
     67: "Sixty-seven", 68: "Sixty-eight", 69: "Sixty-nine",
+    # The roster stopped being a two-digit table when it stopped being read out
+    # of the `cmd_*` bodies alone.
+    110: "One hundred and ten", 111: "One hundred and eleven",
+    112: "One hundred and twelve",
 }
 
 
@@ -25103,6 +25471,16 @@ def raised_refusal_codes(source: Path, function: str) -> set[str]:
     A `Refused` whose first argument is not a string literal is invisible here.
     None exists today (the classes below assert the total), and the limitation
     is stated rather than guessed at.
+
+    **This walks ONE function's body and stops at its own file.** A refusal
+    raised by a helper the function calls -- in this module or, far more often,
+    in `_core/implementation/` -- is not here, and reading an answer about a
+    COMMAND out of this is the measured defect that produced
+    `reachable_refusal_codes` below: `GATING_REFUSALS` was populated from a
+    union of these, so forty-two codes a gating command can raise were never
+    classified, `DIRTY_WORKTREE` (raised in `impl_guards`, reached by `apply`,
+    `step` and `materialize`) among them. Ask this only what one named body
+    spells for itself; ask `reachable_refusal_codes` what a command can raise.
     """
     tree = ast.parse(source.read_text(encoding="utf-8"))
     definition = next(
@@ -25121,17 +25499,214 @@ def raised_refusal_codes(source: Path, function: str) -> set[str]:
     return codes
 
 
+#: The forge's shared implementation modules -- the far side of the file
+#: boundary `raised_refusal_codes` stops at, and where a third of the refusals
+#: a gating command can raise actually live.
+CORE_IMPLEMENTATION = FORGE / ".claude/skills/_core/implementation"
+
+#: A refusal code as every one of them is spelled: screaming snake case, two
+#: segments or more. Used only to recognise a code-shaped string constant when
+#: a refusal's first argument is not a literal this can read.
+REFUSAL_CODE_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
+
+#: Both constructors a refusal code can be born in. `NameRefused` is here
+#: because `cmd_name` catches one and re-raises its code as a `Refused`, so a
+#: walk that knew only `Refused` would lose the four `NAME_*` codes at the one
+#: hop that converts them.
+REFUSAL_CONSTRUCTORS = ("Refused", "NameRefused")
+
+
+def _refusal_code_argument(argument) -> str | None:
+    """The code one refusal's first argument spells, or `None` when this cannot
+    read it.
+
+    Two shapes are read. A plain string constant is the code. An f-string is
+    read down to its leading constant and cut at the first `:` -- the one
+    dynamic spelling this engine uses is
+    `NameRefused(f"NAME_NOT_ALPHANUMERIC:{token}")`, and `cmd_name` partitions
+    it on exactly that colon before re-raising it, so the code is the head.
+    """
+    if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+        return argument.value.partition(":")[0]
+    if (isinstance(argument, ast.JoinedStr) and argument.values
+            and isinstance(argument.values[0], ast.Constant)
+            and isinstance(argument.values[0].value, str)):
+        head = argument.values[0].value.partition(":")[0]
+        if REFUSAL_CODE_RE.match(head):
+            return head
+    return None
+
+
+def _refusal_sites(node, owner: str) -> list[tuple[str, str | None]]:
+    """Every refusal constructed anywhere under `node`, as `(owner, code)`.
+
+    `owner` is the innermost enclosing `def`'s name, so a site this cannot read
+    can be reported by the function that holds it rather than by a line number
+    that moves under every edit. `code` is `None` for exactly those sites.
+    """
+    sites: list[tuple[str, str | None]] = []
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            sites += _refusal_sites(child, child.name)
+            continue
+        if (isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+                and child.func.id in REFUSAL_CONSTRUCTORS):
+            sites.append(
+                (owner,
+                 _refusal_code_argument(child.args[0]) if child.args else None))
+        sites += _refusal_sites(child, owner)
+    return sites
+
+
+def _module_code_constants(tree) -> set[str]:
+    """Every code-shaped string constant a module binds at its top level.
+
+    What an unreadable refusal widens to. `impl_steps` raises one refusal off a
+    lookup table (`_UNRESOLVABLE_CODES`), and this is what carries
+    `STEP_MODULE_MISSING`, `STEP_FUNCTION_MISSING` and `STEP_NOT_CALLABLE` --
+    three codes `step` really does raise, and which no walk over literals can
+    see -- into the derived set.
+    """
+    constants = set()
+    for statement in tree.body:
+        if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            continue
+        if statement.value is None:
+            continue
+        for node in ast.walk(statement.value):
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and REFUSAL_CODE_RE.match(node.value)):
+                constants.add(node.value)
+    return constants
+
+
+def _codes_from_sites(sites, constants: set[str]) -> set[str]:
+    """The codes a set of sites raises, widening every unreadable one to
+    `constants` rather than dropping it. Dropping is what an under-approximation
+    does, and an under-approximation is the defect this whole derivation
+    exists to close."""
+    codes = {code for _, code in sites if code is not None}
+    if any(code is None for _, code in sites):
+        codes |= constants
+    return codes
+
+
+def unreadable_refusal_sites() -> set[tuple[str, str]]:
+    """`(module, function)` for every refusal whose code this file cannot read.
+
+    Not a roster of codes -- a roster of the derivation's own blind spots. A
+    new dynamic site must be looked at by a human, because widening it to its
+    module's constants is only as good as those constants happen to be, so this
+    is asserted rather than tolerated.
+    """
+    sites = set()
+    for source in (CLI, *sorted(CORE_IMPLEMENTATION.glob("*.py"))):
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        sites |= {(source.name, owner)
+                  for owner, code in _refusal_sites(tree, "<module>")
+                  if code is None}
+    return sites
+
+
+def reachable_refusal_codes() -> set[str]:
+    """Every refusal code a gating command can raise, derived from source.
+
+    The lock the roster is actually held to, and the replacement for a union of
+    `raised_refusal_codes(CLI, "cmd_*")` -- which stops at the `cmd_*` body and
+    therefore could not see `DIRTY_WORKTREE`, `FORGE_DEFECT_OPEN`, the whole
+    `GATE_AUTHORIZATION_*` family or any of the position grammar's own parse
+    refusals. Forty-two codes were invisible to it while every one of them
+    could reach a user mid-flow.
+
+    How the set is built, in two halves:
+
+    1. **Inside `implementation_cli.py`, a closure from the nine `cmd_*` roots.**
+       An edge is any *reference* to a module-level `def` of the same file --
+       `helper(...)`, `{"k": helper}`, `partial(helper)` alike -- and nested
+       definitions are descended into, so a guard written as a closure still
+       belongs to the command that holds it.
+    2. **Across the file boundary, whole modules.** Every `*.py` under
+       `_core/implementation/` contributes all of its refusals.
+
+    **What this over-approximates, and why that is the safe direction.** An
+    over-approximation forces a code to be classified that perhaps no gating
+    command can actually reach; the cost is one map entry. An
+    under-approximation lets a live refusal reach a user with nothing published
+    beside it, which is the defect on record. Every widening below is chosen in
+    that direction:
+
+    - A *reference* is not a proven call. A helper merely named inside a
+      reached function is treated as reached.
+    - Modules are taken whole rather than per-symbol, because crossing the
+      boundary per-symbol would mean modelling `impl_position.<attr>` dispatch;
+      module granularity needs no such model. Every module in the directory is
+      taken, not only the ones `implementation_cli.py` imports today, so a
+      module that gains its first import does not also gain a blind spot.
+    - An unreadable refusal code widens to every code-shaped constant its own
+      module binds at the top level, rather than being dropped.
+
+    **What it still cannot see, stated rather than guessed at.** A helper
+    reached only through `globals()`, `getattr` or another runtime lookup is
+    invisible: nothing in this engine dispatches that way today, and
+    `unreadable_refusal_sites` is asserted separately so a new dynamic code
+    site cannot pass unread. And `implementation_cli.py`'s own module-level
+    constants are dominated by `GATING_REFUSALS`' keys, so a *new* unreadable
+    site inside the CLI would widen to codes already classified and prove
+    little -- which is exactly what `unreadable_refusal_sites` is for.
+    """
+    tree = ast.parse(CLI.read_text(encoding="utf-8"))
+    definitions = {node.name: node for node in tree.body
+                   if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    roots = [f"cmd_{command}" for command in impl.GATING_COMMANDS]
+    for root in roots:
+        if root not in definitions:
+            raise AssertionError(f"{CLI.name} defines no {root}")
+    constants = _module_code_constants(tree)
+    codes: set[str] = set()
+    seen: set[str] = set()
+    frontier = list(roots)
+    while frontier:
+        name = frontier.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        definition = definitions[name]
+        codes |= _codes_from_sites(_refusal_sites(definition, name), constants)
+        frontier += [node.id for node in ast.walk(definition)
+                     if isinstance(node, ast.Name)
+                     and isinstance(node.ctx, ast.Load)
+                     and node.id in definitions]
+    for source in sorted(CORE_IMPLEMENTATION.glob("*.py")):
+        module = ast.parse(source.read_text(encoding="utf-8"))
+        codes |= _codes_from_sites(_refusal_sites(module, "<module>"),
+                                   _module_code_constants(module))
+    return codes
+
+
 class GatingRefusalRosterTests(unittest.TestCase):
-    """Lock A: every refusal a gating command raises declares how it is cleared.
+    """Lock A: every refusal a gating command can REACH declares how it is
+    cleared.
 
     The incident. `gate` refused `POSITION_DISAGREES` in a live session, the
     payload carried a code and a sentence, and the agent driving the CLI
     composed the next question itself -- "Do you want me to do that now?".
-    Fifty-six distinct codes are raised inside the gating commands and exactly
-    two publication points existed in the whole engine, so fifty-four of them
+    Fifty-six codes were raised inside the gating commands and exactly two
+    publication points existed in the whole engine, so fifty-four of them
     reached the user as a bare code with nothing runnable attached. A harness
     that has to sit above the agent driving it cannot leave the next act to
     that agent's prose.
+
+    The second incident, and why "reach" replaced "raise". The roster that
+    closed the first one was populated from a union of
+    `raised_refusal_codes(CLI, "cmd_*")`, which stops at the `cmd_*` body. One
+    `step` call then refused twice in one session: `STEP_SEQUENCE_NOT_REACHED`,
+    raised in `cmd_step` and classified, with its `resolve`; and
+    `DIRTY_WORKTREE`, raised in `impl_guards` one file over, with nothing.
+    Forty-two codes were in that second condition. The mechanism had never been
+    broken -- the roster it read was -- so what changed is the derivation, not
+    the chokepoint: `reachable_refusal_codes` follows calls out of the `cmd_*`
+    bodies and out of `implementation_cli.py`, and one hundred and eleven codes
+    are now classified.
 
     The rule the roster encodes, and the one derivable test that separates the
     two kinds: **can the caller clear this by changing the invocation alone,
@@ -25147,41 +25722,108 @@ class GatingRefusalRosterTests(unittest.TestCase):
     """
 
     def gating_codes(self):
+        """Deliberately still the OLD walk, and used only by the tests that are
+        about the walks themselves. Every assertion about the ROSTER reads
+        `reachable_refusal_codes`; this is kept so the two can be compared, and
+        so a reader who finds it here sees immediately what it does not cover.
+        """
         codes = set()
         for command in impl.GATING_COMMANDS:
             codes |= raised_refusal_codes(CLI, f"cmd_{command}")
         return codes
 
-    def test_the_derivation_finds_the_measured_sixty_nine(self):
-        """Sanity check on the scraper itself, not on the roster: a change to a
-        gating command that adds, removes or renames a refusal should move this
-        number, never a typo in the walk above.
+    def test_every_refusal_reachable_from_a_gating_command_is_classified(self):
+        """The lock this roster is actually held to, and the one the roster was
+        NOT built from.
 
-        Fifty-six until `position` joined `GATING_COMMANDS`, which brought its
-        own eight previously-unclassified codes with it (`REVISION_UNREADABLE`
-        it already shared with `admit`) plus `POSITION_RUNG_SKIPPED`, for
-        sixty-five. Sixty-six once `POSITION_STEP_UNKNOWN` joined `cmd_position`
-        -- `STEPS_UNDECLARED` is reused verbatim from `cmd_step` and adds no
-        new member to this union. Sixty-seven once `POSITION_RECORD_UNKNOWN`
-        joined `cmd_position` beside it (the-pilot-proves-the-science, slice
-        B). Sixty-eight once `RUNG_NOT_ATTAINED` joined `cmd_gate` (same
-        change, slice A). Sixty-nine once `POSITION_RECORD_MALFORMED` joined
-        `cmd_position` beside `POSITION_RECORD_UNKNOWN` -- the shape half of
-        the same declaration, which `__steps__` had and `__records__` did
-        not."""
-        self.assertEqual(len(self.gating_codes()), 69)
+        The defect on record. `GATING_REFUSALS` was populated from a union of
+        `raised_refusal_codes(CLI, "cmd_*")`, which walks one function body and
+        stops at its own file, and the blind spot was documented and then
+        populated from anyway. A live session ran the declared flow and got two
+        refusals from the same `step` call's neighbourhood:
+        `STEP_SEQUENCE_NOT_REACHED`, raised in `cmd_step` and therefore
+        classified, carrying its `resolve`; and `DIRTY_WORKTREE`, raised in
+        `impl_guards.require_clean_worktree` and therefore invisible to the
+        scraper, carrying nothing. The agent driving the CLI composed the next
+        act in prose -- exactly what this mechanism exists to prevent.
 
-    def test_every_gating_refusal_is_classified(self):
-        roster = set(impl.GATING_REFUSALS)
-        raised = self.gating_codes()
+        So the set is derived by following calls OUT of the `cmd_*` bodies and
+        out of `implementation_cli.py` itself; `reachable_refusal_codes` states
+        precisely what it over-approximates and why the over-approximation is
+        the safe direction. Nothing here is a hand-written list of codes: the
+        next refusal added to a helper module goes red here without anybody
+        remembering to come back.
+        """
+        missing = sorted(reachable_refusal_codes() - set(impl.GATING_REFUSALS))
         self.assertEqual(
-            sorted(raised - roster), [],
-            "these codes are raised in a gating command and the roster "
+            missing, [],
+            "these codes are reachable from a gating command and the roster "
             "classifies none of them; a refusal nobody decided about is the "
             "defect this roster exists to make impossible")
+
+    def test_the_derivation_crosses_the_boundary_the_old_walk_stopped_at(self):
+        """The derivation is not merely wider -- it is wider in the direction
+        that was broken. Both halves are asserted: a helper-module code the
+        `cmd_*` walk cannot see IS derived here, and the `cmd_*` walk really
+        cannot see it. Asserting only the first would pass over a
+        `reachable_refusal_codes` that had quietly become the old union again.
+        """
+        for code in ("DIRTY_WORKTREE", "NOT_A_GIT_REPO", "FORGE_DEFECT_OPEN",
+                     "GATE_AUTHORIZATION_CONSUMED", "STEP_RUNNER_SILENT",
+                     "POSITION_ITEM_MALFORMED"):
+            with self.subTest(code=code):
+                self.assertIn(code, reachable_refusal_codes())
+                self.assertNotIn(code, self.gating_codes())
+
+    def test_a_refusal_code_no_literal_walk_can_read_is_still_derived(self):
+        """`impl_steps` raises one refusal whose code comes off a lookup table,
+        and `step` -- a gating command -- really does surface all three. A walk
+        over string literals sees none of them, so the unreadable site widens
+        to its module's own code-shaped constants instead of being dropped."""
+        derived = reachable_refusal_codes()
+        for code in ("STEP_MODULE_MISSING", "STEP_FUNCTION_MISSING",
+                     "STEP_NOT_CALLABLE"):
+            with self.subTest(code=code):
+                self.assertIn(code, derived)
+
+    def test_the_derivations_own_blind_spots_are_the_two_measured_ones(self):
+        """A widening is only as good as the constants it widens to, so a NEW
+        refusal whose code this file cannot read must be looked at by a human
+        rather than absorbed. Two sites exist today and both are understood:
+        `cmd_name` re-raising a `NameRefused`'s code, and `impl_steps`'
+        unresolvable-reason lookup. A third goes red here."""
         self.assertEqual(
-            sorted(roster - raised), [],
-            "the roster classifies these and no gating command raises them")
+            unreadable_refusal_sites(),
+            {("implementation_cli.py", "cmd_name"),
+             ("impl_steps.py", "_verdict_result")})
+
+    def test_the_derivation_finds_the_measured_one_hundred_and_twelve(self):
+        """Sanity check on the derivation itself, not on the roster: a change
+        that adds, removes or renames a refusal anywhere a gating command can
+        reach should move this number, never a typo in the walk above.
+
+        Sixty-nine was this number while the walk stopped at the `cmd_*`
+        bodies, and it grew one at a time in that shape -- fifty-six, then
+        sixty-five when `position` joined `GATING_COMMANDS`, then sixty-six,
+        sixty-seven, sixty-eight, sixty-nine as single codes joined single
+        commands. One hundred and eleven is the first reading taken by
+        following calls out of those bodies and out of `implementation_cli.py`
+        altogether. The forty-two it gained were not added by any change; they
+        were always raised, always reachable, and never seen. One hundred and
+        twelve is that reading plus `PRODUCT_DIR_MISNAMED`, which nine write
+        verbs now raise before they can open a second product tree.
+        """
+        self.assertEqual(len(reachable_refusal_codes()), 112)
+
+    def test_the_roster_classifies_nothing_a_gating_command_cannot_raise(self):
+        """The reverse direction, and the half the forward lock cannot give.
+        A roster that grows entries nothing raises is a roster nobody can trust
+        to be exhaustive either -- and this went red, correctly, the moment the
+        forty-two were classified against the wider derivation while this test
+        still read the `cmd_*` union."""
+        self.assertEqual(
+            sorted(set(impl.GATING_REFUSALS) - reachable_refusal_codes()), [],
+            "the roster classifies these and no gating command can reach them")
 
     def test_the_roster_names_only_the_two_kinds(self):
         self.assertEqual(
@@ -25242,14 +25884,18 @@ class GatingRefusalRosterTests(unittest.TestCase):
         "Thirty-four") must fail this test -- and does, because the
         work-state assertion below reads the sentence usage.md actually
         carries beside `POSITION_RUNG_SKIPPED`/`NOT_READY`, not merely
-        `usage.md`'s presence of ANY correct-looking count."""
+        `usage.md`'s presence of ANY correct-looking count.
+
+        The headline sentence now says *reachable from*, not *raised inside*,
+        and the wording is load-bearing rather than cosmetic: "raised inside"
+        is the false claim the roster was populated under."""
         counts = {kind: sum(1 for value in impl.GATING_REFUSALS.values()
                             if value == kind)
                   for kind in (impl.INVOCATION_DEFECT, impl.WORK_STATE)}
         skill = " ".join(SKILL_MD.read_text(encoding="utf-8").split())
         self.assertIn(
             f"{_english_count(len(impl.GATING_REFUSALS))} distinct codes are "
-            "raised inside the nine gating commands", skill)
+            "reachable from the nine gating commands", skill)
         self.assertIn(
             f"an *invocation* defect** ({counts[impl.INVOCATION_DEFECT]} "
             "codes)", skill)
@@ -25268,10 +25914,136 @@ class GatingRefusalRosterTests(unittest.TestCase):
             "`set(counts.values())` loop the moment both kinds tied")
 
     def test_a_code_outside_the_roster_publishes_nothing(self):
-        """The roster is the gating commands' own. A refusal raised anywhere
-        else is not silently handed a resolution it was never classified for."""
+        """The roster is the gating commands' own. A refusal no gating command
+        can reach is not silently handed a resolution it was never classified
+        for.
+
+        The example used to be `NOT_A_GIT_REPO`, which was a bad one and is now
+        classified: it IS reachable, through `resolve_target`, from every
+        gating command there is. `DISCUSS_STDIN_CONFLICT` is a real code raised
+        by a real command outside the nine, and the first assertion derives
+        that rather than asserting it, so this test cannot quietly become a
+        test about a code that has since joined the roster."""
+        self.assertNotIn("DISCUSS_STDIN_CONFLICT", reachable_refusal_codes())
         self.assertIsNone(
-            impl.refusal_resolution("NOT_A_GIT_REPO", self._args()))
+            impl.refusal_resolution("DISCUSS_STDIN_CONFLICT", self._args()))
+
+    def test_a_non_gating_call_publishes_nothing_for_a_shared_code(self):
+        """The other half of the same rule, and the one the widened roster made
+        load-bearing. `DIRTY_WORKTREE` is classified because `apply`, `step`
+        and `materialize` all reach it -- but `plan` runs the identical guard,
+        and `plan` carries no `--session`. Publishing off the code alone would
+        hand `plan` a `discuss` command built from arguments it never had.
+
+        Measured, not assumed: the same code and the same argument shape,
+        differing only in `command`, answer differently."""
+        self.assertIsNotNone(
+            impl.refusal_resolution("DIRTY_WORKTREE",
+                                    self._args(command="step")))
+        self.assertIsNone(
+            impl.refusal_resolution("DIRTY_WORKTREE",
+                                    self._args(command="plan")))
+
+    def test_the_dirty_worktree_resolution_names_the_tree_and_asks_the_choice(self):
+        """The refusal from the live session that widened this roster, and the
+        act the agent driving the CLI had to invent in prose.
+
+        A question rather than a command, and the reason is the one
+        `POSITION_ABSENT` already states: a commit needs a message this engine
+        must never author, and whether a change is product or scratch is a
+        reading nobody here can take. So the listing is published runnable and
+        the choice is asked. Every part is built from the target path the call
+        already carried -- nothing target-specific can enter through it."""
+        resolution = impl.refusal_resolution(
+            "DIRTY_WORKTREE", self._args(target="implementations/box"))
+        self.assertEqual(resolution["kind"], "question")
+        self.assertIn("git -C implementations/box status --porcelain",
+                      resolution["question"])
+        self.assertIn("stash", resolution["question"])
+        self.assertIn("discuss", resolution["command"])
+        self.assertEqual(leaks_in(resolution["question"]), [])
+
+    def _ledger_box(self, events):
+        """A throwaway product folder carrying one `.implementation/
+        position.jsonl`. Only the ledger matters here: `_abandoned_step`
+        reads nothing else, and the refusal being decorated has already
+        been raised by the time a resolution is built."""
+        root = Path(tempfile.mkdtemp(prefix=f"forgeabandon{os.getpid()}"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        path = root / "Method" / ".implementation" / "position.jsonl"
+        path.parent.mkdir(parents=True)
+        path.write_text("".join(json.dumps(e) + "\n" for e in events),
+                        encoding="utf-8")
+        return root
+
+    @staticmethod
+    def _step_event(outcome, at, **extra):
+        return {"kind": "step", "step": "campaign",
+                "callable": "Method_Benchmark.steps.run_campaign",
+                "outcome": outcome, "at": at, **extra}
+
+    def test_a_dirty_tree_after_a_killed_step_says_the_product_is_partial(self):
+        """The measured incident: a campaign step was killed by a timeout at
+        48 runs of 60, the next command refused `DIRTY_WORKTREE`, and the
+        operator had to work out on their own that the tree was dirty
+        BECAUSE a step had died, that the leftovers were partial rather than
+        finished, and that a relaunch would not resume them.
+
+        Every one of those facts is in this skill's own ledger, so the
+        published question carries them: the step's name, when it started,
+        that the product is partial, that re-running does not resume it, and
+        a `git clean -nd` DRY RUN listing exactly what a cleanup would
+        remove without removing any of it."""
+        root = self._ledger_box([
+            self._step_event("started", "2026-09-04T09:00:00Z")])
+        resolution = impl.refusal_resolution(
+            "DIRTY_WORKTREE", self._args(command="step", target=str(root)))
+        question = resolution["question"]
+        self.assertEqual(resolution["kind"], "question")
+        self.assertIn("'campaign'", question)
+        self.assertIn("2026-09-04T09:00:00Z", question)
+        self.assertIn("PARTIAL", question)
+        self.assertIn("does not resume", question)
+        self.assertIn(f"git -C {root} clean -nd", question)
+        self.assertIn(f"git -C {root} status --porcelain", question)
+        self.assertEqual(leaks_in(question), [])
+
+    def test_a_dirty_tree_after_a_step_that_reported_claims_no_killed_step(self):
+        """The half a one-sided test cannot see. `_abandoned_step` answers
+        only when the LATEST step event is a bare `started`; a ledger that
+        holds an abandoned run and then a run that REPORTED describes a
+        partial that has already been superseded, and claiming a dead run
+        there would send the operator hunting for leftovers that are not
+        leftovers.
+
+        The mutation this locks against, which the test above survives:
+        `any(event["outcome"] == "started" for event in steps)` instead of
+        reading the last one. Both ledgers below then produce the killed-step
+        diagnosis, and only this test notices."""
+        root = self._ledger_box([
+            self._step_event("started", "2026-09-04T09:00:00Z"),
+            self._step_event("returned", "2026-09-04T09:10:00Z",
+                             exitStatus=0, suiteDigest="0" * 64),
+        ])
+        resolution = impl.refusal_resolution(
+            "DIRTY_WORKTREE", self._args(command="step", target=str(root)))
+        question = resolution["question"]
+        self.assertNotIn("PARTIAL", question)
+        self.assertNotIn("campaign", question)
+        self.assertIn("Commit what belongs in the history", question)
+        self.assertIn(f"git -C {root} status --porcelain", question)
+
+    def test_a_ledger_with_no_step_event_keeps_the_plain_dirty_tree_question(self):
+        """A dirty tree with no `step` event behind it at all -- `apply` or
+        `materialize` refusing on somebody's uncommitted edit -- must keep
+        the question it always had, with no diagnosis invented for it."""
+        root = self._ledger_box([
+            {"kind": "gate", "jobName": "job", "at": "2026-09-04T09:00:00Z"}])
+        resolution = impl.refusal_resolution(
+            "DIRTY_WORKTREE", self._args(command="step", target=str(root)))
+        self.assertNotIn("PARTIAL", resolution["question"])
+        self.assertIn("Commit what belongs in the history",
+                      resolution["question"])
 
     def test_position_disagrees_publishes_the_notebook_re_execution(self):
         """The code from the incident, and the one resolution named in the
@@ -25298,7 +26070,8 @@ class GatingRefusalRosterTests(unittest.TestCase):
         """`position` takes `--session`, so a published `position` command that
         omitted it would refuse on its own advice. Every gating command that
         raises a position code carries `--session`; this holds the join."""
-        for code in ("POSITION_STALE", "POSITION_UNBACKED"):
+        for code in ("POSITION_STALE", "POSITION_UNBACKED",
+                     "POSITION_HOLDER_MOVED"):
             with self.subTest(code=code):
                 command = impl.refusal_resolution(code, self._args())["command"]
                 self.assertIn("position", command)
@@ -25382,6 +26155,29 @@ class RefusalPayloadPublishesItsExitTests(unittest.TestCase):
         self.assertEqual(payload["code"], "MATERIALIZE_MODE_REQUIRED")
         self.assertNotIn("resolve", payload)
 
+    def test_a_helper_raised_refusal_reaches_stdout_with_its_resolution(self):
+        """The exact failure that widened the roster, reproduced end to end.
+
+        `step` refused `DIRTY_WORKTREE` in a live session with nothing beside
+        it, because the code is raised in `impl_guards`, one file over, and the
+        roster had been populated from a walk that stops at the `cmd_*` body.
+        The mechanism was never broken; the roster it read was.
+
+        Through the real process, not the builder: a resolution that exists in
+        a dict and never reaches stdout is the same silence to the reader.
+        """
+        box, _ = self._box()
+        (box / "untracked.txt").write_text("product\n", encoding="utf-8")
+        proc = self.run_cli("step", "--target", str(box), "--name", "Method",
+                            "--session", "s1", "--step", "any")
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["code"], "DIRTY_WORKTREE")
+        self.assertEqual(payload["resolve"]["kind"], "question")
+        self.assertIn("status --porcelain", payload["resolve"]["question"])
+        self.assertIn("implementation_cli.py discuss",
+                      payload["resolve"]["command"])
+
     def test_the_published_command_is_directly_runnable(self):
         """A published command that does not parse is prose with a monospace
         font. This runs the one the engine published, unedited."""
@@ -25404,8 +26200,7 @@ class RefusalPayloadPublishesItsExitTests(unittest.TestCase):
         # Run in the caller's own environment, which is the only one the
         # published command claims to run in: the revision it carries is the
         # revision the refused call was made against.
-        tokens = shlex.split(published)
-        rerun = self.run_cli(*tokens[1:], proposals=proposals)
+        rerun = self.run_cli(*published_flags(published), proposals=proposals)
         self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
         self.assertEqual(json.loads(rerun.stdout)["command"], "position")
 
@@ -25597,8 +26392,8 @@ class ProbePublishesEveryStepsWorkTests(unittest.TestCase):
         self.write_job_folder(box, head)
         probe = self.probe(box)
         tokens = shlex.split(probe["resolve"]["command"])
-        proc = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
-                              capture_output=True, text=True, cwd=FORGE)
+        proc = subprocess.run(tokens, capture_output=True, text=True,
+                              cwd=tempfile.gettempdir())
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertEqual(json.loads(proc.stdout)["asked"],
                          probe["resolve"]["question"])
@@ -26305,10 +27100,10 @@ class PilotGatesTheDeclaredScaleTests(unittest.TestCase):
     def answer(self, box, entry):
         """Run the entry's own published `discuss` command, with an answer
         appended -- the operator's act, not a hand-written ledger line."""
-        tokens = shlex.split(entry["command"])[1:]
+        tokens = shlex.split(entry["command"])
         proc = subprocess.run(
-            [sys.executable, str(CLI), *tokens, "--answer", "a decision"],
-            capture_output=True, text=True, cwd=FORGE)
+            [*tokens, "--answer", "a decision"],
+            capture_output=True, text=True, cwd=tempfile.gettempdir())
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         return json.loads(proc.stdout)
 
@@ -26506,3 +27301,929 @@ class PilotPublicationProseTests(unittest.TestCase):
             with self.subTest(question=question[:40]):
                 self.assertIn(impl.NEXT_STEP_REPAIR_CHOICE, question)
                 self.assertNotIn(impl.NEXT_STEP_EXPERIMENT_CHOICE, question)
+
+
+class MisnamedProductDirGuardTests(unittest.TestCase):
+    """`PRODUCT_DIR_MISNAMED` -- the write verbs refuse to open a second
+    product tree under a name nothing else reads.
+
+    The incident, measured on a real target. `normalize_name` returns TWO
+    spellings of every name -- the directory (`-`-joined) and the package
+    (`_`-joined) -- and `validate_name` accepts both, so passing the package
+    spelling where the directory spelling belongs is a legal call. Every
+    ledger-writing command then resolved `<target>/<package spelling>/`, found
+    nothing, and CREATED it: a folder holding one file,
+    `.implementation/position.jsonl`. Eight events across two steps landed
+    there, every call reported `outcome: "returned"`, and `.implementation/`
+    is a required ignore, so `git status` showed nothing either. The science
+    ran and produced real product in the correctly-named tree; only the
+    bookkeeping went to a phantom, and `probe` and `position` kept reporting
+    that those steps had never run.
+
+    `detect_product_dir` -- "Find an existing product folder that only has
+    the wrong name" -- had held the answer since the migration path was
+    written, and the migration path was its only caller.
+
+    Why the guard is not "does `<name>/` exist". Because the phantom EXISTS
+    the moment the first event is appended: an existence check fires once and
+    then goes quiet while the split ledger keeps growing.
+    `test_a_ledger_already_split_still_refuses` is that mutation, written as
+    a test.
+    """
+
+    #: The directory spelling and the package spelling of one name -- the two
+    #: strings `normalize_name` returns for the same input, which is what makes
+    #: passing the wrong one a legal call rather than a typo.
+    DIRECTORY = "Method-Two"
+    PACKAGE = "Method_Two"
+
+    def _box(self, suffix, *, product_dirs=(DIRECTORY,)):
+        box = FORGE / "implementations" / f"_e2e_misnamed_{suffix}_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / self.PACKAGE).mkdir(parents=True)
+        (box / "src" / f"{self.PACKAGE}_Benchmark").mkdir(parents=True)
+        (box / "src" / self.PACKAGE / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / f"{self.PACKAGE}_Benchmark" / "__init__.py").write_text(
+            "__steps__ = {'verification': {'module': "
+            f"'{self.PACKAGE}_Benchmark.steps', 'function': 'run_ok'}}}}\n",
+            encoding="utf-8")
+        (box / "src" / f"{self.PACKAGE}_Benchmark" / "steps.py").write_text(
+            "def run_ok():\n    return None\n", encoding="utf-8")
+        for folder in product_dirs:
+            for category in ("Notebooks", "Results", "Models"):
+                (box / folder / category).mkdir(parents=True)
+                (box / folder / category / "kept.txt").write_text(
+                    "", encoding="utf-8")
+        (box / ".gitignore").write_text(
+            ".venv/\n__pycache__/\n.ipynb_checkpoints/\n.implementation/\n",
+            encoding="utf-8")
+        write_fixture_interpreter(
+            box / ".venv" / ("Scripts" if os.name == "nt" else "bin"))
+        git = ["git", "-c", "user.email=forge@example.invalid",
+               "-c", "user.name=forge", "-C", str(box)]
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        subprocess.run(git + ["add", "-A"], check=True, capture_output=True)
+        subprocess.run(git + ["commit", "-qm", "toy"], check=True,
+                       capture_output=True)
+        return box
+
+    def run_cli(self, *args):
+        return subprocess.run([sys.executable, str(CLI), *args],
+                              capture_output=True, text=True, cwd=FORGE)
+
+    def _step(self, box, name):
+        return self.run_cli("step", "--target", str(box), "--name", name,
+                            "--session", "s1", "--step", "verification")
+
+    def test_the_package_spelling_refuses_and_creates_nothing(self):
+        """The incident itself, through the real command. The assertion that
+        matters most is the LAST one: not merely that the call refused, but
+        that the folder it would have opened is still not there."""
+        box = self._box("refuse")
+        proc = self._step(box, self.PACKAGE)
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["code"], "PRODUCT_DIR_MISNAMED")
+        self.assertIn(self.DIRECTORY, payload["detail"])
+        self.assertIn(self.PACKAGE, payload["detail"])
+        self.assertFalse((box / self.PACKAGE).exists(),
+                         "the refusal opened the very tree it exists to refuse")
+        self.assertFalse((box / self.DIRECTORY / ".implementation").exists(),
+                         "a refused call wrote into the real tree instead")
+
+    def test_the_refusal_publishes_the_command_that_names_the_folder(self):
+        """A work state, so a runnable exit is published rather than left to
+        the agent's prose -- and `plan` rather than a `discuss` question,
+        because `discuss` is itself one of the nine verbs this guard stands in
+        front of and a published question would refuse on its own advice."""
+        box = self._box("resolve")
+        payload = json.loads(self._step(box, self.PACKAGE).stdout)
+        self.assertEqual(impl.GATING_REFUSALS["PRODUCT_DIR_MISNAMED"],
+                         impl.WORK_STATE)
+        self.assertEqual(payload["resolve"]["kind"], "command")
+        self.assertIn("plan", payload["resolve"]["command"])
+        self.assertNotIn("discuss", payload["resolve"]["command"])
+
+    def test_a_ledger_already_split_still_refuses(self):
+        """The mutation a weaker guard survives, and the reason the guard asks
+        what `<name>/` HOLDS rather than whether it is there.
+
+        A guard written as `if not (target / name).exists()` passes this
+        repository -- the phantom is present, holding exactly what the
+        incident left in it -- and every further event joins the split ledger
+        it was supposed to stop.
+        """
+        box = self._box("split")
+        ledger = box / self.PACKAGE / ".implementation" / "position.jsonl"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text(
+            json.dumps({"kind": "step", "step": "verification",
+                        "outcome": "returned", "session": "s0"}) + "\n",
+            encoding="utf-8")
+        proc = self._step(box, self.PACKAGE)
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["code"],
+                         "PRODUCT_DIR_MISNAMED")
+        self.assertEqual(len(ledger.read_text(encoding="utf-8").splitlines()), 1,
+                         "the refused call appended to the split ledger anyway")
+
+    def test_the_directory_spelling_runs_into_the_one_product_tree(self):
+        """The other side of the same repository: the guard is about WHICH
+        tree, never about refusing the work."""
+        box = self._box("green")
+        proc = self._step(box, self.DIRECTORY)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["outcome"], "returned")
+        self.assertTrue(
+            (box / self.DIRECTORY / ".implementation" / "position.jsonl").exists())
+        self.assertFalse((box / self.PACKAGE).exists())
+
+    def test_a_target_with_no_product_folder_anywhere_is_untouched(self):
+        """Scaffolding from zero is the flow that legitimately starts with no
+        product folder at all, and `detect_product_dir` answers `None` for
+        zero candidates. A guard that fired here would break the one path
+        every new target begins on."""
+        box = self._box("fromzero", product_dirs=())
+        proc = self._step(box, self.PACKAGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["outcome"], "returned")
+
+    def test_two_candidate_folders_are_not_guessed_between(self):
+        """Ambiguity is not an error either: `detect_product_dir` proposes
+        only an unambiguous single candidate, and this guard inherits that
+        exactly rather than picking one."""
+        box = self._box("ambiguous", product_dirs=(self.DIRECTORY, "Method-Three"))
+        proc = self._step(box, self.PACKAGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["outcome"], "returned")
+
+    def test_every_command_that_appends_to_the_ledger_carries_the_guard(self):
+        """Derived, not listed. The defect on record is a rule written once and
+        applied to one caller, so the scope of this one is read out of the
+        source: a `cmd_*` that appends a ledger event is a `cmd_*` that can
+        open the phantom, and it must run the guard first. A tenth write verb
+        goes red here without anybody remembering to come back.
+
+        Both halves are asserted. Equality alone would pass two empty sets --
+        which is exactly what a mutation to the `append_event` detection would
+        produce -- so the derived set is also checked against the nine verbs
+        the skill documents as writing.
+        """
+        tree = ast.parse(CLI.read_text(encoding="utf-8"))
+        commands = [node for node in tree.body
+                    if isinstance(node, ast.FunctionDef)
+                    and node.name.startswith("cmd_")]
+
+        def calls(node, attribute):
+            return any(isinstance(child, ast.Call)
+                       and isinstance(child.func, ast.Attribute)
+                       and child.func.attr == attribute
+                       for child in ast.walk(node))
+
+        appending = {node.name for node in commands
+                     if calls(node, "append_event")}
+        guarded = {node.name for node in commands
+                   if any(isinstance(child, ast.Name)
+                          and child.id == "require_named_product_dir"
+                          for child in ast.walk(node))}
+        self.assertEqual(
+            appending,
+            {"cmd_position", "cmd_discuss", "cmd_propose", "cmd_gate",
+             "cmd_offer", "cmd_close", "cmd_step", "cmd_settle", "cmd_defect"},
+            "the set of ledger-appending commands moved; the guard's scope is "
+            "derived from it and this list is what proves the derivation reads "
+            "something real")
+        self.assertEqual(
+            appending, guarded,
+            "a command appends to `<name>/.implementation/` without first "
+            "refusing to open a second product tree -- the exact shape of the "
+            "defect this guard closes")
+
+
+class StepMeasuredLastRunTests(unittest.TestCase):
+    """`lastRun` -- the only cost figure this skill can honestly publish.
+
+    The complaint. An operator discovered a twelve-minute step by having it
+    killed at ten. Nothing in the flow said what a step costs, and the obvious
+    fix -- a declared `expectedMinutes` in `__steps__` -- is the wrong one:
+    a field this skill READS is a field a repository built from zero must be
+    made to ship, kit template and from-zero demand both, and nobody chose
+    that obligation.
+
+    `bc78905` had already made the honest version free. `cmd_step` writes a
+    PAIR of ledger events, `outcome: "started"` before the spawn and a
+    terminal event once the child reports, so the elapsed time of every
+    completed run is already on disk. This folds it and says so.
+
+    The limit is asserted here as hard as the number is, because the limit is
+    the honest half: this says nothing before a step's first run, which is
+    precisely the run whose cost surprises somebody.
+    """
+
+    def events(self, *rows):
+        return [dict(row) for row in rows]
+
+    def started(self, step, at, **extra):
+        return {"kind": "step", "step": step, "outcome": "started",
+                "at": at, **extra}
+
+    def terminal(self, step, at, outcome="returned", **extra):
+        return {"kind": "step", "step": step, "outcome": outcome,
+                "at": at, "session": "s1", **extra}
+
+    def test_a_completed_pair_measures_its_own_elapsed_seconds(self):
+        measured = impl._last_measured_run(
+            self.events(self.started("one", "2026-09-04T10:00:00Z"),
+                        self.terminal("one", "2026-09-04T10:12:30Z")), "one")
+        self.assertEqual(measured["seconds"], 750)
+        self.assertEqual(measured["outcome"], "returned")
+
+    def test_a_started_line_with_no_partner_measures_nothing(self):
+        """A killed run is the one shape the ledger exists to make legible, and
+        it is not a measurement of what the step costs -- it is a measurement
+        of when somebody's timeout fired."""
+        self.assertIsNone(impl._last_measured_run(
+            self.events(self.started("one", "2026-09-04T10:00:00Z")), "one"))
+
+    def test_a_killed_run_does_not_pair_with_the_next_run_s_terminal(self):
+        """The trap in the naive fold. `started`, killed, `started`, returned
+        would measure from the FIRST start if the pairing carried across, and
+        would report a step as costing however long the operator waited before
+        relaunching it."""
+        measured = impl._last_measured_run(
+            self.events(self.started("one", "2026-09-04T10:00:00Z"),
+                        self.started("one", "2026-09-04T11:00:00Z"),
+                        self.terminal("one", "2026-09-04T11:00:20Z")), "one")
+        self.assertEqual(measured["seconds"], 20)
+
+    def test_a_refused_terminal_is_not_a_measurement(self):
+        """`refused` is one of `impl_steps`' resolution refusals: the callable
+        was never entered, so the elapsed time is the cost of failing to find
+        a function."""
+        self.assertIsNone(impl._last_measured_run(
+            self.events(self.started("one", "2026-09-04T10:00:00Z"),
+                        self.terminal("one", "2026-09-04T10:00:01Z",
+                                      outcome="refused")), "one"))
+
+    def test_only_this_step_s_own_runs_are_folded(self):
+        measured = impl._last_measured_run(
+            self.events(self.started("other", "2026-09-04T10:00:00Z"),
+                        self.terminal("other", "2026-09-04T10:30:00Z"),
+                        self.started("one", "2026-09-04T11:00:00Z"),
+                        self.terminal("one", "2026-09-04T11:00:05Z")), "one")
+        self.assertEqual(measured["seconds"], 5)
+
+    def test_the_latest_completed_pair_supersedes_an_older_one(self):
+        measured = impl._last_measured_run(
+            self.events(self.started("one", "2026-09-04T10:00:00Z"),
+                        self.terminal("one", "2026-09-04T10:30:00Z"),
+                        self.started("one", "2026-09-04T11:00:00Z"),
+                        self.terminal("one", "2026-09-04T11:00:07Z")), "one")
+        self.assertEqual(measured["seconds"], 7)
+
+    def test_an_unreadable_or_reversed_pair_measures_nothing(self):
+        for start, end in (("not-a-stamp", "2026-09-04T10:00:00Z"),
+                           ("2026-09-04T10:00:00Z", None),
+                           ("2026-09-04T11:00:00Z", "2026-09-04T10:00:00Z")):
+            with self.subTest(start=start, end=end):
+                self.assertIsNone(impl._elapsed_seconds(start, end))
+
+    def test_the_unmeasured_state_is_published_rather_than_omitted(self):
+        """The honest half. A reader who meets this field only when it carries
+        a number never learns which of the two halves they are standing in."""
+        field = impl._step_last_run(None)
+        self.assertEqual(field["status"], "unmeasured")
+        self.assertIsNone(field["seconds"])
+        self.assertEqual(field["note"], impl.STEP_LAST_RUN_UNMEASURED)
+        self.assertIn("first run", field["note"])
+
+    def test_the_measured_state_says_it_describes_the_past_run(self):
+        field = impl._step_last_run(
+            {"seconds": 90, "outcome": "returned", "at": "2026-09-04T10:00:00Z",
+             "session": "s1"})
+        self.assertEqual(field["status"], "measured")
+        self.assertEqual(field["seconds"], 90)
+        self.assertEqual(field["note"], impl.STEP_LAST_RUN_MEASURED)
+
+    def test_no_step_declaration_field_was_added_for_this(self):
+        """Constraint, asserted rather than promised: this publishes a number
+        the ledger already held, so `__steps__` gains nothing a repository
+        built from zero would have to be made to ship. A future
+        `expectedMinutes` read anywhere in the engine goes red here."""
+        source = CLI.read_text(encoding="utf-8")
+        for invented in ("expectedMinutes", "expectedSeconds", "budgetMinutes"):
+            for quoted in (f'"{invented}"', f"'{invented}'"):
+                with self.subTest(key=quoted):
+                    self.assertNotIn(
+                        quoted, source,
+                        "a declaration key read here is a key a from-zero "
+                        "repository must be made to ship")
+
+    def test_step_publishes_the_field_on_a_real_run_in_both_states(self):
+        box = FORGE / "implementations" / f"_e2e_lastrun_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            "__steps__ = {'verification': {'module': 'Method_Benchmark.steps',"
+            " 'function': 'run_ok'}}\n", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(
+            "def run_ok():\n    return None\n", encoding="utf-8")
+        # This fixture is the only one that runs `step` TWICE against one box,
+        # so it is the only one that has to survive its own first run: a step
+        # leaves `__pycache__/` and the product folder behind, and the second
+        # call refuses `DIRTY_WORKTREE` without the ignores every real target
+        # is scaffolded with.
+        (box / ".gitignore").write_text(
+            "__pycache__/\n.ipynb_checkpoints/\n.implementation/\n",
+            encoding="utf-8")
+        write_fixture_interpreter(
+            box / ".venv" / ("Scripts" if os.name == "nt" else "bin"))
+        git = ["git", "-c", "user.email=forge@example.invalid",
+               "-c", "user.name=forge", "-C", str(box)]
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        subprocess.run(git + ["add", "-A"], check=True, capture_output=True)
+        subprocess.run(git + ["commit", "-qm", "toy"], check=True,
+                       capture_output=True)
+
+        def run(session):
+            proc = subprocess.run(
+                [sys.executable, str(CLI), "step", "--target", str(box),
+                 "--name", "Method", "--session", session, "--step",
+                 "verification"], capture_output=True, text=True, cwd=FORGE)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            return json.loads(proc.stdout)["lastRun"]
+
+        first = run("s1")
+        self.assertEqual(first["status"], "unmeasured",
+                         "the first run of a step cannot have been measured")
+        second = run("s2")
+        self.assertEqual(second["status"], "measured")
+        self.assertIsInstance(second["seconds"], int)
+        self.assertEqual(second["session"], "s1",
+                         "the figure describes the PREVIOUS run, not this one")
+
+
+class StepWriteScopeTests(unittest.TestCase):
+    """`wrote` -- which tree a step's run actually landed in.
+
+    The hole. `bc78905`'s `started`/terminal pair answers *did this step
+    produce nothing?*. Nothing answered *did this step produce, in somebody
+    else's tree?* -- and that state was measured twice on one repository in
+    one day: a declared step wrote into a neighbouring declared step's product
+    root, reported `outcome: "returned"`, passed every check this skill runs,
+    and changed only a field inside a JSON nobody opens. Both were caught by a
+    digest compared by hand in a throwaway shell script.
+
+    A `__steps__` entry now names `produces`, the path roots it owns relative
+    to the product folder, and `step` snapshots the product folder on both
+    sides of the run.
+
+    **The mutation a weaker guard survives**, written as
+    `test_a_step_that_wrote_only_outside_its_roots_is_not_own`: a guard asking
+    only "did anything in this target change?" passes a step that wrote
+    exclusively into a neighbour's tree, because something did change. The
+    split by root is what discriminates it.
+    """
+
+    def _box(self, suffix, steps):
+        box = FORGE / "implementations" / f"_e2e_scope_{suffix}_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "Method" / "Results" / "own").mkdir(parents=True)
+        (box / "Method" / "Results" / "neighbour").mkdir(parents=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        # Same byte length before and after -- `{"value": 1}` -> `{"value": 2}`
+        # is exactly the shape of the incident, a field changed inside a JSON
+        # nobody opens -- so the detection rests entirely on the mtime half of
+        # the identity. The stamps are pushed into the past so the assertion
+        # cannot depend on a filesystem's timestamp granularity.
+        for artefact in (box / "Method" / "Results" / "own" / "a.json",
+                         box / "Method" / "Results" / "neighbour" / "b.json"):
+            artefact.write_text('{"value": 1}', encoding="utf-8")
+            os.utime(artefact, (0, 0))
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            f"__steps__ = {steps!r}\n", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(textwrap.dedent(
+            """
+            import pathlib
+            import time
+
+            PRODUCT = pathlib.Path(__file__).resolve().parents[2] / "Method"
+
+            def write_own():
+                time.sleep(0.01)
+                (PRODUCT / "Results" / "own" / "a.json").write_text('{"value": 2}')
+
+            def write_neighbour():
+                time.sleep(0.01)
+                (PRODUCT / "Results" / "neighbour" / "b.json").write_text('{"value": 2}')
+
+            def write_nothing():
+                return None
+            """), encoding="utf-8")
+        (box / ".gitignore").write_text(
+            "__pycache__/\n.ipynb_checkpoints/\n.implementation/\n",
+            encoding="utf-8")
+        write_fixture_interpreter(
+            box / ".venv" / ("Scripts" if os.name == "nt" else "bin"))
+        git = ["git", "-c", "user.email=forge@example.invalid",
+               "-c", "user.name=forge", "-C", str(box)]
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        subprocess.run(git + ["add", "-A"], check=True, capture_output=True)
+        subprocess.run(git + ["commit", "-qm", "toy"], check=True,
+                       capture_output=True)
+        return box
+
+    def _entry(self, function, produces=("Results/own",)):
+        entry = {"module": "Method_Benchmark.steps", "function": function}
+        if produces is not None:
+            entry["produces"] = list(produces)
+        return entry
+
+    def _run(self, box, step="run"):
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "step", "--target", str(box), "--name",
+             "Method", "--session", "s1", "--step", step],
+            capture_output=True, text=True, cwd=FORGE)
+        return proc
+
+    def _wrote(self, box, step="run"):
+        proc = self._run(box, step)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return json.loads(proc.stdout)["wrote"]
+
+    def test_a_step_that_wrote_only_inside_its_roots_is_own(self):
+        box = self._box("own", {"run": self._entry("write_own")})
+        wrote = self._wrote(box)
+        self.assertEqual(wrote["status"], "own")
+        self.assertEqual(wrote["inside"], ["Results/own/a.json"])
+        self.assertEqual(wrote["outside"], [])
+
+    def test_a_step_that_wrote_only_outside_its_roots_is_not_own(self):
+        """The mutation. Something in the target DID change, so a guard asking
+        only "did anything change?" reads this run as productive; the whole
+        point of the declaration is that it lands in a tree this step does not
+        own, and `inside` is empty while `outside` names the neighbour."""
+        box = self._box("foreign", {"run": self._entry("write_neighbour")})
+        wrote = self._wrote(box)
+        self.assertEqual(wrote["status"], "foreign")
+        self.assertEqual(wrote["inside"], [])
+        self.assertEqual(wrote["outside"], ["Results/neighbour/b.json"])
+
+    def test_a_step_that_returned_having_written_nothing_says_so(self):
+        box = self._box("idle", {"run": self._entry("write_nothing")})
+        wrote = self._wrote(box)
+        self.assertEqual(wrote["status"], "nothing")
+        self.assertEqual((wrote["inside"], wrote["outside"]), ([], []))
+
+    def test_a_step_declaring_no_roots_is_graded_against_nothing(self):
+        """Reported with its consequence, never refused -- see
+        `undeclared_produces_state`'s own docstring for both reasons. The run
+        still succeeds, which is the half a refusal would have taken away."""
+        box = self._box("silent", {"run": self._entry("write_neighbour",
+                                                      produces=None)})
+        wrote = self._wrote(box)
+        self.assertEqual(wrote["status"], "undeclared")
+        self.assertEqual(wrote["declared"], [])
+        self.assertEqual(wrote["note"], impl.PRODUCES_UNDECLARED_CONSEQUENCE)
+
+    def test_the_reading_is_written_into_the_terminal_ledger_event(self):
+        """Durable rather than printed once: the incident this closes was
+        found by a hand-compared digest that was then thrown away."""
+        box = self._box("ledger", {"run": self._entry("write_neighbour")})
+        self._wrote(box)
+        events = [json.loads(line) for line in
+                  (box / "Method" / ".implementation" / "position.jsonl")
+                  .read_text(encoding="utf-8").splitlines()]
+        terminal = events[-1]
+        self.assertEqual(terminal["wrote"]["status"], "foreign")
+        self.assertEqual(terminal["wrote"]["outside"],
+                         ["Results/neighbour/b.json"])
+        self.assertNotIn("note", terminal["wrote"],
+                         "a constant sentence repeated into every ledger line")
+
+    def test_a_malformed_produces_is_refused_like_a_malformed_advances(self):
+        for produces in ("Results/own", [], ["  "], [1], ["/abs"], ["../out"]):
+            with self.subTest(produces=produces):
+                box = self._box(
+                    f"bad{abs(hash(repr(produces)))}",
+                    {"run": {"module": "Method_Benchmark.steps",
+                             "function": "write_own", "produces": produces}})
+                proc = self._run(box)
+                self.assertEqual(proc.returncode, 2, proc.stdout)
+                self.assertEqual(json.loads(proc.stdout)["code"],
+                                 "STEP_MALFORMED")
+
+    def test_the_skill_s_own_ledger_directory_is_never_a_write(self):
+        """`step` appends to `.implementation/` on every run it makes, so
+        counting it would make every step in every repository read `foreign`
+        -- the same path `impl_guards` excuses from the dirty-tree check, for
+        the same reason."""
+        box = self._box("ledgerpath", {"run": self._entry("write_own")})
+        before = impl.product_snapshot(box, "Method")
+        (box / "Method" / ".implementation").mkdir(parents=True, exist_ok=True)
+        (box / "Method" / ".implementation" / "position.jsonl").write_text(
+            "{}\n", encoding="utf-8")
+        self.assertEqual(impl.changed_paths(
+            before, impl.product_snapshot(box, "Method")), [])
+
+    def test_a_declared_root_does_not_swallow_a_longer_sibling(self):
+        """Segment-wise, never `str.startswith`: `Results/own` must not claim
+        `Results/own-more`, which is the difference between a guard and a
+        guard-shaped string comparison."""
+        self.assertTrue(impl._owns("Results/own/a.json", ["Results/own"]))
+        self.assertFalse(impl._owns("Results/own-more/a.json", ["Results/own"]))
+
+    def test_a_removal_inside_another_root_counts_as_a_write(self):
+        """A step that deletes a neighbour's result has written into that
+        neighbour's tree exactly as surely as one that overwrites it."""
+        before = {"Results/neighbour/b.json": (1, 1)}
+        self.assertEqual(impl.changed_paths(before, {}),
+                         ["Results/neighbour/b.json"])
+
+
+class UndeclaredProducesReportTests(unittest.TestCase):
+    """`verify.undeclaredProduces` -- the from-zero half of the same
+    declaration.
+
+    The rule this exists for: anything the skill READS from a target must be
+    DEMANDED of a target built from zero, or it becomes a field that silently
+    defaults and a check that silently grades nothing. `undeclaredLadder` is
+    the precedent for the shape -- name the absence, name what it costs, gate
+    on neither -- and the kit ships `produces` in its own `__steps__` example
+    so the question is met rather than defaulted past.
+    """
+
+    def _bench(self, steps, *, holder="__init__.py", package=True):
+        box = FORGE / "implementations" / f"_e2e_produces_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        if package:
+            root = box / "src" / "Method_Benchmark"
+            root.mkdir(parents=True)
+            (root / holder).write_text(f"__steps__ = {steps!r}\n",
+                                       encoding="utf-8")
+        else:
+            box.mkdir(parents=True)
+        return box
+
+    def test_a_step_naming_no_roots_is_named_with_its_consequence(self):
+        box = self._bench({"one": {"module": "m", "function": "f"}})
+        entries = impl.undeclared_produces_state(
+            box, "Method", {"one": {"module": "m", "function": "f"}})
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["step"], "one")
+        self.assertEqual(entries[0]["path"], "src/Method_Benchmark/__init__.py")
+        self.assertIn("produces", entries[0]["declaration"])
+        self.assertEqual(entries[0]["consequence"],
+                         impl.PRODUCES_UNDECLARED_CONSEQUENCE)
+
+    def test_a_step_naming_its_roots_is_asked_nothing(self):
+        steps = {"one": {"module": "m", "function": "f",
+                         "produces": ["Results/one"]}}
+        box = self._bench(steps)
+        self.assertEqual(impl.undeclared_produces_state(box, "Method", steps), [])
+
+    def test_only_the_steps_that_left_it_out_are_named(self):
+        steps = {"one": {"module": "m", "function": "f",
+                         "produces": ["Results/one"]},
+                 "two": {"module": "m", "function": "g"}}
+        box = self._bench(steps)
+        entries = impl.undeclared_produces_state(box, "Method", steps)
+        self.assertEqual([entry["step"] for entry in entries], ["two"])
+
+    def test_a_target_declaring_no_steps_is_asked_nothing(self):
+        """The restraint every sibling report keeps: a repository with nothing
+        to declare has not left a question unanswered."""
+        box = self._bench({})
+        self.assertEqual(impl.undeclared_produces_state(box, "Method", {}), [])
+
+    def test_a_target_with_nowhere_to_write_it_is_asked_nothing(self):
+        box = self._bench({"one": {"module": "m", "function": "f"}},
+                          package=False)
+        self.assertEqual(
+            impl.undeclared_produces_state(
+                box, "Method", {"one": {"module": "m", "function": "f"}}),
+            [], "structure.scaffoldGaps already names the missing file")
+
+    def test_the_kit_template_ships_the_key_it_will_be_asked_for(self):
+        """Constraint (b), asserted rather than promised. A declaration this
+        skill reads and the kit does not ship is a field every repository
+        built from zero silently defaults past."""
+        template = (KIT / "src_benchmark" / "__init__.py").read_text(
+            encoding="utf-8")
+        self.assertIn("__steps__", template)
+        self.assertIn('"produces"', template)
+        self.assertIn("undeclaredProduces", template,
+                      "the template names the key but not where a target is "
+                      "told it is missing")
+
+    def test_the_report_never_gates_verify(self):
+        """Reported, never demanded: `verify`'s exit status is byte-identical
+        whether every step names its roots or none does."""
+        rows = {row[0].strip("`"): row[2] for row in
+                markdown_table_rows(SKILL_MD.read_text(encoding="utf-8"),
+                                    "| Status | What it reports | Gates? |")[0]}
+        self.assertIn("undeclaredProduces", rows)
+        self.assertIn("never", rows["undeclaredProduces"].lower())
+
+
+class FlowWalkReportTests(unittest.TestCase):
+    """`probe.walk` -- where this repository stands in its own declared flow.
+
+    The reframing this exists under, recorded because it decided the shape.
+    The first design was an absence report: enumerate artefacts, subtract the
+    ones a witness names, report the remainder. Measured against a real
+    repository that produced two false alarms out of three -- a legitimate
+    side axis of work, present and current, arriving as findings on an
+    operator's first clean run after a long repair session. An absence report
+    answers "what is broken"; the question somebody opening a clean repository
+    to run the flow from the top actually has is "where am I".
+
+    So nothing here is a finding, every line is reported whatever it says, and
+    the three inputs are ones the skill already holds: the ledger's own
+    `started`/terminal step events, the position sequence with its rungs, and
+    each step's declared output roots. **No target declaration is introduced.**
+
+    The three mutations, each written as a test below:
+    `test_a_killed_run_is_not_the_same_state_as_a_run_nobody_started`,
+    `test_a_step_walked_at_the_floor_does_not_read_as_one_walked_at_the_top`,
+    and `test_an_artefact_no_step_renders_is_described_never_accused`.
+    """
+
+    LEVELS = ["floor", "top"]
+
+    def _steps(self, **overrides):
+        steps = {
+            "one": {"module": "m", "function": "f", "advances": 1,
+                    "produces": ["Notebooks/one.ipynb"]},
+            "two": {"module": "m", "function": "g", "advances": 2,
+                    "produces": ["Notebooks/two.ipynb"]},
+        }
+        for step, patch in overrides.items():
+            if patch is None:
+                steps.pop(step, None)
+            else:
+                steps[step].update(patch)
+        return steps
+
+    def _sequence(self):
+        return [{"ordinal": 1, "mark": " ",
+                 "witness": {"kind": "shard", "operand": "s1"}},
+                {"ordinal": 2, "mark": " ",
+                 "witness": {"kind": "shard", "operand": "s2"}}]
+
+    def _evidence(self, arrived=("s1",)):
+        return {"levels": self.LEVELS, "targetLevel": "top",
+                "shardsArrived": list(arrived), "shardsCurrent": None}
+
+    def _events(self, *rows):
+        return [{"kind": "step", "step": step, "outcome": outcome,
+                 "at": "2026-09-04T10:00:00Z"} for step, outcome in rows]
+
+    def _walk(self, *, steps=None, events=(), evidence=None,
+              artefacts=("Notebooks/one.ipynb", "Notebooks/two.ipynb")):
+        return impl.walk_state(
+            self._steps() if steps is None else steps,
+            self._sequence(), evidence or self._evidence(),
+            list(events), self.LEVELS, list(artefacts))
+
+    def test_a_killed_run_is_not_the_same_state_as_a_run_nobody_started(self):
+        """The first mutation, and the one `bc78905`'s ledger pair exists for.
+        A report that collapses `unfinished` into `notWalked` re-introduces
+        exactly the ambiguity that pair was built to remove: a step that was
+        killed left partial product behind, and one nobody started left
+        none."""
+        walk = self._walk(events=self._events(("one", "started")))
+        rows = {row["step"]: row for row in walk["steps"]}
+        self.assertEqual(rows["one"]["walk"], "unfinished")
+        self.assertEqual(rows["two"]["walk"], "notWalked")
+        self.assertNotEqual(rows["one"]["walk"], rows["two"]["walk"])
+        self.assertIsNone(rows["one"]["lastOutcome"],
+                          "a killed run reported no outcome and none is invented")
+        self.assertIsNotNone(rows["one"]["lastAt"],
+                             "a killed run still stamped when it started")
+
+    def test_a_terminal_event_after_a_started_one_reads_as_walked(self):
+        walk = self._walk(events=self._events(("one", "started"),
+                                              ("one", "returned")))
+        rows = {row["step"]: row for row in walk["steps"]}
+        self.assertEqual(rows["one"]["walk"], "walked")
+        self.assertEqual(rows["one"]["lastOutcome"], "returned")
+
+    def test_a_step_walked_at_the_floor_does_not_read_as_one_walked_at_the_top(self):
+        """The second mutation. Both steps ran and returned; a report that
+        only read the ledger would call them identical. The rung comes from
+        the position sequence, graded through `impl_position.derive` rather
+        than by a second arithmetic beside it."""
+        walk = self._walk(events=self._events(("one", "returned"),
+                                              ("two", "returned")))
+        rows = {row["step"]: row for row in walk["steps"]}
+        self.assertEqual(rows["one"]["walk"], rows["two"]["walk"])
+        self.assertEqual(rows["one"]["rung"], "top")
+        self.assertEqual(rows["two"]["rung"], "floor")
+        self.assertNotEqual(rows["one"]["rung"], rows["two"]["rung"])
+        self.assertTrue(rows["one"]["atTopRung"])
+        self.assertFalse(rows["two"]["atTopRung"])
+
+    def test_an_artefact_no_step_renders_is_described_never_accused(self):
+        """The third mutation, in both halves. Removing the step that renders
+        an artefact must move it to `outsideTheWalk`, and must produce nothing
+        that reads as an error: no finding list, no status change, no refusal.
+        """
+        walk = self._walk(
+            steps=self._steps(two=None),
+            events=self._events(("one", "returned")),
+            artefacts=("Notebooks/one.ipynb", "Notebooks/two.ipynb"))
+        artefacts = {row["path"]: row for row in walk["artefacts"]}
+        self.assertEqual(artefacts["Notebooks/two.ipynb"]["walk"],
+                         impl.WALK_OUTSIDE)
+        self.assertEqual(artefacts["Notebooks/two.ipynb"]["renderedBy"], [])
+        self.assertEqual(walk["status"], "walked",
+                         "an artefact outside the walk moved the flow's own "
+                         "status, which would make it a finding in effect")
+        for key in ("findings", "unvalidated", "missing", "errors"):
+            self.assertNotIn(key, walk)
+
+    def test_an_artefact_inherits_the_state_of_the_step_that_renders_it(self):
+        walk = self._walk(events=self._events(("one", "returned")))
+        artefacts = {row["path"]: row for row in walk["artefacts"]}
+        self.assertEqual(artefacts["Notebooks/one.ipynb"]["walk"], "walked")
+        self.assertEqual(artefacts["Notebooks/one.ipynb"]["renderedBy"], ["one"])
+        self.assertEqual(artefacts["Notebooks/two.ipynb"]["walk"], "notWalked")
+
+    def test_an_artefact_two_steps_claim_is_as_walked_as_the_least_walked(self):
+        """It is not produced until everything writing into it has run."""
+        steps = self._steps(two={"produces": ["Notebooks/one.ipynb"]})
+        walk = self._walk(steps=steps,
+                          events=self._events(("one", "returned")),
+                          artefacts=("Notebooks/one.ipynb",))
+        artefact = walk["artefacts"][0]
+        self.assertEqual(artefact["renderedBy"], ["one", "two"])
+        self.assertEqual(artefact["walk"], "notWalked")
+
+    def test_the_flow_status_reads_the_walk_and_not_a_defect(self):
+        for events, expected in (
+                ((), "notStarted"),
+                (self._events(("one", "returned")), "walking"),
+                (self._events(("one", "returned"), ("two", "returned")),
+                 "walked")):
+            with self.subTest(expected=expected):
+                self.assertEqual(self._walk(events=events)["status"], expected)
+
+    def test_a_target_declaring_no_steps_has_no_walk_to_report(self):
+        walk = impl.walk_state({}, [], {}, [], [], [])
+        self.assertEqual(walk["status"], "undeclared")
+        self.assertEqual((walk["steps"], walk["artefacts"]), ([], []))
+
+    def test_the_note_says_what_the_report_is_on_every_run(self):
+        """`priorWork`'s doctrine: a report met only when something is wrong is
+        a report nobody has learnt to read by the time it matters."""
+        for walk in (self._walk(), impl.walk_state({}, [], {}, [], [], [])):
+            with self.subTest(status=walk["status"]):
+                self.assertEqual(walk["note"], impl.WALK_NOTE)
+        self.assertIn("Nothing here is a finding", impl.WALK_NOTE)
+
+    def test_no_new_target_declaration_is_read_for_the_walk(self):
+        """Constraint (b), asserted rather than promised. Every input is one
+        the skill already holds; a new declaration name appearing in
+        `walk_state`'s own source goes red here."""
+        source = inspect.getsource(impl.walk_state)
+        for invented in ("__artefacts__", "__renders__", "__walk__",
+                         "excluded", "notRun"):
+            with self.subTest(name=invented):
+                self.assertNotIn(invented, source)
+
+    def test_the_walk_never_gates_probe(self):
+        rows = {row[0].strip("`"): row[2] for row in
+                markdown_table_rows(SKILL_MD.read_text(encoding="utf-8"),
+                                    "| Fact | What it reports | Gates? |")[0]}
+        self.assertIn("walk", rows)
+        self.assertIn("never", rows["walk"].lower())
+
+    def test_the_artefacts_enumerated_are_the_ones_the_skill_understands(self):
+        box = FORGE / "implementations" / f"_e2e_walkart_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "Method" / "Notebooks" / ".ipynb_checkpoints").mkdir(parents=True)
+        (box / "Method" / "Results").mkdir(parents=True)
+        (box / "Method" / "Notebooks" / "one.ipynb").write_text("{}", encoding="utf-8")
+        (box / "Method" / "Notebooks" / ".ipynb_checkpoints" / "one.ipynb"
+         ).write_text("{}", encoding="utf-8")
+        (box / "Method" / "Results" / "bulk.csv").write_text("a\n", encoding="utf-8")
+        self.assertEqual(impl.product_artefacts(box, "Method"),
+                         ["Notebooks/one.ipynb"])
+
+    def test_a_target_with_no_notebooks_folder_enumerates_nothing(self):
+        box = FORGE / "implementations" / f"_e2e_walkbare_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "Method").mkdir(parents=True)
+        self.assertEqual(impl.product_artefacts(box, "Method"), [])
+
+
+class PublishedCommandsRunVerbatimTests(unittest.TestCase):
+    """Every command this engine publishes runs as printed, from anywhere.
+
+    Measured. Every published command was a bare relative `implementation_cli.py
+    …` — no interpreter, no directory — and the script ships mode 644 with no
+    execute bit, so not one of them was runnable as printed: correctness rested
+    entirely on the reader's current directory. That is the failure class that
+    cost an hour, because a step launched from the wrong directory produced a
+    shell's `command not found` on stdout with exit status 0, and a harness
+    reading exit status alone recorded a step that never ran as a step that
+    did.
+
+    The three tests that already ran a published string as a subprocess each
+    had to REPAIR it first — drop the leading script-name token, prepend
+    `[sys.executable, CLI]` — and that repair was the defect, written into the
+    tests as a convention. They now run the tokens unrepaired, from a directory
+    that is not the forge.
+    """
+
+    def _args(self, **overrides):
+        base = {"command": "step", "target": "implementations/box",
+                "name": "Method", "session": "s1", "revision": "r1.md",
+                "about": None, "text": None, "step": "one"}
+        base.update(overrides)
+        return argparse.Namespace(**base)
+
+    def test_the_prefix_names_a_real_interpreter_and_this_exact_script(self):
+        tokens = shlex.split(impl.CLI_INVOCATION)
+        self.assertEqual(len(tokens), 2, impl.CLI_INVOCATION)
+        self.assertTrue(Path(tokens[0]).is_absolute(), tokens[0])
+        self.assertTrue(Path(tokens[0]).exists(),
+                        "the published interpreter does not exist")
+        self.assertEqual(Path(tokens[1]), CLI)
+        self.assertTrue(Path(tokens[1]).is_absolute(), tokens[1])
+
+    def test_the_script_is_not_executable_so_the_interpreter_is_load_bearing(self):
+        """The fact that decides the design rather than an aesthetic
+        preference. If this ever gains an execute bit and a shebang, the
+        interpreter token becomes belt-and-braces rather than the only thing
+        making the string run — and this test is where somebody finds that
+        out."""
+        self.assertFalse(os.access(CLI, os.X_OK),
+                         "the CLI is executable now; the published prefix's "
+                         "reasoning has changed and its docstring has not")
+
+    def test_no_publication_point_still_builds_a_bare_script_name(self):
+        """Derived, not listed. Three command strings were hardcoded beside
+        the two builders, and a fourth added later would ship the old,
+        unrunnable shape with nothing noticing."""
+        source = CLI.read_text(encoding="utf-8")
+        self.assertNotIn('"implementation_cli.py', source)
+        self.assertNotIn("'implementation_cli.py", source)
+
+    def test_every_builder_routes_through_the_one_prefix(self):
+        for command in (impl._cli_command("verify", "--target", "/tmp/x"),
+                        impl._discuss_command(Path("/tmp/x"), "Method",
+                                              about="record", question="q?")):
+            with self.subTest(command=command[:40]):
+                self.assertTrue(command.startswith(impl.CLI_INVOCATION + " "),
+                                command)
+
+    def test_a_published_resolution_runs_unrepaired_from_another_directory(self):
+        """The end-to-end proof, and the one that would have caught the
+        incident: the string is executed exactly as a reader would paste it,
+        with the working directory deliberately somewhere else."""
+        box = FORGE / "implementations" / f"_e2e_verbatim_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            "__steps__ = {'one': {'module': 'Method_Benchmark.steps',"
+            " 'function': 'f'}}\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        git = ["git", "-c", "user.email=forge@example.invalid",
+               "-c", "user.name=forge", "-C", str(box)]
+        subprocess.run(git + ["add", "-A"], check=True, capture_output=True)
+        subprocess.run(git + ["commit", "-qm", "toy"], check=True,
+                       capture_output=True)
+
+        refused = subprocess.run(
+            [sys.executable, str(CLI), "step", "--target", str(box), "--name",
+             "Method", "--session", "s1", "--step", "one"],
+            capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(refused.returncode, 2, refused.stdout)
+        payload = json.loads(refused.stdout)
+        self.assertEqual(payload["code"], "INTERPRETER_ABSENT")
+        published = payload["resolve"]["command"]
+
+        # Verbatim: no token dropped, none prepended, and from a directory
+        # with no relationship to the forge whatsoever.
+        elsewhere = tempfile.mkdtemp(prefix=f"verbatim_{os.getpid()}_")
+        self.addCleanup(shutil.rmtree, elsewhere, ignore_errors=True)
+        ran = subprocess.run(shlex.split(published), capture_output=True,
+                             text=True, cwd=elsewhere)
+        self.assertNotIn("command not found", ran.stderr + ran.stdout)
+        self.assertTrue(ran.stdout.strip().startswith("{"),
+                        f"the published exit printed no JSON: {ran.stdout!r} "
+                        f"{ran.stderr!r}")

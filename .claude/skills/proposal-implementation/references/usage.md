@@ -598,7 +598,7 @@ Two independent findings, reported separately:
   in `--revision`; `invariantsWithoutTest` are claims declared in code with no
   test enforcing them. Both need the user's decision before you touch anything.
 
-Nine more are reported and none of them is a finding, which is exactly why
+Ten more are reported and none of them is a finding, which is exactly why
 they were easy to leave undocumented:
 
 - **`coupling`** — which notebook cells reach into the target's internals instead
@@ -716,6 +716,18 @@ they were easy to leave undocumented:
   `null` when the search declares no scale, when no item is graded against one,
   and when no step waits behind such an item. It **never gates** — the refusal
   it reports ahead of is unchanged, and nobody is let through any earlier.
+- **`undeclaredProduces`** — one entry per declared `__steps__` step that names
+  no `produces`, the list of path roots (relative to the product folder) that
+  step and only that step writes into. Not a defect and never a gate: it names
+  what the absence costs. `step` snapshots the product folder before and after
+  every run and reports `wrote`; with no declared root it can tell neither a
+  run that returned having written nothing from one that produced its whole
+  output, nor a run that stayed in its own tree from one that wrote into a
+  neighbour's — the second of which was measured twice in one day on one
+  repository, each time reported as `returned` and caught only by a digest
+  compared by hand. Declare the roots, or leave the reading switched off
+  knowingly. The kit ships the key in its own `__steps__` example, so a
+  repository built from zero is asked rather than defaulted past.
 
 Omit `--revision` and `fidelity.status` is `unknown`: the modules' declared
 revisions are still listed, but nothing is compared. Never report an
@@ -1487,6 +1499,24 @@ is missing. It was guarded on `benchmark` alone, and because the `wiring-first`
 override runs before that guard, the one answer naming missing wiring came back
 with `wiring: null`.
 
+- **`walk`** — where this repository stands in its own declared flow. Read it
+  when you are opening a clean repository to run the flow from the top: it
+  answers *where am I*, not *what is broken*, and nothing in it is a finding.
+  Each declared step reads `notWalked`, `unfinished` (a `started` ledger event
+  with no terminal partner — a run that was killed, whose product is partial)
+  or `walked`, beside the `rung` its position item grades at, so a step walked
+  at the floor and one walked at the top are not the same answer. Each
+  result-rendering artefact in the product tree inherits the state of the step
+  that renders it, through that step's own `produces` roots; one claimed by
+  several steps is only as walked as the least walked of them. An artefact no
+  declared step renders reads `outsideTheWalk` — that is a description of the
+  artefact, not an accusation: a repository legitimately carries a whole side
+  axis of work its agreement does not adjudicate. `witnessed` says whether some
+  position item names that artefact, as a fact and never as a verdict. No
+  reason is offered for an artefact being outside the walk, because nothing a
+  target declares today can state one and this skill never invents a
+  declaration to fill a field.
+
 ## `propose` — the campaign proposal
 
 Appends one `proposal` event to `.implementation/position.jsonl`, scoped to
@@ -1746,9 +1776,34 @@ python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py ste
 ```
 
 Runs exactly one step per call — no flag sequences or dispatches more than
-one, and this never consults `probe`'s `nextStep`. Refuses `DIRTY_WORKTREE`
+one, and this never consults `probe`'s `nextStep`. A step that declares
+`advances` is refused `STEP_SEQUENCE_NOT_REACHED` while an earlier sequence
+item is still unticked — and the mark it reads is the literal one in the
+target's own `AGREED.md`, which a step that just ran does not update.
+`position` is the only writer into that section, so `step` never re-derives
+it; the refusal publishes the exact `position` refresh instead, bound to the
+revision the block already names, as a command run unedited. That pair —
+**run the step, commit its product, re-derive `position`, run the next
+step** — is the whole loop between two ordered steps.
+
+Every successful call publishes that loop for itself, in `next`, so it is
+read where it is needed rather than remembered from here. `next[0]` is the
+`git status --porcelain` listing of what this step just left in the tree:
+**a step's product must be committed before the next step runs**, because
+every step dirties the target and the next one refuses `DIRTY_WORKTREE`
+until it is clean. The commit message is the operator's; this skill never
+writes one. `next[1]`, when the product carries a readable position block,
+is the exact `position` refresh, bound to the block's own revision. A
+six-step flow is therefore six `step` calls, five commits and five
+refreshes — not one command repeated six times. Refuses `DIRTY_WORKTREE`
 before any subprocess spawns (a step mutates the target, same guard
-`plan`/`apply` already call); `STEPS_UNDECLARED` when the target's
+`plan`/`apply` already call). When the ledger's latest `step` event is a
+bare `started`, that refusal's published question says so: it names the
+step that was killed, when it started, that what it left behind is partial
+product a re-run does not resume, and it publishes `git clean -nd` — a dry
+run listing exactly which untracked paths a cleanup would remove, removing
+none of them. Which of them are the dead run's leftovers stays the
+operator's reading; the engine never authors the removal. Also refuses `STEPS_UNDECLARED` when the target's
 `__steps__` names nothing at all, `STEP_UNKNOWN` when it names something and
 `--step` is not one of them, `STEP_MALFORMED` when the named entry is
 missing `module` or `function`; `INTERPRETER_ABSENT` when the target has no
@@ -1757,10 +1812,54 @@ missing `module` or `function`; `INTERPRETER_ABSENT` when the target has no
 the declared callable does not resolve inside the venv, or
 `STEP_RUNNER_SILENT` when the process exited without ever writing a verdict
 — died before resolution even began, so nothing here can say whether the
-step ran.
+step ran. Those four target-side refusals each leave a `refused` terminal
+event in the ledger naming the code; the forge-side refusals above them
+(`FORGE_DEFECT_OPEN` through `INTERPRETER_ABSENT`) leave nothing at all,
+which is what keeps "no event" meaning exactly one thing.
 
-Every RESOLVED run — pass or fail — appends exactly one `kind: "step"` event
-to `.implementation/position.jsonl`: the step's name, its dotted callable,
+Every run past `INTERPRETER_ABSENT` appends a **pair** of `kind: "step"`
+events to `.implementation/position.jsonl`. The first, `outcome:
+"started"`, is written the instant before the subprocess spawns and carries
+the step's name, its dotted callable, the interpreter path and the session —
+nothing else. So the ledger's *shape* answers the question an exit code
+cannot: **no event at all means this command never started** (a mis-resolved
+invocation, a wrong working directory — nothing here ever ran); **a
+`started` with no partner after it means it started and was killed** (a
+harness timeout, a `SIGKILL`) and its product is partial; **a terminal event
+means it ran and reported**. Do not read a step's success off an exit status
+or off stdout: read it off this pair.
+
+Every successful call also publishes `wrote`: what this run changed inside the
+product folder, split by whether this step owns it. A `__steps__` entry names
+`produces`, the list of path roots -- relative to the product folder -- that
+step and only that step writes into; `step` snapshots the folder before the
+spawn and again after the child reports, and answers `own` (everything changed
+lies under those roots), `nothing` (the run returned and changed nothing under
+them), `foreign` (it changed paths outside them) or `undeclared` (the step named
+no roots, so neither reading is available). `foreign` is the one nothing else
+here can see: a step that writes into a neighbouring step's product still
+reports `outcome: "returned"`, still passes every check, and may change only a
+field inside a file nobody opens. Files are compared by `(size, mtime)` -- every
+write a filesystem records moves it, and a file touched without its bytes
+changing reads as written, which is the safe direction for a guard about who
+wrote where. `.implementation/` is excluded, for the reason the dirty-tree guard
+excuses it. The same block, minus its constant note, is written into the
+terminal ledger event, so the reading survives the process that took it.
+
+That same pair is also the only cost figure this skill has, and `step`
+publishes it: `lastRun` on every successful call carries the elapsed seconds
+of the LAST completed run of the step being run, folded from its own
+`started` -> terminal stamps. It is a measurement of that run and never a
+budget for this one — the same step over a larger scale costs what it now
+costs — and it is deliberately not an `expectedMinutes` a target declares:
+a field this skill reads is a field a repository built from zero would have
+to be made to ship, and nobody chose that obligation. The limit is stated in
+the payload rather than implied. `status: "unmeasured"` is what a step
+nobody has run yet reports, which is exactly the run whose cost surprises
+somebody; a run that started and never reported measured nothing and is
+skipped, so the field says the same thing the ledger's own shape does.
+
+The terminal event carries the step's name, its dotted callable,
 the interpreter path, `outcome` (`returned`/`raised`/`unknown`), exit
 status, `error` (the raised exception, formatted once inside the
 subprocess itself, since the step's own stdout/stderr are inherited live
@@ -1886,22 +1985,23 @@ state, alongside the scenarios — not verified by hand once.
 ### Every refusal says how it is cleared
 
 Every refusal leaves the CLI through one handler and prints the same JSON:
-`status`, `code`, `detail`, exit `2`, nothing appended anywhere. Refusals raised
-inside the nine **gating** commands — `apply`, `admit`, `gate`, `offer`,
-`close`, `step`, `settle`, `materialize`, `position` — carry one more thing, and
-which ones carry it is itself the answer to a question:
+`status`, `code`, `detail`, exit `2`, nothing appended anywhere. Refusals a call
+to one of the nine **gating** commands can reach — `apply`, `admit`, `gate`,
+`offer`, `close`, `step`, `settle`, `materialize`, `position` — carry one more
+thing, and which ones carry it is itself the answer to a question:
 
 > Can the caller clear this by changing the invocation alone, without touching
 > the repository?
 
 **Yes — an invocation defect.** The detail already names the flag, the token or
-the mutual exclusion. Thirty-four codes, and nothing is published beside them:
-`SETTLE_STDIN_CONFLICT`, `OFFER_ANSWER_NOT_A_TOKEN`, `MATERIALIZE_MODE_REQUIRED`
-and the rest. Retype the call.
+the mutual exclusion. Forty-nine codes, and nothing is published beside them:
+`SETTLE_STDIN_CONFLICT`, `OFFER_ANSWER_NOT_A_TOKEN`, `MATERIALIZE_MODE_REQUIRED`,
+`NOT_A_GIT_REPO`, `GATE_ELECTION_REQUIRED` and the rest. Retype the call.
 
 **No — a work state.** Somebody has to act on the repository, so the payload
-carries a `resolve` key saying what. Thirty-five codes, including
-`POSITION_DISAGREES`, `AGREEMENT_DISAGREES`, `POSITION_STALE`,
+carries a `resolve` key saying what. Sixty-three codes, including
+`POSITION_DISAGREES`, `AGREEMENT_DISAGREES`, `POSITION_STALE`, `DIRTY_WORKTREE`,
+`GATE_AUTHORIZATION_CONSUMED`, `STEP_MODULE_MISSING`,
 `POSITION_RUNG_SKIPPED`, `POSITION_STEP_UNKNOWN`, `STEPS_UNDECLARED`,
 `POSITION_RECORD_MALFORMED` and `NOT_READY`:
 
@@ -1909,8 +2009,10 @@ carries a `resolve` key saying what. Thirty-five codes, including
 { "status": "refused", "code": "POSITION_STALE",
   "detail": "the position section is bound to a revision whose bytes no longer match; ...",
   "resolve": { "kind": "command",
-               "command": "implementation_cli.py position --target implementations/repo --name Name --session s1 --revision r7.md" } }
+               "command": "/usr/bin/python3 /abs/path/to/implementation_cli.py position --target /abs/path/to/implementations/repo --name Name --session s1 --revision r7.md" } }
 ```
+
+Every published command is runnable **verbatim, from any directory**: it begins with the absolute path of the interpreter running this CLI and the absolute path of the CLI itself, both `shlex.quote`d, and every embedded path is absolute too. That is not decoration — the script ships mode 644 with no execute bit, so a bare relative `implementation_cli.py …` was runnable only from one directory, and a shell that answers `command not found` can hand a harness that text on stdout with exit status 0. Do not shorten a published command before pasting it.
 
 `resolve.kind` is `command` when the engine can name the whole exit — run it
 unedited — and `question` when the next act is a decision nobody but a human
