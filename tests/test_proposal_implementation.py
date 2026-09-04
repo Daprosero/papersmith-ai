@@ -25063,6 +25063,7 @@ _ENGLISH_COUNTS = {
     # (the-pilot-proves-the-science, slice B).
     7: "Seven", 8: "Eight",
     9: "Nine", 10: "Ten", 17: "Seventeen", 18: "Eighteen", 19: "Nineteen",
+    20: "Twenty",
     26: "Twenty-six", 27: "Twenty-seven", 28: "Twenty-eight",
     29: "Twenty-nine", 30: "Thirty", 31: "Thirty-one", 32: "Thirty-two",
     33: "Thirty-three", 34: "Thirty-four", 35: "Thirty-five",
@@ -25810,6 +25811,319 @@ class PilotCompletenessTests(unittest.TestCase):
                  "two": {"module": "m", "function": "g", "advances": True}}
         state = impl.pilot_completeness_state(steps, [], self.evidence())
         self.assertEqual(state["status"], "undeclared")
+
+
+class UnfinishableFlowTests(unittest.TestCase):
+    """`unfinishable_flow_state(steps, sequence, required_scale)` -- an ordered
+    flow whose own declarations contradict each other, said before the first
+    step runs instead of ten minutes into it.
+
+    The measured defect. A target declared six ordered steps and six sequence
+    items. Its first two steps ran and returned; the third was refused
+    `STEP_SEQUENCE_NOT_REACHED`, because item 2 was unticked and item 3 cannot
+    run ahead of it. Item 2 carries a bare, two-state `@record` witness, and
+    `impl_position._derive_record` grades one of those against
+    `search.scaleSatisfied` whenever the search declares a `requiredScale` --
+    so below that scale the item derives `false` by construction, and a
+    two-state item admits no rung for a smaller run to earn partial credit at.
+    Every step above it is therefore refused for as long as the run stays
+    below scale, while `pilotCompleteness` asks for exactly that flow to
+    finish at pilot. Two declarations, each legible on its own, that cannot
+    both be satisfied.
+
+    **Two-state alone is not the rule, and a report that said so would be
+    wrong.** The same target's item 1 is two-state as well -- a `@notebook`
+    witness -- and it was satisfied at pilot, because `_derive_notebook` asks
+    only that the notebook be executed against these sources. What makes an
+    item unsatisfiable below scale is the pair: two-state AND graded against a
+    declared scale. `test_the_kind_this_names_is_the_one_derive_grades_
+    against_scale` is that claim held to `impl_position.derive` itself rather
+    than restated here, because a kind list copied beside the derivers is a
+    list that drifts -- and a drifted one would report an unfinishable flow
+    for a target whose every item ticks perfectly well at pilot.
+
+    **Reported, never repaired, and nothing is weakened.**
+    `STEP_SEQUENCE_NOT_REACHED` stays exactly as it is: the operator learns
+    earlier, and nobody is let through. `unreachable_ladder_state`'s own
+    shape, placement and restraint, one composition over.
+    """
+
+    SCALE = {"runs": 30}
+
+    def item(self, ordinal, kind, operand, *, twostate=True, mark=" "):
+        return {"ordinal": ordinal, "mark": mark, "text": "t",
+                "witness": {"kind": kind, "operand": operand,
+                            "twostate": twostate}}
+
+    def step(self, advances=None):
+        entry = {"module": "m", "function": "f"}
+        if advances is not None:
+            entry["advances"] = advances
+        return entry
+
+    def flow(self, *ordinals):
+        return {f"s{ordinal}": self.step(ordinal) for ordinal in ordinals}
+
+    # --- the predicate, held to the derivation it claims to describe -------
+
+    def test_the_kind_this_names_is_the_one_derive_grades_against_scale(self):
+        """The whole report rests on one claim: that among the two-state
+        witness kinds, `@record` is the only one `impl_position.derive`
+        grades against a DECLARED scale, so it is the only one a run below
+        that scale can never satisfy. Written as a join against `derive`
+        rather than as a second list, and measured on the best evidence a
+        below-scale run can leave behind: every other kind grades `True`
+        there, and a rule naming any of them would report a flow that
+        finishes fine as one that cannot.
+        """
+        best = {
+            "notebook": ("n.ipynb", {"notebooks": {"reports": [
+                {"notebook": "n.ipynb", "status": "executed",
+                 "sourcesMatch": True}]}}),
+            "rehearsal": ("job", {"smokeReady": {"job": True}}),
+            "shard": ("s1", {"shardsArrived": ["s1"], "shardsCurrent": None}),
+            "step": ("one", {"stepVerdicts": {"one": True}}),
+            # A record left by a run below the declared scale: it is on disk
+            # and it reports on this code, and it is still short.
+            "record": (None, {"search": {"recordFound": True,
+                                         "recordCurrent": True,
+                                         "scaleSatisfied": False}}),
+        }
+        graded = {}
+        for kind, (operand, evidence) in best.items():
+            item = self.item(1, kind, operand)
+            graded[kind] = impl_position.derive(
+                [item], {**evidence, "requiredScale": dict(self.SCALE),
+                         "levels": []})[0]["satisfied"]
+        self.assertEqual(
+            sorted(kind for kind, satisfied in graded.items()
+                   if satisfied is not True),
+            ["record"],
+            "the kinds a below-scale run cannot satisfy moved; the predicate "
+            "below names a fixed one and would now be reporting the wrong "
+            "items")
+        # And the predicate agrees with that join, kind by kind.
+        for kind, (operand, _) in best.items():
+            with self.subTest(kind=kind):
+                state = impl.unfinishable_flow_state(
+                    self.flow(1, 2), [self.item(1, kind, operand)],
+                    dict(self.SCALE))
+                self.assertEqual(state is not None, kind == "record")
+
+    def test_a_two_state_record_item_is_satisfiable_when_no_scale_is_declared(self):
+        """The other half of the same join, and the guard against the false
+        alarm that would matter most: with no `requiredScale` declared,
+        `_derive_record` answers `recordFound` alone, so a record a smaller
+        run leaves behind ticks the item and the flow finishes. A rule that
+        fired on the witness kind alone would refuse every such target's
+        whole flow in prose.
+        """
+        item = self.item(2, "record", None)
+        satisfied = impl_position.derive(
+            [item], {"search": {"recordFound": True, "recordCurrent": True,
+                                "scaleSatisfied": False},
+                     "requiredScale": {}, "levels": []})[0]["satisfied"]
+        self.assertIs(satisfied, True)
+        self.assertIsNone(impl.unfinishable_flow_state(
+            self.flow(1, 2, 3), [item], {}))
+
+    # --- what it reports ---------------------------------------------------
+
+    def test_the_flow_waiting_behind_the_item_is_named(self):
+        """The shape the defect actually arrived in: six items, six ordered
+        steps, and a bare two-state `@record` at ordinal 2."""
+        sequence = [self.item(1, "notebook", "one.ipynb", mark="x"),
+                    self.item(2, "record", None),
+                    self.item(3, "notebook", "three.ipynb", twostate=False),
+                    self.item(4, "shard", "s0", twostate=False),
+                    self.item(5, "notebook", "five.ipynb", twostate=False),
+                    self.item(6, "notebook", "six.ipynb", twostate=False)]
+        state = impl.unfinishable_flow_state(
+            self.flow(1, 2, 3, 4, 5, 6), sequence, dict(self.SCALE))
+        self.assertIsNotNone(state)
+        self.assertEqual([row["ordinal"] for row in state["blockedBy"]], [2])
+        self.assertEqual([row["step"] for row in state["blockedSteps"]],
+                         ["s3", "s4", "s5", "s6"])
+        self.assertEqual([row["advances"] for row in state["blockedSteps"]],
+                         [3, 4, 5, 6])
+        self.assertEqual(state["requiredScale"], self.SCALE)
+
+    def test_the_step_that_advances_the_item_is_not_waiting_behind_it(self):
+        """`cmd_step` refuses on items STRICTLY BELOW the ordinal a step
+        advances, so the step whose own item is the unsatisfiable one runs
+        perfectly well -- and the measured run proves it: the step advancing
+        item 2 returned. Reporting it as blocked would name a step the
+        operator has already watched succeed, which is how a report stops
+        being read.
+        """
+        state = impl.unfinishable_flow_state(
+            self.flow(1, 2, 3), [self.item(2, "record", None)],
+            dict(self.SCALE))
+        self.assertEqual([row["step"] for row in state["blockedSteps"]], ["s3"])
+
+    def test_an_item_no_step_waits_behind_is_silent(self):
+        """An unsatisfiable item at or above the furthest ordinal any step
+        advances blocks nothing: the flow runs to its end and stops one tick
+        short of a full sequence, which is an unfinished POSITION and not an
+        unfinishable flow. `pilotCompleteness` already speaks to the first.
+        """
+        for ordinal in (3, 4):
+            with self.subTest(ordinal=ordinal):
+                self.assertIsNone(impl.unfinishable_flow_state(
+                    self.flow(1, 2, 3), [self.item(ordinal, "record", None)],
+                    dict(self.SCALE)))
+
+    def test_a_leveled_record_item_is_silent(self):
+        """The exit itself, proven to close the report rather than asserted
+        to. A `:level`-marked record item admits a rung, so a smaller run
+        earns one and the item ticks below the declared scale.
+        """
+        self.assertIsNone(impl.unfinishable_flow_state(
+            self.flow(1, 2, 3), [self.item(2, "record", "pilot", twostate=False)],
+            dict(self.SCALE)))
+
+    def test_a_flow_nobody_declared_is_not_an_unfinishable_one(self):
+        """`_flow_steps`'s own rule, reused rather than restated: an entry
+        with no ordinal is outside the flow, and `cmd_step` runs one ungated
+        -- so it can never be refused for waiting on anything.
+        """
+        for steps in ({}, {"aside": self.step()}):
+            with self.subTest(steps=steps):
+                self.assertIsNone(impl.unfinishable_flow_state(
+                    steps, [self.item(1, "record", None)], dict(self.SCALE)))
+
+    def test_an_ordinal_less_step_is_never_reported_blocked(self):
+        """The mutation this survives: folding the ordinal-less entries into
+        the flow. They run ungated, so naming one here would publish a step
+        that is not blocked at all.
+        """
+        steps = {**self.flow(1, 3), "aside": self.step()}
+        state = impl.unfinishable_flow_state(
+            steps, [self.item(1, "record", None)], dict(self.SCALE))
+        self.assertEqual([row["step"] for row in state["blockedSteps"]], ["s3"])
+
+    def test_an_empty_sequence_says_nothing(self):
+        """A target that never derived a position has no item to be waiting
+        on -- `position_state` answers `sequence: []` there, and reading that
+        as an unfinishable flow would fire on every target before its first
+        `position` call.
+        """
+        self.assertIsNone(impl.unfinishable_flow_state(
+            self.flow(1, 2), [], dict(self.SCALE)))
+
+    def test_the_earliest_blocking_item_decides_and_every_one_is_named(self):
+        """`cmd_step` refuses on the FIRST unticked item below the ordinal,
+        so the earliest such item is what bounds the flow -- but a reader
+        given only that one would fix it and meet the next. Both are named.
+        """
+        state = impl.unfinishable_flow_state(
+            self.flow(1, 2, 3, 4),
+            [self.item(1, "record", None), self.item(3, "record", None)],
+            dict(self.SCALE))
+        self.assertEqual([row["ordinal"] for row in state["blockedBy"]], [1, 3])
+        self.assertEqual([row["step"] for row in state["blockedSteps"]],
+                         ["s2", "s3", "s4"])
+
+    # --- the consequence ---------------------------------------------------
+
+    def test_the_consequence_names_what_is_lost_and_the_exit(self):
+        """`undeclaredLadder`'s and `unreachableLadder`'s own bar: a reader
+        handed the key's name learns nothing. The consequence has to name
+        what the target gives up and what it can do instead, in enough
+        detail that the exit is a decision somebody can take rather than
+        advice.
+        """
+        state = impl.unfinishable_flow_state(
+            self.flow(1, 2, 3), [self.item(2, "record", None)],
+            dict(self.SCALE))
+        consequence = state["consequence"]
+        for named in ("STEP_SEQUENCE_NOT_REACHED", "pilotCompleteness",
+                      "`@record:level", impl.RECORDS_DECLARATION,
+                      "requiredScale", "s3"):
+            self.assertIn(named, consequence)
+        self.assertIn("2", consequence)
+
+    def test_the_consequence_names_no_target_of_its_own(self):
+        """The forge reports the shape of the exit; the repository decides
+        its own words. Held to the same floor every shipped surface is."""
+        state = impl.unfinishable_flow_state(
+            self.flow(1, 2), [self.item(1, "record", None)], dict(self.SCALE))
+        self.assertEqual(leaks_in(state["consequence"]), [])
+
+    # --- the gate is not weakened -----------------------------------------
+
+    def test_the_refusal_this_reports_ahead_of_is_still_raised(self):
+        """The one thing this change must not do. The report exists so the
+        operator learns earlier, never so anybody is let through, and the
+        proof is that `cmd_step` still raises the identical code.
+        """
+        self.assertIn("STEP_SEQUENCE_NOT_REACHED",
+                      raised_refusal_codes(CLI, "cmd_step"))
+
+    # --- end to end, through `verify` itself --------------------------------
+
+    LADDER = ["floor", "smoke", "pilot", "campaign"]
+
+    BODY = (
+        "- [x] 1. Invariants. `@notebook Notebooks/verification.ipynb`\n"
+        "- [ ] 2. A record at the declared scale. `@record`\n"
+        "- [ ] 3. The report is current. `@notebook:level Notebooks/r.ipynb`\n")
+
+    def _box(self, suffix, *, scale):
+        box = FORGE / "implementations" / f"_unfinishable_{suffix}_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "src/Method_Benchmark", "Method", "tests"):
+            (box / directory).mkdir(parents=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        search = {"what": "one free scalar", "role": "valid",
+                  "tieRule": "the smaller value wins"}
+        if scale:
+            search["requiredScale"] = dict(scale)
+        steps = {"one": {"module": "Method_Benchmark.steps", "function": "a",
+                         "advances": 1},
+                 "two": {"module": "Method_Benchmark.steps", "function": "b",
+                         "advances": 2},
+                 "three": {"module": "Method_Benchmark.steps", "function": "c",
+                           "advances": 3}}
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            "__benchmark__ = " + repr({"revision": "r1.md", "search": search})
+            + f"\n__levels__ = {self.LADDER!r}\n__steps__ = {steps!r}\n",
+            encoding="utf-8")
+        (box / "Method/AGREED.md").write_text(
+            "<!-- position revision=r1.md sha256=" + "a" * 64 + " "
+            "derivedAt=2026-08-30T00:00:00Z session=s0 target=pilot -->\n"
+            + self.BODY + "<!-- /position -->\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        return box
+
+    def verify(self, box):
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box),
+             "--name", "Method"],
+            capture_output=True, text=True, cwd=FORGE)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return json.loads(proc.stdout)
+
+    def test_verify_reports_the_contradiction_on_a_real_target(self):
+        """The wiring, end to end: a declared scale, a two-state `@record` at
+        ordinal 2, and a step at ordinal 3 that can never run below it."""
+        report = self.verify(self._box("blocked", scale=self.SCALE))
+        state = report["unfinishableFlow"]
+        self.assertIsNotNone(state)
+        self.assertEqual([row["ordinal"] for row in state["blockedBy"]], [2])
+        self.assertEqual([row["step"] for row in state["blockedSteps"]],
+                         ["three"])
+        self.assertEqual(state["requiredScale"], self.SCALE)
+
+    def test_verify_says_nothing_about_a_flow_that_can_finish(self):
+        """The direction that matters more. The identical target, with the
+        one declaration that decides removed: no `requiredScale`, so
+        `_derive_record` grades the same item on `recordFound` alone and a
+        record a smaller run leaves behind ticks it.
+        """
+        report = self.verify(self._box("clear", scale=None))
+        self.assertIsNone(report["unfinishableFlow"])
 
 
 class DiscussionBucketFoldTests(unittest.TestCase):

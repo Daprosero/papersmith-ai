@@ -598,7 +598,7 @@ Two independent findings, reported separately:
   in `--revision`; `invariantsWithoutTest` are claims declared in code with no
   test enforcing them. Both need the user's decision before you touch anything.
 
-Eight more are reported and none of them is a finding, which is exactly why
+Nine more are reported and none of them is a finding, which is exactly why
 they were easy to leave undocumented:
 
 - **`coupling`** — which notebook cells reach into the target's internals instead
@@ -694,6 +694,28 @@ they were easy to leave undocumented:
   leveled item quietly *lower* the threshold for every item beside it. `null`
   when the ladder and the sequence can meet, and `null` below two rungs, where
   the rung threshold does not apply at all. It **never gates**.
+- **`unfinishableFlow`** — an ordered flow the target cannot walk to the end
+  of below its own declared scale, said before the first step runs. It carries
+  `requiredScale` (the scale the search declares for itself, which is what
+  decides), `blockedBy` (every sequence item a run below that scale can never
+  tick), `blockedSteps` (every declared step that must wait behind the earliest
+  of them) and the `consequence`. The pair that makes an item unsatisfiable is
+  two-state **and** graded against a declared scale, never two-state alone: a
+  two-state `@notebook` item is satisfied by a notebook executed against these
+  sources and ticks fine at pilot, while a two-state `@record` item is graded on
+  `search.scaleSatisfied` and derives `false` until the full scale is reached —
+  with no rung for a smaller run to earn partial credit at. `step` then refuses
+  `STEP_SEQUENCE_NOT_REACHED` for every step above it, on every call, while
+  `pilotCompleteness` asks for that same flow to finish at pilot. The exit is
+  the target's own and is already built: mark that item leveled and give it a
+  named witness, `@record:level <name>`, backed by one `__records__` entry per
+  record the flow actually produces, each with its own `path` and its own
+  `requiredScale` — a named entry is graded against ITS own scale, so the
+  record a smaller run leaves behind reaches a rung a smaller pass can be
+  sealed at while the entry declaring the full scale still reaches the top.
+  `null` when the search declares no scale, when no item is graded against one,
+  and when no step waits behind such an item. It **never gates** — the refusal
+  it reports ahead of is unchanged, and nobody is let through any earlier.
 
 Omit `--revision` and `fidelity.status` is `unknown`: the modules' declared
 revisions are still listed, but nothing is compared. Never report an

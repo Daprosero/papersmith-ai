@@ -7472,6 +7472,158 @@ def pilot_completeness_state(steps: dict, sequence: list[dict],
             "steps": rows, "incomplete": incomplete}
 
 
+#: What a repository gives up when its own ordered flow and its own declared
+#: scale cannot both be satisfied, written out for the identical reason
+#: `LADDER_UNREACHABLE_CONSEQUENCE` is: a reader handed "the flow is
+#: unfinishable" learns the key's own name and nothing else. A format string
+#: rather than a constant, because the exit is only actionable once the actual
+#: ordinals are named -- "give that item a rung" is advice, `item 2` beside the
+#: four steps waiting on it is a decision somebody can take.
+FLOW_UNFINISHABLE_CONSEQUENCE = (
+    "the ordered flow this target declared can never be finished below the "
+    "scale its own search declares, while `pilotCompleteness` asks for "
+    "exactly that -- two declarations that cannot both be satisfied. The "
+    "sequence item{plural} at ordinal {ordinals} {carry} a two-state "
+    "`@record` witness, and `impl_position._derive_record` grades one of "
+    "those against `search.scaleSatisfied` whenever a `requiredScale` is "
+    "declared, as this target's is. Below that scale `scaleSatisfied` is not "
+    "`true`, so the item derives `false`; and a two-state item admits no "
+    "rung, so there is no partial credit a smaller run could earn on it "
+    "either. `step` then answers `STEP_SEQUENCE_NOT_REACHED` for {steps} -- "
+    "every declared step whose own `advances` ordinal sits above {first} -- "
+    "on every call, and the refusal is true: nothing a run below that scale "
+    "produces can ever tick the item they are waiting on. What is lost is "
+    "the whole flow past that item. Those steps never run, so the sequence "
+    "items they would have produced evidence for stay blank; `probe` keeps "
+    "answering `pilot-first` and naming steps it has just refused; and "
+    "`pilot-decisions` -- the rung standing between a validated flow and the "
+    "offer of the declared scale -- is never reached at all. The exit is "
+    "already built and is the target's own to take: mark that item leveled "
+    "and give it a named witness, `@record:level <name>`, backed by one "
+    "`{declaration}` entry per record the flow actually produces, each "
+    "carrying its own `path` and its own `requiredScale`. "
+    "`_record_scale_level` grades a named entry against ITS own declared "
+    "scale rather than the search block's -- absent is the floor rung, "
+    "present but short of that entry's own scale is one rung under the top "
+    "on a ladder of three rungs or more, and at that scale is the top -- so "
+    "the record a smaller run leaves behind reaches a rung a smaller pass "
+    "can be sealed at, while the entry declaring the full scale still "
+    "reaches the top and nothing about the full run is loosened. The forge "
+    "writes neither the entry nor the marker: which scales a flow passes "
+    "through, what each one is called, and which file each leaves behind "
+    "are the repository's own words, and a reader that invented them would "
+    "be declaring the thing it exists to receive. Nothing here is weakened: "
+    "`STEP_SEQUENCE_NOT_REACHED` is unchanged, and this only says before the "
+    "first step runs what it would otherwise say several steps in."
+)
+
+
+def unfinishable_flow_state(steps: dict, sequence: list[dict],
+                            required_scale: dict) -> dict | None:
+    """The ordered flow this target declared and cannot finish below its own
+    declared scale -- or `None` when it can.
+
+    `unreachable_ladder_state`'s own shape, placement and restraint (design
+    D8), one composition over: that one reports a ladder the sequence beside
+    it can never climb, this one a sequence the flow beside it can never walk
+    to the end of.
+
+    **The measured defect.** A target declared six ordered steps and six
+    sequence items. Its first two steps ran and returned; the third was
+    refused `STEP_SEQUENCE_NOT_REACHED`, because item 2 was unticked and item
+    3 cannot run ahead of it. Item 2 carried a bare `@record` witness, and
+    nothing a run below the declared scale produces can ever tick one -- so
+    steps three through six were refused permanently, while
+    `pilot_completeness_state` asked for exactly that flow to finish at
+    pilot. Every fact needed to say so was already declared before the first
+    step ran; the operator found it by running for ten minutes and then
+    reading four files.
+
+    **The predicate is two-state AND graded against a declared scale, never
+    two-state alone.** That same target's item 1 is two-state too -- a
+    `@notebook` witness -- and it was satisfied at pilot, because
+    `_derive_notebook` asks only that the notebook be executed against these
+    sources. Of the five two-state derivers (`impl_position._DERIVERS`, plus
+    the `record` branch `derive` special-cases above it), exactly one ever
+    reads a declared scale: `_derive_record` returns `scaleSatisfied is True`
+    when `evidence["requiredScale"]` is non-empty, and `recordFound` alone
+    when it is not. So the pair is what makes an item unsatisfiable below
+    scale, and either half alone would be a different rule: naming two-state
+    would report every flow with a notebook item in it, and naming `@record`
+    would report every target that never declared a scale for its search --
+    where a record a smaller run leaves behind ticks the item perfectly well.
+
+    **The operand is deliberately not consulted.** `derive` routes a
+    two-state `record` witness to `_derive_record(evidence)` with no operand
+    at all, so `@record <name>` is graded against the search block exactly as
+    a bare `@record` is; an item is unsatisfiable here whether or not it
+    names something.
+
+    **A step is affected when it must WAIT behind such an item, never merely
+    when its own item is one.** `cmd_step` refuses on items strictly below
+    the ordinal a step advances, so the step that advances the unsatisfiable
+    item runs perfectly well -- the measured run proves it, the step
+    advancing item 2 returned -- and only the steps above it are refused. An
+    unsatisfiable item at or above the furthest ordinal any step advances
+    blocks nothing at all and is reported by nothing here: the flow runs to
+    its end and stops one tick short of a full sequence, which is an
+    unfinished POSITION, and `position_state` already says so.
+
+    **`_flow_steps` decides what the flow is, reused rather than restated.**
+    An entry carrying no ordinal is outside the ordering by the target's own
+    statement, and `cmd_step` runs one ungated for exactly that reason -- so
+    it can never be refused for waiting on anything, and naming one here
+    would publish a step that is not blocked.
+
+    **The marks are deliberately not read.** `cmd_step` refuses on
+    `mark != "x"`, so consulting the marks would silence this report the
+    moment somebody ticked the unsatisfiable item by hand -- the assertion
+    `impl_position.derive`'s own `unbacked` key exists to expose. A
+    diagnosis a false tick can switch off is worse than no diagnosis, so
+    this answers the question the declarations answer and never the one the
+    disk does.
+
+    Pure: no I/O, no evidence read, no measurement at all. `steps` is
+    `resolve_steps_declaration`'s own return, `sequence` is
+    `position_state`'s, and `required_scale` is the caller's own
+    `declared_required_scale(search)` -- the identical restraint
+    `unreachable_ladder_state` keeps, so this can never disagree with the
+    marks reported beside it, and it answers before anything has run.
+    """
+    flow = _flow_steps(steps)
+    if not required_scale or not flow:
+        return None
+    furthest = max(advances for _, advances in flow)
+    blocking = [item for item in sequence
+                if isinstance(item.get("ordinal"), int)
+                and item["ordinal"] < furthest
+                and (item.get("witness") or {}).get("kind") == "record"
+                and (item.get("witness") or {}).get("twostate", True)]
+    if not blocking:
+        return None
+    # The earliest one is what actually bounds the flow -- `cmd_step` refuses
+    # on the first unticked item below the ordinal -- but every one of them is
+    # named, so a reader who repairs the first is not sent back to meet the
+    # next.
+    first = min(item["ordinal"] for item in blocking)
+    blocked = [{"step": step_name, "advances": advances}
+               for step_name, advances in flow if advances > first]
+    ordinals = ", ".join(str(item["ordinal"]) for item in blocking)
+    return {
+        "requiredScale": dict(required_scale),
+        "blockedBy": [{"ordinal": item["ordinal"],
+                       "witness": dict(item["witness"])}
+                      for item in blocking],
+        "blockedSteps": blocked,
+        "consequence": FLOW_UNFINISHABLE_CONSEQUENCE.format(
+            plural="s" if len(blocking) > 1 else "",
+            carry="carry" if len(blocking) > 1 else "carries",
+            ordinals=ordinals, first=first,
+            steps=", ".join(row["step"] for row in blocked),
+            declaration=RECORDS_DECLARATION),
+    }
+
+
 def _position_write_evidence(
         target: Path, name: str, shards_root: str | None = None) -> dict:
     """The same evidence shape `position_state` is handed through `probe`
@@ -11634,10 +11786,16 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     # (return, below) must read the same declaration or the two can disagree
     # about what the target declared.
     declared_records = resolve_records_declaration(target, name)
+    # Read once and used twice, the identical constraint `levels` above
+    # states for itself: the position evidence below grades every two-state
+    # `@record` witness against this scale, and `unfinishableFlow` (return,
+    # below) reports the flow that scale makes unwalkable. Two reads of one
+    # declaration inside one command is how the two come to disagree.
+    required_scale = declared_required_scale(search)
     verify_digest = source_digest(target, package_name(name))
     position = position_state(
         target, name,
-        {"search": search, "requiredScale": declared_required_scale(search),
+        {"search": search, "requiredScale": required_scale,
          "notebooks": notebooks,
          "smokeReady": remote_execution_jobs_state(target)["smokeReady"],
          "shardsArrived": merged["shardsArrived"] if merged else None,
@@ -11801,6 +11959,15 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         # the identical reason `undeclaredLadder`'s own is -- see
         # `undeclared_records_state`'s own docstring.
         "undeclaredRecords": undeclared_records_state(target, name, declared_records),
+        # The same class of finding as `unreachableLadder`, one composition
+        # over: two declarations, each legible on its own, that cannot both
+        # be satisfied. Top-level for the identical `returned_keys`
+        # constraint, and absent from `probe` for the identical reason --
+        # it names no work about to be run, only a declaration to change.
+        # See `unfinishable_flow_state`'s own docstring.
+        "unfinishableFlow": unfinishable_flow_state(
+            resolve_steps_declaration(target, name), position["sequence"],
+            required_scale),
     }
 
 
