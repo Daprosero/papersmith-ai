@@ -51,7 +51,7 @@ __benchmark__ = {
     # One key is OPTIONAL and asked of nobody, and it is the one every
     # later reading hangs off: `record`, the path -- relative to the
     # product folder -- of the artefact this search writes, e.g.:
-    #     "record": "Results/ceilings.json"
+    #     "record": "Results/search-record.json"
     # Leave it out and `search.recordFound` answers `null` forever: a
     # ticked `@record` witness has nothing behind it, a leveled
     # `@record:level` one reaches no rung, and `probe` keeps answering

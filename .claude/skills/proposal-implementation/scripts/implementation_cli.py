@@ -3999,7 +3999,7 @@ def _produced(cell: dict) -> dict:
 #: A number a cell put in front of a reader: a decimal, or a count over a total
 #: like `7/10`. Integers alone are left out — a year, a seed or a count of rows is
 #: not a measurement, and treating every digit as one would make the check below
-#: fire on any sentence that mentions how many transfers there are.
+#: fire on any sentence that mentions how many runs there are.
 MEASUREMENT = re.compile(r"\d+\.\d+|\b\d+/\d+\b")
 
 #: How many of its table's measurements a conclusion may restate before it stops

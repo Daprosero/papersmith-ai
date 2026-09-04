@@ -37,6 +37,13 @@ import impl_availability  # noqa: E402
 import impl_position  # noqa: E402
 import impl_steps  # noqa: E402
 
+# The forge's vocabulary floor, defined in one place beside the suites.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from forge_vocabulary import (  # noqa: E402  (path set above)
+    FORGE_SERVICE_VOCABULARY, FORGE_TARGET_DOMAIN_WORDS,
+    FORGE_TARGET_PROPER_NOUNS, FORGE_VOCABULARY_FLOOR, DEFINITION_MODULE,
+    leak_pattern, leaks_in, scannable_suite_text, suite_modules)
+
 SKILL_ROOT = CLI.parent.parent
 KIT = SKILL_ROOT / "assets" / "kit"
 PYPROJECT_TEMPLATE = SKILL_ROOT / "assets" / "pyproject.template.toml"
@@ -71,14 +78,11 @@ CACHES = ("__pycache__", ".pytest_cache", ".ipynb_checkpoints")
 BINARY_SUFFIXES = (".pyc", ".pyo", ".png", ".jpg", ".jpeg", ".gif", ".pdf",
                    ".pth", ".npz", ".npy", ".zip", ".ico")
 
-#: Words a target owns that the forge is forbidden to borrow — the floor the
-#: derived guard stands on. Being a fixed list, it can only ever hold leaks
-#: somebody already found; that is why the derived rules exist beside it rather
-#: than instead of it, and why a word here may never be admitted to
-#: `FORGE_LEXICON`. Stated once, because two spellings of a floor is how a floor
-#: drifts.
-FORGE_VOCABULARY_FLOOR = ("kaggle", "t4", "ceiling", "ramp", "transfer",
-                          "creda", "milcreda", "latent")
+#: The floor, and the pattern every guard below reads it through, imported from
+#: `tests/forge_vocabulary.py` rather than spelled again here. The floor's own
+#: comment demanded a single spelling from the day it was written and was
+#: nonetheless written twice; `ForgeVocabularyDefinitionTests` is what makes a
+#: second spelling a red instead of a later discovery.
 
 
 def write_fixture_interpreter(bin_dir):
@@ -357,34 +361,34 @@ class NormalizeNameTests(unittest.TestCase):
         self.assertEqual(resolved["package"], package, raw)
 
     def test_spaces_become_the_separator_pair(self):
-        self.assertPair("mil creda", "Mil-Creda", "Mil_Creda")
+        self.assertPair("fem tolla", "Fem-Tolla", "Fem_Tolla")
 
     def test_an_acronym_survives_untouched(self):
-        # Lowercasing MIL-CREDA renames the method, not the folder.
-        self.assertPair("MIL-CREDA", "MIL-CREDA", "MIL_CREDA")
+        # Lowercasing FEM-TOLLA renames the method, not the folder.
+        self.assertPair("FEM-TOLLA", "FEM-TOLLA", "FEM_TOLLA")
 
     def test_a_mixed_acronym_keeps_only_the_acronym_uppercase(self):
-        self.assertPair("MIL creda", "MIL-Creda", "MIL_Creda")
+        self.assertPair("FEM tolla", "FEM-Tolla", "FEM_Tolla")
 
     def test_camel_case_is_split_at_the_boundary(self):
-        self.assertPair("milCreda", "Mil-Creda", "Mil_Creda")
+        self.assertPair("femTolla", "Fem-Tolla", "Fem_Tolla")
 
     def test_underscores_and_hyphens_are_the_same_separator(self):
-        self.assertPair("mil_creda", "Mil-Creda", "Mil_Creda")
-        self.assertPair("mil-creda", "Mil-Creda", "Mil_Creda")
+        self.assertPair("fem_tolla", "Fem-Tolla", "Fem_Tolla")
+        self.assertPair("fem-tolla", "Fem-Tolla", "Fem_Tolla")
 
     def test_surrounding_and_repeated_whitespace_is_absorbed(self):
-        self.assertPair("  mil   creda  ", "Mil-Creda", "Mil_Creda")
+        self.assertPair("  fem   tolla  ", "Fem-Tolla", "Fem_Tolla")
 
     def test_a_single_word_still_produces_both_forms(self):
-        self.assertPair("creda", "Creda", "Creda")
+        self.assertPair("tolla", "Tolla", "Tolla")
 
     def test_digits_inside_a_word_are_kept(self):
-        self.assertPair("creda v2", "Creda-V2", "Creda_V2")
+        self.assertPair("tolla v2", "Tolla-V2", "Tolla_V2")
 
     def test_a_leading_digit_is_refused_because_no_package_may_start_with_one(self):
         with self.assertRaises(impl.NameRefused):
-            impl.normalize_name("2creda")
+            impl.normalize_name("2tolla")
 
     def test_an_empty_name_is_refused(self):
         for raw in ("", "   ", None):
@@ -396,13 +400,13 @@ class NormalizeNameTests(unittest.TestCase):
             impl.normalize_name("-_-")
 
     def test_the_package_is_always_importable(self):
-        for raw in ("mil creda", "MIL-CREDA", "milCreda", "creda v2", "Creda"):
+        for raw in ("fem tolla", "FEM-TOLLA", "femTolla", "tolla v2", "Tolla"):
             package = impl.normalize_name(raw)["package"]
             self.assertTrue(package.isidentifier(), f"{raw} -> {package}")
 
     def test_normalization_is_idempotent(self):
         # Feeding a normalized name back must not drift it.
-        for raw in ("mil creda", "MIL-CREDA", "milCreda"):
+        for raw in ("fem tolla", "FEM-TOLLA", "femTolla"):
             once = impl.normalize_name(raw)
             twice = impl.normalize_name(once["directory"])
             self.assertEqual(once["directory"], twice["directory"], raw)
@@ -416,13 +420,13 @@ class NameCommandTests(unittest.TestCase):
         return json.loads(proc.stdout or "{}"), proc.returncode
 
     def test_the_command_needs_no_repository_because_it_runs_before_one_exists(self):
-        result, code = self.run_cli("name", "--name", "mil creda")
+        result, code = self.run_cli("name", "--name", "fem tolla")
         self.assertEqual(code, 0, result)
-        self.assertEqual(result["directory"], "Mil-Creda")
-        self.assertEqual(result["package"], "Mil_Creda")
+        self.assertEqual(result["directory"], "Fem-Tolla")
+        self.assertEqual(result["package"], "Fem_Tolla")
 
     def test_an_unusable_name_is_refused_with_a_code_not_a_traceback(self):
-        result, code = self.run_cli("name", "--name", "2creda")
+        result, code = self.run_cli("name", "--name", "2tolla")
         self.assertEqual(code, 2, result)
         self.assertEqual(result["status"], "refused")
         self.assertEqual(result["code"], "NAME_STARTS_WITH_DIGIT")
@@ -456,7 +460,7 @@ class PlanScaleTests(unittest.TestCase):
         # not 200. Counting the carried files measures blast radius, not reviewability,
         # and would force a separate session for a trivial change.
         tracked = [f"Images/Results/plot{n}.png" for n in range(200)]
-        result = self.scale({"moves": [], "renames": [{"from": "Images", "to": "Creda"}],
+        result = self.scale({"moves": [], "renames": [{"from": "Images", "to": "Tolla"}],
                              "referenceUpdates": []}, tracked=tracked)
         self.assertEqual(result["decisionCount"], 1)
         self.assertEqual(result["carriedFiles"], 200)
@@ -464,7 +468,7 @@ class PlanScaleTests(unittest.TestCase):
 
     def test_reference_rewrites_are_decisions_because_each_edits_a_file(self):
         # These are what a rename really costs: each one can be wrong on its own.
-        result = self.scale({"moves": [], "renames": [{"from": "Images", "to": "Creda"}],
+        result = self.scale({"moves": [], "renames": [{"from": "Images", "to": "Tolla"}],
                              "referenceUpdates": [{"file": f"src/m{n}.py"} for n in range(20)]})
         self.assertEqual(result["decisionCount"], 21)
         self.assertEqual(result["scale"], "large")
@@ -492,7 +496,7 @@ if __name__ == "__main__":
 class ProbeStateTests(unittest.TestCase):
     """The probe reads its own state from the repository, and stores nothing else."""
 
-    def repo(self, packages=(), results=None, name="Creda"):
+    def repo(self, packages=(), results=None, name="Tolla"):
         box = Path(tempfile.mkdtemp(prefix="pp-probe-"))
         for package in packages:
             (box / "src" / package).mkdir(parents=True)
@@ -511,7 +515,7 @@ class ProbeStateTests(unittest.TestCase):
             "reduction": {"epochs": 3, "seeds": [0]},
             "targetScale": {"epochs": 20, "seeds": list(range(30))},
         })
-        state = impl.probe_state(box, "Creda", "r05.md")
+        state = impl.probe_state(box, "Tolla", "r05.md")
         self.assertEqual(state["status"], "piloted")
         self.assertEqual(state["belowTargetScale"]["seeds"], {"ran": 1, "declared": 30})
 
@@ -521,7 +525,7 @@ class ProbeStateTests(unittest.TestCase):
             "reduction": {"epochs": 20, "seeds": list(range(30))},
             "targetScale": {"epochs": 20, "seeds": list(range(30))},
         })
-        self.assertEqual(impl.probe_state(box, "Creda", "r05.md")["status"], "current")
+        self.assertEqual(impl.probe_state(box, "Tolla", "r05.md")["status"], "current")
 
     def test_a_record_the_checker_wrote_itself_proves_only_half_the_path(self):
         # The join, crossed. Every test above hands `probe_state` a record this file
@@ -575,94 +579,94 @@ class ProbeStateTests(unittest.TestCase):
         # disk's to answer, is this part of the record is the ignore rules'.
         box = Path(tempfile.mkdtemp(prefix="pp-present-"))
         subprocess.run(["git", "init", "-q", str(box)], check=True)
-        (box / "src" / "Creda").mkdir(parents=True)
-        (box / "Creda" / "Notebooks").mkdir(parents=True)
-        stray = box / "Creda" / "Notebooks" / "helper.py"
+        (box / "src" / "Tolla").mkdir(parents=True)
+        (box / "Tolla" / "Notebooks").mkdir(parents=True)
+        stray = box / "Tolla" / "Notebooks" / "helper.py"
         stray.write_text("x = 1\n")
 
-        self.assertNotIn("Creda/Notebooks/helper.py", impl.tracked_files(box),
+        self.assertNotIn("Tolla/Notebooks/helper.py", impl.tracked_files(box),
                          "nothing has been committed, so the index cannot know")
-        self.assertIn("Creda/Notebooks/helper.py", impl.present_files(box),
+        self.assertIn("Tolla/Notebooks/helper.py", impl.present_files(box),
                       "but it is on disk and nobody said to ignore it")
 
-        (box / ".gitignore").write_text("Creda/Notebooks/helper.py\n")
-        self.assertNotIn("Creda/Notebooks/helper.py", impl.present_files(box),
+        (box / ".gitignore").write_text("Tolla/Notebooks/helper.py\n")
+        self.assertNotIn("Tolla/Notebooks/helper.py", impl.present_files(box),
                          "deliberately ignored is not the same as not yet added")
 
     def test_a_leftover_package_is_the_baseline_a_probe_compares_against(self):
-        box = self.repo(packages=["Creda", "legacy"])
-        self.assertEqual(impl.previous_implementations(box, "Creda"), ["legacy"])
+        box = self.repo(packages=["Tolla", "legacy"])
+        self.assertEqual(impl.previous_implementations(box, "Tolla"), ["legacy"])
 
     def test_our_own_package_is_never_its_own_baseline(self):
-        box = self.repo(packages=["Creda"])
-        self.assertEqual(impl.previous_implementations(box, "Creda"), [])
+        box = self.repo(packages=["Tolla"])
+        self.assertEqual(impl.previous_implementations(box, "Tolla"), [])
 
     def test_the_hyphen_form_still_resolves_to_our_package(self):
-        # <Name>/ is Mil-Creda, src/<Package>/ is Mil_Creda: the pair must not
+        # <Name>/ is Fem-Tolla, src/<Package>/ is Fem_Tolla: the pair must not
         # make the implementation look like somebody else's leftover.
-        box = self.repo(packages=["Mil_Creda", "legacy"])
-        self.assertEqual(impl.previous_implementations(box, "Mil-Creda"), ["legacy"])
+        box = self.repo(packages=["Fem_Tolla", "legacy"])
+        self.assertEqual(impl.previous_implementations(box, "Fem-Tolla"), ["legacy"])
 
     def test_a_directory_with_no_source_is_not_an_implementation(self):
         box = Path(tempfile.mkdtemp(prefix="pp-probe-"))
         (box / "src" / "assets").mkdir(parents=True)
         (box / "src" / "assets" / "notes.md").write_text("nothing here\n")
-        self.assertEqual(impl.previous_implementations(box, "Creda"), [])
+        self.assertEqual(impl.previous_implementations(box, "Tolla"), [])
 
     def test_our_own_package_is_not_a_baseline_even_spelled_differently(self):
-        # macOS folds case, so src/Creda and src/CREDA are one directory: an exact
+        # macOS folds case, so src/Tolla and src/TOLLA are one directory: an exact
         # comparison hands our own package back as somebody else's prior work. On a
         # case-sensitive filesystem they are two, but a package differing from ours
         # only in case is a naming accident, not a baseline.
         box = Path(tempfile.mkdtemp(prefix="pp-probe-"))
-        (box / "src" / "CREDA").mkdir(parents=True)
-        (box / "src" / "CREDA" / "m.py").write_text("x = 1\n")
-        self.assertEqual(impl.previous_implementations(box, "Creda"), [])
+        (box / "src" / "TOLLA").mkdir(parents=True)
+        (box / "src" / "TOLLA" / "m.py").write_text("x = 1\n")
+        self.assertEqual(impl.previous_implementations(box, "Tolla"), [])
 
     def test_a_baseline_that_is_not_python_is_still_a_baseline(self):
         # Prior work arrives in whatever shape it was written in. Requiring .py
         # would make a notebook or MATLAB baseline invisible to the comparison.
         box = Path(tempfile.mkdtemp(prefix="pp-probe-"))
-        for package, filename in (("Creda", "m.py"), ("old_matlab", "run.m"),
+        for package, filename in (("Tolla", "m.py"), ("old_matlab", "run.m"),
                                   ("old_notebooks", "study.ipynb")):
             (box / "src" / package).mkdir(parents=True)
             (box / "src" / package / filename).write_text("x\n")
-        self.assertEqual(impl.previous_implementations(box, "Creda"),
+        self.assertEqual(impl.previous_implementations(box, "Tolla"),
                          ["old_matlab", "old_notebooks"])
 
     def test_no_summary_means_no_probe_has_run(self):
-        box = self.repo(packages=["Creda"])
-        self.assertEqual(impl.probe_state(box, "Creda", "r16.md")["status"], "absent")
+        box = self.repo(packages=["Tolla"])
+        self.assertEqual(impl.probe_state(box, "Tolla", "r16.md")["status"], "absent")
 
     def test_a_summary_naming_the_current_revision_is_current(self):
         box = self.repo(results={"revision": "r16.md", "reduction": {}, "comparison": []})
-        self.assertEqual(impl.probe_state(box, "Creda", "r16.md")["status"], "current")
+        self.assertEqual(impl.probe_state(box, "Tolla", "r16.md")["status"], "current")
 
     def test_without_a_revision_to_compare_it_says_unknown_not_stale(self):
         # Reporting "stale" here would assert a state nobody established.
         box = self.repo(results={"revision": "r16.md", "comparison": []})
-        self.assertEqual(impl.probe_state(box, "Creda", None)["status"], "unknown")
+        self.assertEqual(impl.probe_state(box, "Tolla", None)["status"], "unknown")
 
     def test_a_malformed_comparison_refuses_instead_of_raising(self):
         # The same defect read_findings carried: malformed input must produce a
         # typed refusal, never a traceback.
         box = self.repo(results={"revision": "r16.md", "comparison": "not a list"})
-        self.assertEqual(impl.probe_state(box, "Creda", "r16.md")["status"], "unreadable")
+        self.assertEqual(impl.probe_state(box, "Tolla", "r16.md")["status"], "unreadable")
 
     def test_a_summary_naming_an_older_revision_is_stale_by_inspection(self):
         # Nothing is stored to know this: the artifact carries the revision it
         # was obtained under, so staleness is read, not remembered.
         state = impl.probe_state(
             self.repo(results={"revision": "r13.md", "reduction": {}, "comparison": []}),
-            "Creda", "r16.md")
+            "Tolla", "r16.md")
         self.assertEqual(state["status"], "stale")
         self.assertEqual(state["revision"], "r13.md")
         self.assertEqual(state["expectedRevision"], "r16.md")
 
     def test_an_unreadable_summary_refuses_instead_of_reading_as_absent(self):
         box = self.repo(results={"revision": "r16.md"})
-        (box / "Creda" / "Results" / impl.PROBE_RESULTS).write_text("{not json")
-        self.assertEqual(impl.probe_state(box, "Creda", "r16.md")["status"], "unreadable")
+        (box / "Tolla" / "Results" / impl.PROBE_RESULTS).write_text("{not json")
+        self.assertEqual(impl.probe_state(box, "Tolla", "r16.md")["status"], "unreadable")
 
     def test_the_shipped_notebook_template_carries_its_placeholders(self):
         template = (Path(impl.SKILL_ROOT) / "assets/kit/nb" / impl.PROBE_NOTEBOOK)
@@ -686,7 +690,7 @@ class ProbeStateTests(unittest.TestCase):
 class BackendStateTests(unittest.TestCase):
     """numpy cannot be trained, so the backend decides whether a benchmark can run."""
 
-    def repo(self, package_files=(), test_files=(), name="Creda"):
+    def repo(self, package_files=(), test_files=(), name="Tolla"):
         box = Path(tempfile.mkdtemp(prefix="pp-backend-"))
         pkg = box / "src" / impl.package_name(name)
         pkg.mkdir(parents=True)
@@ -699,13 +703,13 @@ class BackendStateTests(unittest.TestCase):
 
     def test_numpy_only_is_not_trainable(self):
         state = impl.backend_state(
-            self.repo([("kernel.py", "import numpy as np\n")]), "Creda")
+            self.repo([("kernel.py", "import numpy as np\n")]), "Tolla")
         self.assertEqual(state["state"], "numpy")
         self.assertFalse(state["trainable"])
 
     def test_torch_is_trainable(self):
         state = impl.backend_state(
-            self.repo([("kernel.py", "import torch\n")]), "Creda")
+            self.repo([("kernel.py", "import torch\n")]), "Tolla")
         self.assertEqual(state["state"], "tensor")
         self.assertTrue(state["trainable"])
 
@@ -714,14 +718,14 @@ class BackendStateTests(unittest.TestCase):
         # numpy, so the suite passes while measuring what the model never touched.
         state = impl.backend_state(
             self.repo([("kernel.py", "import torch\n")],
-                      [("test_kernel.py", "import numpy as np\n")]), "Creda")
+                      [("test_kernel.py", "import numpy as np\n")]), "Tolla")
         self.assertEqual(state["state"], "mixed")
         self.assertFalse(state["trainable"])
         self.assertTrue(state["numpyFiles"] and state["tensorFiles"])
 
     def test_an_unparsable_file_does_not_crash_the_reading(self):
         state = impl.backend_state(
-            self.repo([("broken.py", "def (:\n")]), "Creda")
+            self.repo([("broken.py", "def (:\n")]), "Tolla")
         self.assertEqual(state["state"], "unknown")
 
     def test_the_benchmark_harness_ships_with_the_kit_and_compiles(self):
@@ -840,7 +844,7 @@ class VerdictTests(unittest.TestCase):
 class WiringProposalTests(unittest.TestCase):
     """The gap where a comparison belongs is a proposal, not a placeholder."""
 
-    def repo(self, modules=(), baseline_files=(), name="Creda"):
+    def repo(self, modules=(), baseline_files=(), name="Tolla"):
         box = Path(tempfile.mkdtemp(prefix="pp-wiring-"))
         pkg = box / "src" / impl.package_name(name)
         pkg.mkdir(parents=True)
@@ -857,15 +861,15 @@ class WiringProposalTests(unittest.TestCase):
 
     def test_the_draft_is_assembled_from_provenance_not_guessed(self):
         box = self.repo(modules=[("global_term.py", self.MODULE)],
-                        baseline_files=["src/CREDA/models.py"])
-        draft = impl.wiring_proposal(box, "Creda", ["CREDA"])
+                        baseline_files=["src/TOLLA/models.py"])
+        draft = impl.wiring_proposal(box, "Tolla", ["TOLLA"])
         module = draft["new"]["modules"][0]
         self.assertEqual(module["sections"], ["5"])
         self.assertEqual(module["equations"], ["32", "33"])
         self.assertEqual(module["invariants"], ["bounded"])
 
     def test_it_says_what_it_needs_from_the_user_rather_than_deciding(self):
-        draft = impl.wiring_proposal(self.repo(), "Creda", [])
+        draft = impl.wiring_proposal(self.repo(), "Tolla", [])
         self.assertEqual(draft["status"], "draft")
         needs = " ".join(draft["new"]["needs"] + draft["baseline"]["needs"]).lower()
         for asked in ("trainable terms", "backbone", "head", "entry point"):
@@ -873,12 +877,12 @@ class WiringProposalTests(unittest.TestCase):
 
     def test_the_offer_starts_from_what_the_baseline_already_trains_on(self):
         # Not a list somebody guessed about the field: what this repository does.
-        box = self.repo(baseline_files=["src/CREDA/models.py"])
-        (box / "src/CREDA/models.py").write_text(
+        box = self.repo(baseline_files=["src/TOLLA/models.py"])
+        (box / "src/TOLLA/models.py").write_text(
             "from torchvision import models\n"
             "def build():\n"
             "    return models.resnet50(weights=None)\n")
-        draft = impl.wiring_proposal(box, "Creda", ["CREDA"])
+        draft = impl.wiring_proposal(box, "Tolla", ["TOLLA"])
         found = [b["name"] for b in draft["offer"]["fromBaseline"]["backbones"]]
         self.assertEqual(found, ["resnet50"])
         # Nothing is suggested from a list: a forge for papers cannot know which
@@ -886,10 +890,10 @@ class WiringProposalTests(unittest.TestCase):
         self.assertNotIn("lighterAlternatives", draft["offer"])
 
     def test_the_baseline_is_offered_as_a_candidate_never_as_editable(self):
-        box = self.repo(baseline_files=["src/CREDA/models.py", "src/CREDA/train.py"])
-        draft = impl.wiring_proposal(box, "Creda", ["CREDA"])
+        box = self.repo(baseline_files=["src/TOLLA/models.py", "src/TOLLA/train.py"])
+        draft = impl.wiring_proposal(box, "Tolla", ["TOLLA"])
         candidate = draft["baseline"]["candidates"][0]
-        self.assertEqual(candidate["package"], "CREDA")
+        self.assertEqual(candidate["package"], "TOLLA")
         self.assertEqual(len(candidate["files"]), 2)
         self.assertIn("never modified", " ".join(draft["baseline"]["needs"]))
 
@@ -916,62 +920,62 @@ class BaselineEnvironmentTests(unittest.TestCase):
         return box
 
     def test_a_called_module_attribute_is_a_backbone(self):
-        box = self.repo({"src/CREDA/models.py":
+        box = self.repo({"src/TOLLA/models.py":
                          "from torchvision import models\n"
                          "net = models.resnet50(weights=None)\n"})
-        found = [b["name"] for b in impl.baseline_environment(box, ["CREDA"])["backbones"]]
+        found = [b["name"] for b in impl.baseline_environment(box, ["TOLLA"])["backbones"]]
         self.assertEqual(found, ["resnet50"])
 
     def test_a_method_call_on_an_instance_is_not_a_backbone(self):
         # The distinction that decides whether the reading is useful at all: matching
         # on the holder alone buries the real names under every .eval() and .to().
-        box = self.repo({"src/CREDA/train.py":
+        box = self.repo({"src/TOLLA/train.py":
                          "def run(model, device):\n"
                          "    model.eval()\n"
                          "    model.to(device)\n"
                          "    model.parameters()\n"})
-        self.assertEqual(impl.baseline_environment(box, ["CREDA"])["backbones"], [])
+        self.assertEqual(impl.baseline_environment(box, ["TOLLA"])["backbones"], [])
 
     def test_dataset_names_are_read_from_the_baselines_own_vocabulary(self):
-        box = self.repo({"src/CREDA/artifacts.py":
-                         'DATASETS = ["MNIST-USPS-SVHN", "Office-Caltech", "ImageCLEF"]\n'})
-        found = [d["name"] for d in impl.baseline_environment(box, ["CREDA"])["datasets"]]
-        self.assertEqual(found, ["ImageCLEF", "MNIST-USPS-SVHN", "Office-Caltech"])
+        box = self.repo({"src/TOLLA/artifacts.py":
+                         'DATASETS = ["Whitechapel-Taylor", "Foundry-Cast", "PealArchive"]\n'})
+        found = [d["name"] for d in impl.baseline_environment(box, ["TOLLA"])["datasets"]]
+        self.assertEqual(found, ["Foundry-Cast", "PealArchive", "Whitechapel-Taylor"])
 
     def test_ordinary_words_near_a_dataset_variable_are_not_datasets(self):
-        box = self.repo({"src/CREDA/train.py":
+        box = self.repo({"src/TOLLA/train.py":
                          'dataset_keys = ["classes", "labels", "domain", "loader"]\n'})
-        self.assertEqual(impl.baseline_environment(box, ["CREDA"])["datasets"], [])
+        self.assertEqual(impl.baseline_environment(box, ["TOLLA"])["datasets"], [])
 
     def test_the_data_entry_points_are_found_because_a_name_is_not_a_loader(self):
-        # Naming Office-Caltech says what was measured; load_office_caltech() says
+        # Naming Foundry-Cast says what was measured; load_foundry_cast() says
         # how to measure it again. The wiring needs the second one.
-        box = self.repo({"src/CREDA/pipeline.py":
+        box = self.repo({"src/TOLLA/pipeline.py":
                          "def split_stratified(dataset, val_ratio):\n    return dataset\n"
                          "def load_dataset_results(backbone, dataset):\n    return None\n"
                          "def train_model(x):\n    return x\n"})
-        found = impl.baseline_environment(box, ["CREDA"])["dataEntryPoints"]
+        found = impl.baseline_environment(box, ["TOLLA"])["dataEntryPoints"]
         names = sorted(e["function"] for e in found)
         self.assertEqual(names, ["load_dataset_results", "split_stratified"])
         self.assertIn("dataset", found[0]["args"] + found[1]["args"])
 
     def test_notebooks_outside_the_proposal_are_prior_experiments(self):
-        box = self.repo({"src/CREDA/m.py": "x = 1\n",
-                         "CREDA/Notebooks/Results_Generator.ipynb": "{}",
-                         "MIL-CREDA/Notebooks/probe.ipynb": "{}"})
-        found = impl.baseline_environment(box, ["CREDA"], "MIL-CREDA")["notebooks"]
-        self.assertEqual(found, ["CREDA/Notebooks/Results_Generator.ipynb"],
+        box = self.repo({"src/TOLLA/m.py": "x = 1\n",
+                         "TOLLA/Notebooks/Results_Generator.ipynb": "{}",
+                         "FEM-TOLLA/Notebooks/probe.ipynb": "{}"})
+        found = impl.baseline_environment(box, ["TOLLA"], "FEM-TOLLA")["notebooks"]
+        self.assertEqual(found, ["TOLLA/Notebooks/Results_Generator.ipynb"],
                          "the proposal's own notebooks are not prior work")
 
     def test_trained_weights_left_behind_are_reported(self):
-        box = self.repo({"src/CREDA/m.py": "x = 1\n",
-                         "Creda/Models/resnet50/resnet50_ADDA.pth": "binary"})
-        self.assertEqual(impl.baseline_environment(box, ["CREDA"])["weights"],
-                         ["resnet50_ADDA.pth"])
+        box = self.repo({"src/TOLLA/m.py": "x = 1\n",
+                         "Tolla/Models/resnet50/resnet50_prior.pth": "binary"})
+        self.assertEqual(impl.baseline_environment(box, ["TOLLA"])["weights"],
+                         ["resnet50_prior.pth"])
 
     def test_an_empty_baseline_says_it_discovered_nothing(self):
-        box = self.repo({"src/CREDA/m.py": "x = 1\n"})
-        self.assertFalse(impl.baseline_environment(box, ["CREDA"])["discovered"])
+        box = self.repo({"src/TOLLA/m.py": "x = 1\n"})
+        self.assertFalse(impl.baseline_environment(box, ["TOLLA"])["discovered"])
 
 
 class InterpreterGuardTests(unittest.TestCase):
@@ -1991,7 +1995,7 @@ _COUPLING_DECLARATION = (
     "    'arms': {},\n"
     "    'report': {\n"
     "        'renderers': ['tables.render'],\n"
-    "        'record': 'latent.json',\n"
+    "        'record': 'spectrum.json',\n"
     "    },\n"
     "}\n"
 )
@@ -2021,7 +2025,7 @@ class CouplingTests(unittest.TestCase):
     """
 
     CONTRACT = {"renderers": ["tables.render"], "conclusions": [], "figures": [],
-                "record": "latent.json"}
+                "record": "spectrum.json"}
 
     def couple(self, cells, contract=None):
         with tempfile.TemporaryDirectory() as raw:
@@ -2260,7 +2264,7 @@ class AgreementsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             state = self.write(Path(raw), (
                 "# Acuerdos\n\n"
-                "- [x] el techo queda en 1 y compartido\n"
+                "- [x] el rebaje queda en 1 y compartido\n"
                 "- [ ] la figura muestra la imagen, no la ruta\n"))
             self.assertEqual(state["status"], "open")
             self.assertEqual(state["open"], ["la figura muestra la imagen, no la ruta"])
@@ -2288,7 +2292,7 @@ class AgreementsTests(unittest.TestCase):
             root = Path(raw)
             (root / "Method").mkdir(parents=True, exist_ok=True)
             (root / "Method/AGREED.md").write_text(
-                "# Acordado\n\n- [x] el techo queda en uno\n- [ ] la figura inline\n",
+                "# Acordado\n\n- [x] el rebaje queda en uno\n- [ ] la figura inline\n",
                 encoding="utf-8")
             state = impl.agreements_state(root, "Method")
             self.assertEqual(state["status"], "open")
@@ -2330,9 +2334,9 @@ class AgreementsTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as raw:
             state = self.write(Path(raw), (
-                "# Acuerdos\n\n- [x] el techo queda en uno\n\n"
+                "# Acuerdos\n\n- [x] el rebaje queda en uno\n\n"
                 "## Revertidos\n\n"
-                "**\"El techo se fija sin mirar resultados.\"** Revertido al "
+                "**\"El rebaje se fija sin mirar resultados.\"** Revertido al "
                 "decidir que cada familia busca el suyo.\n\n"
                 "*Una línea en cursiva tampoco es una viñeta.*\n"))
             self.assertEqual(state["unparsed"], [])
@@ -2392,14 +2396,14 @@ class AgreementScanTextTests(unittest.TestCase):
             (root / "Method" / "AGREED.md").write_text(
                 "# Agreed\n\n"
                 "- [ ] the figure shows the image, not the path\n"
-                "- [ ] the ceiling stays at one experiment family\n\n"
+                "- [ ] the undercut stays at one experiment family\n\n"
                 f"{block}", encoding="utf-8")
 
             state = impl.agreements_state(root, "Method")
             self.assertEqual(
                 sorted(state["open"]),
                 sorted(["the figure shows the image, not the path",
-                       "the ceiling stays at one experiment family"]))
+                       "the undercut stays at one experiment family"]))
             self.assertEqual(len(state["open"]), 2)
             self.assertEqual(state["settled"], 0)
 
@@ -2488,11 +2492,11 @@ class AgreementWitnessGrammarTests(unittest.TestCase):
         notice the optional group exists.
         """
         with tempfile.TemporaryDirectory() as raw:
-            state = self.state(Path(raw), "- [x] the ceiling stays at one\n")
+            state = self.state(Path(raw), "- [x] the undercut stays at one\n")
             self.assertEqual(state["open"], [])
             self.assertEqual(state["settled"], 1)
             self.assertEqual(state["witness"]["unwitnessed"],
-                             ["the ceiling stays at one"])
+                             ["the undercut stays at one"])
 
     def test_a_witness_token_round_trips_through_mark_text_and_witness(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -2639,11 +2643,11 @@ class SearchIsAnExperimentTests(unittest.TestCase):
     """
 
     COMPLETE = {
-        "what": "el techo del coeficiente de adaptación, por familia",
+        "what": "el rebaje del parcial de golpe, por familia",
         "requiredScale": {"epochs": 20, "seeds": 3},
         "role": "valid",
-        "tieRule": "el techo más chico entre los empatados",
-        "record": "Results/ceilings.json",
+        "tieRule": "el rebaje más chico entre los empatados",
+        "record": "Results/undercuts.json",
     }
 
     def test_a_repository_that_searches_nothing_has_nothing_to_declare(self):
@@ -2671,7 +2675,7 @@ class SearchIsAnExperimentTests(unittest.TestCase):
     def test_each_missing_piece_is_named_with_why_it_matters(self):
         for field in ("what", "requiredScale", "role", "tieRule"):
             partial = {k: v for k, v in self.COMPLETE.items() if k != field}
-            state = impl.search_state({"search": partial}, ["Results/ceilings.json"])
+            state = impl.search_state({"search": partial}, ["Results/undercuts.json"])
             self.assertEqual(state["status"], "incomplete", field)
             self.assertEqual([m["field"] for m in state["missing"]], [field])
             self.assertTrue(state["missing"][0]["reason"], field)
@@ -2685,7 +2689,7 @@ class SearchIsAnExperimentTests(unittest.TestCase):
         """
         state = impl.search_state({"search": self.COMPLETE}, ["Results/summary.json"])
         self.assertEqual(state["status"], "incomplete")
-        self.assertEqual(state["recordNotDeclared"], "Results/ceilings.json")
+        self.assertEqual(state["recordNotDeclared"], "Results/undercuts.json")
 
     def test_a_directory_among_the_records_covers_the_search_record(self):
         state = impl.search_state({"search": self.COMPLETE}, ["Results"])
@@ -2694,7 +2698,7 @@ class SearchIsAnExperimentTests(unittest.TestCase):
 
     def test_a_complete_declaration_passes(self):
         """Rojo alcanzable: si no leyera la declaración, esto seguiría incompleto."""
-        state = impl.search_state({"search": self.COMPLETE}, ["Results/ceilings.json"])
+        state = impl.search_state({"search": self.COMPLETE}, ["Results/undercuts.json"])
         self.assertEqual(state["status"], "ok")
         self.assertEqual(state["missing"], [])
         self.assertEqual(state["declared"]["role"], "valid")
@@ -2706,13 +2710,13 @@ class SearchIsAnExperimentTests(unittest.TestCase):
             product = Path(raw) / "Method"
             (product / "Results").mkdir(parents=True, exist_ok=True)
             state = impl.search_state({"search": self.COMPLETE},
-                                      ["Results/ceilings.json"], product)
+                                      ["Results/undercuts.json"], product)
             self.assertIs(state["recordFound"], False)
             self.assertEqual(state["status"], "incomplete")
 
-            (product / "Results/ceilings.json").write_text("{}", encoding="utf-8")
+            (product / "Results/undercuts.json").write_text("{}", encoding="utf-8")
             state = impl.search_state({"search": self.COMPLETE},
-                                      ["Results/ceilings.json"], product)
+                                      ["Results/undercuts.json"], product)
             self.assertIs(state["recordFound"], True)
             self.assertEqual(state["status"], "ok")
 
@@ -2727,21 +2731,21 @@ class SearchIsAnExperimentTests(unittest.TestCase):
             product = Path(raw) / "Method"
             deeper = product / "Results/Benchmark/Benchmark"
             deeper.mkdir(parents=True, exist_ok=True)
-            (deeper / "ceilings.json").write_text("{}", encoding="utf-8")
+            (deeper / "undercuts.json").write_text("{}", encoding="utf-8")
 
             declaration = {**self.COMPLETE,
-                           "record": "Results/Benchmark/ceilings.json"}
+                           "record": "Results/Benchmark/undercuts.json"}
             state = impl.search_state({"search": declaration},
                                       ["Results/Benchmark"], product)
             self.assertIs(state["recordFound"], False)
             self.assertEqual(state["strayRecords"],
-                             ["Results/Benchmark/Benchmark/ceilings.json"])
+                             ["Results/Benchmark/Benchmark/undercuts.json"])
 
     def test_nothing_to_check_is_none_and_never_a_failure(self):
         """Sin carpeta de producto no hay pregunta que hacerle al disco, y `False`
         ahí sería inventar un hallazgo."""
         state = impl.search_state({"search": self.COMPLETE},
-                                  ["Results/ceilings.json"])
+                                  ["Results/undercuts.json"])
         self.assertIsNone(state["recordFound"])
         self.assertEqual(state["status"], "ok")
 
@@ -2774,11 +2778,11 @@ class SearchRecordScaleAgreementTests(unittest.TestCase):
     """
 
     COMPLETE = {
-        "what": "el techo del coeficiente de adaptación, por familia",
+        "what": "el rebaje del parcial de golpe, por familia",
         "requiredScale": {"epochs": 20, "seeds": 3},
         "role": "valid",
-        "tieRule": "el techo más chico entre los empatados",
-        "record": "Results/ceilings.json",
+        "tieRule": "el rebaje más chico entre los empatados",
+        "record": "Results/undercuts.json",
     }
 
     def _state(self, record_payload):
@@ -2786,10 +2790,10 @@ class SearchRecordScaleAgreementTests(unittest.TestCase):
             product = Path(raw) / "Method"
             results = product / "Results"
             results.mkdir(parents=True, exist_ok=True)
-            (results / "ceilings.json").write_text(
+            (results / "undercuts.json").write_text(
                 json.dumps(record_payload), encoding="utf-8")
             return impl.search_state({"search": self.COMPLETE},
-                                     ["Results/ceilings.json"], product)
+                                     ["Results/undercuts.json"], product)
 
     def test_a_record_naming_none_of_the_declared_axes_is_null_not_false(self):
         """The tri-state's whole point: a record that answers nothing about
@@ -2830,10 +2834,10 @@ class SearchRecordScaleAgreementTests(unittest.TestCase):
             product = Path(raw) / "Method"
             results = product / "Results"
             results.mkdir(parents=True, exist_ok=True)
-            (results / "ceilings.json").write_text(
+            (results / "undercuts.json").write_text(
                 json.dumps({"epochs": 20, "seeds": 5}), encoding="utf-8")
             state = impl.search_state({"search": incomplete},
-                                      ["Results/ceilings.json"], product)
+                                      ["Results/undercuts.json"], product)
         self.assertIsNone(state["scaleSatisfied"])
 
     def test_a_list_valued_axis_is_measured_by_length(self):
@@ -2845,14 +2849,14 @@ class SearchRecordScaleAgreementTests(unittest.TestCase):
 
     def test_absence_of_a_record_on_disk_reports_recordscale_empty_not_an_error(self):
         state = impl.search_state({"search": self.COMPLETE},
-                                  ["Results/ceilings.json"])
+                                  ["Results/undercuts.json"])
         self.assertEqual(state["recordScale"], {})
         self.assertIsNone(state["scaleSatisfied"])
 
 
 class SearchRecordCurrencyTests(unittest.TestCase):
     """`@shard` already refuses to attribute a rung to a folder that merely
-    exists; `@record` did not. A `ceilings.json` written by yesterday's code
+    exists; `@record` did not. An `undercuts.json` written by yesterday's code
     still ticked its rung today, on the strength of `recordFound` alone --
     `_derive_record`'s own `recordCurrent` finding, one level up.
 
@@ -2865,11 +2869,11 @@ class SearchRecordCurrencyTests(unittest.TestCase):
     """
 
     COMPLETE = {
-        "what": "el techo del coeficiente de adaptación, por familia",
+        "what": "el rebaje del parcial de golpe, por familia",
         "requiredScale": {},
         "role": "valid",
-        "tieRule": "el techo más chico entre los empatados",
-        "record": "Results/ceilings.json",
+        "tieRule": "el rebaje más chico entre los empatados",
+        "record": "Results/undercuts.json",
     }
 
     def _state(self, record_payload, *, current_when="evidence.sourcesDigest",
@@ -2882,10 +2886,10 @@ class SearchRecordCurrencyTests(unittest.TestCase):
             results = product / "Results"
             results.mkdir(parents=True, exist_ok=True)
             if record_payload is not None:
-                (results / "ceilings.json").write_text(
+                (results / "undercuts.json").write_text(
                     json.dumps(record_payload), encoding="utf-8")
             return impl.search_state(
-                {"search": declaration}, ["Results/ceilings.json"], product,
+                {"search": declaration}, ["Results/undercuts.json"], product,
                 digest=digest)
 
     def test_no_currentwhen_declared_is_none_the_compatibility_default(self):
@@ -2902,7 +2906,7 @@ class SearchRecordCurrencyTests(unittest.TestCase):
         self.assertIs(state["recordCurrent"], True)
 
     def test_a_record_stamped_with_a_stale_digest_is_false(self):
-        """The finding this closes: `Results/ceilings.json` written by code
+        """The finding this closes: `Results/undercuts.json` written by code
         this repository has since moved past must not read as current."""
         state = self._state({"evidence": {"sourcesDigest": "digest-of-yesterdays-code"}})
         self.assertIs(state["recordCurrent"], False)
@@ -2928,7 +2932,7 @@ class SearchRecordCurrencyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             product = Path(raw) / "Method"
             state = impl.search_state(
-                {"search": declaration}, ["Results/ceilings.json"], product,
+                {"search": declaration}, ["Results/undercuts.json"], product,
                 digest="digest-of-current-code")
         self.assertIn(
             {"field": "currentWhen", "expected": "str", "found": "int"},
@@ -2945,18 +2949,18 @@ class SearchRecordScaleNestedFieldShapedRecordTests(unittest.TestCase):
     declared scale is reported back as one that has not run.
 
     The fixture below is field-shaped, not reader-shaped: its keys are the
-    keys of a `ceilings.json` left behind by a completed 74-minute GPU run,
+    keys of an `undercuts.json` left behind by a completed 74-minute GPU run,
     including the ones this reader has no use for. Tests that write the
     fixture the reader expects never cross the seam that this defect lived
     in.
     """
 
     COMPLETE = {
-        "what": "el techo del coeficiente de adaptación, por familia",
+        "what": "el rebaje del parcial de golpe, por familia",
         "requiredScale": {"epochs": 20, "seeds": 3},
         "role": "valid",
-        "tieRule": "el techo más chico entre los empatados",
-        "record": "Results/ceilings.json",
+        "tieRule": "el rebaje más chico entre los empatados",
+        "record": "Results/undercuts.json",
     }
 
     @staticmethod
@@ -2969,12 +2973,12 @@ class SearchRecordScaleNestedFieldShapedRecordTests(unittest.TestCase):
         """
         return {
             "arm": "full",
-            "ceiling": 0.62,
-            "criterion": "target accuracy at the ceiling",
+            "undercut": 0.62,
+            "criterion": "measured partial ratio at the undercut",
             "grid": [0.25, 0.5, 0.75, 1.0],
             "tied": False,
             "decidedByTieBreak": False,
-            "tieRule": "el techo más chico entre los empatados",
+            "tieRule": "el rebaje más chico entre los empatados",
             "comparison": {"baseline": 0.51},
             "perSeedPick": {"0": 0.62, "1": 0.62, "2": 0.62},
             "seedsAgree": True,
@@ -2983,7 +2987,7 @@ class SearchRecordScaleNestedFieldShapedRecordTests(unittest.TestCase):
             "seeds": list(seeds),
             "atRequiredScale": True,
             "requiredScale": {"epochs": 20, "seeds": 3},
-            "transfers": ["U-S", "S-M"],
+            "castings": ["thin-thick", "thick-heavy"],
             "neutral": 1.0,
         }
 
@@ -2992,10 +2996,10 @@ class SearchRecordScaleNestedFieldShapedRecordTests(unittest.TestCase):
             product = Path(raw) / "Method"
             results = product / "Results"
             results.mkdir(parents=True, exist_ok=True)
-            (results / "ceilings.json").write_text(
+            (results / "undercuts.json").write_text(
                 json.dumps(record_payload), encoding="utf-8")
             return impl.search_state({"search": self.COMPLETE},
-                                     ["Results/ceilings.json"], product)
+                                     ["Results/undercuts.json"], product)
 
     def test_a_flat_record_still_reads_exactly_as_it_did(self):
         """The regression lock on today's path. Accepting a second shape may
@@ -3010,8 +3014,8 @@ class SearchRecordScaleNestedFieldShapedRecordTests(unittest.TestCase):
         groups, the declared axes inside each. Read at the top level this
         record answers nothing; read uniformly it answers everything, and a
         search that ran at full declared scale stops reporting as unrun."""
-        state = self._state({"creda": self._field_group(),
-                             "milcreda": self._field_group()})
+        state = self._state({"tolla": self._field_group(),
+                             "femtolla": self._field_group()})
         self.assertEqual(state["recordScale"],
                          {"epochs": 20, "seeds": [0, 1, 2]})
         self.assertIs(state["scaleSatisfied"], True)
@@ -3023,8 +3027,8 @@ class SearchRecordScaleNestedFieldShapedRecordTests(unittest.TestCase):
         axis, so an implementation picking the first group, the last group,
         or the weakest group wholesale reports something else."""
         state = self._state({
-            "creda": self._field_group(epochs=20, seeds=(0, 1)),
-            "milcreda": self._field_group(epochs=12, seeds=(0, 1, 2, 3)),
+            "tolla": self._field_group(epochs=20, seeds=(0, 1)),
+            "femtolla": self._field_group(epochs=12, seeds=(0, 1, 2, 3)),
         })
         self.assertEqual(state["recordScale"],
                          {"epochs": 12, "seeds": [0, 1]})
@@ -3036,8 +3040,8 @@ class SearchRecordScaleNestedFieldShapedRecordTests(unittest.TestCase):
         sibling's number instead would hand `_scale_satisfied` a figure no
         group vouched for and let half a record answer for the whole."""
         state = self._state({
-            "creda": self._field_group(epochs="veinte"),
-            "milcreda": self._field_group(epochs=20),
+            "tolla": self._field_group(epochs="veinte"),
+            "femtolla": self._field_group(epochs=20),
         })
         self.assertEqual(state["recordScale"],
                          {"epochs": "veinte", "seeds": [0, 1, 2]})
@@ -3050,7 +3054,7 @@ class SearchRecordScaleNestedFieldShapedRecordTests(unittest.TestCase):
         the same answer a record naming no axis at all gets."""
         partial = self._field_group()
         del partial["seeds"]
-        state = self._state({"creda": self._field_group(), "milcreda": partial})
+        state = self._state({"tolla": self._field_group(), "femtolla": partial})
         self.assertEqual(state["recordScale"], {})
         self.assertIsNone(state["scaleSatisfied"])
 
@@ -3059,8 +3063,8 @@ class SearchRecordScaleNestedFieldShapedRecordTests(unittest.TestCase):
         One scalar beside the groups and there is no longer a rule that says
         which level the record is written at, so the reader declines rather
         than picking one."""
-        state = self._state({"creda": self._field_group(),
-                             "milcreda": self._field_group(),
+        state = self._state({"tolla": self._field_group(),
+                             "femtolla": self._field_group(),
                              "generatedAt": "2026-08-24T03:44:00Z"})
         self.assertEqual(state["recordScale"], {})
         self.assertIsNone(state["scaleSatisfied"])
@@ -3104,10 +3108,10 @@ class UndeclaredRecordsTests(unittest.TestCase):
     def test_a_record_nobody_declared_is_named(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            self.results(root, "summary.json", "Benchmark/ceilings.json")
+            self.results(root, "summary.json", "Benchmark/undercuts.json")
             state = self.build(root, "        'records': ['Results/summary.json'],\n")
             self.assertEqual(state["undeclaredRecords"],
-                             ["Results/Benchmark/ceilings.json"])
+                             ["Results/Benchmark/undercuts.json"])
 
     def test_it_does_not_filter_by_format(self):
         """Filtrar por `.json` daría un pase mudo a quien registre en otra cosa.
@@ -3117,11 +3121,11 @@ class UndeclaredRecordsTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            self.results(root, "runs.csv", "grid.parquet", "latents.npz")
+            self.results(root, "runs.csv", "grid.parquet", "spectra.npz")
             state = self.build(root, "        'records': [],\n")
             self.assertEqual(state["undeclaredRecords"],
-                             ["Results/grid.parquet", "Results/latents.npz",
-                              "Results/runs.csv"])
+                             ["Results/grid.parquet", "Results/runs.csv",
+                              "Results/spectra.npz"])
 
     def test_declaring_a_directory_covers_it_and_shows_in_the_echo(self):
         """Permitido, y visible: renunciar a la cuenta archivo por archivo es una
@@ -3129,10 +3133,10 @@ class UndeclaredRecordsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             self.results(root, "figures/curve.pdf", "figures/grid.pdf",
-                         "Benchmark/ceilings.json")
+                         "Benchmark/undercuts.json")
             state = self.build(root, "        'records': ['Results/figures'],\n")
             self.assertEqual(state["undeclaredRecords"],
-                             ["Results/Benchmark/ceilings.json"])
+                             ["Results/Benchmark/undercuts.json"])
             self.assertEqual(state["declared"]["records"], ["Results/figures"])
 
     def test_the_per_checkpoint_artefacts_of_models_are_never_reported(self):
@@ -3146,7 +3150,7 @@ class UndeclaredRecordsTests(unittest.TestCase):
             models = root / "Method/Models/Benchmark"
             models.mkdir(parents=True, exist_ok=True)
             for i in range(5):
-                (models / f"A_M-U_seed{i}.manifest.json").write_text("{}", encoding="utf-8")
+                (models / f"A_thin-thick_seed{i}.manifest.json").write_text("{}", encoding="utf-8")
             self.results(root, "summary.json")
             state = self.build(root, "        'records': ['Results/summary.json'],\n")
             self.assertEqual(state["undeclaredRecords"], [])
@@ -3155,11 +3159,11 @@ class UndeclaredRecordsTests(unittest.TestCase):
         """Rojo alcanzable: si no leyera `records`, esto seguiría reportando."""
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            self.results(root, "summary.json", "Benchmark/latent.json")
+            self.results(root, "summary.json", "Benchmark/spectrum.json")
             state = self.build(
                 root,
                 "        'records': ['Results/summary.json',\n"
-                "                    'Results/Benchmark/latent.json'],\n")
+                "                    'Results/Benchmark/spectrum.json'],\n")
             self.assertEqual(state["undeclaredRecords"], [])
 
 
@@ -3447,8 +3451,8 @@ class DeclaredDimensionNamesTests(unittest.TestCase):
 class VerifyDistributionUniverseTests(unittest.TestCase):
     """`verify` classifies a shard's dimensions, not the report's.
 
-    A report can render latent-analysis quantities no shard ever carries —
-    a class-separation figure, an attention diagnostic — and none of those
+    A report can render spectrum-analysis quantities no shard ever carries —
+    a partial-ratio figure, a strike-decay diagnostic — and none of those
     belong in the partition a machine split has to be exhaustive over.
     Demanding a classification for them is a category error, not a missing
     declaration, and this is the seam where that used to leak in.
@@ -3459,7 +3463,7 @@ class VerifyDistributionUniverseTests(unittest.TestCase):
         "    'revision': 'r01.md',\n"
         "    'arms': {},\n"
         "    'report': {\n"
-        "        'dimensions': {'shardOnly': 'higher', 'latentOnly': None},\n"
+        "        'dimensions': {'shardOnly': 'higher', 'spectrumOnly': None},\n"
         "    },\n"
         "    'distribution': {\n"
         "        'axis': 'seed',\n"
@@ -3484,7 +3488,7 @@ class VerifyDistributionUniverseTests(unittest.TestCase):
 
     def test_a_dimension_the_report_renders_but_no_shard_carries_is_never_demanded(self):
         """Reachable red: sourcing this from the report's dimensions instead
-        of `config.DIMENSIONS` would put `latentOnly` in `unpartitioned` and
+        of `config.DIMENSIONS` would put `spectrumOnly` in `unpartitioned` and
         report `incomplete` for a declaration that classified everything a
         shard actually has."""
         box = self._box("universe")
@@ -3826,7 +3830,7 @@ class ProseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             self.build(root, **{
-                "src__Method__config.py": "RAMP_CEILING = 1.0\n",
+                "src__Method__config.py": "TAPER_UNDERCUT = 1.0\n",
                 "src__Method__figures.py":
                     '"""The coefficient is fixed at `LAMBDA_CONST` for every arm."""\n',
             })
@@ -3837,9 +3841,9 @@ class ProseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             self.build(root, **{
-                "src__Method__config.py": "RAMP_CEILING = 1.0\n",
+                "src__Method__config.py": "TAPER_UNDERCUT = 1.0\n",
                 "src__Method__figures.py":
-                    '"""Fixed at `RAMP_CEILING` for every arm."""\n',
+                    '"""Fixed at `TAPER_UNDERCUT` for every arm."""\n',
             })
             self.assertEqual(impl.prose_state(root, None)["unresolvedSymbols"], [])
 
@@ -4813,7 +4817,7 @@ class SearchDeclaredBeforeTheRunTests(unittest.TestCase):
         "requiredScale": {"epochs": 20, "seeds": 3},
         "role": "valid",
         "tieRule": "the smallest value among the tied candidates",
-        "record": "Results/ceilings.json",
+        "record": "Results/undercuts.json",
     }
 
     def _declaration(self, search):
@@ -4853,7 +4857,7 @@ class SearchDeclaredBeforeTheRunTests(unittest.TestCase):
             if record_present:
                 results = box / "Method" / "Results"
                 results.mkdir(parents=True, exist_ok=True)
-                (results / "ceilings.json").write_text(
+                (results / "undercuts.json").write_text(
                     json.dumps(record_scale or {}), encoding="utf-8")
             if pilot:
                 results = box / "Method" / "Results"
@@ -5019,7 +5023,7 @@ class RemoteExecutionPendingBeforeTheRunTests(unittest.TestCase):
             if record_present and search is not None:
                 results = box / "Method" / "Results"
                 results.mkdir(parents=True, exist_ok=True)
-                (results / "ceilings.json").write_text("{}", encoding="utf-8")
+                (results / "undercuts.json").write_text("{}", encoding="utf-8")
             if pilot:
                 results = box / "Method" / "Results"
                 results.mkdir(parents=True, exist_ok=True)
@@ -5673,6 +5677,79 @@ class NextStepSectionCoverageTests(unittest.TestCase):
         self.assertEqual(dangling, [], f"referenced but never defined: {dangling}")
 
 
+class ForgeVocabularyDefinitionTests(unittest.TestCase):
+    """The floor is written down once, and a second writing is a red.
+
+    The floor's own comment has said "stated once, because two spellings of a
+    floor is how a floor drifts" since the day it was written -- in both of the
+    two files that spelled it. Two byte-identical tuples read as agreement, so
+    there was never a moment where looking at them said anything was wrong.
+    That is the whole failure mode: copies agree right up until one is edited,
+    and the edit that breaks them is the one nobody thinks to make twice.
+
+    Measured, at the moment this test was written: the floor was spelled at
+    `tests/test_proposal_implementation.py:80` and `tests/test_skill_audit.py:54`,
+    byte for byte, and `CopiedHelperFidelityTests.COPIES` -- the mechanism that
+    exists to turn exactly this drift into a red -- locked four FUNCTIONS
+    between those two files and not the constant. A third, partial spelling sat
+    inline in `test_it_names_no_service_or_method_of_its_own`: six of the eight
+    words, and it had already drifted, missing one word from each of the two
+    halves the floor is split into. Nothing in the suite could see it, because a
+    shorter list is not a different list to anything that never compares them.
+
+    Not "the copies are equal". That assertion passes on the day a copy is made
+    and goes red only after the drift has shipped, which is one edit too late.
+    This one asserts there is nothing to compare.
+
+    The rule is derived, not a threshold somebody picked: a sequence of string
+    literals that holds MORE THAN HALF the floor is the floor being written
+    down again. A guard that legitimately names a few of these words for its own
+    narrower purpose -- `test_shard_io_source_names_no_service_and_no_domain_term`
+    names three of the eight, for the one module whose job is reading
+    dimension-keyed trees -- is naming words, not restating the floor, and the
+    majority rule is what tells the two apart without a list of exceptions.
+    """
+
+    #: The one module allowed to write the floor down, because it is where the
+    #: floor is defined. Named rather than inferred: "the file that happens to
+    #: contain the biggest copy" would bless whichever copy grew last.
+    DEFINITION = DEFINITION_MODULE
+
+    def suite_modules(self):
+        """The shared roster, with the one thing a roster must never be: empty."""
+        modules = suite_modules()
+        self.assertGreater(len(modules), 1, "tests/ holds one module or none")
+        return modules
+
+    def literal_word_sequences(self, source):
+        """Every tuple/list/set of string literals in `source`, as word sets."""
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+                continue
+            words = {element.value.strip().lower() for element in node.elts
+                     if isinstance(element, ast.Constant)
+                     and isinstance(element.value, str)}
+            if words:
+                yield node.lineno, words
+
+    def test_the_floor_is_written_down_in_exactly_one_place(self):
+        floor = set(FORGE_VOCABULARY_FLOOR)
+        offenders = []
+        for module in self.suite_modules():
+            if module == self.DEFINITION:
+                continue
+            source = module.read_text(encoding="utf-8")
+            for lineno, words in self.literal_word_sequences(source):
+                shared = words & floor
+                if len(shared) * 2 > len(floor):
+                    offenders.append(
+                        f"{module.name}:{lineno} respells {sorted(shared)}")
+        self.assertEqual(
+            offenders, [],
+            "the floor is written down somewhere other than "
+            f"{self.DEFINITION.name}, so the two can drift apart: {offenders}")
+
+
 class ReportFirstSectionProseTests(unittest.TestCase):
     """The `report-first` section's own examples must stay generic: this is a
     forge for papers, not for one benchmark.
@@ -5757,9 +5834,16 @@ class ReportFirstSectionProseTests(unittest.TestCase):
         return match.group(0).lower()
 
     def test_it_names_no_service_or_method_of_its_own(self):
+        """Read through `leaks_in`, so this walks the whole floor.
+
+        It used to carry its own inline list of six words. Two of the floor's
+        eight were never in it, so this check had a hole nothing could see,
+        which is the drift `ForgeVocabularyDefinitionTests` now turns into a
+        red.
+        """
         section = self.section_text()
-        for leaked in ("kaggle", "t4", "ceiling", "ramp", "transfer", "creda"):
-            self.assertIsNone(re.search(rf"\b{leaked}\b", section), leaked)
+        self.assertEqual(leaks_in(section), [],
+                         "the report-first section borrows a target's words")
 
     def test_the_whole_forge_borrows_no_repository_s_vocabulary(self):
         """The guard covers every surface, not the paragraph written last.
@@ -5778,11 +5862,10 @@ class ReportFirstSectionProseTests(unittest.TestCase):
         """
         for document in self.guarded_documents():
             with self.subTest(document=str(document.relative_to(self.SKILL_ROOT))):
-                text = self.scannable_text(document)
-                for leaked in FORGE_VOCABULARY_FLOOR:
-                    self.assertIsNone(
-                        re.search(rf"\b{leaked}\b", text),
-                        f"{leaked!r} is some target's vocabulary, not the forge's")
+                hits = leaks_in(self.scannable_text(document))
+                self.assertEqual(
+                    hits, [],
+                    f"{hits} is some target's vocabulary, not the forge's")
 
     def test_the_guard_scans_the_scripts_this_forge_ships(self):
         """The surface that changes most often was the one never scanned.
@@ -5802,12 +5885,19 @@ class ReportFirstSectionProseTests(unittest.TestCase):
         self.assertTrue(expected, "the forge ships no scripts, which cannot be")
         self.assertEqual(sorted(expected - scanned), [])
 
-    def test_a_leak_into_a_script_is_caught(self):
-        """Proven against a tree built for it, not against a clean checkout.
+    #: The word the planted-leak fixtures below plant, taken from the floor
+    #: rather than spelled. A fixture that exists to demonstrate a leak must not
+    #: be one: the suite these fixtures live in is a guarded surface too, and a
+    #: fixture that respelled a target's word could only be let through by line
+    #: number — a list that goes stale on the next edit above it.
+    PLANTED = FORGE_VOCABULARY_FLOOR[0]
 
-        A guard that passes because nothing is wrong today has not been shown to
-        do anything. This builds the forge's shape, plants one leak in a script
-        and one in a comment, and reads what the guard would scan.
+    def caught_in_a_forge_shaped_tree(self, comment):
+        """Build the forge's shape, plant `comment` in one script of two, and
+        report what the guard catches, keyed by path.
+
+        Two scripts and not one, so a guard that reported every file it looked
+        at would be told apart from a guard that reported the file that leaks.
         """
         base = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, base, ignore_errors=True)
@@ -5817,41 +5907,166 @@ class ReportFirstSectionProseTests(unittest.TestCase):
         (base / "SKILL.md").write_text("Generic doctrine.\n", encoding="utf-8")
         (base / "references" / "usage.md").write_text("Generic.\n", encoding="utf-8")
         (base / "scripts" / "leaky.py").write_text(
-            "# reached only by the ramp\nVALUE = 1\n", encoding="utf-8")
+            f"{comment}\nVALUE = 1\n", encoding="utf-8")
         (base / "scripts" / "clean.py").write_text("VALUE = 2\n", encoding="utf-8")
 
         caught = {}
         for document in self.guarded_documents(base):
-            text = self.scannable_text(document)
-            hits = [word for word in FORGE_VOCABULARY_FLOOR
-                    if re.search(rf"\b{word}\b", text)]
+            hits = leaks_in(self.scannable_text(document))
             if hits:
                 caught[str(document.relative_to(base))] = hits
-        self.assertEqual(caught, {"scripts/leaky.py": ["ramp"]})
+        return caught
 
-    def test_the_tests_stay_unguarded_and_it_is_measured(self):
-        """Why the widening stops at `scripts/`.
+    def test_a_leak_into_a_script_is_caught(self):
+        """Proven against a tree built for it, not against a clean checkout.
 
-        `remote-execution` ships an adapter for one hosted service, so the suite
-        that tests it names that service constantly and legitimately. Guarding
-        `tests/` would mean exempting the file that most needs its vocabulary,
-        which is not a guard. Measured rather than asserted, so the day the
-        number goes to zero somebody can reconsider.
+        A guard that passes because nothing is wrong today has not been shown to
+        do anything. This builds the forge's shape, plants one leak in a script,
+        and reads what the guard would scan.
         """
-        suite_root = FORGE / "tests"
         self.assertEqual(
-            [str(path) for path in self.guarded_documents()
-             if suite_root in path.parents], [],
-            "the forge's own suite is not a guarded surface")
+            self.caught_in_a_forge_shaped_tree(
+                f"# reached only by the {self.PLANTED}"),
+            {"scripts/leaky.py": [self.PLANTED]})
 
-        suite = suite_root / "test_remote_execution.py"
+    def test_a_pluralised_leak_into_a_script_is_caught(self):
+        """A leak arrives in the plural more often than in the singular.
+
+        A word on the floor names a thing, and a thing gets counted and gets
+        written to a file: the artefact a target's search leaves behind is
+        `<word>s.json`, and the sentence that leaks is "how many <word>s there
+        are". `\\b<word>\\b` matches neither, so the guard read clean over
+        exactly the spelling a leak is likeliest to wear. Measured, by
+        execution, before this test existed:
+
+            \\bceiling\\b   vs 'ceilings.json' -> no match
+            \\bceilings?\\b vs 'ceilings.json' -> match
+
+        This is the lock and not the pattern string: asserting that
+        `leak_pattern` spells `s?` would pass on any regex containing those two
+        characters and says nothing about what the guard does with a document.
+        `remote-execution`'s own `shard_io` guard has spelled it `s?` since it
+        was written, for this reason; the rule was never carried across to here.
+        """
+        self.assertEqual(
+            self.caught_in_a_forge_shaped_tree(
+                f"# the record lands in {self.PLANTED}s.json"),
+            {"scripts/leaky.py": [self.PLANTED]})
+
+    def guarded_suites(self):
+        """The forge's own suite, as a guarded surface — split by word.
+
+        The widening used to stop at `scripts/`, and the reason it gave was
+        entirely about ONE word: `remote-execution` ships an adapter for one
+        hosted service, so the suite that tests it names that service
+        constantly and legitimately. Guarding `tests/` wholesale would mean
+        exempting the file that most needs its vocabulary, which is not a
+        guard.
+
+        Every word of that is true, and it is an argument for exempting a WORD,
+        not a TREE. A hosted service is something any research project could
+        rent; the name of one project's product is not. The whole suite tree
+        went unscanned because one word in one file needed an exemption, and
+        the words no file needs went unscanned with it. The test that stated
+        the exemption said as much itself — "measured rather than asserted, so
+        the day the number goes to zero somebody can reconsider" — and both
+        measurements below are kept, because both exemptions are still real and
+        both still cost something.
+
+        The split is declared where the floor is, in `tests/forge_vocabulary.py`,
+        with the argument for each half beside it.
+        """
+        return suite_modules()
+
+    def test_a_target_s_proper_nouns_do_not_reach_the_forge_s_own_suite(self):
+        """The half of the floor that has no legitimate use anywhere.
+
+        These words mean nothing in ordinary English, so there is no usage to
+        weigh against the guard: every hit is a leak. This is the assertion the
+        tree-shaped exemption was hiding, and it had real work to do the day it
+        was written — the suites carried a target's product name in prose in
+        three separate files, describing one project's spellings as if they
+        were neutral illustration.
+        """
+        for module in self.guarded_suites():
+            with self.subTest(module=module.name):
+                hits = leaks_in(
+                    scannable_suite_text(module.read_text(encoding="utf-8")),
+                    FORGE_TARGET_PROPER_NOUNS)
+                self.assertEqual(
+                    hits, [],
+                    f"{hits} names a target the forge is not allowed to know")
+
+    def test_the_guard_s_own_machinery_is_exempt_by_its_shape(self):
+        """The mechanism has to be able to name what it forbids.
+
+        Proven on two modules built for it rather than on the suite as it
+        stands, and one line apart: the same word quoted alone is the guard
+        naming it, and the same word in a comment is a leak. A checkout that
+        happens to be clean today would prove only the first half, and an
+        exemption that let the second half through would be a guard that
+        cannot fail.
+
+        Neither string below spells a word: both take it from the floor, which
+        is the same rule the planted-leak fixtures follow, and the reason this
+        test is not itself the thing it forbids.
+        """
+        word = FORGE_TARGET_PROPER_NOUNS[0]
+        named = f'WATCHED = ("{word}",)\n'
+        self.assertEqual(
+            leaks_in(scannable_suite_text(named), FORGE_TARGET_PROPER_NOUNS), [],
+            "a word quoted alone is the guard naming it, not a leak")
+        used = f'WATCHED = ("{word}",)\n# one {word} run wrote this\n'
+        self.assertEqual(
+            leaks_in(scannable_suite_text(used), FORGE_TARGET_PROPER_NOUNS),
+            [word],
+            "quoting one line above does not buy the next line an exemption")
+
+    def test_the_service_vocabulary_stays_exempt_here_and_it_is_measured(self):
+        """The original exemption, kept, and kept measured.
+
+        The skill under test ships an adapter for one hosted service; its suite
+        names that service hundreds of times, and every one of them is the
+        suite doing its job. The day this number goes to zero the service half
+        can join the guarded half.
+        """
+        suite = FORGE / "tests" / "test_remote_execution.py"
         self.assertTrue(suite.is_file())
-        occurrences = len(re.findall(
-            r"\bkaggle\b", suite.read_text(encoding="utf-8").lower()))
+        text = suite.read_text(encoding="utf-8").lower()
+        occurrences = sum(len(leak_pattern(word).findall(text))
+                          for word in FORGE_SERVICE_VOCABULARY)
         self.assertGreater(
             occurrences, 100,
-            "one test file names the service hundreds of times because the "
-            "skill under test ships an adapter for it")
+            "the adapter's own suite no longer names the service it adapts, "
+            "so the exemption that spared it has nothing left to spare")
+
+    def test_the_domain_words_stay_exempt_here_and_it_is_measured(self):
+        """The new exemption, measured on exactly the same terms.
+
+        A target's science words are also ordinary English, and the suites use
+        them as ordinary English: a bulk download whose size a remote job
+        decides, git's own word for what a `fetch --dry-run` still moves, a
+        bound in seconds on one subprocess. Guarding them here would fail that
+        usage rather than catch a leak.
+
+        The module that DECLARES the split is excluded from the count. It
+        argues for the exemption in prose, so counting it would let this
+        measurement be satisfied by its own justification — a measurement that
+        can only ever agree with itself.
+        """
+        found = {}
+        for module in self.guarded_suites():
+            if module == DEFINITION_MODULE:
+                continue
+            hits = leaks_in(
+                scannable_suite_text(module.read_text(encoding="utf-8")),
+                FORGE_TARGET_DOMAIN_WORDS)
+            if hits:
+                found[module.name] = hits
+        self.assertNotEqual(
+            found, {},
+            "no suite uses a domain word as ordinary English any more, so "
+            "nothing is being spared and these words can be guarded here too")
 
 
 class MaterializeBenchmarkDeclarationTests(unittest.TestCase):
@@ -10520,7 +10735,7 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
 
     TARGETS = FORGE / "implementations"
 
-    #: Split on punctuation and on camel-case boundaries, so `MIL_CREDA_Benchmark`
+    #: Split on punctuation and on camel-case boundaries, so `FEM_TOLLA_Benchmark`
     #: and `reportDigest` both come apart into the words a reader would say.
     WORD_SPLIT_RE = re.compile(r"[^A-Za-z0-9]+|(?<=[a-z])(?=[A-Z])")
 
@@ -10719,13 +10934,13 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
     def test_rule_a_names_the_file_a_planted_example_leak_is_in(self):
         base = self.scratch_forge()
         (base / "scripts" / "leaky.py").write_text(
-            'CONTRACT = {"figures": ["figures.curves", "latent.grid"]}\n',
+            'CONTRACT = {"figures": ["figures.curves", "spectra.grid"]}\n',
             encoding="utf-8")
         (base / "scripts" / "clean.py").write_text(
             'CONTRACT = {"figures": ["figures.curves"]}\n', encoding="utf-8")
         self.assertEqual(
             self.example_violations(base),
-            [("scripts/leaky.py", 1, "latent.grid")])
+            [("scripts/leaky.py", 1, "spectra.grid")])
 
     def test_rule_a_objects_to_a_module_the_forge_legitimately_owns(self):
         """The reason rule A exists at all.
@@ -13570,11 +13785,11 @@ class PositionModuleTests(unittest.TestCase):
 
     def test_derive_rehearsal_ticks_on_smoke_ready(self):
         items = [{"ordinal": 1, "mark": " ", "text": "x",
-                  "witness": {"kind": "rehearsal", "operand": "ceiling-search"}}]
+                  "witness": {"kind": "rehearsal", "operand": "undercut-search"}}]
         self.assertIs(impl_position.derive(
-            items, {"smokeReady": {"ceiling-search": True}})[0]["derived"], True)
+            items, {"smokeReady": {"undercut-search": True}})[0]["derived"], True)
         self.assertIs(impl_position.derive(
-            items, {"smokeReady": {"ceiling-search": False}})[0]["derived"], False)
+            items, {"smokeReady": {"undercut-search": False}})[0]["derived"], False)
         self.assertIsNone(impl_position.derive(items, {})[0]["derived"])
 
     def test_derive_shard_is_unmeasured_without_shard_evidence(self):
@@ -14394,7 +14609,7 @@ class PositionCommandTests(unittest.TestCase):
         (box / "Method" / "AGREED.md").write_text(
             "# Agreed\n\n- [x] 1. Something already settled.\n", encoding="utf-8")
         sequence = json.dumps([
-            {"text": "Ceiling search.", "witness": {"kind": "record"}},
+            {"text": "Undercut search.", "witness": {"kind": "record"}},
             {"text": "Rehearse the job.",
              "witness": {"kind": "rehearsal", "operand": "job1"}},
         ])
@@ -14457,7 +14672,7 @@ class PositionCommandTests(unittest.TestCase):
         (box / "Method" / "Results").mkdir(parents=True)
         (box / "Method" / "Results" / "record.json").write_text("{}", encoding="utf-8")
         (box / "Method" / "AGREED.md").write_text(
-            self.block_text("- [ ] 1. Ceiling search. `@record`\n"), encoding="utf-8")
+            self.block_text("- [ ] 1. Undercut search. `@record`\n"), encoding="utf-8")
 
         proc = self.run_cli("position", "--target", str(box), "--name", "Method",
                             "--revision", "r1.md", "--session", "s1",
@@ -14468,7 +14683,7 @@ class PositionCommandTests(unittest.TestCase):
         self.assertEqual(result["status"], "written")
         self.assertEqual(result["wrote"], [1])
         on_disk = (box / "Method" / "AGREED.md").read_text(encoding="utf-8")
-        self.assertIn("- [x] 1. Ceiling search.", on_disk)
+        self.assertIn("- [x] 1. Undercut search.", on_disk)
         ledger = box / "Method" / ".implementation" / "position.jsonl"
         events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
         self.assertEqual(len(events), 1)
@@ -16321,12 +16536,11 @@ class PositionReconcileTests(unittest.TestCase):
     yet (design §3.3, spec "Reconstruction From an Existing Target").
 
     The fixture (`tests/fixtures/agreed_shape_reconcile.md`) mirrors the
-    real `implementations/Domain_Adaptation/MIL-CREDA/AGREED.md`'s *shape*
-    — ~90 checklist items across sixteen `##` sections, plus a trailing
-    no-bullet `Reversed` section — because `implementations/` is gitignored
-    and reconciliation has to be proven against a realistically dense,
-    hand-curated document, not a two-line toy nobody would mistake for a
-    stress test.
+    *shape* a real target's `AGREED.md` reaches — ~90 checklist items
+    across sixteen `##` sections, plus a trailing no-bullet `Reversed`
+    section — because `implementations/` is gitignored and reconciliation
+    has to be proven against a realistically dense, hand-curated document,
+    not a two-line toy nobody would mistake for a stress test.
     """
 
     FIXTURE = Path(__file__).resolve().parent / "fixtures" / "agreed_shape_reconcile.md"
@@ -16483,10 +16697,10 @@ class PositionReconcileTests(unittest.TestCase):
 
         Ten shard directories against six other witnesses (one `@record`,
         five `@notebook`) is not an arbitrary ratio: it is the real shape
-        measured against a MIL-CREDA-shaped target (ten shards under
-        `Results/Benchmark/shards`, five notebooks, one declared record),
-        reproduced with `position --reconcile --shards <dir>` -- the exact
-        invocation that surfaced `_position_write_evidence`'s hardcoded
+        measured against a target that had already run split (ten shards
+        under `Results/Benchmark/shards`, five notebooks, one declared
+        record), reproduced with `position --reconcile --shards <dir>` --
+        the exact invocation that surfaced `_position_write_evidence`'s hardcoded
         `shardsArrived: None`. RED before that function threads `--shards`
         through (6 measured vs 10 unmeasured); GREEN once it does.
         """
@@ -16670,7 +16884,7 @@ class OpenDiscussionsTests(unittest.TestCase):
         guarantee, delivered by construction rather than a second rule.
         """
         box = self._box()
-        original = "should RAMP_CEILING stay at 1.0?"
+        original = "should TAPER_UNDERCUT stay at 1.0?"
         clarification = "does 'stay at 1.0' mean for every family, or per family?"
         self._append(box, asked=original, answered="yes, for every family")
         self._append(box, asked=clarification)
@@ -23159,8 +23373,8 @@ class UndeclaredOptionalDeclarationTests(unittest.TestCase):
     """
 
     SEARCH_DECLARED = {
-        "what": "the ceiling", "requiredScale": {"epochs": 1}, "role": "valid",
-        "tieRule": "the smaller one wins", "record": "Results/ceilings.json",
+        "what": "the undercut", "requiredScale": {"epochs": 1}, "role": "valid",
+        "tieRule": "the smaller one wins", "record": "Results/undercuts.json",
     }
     DISTRIBUTION_DECLARED = {
         "axis": "seed", "poolable": [], "perEnvironment": [], "perRun": [],
