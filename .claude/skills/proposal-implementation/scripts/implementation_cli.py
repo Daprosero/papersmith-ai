@@ -12885,18 +12885,29 @@ def _refusal_target_args(args) -> list[str]:
             "--name", str(getattr(args, "name", ""))]
 
 
-def _refusal_position_command(args, *extra: str) -> str:
+def _refusal_position_command(args, *extra: str, revision: str | None = None) -> str:
     """The `position` invocation that re-derives the block this refusal read.
 
     `--session` is not decoration: `position` requires it, so a published
     command that dropped it would refuse on its own advice. Every gating
     command that can raise a position code carries `--session` itself, and the
     caller's own is reused rather than invented.
+
+    `revision` is the same argument for `--revision`, and it exists because
+    `step` is the one gating command that raises a position code while
+    carrying no `--revision` flag at all (`main()`'s own per-command table).
+    `cmd_position` refuses `REVISION_UNREADABLE` without one, so a command
+    published from `step`'s arguments alone would refuse on its own advice --
+    the exact trap `test_expand_contract_command_string_is_runnable_and_
+    writes_nothing` was written for. The caller supplies the revision the
+    block is ALREADY bound to (`_position_block_revision`), never one this
+    file picks.
     """
     parts = ["position", *_refusal_target_args(args),
              "--session", str(getattr(args, "session", "") or "")]
-    if getattr(args, "revision", None):
-        parts += ["--revision", str(args.revision)]
+    resolved = revision or getattr(args, "revision", None)
+    if resolved:
+        parts += ["--revision", str(resolved)]
     return _cli_command(*parts, *extra)
 
 
@@ -13131,6 +13142,89 @@ def _refusal_git_command(args, *parts: str) -> str:
                     ("git", "-C", str(getattr(args, "target", "")), *parts))
 
 
+def _position_block_revision(target: Path, name: str) -> str | None:
+    """The revision `<Name>/AGREED.md`'s position block is already bound to,
+    read straight off its own header.
+
+    Rebuilt at the moment of refusal from `target`/`name` alone, for the
+    reason `_position_attained_level` states: the `except Refused` chokepoint
+    is handed nothing but `args`, and `step`'s `args` carry no revision at
+    all. Nothing raises on the way out -- a resolution that failed while being
+    built would cost the reader both it and the refusal it explains.
+
+    `allow_legacy=True` so a block written by the prior boolean-only grammar
+    still yields its revision: this reads a header field, it does not decide
+    whether the block is current, and refusing to name a revision here would
+    silently downgrade the published command for exactly the documents
+    `position` exists to rewrite.
+    """
+    product = target / name
+    if not product.is_dir():
+        return None
+    try:
+        for path in sorted(product.glob("*.md")):
+            if not path.is_file():
+                continue
+            block = impl_position.locate_block(path.read_bytes(),
+                                               allow_legacy=True)
+            if block is None:
+                continue
+            return block["revision"] or None
+    except Exception:
+        # Deliberately every one of them, `_position_attained_level`'s own
+        # rule: a malformed opener, two openers, a file that will not read.
+        # The caller falls back to the question below, which needs nothing.
+        return None
+    return None
+
+
+def _resolve_step_sequence_not_reached(args) -> dict:
+    """The refusal the declared six-step flow hit between EVERY pair of steps,
+    and the act the operator had to compose by hand each time.
+
+    Measured: a step ran and returned, and the next step refused this code --
+    because the sequence check reads the TICK in the target's own `AGREED.md`,
+    and nothing had re-derived it since the run. The operator called
+    `position` between every pair, by hand, and the flow said that nowhere.
+
+    **Why `step` does not simply re-derive it itself**, which is the obvious
+    fix and the wrong one. `cmd_position` is "the only writer into
+    `<Name>/AGREED.md`'s position section" -- its own first line, and a
+    single-writer invariant rather than a note about scheduling. A `step` that
+    re-derived would be a second writer into the agreement document, from a
+    command whose entire contract is "run one declared callable, isolated".
+    (`cmd_step`'s own stated non-goal -- "this never consults `probe`'s
+    `nextStep`" -- is about choosing WHAT to run next, which is a different
+    question; the invariant above is the one that decides this.) It is not
+    even reachable without inventing arguments: `position` refuses
+    `REVISION_UNREADABLE` without a `--revision`, and `step` registers no such
+    flag.
+
+    So the exit is published instead of performed, and published RUNNABLE: a
+    bare `position` refresh, bound to the revision the block already names,
+    which mutates `mark` in place and nothing else. That is the same
+    publication `POSITION_STALE` and `POSITION_UNBACKED` already make, and it
+    is safe for the same reason -- every mark is DERIVED on every read, so a
+    refresh over work that genuinely has not happened re-derives the same open
+    mark and this refusal simply restates itself. It cannot tick anything into
+    existence.
+
+    The question survives as the fallback for a call with no readable block
+    (a `--target` that does not exist, an unparsable opener): there is no
+    revision to bind a command to there, and a `position` command without one
+    would refuse on its own advice.
+    """
+    revision = _position_block_revision(
+        Path(str(getattr(args, "target", ""))), str(getattr(args, "name", "")))
+    if revision is None:
+        return _refusal_question(
+            args, "this step is not the next rung of the position sequence "
+                  "(the refusal detail names which item is open), and no "
+                  "readable position block was found to re-derive; do that "
+                  "rung's work now, or install the sequence, and why?")
+    return _refusal_command(_refusal_position_command(args, revision=revision))
+
+
 def _abandoned_step(args) -> dict | None:
     """The `step` run that started and never reported, or `None`.
 
@@ -13284,10 +13378,7 @@ _WORK_STATE_RESOLUTIONS = {
         args, "this launch is not the next rung of the position sequence (the "
               "refusal detail names which item is open); do that rung's work "
               "now, or re-derive the sequence, and why?"),
-    "STEP_SEQUENCE_NOT_REACHED": lambda args: _refusal_question(
-        args, "this step is not the next rung of the position sequence (the "
-              "refusal detail names which item is open); do that rung's work "
-              "now, or re-derive the sequence, and why?"),
+    "STEP_SEQUENCE_NOT_REACHED": _resolve_step_sequence_not_reached,
     "NOT_READY": lambda args: _refusal_question(
         args, "this job has no passing rehearsal recorded at the commit it is "
               "pinned to, and readiness is measured rather than asserted; "

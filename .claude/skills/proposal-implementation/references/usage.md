@@ -1746,7 +1746,15 @@ python3 .claude/skills/proposal-implementation/scripts/implementation_cli.py ste
 ```
 
 Runs exactly one step per call — no flag sequences or dispatches more than
-one, and this never consults `probe`'s `nextStep`. Refuses `DIRTY_WORKTREE`
+one, and this never consults `probe`'s `nextStep`. A step that declares
+`advances` is refused `STEP_SEQUENCE_NOT_REACHED` while an earlier sequence
+item is still unticked — and the mark it reads is the literal one in the
+target's own `AGREED.md`, which a step that just ran does not update.
+`position` is the only writer into that section, so `step` never re-derives
+it; the refusal publishes the exact `position` refresh instead, bound to the
+revision the block already names, as a command run unedited. That pair —
+**run the step, commit its product, re-derive `position`, run the next
+step** — is the whole loop between two ordered steps. Refuses `DIRTY_WORKTREE`
 before any subprocess spawns (a step mutates the target, same guard
 `plan`/`apply` already call). When the ledger's latest `step` event is a
 bare `started`, that refusal's published question says so: it names the

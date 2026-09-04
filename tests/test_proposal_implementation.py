@@ -25119,6 +25119,103 @@ class StepSequenceOrderTests(unittest.TestCase):
         return self.run_cli("step", "--target", str(box), "--name", "Method",
                             "--session", "t", "--step", "later")
 
+    # --- The refusal publishes the act the operator had to compose ---
+
+    def _proposals(self, revision="r01.md"):
+        """A proposals root holding the exact revision `_position`'s block
+        names, so a published `position` command can actually be run against
+        it. `cmd_position` refuses `REVISION_UNREADABLE` for a revision it
+        cannot read, and a published command that refuses on its own advice
+        is the trap this whole publication exists to avoid."""
+        root = Path(tempfile.mkdtemp(prefix=f"forgeprop{os.getpid()}"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / revision).write_text("# proposal\n", encoding="utf-8")
+        return root
+
+    def test_the_refusal_publishes_a_position_command_that_clears_it(self):
+        """The friction this closes, reproduced whole: a step ran and
+        returned, and the NEXT step refused because the sequence check reads
+        the literal `mark` in the target's own AGREED.md, which nothing had
+        re-derived since the run. The operator called `position` by hand
+        between every pair of six steps, and the flow said that nowhere.
+
+        `step` does not re-derive it itself because `cmd_position` is the
+        only writer into that section -- a single-writer invariant, stated in
+        its own first line -- so the exit is PUBLISHED instead, runnable
+        unedited, bound to the revision the block already names.
+
+        Run, not inspected. The mutation this locks against, which an
+        assertion on `resolve["kind"]` alone survives: publishing
+        `_refusal_position_command(args)` without the revision. `step`
+        registers no `--revision` flag, so the command would be well-formed,
+        would parse, and would refuse `REVISION_UNREADABLE` the moment
+        anybody ran it.
+        """
+        box = self._box("published")
+        proposals = self._proposals()
+        (box / "src" / "Method_Benchmark").mkdir(parents=True, exist_ok=True)
+        (box / "src" / "Method_Benchmark" / "work.py").write_text(
+            "def run():\n    return 'ran'\n", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            "__steps__ = {\n"
+            "  'early': {'module': 'Method_Benchmark.work', "
+            "'function': 'run', 'advances': 1},\n"
+            "  'later': {'module': 'Method_Benchmark.work', "
+            "'function': 'run', 'advances': 2},\n"
+            "}\n", encoding="utf-8")
+        header = {"revision": "r01.md", "revisionSha256": "a" * 64,
+                  "derivedAt": "2026-01-01T00:00:00Z", "session": "t",
+                  "target": "pilot"}
+        items = [{"mark": " ", "ordinal": n, "text": f"rung {n}",
+                  "witness": {"kind": "step", "operand": operand,
+                              "twostate": True}}
+                 for n, operand in enumerate(("early", "later"), start=1)]
+        (box / "Method").mkdir(parents=True, exist_ok=True)
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+        self._commit(box)
+
+        early = self.run_cli("step", "--target", str(box), "--name", "Method",
+                             "--session", "t", "--step", "early")
+        self.assertEqual(early.returncode, 0, early.stdout + early.stderr)
+        self._commit(box)
+
+        blocked = self._run(box)
+        self.assertEqual(blocked.returncode, 2, blocked.stdout)
+        payload = json.loads(blocked.stdout)
+        self.assertEqual(payload["code"], "STEP_SEQUENCE_NOT_REACHED")
+        self.assertEqual(payload["resolve"]["kind"], "command")
+        command = payload["resolve"]["command"]
+        self.assertIn("--revision r01.md", command)
+
+        tokens = shlex.split(command)
+        self.assertTrue(tokens[0].endswith("implementation_cli.py"), command)
+        env = dict(os.environ)
+        env["IMPLEMENTATION_PROPOSALS"] = str(proposals)
+        rederive = subprocess.run([sys.executable, str(CLI), *tokens[1:]],
+                                  capture_output=True, text=True,
+                                  cwd=FORGE, env=env)
+        self.assertEqual(rederive.returncode, 0,
+                         rederive.stdout + rederive.stderr)
+        self._commit(box)
+
+        cleared = self._run(box)
+        self.assertEqual(cleared.returncode, 0, cleared.stdout + cleared.stderr)
+        self.assertEqual(json.loads(cleared.stdout)["outcome"], "returned")
+
+    def test_no_readable_block_falls_back_to_the_question(self):
+        """A revision cannot be derived from a product that holds no block,
+        and a `position` command with no `--revision` refuses on its own
+        advice -- so that call gets the question instead, which needs
+        nothing from the document."""
+        resolution = impl.refusal_resolution(
+            "STEP_SEQUENCE_NOT_REACHED",
+            argparse.Namespace(command="step", target="implementations/absent",
+                               name="Method", session="t", about=None))
+        self.assertEqual(resolution["kind"], "question")
+        self.assertIn("no readable position block", resolution["question"])
+        self.assertIn("discuss", resolution["command"])
+
     def test_an_earlier_open_rung_refuses_the_step(self):
         box = self._box("behind")
         self._declare(box, advances=3)
