@@ -2795,6 +2795,54 @@ def cmd_probe(args) -> dict:
         list((report.get("declared") or {}).get("records") or []),
         target / name, declaration_status=resolved["status"],
         digest=source_digest(target, package_name(name)))
+    # Computed once and reused for the `remoteExecution` merge below, rather
+    # than called twice for the same answer.
+    jobs = remote_execution_jobs_state(target)
+    # `probe` takes no `--shards` of its own, but a target that declared
+    # `distribution.shardsRoot` still gets a real shard answer here --
+    # `_resolve_shard_evidence` is the identical fallback
+    # `_position_write_evidence` applies for `gate`/`close`/`discuss`.
+    # Undeclared, both stay `None`: `@shard` reports `unmeasured`, never a
+    # false "did not arrive" (see `impl_position.derive`'s own docstring).
+    shards_arrived, shards_current = _resolve_shard_evidence(
+        target, name, resolved["contract"], None)
+    probe_digest = source_digest(target, package_name(name))
+    # Read once and handed to both readers below: `position_state` derives
+    # the sequence from it, and `pilot_completeness_state` grades the flow
+    # against the identical dict. Two evidence builds inside one command is
+    # how two answers come to disagree about the same repository.
+    probe_evidence = {
+        "search": search, "requiredScale": declared_required_scale(search),
+        "notebooks": notebooks_state(target, name, package_name(name)),
+        "smokeReady": jobs["smokeReady"], "shardsArrived": shards_arrived,
+        "shardsCurrent": shards_current,
+        "levels": resolve_levels_declaration(target, name),
+        "stepVerdicts": _step_verdicts(target, name),
+        # Design B5 (evidence wiring is three sites): the identical
+        # `named_records_state` call `_position_write_evidence` and
+        # `cmd_verify`'s own inline dict make, so `probe` never reports
+        # `unmeasured` for a `@record:level <name>` witness while `gate`
+        # (which reads `_position_write_evidence`) reports it satisfied.
+        "records": named_records_state(
+            target, name, resolve_records_declaration(target, name),
+            probe_digest)}
+    # Hoisted above the ladder rather than computed after it, because two of
+    # its rungs read the flow's own state. The evidence itself is unchanged;
+    # only the order in which this function builds it is.
+    position = position_state(
+        target, name, probe_evidence, args.revision,
+        revision_source(args.revision) if args.revision else None)
+    pilot = pilot_completeness_state(
+        resolve_steps_declaration(target, name), position["sequence"],
+        probe_evidence)
+    # Which of the flow's own steps still owes a decision about how it is
+    # carried out in the full run. Never "which are open": a step nobody has
+    # asked about yet appears in no open bucket either, and reading that as
+    # decided is silence taken for consent.
+    answered = _answered_discussions(target, name)
+    pilot_undecided = [
+        row["step"] for row in pilot["steps"]
+        if _pilot_decision_question(target, name, row["step"]) not in answered]
     if next_step in ("benchmark", "piloted") and resolved["status"] in (
             "absent", "undeclared"):
         next_step = "declare-first"
@@ -2822,6 +2870,37 @@ def cmd_probe(args) -> dict:
     # Only `pending` names a submission a wait can actually resolve.
     elif next_step in ("benchmark", "piloted") and remote["status"] == "pending":
         next_step = "poll-first"
+    # The declared flow itself, read before the search record and after the
+    # submission already out. A submission already sent keeps its place at the
+    # top of this half of the ladder for the reason it always had -- an answer
+    # on its way outranks anything this repository could be told to start --
+    # but everything BELOW it is about spending machine time that has not been
+    # spent yet, and the pilot comes before the scale.
+    #
+    # Measured, and the defect that named this rung: a target declaring six
+    # ordered steps had run the second and nothing else, six of its seven
+    # notebooks carried zero executed cells and zero outputs, and this ladder
+    # answered `search-first` -- whose published question offers to continue
+    # toward the declared scale. That rung's own condition ("the record is
+    # absent or short") was true; it is simply a different fact from "the flow
+    # was validated at pilot", and nothing had been produced for anybody to
+    # read. A question that offers the expensive run at that point is an
+    # invitation to say yes.
+    elif next_step in ("benchmark", "piloted") and (
+            pilot["status"] == "incomplete"):
+        next_step = "pilot-first"
+    # And what a finished pilot unlocks is NOT permission to launch. The flow
+    # returns to its first step and each one owes its own decision about how
+    # it is carried out in the full run; only once every one of those is on
+    # the record does the ladder fall through to the rung that offers the
+    # declared scale. `offer --answer` is not that mechanism and is not
+    # borrowed for it: it records one closed yes/no per call, and this is one
+    # decision per step. `discuss` already buckets by exact question text, so
+    # N steps are N independently-retiring buckets with no second approval
+    # surface built beside it.
+    elif next_step in ("benchmark", "piloted") and (
+            pilot["status"] == "complete" and pilot_undecided):
+        next_step = "pilot-decisions"
     elif next_step in ("benchmark", "piloted") and (
             search["recordFound"] is False
             or (declared_required_scale(search)
@@ -2846,36 +2925,6 @@ def cmd_probe(args) -> dict:
     # doctrine exactly but named its module something else.
     harness_status = resolve_harness_status(target, name, package_name(name))
     notebook = target / name / "Notebooks" / PROBE_NOTEBOOK
-    # Computed once and reused for the `remoteExecution` merge below, rather
-    # than called twice for the same answer.
-    jobs = remote_execution_jobs_state(target)
-    # `probe` takes no `--shards` of its own, but a target that declared
-    # `distribution.shardsRoot` still gets a real shard answer here --
-    # `_resolve_shard_evidence` is the identical fallback
-    # `_position_write_evidence` applies for `gate`/`close`/`discuss`.
-    # Undeclared, both stay `None`: `@shard` reports `unmeasured`, never a
-    # false "did not arrive" (see `impl_position.derive`'s own docstring).
-    shards_arrived, shards_current = _resolve_shard_evidence(
-        target, name, resolved["contract"], None)
-    probe_digest = source_digest(target, package_name(name))
-    position = position_state(
-        target, name,
-        {"search": search, "requiredScale": declared_required_scale(search),
-         "notebooks": notebooks_state(target, name, package_name(name)),
-         "smokeReady": jobs["smokeReady"], "shardsArrived": shards_arrived,
-         "shardsCurrent": shards_current,
-         "levels": resolve_levels_declaration(target, name),
-         "stepVerdicts": _step_verdicts(target, name),
-         # Design B5 (evidence wiring is three sites): the identical
-         # `named_records_state` call `_position_write_evidence` and
-         # `cmd_verify`'s own inline dict make, so `probe` never reports
-         # `unmeasured` for a `@record:level <name>` witness while `gate`
-         # (which reads `_position_write_evidence`) reports it satisfied.
-         "records": named_records_state(
-             target, name, resolve_records_declaration(target, name),
-             probe_digest)},
-        args.revision,
-        revision_source(args.revision) if args.revision else None)
     # Computed once and reused for both `search.costForecast` below and the
     # classification call: the exact same projection, never a second one
     # (design D3, `the-pilot-decides-the-remote-strategy`).
@@ -2911,7 +2960,13 @@ def cmd_probe(args) -> dict:
          # actually routed there, and a second read here could disagree with
          # the branch above that published it.
          "declarationStatus": resolved["status"],
-         "live": report.get("live")})
+         "live": report.get("live"),
+         # The two facts the flow rungs publish, threaded through rather than
+         # recomputed: a second read here could disagree with the branch that
+         # published it, the same discipline `declarationStatus` states.
+         "incomplete": pilot["incomplete"],
+         "notebooks": [row["notebook"] for row in pilot["steps"]
+                       if row["notebook"]]})
     # `toDiscuss` carries the question-shaped publications only -- a command
     # this flow can name completely is not a question anybody answers, and
     # putting one in a discussion list would open a bucket nothing retires.
@@ -2921,6 +2976,15 @@ def cmd_probe(args) -> dict:
         [{key: value for key, value in publication.items() if key != "kind"}]
         if publication and publication["kind"] == "question" else []
     )
+    # The per-step pass, appended after the rung's own question rather than
+    # replacing it: the first entry says what state the flow is in and where
+    # its outputs are, and one entry per still-undecided step follows, each in
+    # its own `discuss` bucket. This is the one answer whose `toDiscuss` is
+    # longer than its `resolve`, and the roster's `publish` shape (one dict)
+    # is why the per-step half lives here rather than inside it.
+    if next_step == "pilot-decisions":
+        to_discuss += [_pilot_decision_entry(target, name, step)
+                       for step in pilot_undecided]
     return {
         "status": "ok",
         "target": str(target),
@@ -2946,6 +3010,12 @@ def cmd_probe(args) -> dict:
         "coupling": coupling_state(target, name, package_name(name)),
         # A static fact, reported and never gating: see `position_state`.
         "position": position,
+        # Whether the ordered flow this target declared has actually run at
+        # pilot, step by step. Two rungs read it (`pilot-first`,
+        # `pilot-decisions`); it is reported beside them because "which steps
+        # are still short" is exactly what a reader needs in order to act on
+        # either answer. See `pilot_completeness_state`.
+        "pilotCompleteness": pilot,
         # What went out to a remote worker (the ledger), plus what job
         # folders exist right now (the filesystem), plus — purely additive,
         # this slice refuses nothing on it — whether each job classifies as
@@ -7265,6 +7335,143 @@ def _step_verdicts(target: Path, name: str) -> dict:
     return verdicts
 
 
+def _flow_steps(steps: dict) -> list[tuple[str, int]]:
+    """The declared flow, in the order the target declared it: every
+    `__steps__` entry carrying an integer `advances` ordinal, sorted by it.
+
+    **An entry without an ordinal is outside the flow, and that is the
+    target's own statement, not this reader's guess.** `cmd_step` runs such
+    an entry ungated for exactly that reason -- "an ordering nobody declared
+    is not one this command invents" -- so an entry that never claimed a
+    position in the sequence cannot be a position the sequence is waiting on.
+    Folding them in would report a finished flow unfinished forever, for
+    every step a repository keeps beside the ordering rather than inside it.
+
+    **A non-integer ordinal declares no position either.** `cmd_step` already
+    refuses `STEP_MALFORMED` for one at the moment it would run; this reader
+    never raises (it is called from three reporting paths), so it drops the
+    entry rather than sorting a string against an int and crashing a command
+    whose whole job is to report. `bool` is excluded even though
+    `isinstance(True, int)` holds, the same shape defect `_numeric`
+    (`impl_execution_strategy`) already refuses to read as a number.
+
+    Ties break on the step's own name, so two entries claiming one ordinal
+    still produce one deterministic order rather than a dict-insertion order
+    that moves when the target's file is re-spelled.
+    """
+    ordered: list[tuple[str, int]] = []
+    for step_name, entry in steps.items():
+        if not isinstance(entry, dict):
+            continue
+        advances = entry.get("advances")
+        if isinstance(advances, bool) or not isinstance(advances, int):
+            continue
+        ordered.append((step_name, advances))
+    return sorted(ordered, key=lambda pair: (pair[1], pair[0]))
+
+
+def pilot_completeness_state(steps: dict, sequence: list[dict],
+                             evidence: dict) -> dict:
+    """Whether the ordered flow this target declared has actually run at
+    pilot -- `{"status", "steps", "incomplete"}`, and never a refusal.
+
+    The measured defect this exists for: a target declaring six ordered steps
+    had run the second of them and nothing else; six of its seven notebooks
+    carried zero executed cells and zero outputs; and `probe` answered the
+    rung that offers the declared scale anyway. That rung fires on "the search
+    record is absent", which is a different fact from "the flow was validated
+    at pilot", and the ladder was reading the wrong one. Nothing had been
+    produced for anybody to read, and a question that offers the expensive run
+    at that point is an invitation to say yes.
+
+    Two facts per step, and only two:
+
+    - **It ran and returned.** `@step <name>` is already the witness that
+      reads exactly that (`impl_position._derive_step` over
+      `evidence["stepVerdicts"]`, which `_step_verdicts` folds from the
+      ledger and expires against a live `suite_digest`). `None` --
+      never run, a stale digest, an event from before digests were
+      recorded -- is "not shown", never a pass: the same refusal to fold
+      unmeasured into attainment that `_skipped_rung_detail` states one
+      rung up.
+    - **The notebook it owes, when it owes one, is executed against these
+      sources.** `@notebook <path>` is already the witness that reads exactly
+      that (`status == "executed"` and `sourcesMatch is True`).
+
+    **How the notebook is known, and why nothing new is declared for it.**
+    The forge must never read the target's own Python to find which file a
+    step executes. It does not have to: `advances` is the target saying which
+    position item a step produces evidence for, and that item already names
+    its own witness. So the notebook a step owes is the operand of the
+    sequence item at that step's ordinal, whenever that item's witness kind is
+    `notebook` -- a link the target already writes, in the vocabulary it
+    already uses. A second declaration beside it would be one more thing that
+    can disagree with the first.
+
+    **Both halves are graded through `impl_position.derive`, never by a
+    second arithmetic beside it** -- the discipline `_skipped_rung_detail`
+    already keeps ("whatever satisfied means for a witness, it means the same
+    thing here as it does when the mark is written"), and the same synthetic-
+    item shape `cmd_discuss` already hands it. So this predicate can never
+    disagree with what a tick in the sequence asserts.
+
+    **Both probes are built two-state, however the sequence item declared
+    itself, and that is the decision this rule turns on.** A leveled
+    `@notebook` witness grades a RUNG, and every rung above the floor is
+    evidence only a full-scale run can produce (`_derive_notebook_level`
+    reads the record's own scale behind the report). Read that way a pilot
+    could never complete, the rung waiting on completeness would never lift,
+    and the flow would deadlock on the very evidence it is withholding
+    permission to go and get. What a pilot genuinely produces is the
+    executed-and-current fact, so that is what is asked for -- and because
+    the probe carries `twostate: True`, `evidence["targetLevel"]` is never
+    consulted for it at all.
+
+    **An item whose witness is not a notebook adds nothing.** A `@record` or
+    `@shard` witness is full-scale evidence by construction -- a record must
+    meet its own declared scale, and a pilot campaign leaves no shard at all
+    -- so demanding either here would deadlock the flow on evidence the pilot
+    cannot produce. The step's own verdict is the whole predicate there.
+
+    **A flow nobody declared is not an incomplete one.** `status` is
+    `"undeclared"` when no entry carries an ordinal, and every caller reads
+    that as "this rule does not apply" -- a target that never opted into an
+    ordering keeps exactly the ladder it always had.
+
+    Pure: no I/O, no filesystem walk, no ledger read. `steps` is
+    `resolve_steps_declaration`'s own return, `sequence` is
+    `position_state`'s, and `evidence` is the position evidence dict every
+    caller already builds -- the same restraint `classify_remote_necessity`
+    keeps, so two callers asking this question cannot answer it differently.
+    """
+    flow = _flow_steps(steps)
+    if not flow:
+        return {"status": "undeclared", "steps": [], "incomplete": []}
+    by_ordinal = {item["ordinal"]: item for item in sequence
+                  if isinstance(item.get("ordinal"), int)}
+    rows = []
+    for step_name, advances in flow:
+        witness = (by_ordinal.get(advances) or {}).get("witness") or {}
+        notebook = (witness.get("operand")
+                    if witness.get("kind") == "notebook" else None)
+        probes = [{"witness": {"kind": "step", "operand": step_name,
+                               "twostate": True}, "mark": " "}]
+        if notebook:
+            probes.append({"witness": {"kind": "notebook", "operand": notebook,
+                                       "twostate": True}, "mark": " "})
+        graded = impl_position.derive(probes, evidence)
+        ran = graded[0]["satisfied"]
+        current = graded[1]["satisfied"] if notebook else None
+        rows.append({
+            "step": step_name, "advances": advances, "ran": ran,
+            "notebook": notebook, "notebookCurrent": current,
+            "complete": ran is True and (notebook is None or current is True),
+        })
+    incomplete = [row["step"] for row in rows if not row["complete"]]
+    return {"status": "incomplete" if incomplete else "complete",
+            "steps": rows, "incomplete": incomplete}
+
+
 def _position_write_evidence(
         target: Path, name: str, shards_root: str | None = None) -> dict:
     """The same evidence shape `position_state` is handed through `probe`
@@ -8111,6 +8318,86 @@ def _report_first_publication(target: Path, name: str, facts: dict) -> dict:
         "the run it describes; " + NEXT_STEP_REPAIR_CHOICE)
 
 
+def _pilot_first_publication(target: Path, name: str, facts: dict) -> dict:
+    """`pilot-first` -- the flow's own steps that have not finished at pilot,
+    named one by one.
+
+    Named rather than counted, and the shape is `POSITION_RUNG_SKIPPED`'s own
+    detail: a reader handed "the pilot is incomplete" learns a verdict and
+    nothing they can act on, while a reader handed the step names knows
+    exactly which `step` invocations are still owed.
+
+    **This sentence must not offer the declared scale**, and that is the
+    entire point of the rung. `NEXT_STEP_EXPERIMENT_CHOICE` asks whether to
+    continue toward the declared scale; asking it here would offer the
+    expensive run at the one state where nothing has been produced for
+    anybody to read. The repair choice is the honest one: run the steps the
+    flow already agreed to, or record why the flow is deliberately deferred.
+    """
+    missing = list(facts.get("incomplete") or [])
+    named = ", ".join(repr(step) for step in missing)
+    plural = "s" if len(missing) != 1 else ""
+    return _next_step_question_entry(
+        target, name,
+        f"{name} (target {target}) declares an ordered flow whose step{plural} "
+        f"{named} {'have' if len(missing) != 1 else 'has'} not finished at "
+        "pilot -- each still owes a run that returned, and the ones whose own "
+        "sequence item names a notebook still owe that notebook executed "
+        "against these sources, because the outputs are what anybody reads to "
+        "know the agreed thing is there; " + NEXT_STEP_REPAIR_CHOICE)
+
+
+def _pilot_decision_question(target: Path, name: str, step: str) -> str:
+    """The exact text of one step's own decision question, and the only
+    construction of it.
+
+    Buckets are by exact trimmed text (`_discussion_buckets`), so this string
+    IS the bucket key: a second spelling anywhere would open a second,
+    never-retiring bucket for a decision somebody already made. It is derived
+    from the target, the name and the step alone -- never from a count, a
+    scale or an achieved figure, all of which move while the decision has not
+    changed (the stability rule `_piloted_discuss_entry` documents).
+    """
+    return (f"{name} (target {target}) has finished step {step!r} of its "
+            "declared flow at pilot; how is that step carried out in the full "
+            "run -- on a remote worker, or locally -- and why?")
+
+
+def _pilot_decision_entry(target: Path, name: str, step: str) -> dict:
+    """One step's decision, in the shape `toDiscuss` already carries, minus
+    the `kind` key every other entry in that list also drops."""
+    entry = _next_step_question_entry(
+        target, name, _pilot_decision_question(target, name, step))
+    return {key: value for key, value in entry.items() if key != "kind"}
+
+
+def _pilot_decisions_publication(target: Path, name: str, facts: dict) -> dict:
+    """`pilot-decisions` -- the pass itself, published beside the per-step
+    questions `cmd_probe` appends to `toDiscuss`.
+
+    The owner's rule, in order: the flow runs as it stands at pilot, which
+    proves it runs; the notebooks run, which proves it shows what was agreed;
+    and only then does the flow return to its first step, one step at a time,
+    with a decision per step about how the full run carries it. So what a
+    finished pilot unlocks is the start of that pass -- never permission to
+    launch, and never a single yes/no at the end.
+
+    Where the outputs are is named here rather than left to the reader, since
+    reading them is the act this question is waiting on. The paths are the
+    target's own declared operands, read out of its own sequence.
+    """
+    notebooks = list(facts.get("notebooks") or [])
+    where = (" its outputs are at " + ", ".join(notebooks) + "; "
+             if notebooks else " ")
+    return _next_step_question_entry(
+        target, name,
+        f"{name} (target {target}) has finished every step of its declared "
+        f"flow at pilot and{where}"
+        "the flow now returns to its first step: each step owes its own "
+        "decision about how the full run carries it, and those questions are "
+        "published beside this one; " + NEXT_STEP_REPAIR_CHOICE)
+
+
 #: Every value `cmd_probe`'s ladder can assign to `next_step`, and what each
 #: one publishes. The roster exists because the condition it replaces was one
 #: literal -- `next_step == "piloted"` -- so `search-first`, which launches a
@@ -8134,7 +8421,9 @@ PROBE_NEXT_STEPS: dict[str, dict] = {
     "already-benchmarked": {"kind": NEXT_STEP_TERMINAL, "wiring": False,
                             "publish": None},
 
-    # Repairs: work that spends a person's attention, never machine time.
+    # Repairs: work whose cost is already settled -- a person's attention, or
+    # a run the flow already agreed to. Never an offer of the declared scale,
+    # which is what separates this kind from `experiment` below.
     "convert": {"kind": NEXT_STEP_REPAIR, "wiring": False,
                 "publish": _convert_publication},
     "declare-first": {"kind": NEXT_STEP_REPAIR, "wiring": False,
@@ -8147,6 +8436,19 @@ PROBE_NEXT_STEPS: dict[str, dict] = {
                    "publish": _poll_first_publication},
     "report-first": {"kind": NEXT_STEP_REPAIR, "wiring": False,
                      "publish": _report_first_publication},
+    # The declared flow, before and after it has finished at pilot. Repairs
+    # rather than experiments, and the distinction is not "does a machine
+    # run": running the remaining steps of an already-agreed flow, and
+    # deciding how the full run carries each one, are both work whose cost
+    # was settled when the step was declared. What makes an answer an
+    # EXPERIMENT here is that it OFFERS the declared scale and must therefore
+    # ask the standing rule's flow question -- and these two exist precisely
+    # to withhold that offer until the pilot has run and every step has been
+    # decided.
+    "pilot-first": {"kind": NEXT_STEP_REPAIR, "wiring": False,
+                    "publish": _pilot_first_publication},
+    "pilot-decisions": {"kind": NEXT_STEP_REPAIR, "wiring": False,
+                        "publish": _pilot_decisions_publication},
 
     # Experiments: the three answers that spend machine time, and therefore the
     # three the standing rule's flow question belongs at. `search-first`
@@ -8172,6 +8474,52 @@ def next_step_publication(target: Path, name: str, next_step: str,
     if entry["publish"] is None:
         return None
     return entry["publish"](target, name, facts)
+
+
+def _discussion_buckets(target: Path, name: str) -> dict[str, dict]:
+    """Every `discuss` bucket in this target's ledger: exact trimmed question
+    text -> the LAST event in ledger order that carries it.
+
+    One fold, two readers (`_open_discussions` and `_answered_discussions`
+    below), for the reason this codebase already states about every other
+    shared derivation: two spellings of one fold is how two commands come to
+    disagree about the same ledger. Both readers need the identical bucketing
+    rule -- by exact trimmed text, never by witness identity, since every
+    entry a published question writes shares the same operand-less `record`
+    identity -- and the identical last-wins rule, never "any event answered
+    this", which would let a stale answer sit in front of a fresh re-ask.
+
+    Ledger (append) order decides, never a comparison of `at`, which is
+    second-granularity and can tie. Insertion order is preserved in
+    first-asked order: re-assigning an existing key updates its value in
+    place and never moves the key.
+    """
+    events = impl_position.read_events(
+        target / name / ".implementation" / "position.jsonl")
+    buckets: dict[str, dict] = {}
+    for event in events:
+        if event.get("kind") != "discuss":
+            continue
+        text = (event.get("asked") or "").strip()
+        if not text:
+            continue
+        buckets[text] = event
+    return buckets
+
+
+def _answered_discussions(target: Path, name: str) -> set[str]:
+    """Every distinct `discuss` question text whose LAST occurrence in ledger
+    order carries a non-blank answer -- `_open_discussions`'s exact
+    complement over the same fold.
+
+    A pass that asks one question per item needs this, and cannot get it from
+    `_open_discussions`: a question nobody has asked yet appears in neither
+    list, so reading "not open" as "decided" would treat every item that was
+    never asked about as already settled -- silence read as consent, which is
+    the one reading this whole surface exists to refuse.
+    """
+    return {text for text, event in _discussion_buckets(target, name).items()
+            if (event.get("answered") or "").strip()}
 
 
 def _open_discussions(target: Path, name: str) -> list[dict]:
@@ -8204,19 +8552,9 @@ def _open_discussions(target: Path, name: str) -> list[dict]:
     an existing key updates its value in place, it never moves the key) --
     deterministic across identical ledgers, never a live re-sort.
     """
-    events = impl_position.read_events(
-        target / name / ".implementation" / "position.jsonl")
-    last_by_text: dict[str, dict] = {}
-    for event in events:
-        if event.get("kind") != "discuss":
-            continue
-        text = (event.get("asked") or "").strip()
-        if not text:
-            continue
-        last_by_text[text] = event
     return [
         {"asked": text, "about": event.get("about") or {}}
-        for text, event in last_by_text.items()
+        for text, event in _discussion_buckets(target, name).items()
         if not (event.get("answered") or "").strip()
     ]
 

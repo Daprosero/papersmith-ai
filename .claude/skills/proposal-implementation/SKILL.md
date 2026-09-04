@@ -469,6 +469,8 @@ exactly what stops a launcher from being able to claim it implements anything.
 | `probe` reports `nextStep: "declare-first"` | The benchmark has no `src/<Package>_Benchmark/` at all, or has one whose every block is still at its scaffolded empty value: report before offering a run built on a declaration that has not happened |
 | `probe` reports `nextStep: "poll-first"` | A submission is already out to a remote worker with no result back yet: report before offering another run |
 | `probe` reports `nextStep: "search-first"` | A declared search's record is absent from disk: the run has no chosen configuration yet, report before offering it |
+| `probe` reports `nextStep: "pilot-first"` | The ordered flow the target declared has steps that have not finished at pilot — `pilotCompleteness.incomplete` names them: report those, and never the declared scale, because nothing has been produced yet for anybody to read |
+| `probe` reports `nextStep: "pilot-decisions"` | The flow finished at pilot and each of its steps now owes its own decision about how the full run carries it: publish the per-step questions, read `remoteExecution.necessity` beside them, and decide one step at a time |
 | `probe` reports a job with `smokeReady: false` | A job folder exists that no rehearsal has ever passed on its pinned commit: read it before offering a campaign, because a rehearsal finds cheaply what the long run would find expensively |
 | `probe` reports a job whose `staleness` is `drift` | The repository moved past the commit that job is pinned to: regenerate the job, or say plainly that the run measures the older code, before offering a campaign |
 | `probe` reports `remoteExecution: "drift"` | The ledger and the service no longer agree, or a stale result arrived: run `remote_cli reconcile` before reading anything else out of that ledger. Waiting fixes nothing |
@@ -1346,6 +1348,90 @@ service disagreement, and it maps to the second `generate-job` row — the same
 command, run with `--regenerate` against the existing folder rather than a
 fresh one.
 
+### `nextStep: "pilot-first"` — the declared flow has not finished at pilot
+
+**The pilot is a gate, not a step.** A target may declare an ordered flow: every
+`__steps__` entry that carries an `advances` ordinal is one of its steps, and the
+ordinal is the order. This rung fires while any of those steps has not finished,
+and it withholds the offer of the declared scale until they all have.
+
+Two facts are asked of each step, and only two. It has to have **run and
+returned** — the same `@step` reading the position grammar already performs, so a
+run recorded against a suite that has since moved reads as unmeasured rather than
+as a pass. And when its own sequence item names a notebook, that notebook has to
+be **executed against these sources** — `status: "executed"` and `sourcesMatch:
+true` together, the same `@notebook` reading. Existence proves nothing: a file
+copied into place and an executed report are indistinguishable until the
+execution counts are read.
+
+**How the notebook a step owes is known, and why nothing new is declared for
+it.** Nothing here reads the target's own Python to find which file a step
+executes; it does not have to. `advances` is the target saying which position
+item a step produces evidence for, and that item already names its own witness.
+So the notebook is the operand of the item at that step's ordinal, whenever that
+item's witness names one — a link the target already writes, in the vocabulary it
+already uses. A second declaration beside it would be one more thing that can
+disagree with the first.
+
+**An item whose witness is not a notebook adds nothing to its step**, and that
+restraint is what keeps this rung reachable. A record must meet its own declared
+scale and a campaign run short leaves no shard at all, so both are evidence only
+the full run produces. Demanding either here would deadlock the flow on exactly
+the evidence it is withholding permission to go and get.
+
+**A target that declares no ordered flow reaches none of this.** `status:
+"undeclared"` means the rule does not apply, and the ladder answers precisely
+what it answered before this rung existed. A repository that never opted into an
+ordering is not an unfinished one.
+
+**Why it sits after `poll-first` and before `search-first`.** A submission
+already out keeps its place: an answer on its way outranks anything this
+repository could be told to start, and asking again would spend real quota on a
+question the first send is already answering. Everything below it is about
+machine time that has not been spent yet, and the pilot comes before the scale.
+`search-first` fires on "the record is absent or short", which is a true fact and
+a different one: a target can have run one step of six, produced nothing anybody
+can read, and satisfy that condition exactly. Measured, on a real target: one
+step of six had run, six of its seven notebooks carried zero executed cells and
+zero outputs, and the flow offered the full declared scale anyway. A question
+that offers the expensive run at that point is an invitation to say yes.
+
+**The published question names the steps, never a count.** `resolve` and
+`toDiscuss` carry the runnable `discuss` command; the sentence names each step
+still short, the same shape `POSITION_RUNG_SKIPPED`'s own detail uses when it
+names the items that came up short. It asks the repair choice — do it now, or
+record why it is deliberately deferred — and never the flow question, because
+the flow question is the offer this rung exists to withhold.
+
+### `nextStep: "pilot-decisions"` — every step ran, and each one owes its own decision
+
+**What a finished pilot unlocks is not permission to launch.** The flow runs as
+it stands, which proves that it runs; its notebooks run, which proves that it
+shows what was agreed; and only then does the flow return to its first step and
+go one step at a time, deciding for each one how the full run carries it — sent
+to a worker for the steps that need one, kept local for the steps that do not.
+This rung is the start of that pass, and the offer of the declared scale waits
+behind it.
+
+**One question per step, each retiring on its own.** `toDiscuss` carries the
+rung's own question first — what state the flow is in, and where its outputs are
+— and then one entry per step that has not been decided yet. Every entry is a
+runnable `discuss` command, and `discuss` buckets by exact question text, so
+answering one retires one. Nothing new records the answers: `discuss` already
+does, and building a second approval surface beside it would give two places to
+look for the same decision.
+
+**Never-asked is not decided.** A step whose question nobody has asked appears in
+no open bucket either, so the pass reads which texts were ANSWERED rather than
+which are open. Reading the absence as agreement is silence taken for consent.
+
+**Which steps need a worker is not answered here.** `remoteExecution.necessity`
+classifies job folders — must-remote, local-sufficient, or optional with the
+missing fact named — and a job folder is not a step: nothing declared ties one to
+the other, and inventing the link would be the forge deciding a repository's own
+layout for it. Read that classification beside this pass; it informs the
+decisions and never makes them.
+
 ### `nextStep: "search-first"` — a declared search has not chosen anything yet
 
 **This rung asks the flow question, and used to publish nothing.** A search is
@@ -2194,7 +2280,7 @@ friction to ask; it does not raise the bar on who is allowed to answer.
 
 ### What `probe` reports, and why none of the job facts is a gate
 
-`probe` answers `nextStep` and reports fifteen facts around it. The ladder
+`probe` answers `nextStep` and reports sixteen facts around it. The ladder
 that chooses `nextStep` reads most of them; the rest are read by a human
 before deciding what to do with the answer, and a fact nobody was told about
 is a fact nobody reads:
@@ -2209,6 +2295,7 @@ is a fact nobody reads:
 | `nextStep` | The one thing to do next | This is the answer, not a fact feeding it |
 | `notebook` | Where the pilot notebook is, or `null` | Reported whatever it says |
 | `position` | The execution sequence's derived state, read from `<Name>/AGREED.md`'s own position section. `probe` takes no `--shards`, so every `@shard` witness reports `unmeasured` here, never a false "did not arrive" | **Never** — a derived fact, reported so a human can decide about it |
+| `pilotCompleteness` | Whether the ordered flow the target declared has actually finished at pilot, step by step: `status` (`undeclared` when no `__steps__` entry carries an `advances` ordinal), one row per step naming its ordinal, whether it ran and returned, the notebook its own sequence item names and whether that notebook is executed against these sources, and `incomplete` — the steps still short, in declared order | Yes — an unfinished flow is `pilot-first`, and a finished one whose steps have not each been decided is `pilot-decisions` |
 | `remoteExecution` | The ledger's fold, plus the job folders that exist on disk right now | Yes — a submission already out is `poll-first` |
 | `report` | Whether the document a human reads agrees with the run | Yes — a document in drift is `report-first` |
 | `resolve` | What to do about `nextStep`, published by the engine rather than composed by whoever reads it: `{kind: "command", command}` for a step this flow can name completely, `{kind: "question", question, command}` for a step whose next act is a decision, and `null` only for the two steps the roster declares terminal | **Never** — a published action, not a verdict; publishing it proves the decision reached the record, never that the operator took it |
