@@ -1697,6 +1697,84 @@ def undeclared_records_state(target: Path, name: str, records: dict) -> dict | N
             "consequence": RECORDS_UNDECLARED_CONSEQUENCE}
 
 
+#: The sub-key a `__steps__` entry names its own output roots with, relative
+#: to the product folder. Spelled once, read by `cmd_step` and reported on by
+#: `undeclared_produces_state`, for the reason every other declaration name in
+#: this file is a constant: two spellings of one key is how a declaration comes
+#: to be half-read.
+PRODUCES_KEY = "produces"
+
+#: What a step gives up by naming no output roots, written out rather than
+#: labelled -- `LADDER_UNDECLARED_CONSEQUENCE`'s own doctrine. Every fact here
+#: is read off `cmd_step`'s own body: the two comparisons it cannot make, and
+#: the incident that proved neither is theoretical.
+PRODUCES_UNDECLARED_CONSEQUENCE = (
+    "this step's run is measured against nothing. `step` compares the product "
+    "folder before and after every run, but with no declared root it cannot "
+    "say which side of the comparison belongs to this step, so both readings "
+    "are switched off for it: a run that returned having written nothing at "
+    "all reads exactly like a run that produced its whole output, and a run "
+    "that wrote into ANOTHER step's tree reads exactly like one that stayed "
+    "in its own. Measured twice on one repository in one day -- a step wrote "
+    "into a neighbour's product, reported `outcome: \"returned\"`, passed "
+    "every check this skill runs, and was caught only because somebody "
+    "compared a digest by hand.")
+
+
+def undeclared_produces_state(target: Path, name: str, steps: dict) -> list[dict]:
+    """Every declared step that names no output root, beside what that costs.
+
+    `undeclared_ladder_state`'s shape and restraint, one declaration deeper:
+    per-STEP rather than per-repository, because `__steps__` is a map and one
+    step naming its roots says nothing about its neighbour.
+
+    **Reported, never demanded, and the reasoning is not a preference.** Two
+    precedents point opposite ways and one of them is inside this very
+    declaration. `advances` -- the only other optional sub-key a `__steps__`
+    entry carries -- is documented at its own call site as "a step that
+    declares none runs ungated, exactly as before; an ordering nobody declared
+    is not one this command invents". A sibling key that REFUSED would put two
+    opposite doctrines inside one declaration, and would refuse work that is
+    perfectly runnable.
+
+    The second reason is about WHEN the reading happens. Every fail-closed
+    refusal in this skill guards an act the engine is about to take. This one
+    grades an act already taken: the subprocess has run, the product is on
+    disk, and the time is spent. A refusal there would discard the run's own
+    verdict and teach an operator to stop declaring steps.
+
+    So the absence is reported with its consequence, and the consequence is
+    the part that has to be unmissable -- which is why it is written out
+    rather than named. `verify` is where a from-zero repository is told, and
+    the kit ships the key in its own `__steps__` example, so a target built
+    from zero meets the question rather than defaulting past it silently.
+
+    **A target with nowhere to write it is asked nothing**, the identical
+    restraint `undeclared_ladder_state` keeps: no benchmark package, or no
+    file `resolve_steps_declaration` reads, is a scaffold gap
+    `structure.scaffoldGaps` already names.
+
+    `steps` is passed in rather than resolved here, from the same
+    `resolve_steps_declaration` call `verify` already makes -- two reads of
+    one declaration in one command is how the two come to disagree.
+    """
+    if not steps:
+        return []
+    bench_root = target / "src" / f"{package_name(name)}_Benchmark"
+    if not bench_root.is_dir():
+        return []
+    holder = next((candidate for candidate in ("__init__.py", "config.py")
+                   if (bench_root / candidate).is_file()), None)
+    if holder is None:
+        return []
+    return [{"step": step, "declaration": f"{STEPS_DECLARATION}[{step!r}]"
+                                          f"[{PRODUCES_KEY!r}]",
+             "path": (bench_root / holder).relative_to(target).as_posix(),
+             "consequence": PRODUCES_UNDECLARED_CONSEQUENCE}
+            for step, entry in sorted(steps.items())
+            if not (isinstance(entry, dict) and entry.get(PRODUCES_KEY))]
+
+
 def search_cost_forecast(reduction: dict, required_scale: dict) -> dict | None:
     """What the declared search would cost, projected from what was actually measured.
 
@@ -7460,6 +7538,120 @@ def _step_last_run(measured: dict | None) -> dict:
     return {"status": "measured", **measured, "note": STEP_LAST_RUN_MEASURED}
 
 
+def product_snapshot(target: Path, name: str) -> dict[str, tuple]:
+    """Every file under the product folder, mapped to a cheap write identity.
+
+    `(st_size, st_mtime_ns)` rather than a content digest, and the choice is
+    measured against what a product folder holds: trained artifacts and
+    datasets live under `Models/` and `Data/`, and hashing them on both sides
+    of every step would make each step pay, in full, for a guard about
+    bookkeeping. Every write a filesystem records moves `st_mtime_ns`, so the
+    change this exists to see -- a field rewritten inside a JSON nobody opens
+    -- is seen. **Its limit, stated rather than left to be discovered**: a
+    file touched without its bytes changing reads as written, which is the
+    safe direction for a guard whose whole subject is who wrote where.
+
+    `.implementation/` is excluded for the reason `impl_guards` excuses it
+    from the dirty-tree check: it is this skill's own bookkeeping, appended by
+    the very command being measured, and counting it would make every single
+    step look like it wrote outside its roots. `IGNORED_DIRS` goes for the
+    reason every other reader here drops it.
+    """
+    product = target / name
+    if not product.is_dir():
+        return {}
+    snapshot: dict[str, tuple] = {}
+    skipped = {*IGNORED_DIRS, ".implementation"}
+    for path in product.rglob("*"):
+        relative = path.relative_to(product)
+        if skipped & set(relative.parts):
+            continue
+        if not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            # A file that vanished between the walk and the stat. Recording
+            # it as absent is the honest reading and matches what the other
+            # side of the comparison will see.
+            continue
+        snapshot[relative.as_posix()] = (stat.st_size, stat.st_mtime_ns)
+    return snapshot
+
+
+def changed_paths(before: dict[str, tuple], after: dict[str, tuple]) -> list[str]:
+    """Product-relative paths that were written, added or removed between two
+    snapshots, sorted. A removal counts: a step that deletes a neighbour's
+    result has written into that neighbour's tree exactly as surely as one
+    that overwrites it."""
+    return sorted({path for path in set(before) | set(after)
+                   if before.get(path) != after.get(path)})
+
+
+def _owns(path: str, roots: list[str]) -> bool:
+    """Whether one product-relative path lies under one of the declared roots.
+
+    Segment-wise, never `str.startswith`: a root of `Results/one` must not
+    swallow `Results/one-more`, which is the difference between a guard and a
+    guard-shaped string comparison.
+    """
+    parts = Path(path).parts
+    for root in roots:
+        root_parts = Path(root).parts
+        if parts[:len(root_parts)] == root_parts:
+            return True
+    return False
+
+
+#: Said when a step declared its roots and everything it wrote is under them.
+STEP_WROTE_OWN = (
+    "everything this run changed in the product folder lies under the roots "
+    "this step declares.")
+
+#: Said when a step declared roots and changed nothing under them. Not an
+#: accusation -- a step whose whole output is already current legitimately
+#: rewrites nothing -- but it is the one reading `outcome: \"returned\"` alone
+#: cannot give.
+STEP_WROTE_NOTHING = (
+    "this run returned and changed nothing under the roots this step "
+    "declares. A step whose output was already current writes nothing and is "
+    "not defective for it; a step that silently did no work looks the same "
+    "from its exit status, and this is the only place the two are told apart.")
+
+#: The defect the whole declaration exists for.
+STEP_WROTE_FOREIGN = (
+    "this run changed paths in the product folder that lie OUTSIDE the roots "
+    "this step declares. Either the step wrote into work it does not own -- "
+    "measured twice on one repository in one day, each time reported as "
+    "`outcome: \"returned\"` and caught only by a digest compared by hand -- "
+    "or its declared roots are wrong. Both are the target's to decide; this "
+    "reports what changed and never repairs it.")
+
+
+def _step_wrote(declared: list[str] | None,
+                before: dict[str, tuple], after: dict[str, tuple]) -> dict:
+    """What this run changed, split by whether this step owns it.
+
+    Published on every run, in all four states, so a reader learns what the
+    check watches rather than meeting it only when it has something to say --
+    `undeclaredLadder`'s own doctrine.
+    """
+    if not declared:
+        return {"status": "undeclared", "declared": [], "inside": [],
+                "outside": [], "note": PRODUCES_UNDECLARED_CONSEQUENCE}
+    changed = changed_paths(before, after)
+    inside = [path for path in changed if _owns(path, declared)]
+    outside = [path for path in changed if not _owns(path, declared)]
+    if outside:
+        status, note = "foreign", STEP_WROTE_FOREIGN
+    elif not inside:
+        status, note = "nothing", STEP_WROTE_NOTHING
+    else:
+        status, note = "own", STEP_WROTE_OWN
+    return {"status": status, "declared": list(declared),
+            "inside": inside, "outside": outside, "note": note}
+
+
 def _step_verdicts(target: Path, name: str) -> dict:
     """`evidence["stepVerdicts"]` for every caller that reads an `@step`
     witness -- `_position_write_evidence`, `cmd_probe`'s inline dict, and
@@ -11570,6 +11762,31 @@ def cmd_step(args: argparse.Namespace) -> dict:
                 f"{args.step!r} advances item {advances} and cannot run ahead "
                 "of it -- a step that skips a rung is refused.")
 
+    # The other optional sub-key, read exactly the way `advances` is: absent
+    # runs unmeasured (see `PRODUCES_UNDECLARED_CONSEQUENCE`), and PRESENT is
+    # held to a shape, because a declaration nobody validated is a check that
+    # silently grades nothing. A bare string is refused rather than wrapped:
+    # `__records__`'s `path` is one path and `__levels__` is a list, so a key
+    # that accepted both spellings would be the one grammar in this file with
+    # two.
+    produces = entry.get(PRODUCES_KEY)
+    if produces is not None:
+        if (not isinstance(produces, list) or not produces
+                or not all(isinstance(root, str) and root.strip()
+                           for root in produces)):
+            raise Refused(
+                "STEP_MALFORMED",
+                f"__steps__[{args.step!r}][{PRODUCES_KEY!r}] must be a "
+                "non-empty list of path roots relative to the product "
+                f"folder, not {produces!r}.")
+        if any(Path(root).is_absolute() or ".." in Path(root).parts
+               for root in produces):
+            raise Refused(
+                "STEP_MALFORMED",
+                f"__steps__[{args.step!r}][{PRODUCES_KEY!r}] names a root "
+                "outside the product folder; every root is relative to "
+                f"<name>/ and climbs out of nothing: {produces!r}.")
+
     interpreter = target_interpreter(target)
     if not interpreter.exists():
         raise Refused(
@@ -11587,6 +11804,11 @@ def cmd_step(args: argparse.Namespace) -> dict:
     # events this invocation just wrote.
     last_run = _step_last_run(
         _last_measured_run(impl_position.read_events(ledger_path), args.step))
+    # The before half of the write-scope comparison, taken here rather than
+    # after the pre-spawn ledger append so the append itself cannot show up as
+    # a write -- `.implementation/` is excluded either way, and taking it
+    # before costs nothing extra.
+    before_product = product_snapshot(target, name)
 
     # The ledger is written TWICE, and that is the whole design -- the same
     # two-write discipline `impl_steps.RUNNER` already keeps for its own
@@ -11629,12 +11851,20 @@ def cmd_step(args: argparse.Namespace) -> dict:
         })
         raise
 
+    wrote = _step_wrote(produces, before_product,
+                        product_snapshot(target, name))
     recorded_at = _now_iso8601()
     event = {
         **identity,
         "outcome": result["outcome"], "exitStatus": result["exitStatus"],
         "error": result["error"], "at": recorded_at,
         "suiteDigest": suite_digest(target),
+        # Durable, not merely printed. The incident this closes was found by
+        # a digest somebody compared by hand and thrown away; a reading that
+        # lives only in one process's stdout is the same thing with extra
+        # steps. The constant `note` is not carried -- it is the same
+        # sentence for every event and belongs where it is defined.
+        "wrote": {key: value for key, value in wrote.items() if key != "note"},
     }
     impl_position.append_event(ledger_path, event)
 
@@ -11645,6 +11875,7 @@ def cmd_step(args: argparse.Namespace) -> dict:
         "exitStatus": result["exitStatus"], "error": result["error"],
         "session": args.session, "recordedAt": recorded_at,
         "lastRun": last_run,
+        "wrote": wrote,
         "next": _step_next_acts(target, name, args),
     }
 
@@ -12148,6 +12379,12 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     to_discuss = [_local_remedy_discuss_entry(target, name, finding_id)
                   for finding_id in local_remedies_not_written]
 
+    # Resolved ONCE and threaded into both readers below. Two reads of one
+    # declaration in one command is how the two come to disagree about what
+    # the target declared -- `undeclared_ladder_state`'s own stated reason for
+    # taking `levels` as an argument.
+    declared_steps = resolve_steps_declaration(target, name)
+
     return {
         "command": "verify",
         "target": str(target),
@@ -12287,8 +12524,16 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         # it names no work about to be run, only a declaration to change.
         # See `unfinishable_flow_state`'s own docstring.
         "unfinishableFlow": unfinishable_flow_state(
-            resolve_steps_declaration(target, name), position["sequence"],
-            required_scale),
+            declared_steps, position["sequence"], required_scale),
+        # The same gap, one sub-key deeper, and the one that lets a step write
+        # into another step's product unseen. Per-step rather than
+        # per-repository, because `__steps__` is a map: one entry naming its
+        # roots says nothing about its neighbour. See
+        # `undeclared_produces_state`'s own docstring for why this is reported
+        # with its consequence rather than refused, and where the from-zero
+        # demand lives.
+        "undeclaredProduces": undeclared_produces_state(
+            target, name, declared_steps),
     }
 
 

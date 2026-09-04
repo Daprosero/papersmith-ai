@@ -598,7 +598,7 @@ Two independent findings, reported separately:
   in `--revision`; `invariantsWithoutTest` are claims declared in code with no
   test enforcing them. Both need the user's decision before you touch anything.
 
-Nine more are reported and none of them is a finding, which is exactly why
+Ten more are reported and none of them is a finding, which is exactly why
 they were easy to leave undocumented:
 
 - **`coupling`** — which notebook cells reach into the target's internals instead
@@ -716,6 +716,18 @@ they were easy to leave undocumented:
   `null` when the search declares no scale, when no item is graded against one,
   and when no step waits behind such an item. It **never gates** — the refusal
   it reports ahead of is unchanged, and nobody is let through any earlier.
+- **`undeclaredProduces`** — one entry per declared `__steps__` step that names
+  no `produces`, the list of path roots (relative to the product folder) that
+  step and only that step writes into. Not a defect and never a gate: it names
+  what the absence costs. `step` snapshots the product folder before and after
+  every run and reports `wrote`; with no declared root it can tell neither a
+  run that returned having written nothing from one that produced its whole
+  output, nor a run that stayed in its own tree from one that wrote into a
+  neighbour's — the second of which was measured twice in one day on one
+  repository, each time reported as `returned` and caught only by a digest
+  compared by hand. Declare the roots, or leave the reading switched off
+  knowingly. The kit ships the key in its own `__steps__` example, so a
+  repository built from zero is asked rather than defaulted past.
 
 Omit `--revision` and `fidelity.status` is `unknown`: the modules' declared
 revisions are still listed, but nothing is compared. Never report an
@@ -1798,6 +1810,23 @@ invocation, a wrong working directory — nothing here ever ran); **a
 harness timeout, a `SIGKILL`) and its product is partial; **a terminal event
 means it ran and reported**. Do not read a step's success off an exit status
 or off stdout: read it off this pair.
+
+Every successful call also publishes `wrote`: what this run changed inside the
+product folder, split by whether this step owns it. A `__steps__` entry names
+`produces`, the list of path roots -- relative to the product folder -- that
+step and only that step writes into; `step` snapshots the folder before the
+spawn and again after the child reports, and answers `own` (everything changed
+lies under those roots), `nothing` (the run returned and changed nothing under
+them), `foreign` (it changed paths outside them) or `undeclared` (the step named
+no roots, so neither reading is available). `foreign` is the one nothing else
+here can see: a step that writes into a neighbouring step's product still
+reports `outcome: "returned"`, still passes every check, and may change only a
+field inside a file nobody opens. Files are compared by `(size, mtime)` -- every
+write a filesystem records moves it, and a file touched without its bytes
+changing reads as written, which is the safe direction for a guard about who
+wrote where. `.implementation/` is excluded, for the reason the dirty-tree guard
+excuses it. The same block, minus its constant note, is written into the
+terminal ledger event, so the reading survives the process that took it.
 
 That same pair is also the only cost figure this skill has, and `step`
 publishes it: `lastRun` on every successful call carries the elapsed seconds

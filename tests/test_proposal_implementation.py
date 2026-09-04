@@ -25390,7 +25390,10 @@ _ENGLISH_COUNTS = {
     # (the-pilot-proves-the-science, slice B).
     7: "Seven", 8: "Eight",
     9: "Nine", 10: "Ten", 17: "Seventeen", 18: "Eighteen", 19: "Nineteen",
-    20: "Twenty",
+    # `Twenty-one` is `verify`'s status count once `undeclaredProduces` joined
+    # it -- the per-step half of the same "reported, never demanded" family
+    # `undeclaredLadder` and `undeclaredRecords` already sit in.
+    20: "Twenty", 21: "Twenty-one",
     26: "Twenty-six", 27: "Twenty-seven", 28: "Twenty-eight",
     29: "Twenty-nine", 30: "Thirty", 31: "Thirty-one", 32: "Thirty-two",
     33: "Thirty-three", 34: "Thirty-four", 35: "Thirty-five",
@@ -27632,3 +27635,269 @@ class StepMeasuredLastRunTests(unittest.TestCase):
         self.assertIsInstance(second["seconds"], int)
         self.assertEqual(second["session"], "s1",
                          "the figure describes the PREVIOUS run, not this one")
+
+
+class StepWriteScopeTests(unittest.TestCase):
+    """`wrote` -- which tree a step's run actually landed in.
+
+    The hole. `bc78905`'s `started`/terminal pair answers *did this step
+    produce nothing?*. Nothing answered *did this step produce, in somebody
+    else's tree?* -- and that state was measured twice on one repository in
+    one day: a declared step wrote into a neighbouring declared step's product
+    root, reported `outcome: "returned"`, passed every check this skill runs,
+    and changed only a field inside a JSON nobody opens. Both were caught by a
+    digest compared by hand in a throwaway shell script.
+
+    A `__steps__` entry now names `produces`, the path roots it owns relative
+    to the product folder, and `step` snapshots the product folder on both
+    sides of the run.
+
+    **The mutation a weaker guard survives**, written as
+    `test_a_step_that_wrote_only_outside_its_roots_is_not_own`: a guard asking
+    only "did anything in this target change?" passes a step that wrote
+    exclusively into a neighbour's tree, because something did change. The
+    split by root is what discriminates it.
+    """
+
+    def _box(self, suffix, steps):
+        box = FORGE / "implementations" / f"_e2e_scope_{suffix}_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        (box / "src" / "Method").mkdir(parents=True)
+        (box / "src" / "Method_Benchmark").mkdir(parents=True)
+        (box / "Method" / "Results" / "own").mkdir(parents=True)
+        (box / "Method" / "Results" / "neighbour").mkdir(parents=True)
+        (box / "src" / "Method" / "__init__.py").write_text("", encoding="utf-8")
+        # Same byte length before and after -- `{"value": 1}` -> `{"value": 2}`
+        # is exactly the shape of the incident, a field changed inside a JSON
+        # nobody opens -- so the detection rests entirely on the mtime half of
+        # the identity. The stamps are pushed into the past so the assertion
+        # cannot depend on a filesystem's timestamp granularity.
+        for artefact in (box / "Method" / "Results" / "own" / "a.json",
+                         box / "Method" / "Results" / "neighbour" / "b.json"):
+            artefact.write_text('{"value": 1}', encoding="utf-8")
+            os.utime(artefact, (0, 0))
+        (box / "src" / "Method_Benchmark" / "__init__.py").write_text(
+            f"__steps__ = {steps!r}\n", encoding="utf-8")
+        (box / "src" / "Method_Benchmark" / "steps.py").write_text(textwrap.dedent(
+            """
+            import pathlib
+            import time
+
+            PRODUCT = pathlib.Path(__file__).resolve().parents[2] / "Method"
+
+            def write_own():
+                time.sleep(0.01)
+                (PRODUCT / "Results" / "own" / "a.json").write_text('{"value": 2}')
+
+            def write_neighbour():
+                time.sleep(0.01)
+                (PRODUCT / "Results" / "neighbour" / "b.json").write_text('{"value": 2}')
+
+            def write_nothing():
+                return None
+            """), encoding="utf-8")
+        (box / ".gitignore").write_text(
+            "__pycache__/\n.ipynb_checkpoints/\n.implementation/\n",
+            encoding="utf-8")
+        write_fixture_interpreter(
+            box / ".venv" / ("Scripts" if os.name == "nt" else "bin"))
+        git = ["git", "-c", "user.email=forge@example.invalid",
+               "-c", "user.name=forge", "-C", str(box)]
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        subprocess.run(git + ["add", "-A"], check=True, capture_output=True)
+        subprocess.run(git + ["commit", "-qm", "toy"], check=True,
+                       capture_output=True)
+        return box
+
+    def _entry(self, function, produces=("Results/own",)):
+        entry = {"module": "Method_Benchmark.steps", "function": function}
+        if produces is not None:
+            entry["produces"] = list(produces)
+        return entry
+
+    def _run(self, box, step="run"):
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "step", "--target", str(box), "--name",
+             "Method", "--session", "s1", "--step", step],
+            capture_output=True, text=True, cwd=FORGE)
+        return proc
+
+    def _wrote(self, box, step="run"):
+        proc = self._run(box, step)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return json.loads(proc.stdout)["wrote"]
+
+    def test_a_step_that_wrote_only_inside_its_roots_is_own(self):
+        box = self._box("own", {"run": self._entry("write_own")})
+        wrote = self._wrote(box)
+        self.assertEqual(wrote["status"], "own")
+        self.assertEqual(wrote["inside"], ["Results/own/a.json"])
+        self.assertEqual(wrote["outside"], [])
+
+    def test_a_step_that_wrote_only_outside_its_roots_is_not_own(self):
+        """The mutation. Something in the target DID change, so a guard asking
+        only "did anything change?" reads this run as productive; the whole
+        point of the declaration is that it lands in a tree this step does not
+        own, and `inside` is empty while `outside` names the neighbour."""
+        box = self._box("foreign", {"run": self._entry("write_neighbour")})
+        wrote = self._wrote(box)
+        self.assertEqual(wrote["status"], "foreign")
+        self.assertEqual(wrote["inside"], [])
+        self.assertEqual(wrote["outside"], ["Results/neighbour/b.json"])
+
+    def test_a_step_that_returned_having_written_nothing_says_so(self):
+        box = self._box("idle", {"run": self._entry("write_nothing")})
+        wrote = self._wrote(box)
+        self.assertEqual(wrote["status"], "nothing")
+        self.assertEqual((wrote["inside"], wrote["outside"]), ([], []))
+
+    def test_a_step_declaring_no_roots_is_graded_against_nothing(self):
+        """Reported with its consequence, never refused -- see
+        `undeclared_produces_state`'s own docstring for both reasons. The run
+        still succeeds, which is the half a refusal would have taken away."""
+        box = self._box("silent", {"run": self._entry("write_neighbour",
+                                                      produces=None)})
+        wrote = self._wrote(box)
+        self.assertEqual(wrote["status"], "undeclared")
+        self.assertEqual(wrote["declared"], [])
+        self.assertEqual(wrote["note"], impl.PRODUCES_UNDECLARED_CONSEQUENCE)
+
+    def test_the_reading_is_written_into_the_terminal_ledger_event(self):
+        """Durable rather than printed once: the incident this closes was
+        found by a hand-compared digest that was then thrown away."""
+        box = self._box("ledger", {"run": self._entry("write_neighbour")})
+        self._wrote(box)
+        events = [json.loads(line) for line in
+                  (box / "Method" / ".implementation" / "position.jsonl")
+                  .read_text(encoding="utf-8").splitlines()]
+        terminal = events[-1]
+        self.assertEqual(terminal["wrote"]["status"], "foreign")
+        self.assertEqual(terminal["wrote"]["outside"],
+                         ["Results/neighbour/b.json"])
+        self.assertNotIn("note", terminal["wrote"],
+                         "a constant sentence repeated into every ledger line")
+
+    def test_a_malformed_produces_is_refused_like_a_malformed_advances(self):
+        for produces in ("Results/own", [], ["  "], [1], ["/abs"], ["../out"]):
+            with self.subTest(produces=produces):
+                box = self._box(
+                    f"bad{abs(hash(repr(produces)))}",
+                    {"run": {"module": "Method_Benchmark.steps",
+                             "function": "write_own", "produces": produces}})
+                proc = self._run(box)
+                self.assertEqual(proc.returncode, 2, proc.stdout)
+                self.assertEqual(json.loads(proc.stdout)["code"],
+                                 "STEP_MALFORMED")
+
+    def test_the_skill_s_own_ledger_directory_is_never_a_write(self):
+        """`step` appends to `.implementation/` on every run it makes, so
+        counting it would make every step in every repository read `foreign`
+        -- the same path `impl_guards` excuses from the dirty-tree check, for
+        the same reason."""
+        box = self._box("ledgerpath", {"run": self._entry("write_own")})
+        before = impl.product_snapshot(box, "Method")
+        (box / "Method" / ".implementation").mkdir(parents=True, exist_ok=True)
+        (box / "Method" / ".implementation" / "position.jsonl").write_text(
+            "{}\n", encoding="utf-8")
+        self.assertEqual(impl.changed_paths(
+            before, impl.product_snapshot(box, "Method")), [])
+
+    def test_a_declared_root_does_not_swallow_a_longer_sibling(self):
+        """Segment-wise, never `str.startswith`: `Results/own` must not claim
+        `Results/own-more`, which is the difference between a guard and a
+        guard-shaped string comparison."""
+        self.assertTrue(impl._owns("Results/own/a.json", ["Results/own"]))
+        self.assertFalse(impl._owns("Results/own-more/a.json", ["Results/own"]))
+
+    def test_a_removal_inside_another_root_counts_as_a_write(self):
+        """A step that deletes a neighbour's result has written into that
+        neighbour's tree exactly as surely as one that overwrites it."""
+        before = {"Results/neighbour/b.json": (1, 1)}
+        self.assertEqual(impl.changed_paths(before, {}),
+                         ["Results/neighbour/b.json"])
+
+
+class UndeclaredProducesReportTests(unittest.TestCase):
+    """`verify.undeclaredProduces` -- the from-zero half of the same
+    declaration.
+
+    The rule this exists for: anything the skill READS from a target must be
+    DEMANDED of a target built from zero, or it becomes a field that silently
+    defaults and a check that silently grades nothing. `undeclaredLadder` is
+    the precedent for the shape -- name the absence, name what it costs, gate
+    on neither -- and the kit ships `produces` in its own `__steps__` example
+    so the question is met rather than defaulted past.
+    """
+
+    def _bench(self, steps, *, holder="__init__.py", package=True):
+        box = FORGE / "implementations" / f"_e2e_produces_{os.getpid()}_{id(self)}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        if package:
+            root = box / "src" / "Method_Benchmark"
+            root.mkdir(parents=True)
+            (root / holder).write_text(f"__steps__ = {steps!r}\n",
+                                       encoding="utf-8")
+        else:
+            box.mkdir(parents=True)
+        return box
+
+    def test_a_step_naming_no_roots_is_named_with_its_consequence(self):
+        box = self._bench({"one": {"module": "m", "function": "f"}})
+        entries = impl.undeclared_produces_state(
+            box, "Method", {"one": {"module": "m", "function": "f"}})
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["step"], "one")
+        self.assertEqual(entries[0]["path"], "src/Method_Benchmark/__init__.py")
+        self.assertIn("produces", entries[0]["declaration"])
+        self.assertEqual(entries[0]["consequence"],
+                         impl.PRODUCES_UNDECLARED_CONSEQUENCE)
+
+    def test_a_step_naming_its_roots_is_asked_nothing(self):
+        steps = {"one": {"module": "m", "function": "f",
+                         "produces": ["Results/one"]}}
+        box = self._bench(steps)
+        self.assertEqual(impl.undeclared_produces_state(box, "Method", steps), [])
+
+    def test_only_the_steps_that_left_it_out_are_named(self):
+        steps = {"one": {"module": "m", "function": "f",
+                         "produces": ["Results/one"]},
+                 "two": {"module": "m", "function": "g"}}
+        box = self._bench(steps)
+        entries = impl.undeclared_produces_state(box, "Method", steps)
+        self.assertEqual([entry["step"] for entry in entries], ["two"])
+
+    def test_a_target_declaring_no_steps_is_asked_nothing(self):
+        """The restraint every sibling report keeps: a repository with nothing
+        to declare has not left a question unanswered."""
+        box = self._bench({})
+        self.assertEqual(impl.undeclared_produces_state(box, "Method", {}), [])
+
+    def test_a_target_with_nowhere_to_write_it_is_asked_nothing(self):
+        box = self._bench({"one": {"module": "m", "function": "f"}},
+                          package=False)
+        self.assertEqual(
+            impl.undeclared_produces_state(
+                box, "Method", {"one": {"module": "m", "function": "f"}}),
+            [], "structure.scaffoldGaps already names the missing file")
+
+    def test_the_kit_template_ships_the_key_it_will_be_asked_for(self):
+        """Constraint (b), asserted rather than promised. A declaration this
+        skill reads and the kit does not ship is a field every repository
+        built from zero silently defaults past."""
+        template = (KIT / "src_benchmark" / "__init__.py").read_text(
+            encoding="utf-8")
+        self.assertIn("__steps__", template)
+        self.assertIn('"produces"', template)
+        self.assertIn("undeclaredProduces", template,
+                      "the template names the key but not where a target is "
+                      "told it is missing")
+
+    def test_the_report_never_gates_verify(self):
+        """Reported, never demanded: `verify`'s exit status is byte-identical
+        whether every step names its roots or none does."""
+        rows = {row[0].strip("`"): row[2] for row in
+                markdown_table_rows(SKILL_MD.read_text(encoding="utf-8"),
+                                    "| Status | What it reports | Gates? |")[0]}
+        self.assertIn("undeclaredProduces", rows)
+        self.assertIn("never", rows["undeclaredProduces"].lower())
