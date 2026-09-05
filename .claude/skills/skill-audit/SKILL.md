@@ -131,6 +131,20 @@ it injects a nondeterministic writer into the directory the rest of the suite
 is measuring, and the failures land on whichever unrelated test is running
 when it writes.
 
+### The constructed child environment
+
+`constructed_child_env` is the one place a driver-kind child environment is
+built, shared by `run_box_step`'s `driver` step-kind and
+`run_sensitivity_drive`'s producer drive. `PYTHONDONTWRITEBYTECODE=1` is
+injected into every such environment **unconditionally** -- never inherited
+from the parent process, and never satisfiable by declaring it in a
+recipe's `env` list. The name stays out of `DRIVER_ENV_ALLOWLIST` **on
+purpose**: a recipe naming it explicitly is refused `Unprobeable`,
+deliberately, not an oversight. Widening the allowlist to admit it would
+turn the purge into a value a recipe could opt out of, and a same-size
+mutation could then execute a cached `.pyc` again -- the exact trap this
+paragraph exists to keep shut.
+
 ### Move 6, in detail
 
 Invert every lock the audit leans on, and watch it fire. The mutation sweep is
@@ -356,6 +370,7 @@ requirement, not a caveat.
 | An inversion is undone with `git checkout --` | Restore by inverse patch and confirm by content comparison; checkout restores from the index and silently discards unrelated work |
 | A remote-job rung is claimed from a full run, or from nothing at all | Drive it through that job's own `run.smoke` block (module / function / kwargs / requiredEvidence) in `run-config.json`; a job declaring none of `smoke_module`/`smoke_function` is itself a finding, service-blind, with no epoch or pilot-scale dial: a shard measured at pilot scale is not a cheaper shard, it is a different experiment |
 | A "did not move" report accuses a producer never proven to read its box | Fire an inverted control first: remove every declared input at once and demand the producer notice, by refusal or by its declared values changing. A per-input `unchanged` cell means nothing until the control has passed |
+| A same-size mutation reads live because it ran a cached `.pyc` | Inject `PYTHONDONTWRITEBYTECODE=1` unconditionally into every constructed child environment, at every site that builds one, through one shared helper -- never dependent on the parent process's own environment, and never satisfiable by a recipe's own declaration |
 
 ## The evidence ladder
 

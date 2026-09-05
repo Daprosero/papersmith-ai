@@ -6762,3 +6762,139 @@ class SensitivityAdjudicationTests(SensitivityBoxMixin, unittest.TestCase):
         self.assertEqual(result.returncode, 0, payload)
         self.assertIn("rows", payload["notAdjudicable"])
         self.assertNotIn("adjudication", payload)
+
+
+# ==========================================================================
+# Commit 0 -- `a-driven-child-purges-its-own-bytecode`: every constructed
+# child environment carries `PYTHONDONTWRITEBYTECODE=1` unconditionally, at
+# both sites that build one, through one shared helper. A same-size
+# mutation must never be able to execute a cached `.pyc`.
+# ==========================================================================
+
+@contextlib.contextmanager
+def _env_var_removed(name):
+    """Pop `name` from `os.environ` for one block, restored exactly as
+    found afterward. Manual save/restore, not `unittest.mock`, to match
+    this file's own idiom -- and this is the one lock in the suite that
+    must run with the name popped even though the method rules require it
+    set for every other test in the same process.
+    """
+    had = os.environ.pop(name, None)
+    try:
+        yield
+    finally:
+        if had is not None:
+            os.environ[name] = had
+
+
+class ChildEnvTests(unittest.TestCase):
+    """`driver-child-environment` (Change 0): the purge holds regardless of
+    the parent process's own environment, at both `run_box_step` and
+    `run_sensitivity_drive`, and the name stays out of
+    `DRIVER_ENV_ALLOWLIST` so a recipe can never declare it away.
+
+    Each lock executes a real child process and reads what that child
+    itself observed -- never asserts a field on a constructed dict, per
+    this change's own "guard a weaker guard survives" discipline.
+    """
+
+    PURGE_PROBE = (
+        "import os, pathlib, sys; "
+        "pathlib.Path(sys.argv[1]).write_text("
+        "os.environ.get('PYTHONDONTWRITEBYTECODE', ''))")
+
+    def test_run_box_step_purges_bytecode_even_when_parent_lacks_it(self):
+        """Scenario: purge holds regardless of parent environment."""
+        cli = audit_cli_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp).resolve()
+            repo, subject, box = tmp / "repo", tmp / "subject", tmp / "box"
+            repo.mkdir(); subject.mkdir(); box.mkdir()
+            step = {"kind": "driver",
+                    "argv": [sys.executable, "-c", self.PURGE_PROBE,
+                             "{box}/purge_probe.txt"]}
+            with _env_var_removed("PYTHONDONTWRITEBYTECODE"):
+                cli.run_box_step(step, repo, subject, box, timeout=30)
+            self.assertEqual(
+                (box / "purge_probe.txt").read_text(), "1",
+                "run_box_step's driver-kind child env must carry "
+                "PYTHONDONTWRITEBYTECODE=1 even when the parent process's "
+                "own environment has none")
+
+    def test_run_sensitivity_drive_purges_bytecode_independently(self):
+        """Scenario: both sites carry the purge, not one -- this lock never
+        calls `run_box_step` at all."""
+        cli = audit_cli_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp).resolve()
+            repo = tmp / "repo"
+            real_subject = tmp / "subject"
+            copy_root = tmp / "copy"
+            box = tmp / "box"
+            for made in (repo, real_subject, copy_root, box):
+                made.mkdir()
+            recipe = {"argv": [sys.executable, "-c",
+                               "import os, sys; sys.stdout.write("
+                               "os.environ.get('PYTHONDONTWRITEBYTECODE', "
+                               "''))"]}
+            with _env_var_removed("PYTHONDONTWRITEBYTECODE"):
+                completed = cli.run_sensitivity_drive(
+                    recipe, real_subject, copy_root, box, repo, timeout=30)
+            self.assertEqual(
+                completed.stdout, "1",
+                "run_sensitivity_drive's own child env must carry "
+                "PYTHONDONTWRITEBYTECODE=1, independently of whether "
+                "run_box_step ran in this process")
+
+    def test_a_declared_purge_name_still_refuses_the_driver_step(self):
+        """Scenario: an explicit declaration still refuses the step -- the
+        purge name stays out of `DRIVER_ENV_ALLOWLIST` on purpose."""
+        cli = audit_cli_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            repo, subject, box = tmp / "repo", tmp / "subject", tmp / "box"
+            repo.mkdir(); subject.mkdir(); box.mkdir()
+            step = {"kind": "driver", "argv": [sys.executable, "-c", "pass"],
+                    "env": ["PYTHONDONTWRITEBYTECODE"]}
+            with self.assertRaises(cli.Unprobeable) as caught:
+                cli.run_box_step(step, repo, subject, box, timeout=30)
+            self.assertIn("PYTHONDONTWRITEBYTECODE", str(caught.exception))
+            self.assertNotIn(
+                "PYTHONDONTWRITEBYTECODE", cli.DRIVER_ENV_ALLOWLIST,
+                "the purge name must never enter the allowlist -- it is "
+                "injected, never recipe-declarable")
+
+
+class ChildEnvConstructionSweepTests(unittest.TestCase):
+    """An AST class-sweep proving `constructed_child_env` is the one place
+    a child environment's `os.environ[...]` comprehension is built -- the
+    `SingleWalkTests` idiom, applied to this change's own helper.
+    """
+
+    def test_environ_subscript_comprehensions_appear_only_in_the_helper(self):
+        tree = ast.parse(CLI.read_text(encoding="utf-8"))
+        function_bodies = {
+            node.name: node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)}
+        self.assertIn(
+            "constructed_child_env", function_bodies,
+            "audit_cli.py defines no constructed_child_env to scope this "
+            "lock to")
+        inside_helper = set(ast.walk(function_bodies["constructed_child_env"]))
+
+        def is_os_environ_subscript(node):
+            return (isinstance(node, ast.Subscript)
+                    and isinstance(node.value, ast.Attribute)
+                    and node.value.attr == "environ"
+                    and isinstance(node.value.value, ast.Name)
+                    and node.value.value.id == "os")
+
+        offenders = [
+            ast.dump(node) for node in ast.walk(tree)
+            if node not in inside_helper
+            and isinstance(node, ast.DictComp)
+            and is_os_environ_subscript(node.value)]
+        self.assertEqual(
+            offenders, [],
+            "a second os.environ[...] child-env comprehension exists "
+            f"outside constructed_child_env: {offenders}")

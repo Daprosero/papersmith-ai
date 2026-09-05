@@ -509,6 +509,40 @@ BOX_STEP_KINDS = ("exec", "driver")
 DRIVER_ENV_ALLOWLIST = ("HOME", "LANG", "LC_ALL", "PATH", "TERM", "TMPDIR",
                         "USER")
 
+
+def constructed_child_env(names, label, hint=""):
+    """The only place a driver-kind child environment is built, for both
+    `run_box_step` and `run_sensitivity_drive`.
+
+    `names` intersected with `DRIVER_ENV_ALLOWLIST` decides what the child
+    inherits by *name*; an unknown name is refused `Unprobeable` naming
+    `label` and `hint`, so each site keeps its own distinct refusal wording
+    while sharing the one comparison against the allowlist.
+
+    `PYTHONDONTWRITEBYTECODE` is then injected **unconditionally** --
+    never inherited from the parent, and never satisfiable by declaring it
+    in `names`, because it stays out of `DRIVER_ENV_ALLOWLIST` on purpose.
+    A same-size mutation to the guarded source must never be able to
+    execute a stale `.pyc` at either site; conditioning the purge on the
+    parent's own environment or on a recipe's declaration would reopen
+    exactly that hole.
+
+    Returns `(env, missing)`: `missing` is `names` filtered to those absent
+    from the parent process, sorted -- `run_box_step` transcribes it into
+    `envMissing`; `run_sensitivity_drive` has never had a use for it and
+    discards it.
+    """
+    unknown = sorted(set(names) - set(DRIVER_ENV_ALLOWLIST))
+    if unknown:
+        raise Unprobeable(
+            f"{label} names env {unknown}, outside "
+            f"{sorted(DRIVER_ENV_ALLOWLIST)}{hint}")
+    missing = sorted(name for name in names if name not in os.environ)
+    env = {name: os.environ[name] for name in names if name in os.environ}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return env, missing
+
+
 #: The directory namespace the ignorance control gate seeds a from-zero box
 #: with, before trusting that box was ever empty. Absurd and namespaced so
 #: it can never collide with a real driver's own output.
@@ -650,24 +684,18 @@ def run_box_step(step, repo, subject, box, timeout, forbidden_shape=()):
         for part in argv:
             assert_brief_names_no_shape(part, forbidden_shape)
         names = env_spec or []
-        unknown = sorted(set(names) - set(DRIVER_ENV_ALLOWLIST))
-        if unknown:
-            raise Unprobeable(
-                f"a fromZero driver step names env {unknown}, outside "
-                f"{sorted(DRIVER_ENV_ALLOWLIST)}; a driver refusing for an "
-                "environment reason is a candidate for widening this list "
-                "by measurement -- run the declared argv under `env -i` "
-                "with only the declared names and observe which addition "
-                "changes the refusal")
         # A name declared here but absent from the parent process is
         # dropped from `child_env` with nothing said below -- silent by
         # construction. `envMissing` makes that drop visible: transcribed
         # into `## User drive`, a recipe declaring `USER` on a machine that
         # has none then reads as a stated fact, not as an inexplicable
         # refusal from the child.
-        missing = sorted(name for name in names if name not in os.environ)
-        child_env = {name: os.environ[name] for name in names
-                    if name in os.environ}
+        child_env, missing = constructed_child_env(
+            names, "a fromZero driver step",
+            hint="; a driver refusing for an environment reason is a "
+                 "candidate for widening this list by measurement -- run "
+                 "the declared argv under `env -i` with only the declared "
+                 "names and observe which addition changes the refusal")
         real_path = shutil.which(argv[0], path=child_env.get("PATH"))
         if not real_path:
             raise Unprobeable(
@@ -1456,12 +1484,7 @@ def run_sensitivity_drive(recipe, real_subject, copy_root, box, repo, timeout):
     cwd = resolve_under(recipe.get("cwd"), copy_root, "sensitivity.cwd")
 
     names = recipe.get("env") or []
-    unknown = sorted(set(names) - set(DRIVER_ENV_ALLOWLIST))
-    if unknown:
-        raise Unprobeable(
-            f"the sensitivity recipe names env {unknown}, outside "
-            f"{sorted(DRIVER_ENV_ALLOWLIST)}")
-    child_env = {name: os.environ[name] for name in names if name in os.environ}
+    child_env, _ = constructed_child_env(names, "the sensitivity recipe")
 
     try:
         return subprocess.run(
