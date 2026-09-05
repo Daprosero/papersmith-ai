@@ -17,6 +17,7 @@ into a page of confident findings.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -25,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import uuid
+from ast import walk as ast_walk
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -1268,6 +1270,19 @@ def build_parser():
     exits.add_argument("--timeout", type=int, default=30,
                        help="seconds before a hanging published act is "
                             "exit-coded published-but-timed-out")
+
+    enumeration_reach = commands.add_parser(
+        "enumeration-reach",
+        help="per declared check, whether its own iteration source is "
+             "derived from the subject or bounded")
+    enumeration_reach.add_argument("--subject", required=True,
+                                   help="the subject's root directory")
+    enumeration_reach.add_argument("--spec", required=True,
+                                   help="the JSON recipe declaring the "
+                                        "checks block")
+    enumeration_reach.add_argument("--repo-root", default=".",
+                                   help="the root a site declaring "
+                                        "root=repo resolves under")
 
     return parser
 
@@ -2968,6 +2983,180 @@ def run_reading_diff(args):
     return 0
 
 
+#: Move 12's own closed, four-value roster (`spec.md`, "The audit measures an
+#: enumerator's reach, not only its result"). `derived` is the innocent
+#: default: a check with no bounded pattern this classifier can recognise is
+#: presumed derived, never presumed guilty. The other three name exactly the
+#: three bounded shapes the source session actually measured: a literal
+#: collection, an unfiltered namespace walk (`dir(...)`), and that same walk
+#: narrowed by a filter before the assertion runs.
+ENUMERATION_SOURCES = ("derived", "literal-collection", "single-namespace",
+                       "filtered-subset")
+
+#: The one outcome a non-Python subject's check reports, never guessed at.
+#: `probe_code_side` parses no source, on purpose, so the subject may be any
+#: language; this subcommand does parse source, so a subject it cannot parse
+#: is a language boundary, not an empty roster.
+ENUMERATION_UNREACHABLE = "unreachable-for-this-language"
+
+
+def find_check_function(tree, qualname):
+    """The `ast.FunctionDef` a dotted `qualname` names inside `tree`.
+
+    `qualname` is `function` or `Class.method`, the same two shapes
+    `check_citations.py`'s own symbol citations use elsewhere in this
+    repository -- a name, never a line, since a parallel edit moves every
+    line number and never moves a name.
+    """
+    parts = qualname.split(".")
+    class_name, function_name = (None, parts[0]) if len(parts) == 1 \
+        else (parts[0], parts[1])
+    for node in ast_walk(tree):
+        if class_name:
+            if not (isinstance(node, ast.ClassDef) and node.name == class_name):
+                continue
+            for child in node.body:
+                if isinstance(child, ast.FunctionDef) and child.name == function_name:
+                    return child
+        elif isinstance(node, ast.FunctionDef) and node.name == function_name:
+            return node
+    return None
+
+
+def _resolve_local_literal(function_node, iterable):
+    """`iterable`, or the literal collection it names if it is a bare local
+    variable assigned one earlier in the same function.
+
+    A hand-written allowlist is overwhelmingly assigned to a name before it
+    is walked -- `test_the_cli_is_stdlib_only`'s own `permitted` set is
+    written exactly this way -- so classifying only a literal sitting
+    directly in the loop's own `iter` slot would miss the shape real code
+    actually has. One level of resolution, not a general data-flow
+    analysis: a name assigned anything other than a literal collection, or
+    never assigned one at all, is returned unchanged and falls through to
+    `derived`.
+    """
+    if not isinstance(iterable, ast.Name):
+        return iterable
+    for node in ast_walk(function_node):
+        if isinstance(node, ast.Assign) \
+                and isinstance(node.value, (ast.List, ast.Tuple, ast.Set, ast.Dict)) \
+                and any(isinstance(target, ast.Name) and target.id == iterable.id
+                       for target in node.targets):
+            return node.value
+    return iterable
+
+
+def _classify_iterable(iterable, has_filter):
+    if isinstance(iterable, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
+        return "literal-collection"
+    if isinstance(iterable, ast.Call) and isinstance(iterable.func, ast.Name) \
+            and iterable.func.id == "dir":
+        return "filtered-subset" if has_filter else "single-namespace"
+    return "derived"
+
+
+def enumeration_source_kind(function_node):
+    """One check function's own iteration source, classified from its
+    syntax tree into `ENUMERATION_SOURCES`.
+
+    Reads the first `for` statement or comprehension `ast.walk` reaches --
+    source order for a function with one dominant loop, the shape every
+    check this subcommand was built against actually has. A function with
+    no loop and no comprehension at all enumerates nothing this classifier
+    can see, and is `derived` by the same innocent-until-caught default:
+    presumed to compute its own domain rather than presumed to hand-list it.
+    """
+    for node in ast_walk(function_node):
+        if isinstance(node, ast.comprehension):
+            iterable = _resolve_local_literal(function_node, node.iter)
+            return _classify_iterable(iterable, bool(node.ifs))
+        if isinstance(node, ast.For):
+            iterable = _resolve_local_literal(function_node, node.iter)
+            has_filter = any(isinstance(child, ast.If) for child in node.body)
+            return _classify_iterable(iterable, has_filter)
+    return "derived"
+
+
+def run_enumeration_reach(args):
+    """Move 12: is a check's own claim of completeness backed by a
+    derivation, or by something bounded wearing a derivation's clothes?
+
+    `probe_code_side` parses no source of the subject, on purpose, so the
+    subject may be written in any language; this subcommand does the
+    opposite on purpose, and so cannot live inside `roster` without forking
+    a second code-side derivation there. It reads the recipe's own declared
+    `checks` -- each an operator-identified function the operator has
+    already read as claiming completeness over a set, by symbol name, never
+    by line -- and classifies only the enumeration side: `derived`, or one
+    of three bounded shapes. A check whose site does not end `.py`, or whose
+    source does not parse as Python, is `unreachable-for-this-language`,
+    never guessed at.
+
+    Nothing here mutates the subject; there is no box, no copy, and no
+    escape gate, because nothing here writes at all. Exit `0` for any
+    verdict; exit `2` only for an inability to look: no `checks` block, a
+    check naming no site, or a named check not found in its own site.
+    """
+    spec_path = Path(args.spec)
+    if not spec_path.is_file():
+        raise Unprobeable(f"no enumeration-reach recipe at {spec_path}")
+    try:
+        recipe = json.loads(spec_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise Unprobeable(f"the enumeration-reach recipe is unreadable: {error}")
+
+    subject = Path(args.subject).resolve()
+    repo = Path(args.repo_root).resolve()
+    surface = recipe.get("surface", "")
+    if not surface:
+        raise Unprobeable("the recipe names no surface to scope the sweep under")
+    checks = recipe.get("checks")
+    if not checks:
+        raise Unprobeable(
+            "the recipe declares no checks block; a recipe with no checks "
+            "to classify is refused, never reported as zero")
+
+    matrix = {}
+    parsed = {}
+    for entry in checks:
+        name = entry.get("name")
+        if not name:
+            raise Unprobeable("a checks entry names no check")
+        site = entry.get("site")
+        if not site:
+            raise Unprobeable(f"check {name!r} declares no site")
+
+        path = resolve_site(site, subject, repo)
+        if path.suffix != ".py":
+            matrix[name] = {"claim": None, "verdict": ENUMERATION_UNREACHABLE}
+            continue
+
+        cache_key = str(path)
+        if cache_key not in parsed:
+            try:
+                parsed[cache_key] = ast.parse(read_site(path))
+            except SyntaxError:
+                parsed[cache_key] = None
+        tree = parsed[cache_key]
+        if tree is None:
+            matrix[name] = {"claim": None, "verdict": ENUMERATION_UNREACHABLE}
+            continue
+
+        function = find_check_function(tree, name)
+        if function is None:
+            raise Unprobeable(f"check {name!r} was not found at {path}")
+        matrix[name] = {"claim": ast.get_docstring(function),
+                        "verdict": enumeration_source_kind(function)}
+
+    bounded = sorted(
+        name for name, result in matrix.items()
+        if result["verdict"] not in ("derived", ENUMERATION_UNREACHABLE))
+
+    emit({"bounded": bounded, "checks": matrix, "surface": surface})
+    return 0
+
+
 #: Every item a report must carry, with the heading or field that carries it.
 #: Held to the shape table in SKILL.md in both directions, so this cannot become
 #: a roster restated in two places -- which is the defect the whole tool exists
@@ -4564,6 +4753,7 @@ DISPATCH = {
     "sensitivity": run_sensitivity,
     "inversion": run_inversion,
     "exits": run_exits,
+    "enumeration-reach": run_enumeration_reach,
 }
 
 

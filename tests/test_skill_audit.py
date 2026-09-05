@@ -461,9 +461,15 @@ class SkillHouseShapeTests(unittest.TestCase):
         # intersected with `DRIVER_ENV_ALLOWLIST`, never passed wholesale.
         # `uuid` arrived with the ignorance control gate's seeded marker, a
         # nonce that must never collide with a real driver's own output.
-        permitted = {"__future__", "argparse", "fnmatch", "hashlib", "json",
-                     "os", "pathlib", "re", "shutil", "subprocess", "sys",
-                     "uuid"}
+        # `ast` arrived with `enumeration-reach` (Move 12): R1 asks whether a
+        # check's own iteration source is derived or bounded, which is a
+        # question only source answers -- `probe_code_side` parses no source
+        # of the subject on purpose, so this is the one subcommand that
+        # deliberately does the opposite, on a *check's* own source, never
+        # the subject's.
+        permitted = {"__future__", "argparse", "ast", "fnmatch", "hashlib",
+                     "json", "os", "pathlib", "re", "shutil", "subprocess",
+                     "sys", "uuid"}
         self.assertEqual(
             sorted(imported - permitted), [],
             "audit_cli.py must import nothing outside the standard library, and "
@@ -532,8 +538,8 @@ class MovesTableTests(unittest.TestCase):
             (numbered if match else textual).append(
                 int(match.group(1)) if match else row)
         self.assertEqual(
-            sorted(numbered), list(range(0, 12)),
-            "the table must carry exactly one row per move 0 through 11, with no "
+            sorted(numbered), list(range(0, 13)),
+            "the table must carry exactly one row per move 0 through 12, with no "
             f"gap and no repeat; found {sorted(numbered)}")
         self.assertEqual(
             len(textual), 1,
@@ -1299,8 +1305,9 @@ class SelfAuditSubcommandRosterTests(unittest.TestCase):
         self.assertEqual(payload["unregistered"], [])
         self.assertEqual(payload["phantom"], [])
         self.assertEqual(sorted(payload["code"]),
-                         ["check-report", "exits", "inversion", "reading-diff",
-                          "roster", "sensitivity", "structure", "walkthrough"])
+                         ["check-report", "enumeration-reach", "exits",
+                          "inversion", "reading-diff", "roster", "sensitivity",
+                          "structure", "walkthrough"])
 
     def test_the_roster_comes_from_argparse_and_not_from_a_list(self):
         _, payload = roster_json(SELF_SPEC, SKILL_ROOT)
@@ -8464,3 +8471,229 @@ class ExitsBoxLifecycleTests(ExitsBoxMixin, unittest.TestCase):
         result, payload = exits_json(recipe, subject)
         self.assertEqual(result.returncode, 2, payload)
         self.assertIn(str(box), payload["error"])
+
+
+# ==========================================================================
+# Move 12 -- `enumeration-reach`: `roster`'s Move 0 enumerates a closed
+# surface from both sides, correctly. This asks a narrower question of one
+# side alone -- for a check the subject declares complete over a set, is its
+# own iteration source *derived* from the subject, or *bounded*: a literal
+# collection, an unfiltered namespace walk, or that same walk filtered
+# before the assertion runs. `probe_code_side` parses no source of the
+# subject on purpose; this subcommand does the opposite on purpose, on a
+# check's own source, and so cannot live inside `roster` without forking a
+# second code-side derivation there.
+# ==========================================================================
+
+def enumeration_reach_json(spec, subject, repo=FORGE, extra=()):
+    """Drive `enumeration-reach` as a process and parse what it wrote to
+    stdout."""
+    result = run_cli("enumeration-reach", "--subject", str(subject),
+                     "--spec", str(spec), "--repo-root", str(repo), *extra)
+    try:
+        return result, json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise AssertionError(
+            f"enumeration-reach exited {result.returncode} without JSON on "
+            f"stdout.\nstdout={result.stdout!r}\nstderr={result.stderr!r}")
+
+
+class EnumerationReachBoxMixin(BoxMixin):
+    """Fixtures for `enumeration-reach`: a subject holding a real Python
+    source file, each function inside it one candidate check.
+    """
+
+    def make_enumeration_reach_subject(self, name, files):
+        subject = self.make_box(name)
+        for relative, content in files.items():
+            self.write(subject, relative, content)
+        return subject
+
+    def make_enumeration_reach_recipe(self, subject, surface, checks):
+        spec = subject / "enumeration_reach.json"
+        spec.write_text(json.dumps({
+            "surface": run_scoped(surface),
+            "checks": checks,
+        }, indent=2), encoding="utf-8")
+        return spec
+
+
+#: A real Python source file, each function below one candidate check.
+#: `universal_claim_bounded` states a claim over "every accepted operation"
+#: and iterates a hand-written tuple -- the exact shape the source session's
+#: own checks that lagged reality had. `derived_from_signature` iterates a
+#: real derivation call, never a literal or a namespace walk.
+#: `every_attribute` and `every_writer` both walk `dir(module)`, the second
+#: one filtered by an `if ... continue` before its own assertion runs --
+#: the "skips any function without a particular parameter" shape, generalised
+#: to a name prefix so the fixture needs no second module to introspect.
+_ENUMERATION_REACH_CHECKS_SOURCE = '''\
+def universal_claim_bounded():
+    """Every accepted operation is one of these two."""
+    accepted = ("ALPHA", "BETA")
+    for member in accepted:
+        assert member
+
+
+def derived_from_signature():
+    """Derived from the subject's own declared signature, not a list."""
+    names = subcommand_surface_stub()
+    for name in names:
+        assert name
+
+
+def every_attribute(module):
+    """Every attribute the module exposes."""
+    for name in dir(module):
+        assert name
+
+
+def every_writer(module):
+    """Every writer function the module exposes."""
+    for name in dir(module):
+        if not name.startswith("write_"):
+            continue
+        assert name
+
+
+def subcommand_surface_stub():
+    return ["a", "b"]
+'''
+
+
+class EnumerationReachUniversalClaimTests(EnumerationReachBoxMixin,
+                                          unittest.TestCase):
+    """C2.1: a check whose stated claim is universal and whose enumeration
+    is a literal collection is reported with both facts side by side."""
+
+    def test_a_literal_collection_is_reported_bounded_with_its_own_claim(self):
+        subject = self.make_enumeration_reach_subject(
+            "universal_bounded", {"checks.py": _ENUMERATION_REACH_CHECKS_SOURCE})
+        recipe = self.make_enumeration_reach_recipe(
+            subject, "universal_bounded",
+            [{"name": "universal_claim_bounded",
+              "site": {"root": "subject", "path": "checks.py"}}])
+        result, payload = enumeration_reach_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        entry = payload["checks"]["universal_claim_bounded"]
+        self.assertEqual(entry["verdict"], "literal-collection")
+        self.assertIn("Every accepted operation", entry["claim"])
+        self.assertIn("universal_claim_bounded", payload["bounded"])
+
+
+class EnumerationReachDerivedTests(EnumerationReachBoxMixin, unittest.TestCase):
+    """C2.2: a check whose enumeration source is computed from the subject
+    is reported derived, and is not a finding."""
+
+    def test_a_derived_enumeration_is_reported_derived_not_a_finding(self):
+        subject = self.make_enumeration_reach_subject(
+            "derived_check", {"checks.py": _ENUMERATION_REACH_CHECKS_SOURCE})
+        recipe = self.make_enumeration_reach_recipe(
+            subject, "derived_check",
+            [{"name": "derived_from_signature",
+              "site": {"root": "subject", "path": "checks.py"}}])
+        result, payload = enumeration_reach_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            payload["checks"]["derived_from_signature"]["verdict"], "derived")
+        self.assertNotIn("derived_from_signature", payload["bounded"])
+
+
+class EnumerationReachNamespaceTests(EnumerationReachBoxMixin, unittest.TestCase):
+    """C2.3: `single-namespace` and `filtered-subset` each classified
+    correctly from a fixture AST -- the four-value closed roster."""
+
+    def test_an_unfiltered_namespace_walk_is_single_namespace(self):
+        subject = self.make_enumeration_reach_subject(
+            "namespace_walk", {"checks.py": _ENUMERATION_REACH_CHECKS_SOURCE})
+        recipe = self.make_enumeration_reach_recipe(
+            subject, "namespace_walk",
+            [{"name": "every_attribute",
+              "site": {"root": "subject", "path": "checks.py"}}])
+        result, payload = enumeration_reach_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            payload["checks"]["every_attribute"]["verdict"], "single-namespace")
+
+    def test_a_filtered_namespace_walk_is_filtered_subset(self):
+        subject = self.make_enumeration_reach_subject(
+            "namespace_filtered", {"checks.py": _ENUMERATION_REACH_CHECKS_SOURCE})
+        recipe = self.make_enumeration_reach_recipe(
+            subject, "namespace_filtered",
+            [{"name": "every_writer",
+              "site": {"root": "subject", "path": "checks.py"}}])
+        result, payload = enumeration_reach_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            payload["checks"]["every_writer"]["verdict"], "filtered-subset")
+
+
+class EnumerationReachLanguageBoundaryTests(EnumerationReachBoxMixin,
+                                            unittest.TestCase):
+    """C2.4: a non-Python subject's checks report
+    `unreachable-for-this-language`, never guessed."""
+
+    def test_a_non_python_site_is_unreachable_for_this_language(self):
+        subject = self.make_enumeration_reach_subject(
+            "non_python", {"checks.js":
+                          "function everyMember() { return ['A', 'B']; }\n"})
+        recipe = self.make_enumeration_reach_recipe(
+            subject, "non_python",
+            [{"name": "everyMember",
+              "site": {"root": "subject", "path": "checks.js"}}])
+        result, payload = enumeration_reach_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        entry = payload["checks"]["everyMember"]
+        self.assertEqual(entry["verdict"], "unreachable-for-this-language")
+        self.assertNotIn("everyMember", payload["bounded"])
+
+
+class EnumerationReachRosterIsolationTests(unittest.TestCase):
+    """C2.5: this subcommand does not fork a second code-side derivation
+    inside `run_roster` -- R1 stays out of `roster` entirely, per the
+    design's own rejection of that placement.
+    """
+
+    def test_run_roster_references_none_of_the_enumeration_reach_mechanism(self):
+        tree = ast.parse(CLI.read_text(encoding="utf-8"))
+        run_roster = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "run_roster")
+        referenced = {node.id for node in ast.walk(run_roster)
+                     if isinstance(node, ast.Name)}
+        referenced |= {node.attr for node in ast.walk(run_roster)
+                      if isinstance(node, ast.Attribute)}
+        forbidden = {"enumeration_source_kind", "find_check_function",
+                    "run_enumeration_reach", "ENUMERATION_SOURCES",
+                    "ENUMERATION_UNREACHABLE", "_resolve_local_literal",
+                    "_classify_iterable"}
+        self.assertEqual(
+            referenced & forbidden, set(),
+            "run_roster must not fork a second code-side derivation; R1 "
+            "lives entirely inside its own subcommand")
+
+
+class EnumerationReachMissingChecksBlockTests(EnumerationReachBoxMixin,
+                                              unittest.TestCase):
+    """No `checks` block is refused, never reported as zero -- the
+    `mutations`/`states` precedent."""
+
+    def test_no_checks_block_exits_two(self):
+        subject = self.make_enumeration_reach_subject("no_checks", {})
+        spec = subject / "recipe.json"
+        spec.write_text(json.dumps({"surface": run_scoped("no_checks")}),
+                        encoding="utf-8")
+        result, payload = enumeration_reach_json(spec, subject)
+        self.assertEqual(result.returncode, 2, payload)
+
+
+class EnumerationReachCardinalityTests(unittest.TestCase):
+    """The four-value closed roster, held by count."""
+
+    def test_exactly_four_sources(self):
+        cli = audit_cli_module()
+        self.assertEqual(len(cli.ENUMERATION_SOURCES), 4)
+        self.assertEqual(
+            set(cli.ENUMERATION_SOURCES),
+            {"derived", "literal-collection", "single-namespace",
+             "filtered-subset"})

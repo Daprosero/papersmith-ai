@@ -82,6 +82,7 @@ move, in order; the numbering is the order.
 | 9. Compare two supplied readings of one prose surface by mechanical diff, and never let the comparison close | `reading-diff` | `tests/test_skill_audit.py` |
 | 10. Vary a declared input a result claims to depend on, and ask whether the declared output moves | `sensitivity` | `tests/test_skill_audit.py` |
 | 11. Per reported state, whether a mechanical exit exists and whether it is published, and drive it for real if so | `exits` | `tests/test_skill_audit.py` |
+| 12. Per declared check, whether its own claim of completeness is backed by a derivation or by something bounded wearing a derivation's clothes | `enumeration-reach` | `tests/test_skill_audit.py` |
 | Read every artifact's opening paragraphs against its own frontmatter and its own shipped files | `doctrine` | no lock — irreducibly textual, and carried anyway |
 
 The last row has no code and no lock, and says so. Prose contradicting prose
@@ -367,6 +368,38 @@ The real subject is digested before and after the whole sweep, exactly like
 every other box-owning move: a change reaching it is
 `Unprobeable kind=exit-escaped-the-box`, the sweep halts, and `erase_box`
 still runs in a `finally`.
+
+### Move 12, in detail
+
+Move 0 enumerates a closed surface from both sides and is correct to do so.
+This asks a narrower question of one side alone: for a check the subject
+declares complete over a set, is its own iteration source *derived* from
+the subject, or *bounded* -- a literal collection, a single module's
+namespace, or a subset filtered before the assertion runs. Measured, four
+times in one session: an enumerator of refusal codes walking one
+function-name prefix inside one file, invisible to 42 codes raised
+elsewhere; a check documented as "enumerated from the signature" that
+skipped any function without a particular parameter; a helper collecting
+"the notebooks the steps run" by matching any string literal with that
+suffix, so a mutation replacing the call while leaving the literal survived
+it; and a check hand-listing four names that lagged reality by two.
+
+`probe_code_side`'s whole argument is that no source of the subject is
+parsed, so the subject may be written in any language. Move 12 does the
+opposite on purpose, on a **check's own source**, never the subject's, and
+so cannot live inside `roster` without forking a second code-side
+derivation there -- `ast` is the one new stdlib import this move admits, and
+`enumeration-reach` is its own subcommand for exactly that reason. A
+check's own name and docstring are its stated claim, read and reported
+verbatim; the tool never adjudicates whether that claim is universal, only
+what the check's own iteration source actually is. A check whose site does
+not end `.py`, or whose source does not parse as Python, is
+`unreachable-for-this-language`, never guessed at.
+
+**A check that says it derives and enumerates by hand is worse than no
+check**, because nobody looks at it again -- the whole finding, and the
+reason a derived enumeration is reported plainly, never escalated: it is
+not a finding, it is the check working as documented.
 
 ## The stages
 
@@ -669,6 +702,7 @@ carries no vocabulary of its own beyond that one heading.
 | `sensitivity` | A copy of the subject, a producer driven once per varied declared input, and the declared results site re-read after each drive | `control`, `matrix`, `notAdjudicable`, `inputsVaried`, `inputsUnchecked`, `inputsTotal`, `notes`, `containment` |
 | `inversion` | The real subject in place, one guarded fact substituted at a time from the recipe's own declared `mutations` block, its declared observing run driven before and after | `baseline`, `matrix`, `factsDriven`, `factsUnchecked`, `factsTotal`, `notAdjudicable`, `observed`, `frozen`, `notes` |
 | `exits` | Per state a recipe declares, a human-judgement declaration, a published act extracted from the subject's own text, or neither; an admitted act driven for real inside a copy | `exits`, `searched`, `frozen` |
+| `enumeration-reach` | Per declared check, its own stated claim and its own iteration source, classified from its syntax tree | `checks`, `bounded` |
 
 `roster` exits `0` for **any** verdict, findings included, and `2` when the
 probe could not be driven or the extraction matched nothing. Inability to look
@@ -724,6 +758,12 @@ published act reaching the real subject (`kind=exit-escaped-the-box`). None
 of `unstated` or any admission-gate outcome is an inability to look; each is
 a reported fact about the state.
 
+`enumeration-reach` exits `0` for **any** classification, including
+`unreachable-for-this-language`, and `2` only for an inability to look: no
+`checks` block, a check naming no site, or a named check not found in its
+own site. Nothing here mutates the subject; there is no box, no copy, and
+no escape gate, because nothing here writes at all.
+
 ## The shipped files
 
 This skill's own `structure` recipe (`references/probes/skill-audit.structure.json`)
@@ -746,6 +786,7 @@ the same change.
 | `references/probes/skill-audit.sensitivity.json` | the self-probe recipe for `sensitivity` |
 | `references/probes/skill-audit.self-guarded-facts.json` | the self-probe recipe for `inversion` |
 | `references/probes/skill-audit.exits.json` | the self-probe recipe for `exits` |
+| `references/probes/skill-audit.enumeration-reach.json` | the self-probe recipe for `enumeration-reach`, pointed at two of this file's own suite's checks |
 | `references/probes/remote-execution.accepted-operations.json` | `remote-execution`'s top-level `roster` recipe — pre-existing gap, committed without this row |
 | `references/probes/remote-execution.smoke-subcommands.json` | `remote-execution`'s nested `smoke record` `roster` recipe |
 | `references/probes/proposal-implementation.accepted-operations.json` | `proposal-implementation`'s `roster` recipe — same finding, over 2045 lines |
@@ -827,6 +868,10 @@ landed" and "its row landed" can outlive one commit undetected.
 | A published act's binary does not exist | Report `published-but-not-executable` |
 | A published act hangs past `exits`' own `--timeout` | Report `published-but-timed-out` |
 | A published act reaches the real subject | Exit `2` as `exit-escaped-the-box`; never reported as a finding |
+| An `enumeration-reach` recipe declares no `checks` block | Exit `2`; never reported as zero checks |
+| A declared check's site does not end `.py`, or does not parse as Python | Report `unreachable-for-this-language`; never guessed at |
+| A declared check's own iteration source is computed from the subject | Report `derived`; never a finding |
+| A declared check's own iteration source is a literal collection, a namespace walk, or a filtered namespace walk | Report both the check's own claim and the bounded kind, side by side |
 
 ## Handoff
 
