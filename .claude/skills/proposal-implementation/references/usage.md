@@ -1514,17 +1514,40 @@ oversight: the fact as computed cannot tell a repository that is not ready apart
 from one that never sends work anywhere. `SKILL.md`'s Output Contract carries the
 argument and states what would change it.
 
-**`pilotCompleteness` is a rung, and two of them.** It answers whether the
-ordered flow the target declared has actually finished at pilot: `status:
-"undeclared"` when no `__steps__` entry carries an `advances` ordinal (the rule
-does not apply, and the ladder answers what it always did), `"incomplete"` while
-any step is short, `"complete"` once none is. `incomplete` names the steps still
-short, in declared order — read that, not a count. Each row says why: `ran` is
-the step's own ledger verdict (`null` is unmeasured, which includes a run
-recorded against a suite that has since moved), `notebook` is the file its own
-sequence item names, and `notebookCurrent` is whether that file is executed
-against these sources. Existence is not evidence — a template copied into place
-and an executed report look identical until the execution counts are read.
+**`pilotCompleteness` is a rung, and two of them.** It answers whether the flow
+the target declared has actually finished at pilot: `status: "undeclared"` when
+no `__steps__` entry carries an `advances` ordinal at all (the rule does not
+apply, and the ladder answers what it always did), `"incomplete"` while any step
+is short, `"complete"` once none is. `incomplete` names the steps still short —
+read that, not a count. Each row says why: `ran` is the step's own ledger verdict
+(`null` is unmeasured, which includes a run recorded against a suite that has
+since moved), `notebooks` are the files it owes, and `notebooksCurrent` is
+whether all of them are executed against these sources. Existence is not
+evidence — a template copied into place and an executed report look identical
+until the execution counts are read.
+
+**Every declared step counts, not the ordered subset.** A row exists for every
+`__steps__` entry: the ones carrying an ordinal first and in that order, then the
+rest in name order with `advances: null`. The ordinal says where a step goes, and
+it never said whether the step has to run. Measured, and the reason this changed:
+a repository declaring ten steps carried no ordinal on four of them, none of the
+four had ever run, two of their notebooks held zero executed cells — and `probe`
+answered `pilot-decisions`, which offers the remote worker. The gate was reading
+six tenths of the flow and reporting on all of it.
+
+**The notebooks a step owes come from two links the target already writes.** Its
+own `produces` roots, where a root under `Notebooks/` names a notebook it renders
+— the half that needs no ordinal, and therefore the half that works for the
+entries above; and, when the step carries an ordinal, the operand of the sequence
+item at it whenever that item's witness is a notebook. The union, never one or
+the other: dropping the second would lose a check today's targets already have.
+
+**`unmeasurable` sits beside `incomplete`, and it is not a softer version of
+it.** It names the steps that declare no `produces` roots, so nobody could look
+at what they rendered. Such a step has not failed the pilot — its own run still
+decides its row — and the top-level `note` says exactly what the missing
+declaration costs. `incomplete` asks a reader for a run; `unmeasurable` asks for
+a declaration.
 
 While it is `"incomplete"` the answer is `pilot-first` and the offer of the
 declared scale is withheld: the outputs are what anybody reads to know the agreed

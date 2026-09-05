@@ -27031,13 +27031,23 @@ class PilotCompletenessTests(unittest.TestCase):
     record is missing", which is a different fact from "the pilot was
     validated", and the flow was reading the wrong one.
 
+    The second measured defect, and the one that widened this: on a real
+    repository `probe` answered `pilot-decisions` -- the rung that offers the
+    remote worker -- while FOUR of ten declared steps had never run, two of
+    their notebooks carrying zero executed cells. All four carried no
+    `advances` ordinal, and this predicate iterated `_flow_steps`, which
+    returns only the entries that do. `_flow_steps` is right about ORDER and
+    is unchanged; completeness asks a different question and now reads every
+    declared entry.
+
     Nothing here is hardcoded and nothing is read out of the target's Python.
-    The flow is `__steps__`'s own entries that carry an `advances` ordinal;
-    the order is that ordinal; a step has run when the ledger's `@step`
-    verdict says `returned` under a current suite digest; and the notebook a
-    step owes, when it owes one, is the operand of the sequence item that
-    step's own `advances` names -- a link the target already writes, so no
-    second declaration is invented beside it.
+    The flow is every `__steps__` entry, ordinal-carrying ones first and in
+    that order; a step has run when the ledger's `@step` verdict says
+    `returned` under a current suite digest; and the notebooks a step owes are
+    the union of the roots its own `produces` names under the product's
+    notebook category and the operand of the sequence item its `advances`
+    names -- both links the target already writes, so no second declaration is
+    invented beside them.
     """
 
     def evidence(self, *, step_verdicts=None, reports=None, levels=None):
@@ -27066,19 +27076,137 @@ class PilotCompletenessTests(unittest.TestCase):
                 self.assertEqual(state["status"], "undeclared")
                 self.assertEqual(state["steps"], [])
                 self.assertEqual(state["incomplete"], [])
+                self.assertEqual(state["unmeasurable"], [])
 
-    def test_a_step_without_an_ordinal_is_outside_the_flow(self):
-        """The mutation this survives: folding the ordinal-less entries in.
-        They are the ones `cmd_step` itself runs ungated, so an ordering that
-        never claimed them cannot be waiting on them -- and a rule that
-        counted them would report a complete flow incomplete forever."""
+    def test_a_declared_step_without_an_ordinal_still_has_to_have_run(self):
+        """THE defect. `_flow_steps` returns only the entries carrying an
+        integer `advances`, and this predicate used to iterate it -- so a
+        declared step with no ordinal was invisible to the completeness gate,
+        the pilot read complete over it, and the ladder opened toward the
+        remote worker.
+
+        The ordinal answers *in what order do they go*; it never answered
+        *does this step count*. `cmd_step` runs an ordinal-less entry UNGATED,
+        which is a statement about what the sequence is waiting on, not a
+        statement that the step need not run.
+
+        The weaker guard this beats: a fixture giving every step an
+        `advances` passes the old narrow code unchanged."""
         steps = {"one": {"module": "m", "function": "f", "advances": 1},
                  "aside": {"module": "m", "function": "g"}}
         state = impl.pilot_completeness_state(
             steps, [self.item(1, "record", None)],
             self.evidence(step_verdicts={"one": True}))
+        self.assertEqual(state["status"], "incomplete")
+        self.assertEqual(state["incomplete"], ["aside"])
+        self.assertEqual([row["step"] for row in state["steps"]],
+                         ["one", "aside"])
+        self.assertIsNone(state["steps"][1]["advances"])
+
+    def test_the_ordinal_less_steps_come_last_and_in_name_order(self):
+        """There is no position to sort them into, so a reader meets the
+        declared sequence first and everything declared beside it after. Name
+        order, never dict-insertion order, which moves when the target's own
+        file is re-spelled."""
+        steps = {"zulu": {"module": "m", "function": "z"},
+                 "two": {"module": "m", "function": "b", "advances": 2},
+                 "alpha": {"module": "m", "function": "a"},
+                 "one": {"module": "m", "function": "f", "advances": 1}}
+        state = impl.pilot_completeness_state(steps, [], self.evidence())
+        self.assertEqual([row["step"] for row in state["steps"]],
+                         ["one", "two", "alpha", "zulu"])
+
+    def test_a_step_owes_the_notebooks_its_own_produces_roots_name(self):
+        """The half that makes the widening possible without a new
+        declaration. `produces` -- the per-step output roots -- is already
+        the target naming what a step renders, and a root under the product's
+        notebook category is a notebook it owes. No ordinal, and therefore no
+        sequence item, is needed to find it -- the anchor below carries the
+        only ordinal in the fixture, and it is there because `undeclared`
+        still means "no entry declares one at all"."""
+        steps = {"anchor": {"module": "m", "function": "f", "advances": 1},
+                 "aside": {"module": "m", "function": "g",
+                           "produces": ["Notebooks/two.ipynb"]}}
+        state = impl.pilot_completeness_state(
+            steps, [self.item(1, "record", None)], self.evidence(
+                step_verdicts={"anchor": True, "aside": True},
+                reports=[self.report("Method/Notebooks/two.ipynb",
+                                     status="stale")]))
+        self.assertEqual(state["steps"][1]["notebooks"],
+                         ["Notebooks/two.ipynb"])
+        self.assertIs(state["steps"][1]["notebooksCurrent"], False)
+        self.assertEqual(state["incomplete"], ["aside"])
+
+    def test_a_produces_root_owns_a_notebook_segment_wise(self):
+        """`_owns`, never `str.startswith`: a root of `Notebooks/one` must not
+        swallow `Notebooks/one-more`, which is the difference between a guard
+        and a guard-shaped string comparison. The fixture makes the neighbour
+        the stale one, so a prefix match would report incomplete."""
+        steps = {"anchor": {"module": "m", "function": "f", "advances": 1},
+                 "aside": {"module": "m", "function": "g",
+                           "produces": ["Notebooks/one"]}}
+        state = impl.pilot_completeness_state(
+            steps, [self.item(1, "record", None)], self.evidence(
+                step_verdicts={"anchor": True, "aside": True},
+                reports=[self.report("Method/Notebooks/one/a.ipynb"),
+                         self.report("Method/Notebooks/one-more/b.ipynb",
+                                     status="stale")]))
+        self.assertEqual(state["steps"][1]["notebooks"],
+                         ["Notebooks/one/a.ipynb"])
         self.assertEqual(state["status"], "complete")
-        self.assertEqual([row["step"] for row in state["steps"]], ["one"])
+
+    def test_a_produces_root_outside_the_notebook_category_owes_nothing(self):
+        """A step that writes results and models renders no notebook, and
+        demanding one of it would fail a step that did exactly what it
+        declared. Measured, never unmeasurable: the roots ARE declared, so
+        the question was asked and the answer is none."""
+        steps = {"anchor": {"module": "m", "function": "f", "advances": 1,
+                            "produces": ["Results/anchor"]},
+                 "aside": {"module": "m", "function": "g",
+                           "produces": ["Results/table", "Models/net"]}}
+        state = impl.pilot_completeness_state(
+            steps, [self.item(1, "record", None)], self.evidence(
+                step_verdicts={"anchor": True, "aside": True},
+                reports=[self.report("Method/Notebooks/one.ipynb",
+                                     status="stale")]))
+        self.assertEqual(state["steps"][1]["notebooks"], [])
+        self.assertIsNone(state["steps"][1]["notebooksCurrent"])
+        self.assertEqual(state["status"], "complete")
+        self.assertEqual(state["unmeasurable"], [])
+
+    def test_a_step_declaring_no_produces_is_unmeasurable_not_failed(self):
+        """The distinction that has to survive the widening. A step declaring
+        no output roots has not failed the pilot -- nobody could look. It is
+        named in `unmeasurable` beside the consequence, its own run still
+        decides, and it never appears in `incomplete` for the missing
+        declaration alone."""
+        steps = {"one": {"module": "m", "function": "f", "advances": 1},
+                 "aside": {"module": "m", "function": "g"}}
+        state = impl.pilot_completeness_state(
+            steps, [self.item(1, "record", None)],
+            self.evidence(step_verdicts={"one": True, "aside": True}))
+        self.assertEqual(state["status"], "complete")
+        self.assertEqual(state["incomplete"], [])
+        self.assertEqual(state["unmeasurable"], ["one", "aside"])
+        self.assertIs(state["steps"][1]["producesDeclared"], False)
+        self.assertIn(impl.PRODUCES_KEY, state["note"])
+
+    def test_a_step_owes_both_its_produces_roots_and_its_items_notebook(self):
+        """The union, and why it is a union. Dropping the sequence item would
+        LOSE a check every target declaring notebook witnesses and no
+        `produces` has today, and a predicate standing in front of the
+        expensive door may only ever widen."""
+        steps = {"one": {"module": "m", "function": "f", "advances": 1,
+                         "produces": ["Notebooks/two.ipynb"]}}
+        state = impl.pilot_completeness_state(
+            steps, [self.item(1, "notebook", "Notebooks/one.ipynb")],
+            self.evidence(
+                step_verdicts={"one": True},
+                reports=[self.report("Method/Notebooks/one.ipynb"),
+                         self.report("Method/Notebooks/two.ipynb")]))
+        self.assertEqual(state["steps"][0]["notebooks"],
+                         ["Notebooks/one.ipynb", "Notebooks/two.ipynb"])
+        self.assertEqual(state["status"], "complete")
 
     def test_the_flow_is_reported_in_the_ordinal_order_the_target_declared(self):
         """`__steps__` is a mapping, so its own insertion order is whatever
@@ -27132,8 +27260,8 @@ class PilotCompletenessTests(unittest.TestCase):
                                                status="stale")]))
         self.assertEqual(state["incomplete"], ["one"])
         self.assertIs(state["steps"][0]["ran"], True)
-        self.assertIs(state["steps"][0]["notebookCurrent"], False)
-        self.assertEqual(state["steps"][0]["notebook"], "Notebooks/one.ipynb")
+        self.assertIs(state["steps"][0]["notebooksCurrent"], False)
+        self.assertEqual(state["steps"][0]["notebooks"], ["Notebooks/one.ipynb"])
 
     def test_a_notebook_executed_against_other_sources_is_not_complete(self):
         """`executed` alone says a cell ran once, never that it ran against
@@ -27161,7 +27289,7 @@ class PilotCompletenessTests(unittest.TestCase):
                           reports=[self.report("Method/Notebooks/one.ipynb")],
                           levels=["floor", "pilot", "full"]))
         self.assertEqual(state["status"], "complete")
-        self.assertIs(state["steps"][0]["notebookCurrent"], True)
+        self.assertIs(state["steps"][0]["notebooksCurrent"], True)
 
     def test_an_item_whose_witness_is_not_a_notebook_owes_only_its_verdict(self):
         """The deadlock this refuses. A step's item may witness a record or a
@@ -27178,9 +27306,9 @@ class PilotCompletenessTests(unittest.TestCase):
             self.evidence(step_verdicts={"one": True, "two": True},
                           levels=["floor", "full"]))
         self.assertEqual(state["status"], "complete")
-        self.assertEqual([row["notebook"] for row in state["steps"]],
-                         [None, None])
-        self.assertEqual([row["notebookCurrent"] for row in state["steps"]],
+        self.assertEqual([row["notebooks"] for row in state["steps"]],
+                         [[], []])
+        self.assertEqual([row["notebooksCurrent"] for row in state["steps"]],
                          [None, None])
 
     def test_a_step_whose_ordinal_names_no_item_owes_only_its_verdict(self):
@@ -27191,7 +27319,7 @@ class PilotCompletenessTests(unittest.TestCase):
         state = impl.pilot_completeness_state(
             steps, [], self.evidence(step_verdicts={"one": True}))
         self.assertEqual(state["status"], "complete")
-        self.assertIsNone(state["steps"][0]["notebook"])
+        self.assertEqual(state["steps"][0]["notebooks"], [])
 
     def test_every_step_run_and_every_notebook_current_reads_complete(self):
         steps = {"one": {"module": "m", "function": "f", "advances": 1},
@@ -27634,6 +27762,13 @@ class PilotGatesTheDeclaredScaleTests(unittest.TestCase):
     These fixtures differ ONLY in what actually ran -- the same declaration,
     the same search, the same absent record -- so the rung has to move on the
     evidence or not at all.
+
+    `'aside'` carries no `advances`, and it is the whole reason this class
+    changed: while completeness read the ordered subset alone, the two steps
+    that carry ordinals were enough to reach `pilot-decisions` with `'aside'`
+    never run. Every fixture below that reaches a finished pilot now has to
+    run all three, and `test_a_declared_step_with_no_ordinal_gates_the_door`
+    is the one that fails against the narrow reading.
     """
 
     SEARCH = SearchDeclaredBeforeTheRunTests.SEARCH
@@ -27651,16 +27786,26 @@ class PilotGatesTheDeclaredScaleTests(unittest.TestCase):
     SEQUENCE = ("- [ ] 1. The first step's evidence. `@notebook Notebooks/one.ipynb`\n"
                 "- [ ] 2. The second step's evidence. `@record`\n")
 
-    def _declaration(self):
+    #: The same three steps, with `'first'` declaring the notebook category as
+    #: its own output root. `produces` is where a step names what it renders,
+    #: so this makes it owe BOTH notebooks in the product -- the fixture that
+    #: proves the published sentence carries every one of them and not the
+    #: first per step.
+    STEPS_RENDERING = STEPS.replace(
+        "'function': 'a', 'advances': 1},",
+        "'function': 'a', 'advances': 1,\n"
+        "              'produces': ['Notebooks']},")
+
+    def _declaration(self, steps=None):
         return ("__benchmark__ = {\n"
                 "    'revision': 'r01.md',\n"
                 "    'arms': {'floor': {'sections': ['3']}, "
                 "'full': {'sections': ['3']}},\n"
                 f"    'search': {self.SEARCH!r},\n"
-                "}\n" + self.STEPS)
+                "}\n" + (self.STEPS if steps is None else steps))
 
     def build(self, suffix, *, ran=(), notebook_executed=False,
-              notebook_current=True):
+              notebook_current=True, steps=None, notebooks=("one.ipynb",)):
         box = FORGE / "implementations" / f"_pilotgate_{suffix}_{os.getpid()}"
         self.addCleanup(shutil.rmtree, box, ignore_errors=True)
         for directory in ("src/Method", "src/Method_Benchmark", "src/Prior",
@@ -27677,7 +27822,7 @@ class PilotGatesTheDeclaredScaleTests(unittest.TestCase):
             encoding="utf-8")
         (box / "src/Prior/model.py").write_text("import torch\n", encoding="utf-8")
         (box / "src/Method_Benchmark/__init__.py").write_text(
-            self._declaration(), encoding="utf-8")
+            self._declaration(steps), encoding="utf-8")
         (box / "src/Method_Benchmark/wiring.py").write_text(
             self.WIRING, encoding="utf-8")
 
@@ -27685,16 +27830,17 @@ class PilotGatesTheDeclaredScaleTests(unittest.TestCase):
         # the stamp is the digest of the sources as they finally stand.
         digest = impl.source_digest(box, impl.package_name("Method"))
         stamped = digest if notebook_current else "0" * 64
-        (box / "Method/Notebooks/one.ipynb").write_text(json.dumps({
-            "cells": [{"cell_type": "code",
-                       "execution_count": 1 if notebook_executed else None,
-                       "metadata": {},
-                       "outputs": ([{"output_type": "stream", "name": "stdout",
-                                     "text": [f"{impl.DIGEST_MARKER} {stamped}\n"]}]
-                                   if notebook_executed else []),
-                       "source": ["print('measured')\n"]}],
-            "metadata": {}, "nbformat": 4, "nbformat_minor": 5,
-        }), encoding="utf-8")
+        for basename in notebooks:
+            (box / "Method/Notebooks" / basename).write_text(json.dumps({
+                "cells": [{"cell_type": "code",
+                           "execution_count": 1 if notebook_executed else None,
+                           "metadata": {},
+                           "outputs": ([{"output_type": "stream", "name": "stdout",
+                                         "text": [f"{impl.DIGEST_MARKER} {stamped}\n"]}]
+                                       if notebook_executed else []),
+                           "source": ["print('measured')\n"]}],
+                "metadata": {}, "nbformat": 4, "nbformat_minor": 5,
+            }), encoding="utf-8")
 
         (box / "Method/AGREED.md").write_text(
             "<!-- position revision=r01.md sha256=" + "a" * 64
@@ -27738,7 +27884,37 @@ class PilotGatesTheDeclaredScaleTests(unittest.TestCase):
         self.assertEqual(probe["nextStep"], "pilot-first")
         self.assertEqual(probe["pilotCompleteness"]["status"], "incomplete")
         self.assertEqual(probe["pilotCompleteness"]["incomplete"],
-                         ["first", "second"])
+                         ["first", "second", "aside"])
+
+    def test_a_declared_step_with_no_ordinal_gates_the_door(self):
+        """The discriminating fixture, and the one the narrow reading fails.
+        Every step that carries an ordinal has run and the notebook its own
+        sequence item names is executed against these sources -- so under
+        `_flow_steps` the pilot reads complete and the ladder falls through to
+        `pilot-decisions`, whose per-step questions offer the remote worker.
+        `'aside'` is declared and has never run.
+
+        The weaker guard this beats: give `'aside'` an `advances` and the old
+        narrow code passes unchanged, because every declared step would then
+        be in the ordered subset it iterates."""
+        box = self.build("noordinal", ran=("first", "second"),
+                         notebook_executed=True)
+        probe = self.probe(box)
+        self.assertEqual(probe["pilotCompleteness"]["status"], "incomplete")
+        self.assertEqual(probe["pilotCompleteness"]["incomplete"], ["aside"])
+        self.assertEqual(probe["nextStep"], "pilot-first")
+        # The expensive door, shut at every consumer of the widened answer:
+        # the rung, the published sentence, and the per-step decision pass
+        # that would have asked how the full run carries each step.
+        self.assertEqual(
+            impl.PROBE_NEXT_STEPS[probe["nextStep"]]["kind"],
+            impl.NEXT_STEP_REPAIR)
+        question = probe["resolve"]["question"]
+        self.assertIn("'aside'", question)
+        self.assertNotIn(impl.NEXT_STEP_EXPERIMENT_CHOICE, question)
+        self.assertEqual(len(probe["toDiscuss"]), 1)
+        for entry in probe["toDiscuss"]:
+            self.assertNotIn("remote worker", entry["question"])
 
     def test_the_withheld_question_names_the_steps_still_short(self):
         """Not "the pilot is incomplete": which steps. The shape
@@ -27769,14 +27945,14 @@ class PilotGatesTheDeclaredScaleTests(unittest.TestCase):
         """The half a lock reading only the ledger would lose: the step
         returned, and the notebook its own sequence item names has no
         executed cell. Nothing was produced, so nothing was validated."""
-        box = self.build("stale", ran=("first", "second"),
+        box = self.build("stale", ran=("first", "second", "aside"),
                          notebook_executed=False)
         probe = self.probe(box)
         self.assertEqual(probe["nextStep"], "pilot-first")
         self.assertEqual(probe["pilotCompleteness"]["incomplete"], ["first"])
 
     def test_a_notebook_executed_against_other_sources_is_still_short(self):
-        box = self.build("drifted", ran=("first", "second"),
+        box = self.build("drifted", ran=("first", "second", "aside"),
                          notebook_executed=True, notebook_current=False)
         probe = self.probe(box)
         self.assertEqual(probe["nextStep"], "pilot-first")
@@ -27788,18 +27964,42 @@ class PilotGatesTheDeclaredScaleTests(unittest.TestCase):
         """What completeness unlocks is not permission to launch: the flow
         returns to its first step, and each one owes its own decision about
         how it is carried out in the full run."""
-        box = self.build("complete", ran=("first", "second"),
+        box = self.build("complete", ran=("first", "second", "aside"),
                          notebook_executed=True)
         probe = self.probe(box)
         self.assertEqual(probe["pilotCompleteness"]["status"], "complete")
         self.assertEqual(probe["nextStep"], "pilot-decisions")
         asked = [entry["question"] for entry in probe["toDiscuss"]]
-        self.assertEqual(len(asked), 3, asked)
+        self.assertEqual(len(asked), 4, asked)
         self.assertIn("'first'", asked[1])
         self.assertIn("'second'", asked[2])
+        # The ordinal-less step owes its own decision too: the pass runs over
+        # every step completeness counted, not over the ordered subset.
+        self.assertIn("'aside'", asked[3])
+
+    def test_the_decision_pass_names_every_notebook_a_step_renders(self):
+        """The consumer one indirection behind the widened answer. A step owes
+        a LIST of notebooks now -- its `produces` roots union its sequence
+        item's witness -- and `cmd_probe` assembles the published sentence's
+        `notebooks` fact out of those rows. Reading only the first per row
+        would name one artefact and silently drop the other, sending the
+        operator to read half of what the pilot produced.
+
+        `'first'` declares the notebook category itself as its root, so it
+        renders both files in the product."""
+        box = self.build("renders", ran=("first", "second", "aside"),
+                         notebook_executed=True, steps=self.STEPS_RENDERING,
+                         notebooks=("one.ipynb", "two.ipynb"))
+        probe = self.probe(box)
+        self.assertEqual(probe["nextStep"], "pilot-decisions")
+        self.assertEqual(probe["pilotCompleteness"]["steps"][0]["notebooks"],
+                         ["Notebooks/one.ipynb", "Notebooks/two.ipynb"])
+        question = probe["resolve"]["question"]
+        self.assertIn("Notebooks/one.ipynb", question)
+        self.assertIn("Notebooks/two.ipynb", question)
 
     def test_the_decision_pass_still_withholds_the_declared_scale(self):
-        box = self.build("undecided", ran=("first", "second"),
+        box = self.build("undecided", ran=("first", "second", "aside"),
                          notebook_executed=True)
         probe = self.probe(box)
         for entry in probe["toDiscuss"]:
@@ -27809,33 +28009,34 @@ class PilotGatesTheDeclaredScaleTests(unittest.TestCase):
     def test_the_pass_asks_one_question_per_step_in_declared_order(self):
         """One bucket per step, and the ordinal is the order -- the fixture
         spells the entries out of ordinal order on purpose."""
-        box = self.build("order", ran=("first", "second"),
+        box = self.build("order", ran=("first", "second", "aside"),
                          notebook_executed=True)
         probe = self.probe(box)
         steps = [row["step"] for row in probe["pilotCompleteness"]["steps"]]
-        self.assertEqual(steps, ["first", "second"])
+        self.assertEqual(steps, ["first", "second", "aside"])
 
     def test_answering_one_step_leaves_the_other_still_asked(self):
         """The property the pass rests on: one answer retires one step. All
         of these entries share the identical operand-less `record` witness
         identity, so a fold that grouped by identity would retire every one
         of them at once."""
-        box = self.build("partial", ran=("first", "second"),
+        box = self.build("partial", ran=("first", "second", "aside"),
                          notebook_executed=True)
         first = self.probe(box)
         self.answer(box, first["toDiscuss"][1])
         second = self.probe(box)
         self.assertEqual(second["nextStep"], "pilot-decisions")
         asked = [entry["question"] for entry in second["toDiscuss"]]
-        self.assertEqual(len(asked), 2, asked)
+        self.assertEqual(len(asked), 3, asked)
         self.assertIn("'second'", asked[1])
+        self.assertIn("'aside'", asked[2])
 
     def test_every_step_decided_finally_offers_the_declared_scale(self):
         """The other pole, and the one that proves the rung is a gate rather
         than a wall: the same repository, the same absent record, and once
         the flow has run and every step's decision is on the record, the
         question that offers the declared scale is published at last."""
-        box = self.build("decided", ran=("first", "second"),
+        box = self.build("decided", ran=("first", "second", "aside"),
                          notebook_executed=True)
         probe = self.probe(box)
         for entry in probe["toDiscuss"][1:]:
