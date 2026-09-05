@@ -4489,6 +4489,68 @@ def _described(produced: dict) -> str | None:
     return None
 
 
+#: The mime types a runtime writes prose in. Anything else it managed to render
+#: -- a picture, an HTML table, a plotting library's own bundle -- is a result a
+#: reader can read, whatever it happens to be called. Written as the complement
+#: rather than as a list of the rich types, for the reason `OBJECT_REPR` states
+#: about naming a library: an allow-list of rich mimes goes silent for the next
+#: runtime, and nothing here may learn who draws.
+PROSE_MIMES = ("text/plain", "text/markdown")
+
+#: A markdown table's delimiter row -- the rule under the header. A line made of
+#: nothing but pipes, dashes, colons and blanks, carrying at least one column
+#: boundary and at least one run of dashes. It is the one part of a table that
+#: cannot occur inside a sentence, and it is matched as STRUCTURE and never as
+#: words on purpose: a check that read phrases would hold one repository's prose,
+#: in one language, and say nothing about the next.
+TABLE_RULE = re.compile(r"^(?=[^\n]*\|)(?=[^\n]*--)[ \t|:-]+$", re.M)
+
+#: A value standing in a column. Wider than `MEASUREMENT` deliberately: this one
+#: is only ever COUNTED per line and never quoted back as a measurement, so a
+#: table whose cells are whole numbers still reads as a table. `MEASUREMENT` may
+#: not widen the same way -- there it is the number put in front of a reader, and
+#: a year or a seed is not one.
+VALUE = re.compile(r"-?\d+(?:[.,]\d+)?")
+
+
+def _shows_result(produced: dict) -> bool:
+    """Whether what a cell emitted carries a result, or only a sentence about one.
+
+    The question `_shows_image` asks about pictures, asked about everything else
+    a rendering can produce. Three routes in, and every one of them reads the
+    STRUCTURE of the output:
+
+    * the runtime rendered something that is not prose at all -- an image, an
+      HTML table, a bundle a plotting library registered a formatter for;
+    * the prose it did emit carries a markdown table's delimiter row; or
+    * it carries values in the shape a table has -- a measurement anywhere, or
+      more than one line with more than one value on it, which is what a
+      whitespace-aligned table printed as text looks like and what the kit's own
+      `render` ships.
+
+    **Nothing here may read what the words say, and that is the whole design.**
+    The cell this exists to catch emits a sentence explaining why it has nothing
+    to show, and the obvious implementation -- match those sentences -- would
+    hardcode one repository's prose, in one language, into a forge that builds
+    repositories for research it is never allowed to know the name of. It would
+    also break on the next repository, which says the same thing in different
+    words. A table and a picture are structural; a sentence is not, and it is
+    recognised here only by the absence of the other two.
+
+    Biased toward "showed something" wherever the reading is ambiguous. A
+    finding that fired on real tables would be met once and ignored forever,
+    while one that stays quiet on an unusual rendering costs a reader nothing
+    they did not already have.
+    """
+    if any(mime not in PROSE_MIMES for mime in produced["mimes"]):
+        return True
+    text = produced["shown"]
+    if TABLE_RULE.search(text) or MEASUREMENT.search(text):
+        return True
+    return sum(1 for line in text.splitlines()
+               if len(VALUE.findall(line)) > 1) > 1
+
+
 #: Read inside the target's own interpreter, because both questions below need the
 #: real values and neither can be answered from the text of the file. A constant
 #: built by a comprehension has no literal to compare, and a conclusion that cannot
@@ -4820,6 +4882,17 @@ def report_state(target: Path, name: str, package: str) -> dict:
                         rule buckets a rendering under) is blind to it too.
     `unrendered`        a cell that computed a declared measurement and emitted
                         nothing. The number exists and no reader ever sees it.
+    `statedNotShown`    a cell that called a declared rendering and emitted a
+                        sentence where the result belongs — no table, no
+                        picture, only prose. Measured on a real report: of 57
+                        rendered outputs 6 carried a table and 21 explained why
+                        they had nothing, and every check here called the
+                        document clean, because such a cell emitted markdown,
+                        carries a conclusion and states its aim. It is judged by
+                        the STRUCTURE of what it emitted and never by what the
+                        words say (`_shows_result`): matching sentences would
+                        write one repository's prose, in one language, into a
+                        forge that may not know whose repository it is.
     `describedNotShown` a cell that emitted a description of a figure instead of
                         the picture. This is the one that hides best: the cell ran,
                         raised nothing, produced an output, and every check that
@@ -4829,7 +4902,7 @@ def report_state(target: Path, name: str, package: str) -> dict:
     `undeclaredDrawings` a cell that showed a picture no declared call could have
                         drawn, so `figures` is short by that call.
 
-    The last three are the only ones that read what a cell *produced* rather than
+    The last four are the only ones that read what a cell *produced* rather than
     what its code says. Everything else here can be answered from the sources, and
     a defect that only exists in the outputs was invisible to all of it.
 
@@ -4920,6 +4993,7 @@ def report_state(target: Path, name: str, package: str) -> dict:
     undeclared: set[str] = set()
     unaimed: list[dict] = []
     unrendered: list[dict] = []
+    stated_not_shown: list[dict] = []
     described_not_shown: list[dict] = []
     undeclared_drawings: list[dict] = []
     restated: list[dict] = []
@@ -4986,7 +5060,8 @@ def report_state(target: Path, name: str, package: str) -> dict:
                     # second is the declared one, and it still reads the cell as a
                     # whole — a declared drawing call that produced no picture
                     # anywhere in its cell drew nothing a reader can see.
-                    if described is not None or (drawn and not shows_image):
+                    describes = described is not None or (drawn and not shows_image)
+                    if describes:
                         described_not_shown.append({
                             "notebook": rel, "cell": index,
                             "drawing": ", ".join(drawn) or "<sin declarar>",
@@ -5017,6 +5092,40 @@ def report_state(target: Path, name: str, package: str) -> dict:
                     if rendered and not writes_record and not produced["any"]:
                         unrendered.append({"notebook": rel, "cell": index,
                                            "rendering": ", ".join(rendered)})
+
+                    # The cell that emitted SOMETHING and no result in it: a
+                    # declared rendering whose output carries neither a table
+                    # nor a picture, so what a reader meets where the result
+                    # belongs is a sentence. `unrendered` cannot see it — that
+                    # one fires on a cell that emitted nothing at all, and this
+                    # one has an output, a conclusion after it and an aim
+                    # before it, which is why every other check here calls it
+                    # green.
+                    #
+                    # Excluded when `describedNotShown` has already claimed the
+                    # cell: a description of a figure is this same failure with
+                    # a name of its own, and reporting one cell twice would ask
+                    # a reader to fix it twice.
+                    #
+                    # Reported and never refused. A rendering legitimately has
+                    # nothing to show when the run that fills it has not
+                    # happened yet, and that is the honest output of a
+                    # rehearsal rather than a defect in the notebook. What is
+                    # wrong is only that it is INVISIBLE: it counts as shown,
+                    # so a reader is told the document is fine. Named and
+                    # counted here, the reader judges.
+                    if (rendered and not writes_record and produced["any"]
+                            and not describes and not _shows_result(produced)):
+                        stated_not_shown.append({
+                            "notebook": rel, "cell": index,
+                            "rendering": ", ".join(rendered),
+                            "emitted": sorted(produced["mimes"])
+                                       or (["text"] if produced["streamed"] else []),
+                            # The sentence itself, so the reader meets what
+                            # stood in for the table rather than being told one
+                            # did — `describedNotShown`'s own `description`
+                            # key, one failure over.
+                            "stated": produced["shown"].strip()[:120]})
 
                     # A conclusion that says the table again. Every other reading
                     # of duplication compares one rendering with another; this one
@@ -5238,6 +5347,11 @@ def report_state(target: Path, name: str, package: str) -> dict:
                 # mirar y nada sobre dónde termina lo bueno.
                 "unaimed": unaimed,
                 "unrendered": unrendered,
+                # A declared rendering that emitted a sentence where the result
+                # belongs. `unrendered` is its sibling and cannot reach it: that
+                # one fires on a cell that emitted NOTHING, and this cell
+                # emitted something — which is exactly why it reads as shown.
+                "statedNotShown": stated_not_shown,
                 "describedNotShown": described_not_shown,
                 # A cell that showed a picture no declared call could have drawn.
                 # It is what keeps the two findings above from being a courtesy:

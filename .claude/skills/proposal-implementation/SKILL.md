@@ -1722,13 +1722,28 @@ behind it is right:
   at the report — a conclusion that cannot come out wrong is measuring nothing, for
   exactly the reason an assertion that cannot fail proves nothing.
 - **A cell that shows nothing showed nothing.** Every check above reads the code a
-  cell contains. Two failures live only in what it *emitted*, and both survive
-  every reading of the source: a measurement computed and never displayed, and a
-  figure that came out as a *description of a figure*. The second hides best —
+  cell contains. Three failures live only in what it *emitted*, and all three
+  survive every reading of the source: a measurement computed and never displayed,
+  a figure that came out as a *description of a figure*, and a rendering that came
+  out as a *sentence*. The second hides well —
   displaying a figure object where the runtime never registered an image formatter
   emits a line of text like `<Figure size 640x480>`. The cell ran, raised nothing,
   produced an output, and anything reading `execution_count` and the error list
   calls it green. `verify` reports these as `unrendered` and `describedNotShown`.
+
+  The third hides best of all, and it was measured rather than argued: in one real
+  report, of 57 rendered outputs 6 carried a table and 21 explained why they had
+  nothing to show. Each of those cells called a declared rendering, ran clean,
+  emitted markdown, states its aim and carries a conclusion — so every check above
+  stays quiet and the reader is told the document is fine. `verify` reports it as
+  `statedNotShown`, and it is judged by the **structure** of what the cell emitted
+  — a mime the runtime rendered as something other than prose, a markdown table's
+  rule, a measurement, rows of values — and never by what the words say. Matching
+  sentences would write one repository's prose, in one language, into a forge that
+  is not allowed to know whose repository it is, and would go quiet on the next
+  one. It is reported and never refused: a rendering legitimately has nothing to
+  show before the run that fills it, and what is wrong today is only that the
+  absence is invisible. Named and counted, the reader judges.
 - **A term's share, not just its magnitude.** A term correctly implemented and
   multiplied by something tiny produces a column of near-zeros that reads like a
   result, and the numerator alone cannot tell *the term commanded nothing* from

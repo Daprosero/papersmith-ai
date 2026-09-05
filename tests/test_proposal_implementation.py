@@ -1737,12 +1737,25 @@ class ReportContractTests(unittest.TestCase):
             self.build(root, cells, declaration)
             return impl.report_state(root, "Method", "Method")
 
+    #: A rendering that actually rendered: the aligned rows a `print` of the
+    #: kit's own `render` puts on screen. Measured, and it is why this constant
+    #: carries an explicit output at all: the shared default is `_stream()`, one
+    #: line reading `salida`, and a cell calling a declared rendering that emits
+    #: one line and no values is precisely `statedNotShown` -- prose standing
+    #: where the table belongs. A fixture named WELL_FORMED that carried the
+    #: defect made `test_an_unavailable_live_check_never_reports_ok` assert
+    #: `incomplete` over a report in drift, and the assertion passed because
+    #: nothing could see the defect yet.
+    TABLE_SHOWN = _stream("dimension              baseline             new  winner\n"
+                          "accuracy          0.812 ± 0.011   0.874 ± 0.009  new\n")
+
     WELL_FORMED = [
         _cell("markdown", "Qué mide: la exactitud. Más alto es mejor."),
         # La mitad calculada del encuadre: contra qué valor se compara lo de abajo.
         _cell("code", "print(tables.objective('accuracy'))"),
         _cell("code", "print(tables.render(runs, 'accuracy', reduction))\n"
-                      "print(tables.conclusion(runs, 'accuracy', reduction))"),
+                      "print(tables.conclusion(runs, 'accuracy', reduction))",
+              outputs=[TABLE_SHOWN]),
     ]
 
     def test_a_well_formed_report_passes_every_static_check(self):
@@ -4340,6 +4353,170 @@ class CellOutputTests(unittest.TestCase):
         informe lo que hace que `probe` conteste `report-first` en vez de ofrecer
         la campaña."""
         state = self.state(self.drawing([_shown("text/plain", "<Figure ...>")]))
+        self.assertEqual(state["status"], "drift")
+
+
+class StatedNotShownTests(unittest.TestCase):
+    """A declared rendering that emitted a sentence where the result belongs.
+
+    Measured on a real report the operator opens: 57 rendered markdown outputs,
+    6 of them carrying a table, and 21 explaining why they had nothing to show.
+    Every one of those 21 called a declared rendering, ran clean, emitted an
+    output, states its aim and carries a conclusion -- so `unrendered`,
+    `describedNotShown`, `unconcluded`, `unaimed`, `restated` and `duplicated`
+    all stay quiet and the document reads fine.
+
+    **The words are never read, and that is the design.** The obvious
+    implementation is to match the sentences, and matching sentences would write
+    one repository's prose, in one language, into a forge that builds
+    repositories for research it may not know the name of -- and would go silent
+    on the next repository, which says the same thing differently. A cell is
+    judged by whether what it emitted carries the STRUCTURE a rendering
+    produces: a mime the runtime rendered as something other than prose, a
+    markdown table's rule, a measurement, or rows of values.
+
+    Reported and never refused. A rendering legitimately has nothing to show
+    before the run that fills it; what is wrong today is that it is invisible.
+    """
+
+    DECLARATION = CellOutputTests.DECLARATION
+    FRAME = _cell("markdown", "Qué mide: la exactitud. Más alto es mejor.")
+    AIM = _cell("code", "print(tables.objective('accuracy'))")
+    SOURCE = ("display(tables.render(runs, 'accuracy', reduction))\n"
+              "display(tables.conclusion(runs, 'accuracy', reduction))")
+
+    def state(self, outputs, source=None):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "src/Method_Benchmark").mkdir(parents=True)
+            (root / "src/Method_Benchmark/__init__.py").write_text(
+                self.DECLARATION, encoding="utf-8")
+            notebooks = root / "Method/Notebooks"
+            notebooks.mkdir(parents=True)
+            (notebooks / "Report.ipynb").write_text(
+                json.dumps({"cells": [self.FRAME, self.AIM,
+                                      _cell("code", source or self.SOURCE,
+                                            outputs=outputs)],
+                            "metadata": {}, "nbformat": 4, "nbformat_minor": 5}),
+                encoding="utf-8")
+            return impl.report_state(root, "Method", "Method")
+
+    def test_a_rendering_that_emitted_only_a_sentence_is_caught(self):
+        """The defect itself. The weaker guard this beats is `unrendered`, which
+        is the only check in this file that looks at whether a rendering showed
+        anything: it fires on a cell that emitted NOTHING, and this cell emitted
+        a markdown output -- so it stays empty here, as the assertion says."""
+        state = self.state([_shown("text/markdown",
+                                   "No hay resultados para esta sección.")])
+        self.assertEqual(len(state["statedNotShown"]), 1, state["statedNotShown"])
+        found = state["statedNotShown"][0]
+        self.assertEqual(found["notebook"], "Method/Notebooks/Report.ipynb")
+        self.assertEqual(found["cell"], 2)
+        self.assertEqual(found["rendering"], "tables.render")
+        self.assertEqual(found["emitted"], ["text/markdown"])
+        self.assertEqual(found["stated"], "No hay resultados para esta sección.")
+        # The neighbours that a reader would otherwise expect to have caught it.
+        for quiet in ("unrendered", "describedNotShown", "unconcluded",
+                      "unaimed", "restated", "duplicated"):
+            self.assertEqual(state[quiet], [], f"{quiet}: {state[quiet]}")
+
+    def test_the_finding_never_reads_what_the_sentence_says(self):
+        """The load-bearing property. None of these sentences shares a word with
+        any other, one of them announces nothing at all, and every one of them is
+        a rendering that showed no result. A check built from a list of phrases
+        -- in any language, however configurable -- would hold for the sentences
+        somebody collected and go quiet on the rest."""
+        for sentence in ("No hay resultados para esta sección.",
+                         "Nothing to show here yet.",
+                         "Ver el apéndice.",
+                         "TODO",
+                         "aún no",
+                         "(pendiente)"):
+            with self.subTest(sentence=sentence):
+                state = self.state([_shown("text/markdown", sentence)])
+                self.assertEqual(len(state["statedNotShown"]), 1, sentence)
+
+    def test_a_markdown_table_is_a_result_and_not_a_sentence(self):
+        """Green has to be reachable through the ordinary shape, or the finding
+        above is not a check, it is a ban on rendering into markdown. The weaker
+        guard this beats reads the MIME alone: `text/markdown` is the same prose
+        mime the sentence above came in, so a mime-only rule reports this."""
+        state = self.state([_shown("text/markdown",
+                                   "| dimensión | base | nueva |\n"
+                                   "| --- | --- | --- |\n"
+                                   "| exactitud | 0.812 | 0.874 |\n")])
+        self.assertEqual(state["statedNotShown"], [])
+
+    def test_a_table_printed_as_aligned_text_is_a_result_too(self):
+        """The kit's own `render` returns whitespace-aligned rows and the
+        notebook prints them, so there is no pipe, no rule and no HTML anywhere
+        in the output. The weaker guard this beats reads markdown structure
+        alone: it would report the renderer this skill itself ships."""
+        state = self.state([_stream(
+            "dimensión              baseline             new  winner\n"
+            "exactitud         0.812 ± 0.011   0.874 ± 0.009  new\n")])
+        self.assertEqual(state["statedNotShown"], [])
+
+    def test_a_table_of_whole_numbers_is_still_a_table(self):
+        """The weaker guard this beats reads `MEASUREMENT` alone -- decimals and
+        `n/m` -- which a table of counts carries none of. Rows of values are what
+        makes it a table, and `VALUE` is wider than `MEASUREMENT` for exactly
+        this reason: it is counted per line and never quoted as a result."""
+        state = self.state([_stream(
+            "corridas                    30              31\n"
+            "particiones                  5               6\n")])
+        self.assertEqual(state["statedNotShown"], [])
+
+    def test_anything_the_runtime_rendered_richly_is_a_result(self):
+        """Nothing here may learn who draws or who tabulates. A mime the runtime
+        rendered as something other than prose is a result whatever produced it,
+        and the rule is the complement of the two prose mimes rather than a list
+        of the rich ones -- an allow-list would go silent for the next runtime."""
+        for data in ({"image/png": "iVBOR"},
+                     {"text/html": "<table><tr><td>30</td></tr></table>",
+                      "text/plain": "   corridas\n0        30"},
+                     {"application/vnd.plotly.v1+json": {},
+                      "text/plain": "FigureWidget"}):
+            with self.subTest(mimes=sorted(data)):
+                state = self.state([{"output_type": "display_data",
+                                     "data": data, "metadata": {}}])
+                self.assertEqual(state["statedNotShown"], [])
+
+    def test_a_cell_that_emitted_nothing_stays_the_other_finding(self):
+        """One defect, one finding. A rendering that emitted nothing at all is
+        `unrendered` and was always caught; this must not report it a second
+        time under a new name."""
+        state = self.state([])
+        self.assertEqual(len(state["unrendered"]), 1, state["unrendered"])
+        self.assertEqual(state["statedNotShown"], [])
+
+    def test_a_figure_that_came_out_as_a_description_is_reported_once(self):
+        """`describedNotShown` already owns the cell that emitted an object's
+        repr where a picture belongs. That output carries no table and no image
+        either, so without the exclusion the same cell would be reported twice
+        and a reader asked to fix it twice."""
+        state = self.state([_shown("text/plain", "<Figure size 640x480>")],
+                           source="figures.curves(path)\n" + self.SOURCE)
+        self.assertEqual(len(state["describedNotShown"]), 1,
+                         state["describedNotShown"])
+        self.assertEqual(state["statedNotShown"], [])
+
+    def test_the_cell_that_writes_the_record_is_exempt(self):
+        """The same exemption `duplicated` and `unaimed` already carry, for the
+        same reason: the record is the file, not a reading, and demanding it show
+        a table would make the one artefact a later session depends on the
+        defect."""
+        state = self.state(
+            [_stream("escrito\n")],
+            source="(root / 'record.json').write_text("
+                   "tables.render(runs, 'accuracy', reduction))")
+        self.assertEqual(state["statedNotShown"], [])
+
+    def test_the_finding_puts_the_report_in_drift(self):
+        """Without this the finding would exist and stop nothing: it is the
+        report's own status that any consumer reads to know the document does
+        not yet agree with the run it describes."""
+        state = self.state([_shown("text/markdown", "No hay nada que mostrar.")])
         self.assertEqual(state["status"], "drift")
 
 
