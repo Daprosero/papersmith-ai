@@ -461,9 +461,15 @@ class SkillHouseShapeTests(unittest.TestCase):
         # intersected with `DRIVER_ENV_ALLOWLIST`, never passed wholesale.
         # `uuid` arrived with the ignorance control gate's seeded marker, a
         # nonce that must never collide with a real driver's own output.
-        permitted = {"__future__", "argparse", "fnmatch", "hashlib", "json",
-                     "os", "pathlib", "re", "shutil", "subprocess", "sys",
-                     "uuid"}
+        # `ast` arrived with `enumeration-reach` (Move 12): R1 asks whether a
+        # check's own iteration source is derived or bounded, which is a
+        # question only source answers -- `probe_code_side` parses no source
+        # of the subject on purpose, so this is the one subcommand that
+        # deliberately does the opposite, on a *check's* own source, never
+        # the subject's.
+        permitted = {"__future__", "argparse", "ast", "fnmatch", "hashlib",
+                     "json", "os", "pathlib", "re", "shutil", "subprocess",
+                     "sys", "uuid"}
         self.assertEqual(
             sorted(imported - permitted), [],
             "audit_cli.py must import nothing outside the standard library, and "
@@ -532,8 +538,8 @@ class MovesTableTests(unittest.TestCase):
             (numbered if match else textual).append(
                 int(match.group(1)) if match else row)
         self.assertEqual(
-            sorted(numbered), list(range(0, 11)),
-            "the table must carry exactly one row per move 0 through 10, with no "
+            sorted(numbered), list(range(0, 13)),
+            "the table must carry exactly one row per move 0 through 12, with no "
             f"gap and no repeat; found {sorted(numbered)}")
         self.assertEqual(
             len(textual), 1,
@@ -1020,6 +1026,169 @@ class RosterExitCodeTests(BoxMixin, unittest.TestCase):
         self.assertEqual((looked.returncode, blind.returncode), (0, 2))
 
 
+class GuardReachTests(BoxMixin, unittest.TestCase):
+    """R2 + R3, `the-audit-grades-what-a-step-wrote`: a guarded vocabulary is
+    a closed set, so it is Move 0's subject. `roster`'s `guardReach` block
+    derives the guarded members from a driven producer, derives each
+    member's identifier-boundary variants, and drives the subject's own
+    guard for real to measure which variants it reaches -- and, reusing the
+    same drive, whether its verdict is measuring identity or content.
+    `guardReach` is optional, exactly like `doctrineSites`: a recipe that
+    never declares it changes nothing about `roster`'s existing behaviour.
+    """
+
+    def _primary_recipe(self, box, guard_reach=None):
+        primary_argv = self.echo_probe(box, ["X"], name="primary.py")
+        fields = dict(
+            surface="s", probe="refusal", argv=primary_argv, cwd=".",
+            stream="stdout", exit=1,
+            extract=r"is not one of (?P<roster>.+)$", split=", ")
+        if guard_reach is not None:
+            fields["guardReach"] = guard_reach
+        return self.recipe(box, **fields)
+
+    def _producer(self, box, members, name="members.py"):
+        return {
+            "argv": self.echo_probe(box, members, name=name), "cwd": ".",
+            "stream": "stdout", "exit": 1,
+            "extract": r"is not one of (?P<roster>.+)$", "split": ", "}
+
+    def _word_boundary_guard(self, box, member, name="guard.py"):
+        """A guard whose matcher is exactly the measured real bug: a plain
+        word-boundary pattern over the bare member, which cannot reach any
+        identifier-boundary variant at all (`spec.md`'s own measured case,
+        R2) but does reach the bare member itself.
+        """
+        self.write(box, name,
+                  "import re, sys\n"
+                  f"PATTERN = re.compile(r'\\b{member}\\b')\n"
+                  "if PATTERN.search(sys.argv[1]):\n"
+                  "    print('REFUSED')\n"
+                  "    sys.exit(1)\n"
+                  "sys.exit(0)\n")
+        return {"argv": ["python3", name, "{candidate}"], "cwd": ".",
+               "stream": "stdout", "refusal": "REFUSED"}
+
+    def _never_refuses_guard(self, box, name="never.py"):
+        self.write(box, name, "import sys\nsys.exit(0)\n")
+        return {"argv": ["python3", name, "{candidate}"], "cwd": ".",
+               "stream": "stdout", "refusal": "REFUSED"}
+
+    def _always_refuses_guard(self, box, name="always.py"):
+        self.write(box, name,
+                  "import sys\nprint('REFUSED')\nsys.exit(1)\n")
+        return {"argv": ["python3", name, "{candidate}"], "cwd": ".",
+               "stream": "stdout", "refusal": "REFUSED"}
+
+    def test_no_guardreach_block_declared_changes_nothing(self):
+        box = self.make_box("no_guardreach")
+        spec = self._primary_recipe(box)
+        result, payload = roster_json(spec, box)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertIsNone(payload["guardReach"])
+        self.assertEqual(
+            [n["kind"] for n in payload["notes"]
+             if n["kind"] in ("no-driveable-guard", "guard-never-fires",
+                              "guard-unreachable-variant")], [],
+            "a recipe that never declares guardReach must gain no new note "
+            "kind -- optional, exactly like doctrineSites")
+
+    def test_a_guard_that_never_fires_reports_one_control_finding(self):
+        box = self.make_box("guard_never_fires")
+        spec = self._primary_recipe(box, {
+            "producer": self._producer(box, ["credential"]),
+            "drive": self._never_refuses_guard(box)})
+        result, payload = roster_json(spec, box)
+        self.assertEqual(result.returncode, 0, payload)
+        kinds = [n["kind"] for n in payload["notes"]]
+        self.assertEqual(kinds.count("guard-never-fires"), 1)
+        self.assertNotIn(
+            "guard-unreachable-variant", kinds,
+            "a guard that never fires reports one control finding, never "
+            "one per identifier variant")
+        member_report = payload["guardReach"]["members"][0]
+        self.assertEqual(member_report["member"], "credential")
+        self.assertEqual(member_report["control"], "not-reached")
+        self.assertEqual(member_report["unreachable"], [])
+        self.assertIsNone(member_report["identity"])
+
+    def test_an_unreachable_identifier_variant_is_named(self):
+        box = self.make_box("guard_unreachable_variant")
+        spec = self._primary_recipe(box, {
+            "producer": self._producer(box, ["credential"]),
+            "drive": self._word_boundary_guard(box, "credential")})
+        result, payload = roster_json(spec, box)
+        self.assertEqual(result.returncode, 0, payload)
+        member_report = payload["guardReach"]["members"][0]
+        self.assertEqual(member_report["control"], "reached")
+        self.assertEqual(
+            sorted(member_report["unreachable"]),
+            sorted(["credentials", "credential_other", "credentialOther"]),
+            "a plain word-boundary matcher cannot reach any of the three "
+            "identifier-boundary variants of its own guarded member")
+        unreachable_notes = [n for n in payload["notes"]
+                             if n["kind"] == "guard-unreachable-variant"]
+        self.assertEqual(len(unreachable_notes), 3)
+
+    def test_no_driveable_guard_is_a_finding_never_an_empty_roster(self):
+        box = self.make_box("no_driveable_guard")
+        producer = self._producer(box, ["credential"])
+        producer["extract"] = r"this pattern matches nothing at all (?P<roster>.+)$"
+        spec = self._primary_recipe(box, {
+            "producer": producer,
+            "drive": self._word_boundary_guard(box, "credential")})
+        result, payload = roster_json(spec, box)
+        self.assertEqual(
+            result.returncode, 0,
+            f"an undriveable guard is a finding, never an inability to "
+            f"look: {payload}")
+        self.assertIsNone(payload["guardReach"])
+        kinds = [n["kind"] for n in payload["notes"]]
+        self.assertEqual(kinds.count("no-driveable-guard"), 1)
+
+    def test_r3_identity_measured_when_the_neutral_token_is_not_reached(self):
+        box = self.make_box("identity_measured")
+        spec = self._primary_recipe(box, {
+            "producer": self._producer(box, ["credential"]),
+            "drive": self._word_boundary_guard(box, "credential")})
+        result, payload = roster_json(spec, box)
+        self.assertEqual(result.returncode, 0, payload)
+        identity = payload["guardReach"]["members"][0]["identity"]
+        self.assertEqual(identity["verdict"], "identity-measured")
+        self.assertEqual(
+            identity["limit"], audit_cli_module().READING_DIFF_LIMIT,
+            "R3's payload carries the permanent stated limit regardless of "
+            "verdict")
+
+    def test_r3_not_determined_when_the_neutral_token_is_still_reached(self):
+        box = self.make_box("identity_not_determined")
+        spec = self._primary_recipe(box, {
+            "producer": self._producer(box, ["credential"]),
+            "drive": self._always_refuses_guard(box)})
+        result, payload = roster_json(spec, box)
+        self.assertEqual(result.returncode, 0, payload)
+        identity = payload["guardReach"]["members"][0]["identity"]
+        self.assertEqual(identity["verdict"], "not-determined")
+        self.assertEqual(identity["limit"], audit_cli_module().READING_DIFF_LIMIT)
+
+    def test_identifier_variants_derives_plural_underscore_and_case(self):
+        cli = audit_cli_module()
+        self.assertEqual(
+            cli.identifier_variants("credential"),
+            ["credentials", "credential_other", "credentialOther"])
+
+    def test_identity_measured_is_a_closed_two_value_roster(self):
+        cli = audit_cli_module()
+        self.assertEqual(
+            cli.IDENTITY_MEASURED, ("identity-measured", "not-determined"))
+        self.assertEqual(
+            len(cli.IDENTITY_MEASURED), 2,
+            "R3 stops at two facts -- identity was measured, or it was "
+            "not -- a third value would let a rename-insensitive guard's "
+            "verdict be read as a claim about content, which R3 refuses "
+            "to make")
+
+
 class RefusalProbeTests(unittest.TestCase):
     """Move 2, against the live subject on disk.
 
@@ -1136,8 +1305,9 @@ class SelfAuditSubcommandRosterTests(unittest.TestCase):
         self.assertEqual(payload["unregistered"], [])
         self.assertEqual(payload["phantom"], [])
         self.assertEqual(sorted(payload["code"]),
-                         ["check-report", "reading-diff", "roster",
-                          "sensitivity", "structure", "walkthrough"])
+                         ["check-report", "enumeration-reach", "exits",
+                          "inversion", "reading-diff", "roster", "sensitivity",
+                          "structure", "walkthrough"])
 
     def test_the_roster_comes_from_argparse_and_not_from_a_list(self):
         _, payload = roster_json(SELF_SPEC, SKILL_ROOT)
@@ -1407,6 +1577,98 @@ class DuplicatedTests(unittest.TestCase):
             restated <= set(payload["code"]),
             "every restatement here agrees with the running code, and every "
             "one of them is still reported")
+
+
+class RestatementSearchCannotFireTests(BoxMixin, unittest.TestCase):
+    """`duplicated` needs at least two independently matching sites before it
+    reports anything -- one restatement is not a duplication. Two shipped
+    recipes (`remote-execution.accepted-operations.json`,
+    `skill-audit.subcommands.json`) declare exactly one `restatementSearch`
+    path, so the mechanism can never produce a `duplicated` finding for them
+    regardless of what that one path holds. A run must say so, on every run,
+    following the `comparison-not-run` precedent immediately below it in this
+    same function -- never a silent, indistinguishable-from-a-real-search
+    empty result.
+
+    The weaker guard this class specifically refuses to let pass: a lock that
+    only proves "a note fires when `paths` is empty" would still be green
+    against a recipe declaring exactly one path -- the actual shipped shape.
+    Every test here uses a genuinely matching, non-empty path so that guard
+    could never be mistaken for this one.
+    """
+
+    def _recipe(self, box, paths):
+        argv = self.echo_probe(box, ["ALPHA", "BETA"])
+        return self.recipe(
+            box, surface="s", probe="refusal", argv=argv, cwd=".",
+            stream="stdout", exit=1,
+            extract=r"is not one of (?P<roster>.+)$", split=", ",
+            doctrineSites=[],
+            restatementSearch={"quorum": 2, "paths": paths})
+
+    def test_one_declared_path_cannot_reach_the_quorum(self):
+        box = self.make_box("restate_one")
+        self.write(box, "RESTATE.md", "ALPHA and BETA are both named here.\n")
+        spec = self._recipe(box, [{"path": "RESTATE.md"}])
+        _, payload = roster_json(spec, box)
+        kinds = [n["kind"] for n in payload["notes"]]
+        self.assertIn(
+            "restatement-search-cannot-fire", kinds,
+            f"a one-path restatementSearch can never reach the quorum of "
+            f"two matching sites, and must say so: {payload['notes']}")
+        self.assertEqual(
+            payload["duplicated"], [],
+            "one matching site is not a duplication")
+
+    def test_two_declared_paths_that_both_match_do_not_fire_the_note(self):
+        box = self.make_box("restate_two")
+        self.write(box, "RESTATE1.md", "ALPHA and BETA are both named here.\n")
+        self.write(box, "RESTATE2.md", "ALPHA and BETA, named again here.\n")
+        spec = self._recipe(
+            box, [{"path": "RESTATE1.md"}, {"path": "RESTATE2.md"}])
+        _, payload = roster_json(spec, box)
+        kinds = [n["kind"] for n in payload["notes"]]
+        self.assertNotIn(
+            "restatement-search-cannot-fire", kinds,
+            f"two independently matching sites reach the quorum and must "
+            f"not be reported as structurally incapable: {payload['notes']}")
+        self.assertEqual(len(payload["duplicated"]), 2)
+
+    def test_no_restatement_search_declared_emits_no_note(self):
+        box = self.make_box("restate_absent")
+        argv = self.echo_probe(box, ["ALPHA", "BETA"])
+        spec = self.recipe(
+            box, surface="s", probe="refusal", argv=argv, cwd=".",
+            stream="stdout", exit=1,
+            extract=r"is not one of (?P<roster>.+)$", split=", ",
+            doctrineSites=[])
+        _, payload = roster_json(spec, box)
+        kinds = [n["kind"] for n in payload["notes"]]
+        self.assertNotIn(
+            "restatement-search-cannot-fire", kinds,
+            "a recipe that declares no restatementSearch at all has not "
+            "shipped a check that cannot fire; it has shipped no check")
+
+    def test_the_threshold_is_one_named_constant_never_a_second_literal(self):
+        source = function_source(CLI, "run_roster")
+        self.assertGreaterEqual(
+            source.count("RESTATEMENT_SITE_QUORUM"), 2,
+            "the runtime cutoff and the note's own message must both read "
+            "the same named constant, never a second hand-spelled literal "
+            f"`2`: {source!r}")
+        self.assertNotIn(
+            "len(duplicated) < 2", source,
+            "the runtime cutoff must read RESTATEMENT_SITE_QUORUM, never "
+            "the bare literal it replaced")
+
+    def test_restatement_search_cannot_fire_is_classified_deterministic_exclusion(self):
+        cli = audit_cli_module()
+        self.assertIn(
+            "restatement-search-cannot-fire",
+            cli.ESCALATION_BUCKETS["deterministic-exclusion"],
+            "there is no prose behind a too-short path list to escalate a "
+            "reader towards; this is a structural fact about the recipe, "
+            "not a surface an escalatable reading could still resolve")
 
 
 class NumeralCheckTests(BoxMixin, unittest.TestCase):
@@ -2191,6 +2453,7 @@ REMEDY_REPORT_BODY = f"""# Audit: a subject, three remedy verdicts
 - Doctrine side: `SKILL.md:99`
 - Detail: the guarded fact no longer exists anywhere in the running code.
 - Remedy: delete
+- Reachability: silent: this proves the mutation stayed silent, never that every consumer of the fact was exercised
 
 ### F3. A guarded fact that moved
 
@@ -2203,6 +2466,7 @@ REMEDY_REPORT_BODY = f"""# Audit: a subject, three remedy verdicts
 - Doctrine side: `SKILL.md:99`
 - Detail: the guarded fact exists, but at a different site than the test measures.
 - Remedy: update
+- Reachability: silent: this proves the mutation stayed silent, never that every consumer of the fact was exercised
 
 ### F4. A guarded fact this tool cannot classify
 
@@ -2214,7 +2478,8 @@ REMEDY_REPORT_BODY = f"""# Audit: a subject, three remedy verdicts
 - Code side: `engine/ambiguous.ts:7`
 - Doctrine side: `SKILL.md:99`
 - Detail: the guarded fact is a config literal, not a named symbol.
-- Remedy: undecided: the guarded fact is a config literal, not a named symbol
+- Remedy: undecided: none determined -- the guarded fact is a config literal, not a named symbol
+- Reachability: silent: this proves the mutation stayed silent, never that every consumer of the fact was exercised
 
 ## Undecidable
 
@@ -2301,8 +2566,8 @@ class RemedyVerdictTests(BoxMixin, unittest.TestCase):
 
     def test_bare_undecided_with_no_reason_is_rejected(self):
         broken = REMEDY_REPORT.replace(
-            "- Remedy: undecided: the guarded fact is a config literal, "
-            "not a named symbol\n",
+            "- Remedy: undecided: none determined -- the guarded fact is "
+            "a config literal, not a named symbol\n",
             "- Remedy: undecided\n", 1)
         self.assertNotEqual(broken, REMEDY_REPORT, "the graft must land")
         result, payload = self.check(broken, name="remedy-bare-undecided.md")
@@ -2393,6 +2658,7 @@ REMEDY_REPORT_ONE_BUCKET_BODY = f"""# Audit: a subject, two remedy verdicts
 - Doctrine side: `SKILL.md:99`
 - Detail: the guarded fact no longer exists anywhere in the running code.
 - Remedy: delete
+- Reachability: silent: this proves the mutation stayed silent, never that every consumer of the fact was exercised
 
 ### F3. A guarded fact that moved
 
@@ -2405,6 +2671,7 @@ REMEDY_REPORT_ONE_BUCKET_BODY = f"""# Audit: a subject, two remedy verdicts
 - Doctrine side: `SKILL.md:99`
 - Detail: the guarded fact exists, but at a different site than the test measures.
 - Remedy: update
+- Reachability: silent: this proves the mutation stayed silent, never that every consumer of the fact was exercised
 
 ## Undecidable
 
@@ -3628,6 +3895,61 @@ class NothingWasRepairedTests(unittest.TestCase):
             f"walkthrough left {borrowed.name} behind; the box it borrows "
             "must be gone afterwards")
 
+    def test_an_inversion_run_leaves_the_subject_byte_identical(self):
+        """The exemption in the lock below, held by bytes instead of by
+        prose. `inversion` is the one subcommand that mutates the real
+        subject at all, on purpose -- Move 6's whole mechanism. This
+        drives the real shipped self-probe against the real subject and
+        answers the only way it can be answered: by comparing the tree to
+        itself after every byte was restored.
+        """
+        before = tree_digest(SKILL_ROOT)
+        self.assertIn(
+            "scripts/audit_cli.py", before,
+            "the walk did not see the subject's own script, so a tree "
+            "that compares equal afterwards would prove nothing")
+        result, payload = inversion_json(
+            PROBES / "skill-audit.self-guarded-facts.json", SKILL_ROOT,
+            repo=FORGE)
+        after = tree_digest(SKILL_ROOT)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            sorted(set(before) - set(after)), [], "a file was removed")
+        self.assertEqual(
+            sorted(set(after) - set(before)), [], "a file was added")
+        self.assertEqual(
+            [q for q in before if before[q] != after.get(q)], [],
+            "inversion left a byte changed under the audited subject "
+            "after restoring; the audit reports and repairs nothing, so "
+            "any difference here is a defect in the audit")
+
+    def test_an_exits_run_leaves_the_subject_byte_identical(self):
+        """The exemption in the lock below, held by bytes instead of by
+        prose. `exits` is the newest subcommand to touch a box at all --
+        `materialize_subject_copy`'s own copy, exactly like `sensitivity` --
+        and never the real subject. This drives the real shipped self-probe
+        against the real subject and answers the only way it can be
+        answered: by comparing the tree to itself.
+        """
+        before = tree_digest(SKILL_ROOT)
+        self.assertIn(
+            "scripts/audit_cli.py", before,
+            "the walk did not see the subject's own script, so a tree that "
+            "compares equal afterwards would prove nothing")
+        result, payload = exits_json(
+            PROBES / "skill-audit.exits.json", SKILL_ROOT, repo=FORGE)
+        after = tree_digest(SKILL_ROOT)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            sorted(set(before) - set(after)), [], "a file was removed")
+        self.assertEqual(
+            sorted(set(after) - set(before)), [], "a file was added")
+        self.assertEqual(
+            [q for q in before if before[q] != after.get(q)], [],
+            "exits changed a file under the audited subject; the audit "
+            "reports and repairs nothing, so any difference here is a "
+            "defect in the audit")
+
     def test_the_auditor_names_no_write_into_the_audited_subject(self):
         """`roster` and `check-report` write nothing, anywhere, and still don't.
 
@@ -3654,12 +3976,23 @@ class NothingWasRepairedTests(unittest.TestCase):
         Move 10 perturbs), never into the subject, and
         `test_a_sensitivity_run_leaves_the_subject_untouched` below is
         what actually proves that, by bytes.
+
+        `run_inversion` joined the exemption with Move 6, on different
+        terms from every entry above it: it is the one function in this
+        skill that mutates the real subject **on purpose**, never a copy
+        or a box, because a guarded fact's declaring test commonly lives
+        outside `--subject` and no copy could host its own observing run.
+        Every mutated byte is restored before this function returns,
+        confirmed by `restore_exact_bytes` (already exempted above) inside
+        a `finally` that runs regardless of outcome, and
+        `test_an_inversion_run_leaves_the_subject_byte_identical` below is
+        what actually proves that, by bytes.
         """
         box_lifecycle_exemption = {
             "run_structure", "run_walkthrough", "erase_box",
             "run_box_step", "ignorance_control_gate", "run_sensitivity",
             "materialize_subject_copy", "vary_by_absence",
-            "restore_exact_bytes"}
+            "restore_exact_bytes", "run_inversion", "run_exits"}
         for path in sorted(SKILL_ROOT.rglob("*")):
             if not path.is_file() or path.suffix != ".py":
                 continue
@@ -4195,16 +4528,20 @@ class StructureBoxMixin(BoxMixin):
                 f"(root / {relative!r}).write_text({content!r}, encoding='utf-8')")
         return self.write(scripts, "build.py", "\n".join(lines) + "\n")
 
-    def make_recipe(self, subject, surface, steps, exclude=()):
-        spec = subject / "structure.json"
-        spec.write_text(json.dumps({
+    def make_recipe(self, subject, surface, steps, exclude=(),
+                    artefact_kinds=None):
+        fields = {
             "surface": run_scoped(surface),
             "declared": {"path": "STRUCTURE.md", "table": "| Path | Holds |",
                         "column": 0},
             "disk": {"root": "content"},
             "fromZero": {"root": "build", "steps": steps},
             "exclude": list(exclude),
-        }, indent=2), encoding="utf-8")
+        }
+        if artefact_kinds is not None:
+            fields["artefactKinds"] = artefact_kinds
+        spec = subject / "structure.json"
+        spec.write_text(json.dumps(fields, indent=2), encoding="utf-8")
         return spec
 
 
@@ -4264,6 +4601,136 @@ class StructureOutcomeIntegrationTests(StructureBoxMixin, unittest.TestCase):
         self.assertEqual(payload["outcome"], "agree")
         self.assertTrue(payload["containment"]["afterRemoved"])
         self.assertTrue(payload["containment"]["beforeEmpty"])
+
+
+class ArtefactKindTests(StructureBoxMixin, unittest.TestCase):
+    """R5 (`spec.md`, "An artefact is judged by what it shows") plus the
+    requirement `73573db` relocated beside it ("Artefacts on disk that the
+    flow's declared roster never names"). Both share one enumeration --
+    `tree_digest(from_zero_root, exclude)`, already built for `structure`'s
+    own three-way comparison -- so the pair costs one from-zero drive, not
+    two.
+    """
+
+    def _run(self, name, declared, from_zero_files, artefact_kinds,
+             disk_files=None):
+        surface = f"artefact_{name}"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            name, declared, disk_files if disk_files is not None else
+            {path: "x" for path in declared})
+        script = self.build_script(subject, from_zero_files)
+        steps = [["python3", str(script), "{box}/build"]]
+        spec = self.make_recipe(subject, surface, steps,
+                                artefact_kinds=artefact_kinds)
+        return structure_json(spec, subject, repo=FORGE)
+
+    def test_a_produced_artefact_of_zero_length_is_produced_but_empty(self):
+        result, payload = self._run(
+            "zero_length",
+            declared=["notebooks/a.ipynb"],
+            from_zero_files={"notebooks/a.ipynb": ""},
+            artefact_kinds=[{"name": "notebook", "glob": "notebooks/*.ipynb"}])
+        self.assertEqual(result.returncode, 0, payload)
+        content = payload["artefacts"][0]["content"]
+        self.assertEqual(
+            content, [{"path": "notebooks/a.ipynb",
+                      "status": "produced-but-empty"}])
+
+    def test_an_absent_declared_artefact_is_named_absent_not_empty(self):
+        result, payload = self._run(
+            "absent",
+            declared=["notebooks/a.ipynb", "notebooks/never-built.ipynb"],
+            from_zero_files={"notebooks/a.ipynb": "some real content"},
+            artefact_kinds=[{"name": "notebook", "glob": "notebooks/*.ipynb"}])
+        self.assertEqual(result.returncode, 0, payload)
+        statuses = {row["path"]: row["status"]
+                   for row in payload["artefacts"][0]["content"]}
+        self.assertEqual(statuses["notebooks/never-built.ipynb"], "absent")
+        self.assertNotEqual(statuses["notebooks/a.ipynb"], "absent")
+
+    def test_content_not_matching_a_declared_pattern_carries_no_match(self):
+        result, payload = self._run(
+            "no_match",
+            declared=["notebooks/a.ipynb"],
+            from_zero_files={"notebooks/a.ipynb": "no signal in here"},
+            artefact_kinds=[{"name": "notebook", "glob": "notebooks/*.ipynb",
+                            "contentPattern": "EXECUTED"}])
+        self.assertEqual(result.returncode, 0, payload)
+        content = payload["artefacts"][0]["content"]
+        self.assertEqual(
+            content, [{"path": "notebooks/a.ipynb",
+                      "status": "carries-no-match"}])
+
+    def test_a_declared_pattern_that_matches_is_produced(self):
+        result, payload = self._run(
+            "matches",
+            declared=["notebooks/a.ipynb"],
+            from_zero_files={"notebooks/a.ipynb": "cell EXECUTED here"},
+            artefact_kinds=[{"name": "notebook", "glob": "notebooks/*.ipynb",
+                            "contentPattern": "EXECUTED"}])
+        self.assertEqual(result.returncode, 0, payload)
+        content = payload["artefacts"][0]["content"]
+        self.assertEqual(
+            content, [{"path": "notebooks/a.ipynb", "status": "produced"}])
+
+    def test_a_kind_with_no_content_pattern_is_never_assumed_full(self):
+        result, payload = self._run(
+            "no_pattern_declared",
+            declared=["notebooks/a.ipynb"],
+            from_zero_files={"notebooks/a.ipynb": "real content, unchecked"},
+            artefact_kinds=[{"name": "notebook", "glob": "notebooks/*.ipynb"}])
+        self.assertEqual(result.returncode, 0, payload)
+        content = payload["artefacts"][0]["content"]
+        self.assertEqual(
+            content, [{"path": "notebooks/a.ipynb",
+                      "status": "content-not-declared"}])
+        self.assertNotEqual(
+            content[0]["status"], "produced",
+            "no declared contentPattern must never be read as 'full'")
+
+    def test_an_on_disk_artefact_the_declared_roster_never_names_is_unnamed(self):
+        result, payload = self._run(
+            "unnamed",
+            declared=["notebooks/a.ipynb"],
+            from_zero_files={"notebooks/a.ipynb": "declared and produced",
+                            "notebooks/extra.ipynb": "nobody named this one"},
+            artefact_kinds=[{"name": "notebook", "glob": "notebooks/*.ipynb"}])
+        self.assertEqual(result.returncode, 0, payload)
+        artefact = payload["artefacts"][0]
+        self.assertEqual(artefact["unnamed"], ["notebooks/extra.ipynb"])
+        self.assertEqual(sorted(artefact["onDisk"]),
+                         ["notebooks/a.ipynb", "notebooks/extra.ipynb"])
+        self.assertNotIn(
+            "notebooks/extra.ipynb",
+            [row["path"] for row in artefact["content"]],
+            "an unnamed artefact is a separate list, distinct from a "
+            "named artefact that failed")
+
+    def test_a_complete_roster_still_states_what_it_covered(self):
+        result, payload = self._run(
+            "complete",
+            declared=["notebooks/a.ipynb"],
+            from_zero_files={"notebooks/a.ipynb": "declared and produced"},
+            artefact_kinds=[{"name": "notebook", "glob": "notebooks/*.ipynb"}])
+        self.assertEqual(result.returncode, 0, payload)
+        artefact = payload["artefacts"][0]
+        self.assertEqual(
+            artefact["unnamed"], [],
+            "an empty remainder is still reported, not omitted")
+        self.assertIn("unnamed", artefact)
+
+    def test_no_artefact_kinds_declared_yields_an_empty_list_not_an_error(self):
+        result, payload = self._run(
+            "none_declared", declared=["a.txt"],
+            from_zero_files={"a.txt": "x"}, artefact_kinds=[])
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["artefacts"], [])
+
+    def test_empty_file_sha256_is_the_real_digest_of_zero_bytes(self):
+        cli = audit_cli_module()
+        self.assertEqual(cli.EMPTY_FILE_SHA256,
+                         hashlib.sha256(b"").hexdigest())
 
 
 class StructureBoxLifecycleTests(StructureBoxMixin, unittest.TestCase):
@@ -5215,6 +5682,183 @@ class WalkthroughStepRoleTests(WalkthroughBoxMixin, unittest.TestCase):
         self.assertEqual(payload["gates"], {"declared": 1, "passed": 0})
 
 
+class WalkthroughDigestTests(WalkthroughBoxMixin, unittest.TestCase):
+    """R6, `the-audit-grades-what-a-step-wrote`: a driven step is graded on
+    what it wrote into the shared box, never on its own reported success.
+    A step declared `readOnly` is exempt; a step with no such declaration
+    defaults to producing, and an unchanged box is the finding. Separately,
+    any change to the *subject* -- never the box -- is an escape this
+    mechanism gates, which `walkthrough` had no reach over at all before.
+    """
+
+    def test_a_step_that_returns_zero_and_writes_nothing_is_named(self):
+        surface = "wrote_nothing"
+        self.walkthrough_box(surface)
+        subject = self.make_box("wrote_nothing_subject")
+        steps = [{"argv": ["python3", "-c", "pass"], "expect": {"exit": 0},
+                  "name": "claims success, writes nothing"}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["steps"][0]["outcome"], "passed")
+        self.assertEqual(payload["steps"][0]["box"]["verdict"],
+                         "produced-nothing")
+        self.assertEqual(payload["steps"][0]["box"]["changed"], [])
+
+    def test_a_step_that_writes_nothing_against_an_already_nonempty_box_is_still_named(self):
+        """Discriminates against a weaker guard that only fires when the box
+        is empty on both sides -- the shipped shape has prior steps leave
+        content behind, and a later step that adds nothing must still be
+        graded against its own before/after, not against emptiness.
+        """
+        surface = "wrote_nothing_nonempty"
+        self.walkthrough_box(surface)
+        subject = self.make_box("wrote_nothing_nonempty_subject")
+        steps = [
+            {"argv": ["python3", "-c",
+                     "open('marker.txt', 'w').write('hello')"],
+             "expect": {"exit": 0}, "name": "leaves the box non-empty"},
+            {"argv": ["python3", "-c", "pass"], "expect": {"exit": 0},
+             "name": "claims success, adds nothing to an already-full box"},
+        ]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["steps"][0]["box"]["verdict"], "produced")
+        self.assertEqual(payload["steps"][1]["box"]["verdict"],
+                         "produced-nothing",
+                         "an unchanged non-empty box is still nothing "
+                         "produced by THIS step")
+
+    def test_a_step_that_writes_entirely_inside_its_declared_roots_is_clean(self):
+        surface = "wrote_inside_roots"
+        self.walkthrough_box(surface)
+        subject = self.make_box("wrote_inside_roots_subject")
+        steps = [{
+            "argv": ["python3", "-c",
+                     "import os\n"
+                     "os.makedirs('out', exist_ok=True)\n"
+                     "open('out/product.txt', 'w').write('made')\n"],
+            "expect": {"exit": 0}, "name": "writes only where it declared",
+            "roots": ["out"]}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        box_report = payload["steps"][0]["box"]
+        self.assertEqual(box_report["verdict"], "produced")
+        self.assertEqual(box_report["changed"], ["out/product.txt"])
+        self.assertEqual(box_report["outsideRoots"], [])
+
+    def test_a_step_that_writes_outside_its_declared_roots_is_named(self):
+        surface = "wrote_outside_roots"
+        self.walkthrough_box(surface)
+        subject = self.make_box("wrote_outside_roots_subject")
+        steps = [{
+            "argv": ["python3", "-c",
+                     "open('stray.txt', 'w').write('escaped its roots')\n"],
+            "expect": {"exit": 0}, "name": "declares one root, writes another",
+            "roots": ["allowed"]}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        box_report = payload["steps"][0]["box"]
+        self.assertEqual(box_report["verdict"], "wrote-outside-roots")
+        self.assertEqual(box_report["outsideRoots"], ["stray.txt"])
+
+    def test_a_step_that_writes_partly_outside_its_declared_roots_is_named(self):
+        """Discriminates against a weaker guard that only fires when EVERY
+        changed path is outside the declared roots -- 'wholly outside' and
+        'partly outside' are the same finding, per spec.md's own wording.
+        """
+        surface = "wrote_partly_outside_roots"
+        self.walkthrough_box(surface)
+        subject = self.make_box("wrote_partly_outside_roots_subject")
+        steps = [{
+            "argv": ["python3", "-c",
+                     "import os\n"
+                     "os.makedirs('allowed', exist_ok=True)\n"
+                     "open('allowed/ok.txt', 'w').write('fine')\n"
+                     "open('stray.txt', 'w').write('escaped')\n"],
+            "expect": {"exit": 0}, "name": "writes both inside and outside",
+            "roots": ["allowed"]}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        box_report = payload["steps"][0]["box"]
+        self.assertEqual(box_report["verdict"], "wrote-outside-roots")
+        self.assertEqual(box_report["outsideRoots"], ["stray.txt"])
+        self.assertEqual(sorted(box_report["changed"]),
+                         ["allowed/ok.txt", "stray.txt"])
+
+    def test_a_read_only_step_that_writes_nothing_is_not_a_finding(self):
+        surface = "read_only_clean"
+        self.walkthrough_box(surface)
+        subject = self.make_box("read_only_clean_subject")
+        steps = [{"argv": ["python3", "-c", "pass"], "expect": {"exit": 0},
+                  "name": "declared read-only", "readOnly": True}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["steps"][0]["box"]["verdict"], "read-only")
+
+    def test_a_read_only_step_is_exempt_even_if_it_writes_something(self):
+        """`readOnly` is exempt outright, not exempt-only-when-unchanged.
+        Discriminates against a weaker guard that checks emptiness first and
+        only consults `readOnly` as a tiebreaker on the unchanged branch."""
+        surface = "read_only_but_wrote"
+        self.walkthrough_box(surface)
+        subject = self.make_box("read_only_but_wrote_subject")
+        steps = [{
+            "argv": ["python3", "-c", "open('side.txt', 'w').write('oops')"],
+            "expect": {"exit": 0},
+            "name": "declared read-only, writes anyway", "readOnly": True}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["steps"][0]["box"]["verdict"], "read-only")
+
+    def test_a_step_that_writes_into_the_subject_is_unprobeable(self):
+        """The gap `structure` already closed and `walkthrough` had not:
+        a change to the *subject*, not the box, is an escape, never a
+        finding, and the whole sweep halts rather than naming which step.
+        """
+        surface = "escaped_the_box"
+        self.walkthrough_box(surface)
+        subject = self.make_box("escaped_the_box_subject")
+        steps = [{
+            "argv": ["python3", "-c",
+                     "open(r'{subject}/escaped.txt', 'w').write('boom')\n"],
+            "expect": {"exit": 0}, "name": "reaches out of its own box"}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertEqual(payload["status"], "unprobeable")
+        self.assertIn("kind=step-escaped-the-box", payload["error"])
+        self.assertIn("escaped.txt", payload["error"])
+
+    def test_a_step_that_modifies_an_existing_subject_file_in_place_is_unprobeable(self):
+        """Discriminates against a weaker guard comparing only the *set* of
+        subject paths (or their count) rather than the full `tree_digest`
+        value map -- an in-place content change adds no path and removes
+        none, so a set/length comparison alone would miss it entirely.
+        """
+        surface = "escaped_in_place"
+        self.walkthrough_box(surface)
+        subject = self.make_box("escaped_in_place_subject")
+        (subject / "existing.txt").write_text("original", encoding="utf-8")
+        steps = [{
+            "argv": ["python3", "-c",
+                     "open(r'{subject}/existing.txt', 'w')"
+                     ".write('mutated in place')\n"],
+            "expect": {"exit": 0}, "name": "rewrites a file already there"}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertEqual(payload["status"], "unprobeable")
+        self.assertIn("kind=step-escaped-the-box", payload["error"])
+        self.assertIn("existing.txt", payload["error"])
+
+
 # ==========================================================================
 # `the-audit-that-escalates-what-it-cannot-decide`, Slice 3 -- every note
 # kind classified by a totality-checked partition, and an escalatable kind
@@ -6145,6 +6789,8 @@ class StageOutcomesTests(BoxMixin, unittest.TestCase):
             "- Whether the model behind argv[0] already knew this "
             "subject's shape from training data is not measured here, "
             "stated as an assumption.\n\n"
+            f"{cli.USER_DRIVE_DEMANDED_HEADING}\n\n"
+            "(none)\n\n"
             "## Ranked findings", 1)
         for stage_id, outcome in (post_drive_overrides or {}).items():
             needle = f"- Stage: {stage_id}: {VALID_REPORT_STAGE_OVERRIDES[stage_id]}\n"
@@ -6263,6 +6909,50 @@ class StageOutcomesTests(BoxMixin, unittest.TestCase):
         result, payload = self.check(broken, name="user-drive-no-declared-heading.md")
         self.assertEqual(result.returncode, 1, payload)
         self.assertIn("user-drive", [v["item"] for v in payload["violations"]])
+
+    def test_user_drive_missing_demanded_heading_is_rejected(self):
+        """R4 (`spec.md`): `### Demanded, not scaffolded` is required
+        exactly like `### Declared, not proven` -- same pattern, reused via
+        `user_drive_subsection_only_nonempty`, not a second hand-copied
+        function for the second heading.
+        """
+        cli = audit_cli_module()
+        text = self._with_stage_two_agreed(VALID_REPORT)
+        broken = text.replace(f"{cli.USER_DRIVE_DEMANDED_HEADING}\n\n", "", 1)
+        self.assertNotEqual(broken, text, "the graft must land")
+        result, payload = self.check(broken, name="user-drive-no-demanded-heading.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "user-drive"]
+        self.assertTrue(
+            any("Demanded" in v["detail"] for v in violations),
+            f"a missing 'Demanded, not scaffolded' heading must be "
+            f"rejected: {violations}")
+
+    def test_user_drive_empty_demanded_section_is_rejected(self):
+        cli = audit_cli_module()
+        text = self._with_stage_two_agreed(VALID_REPORT)
+        broken = text.replace(f"{cli.USER_DRIVE_DEMANDED_HEADING}\n\n(none)\n\n",
+                              f"{cli.USER_DRIVE_DEMANDED_HEADING}\n\n", 1)
+        self.assertNotEqual(broken, text, "the graft must land")
+        result, payload = self.check(broken, name="user-drive-empty-demanded.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "user-drive"]
+        self.assertTrue(
+            any("Demanded" in v["detail"] for v in violations),
+            f"an empty 'Demanded, not scaffolded' section must be "
+            f"rejected, '(none)' is the explicit accepted way to say "
+            f"there was nothing to demand: {violations}")
+
+    def test_user_drive_demanded_none_is_accepted(self):
+        """[LOCK] `(none)` is the explicit, accepted, non-empty answer --
+        already exercised by the shared `_with_stage_two_agreed` baseline,
+        asserted here by name so the acceptance is not merely incidental.
+        """
+        text = self._with_stage_two_agreed(VALID_REPORT)
+        cli = audit_cli_module()
+        self.assertIn(f"{cli.USER_DRIVE_DEMANDED_HEADING}\n\n(none)\n\n", text)
+        result, payload = self.check(text, name="user-drive-demanded-none.md")
+        self.assertEqual(result.returncode, 0, payload)
 
     def test_stage_model_total_sums_a_synthetic_table(self):
         cli = audit_cli_module()
@@ -6762,3 +7452,1248 @@ class SensitivityAdjudicationTests(SensitivityBoxMixin, unittest.TestCase):
         self.assertEqual(result.returncode, 0, payload)
         self.assertIn("rows", payload["notAdjudicable"])
         self.assertNotIn("adjudication", payload)
+
+
+# ==========================================================================
+# Commit 0 -- `a-driven-child-purges-its-own-bytecode`: every constructed
+# child environment carries `PYTHONDONTWRITEBYTECODE=1` unconditionally, at
+# both sites that build one, through one shared helper. A same-size
+# mutation must never be able to execute a cached `.pyc`.
+# ==========================================================================
+
+@contextlib.contextmanager
+def _env_var_removed(name):
+    """Pop `name` from `os.environ` for one block, restored exactly as
+    found afterward. Manual save/restore, not `unittest.mock`, to match
+    this file's own idiom -- and this is the one lock in the suite that
+    must run with the name popped even though the method rules require it
+    set for every other test in the same process.
+    """
+    had = os.environ.pop(name, None)
+    try:
+        yield
+    finally:
+        if had is not None:
+            os.environ[name] = had
+
+
+class ChildEnvTests(unittest.TestCase):
+    """`driver-child-environment` (Change 0): the purge holds regardless of
+    the parent process's own environment, at both `run_box_step` and
+    `run_sensitivity_drive`, and the name stays out of
+    `DRIVER_ENV_ALLOWLIST` so a recipe can never declare it away.
+
+    Each lock executes a real child process and reads what that child
+    itself observed -- never asserts a field on a constructed dict, per
+    this change's own "guard a weaker guard survives" discipline.
+    """
+
+    PURGE_PROBE = (
+        "import os, pathlib, sys; "
+        "pathlib.Path(sys.argv[1]).write_text("
+        "os.environ.get('PYTHONDONTWRITEBYTECODE', ''))")
+
+    def test_run_box_step_purges_bytecode_even_when_parent_lacks_it(self):
+        """Scenario: purge holds regardless of parent environment."""
+        cli = audit_cli_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp).resolve()
+            repo, subject, box = tmp / "repo", tmp / "subject", tmp / "box"
+            repo.mkdir(); subject.mkdir(); box.mkdir()
+            step = {"kind": "driver",
+                    "argv": [sys.executable, "-c", self.PURGE_PROBE,
+                             "{box}/purge_probe.txt"]}
+            with _env_var_removed("PYTHONDONTWRITEBYTECODE"):
+                cli.run_box_step(step, repo, subject, box, timeout=30)
+            self.assertEqual(
+                (box / "purge_probe.txt").read_text(), "1",
+                "run_box_step's driver-kind child env must carry "
+                "PYTHONDONTWRITEBYTECODE=1 even when the parent process's "
+                "own environment has none")
+
+    def test_run_sensitivity_drive_purges_bytecode_independently(self):
+        """Scenario: both sites carry the purge, not one -- this lock never
+        calls `run_box_step` at all."""
+        cli = audit_cli_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp).resolve()
+            repo = tmp / "repo"
+            real_subject = tmp / "subject"
+            copy_root = tmp / "copy"
+            box = tmp / "box"
+            for made in (repo, real_subject, copy_root, box):
+                made.mkdir()
+            recipe = {"argv": [sys.executable, "-c",
+                               "import os, sys; sys.stdout.write("
+                               "os.environ.get('PYTHONDONTWRITEBYTECODE', "
+                               "''))"]}
+            with _env_var_removed("PYTHONDONTWRITEBYTECODE"):
+                completed = cli.run_sensitivity_drive(
+                    recipe, real_subject, copy_root, box, repo, timeout=30)
+            self.assertEqual(
+                completed.stdout, "1",
+                "run_sensitivity_drive's own child env must carry "
+                "PYTHONDONTWRITEBYTECODE=1, independently of whether "
+                "run_box_step ran in this process")
+
+    def test_a_declared_purge_name_still_refuses_the_driver_step(self):
+        """Scenario: an explicit declaration still refuses the step -- the
+        purge name stays out of `DRIVER_ENV_ALLOWLIST` on purpose."""
+        cli = audit_cli_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            repo, subject, box = tmp / "repo", tmp / "subject", tmp / "box"
+            repo.mkdir(); subject.mkdir(); box.mkdir()
+            step = {"kind": "driver", "argv": [sys.executable, "-c", "pass"],
+                    "env": ["PYTHONDONTWRITEBYTECODE"]}
+            with self.assertRaises(cli.Unprobeable) as caught:
+                cli.run_box_step(step, repo, subject, box, timeout=30)
+            self.assertIn("PYTHONDONTWRITEBYTECODE", str(caught.exception))
+            self.assertNotIn(
+                "PYTHONDONTWRITEBYTECODE", cli.DRIVER_ENV_ALLOWLIST,
+                "the purge name must never enter the allowlist -- it is "
+                "injected, never recipe-declarable")
+
+
+class ChildEnvConstructionSweepTests(unittest.TestCase):
+    """An AST class-sweep proving `constructed_child_env` is the one place
+    a child environment's `os.environ[...]` comprehension is built -- the
+    `SingleWalkTests` idiom, applied to this change's own helper.
+    """
+
+    def test_environ_subscript_comprehensions_appear_only_in_the_helper(self):
+        tree = ast.parse(CLI.read_text(encoding="utf-8"))
+        function_bodies = {
+            node.name: node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)}
+        self.assertIn(
+            "constructed_child_env", function_bodies,
+            "audit_cli.py defines no constructed_child_env to scope this "
+            "lock to")
+        inside_helper = set(ast.walk(function_bodies["constructed_child_env"]))
+
+        def is_os_environ_subscript(node):
+            return (isinstance(node, ast.Subscript)
+                    and isinstance(node.value, ast.Attribute)
+                    and node.value.attr == "environ"
+                    and isinstance(node.value.value, ast.Name)
+                    and node.value.value.id == "os")
+
+        offenders = [
+            ast.dump(node) for node in ast.walk(tree)
+            if node not in inside_helper
+            and isinstance(node, ast.DictComp)
+            and is_os_environ_subscript(node.value)]
+        self.assertEqual(
+            offenders, [],
+            "a second os.environ[...] child-env comprehension exists "
+            f"outside constructed_child_env: {offenders}")
+
+
+# ==========================================================================
+# Commit a1 -- the `inversion` mechanism: invert every guarded fact a
+# recipe declares in the real tree, and watch its lock fire. Ten soundness
+# conditions; every RED lock below is named against the spec condition it
+# proves, never a placeholder.
+# ==========================================================================
+
+def inversion_json(spec, subject, repo=FORGE, extra=()):
+    """Drive `inversion` as a process and parse what it wrote to stdout."""
+    result = run_cli("inversion", "--subject", str(subject),
+                     "--spec", str(spec), "--repo-root", str(repo), *extra)
+    try:
+        return result, json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise AssertionError(
+            f"inversion exited {result.returncode} without JSON on "
+            f"stdout.\nstdout={result.stdout!r}\nstderr={result.stderr!r}")
+
+
+class InversionBoxMixin(BoxMixin):
+    """Fixtures for `inversion`: a subject holding one guarded source file
+    and one or more observing scripts, all real files driven as a real
+    process. `inversion` mutates the real tree in place, never a copy, so
+    there is no box-lifecycle machinery to manage here.
+    """
+
+    #: Discriminating: exits 0 only while the guarded value still reads
+    #: 10 -- a mutation the guard is meant to catch reads red through it.
+    DISCRIMINATING_OBSERVER = (
+        "import guarded, sys\n"
+        "sys.exit(0 if guarded.THRESHOLD == 10 else 1)\n")
+
+    #: Obsolete: exits 0 regardless of the guarded value -- half of the
+    #: load-bearing inversion proof, the shape conditions 8/9 exist for.
+    OBSOLETE_OBSERVER = "import guarded\n"
+
+    def make_inversion_subject(self, name, files):
+        """`files` is `{relative: content}`. Every fixture below writes
+        its own guarded source and observer(s) explicitly, so a reader
+        never has to cross-reference a shared default to know what a
+        given test actually drives.
+        """
+        subject = self.make_box(name)
+        for relative, content in files.items():
+            self.write(subject, relative, content)
+        return subject
+
+    def make_inversion_recipe(self, subject, surface, mutations, repo=FORGE,
+                              exclude=(), default_observer="test_guarded.py"):
+        cwd = subject.relative_to(repo).as_posix()
+        for fact in mutations:
+            fact.setdefault("observe", {
+                "argv": ["python3", default_observer], "cwd": cwd,
+                "env": ["PATH"]})
+        spec = subject / "inversion.json"
+        spec.write_text(json.dumps({
+            "surface": run_scoped(surface),
+            "exclude": list(exclude),
+            "mutations": mutations,
+        }, indent=2), encoding="utf-8")
+        return spec
+
+    def guarded_fact(self, fact="the threshold guarded.py holds",
+                     file="guarded.py", line=1, literal="THRESHOLD = 10",
+                     replacement="THRESHOLD = 99", observe=None):
+        entry = {"fact": fact, "file": file, "line": line,
+                 "literal": literal, "replacement": replacement}
+        if observe is not None:
+            entry["observe"] = observe
+        return entry
+
+
+class InversionBaselineGateTests(InversionBoxMixin, unittest.TestCase):
+    """Spec condition 11: the observing run is proven green before any
+    mutation. Added by the design phase: without it, an already-red suite
+    would report every guarded fact `fires`, having proven nothing.
+    """
+
+    def test_a_red_baseline_refuses_the_sweep_before_any_mutation(self):
+        subject = self.make_inversion_subject("baseline_red", {
+            "guarded.py": "THRESHOLD = 999\n",
+            "test_guarded.py": self.DISCRIMINATING_OBSERVER,
+        })
+        recipe = self.make_inversion_recipe(subject, "baseline_red", [
+            self.guarded_fact(fact="fact one", literal="THRESHOLD = 999",
+                              replacement="THRESHOLD = 1"),
+            self.guarded_fact(fact="fact two", literal="THRESHOLD = 999",
+                              replacement="THRESHOLD = 2"),
+        ])
+        before = (subject / "guarded.py").read_bytes()
+        result, payload = inversion_json(recipe, subject)
+        after = (subject / "guarded.py").read_bytes()
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("baseline-not-green", payload["error"])
+        self.assertEqual(
+            before, after,
+            "a red baseline must halt before any byte is written")
+
+
+class InversionFactResolutionTests(InversionBoxMixin, unittest.TestCase):
+    """Conditions 1 and 4: presence proven before mutation, and a guarded
+    fact resolves to exactly one match on its declared line.
+    """
+
+    def test_an_absent_literal_halts_before_any_write(self):
+        subject = self.make_inversion_subject("fact_absent", {
+            "guarded.py": "THRESHOLD = 10\n",
+            "test_guarded.py": self.DISCRIMINATING_OBSERVER,
+        })
+        recipe = self.make_inversion_recipe(subject, "fact_absent", [
+            self.guarded_fact(literal="THRESHOLD = 20",
+                              replacement="THRESHOLD = 30")])
+        before = (subject / "guarded.py").read_bytes()
+        result, payload = inversion_json(recipe, subject)
+        after = (subject / "guarded.py").read_bytes()
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("fact-absent", payload["error"])
+        self.assertEqual(before, after)
+
+    def test_a_literal_repeated_on_its_declared_line_halts_ambiguous(self):
+        # The literal appears twice on line 1 -- once as the real
+        # assignment, once inside a trailing comment -- scoped to the
+        # declared line, never the whole file.
+        subject = self.make_inversion_subject("fact_ambiguous", {
+            "guarded.py": "THRESHOLD = 10  # THRESHOLD = 10\n",
+            "test_guarded.py": self.DISCRIMINATING_OBSERVER,
+        })
+        recipe = self.make_inversion_recipe(subject, "fact_ambiguous", [
+            self.guarded_fact(literal="THRESHOLD = 10",
+                              replacement="THRESHOLD = 99")])
+        before = (subject / "guarded.py").read_bytes()
+        result, payload = inversion_json(recipe, subject)
+        after = (subject / "guarded.py").read_bytes()
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("fact-ambiguous", payload["error"])
+        self.assertEqual(
+            before, after, "neither occurrence may be substituted")
+
+
+class InversionNoOpWriteTests(InversionBoxMixin, unittest.TestCase):
+    """Condition 2: the post-write digest must differ from the pre-write
+    digest, asserted before the observing run -- proven by counting real
+    invocations, never by inspecting a constructed dict.
+    """
+
+    MARKING_OBSERVER = (
+        "import pathlib, sys\n"
+        "log = pathlib.Path('invocations.log')\n"
+        "log.write_text((log.read_text() if log.exists() else '') + 'x\\n')\n"
+        "import guarded\n"
+        "sys.exit(0 if guarded.THRESHOLD == 10 else 1)\n")
+
+    def test_a_write_that_did_not_change_the_bytes_halts_before_observing(self):
+        subject = self.make_inversion_subject("no_op_write", {
+            "guarded.py": "THRESHOLD = 10\n",
+            "test_guarded.py": self.MARKING_OBSERVER,
+        })
+        recipe = self.make_inversion_recipe(subject, "no_op_write", [
+            self.guarded_fact(literal="THRESHOLD = 10",
+                              replacement="THRESHOLD = 10")])
+        result, payload = inversion_json(recipe, subject)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("no-op-write", payload["error"])
+        invocations = (subject / "invocations.log").read_text().splitlines()
+        self.assertEqual(
+            len(invocations), 1,
+            "only the baseline drive may have run; the no-op fact's own "
+            "observing run must never execute")
+
+
+class InversionSameLengthMutationTests(InversionBoxMixin, unittest.TestCase):
+    """Condition 3: bytecode is purged unconditionally for every
+    substitution drive (Change 0's helper), so a same-byte-length
+    mutation still executes fresh source, never a cached `.pyc`.
+    """
+
+    def test_a_same_length_mutation_fires_and_leaves_no_bytecode_cache(self):
+        subject = self.make_inversion_subject("same_length", {
+            "guarded.py": "THRESHOLD = 10\n",
+            "test_guarded.py": self.DISCRIMINATING_OBSERVER,
+        })
+        recipe = self.make_inversion_recipe(subject, "same_length", [
+            # Same byte length: "10" -> "20", two characters each.
+            self.guarded_fact(literal="THRESHOLD = 10",
+                              replacement="THRESHOLD = 20")])
+        result, payload = inversion_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(list(payload["matrix"].values()), ["fires"])
+        self.assertFalse(
+            (subject / "__pycache__").exists(),
+            "no constructed child environment in this sweep may leave a "
+            "bytecode cache behind; its presence is exactly the "
+            "staleness trap condition 3 exists to keep shut")
+
+
+class InversionRestoreTests(InversionBoxMixin, unittest.TestCase):
+    """Condition 5: restoration is confirmed by sha256, never `git
+    checkout --`. Restore discipline reused verbatim from
+    `restore_exact_bytes`, including its stated `kind=sensitivity-
+    restore-failed` message -- renaming it would edit a function this
+    change requires kept byte-identical.
+    """
+
+    def test_a_restore_mismatch_halts_the_sweep_and_the_next_fact_is_untouched(self):
+        # The observer recreates the mutated file as a directory, but
+        # only once the mutated value is actually observed -- never
+        # during the baseline's own unmutated call -- exactly
+        # `SensitivityRestoreTests`'s idiom, applied after the fact.
+        observer = (
+            "import pathlib, sys\n"
+            "import guarded\n"
+            "if guarded.THRESHOLD != 10:\n"
+            "    pathlib.Path('guarded.py').unlink()\n"
+            "    pathlib.Path('guarded.py').mkdir()\n"
+            "sys.exit(0)\n")
+        subject = self.make_inversion_subject("restore_mismatch", {
+            "guarded.py": "THRESHOLD = 10\n",
+            "test_guarded.py": observer,
+            "guarded2.py": "OTHER = 1\n",
+            "test_guarded2.py": ("import guarded2, sys\n"
+                                 "sys.exit(0 if guarded2.OTHER == 1 else 1)\n"),
+        })
+        cwd = subject.relative_to(FORGE).as_posix()
+        recipe = self.make_inversion_recipe(subject, "restore_mismatch", [
+            self.guarded_fact(
+                fact="the one that breaks restore", file="guarded.py",
+                literal="THRESHOLD = 10", replacement="THRESHOLD = 99",
+                observe={"argv": ["python3", "test_guarded.py"],
+                        "cwd": cwd, "env": ["PATH"]}),
+            self.guarded_fact(
+                fact="the one that must never be reached", file="guarded2.py",
+                literal="OTHER = 1", replacement="OTHER = 2",
+                observe={"argv": ["python3", "test_guarded2.py"],
+                        "cwd": cwd, "env": ["PATH"]}),
+        ])
+        result, payload = inversion_json(recipe, subject)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("sensitivity-restore-failed", payload["error"])
+        self.assertEqual(
+            (subject / "guarded2.py").read_bytes(), b"OTHER = 1\n",
+            "the sweep must halt before the second fact is ever mutated")
+
+    def test_git_checkout_is_never_invoked_by_this_subcommand(self):
+        """Grep-on-source lock: `git checkout --` restores from the index
+        and silently discards unrelated work; this subcommand's whole
+        restore discipline exists to never need it. An exact-value match
+        against a bare `ast.Constant`, never a substring search, so this
+        stays true of the running code rather than of a docstring that
+        happens to mention the word while forbidding it.
+        """
+        tree = ast.parse(CLI.read_text(encoding="utf-8"))
+        offenders = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and node.value == "checkout"]
+        self.assertEqual(
+            offenders, [],
+            "a literal \"checkout\" string constant exists in "
+            "audit_cli.py -- restore must go through restore_exact_bytes, "
+            "never git checkout")
+
+
+class InversionOperatorFlipTests(InversionBoxMixin, unittest.TestCase):
+    """Condition 6: the mutation must invert the value the guard asserts,
+    never the comparison operator around it -- flipping `==` to `!=`
+    excludes a different subset, it never removes the fact.
+    """
+
+    def test_flipping_the_operator_instead_of_the_value_is_refused(self):
+        subject = self.make_inversion_subject("operator_flip", {
+            "guarded.py": "def check(x):\n    return x == 10\n",
+            "test_guarded.py": ("import guarded, sys\n"
+                                "sys.exit(0 if guarded.check(10) else 1)\n"),
+        })
+        recipe = self.make_inversion_recipe(subject, "operator_flip", [
+            self.guarded_fact(line=2, literal="x == 10",
+                              replacement="x != 10")])
+        before = (subject / "guarded.py").read_bytes()
+        result, payload = inversion_json(recipe, subject)
+        after = (subject / "guarded.py").read_bytes()
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("operator-flip", payload["error"])
+        self.assertEqual(before, after)
+
+
+class InversionObserveFidelityTests(InversionBoxMixin, unittest.TestCase):
+    """Condition 7: the observing run is the one the guarded fact itself
+    declares -- never a hand-picked subset -- and a subject with more
+    than one declared suite runs each fact's own suite separately.
+    """
+
+    def test_each_facts_own_declared_suite_runs_and_not_the_others(self):
+        subject = self.make_inversion_subject("two_suites", {
+            "guarded_a.py": "THRESHOLD_A = 10\n",
+            "observer_a.py": ("import pathlib, guarded_a, sys\n"
+                              "pathlib.Path('ran_a.txt').write_text('x')\n"
+                              "sys.exit(0 if guarded_a.THRESHOLD_A == 10 "
+                              "else 1)\n"),
+            "guarded_b.py": "THRESHOLD_B = 20\n",
+            "observer_b.py": ("import pathlib, guarded_b, sys\n"
+                              "pathlib.Path('ran_b.txt').write_text('x')\n"
+                              "sys.exit(0 if guarded_b.THRESHOLD_B == 20 "
+                              "else 1)\n"),
+        })
+        cwd = subject.relative_to(FORGE).as_posix()
+        recipe = self.make_inversion_recipe(subject, "two_suites", [
+            self.guarded_fact(
+                fact="fact a", file="guarded_a.py",
+                literal="THRESHOLD_A = 10", replacement="THRESHOLD_A = 99",
+                observe={"argv": ["python3", "observer_a.py"],
+                        "cwd": cwd, "env": ["PATH"]}),
+            self.guarded_fact(
+                fact="fact b", file="guarded_b.py",
+                literal="THRESHOLD_B = 20", replacement="THRESHOLD_B = 88",
+                observe={"argv": ["python3", "observer_b.py"],
+                        "cwd": cwd, "env": ["PATH"]}),
+        ])
+        result, payload = inversion_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertTrue((subject / "ran_a.txt").is_file(),
+                        "fact a's own declared observer must have run")
+        self.assertTrue((subject / "ran_b.txt").is_file(),
+                        "fact b's own declared observer must have run")
+        self.assertEqual(payload["matrix"]["fact a"], "fires")
+        self.assertEqual(payload["matrix"]["fact b"], "fires")
+
+
+class InversionNotAdjudicableTests(InversionBoxMixin, unittest.TestCase):
+    """Condition 8: a green mutation is reported, never silently
+    accepted -- surfaced in the payload's own `notAdjudicable` roster,
+    carrying the Move-6 finding fields a report author transcribes
+    verbatim into `## Not adjudicable`.
+    """
+
+    def test_a_green_mutation_is_reported_not_adjudicable(self):
+        subject = self.make_inversion_subject("obsolete_guard", {
+            "guarded.py": "THRESHOLD = 10\n",
+            "test_guarded.py": self.OBSOLETE_OBSERVER,
+        })
+        recipe = self.make_inversion_recipe(subject, "obsolete_guard", [
+            self.guarded_fact(literal="THRESHOLD = 10",
+                              replacement="THRESHOLD = 99")])
+        result, payload = inversion_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(len(payload["notAdjudicable"]), 1)
+        entry = payload["notAdjudicable"][0]
+        self.assertEqual(entry["move"], 6)
+        self.assertEqual(entry["adjudication"], "not adjudicable")
+        self.assertTrue(entry["remedy"].startswith("undecided:"))
+
+
+class InversionCapOverflowTests(InversionBoxMixin, unittest.TestCase):
+    """The sweep is capped at 8, and overflow is named individually under
+    `## Unchecked`, never silently dropped."""
+
+    def test_ten_declared_facts_yield_eight_driven_and_two_named(self):
+        files = {"guarded.py": "\n".join(
+            f"VALUE_{index} = {index}" for index in range(10)) + "\n"}
+        for index in range(10):
+            files[f"observer_{index}.py"] = (
+                f"import guarded, sys\n"
+                f"sys.exit(0 if guarded.VALUE_{index} == {index} else 1)\n")
+        subject = self.make_inversion_subject("cap_overflow", files)
+        cwd = subject.relative_to(FORGE).as_posix()
+        fact_names = [f"value {index}" for index in range(10)]
+        mutations = [
+            self.guarded_fact(
+                fact=fact_names[index], line=index + 1,
+                literal=f"VALUE_{index} = {index}",
+                replacement=f"VALUE_{index} = {index + 1000}",
+                observe={"argv": ["python3", f"observer_{index}.py"],
+                        "cwd": cwd, "env": ["PATH"]})
+            for index in range(10)]
+        recipe = self.make_inversion_recipe(subject, "cap_overflow", mutations)
+        result, payload = inversion_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["factsTotal"], 10)
+        self.assertEqual(len(payload["factsDriven"]), 8)
+        self.assertEqual(sorted(payload["factsUnchecked"]),
+                         sorted(fact_names[8:10]))
+
+
+class InversionExitCodeContractTests(InversionBoxMixin, unittest.TestCase):
+    """Exit `0` for any verdict, a not-adjudicable finding included; exit
+    `2` only for an inability to look. The restore-mismatch half of this
+    contract is proven by `InversionRestoreTests`.
+    """
+
+    def test_an_all_obsolete_drive_exits_zero(self):
+        subject = self.make_inversion_subject("all_obsolete", {
+            "guarded.py": "A = 1\nB = 2\n",
+            "test_guarded.py": "import guarded\n",
+        })
+        recipe = self.make_inversion_recipe(subject, "all_obsolete", [
+            self.guarded_fact(fact="a", line=1, literal="A = 1",
+                              replacement="A = 99"),
+            self.guarded_fact(fact="b", line=2, literal="B = 2",
+                              replacement="B = 88"),
+        ])
+        result, payload = inversion_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(len(payload["notAdjudicable"]), 2)
+
+
+class InversionMissingMutationsBlockTests(InversionBoxMixin, unittest.TestCase):
+    """A recipe with no declared `mutations` block refuses, naming the
+    missing block, never reporting zero guarded facts."""
+
+    def test_a_recipe_with_no_mutations_block_refuses_naming_it(self):
+        subject = self.make_inversion_subject(
+            "no_mutations", {"guarded.py": "A = 1\n"})
+        spec = subject / "inversion.json"
+        spec.write_text(
+            json.dumps({"surface": run_scoped("no_mutations")}),
+            encoding="utf-8")
+        result, payload = inversion_json(spec, subject)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("mutations", payload["error"])
+
+
+class InversionEscapeTests(InversionBoxMixin, unittest.TestCase):
+    """A drive writing outside its declared file exits `2`, and the sweep
+    halts -- `kind=build-escaped-the-box`, the same ruling `structure` and
+    `sensitivity` already carry."""
+
+    def test_a_drive_writing_outside_its_declared_file_halts(self):
+        # The extra write only happens once the mutated value is actually
+        # observed -- never during the baseline's own unmutated call.
+        observer = (
+            "import pathlib, sys\n"
+            "import guarded\n"
+            "if guarded.THRESHOLD != 10:\n"
+            "    pathlib.Path('extra.txt').write_text('unaccounted')\n"
+            "sys.exit(0)\n")
+        subject = self.make_inversion_subject("escape", {
+            "guarded.py": "THRESHOLD = 10\n",
+            "test_guarded.py": observer,
+        })
+        recipe = self.make_inversion_recipe(subject, "escape", [
+            self.guarded_fact(literal="THRESHOLD = 10",
+                              replacement="THRESHOLD = 99")])
+        result, payload = inversion_json(recipe, subject)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("build-escaped-the-box", payload["error"])
+
+
+# ==========================================================================
+# Commit a2 -- the report side: conditions 9 and 10 in `check-report`, the
+# `reachability` REPORT_SHAPE key, and `example-report.md`'s re-signature.
+# ==========================================================================
+
+class UndistinguishedCauseTests(BoxMixin, unittest.TestCase):
+    """Condition 9: an `undecided` Move-6 remedy reason must name one of
+    the three causes -- obsolete guard, equivalent mutant, degenerate
+    fixture -- or state that none could be determined. Stricter than
+    accepting any non-empty string.
+    """
+
+    def check(self, text, name="report.md"):
+        box = getattr(self, "_box", None) or self.make_box("undistinguished")
+        self._box = box
+        path = self.write(box, name, resign(text))
+        result = run_cli("check-report", str(path))
+        return result, json.loads(result.stdout)
+
+    def test_a_reason_naming_no_cause_is_rejected(self):
+        broken = REMEDY_REPORT.replace(
+            "- Remedy: undecided: none determined -- the guarded fact is "
+            "a config literal, not a named symbol\n",
+            "- Remedy: undecided: it is complicated\n", 1)
+        self.assertNotEqual(broken, REMEDY_REPORT, "the graft must land")
+        result, payload = self.check(broken, name="no-cause.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "remedy"]
+        self.assertTrue(
+            any("F4" in v["detail"] for v in violations),
+            f"a reason naming none of the three causes must be rejected "
+            f"and must name F4: {violations}")
+
+    def test_each_undistinguished_cause_alone_is_accepted(self):
+        cli = audit_cli_module()
+        for cause in cli.UNDISTINGUISHED_CAUSES:
+            with self.subTest(cause=cause):
+                broken = REMEDY_REPORT.replace(
+                    "- Remedy: undecided: none determined -- the guarded "
+                    "fact is a config literal, not a named symbol\n",
+                    f"- Remedy: undecided: {cause}\n", 1)
+                self.assertNotEqual(
+                    broken, REMEDY_REPORT, "the graft must land")
+                result, payload = self.check(
+                    broken, name=f"cause-{cause.replace(' ', '-')}.md")
+                self.assertEqual(result.returncode, 0, payload)
+
+
+class ReachabilityStatementTests(BoxMixin, unittest.TestCase):
+    """Condition 10: every substitution-probe finding, whatever its
+    verdict, states reachability rather than coverage. Scope is
+    `- Move: 6` alone, never also gated on `not adjudicable` -- a lock
+    that fires is a clean result, not a finding under `## Not
+    adjudicable`, and this binds both outcomes.
+    """
+
+    def check(self, text, name="report.md"):
+        box = getattr(self, "_box", None) or self.make_box("reachability")
+        self._box = box
+        path = self.write(box, name, resign(text))
+        result = run_cli("check-report", str(path))
+        return result, json.loads(result.stdout)
+
+    def test_a_move_six_finding_with_no_reachability_line_is_rejected(self):
+        broken = VALID_REPORT.replace(
+            "### F1. A set restated in more places than it is derived\n\n"
+            "- Move: 0\n", "### F1. A set restated in more places than it "
+            "is derived\n\n- Move: 6\n", 1)
+        self.assertNotEqual(broken, VALID_REPORT, "the graft must land")
+        result, payload = self.check(broken, name="no-reachability.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "reachability"]
+        self.assertTrue(
+            any("F1" in v["detail"] for v in violations),
+            f"a Move-6 finding with no '- Reachability:' line must be "
+            f"rejected and must name F1: {violations}")
+
+    def test_a_reachability_value_outside_the_vocabulary_is_rejected(self):
+        broken = REMEDY_REPORT.replace(
+            "- Reachability: silent: this proves the mutation stayed "
+            "silent, never that every consumer of the fact was "
+            "exercised\n",
+            "- Reachability: maybe\n", 1)
+        self.assertNotEqual(broken, REMEDY_REPORT, "the graft must land")
+        result, payload = self.check(broken, name="bad-reachability.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "reachability"]
+        self.assertTrue(
+            any("F2" in v["detail"] for v in violations),
+            f"a reachability value outside fires|silent must be rejected "
+            f"and must name F2: {violations}")
+
+    def test_reachability_present_outside_move_six_is_rejected(self):
+        broken = VALID_REPORT.replace(
+            "- Adjudication: doctrine wrong\n",
+            "- Adjudication: doctrine wrong\n"
+            "- Reachability: fires: x\n", 1)
+        self.assertNotEqual(broken, VALID_REPORT, "the graft must land")
+        result, payload = self.check(
+            broken, name="reachability-out-of-scope.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "reachability"]
+        self.assertTrue(
+            any("F1" in v["detail"] for v in violations),
+            f"a Reachability line outside Move 6 must be rejected and "
+            f"must name F1: {violations}")
+
+    def test_reachability_holds_regardless_of_adjudication(self):
+        """The scope is `- Move: 6` alone, not `Move 6 + not
+        adjudicable`: a Move-6 finding whose adjudication is `doctrine
+        wrong` still needs its own '- Reachability:' line, and carrying
+        one there is accepted rather than refused.
+        """
+        broken = VALID_REPORT.replace(
+            "### F1. A set restated in more places than it is derived\n\n"
+            "- Move: 0\n", "### F1. A set restated in more places than it "
+            "is derived\n\n- Move: 6\n", 1)
+        broken = broken.replace(
+            "- Adjudication: doctrine wrong\n",
+            "- Adjudication: doctrine wrong\n"
+            "- Reachability: fires: this proves the lock fires, never "
+            "that every consumer of the fact was exercised\n", 1)
+        self.assertNotEqual(broken, VALID_REPORT, "the graft must land")
+        result, payload = self.check(broken, name="move-six-fires.md")
+        self.assertEqual(result.returncode, 0, payload)
+
+
+class UndistinguishedCauseDoctrineAgreementTests(unittest.TestCase):
+    """Every `UNDISTINGUISHED_CAUSES` member appears verbatim in
+    `SKILL.md`'s `remedy` row -- the `stage_model_total` idiom, never a
+    second hand-written roster held beside the constant it describes.
+    """
+
+    def test_every_cause_appears_verbatim_in_the_remedy_row(self):
+        cli = audit_cli_module()
+        tables = markdown_table_rows(doctrine_text(), REPORT_HEADER)
+        self.assertEqual(len(tables), 1, "one report-shape table, exactly")
+        remedy_rows = [row for row in tables[0]
+                      if row[0].strip("`") == "remedy"]
+        self.assertEqual(len(remedy_rows), 1, "exactly one `remedy` row")
+        row_text = " ".join(remedy_rows[0])
+        for cause in cli.UNDISTINGUISHED_CAUSES:
+            with self.subTest(cause=cause):
+                self.assertIn(
+                    cause, row_text,
+                    f"{cause!r} does not appear verbatim in the `remedy` "
+                    "row")
+
+
+class ReachabilityReportShapeTests(unittest.TestCase):
+    """The `reachability` `REPORT_SHAPE` key and its `SKILL.md` row, bound
+    both directions. `ReportSchemaSelfDescriptionTests`'s own generic
+    sweep already covers any key once it is added on both sides; this is
+    the explicit, named lock for this one.
+    """
+
+    def test_reachability_is_a_report_shape_key(self):
+        cli = audit_cli_module()
+        self.assertEqual(
+            cli.REPORT_SHAPE["reachability"], "- Reachability:")
+
+    def test_reachability_has_a_documented_row(self):
+        tables = markdown_table_rows(doctrine_text(), REPORT_HEADER)
+        self.assertEqual(len(tables), 1, "one report-shape table, exactly")
+        items = {row[0].strip("`") for row in tables[0]}
+        self.assertIn("reachability", items)
+
+
+# ==========================================================================
+# Move 11 -- `exits`: none of the eleven earlier moves asks whether a
+# reported state lets its operator out. Per state: a human judgement is
+# `judgement`, reported and never a finding; no such declaration and no
+# published act is `unstated`, a finding; a published act is admitted
+# (never `shell=True`) and driven for real, inside a copy, and its own exit
+# code is never read -- reachability, not success.
+# ==========================================================================
+
+def exits_json(spec, subject, repo=FORGE, extra=()):
+    """Drive `exits` as a process and parse what it wrote to stdout."""
+    result = run_cli("exits", "--subject", str(subject), "--spec", str(spec),
+                     "--repo-root", str(repo), *extra)
+    try:
+        return result, json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise AssertionError(
+            f"exits exited {result.returncode} without JSON on stdout.\n"
+            f"stdout={result.stdout!r}\nstderr={result.stderr!r}")
+
+
+#: One state per fenced act, extracted the same way in every fixture below:
+#: a `## <NAME>` heading, a blank line, then a fenced `$ <act>` block. Real
+#: prose shape, not a contrived delimiter -- the same fence `references/
+#: usage.md`'s own worked invocations already use.
+def _one_act_state(name, extract_heading=None):
+    heading = extract_heading or name
+    return {
+        "name": name,
+        "site": {"root": "subject", "path": "DOC.md"},
+        "extract": rf"## {re.escape(heading)}\n\n```\n\$ (?P<act>.+)\n```",
+    }
+
+
+class ExitsBoxMixin(BoxMixin):
+    """Fixtures for `exits`: a subject holding a doctrine file naming
+    states, plus whatever real scripts its published acts point at.
+    """
+
+    def make_exits_subject(self, name, files):
+        subject = self.make_box(name)
+        for relative, content in files.items():
+            self.write(subject, relative, content)
+        return subject
+
+    def make_exits_recipe(self, subject, surface, states,
+                          interpreters=("python3",), env=("HOME", "PATH"),
+                          exclude=()):
+        spec = subject / "exits.json"
+        spec.write_text(json.dumps({
+            "surface": run_scoped(surface),
+            "exclude": list(exclude),
+            "interpreterAllowlist": list(interpreters),
+            "env": list(env),
+            "states": states,
+        }, indent=2), encoding="utf-8")
+        return spec
+
+    def exits_box(self, surface):
+        box = BOXES / f"_exits_{run_scoped(surface)}"
+        self.addCleanup(self._erase_exits_box, box)
+        return box
+
+    def _erase_exits_box(self, box):
+        if not box.exists():
+            return
+        for path in sorted(box.rglob("*"), reverse=True):
+            path.rmdir() if path.is_dir() else path.unlink()
+        box.rmdir()
+
+
+class ExitsPublishedAndRanTests(ExitsBoxMixin, unittest.TestCase):
+    """A published act's own exit code is never read -- reachability, not
+    success. C1.1/C1.2: at least one lock here drives the act for real,
+    beating the weaker guard that would pass an act merely "carrying a
+    resolve key" with a hole in it.
+    """
+
+    def test_a_refusing_act_still_reports_published_and_ran(self):
+        subject = self.make_exits_subject("published_refuses", {
+            "DOC.md": "## STATE_ONE\n\n```\n$ python3 refuse.py\n```\n",
+            "refuse.py": "import sys\nsys.exit(1)\n",
+        })
+        recipe = self.make_exits_recipe(
+            subject, "published_refuses", [_one_act_state("STATE_ONE")])
+        result, payload = exits_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            payload["exits"]["STATE_ONE"], "published-and-ran",
+            "a refusing act was still published and is reachable; the exit "
+            "code the act itself returns is never read")
+
+    def test_a_lock_executes_the_published_act_end_to_end(self):
+        """The weaker guard this beats: a lock asserting only that the
+        finding 'carries a resolve key' would pass an act with a hole in
+        it. This drives the act for real and reads its side effect off
+        disk, outside both the subject and the box, so `erase_box` cannot
+        make the proof disappear along with the copy.
+        """
+        subject = self.make_exits_subject("published_executes", {
+            "act.py": "import sys\nopen(sys.argv[1], 'w').write('ran')\n",
+        })
+        with tempfile.TemporaryDirectory(prefix="skill_audit_exits_") as tmp:
+            marker = Path(tmp) / "ran.txt"
+            self.write(subject, "DOC.md",
+                      f"## STATE_EXEC\n\n```\n$ python3 act.py {marker}\n```\n")
+            recipe = self.make_exits_recipe(
+                subject, "published_executes", [_one_act_state("STATE_EXEC")])
+            self.assertFalse(marker.exists(), "the marker must not pre-exist")
+            result, payload = exits_json(recipe, subject)
+            self.assertEqual(result.returncode, 0, payload)
+            self.assertEqual(payload["exits"]["STATE_EXEC"], "published-and-ran")
+            self.assertTrue(
+                marker.exists(),
+                "the act was never actually driven; a lock only checking "
+                "the payload's shape would not have caught this")
+            self.assertEqual(marker.read_text(encoding="utf-8"), "ran")
+
+
+class ExitsAdmissionGateTests(ExitsBoxMixin, unittest.TestCase):
+    """C1.3/C1.4: the admission gate runs before any process starts."""
+
+    def test_a_shell_metacharacter_act_is_published_but_unparseable(self):
+        subject = self.make_exits_subject("admission_metachar", {
+            "DOC.md": "## STATE_METACHAR\n\n```\n$ python3 fix.py; rm -rf /\n```\n",
+        })
+        recipe = self.make_exits_recipe(
+            subject, "admission_metachar", [_one_act_state("STATE_METACHAR")])
+        result, payload = exits_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            payload["exits"]["STATE_METACHAR"], "published-but-unparseable",
+            "a shell metacharacter must never reach shell=False's argv as a "
+            "literal token pretending to be a separate command")
+
+    def test_an_argv0_outside_every_admitted_root_is_published_but_unparseable(self):
+        subject = self.make_exits_subject("admission_argv0", {
+            "DOC.md": "## STATE_OUTSIDE\n\n```\n$ curl https://example.invalid/x\n```\n",
+        })
+        recipe = self.make_exits_recipe(
+            subject, "admission_argv0", [_one_act_state("STATE_OUTSIDE")],
+            interpreters=("python3",))
+        result, payload = exits_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            payload["exits"]["STATE_OUTSIDE"], "published-but-unparseable",
+            "curl resolves under neither --subject nor --repo-root and is "
+            "outside the declared interpreter allowlist; refused before "
+            "any process starts")
+
+
+class ExitsExecutionOutcomeTests(ExitsBoxMixin, unittest.TestCase):
+    """C1.5: a missing binary and a hang are distinct, both post-admission,
+    outcomes."""
+
+    def test_a_missing_binary_is_published_but_not_executable(self):
+        subject = self.make_exits_subject("missing_binary", {
+            "DOC.md": ("## STATE_MISSING\n\n```\n"
+                      "$ definitely-not-a-real-interpreter-xyz fix.py\n```\n"),
+        })
+        recipe = self.make_exits_recipe(
+            subject, "missing_binary", [_one_act_state("STATE_MISSING")],
+            interpreters=("definitely-not-a-real-interpreter-xyz",))
+        result, payload = exits_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            payload["exits"]["STATE_MISSING"], "published-but-not-executable")
+
+    def test_a_hanging_act_is_published_but_timed_out(self):
+        subject = self.make_exits_subject("hanging_act", {
+            "hang.py": "import time\ntime.sleep(30)\n",
+            "DOC.md": "## STATE_HANG\n\n```\n$ python3 hang.py\n```\n",
+        })
+        recipe = self.make_exits_recipe(
+            subject, "hanging_act", [_one_act_state("STATE_HANG")])
+        result, payload = exits_json(
+            recipe, subject, extra=("--timeout", "1"))
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            payload["exits"]["STATE_HANG"], "published-but-timed-out")
+
+
+class ExitsJudgementTests(ExitsBoxMixin, unittest.TestCase):
+    """C1.6: a state declared a human judgement is reported, never a
+    finding."""
+
+    def test_a_declared_human_judgement_is_reported_and_is_not_a_finding(self):
+        subject = self.make_exits_subject("judgement_state", {})
+        recipe = self.make_exits_recipe(
+            subject, "judgement_state",
+            [{"name": "STATE_JUDGEMENT", "judgement": True}])
+        result, payload = exits_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["exits"]["STATE_JUDGEMENT"], "judgement")
+        self.assertNotIn("STATE_JUDGEMENT", payload["searched"])
+
+
+class ExitsUnstatedTests(ExitsBoxMixin, unittest.TestCase):
+    """C1.7: no published act and nothing declared names the driveable
+    range that was searched."""
+
+    def test_no_published_act_is_unstated_with_the_searched_range(self):
+        subject = self.make_exits_subject("unstated_state", {
+            "DOC.md": "## STATE_SILENT\n\nThis state exists. Resolve it by hand.\n",
+        })
+        recipe = self.make_exits_recipe(
+            subject, "unstated_state", [_one_act_state("STATE_SILENT")])
+        result, payload = exits_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["exits"]["STATE_SILENT"], "unstated")
+        self.assertRegex(
+            payload["searched"]["STATE_SILENT"], r".+:\d+-\d+$",
+            "the result must name the range that was searched")
+
+
+class ExitsEscapeGateTests(ExitsBoxMixin, unittest.TestCase):
+    """C1.8: a published act reaching the real subject halts the sweep as
+    an inability to look, and the box is still erased."""
+
+    def test_a_real_subject_digest_mismatch_halts_the_sweep_and_erases_the_box(self):
+        subject = self.make_exits_subject("escape_state", {})
+        real_target = subject / "canary.txt"
+        real_target.write_text("untouched\n", encoding="utf-8")
+        self.write(subject, "escape.py",
+                  f"open({str(real_target)!r}, 'w').write('escaped')\n")
+        self.write(subject, "DOC.md",
+                  "## STATE_ESCAPE\n\n```\n$ python3 escape.py\n```\n")
+        recipe = self.make_exits_recipe(
+            subject, "escape_state", [_one_act_state("STATE_ESCAPE")])
+        box = self.exits_box("escape_state")
+        result, payload = exits_json(recipe, subject)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("exit-escaped-the-box", payload["error"])
+        self.assertFalse(
+            box.exists(), "erase_box must still run in `finally`")
+
+
+class ExitsOutcomeCardinalityTests(unittest.TestCase):
+    """The five-value closed roster, held by count -- the `IDENTITY_MEASURED`
+    idiom -- so a sixth value never lands unnoticed."""
+
+    def test_exactly_five_outcomes(self):
+        cli = audit_cli_module()
+        self.assertEqual(len(cli.EXIT_OUTCOMES), 5)
+        self.assertEqual(
+            set(cli.EXIT_OUTCOMES),
+            {"published-and-ran", "published-but-not-executable",
+             "published-but-unparseable", "published-but-timed-out",
+             "unstated"})
+
+
+class ExitsBoxLifecycleTests(ExitsBoxMixin, unittest.TestCase):
+    """A `exits` box is never silently adopted, matching every other
+    box-owning subcommand's own discipline."""
+
+    def test_an_occupied_box_is_refused(self):
+        subject = self.make_exits_subject("occupied", {})
+        recipe = self.make_exits_recipe(
+            subject, "occupied", [{"name": "S", "judgement": True}])
+        box = self.exits_box("occupied")
+        box.mkdir(parents=True, exist_ok=True)
+        (box / "leftover.txt").write_text("stale\n", encoding="utf-8")
+        result, payload = exits_json(recipe, subject)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn(str(box), payload["error"])
+
+
+# ==========================================================================
+# Move 12 -- `enumeration-reach`: `roster`'s Move 0 enumerates a closed
+# surface from both sides, correctly. This asks a narrower question of one
+# side alone -- for a check the subject declares complete over a set, is its
+# own iteration source *derived* from the subject, or *bounded*: a literal
+# collection, an unfiltered namespace walk, or that same walk filtered
+# before the assertion runs. `probe_code_side` parses no source of the
+# subject on purpose; this subcommand does the opposite on purpose, on a
+# check's own source, and so cannot live inside `roster` without forking a
+# second code-side derivation there.
+# ==========================================================================
+
+def enumeration_reach_json(spec, subject, repo=FORGE, extra=()):
+    """Drive `enumeration-reach` as a process and parse what it wrote to
+    stdout."""
+    result = run_cli("enumeration-reach", "--subject", str(subject),
+                     "--spec", str(spec), "--repo-root", str(repo), *extra)
+    try:
+        return result, json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise AssertionError(
+            f"enumeration-reach exited {result.returncode} without JSON on "
+            f"stdout.\nstdout={result.stdout!r}\nstderr={result.stderr!r}")
+
+
+class EnumerationReachBoxMixin(BoxMixin):
+    """Fixtures for `enumeration-reach`: a subject holding a real Python
+    source file, each function inside it one candidate check.
+    """
+
+    def make_enumeration_reach_subject(self, name, files):
+        subject = self.make_box(name)
+        for relative, content in files.items():
+            self.write(subject, relative, content)
+        return subject
+
+    def make_enumeration_reach_recipe(self, subject, surface, checks):
+        spec = subject / "enumeration_reach.json"
+        spec.write_text(json.dumps({
+            "surface": run_scoped(surface),
+            "checks": checks,
+        }, indent=2), encoding="utf-8")
+        return spec
+
+
+#: A real Python source file, each function below one candidate check.
+#: `universal_claim_bounded` states a claim over "every accepted operation"
+#: and iterates a hand-written tuple -- the exact shape the source session's
+#: own checks that lagged reality had. `derived_from_signature` iterates a
+#: real derivation call, never a literal or a namespace walk.
+#: `every_attribute` and `every_writer` both walk `dir(module)`, the second
+#: one filtered by an `if ... continue` before its own assertion runs --
+#: the "skips any function without a particular parameter" shape, generalised
+#: to a name prefix so the fixture needs no second module to introspect.
+_ENUMERATION_REACH_CHECKS_SOURCE = '''\
+def universal_claim_bounded():
+    """Every accepted operation is one of these two."""
+    accepted = ("ALPHA", "BETA")
+    for member in accepted:
+        assert member
+
+
+def derived_from_signature():
+    """Derived from the subject's own declared signature, not a list."""
+    names = subcommand_surface_stub()
+    for name in names:
+        assert name
+
+
+def every_attribute(module):
+    """Every attribute the module exposes."""
+    for name in dir(module):
+        assert name
+
+
+def every_writer(module):
+    """Every writer function the module exposes."""
+    for name in dir(module):
+        if not name.startswith("write_"):
+            continue
+        assert name
+
+
+def subcommand_surface_stub():
+    return ["a", "b"]
+'''
+
+
+class EnumerationReachUniversalClaimTests(EnumerationReachBoxMixin,
+                                          unittest.TestCase):
+    """C2.1: a check whose stated claim is universal and whose enumeration
+    is a literal collection is reported with both facts side by side."""
+
+    def test_a_literal_collection_is_reported_bounded_with_its_own_claim(self):
+        subject = self.make_enumeration_reach_subject(
+            "universal_bounded", {"checks.py": _ENUMERATION_REACH_CHECKS_SOURCE})
+        recipe = self.make_enumeration_reach_recipe(
+            subject, "universal_bounded",
+            [{"name": "universal_claim_bounded",
+              "site": {"root": "subject", "path": "checks.py"}}])
+        result, payload = enumeration_reach_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        entry = payload["checks"]["universal_claim_bounded"]
+        self.assertEqual(entry["verdict"], "literal-collection")
+        self.assertIn("Every accepted operation", entry["claim"])
+        self.assertIn("universal_claim_bounded", payload["bounded"])
+
+
+class EnumerationReachDerivedTests(EnumerationReachBoxMixin, unittest.TestCase):
+    """C2.2: a check whose enumeration source is computed from the subject
+    is reported derived, and is not a finding."""
+
+    def test_a_derived_enumeration_is_reported_derived_not_a_finding(self):
+        subject = self.make_enumeration_reach_subject(
+            "derived_check", {"checks.py": _ENUMERATION_REACH_CHECKS_SOURCE})
+        recipe = self.make_enumeration_reach_recipe(
+            subject, "derived_check",
+            [{"name": "derived_from_signature",
+              "site": {"root": "subject", "path": "checks.py"}}])
+        result, payload = enumeration_reach_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            payload["checks"]["derived_from_signature"]["verdict"], "derived")
+        self.assertNotIn("derived_from_signature", payload["bounded"])
+
+
+class EnumerationReachNamespaceTests(EnumerationReachBoxMixin, unittest.TestCase):
+    """C2.3: `single-namespace` and `filtered-subset` each classified
+    correctly from a fixture AST -- the four-value closed roster."""
+
+    def test_an_unfiltered_namespace_walk_is_single_namespace(self):
+        subject = self.make_enumeration_reach_subject(
+            "namespace_walk", {"checks.py": _ENUMERATION_REACH_CHECKS_SOURCE})
+        recipe = self.make_enumeration_reach_recipe(
+            subject, "namespace_walk",
+            [{"name": "every_attribute",
+              "site": {"root": "subject", "path": "checks.py"}}])
+        result, payload = enumeration_reach_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            payload["checks"]["every_attribute"]["verdict"], "single-namespace")
+
+    def test_a_filtered_namespace_walk_is_filtered_subset(self):
+        subject = self.make_enumeration_reach_subject(
+            "namespace_filtered", {"checks.py": _ENUMERATION_REACH_CHECKS_SOURCE})
+        recipe = self.make_enumeration_reach_recipe(
+            subject, "namespace_filtered",
+            [{"name": "every_writer",
+              "site": {"root": "subject", "path": "checks.py"}}])
+        result, payload = enumeration_reach_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            payload["checks"]["every_writer"]["verdict"], "filtered-subset")
+
+
+class EnumerationReachLanguageBoundaryTests(EnumerationReachBoxMixin,
+                                            unittest.TestCase):
+    """C2.4: a non-Python subject's checks report
+    `unreachable-for-this-language`, never guessed."""
+
+    def test_a_non_python_site_is_unreachable_for_this_language(self):
+        subject = self.make_enumeration_reach_subject(
+            "non_python", {"checks.js":
+                          "function everyMember() { return ['A', 'B']; }\n"})
+        recipe = self.make_enumeration_reach_recipe(
+            subject, "non_python",
+            [{"name": "everyMember",
+              "site": {"root": "subject", "path": "checks.js"}}])
+        result, payload = enumeration_reach_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        entry = payload["checks"]["everyMember"]
+        self.assertEqual(entry["verdict"], "unreachable-for-this-language")
+        self.assertNotIn("everyMember", payload["bounded"])
+
+
+class EnumerationReachRosterIsolationTests(unittest.TestCase):
+    """C2.5: this subcommand does not fork a second code-side derivation
+    inside `run_roster` -- R1 stays out of `roster` entirely, per the
+    design's own rejection of that placement.
+    """
+
+    def test_run_roster_references_none_of_the_enumeration_reach_mechanism(self):
+        tree = ast.parse(CLI.read_text(encoding="utf-8"))
+        run_roster = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "run_roster")
+        referenced = {node.id for node in ast.walk(run_roster)
+                     if isinstance(node, ast.Name)}
+        referenced |= {node.attr for node in ast.walk(run_roster)
+                      if isinstance(node, ast.Attribute)}
+        forbidden = {"enumeration_source_kind", "find_check_function",
+                    "run_enumeration_reach", "ENUMERATION_SOURCES",
+                    "ENUMERATION_UNREACHABLE", "_resolve_local_literal",
+                    "_classify_iterable"}
+        self.assertEqual(
+            referenced & forbidden, set(),
+            "run_roster must not fork a second code-side derivation; R1 "
+            "lives entirely inside its own subcommand")
+
+
+class EnumerationReachMissingChecksBlockTests(EnumerationReachBoxMixin,
+                                              unittest.TestCase):
+    """No `checks` block is refused, never reported as zero -- the
+    `mutations`/`states` precedent."""
+
+    def test_no_checks_block_exits_two(self):
+        subject = self.make_enumeration_reach_subject("no_checks", {})
+        spec = subject / "recipe.json"
+        spec.write_text(json.dumps({"surface": run_scoped("no_checks")}),
+                        encoding="utf-8")
+        result, payload = enumeration_reach_json(spec, subject)
+        self.assertEqual(result.returncode, 2, payload)
+
+
+class EnumerationReachCardinalityTests(unittest.TestCase):
+    """The four-value closed roster, held by count."""
+
+    def test_exactly_four_sources(self):
+        cli = audit_cli_module()
+        self.assertEqual(len(cli.ENUMERATION_SOURCES), 4)
+        self.assertEqual(
+            set(cli.ENUMERATION_SOURCES),
+            {"derived", "literal-collection", "single-namespace",
+             "filtered-subset"})

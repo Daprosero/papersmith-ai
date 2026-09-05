@@ -434,6 +434,22 @@ defaults to producing.
 
 ### Requirement: Artefacts on disk that the flow's declared roster never names
 
+> **Home: commit B3, beside R5.** An earlier narrowing note in this file
+> promised this requirement a place in `audit-scope-hardening` and that
+> capability's seven requirements never contained it, so it sat with no
+> commit, no forecast and no design decision until the tasks phase counted the
+> headings and found it. Placed here rather than duplicated as an eighth
+> requirement: duplication under two capabilities is the exact defect this
+> spec already had once and marked superseded.
+>
+> It belongs with R5 because they are two halves of one question over one
+> enumeration of the subject tree — *which artefacts exist that nobody names*,
+> and *which named artefacts show nothing*. The incident that produced both had
+> both at once: three artefacts no declaration named, each with zero executed
+> units. Sharing R5's enumeration is what keeps the pair cheap; B3's forecast
+> moves from 500–700 to roughly 650–950, still inside the budget.
+
+
 The defect this skill exists for, aimed at products rather than
 subcommands: a flow validates the artefacts its own declarations name, so
 an artefact nobody named is never validated and the flow still reports

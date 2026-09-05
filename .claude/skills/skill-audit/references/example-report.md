@@ -6,7 +6,7 @@ accept in the reference beside the invocation that validates it.
 ## Report integrity
 
 - Schema: skill-audit-report/1
-- Self-digest: sha256:b69203f25b67528be95e4b87eb9a5bd822e50a38c815bd49d0b252cbe4785973
+- Self-digest: sha256:0e1ab1cb56bd6d50ad1fc0c046992ed0c1fc8c7b94a1efeffafe475a12aa5fee
 
 ## Frozen
 
@@ -22,11 +22,13 @@ accept in the reference beside the invocation that validates it.
 - Move: 3: skipped: no external boundary crossed in this pass
 - Move: 4: skipped: no installed dependency read in this pass
 - Move: 5: skipped: no live probe attempted, no consent sought
-- Move: 6: skipped: no lock inverted in this pass
+- Move: 6: ran
 - Move: 7: skipped: single-harness count only, not compared
 - Move: 8: skipped: no ordered user-mode flow driven in this pass
 - Move: 9: skipped: no supplied reading pair compared in this pass
 - Move: 10: skipped: no computed-value sweep run in this pass
+- Move: 11: skipped: no reported state audited in this pass
+- Move: 12: skipped: no check's enumeration reach audited in this pass
 - Move: textual: ran
 
 ## Stage outcomes
@@ -54,6 +56,10 @@ accept in the reference beside the invocation that validates it.
 
 ## Not adjudicable
 
+- Delete: (none)
+- Update: (none)
+- Undecided: F3
+
 ### F2. A declared value nothing anywhere reads
 
 - Move: 0
@@ -65,6 +71,25 @@ accept in the reference beside the invocation that validates it.
 - Doctrine side: `engine/host.mjs:319`
 - Detail: enumeration found no consumer, so the question is not which half is
   wrong. Build-or-delete, and the choice costs something either way.
+
+### F3. A guarded fact's mutation leaves its declared run green
+
+- Move: 6
+- Evidence: CONFIRMED by execution
+- Found by: not-compared
+- Adjudication: not adjudicable
+- Digest: sha256:f9f163e09a5078c732f596f31c660b4229a97eec1e4fa5de3b6b09eef93ad6e3
+- Remedy: undecided: degenerate fixture -- the fixture's own correct answer
+  already equals the mutant's output
+- Reachability: silent: this proves the guarded fact's lock did not fire
+  against this one mutation; it does not prove every consumer of the fact
+  was exercised
+- Code side: `engine/host.mjs:410`
+- Doctrine side: `tests/host.spec.mjs:88`
+- Detail: substituting the declared literal at `engine/host.mjs:410` and
+  re-running `tests/host.spec.mjs:88` left the suite green; condition 2
+  confirms the byte changed, but nothing here proves the fixture's own
+  input still discriminates the two values.
 
 ## Undecidable
 
@@ -101,3 +126,4 @@ which would move this surface out of the complement case entirely.
 | --- | --- | --- |
 | One table, one derivation, restatements deleted | F1 | 40 |
 | Build or delete the unread declared value | F2 | 0 |
+| Decide the guarded fact's own undistinguished cause | F3 | 0 |

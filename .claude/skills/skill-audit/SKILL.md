@@ -76,11 +76,13 @@ move, in order; the numbering is the order.
 | 3. Fake every external boundary and assert on what crossed it, never dial it | `doctrine` | `tests/test_skill_audit.py` |
 | 4. Read an installed dependency as text; importing a service client authenticates it | `doctrine` | `tests/test_skill_audit.py` |
 | 5. Probe live only with consent, read-only, and scope the result to the environment | `doctrine` | `tests/test_skill_audit.py` |
-| 6. Invert every lock the audit leans on, and watch it fire | `doctrine` | `tests/test_skill_audit.py` |
+| 6. Invert every lock the audit leans on, and watch it fire | `inversion` | `tests/test_skill_audit.py` |
 | 7. Compare per-harness test counts before and after; a count that did not rise is a finding | `doctrine` | `tests/test_skill_audit.py` |
 | 8. Drive the whole documented flow in order, against one real shared box, and name the first step that breaks its own declared expectation | `walkthrough` | `tests/test_skill_audit.py` |
 | 9. Compare two supplied readings of one prose surface by mechanical diff, and never let the comparison close | `reading-diff` | `tests/test_skill_audit.py` |
 | 10. Vary a declared input a result claims to depend on, and ask whether the declared output moves | `sensitivity` | `tests/test_skill_audit.py` |
+| 11. Per reported state, whether a mechanical exit exists and whether it is published, and drive it for real if so | `exits` | `tests/test_skill_audit.py` |
+| 12. Per declared check, whether its own claim of completeness is backed by a derivation or by something bounded wearing a derivation's clothes | `enumeration-reach` | `tests/test_skill_audit.py` |
 | Read every artifact's opening paragraphs against its own frontmatter and its own shipped files | `doctrine` | no lock — irreducibly textual, and carried anyway |
 
 The last row has no code and no lock, and says so. Prose contradicting prose
@@ -100,6 +102,35 @@ two independent derivations, before forming any opinion about either. Treat
 every enumeration produced by reading as a **candidate** until something
 executes. Move 0 also compares any unhedged numeral in the subject's prose
 against the enumeration that immediately follows it.
+
+A guarded vocabulary is a closed set too, so its **reach** is Move 0's
+subject as well, via `roster`'s optional `guardReach` recipe block. For every
+member the block's own driven `producer` derives, `identifier_variants`
+derives that member's plural, underscore-joined, and case-joined forms --
+never a claim about correct English pluralisation, only a probe for shapes a
+word-boundary matcher can measurably fail to reach, since `_` is itself a
+word character in that pattern language. The guard is then driven for real
+with each form, never matched against a recipe-declared pattern compiled
+with `re`, which would be a hand-copy of the subject's own source living
+beside it, free to drift. A control runs first: the bare guarded member
+itself MUST be reached, or the finding is `kind=guard-never-fires` once, not
+one `kind=guard-unreachable-variant` per identifier form. A subject exposing
+no driveable guard for a declared `guardReach` block is `kind=no-driveable-
+guard`, the `no-closed-roster` idiom reused verbatim -- reported, never a
+silently empty roster.
+
+The same drive answers a second, narrower question: whether the guard's
+verdict is measuring identity or content. Substitute the guarded member with
+a neutral token nothing could collide with and drive the guard again; if it
+now passes, the guard's verdict moved when the identifier moved and the
+content did not, and the result is `identity-measured`. If it still refuses,
+the probe could not determine that, and the result is `not-determined` --
+`IDENTITY_MEASURED` is a closed two-value roster with no third value ever
+meaning "the content is specific," because that would be a reading, not a
+measurement. Every such payload also carries the `READING_DIFF_LIMIT`
+sentence, regardless of verdict: a rename-insensitive guard proves its own
+matcher tests identity, and proves nothing whatever about whether the
+content behind it is still specific.
 
 ### Move 1, in detail
 
@@ -131,22 +162,43 @@ it injects a nondeterministic writer into the directory the rest of the suite
 is measuring, and the failures land on whichever unrelated test is running
 when it writes.
 
+### The constructed child environment
+
+`constructed_child_env` is the one place a driver-kind child environment is
+built, shared by `run_box_step`'s `driver` step-kind and
+`run_sensitivity_drive`'s producer drive. `PYTHONDONTWRITEBYTECODE=1` is
+injected into every such environment **unconditionally** -- never inherited
+from the parent process, and never satisfiable by declaring it in a
+recipe's `env` list. The name stays out of `DRIVER_ENV_ALLOWLIST` **on
+purpose**: a recipe naming it explicitly is refused `Unprobeable`,
+deliberately, not an oversight. Widening the allowlist to admit it would
+turn the purge into a value a recipe could opt out of, and a same-size
+mutation could then execute a cached `.pyc` again -- the exact trap this
+paragraph exists to keep shut.
+
 ### Move 6, in detail
 
-Invert every lock the audit leans on, and watch it fire. The mutation sweep is
-bounded, not exhaustive: a **guarded fact** is the `(file, line, literal)`
-triple a named test asserts on, derived from the subject's own declared lock
-roster where one exists, otherwise from the probe recipe's declared
-`mutations` block -- never listed by hand. Facts the sweep did not reach are
-named in `## Unchecked`, never silently dropped.
+Invert every lock the audit leans on, and watch it fire, through the
+`inversion` subcommand. The mutation sweep is bounded, not exhaustive: a
+**guarded fact** is the `(file, line, literal)` triple a named test asserts
+on, sourced **only** from the invoking probe recipe's own declared
+`mutations` block -- never listed by hand, and never derived from the
+subject's own lock roster in v1. Facts the sweep did not reach are named in
+`## Unchecked`, never silently dropped.
+
+The observing run each guarded fact declares is driven once, unmutated,
+before the first byte is touched: a subject whose observing run is already
+red is refused `Unprobeable` `kind=baseline-not-green`, with no file mutated
+and no finding emitted -- against an already-red suite, every guarded fact
+would report `fires`, having proven nothing.
 
 One subprocess test-run per guarded fact, serial, each restored before the
-next. **Hard cap: eight guarded facts per run**, plus the per-step timeout
-`run_box_step` already applies; overflow lands in `## Unchecked`. A
-wall-clock budget was considered and rejected: it would make a report's
-contents depend on the machine that produced it, so two runs of the same
-audit on different machines could disagree about what was checked -- the
-same class of defect as "green by accident of the machine." A count cap
+next. **Hard cap: eight guarded facts per run**, plus this subcommand's own
+`--timeout`, applied to each observing run; overflow lands in `##
+Unchecked`. A wall-clock budget was considered and rejected: it would make a
+report's contents depend on the machine that produced it, so two runs of the
+same audit on different machines could disagree about what was checked --
+the same class of defect as "green by accident of the machine." A count cap
 is deterministic and travels with the report.
 
 Restore discipline, inherited from the table below: `sha256` before, write
@@ -157,23 +209,41 @@ sweep must not keep mutating. Invert the effect the guard asserts, not the
 comparison around it: flipping `==` to `!=` only changes which subset is
 excluded and yields a different wrong answer, never the absence of the fact.
 
-A guarded fact whose mutation leaves the suite green is an obsolete guard:
-adjudicated `not adjudicable`, sitting under `## Not adjudicable` with the
-rest of that verdict's findings. Its own remedy is a three-way verdict,
-never build-or-delete: `- Remedy: delete` when the guarded fact no longer
-exists; `- Remedy: update` when the fact exists but moved, or the test
-measures it wrongly; `- Remedy: undecided: <reason>` when the split itself
-cannot be made. The distinguishing procedure: when the guarded fact names a
-Python symbol, existence-checking by AST -- the approach `check_citations.py`'s
-`symbols_in`/`repo_symbols` already takes, scoped to `--subject`'s own tree,
-never imported or vendored -- decides delete-versus-update mechanically. When
-the guarded fact is not a named symbol (a config literal, an error string, a
-count), the split is a semantic judgment this tool cannot make, and
-`undecided` with a stated reason is the honest report. **The auditor still
-never deletes a test.** It reports, in the three rosters at the top of
-`## Not adjudicable`, and the finding still gets its own `## Repair units`
-row with a changed-line forecast, so the next change picks it up as a work
-item.
+A guarded fact whose mutation leaves the suite green is **not** simply an
+obsolete guard: condition 2 proves the bytes moved, and nothing proves
+behaviour moved along with them. The cause may equally be an **equivalent
+mutant** (the bytes changed, the behaviour did not) or a **degenerate
+fixture** (the fixture's own correct answer already equals the mutant's
+output) -- both measured defects from the source session, not hypothetical.
+Every such finding is adjudicated `not adjudicable`, sitting under `##
+Not adjudicable` with the rest of that verdict's findings, and its own
+remedy is a three-way verdict, never build-or-delete: `- Remedy: delete`
+when the guarded fact no longer exists; `- Remedy: update` when the fact
+exists but moved, or the test measures it wrongly; `- Remedy: undecided:
+<reason>` when the split itself cannot be made, and that reason MUST name
+one of `obsolete guard`, `equivalent mutant`, or `degenerate fixture`, or
+state that none could be determined -- defaulting to `obsolete guard`
+when the cause is undistinguished is the exact overclaim this paragraph
+now refuses. **v1 ships no delete-versus-update classifier.** A prior
+draft of this doctrine named `check_citations.py`'s `symbols_in`/
+`repo_symbols` as the precedent for deciding that split by AST existence-
+checking; that tool **does not exist in this repository**, so v1 cannot
+reuse it and does not imitate it either. Every v1 not-adjudicable finding
+therefore carries `- Remedy: undecided: <reason>` only -- `delete` and
+`update` remain in the validator's own accepted vocabulary, for a
+human-authored report, but v1's own emitter never produces either until a
+later change ships that classifier. **The auditor still never deletes a
+test.** It reports, in the three rosters at the top of `## Not adjudicable`,
+and the finding still gets its own `## Repair units` row with a
+changed-line forecast, so the next change picks it up as a work item.
+
+Every Move-6 finding, whatever its verdict, also carries `- Reachability:
+fires: <what this does not prove>` or `- Reachability: silent: <what this
+does not prove>`. A red mutation proves the guarded fact's lock **fires**;
+it never proves every consumer of that fact was exercised, which needs
+Move 0's own enumeration over every field a producer emits, not a single
+substitution. Stating reachability rather than coverage is what keeps a
+passing inversion sweep from being read as a stronger claim than it is.
 
 ### Move 8, in detail
 
@@ -186,6 +256,23 @@ contradicts what it declared is the stall, named by its index; every gate at
 or after that index is `unreached`, and the report carries it under
 `## Unchecked`, never under clean. A step declaring no expectation at all is
 refused before it runs: a gate that asserts nothing is not a gate.
+
+A step that reports success is not a step that produced. `walkthrough` takes
+a digest of the shared **box** -- never the subject -- before and after each
+driven step, and grades what actually changed against that one step's own
+declarations: a step not declared `readOnly` that leaves the box
+byte-identical is reported as having produced nothing, whatever it exited; a
+step declaring `roots` is measured against them, and a change wholly or
+partly outside its declared `roots` is reported as writing into a tree it
+does not own; a step declared `readOnly` is exempt outright. The digest
+covers the box, not the subject, because every step already runs with its
+`cwd` inside the box -- digesting the subject would fire on every step of
+every correct flow. Separately, and independently of any one step's own
+grading, the subject tree is digested once before the whole flow and once
+after: `walkthrough` never writes into the subject at all, so any change
+there halts the sweep `Unprobeable kind=step-escaped-the-box` -- an
+inability to look, never a finding, the same reach `structure`'s own
+from-zero build already had and `walkthrough` did not.
 
 ### Move 9, in detail
 
@@ -238,6 +325,82 @@ that produced it. Restore discipline is inherited from Move 6 verbatim:
 again, assert equality -- never `git checkout --`, which has no target
 here at all, since the copy is not tracked by git.
 
+### Move 11, in detail
+
+The ten earlier moves all ask whether the subject is correct. None asks
+whether the subject lets its operator out. Measured on a sibling skill: of
+51 reported keys naming a state a human must act on, eight had a mechanical
+exit and none published it -- getting out of one required reading the
+skill's own documentation, finding a payload's shape by grepping its test
+suite, and rebuilding an input by hand.
+
+Per state a recipe declares: a state the recipe or subject marks a human
+judgement is `judgement`, reported and never a finding -- publishing a
+command for a judgement would be worse than the silence. A state with no
+such declaration is searched, through the recipe's own declared `site` and
+`extract`, for a published act; none found is `unstated`, a finding,
+reported with the driveable range that was searched. The audit does not
+guess at an unpublished exit's identity: locating one would mean searching
+the subject's surface for an act that would clear a named state, and any
+name-similarity heuristic is a guess this skill refuses everywhere else.
+
+A found act passes an admission gate before any process starts: split into
+a list of strings, refused if that split is empty; refused if it carries a
+shell metacharacter (`;`, `|`, `&`, `$`, `>`, `<`, a backtick, or a
+newline), because this tool never sets `shell=True` and passing one through
+literally would misreport a shell command as broken; and its `argv[0]`
+resolved under `--subject`, under `--repo-root`, or named in the recipe's
+own declared interpreter allowlist -- the `DRIVER_ENV_ALLOWLIST` precedent,
+applied to an operator-authored act. Anything else is
+`published-but-unparseable`.
+
+An admitted act then runs for real, inside `materialize_subject_copy`'s own
+copy so an exit that repairs repairs only that copy, through
+`constructed_child_env` for its environment and this subcommand's own
+`--timeout`. **`published-and-ran` deliberately does not read the act's own
+exit code** -- the requirement is that the act can be reached, not that it
+succeeds; an act that runs and refuses has been published and can be run,
+and judging whether its refusal was correct is a different question this
+probe does not ask. A missing binary is `published-but-not-executable`; a
+hang is `published-but-timed-out`.
+
+The real subject is digested before and after the whole sweep, exactly like
+every other box-owning move: a change reaching it is
+`Unprobeable kind=exit-escaped-the-box`, the sweep halts, and `erase_box`
+still runs in a `finally`.
+
+### Move 12, in detail
+
+Move 0 enumerates a closed surface from both sides and is correct to do so.
+This asks a narrower question of one side alone: for a check the subject
+declares complete over a set, is its own iteration source *derived* from
+the subject, or *bounded* -- a literal collection, a single module's
+namespace, or a subset filtered before the assertion runs. Measured, four
+times in one session: an enumerator of refusal codes walking one
+function-name prefix inside one file, invisible to 42 codes raised
+elsewhere; a check documented as "enumerated from the signature" that
+skipped any function without a particular parameter; a helper collecting
+"the notebooks the steps run" by matching any string literal with that
+suffix, so a mutation replacing the call while leaving the literal survived
+it; and a check hand-listing four names that lagged reality by two.
+
+`probe_code_side`'s whole argument is that no source of the subject is
+parsed, so the subject may be written in any language. Move 12 does the
+opposite on purpose, on a **check's own source**, never the subject's, and
+so cannot live inside `roster` without forking a second code-side
+derivation there -- `ast` is the one new stdlib import this move admits, and
+`enumeration-reach` is its own subcommand for exactly that reason. A
+check's own name and docstring are its stated claim, read and reported
+verbatim; the tool never adjudicates whether that claim is universal, only
+what the check's own iteration source actually is. A check whose site does
+not end `.py`, or whose source does not parse as Python, is
+`unreachable-for-this-language`, never guessed at.
+
+**A check that says it derives and enumerates by hand is worse than no
+check**, because nobody looks at it again -- the whole finding, and the
+reason a derived enumeration is reported plainly, never escalated: it is
+not a finding, it is the check working as documented.
+
 ## The stages
 
 A differential audit against a second subject runs in six stages, cheapest
@@ -276,6 +439,47 @@ One cross-section rule ties `## Undecidable` back to `## Move outcomes`: an
 entry claiming `- Rung: probe` must name a move whose own row there reads
 `ran`. Declaring a probe was the answer and then skipping the move it names
 is refused, structurally.
+
+### `### Demanded, not scaffolded`: an operator's declaration, never a proof
+
+Stage 2 drives the subject from ignorance and measures that the drive ran.
+It does not measure whether everything the subject **reads** from its own
+target during that drive is **demanded** when the target is built from
+nothing -- a from-zero scaffold silently missing a declaration the subject
+reads is invisible to every other move. `## User drive`'s
+`### Demanded, not scaffolded` subsection states this by hand: per
+declaration the subject reads from its target, the declaration itself,
+where it belongs, and the consequence of its absence. `(none)` is the
+explicit way to say there was nothing to demand; a bare heading is refused
+the same as an absent one, exactly like `### Declared, not proven` already
+is.
+
+This is the structural half only, and stays one on purpose. The stronger,
+derived form -- scaffold into an empty box, drive the subject against that
+box, and collect what it refuses for -- is out of reach for the same reason
+`structure`'s own from-zero driver already states in this file:
+`subprocess.run()` is this tool's only authority over an external driver,
+and it holds none over what happens on either side of that call. That
+stronger form is recorded here as **the scaffolded-refusal drive**, deferred
+rather than built, and rather than smuggled into a recipe that cannot
+express it.
+
+### An artefact is judged by what it shows, and by what nobody named
+
+Only a real drive produces artefacts, so this attaches to stage 2's own
+from-zero build, not to a static check. `structure`'s optional
+`artefactKinds` recipe block names a kind by its `glob`; per declared
+member of that kind, the payload reports `produced`, `produced-but-empty`
+(a file the build wrote carrying zero bytes -- existence is not the
+measurement), `absent` (the build never wrote it at all), `carries-no-match`
+(the kind declares a `contentPattern` and the produced content does not
+match it), or `content-not-declared` (no pattern is declared, so the
+content is never assumed full). Separately, and sharing the same
+`tree_digest(from_zero_root, exclude)` enumeration: every on-disk member of
+that kind the declared roster never names at all, reported as `unnamed`
+whether or not the list is empty -- a flow validates only what it names, so
+an artefact nobody named is otherwise never checked at all, and the report
+would still read complete.
 
 ### The binding ruling: an audit never reports without driving
 
@@ -356,6 +560,7 @@ requirement, not a caveat.
 | An inversion is undone with `git checkout --` | Restore by inverse patch and confirm by content comparison; checkout restores from the index and silently discards unrelated work |
 | A remote-job rung is claimed from a full run, or from nothing at all | Drive it through that job's own `run.smoke` block (module / function / kwargs / requiredEvidence) in `run-config.json`; a job declaring none of `smoke_module`/`smoke_function` is itself a finding, service-blind, with no epoch or pilot-scale dial: a shard measured at pilot scale is not a cheaper shard, it is a different experiment |
 | A "did not move" report accuses a producer never proven to read its box | Fire an inverted control first: remove every declared input at once and demand the producer notice, by refusal or by its declared values changing. A per-input `unchanged` cell means nothing until the control has passed |
+| A same-size mutation reads live because it ran a cached `.pyc` | Inject `PYTHONDONTWRITEBYTECODE=1` unconditionally into every constructed child environment, at every site that builds one, through one shared helper -- never dependent on the parent process's own environment, and never satisfiable by a recipe's own declaration |
 
 ## The evidence ladder
 
@@ -458,11 +663,12 @@ and `- Self-digest:` exists to make editing one visible.
 | `disputed-severity` | `## Disputed severity`, bare heading; when non-empty, exactly two `- Position:` lines per dispute, each citing `file:line`, recorded verbatim, with no ranking | The heading is absent, or a dispute's positions are unpaired, or a position carries no citation |
 | `stage-outcomes` | `## Stage outcomes`, one row per stage named in the stages table above, each `ran` or `skipped: <reason>` | A stage has no row, or a `skipped` row carries no reason |
 | `undecidable` | `## Undecidable`, bare heading, demanded when stage 1 is `ran`; when non-empty, each entry names `- Kind:`, `- Rung:` (`probe` or `readers`), and, when the rung is `probe`, `- Probe: <move>` | The heading is absent while stage 1's row reads `ran`, or a `probe` rung names a move whose own `## Move outcomes` row is not `ran` |
-| `user-drive` | `## User drive`, demanded when stage 2 is `ran`; the driver's `argv`, `argv[0]`'s resolved path, its `cwd`, the env names passed, any declared-but-absent env name (`envMissing`), the ignorance control gate's outcome, the box digest before and after -- `run_structure`'s own `ignorance` block, transcribed rather than narrated -- a `- Digest:` line agreeing with `## Frozen`'s, and a non-empty `### Declared, not proven` subsection stating what the drive did not prove: training-data exposure, contact between drives, "genuinely ignorant" versus "was not shown the file", and that the comparison's resolution is bounded by the brief the operator wrote | Absent while stage 2's row reads `ran`; the `- Digest:` line is absent or disagrees with `## Frozen`; or `### Declared, not proven` is absent or carries nothing, because a drive claiming to have proven everything has misread what it did |
+| `user-drive` | `## User drive`, demanded when stage 2 is `ran`; the driver's `argv`, `argv[0]`'s resolved path, its `cwd`, the env names passed, any declared-but-absent env name (`envMissing`), the ignorance control gate's outcome, the box digest before and after -- `run_structure`'s own `ignorance` block, transcribed rather than narrated -- a `- Digest:` line agreeing with `## Frozen`'s, a non-empty `### Declared, not proven` subsection stating what the drive did not prove: training-data exposure, contact between drives, "genuinely ignorant" versus "was not shown the file", and that the comparison's resolution is bounded by the brief the operator wrote; and a non-empty `### Demanded, not scaffolded` subsection, per declaration the subject read from its target during the drive, naming the declaration, where it belongs, and the consequence of its absence -- `(none)` is the explicit way to say there was nothing to demand | Absent while stage 2's row reads `ran`; the `- Digest:` line is absent or disagrees with `## Frozen`; `### Declared, not proven` is absent or carries nothing, because a drive claiming to have proven everything has misread what it did; or `### Demanded, not scaffolded` is absent or carries nothing, left blank rather than stated `(none)` |
 | `reading-diff` | `## Reading diff`, demanded when stage 3 is `ran` | Absent while stage 3's row reads `ran` |
 | `drives` | `## Drives`, demanded when stage 4 is `ran`; no finding may attribute itself to the skill-less drive while naming the subject as its own target | Absent while stage 4's row reads `ran`, or a finding commits that category error |
 | `not-adjudicable` | `## Not adjudicable`, bare heading; when non-empty, each entry names the absent half, its `- Evidence:`, and the `## Repair units` unit it belongs to; when at least one entry carries `- Move: 6`, the section opens with `- Delete:`, `- Update:`, `- Undecided:`, naming each in-scope finding by label, `(none)` for an empty bucket -- the same conditionally-required idiom `NO_CONFIRMED_DECLARATION` already uses for a line demanded only when a condition holds | The heading is absent, or a finding whose `- Adjudication:` reads `not adjudicable` sits under `## Ranked findings` instead; the three rosters are missing while a Move-6 not-adjudicable finding exists, present with no such finding, or a label is omitted, duplicated, or listed under the wrong bucket |
-| `remedy` | Per finding with `- Move: 6` and `- Adjudication: not adjudicable`, `- Remedy:` one of `delete`, `update`, or `undecided: <reason>` | The field is absent in that exact scope; carries a value outside the vocabulary; a bare `undecided` with no reason; or is present on any finding outside that exact scope |
+| `remedy` | Per finding with `- Move: 6` and `- Adjudication: not adjudicable`, `- Remedy:` one of `delete`, `update`, or `undecided: <reason>`, where an `undecided` reason names one of `obsolete guard`, `equivalent mutant`, `degenerate fixture`, or states `none determined` | The field is absent in that exact scope; carries a value outside the vocabulary; a bare `undecided` with no reason; an `undecided` reason naming none of the four; or is present on any finding outside that exact scope |
+| `reachability` | Per finding with `- Move: 6`, `- Reachability: fires: <what this does not prove>` or `- Reachability: silent: <what this does not prove>` -- proves the guarded fact's lock fires (or stayed silent), never that every consumer of the fact was exercised | The field is absent on a Move-6 finding; carries a value outside `fires`/`silent`; or is present on any finding outside that exact scope |
 | `computed-value-provenance` | `## Computed-value provenance`, bare heading, unconditional -- like `## Not adjudicable` and `## Disputed severity`, demanded whether or not Move 10 ran; when Move 10 ran, transcribes `sensitivity`'s own emitted payload: the producer, the control outcome, the inputs varied and the total declared, the range swept, and the full matrix -- published even when no cell crosses the finding threshold | The heading is absent |
 
 Every `check-report` run additionally reports `"supersession"`, a closed
@@ -488,12 +694,15 @@ carries no vocabulary of its own beyond that one heading.
 
 | Subcommand | Derives | Emits |
 | --- | --- | --- |
-| `roster` | Code side by driving the subject as a process; documented side by parsing a table | `code`, `doctrine`, `unregistered`, `phantom`, `duplicated`, `numeralMismatch`, `notes` |
+| `roster` | Code side by driving the subject as a process; documented side by parsing a table; a guarded vocabulary's reach and identity-versus-content, optionally, by driving its own declared guard | `code`, `doctrine`, `unregistered`, `phantom`, `duplicated`, `numeralMismatch`, `notes`, `guardReach` |
 | `check-report` | The report shape above, from a report file | `violations` |
-| `structure` | Declared side by parsing a structure table; on-disk side by walking `--subject`; from-zero side by walking a recipe-built scaffold inside an empty box | `sides`, `outcome`, `onlyIn`, `missingFrom`, `notes`, `containment` |
+| `structure` | Declared side by parsing a structure table; on-disk side by walking `--subject`; from-zero side by walking a recipe-built scaffold inside an empty box; per optional declared `artefactKind`, what the from-zero build produced and which on-disk members its declared roster never names | `sides`, `outcome`, `onlyIn`, `missingFrom`, `notes`, `containment`, `artefacts` |
 | `walkthrough` | An ordered recipe of steps, each run for real against one shared box, each held to its own declared expectation | `steps`, `stall`, `unreached`, `containment` |
 | `reading-diff` | Two supplied readings of one prose surface, given directly rather than derived | `agreement`, `shared`, `onlyIn`, `comparison`, `candidates`, `limit`, `frozen` |
 | `sensitivity` | A copy of the subject, a producer driven once per varied declared input, and the declared results site re-read after each drive | `control`, `matrix`, `notAdjudicable`, `inputsVaried`, `inputsUnchecked`, `inputsTotal`, `notes`, `containment` |
+| `inversion` | The real subject in place, one guarded fact substituted at a time from the recipe's own declared `mutations` block, its declared observing run driven before and after | `baseline`, `matrix`, `factsDriven`, `factsUnchecked`, `factsTotal`, `notAdjudicable`, `observed`, `frozen`, `notes` |
+| `exits` | Per state a recipe declares, a human-judgement declaration, a published act extracted from the subject's own text, or neither; an admitted act driven for real inside a copy | `exits`, `searched`, `frozen` |
+| `enumeration-reach` | Per declared check, its own stated claim and its own iteration source, classified from its syntax tree | `checks`, `bounded` |
 
 `roster` exits `0` for **any** verdict, findings included, and `2` when the
 probe could not be driven or the extraction matched nothing. Inability to look
@@ -510,10 +719,13 @@ from-zero box is not empty and so cannot be adopted, or when the from-zero
 build wrote outside its own box. None of those three is a finding; each is an
 inability to look.
 
-`walkthrough` exits `0` for **any** verdict, a stall included — a stall is a
-finding on its own, never an inability to look. It exits `2` only when the
-flow itself could not be entered: a step declaring no expectation at all, its
-shared box already occupied, or the very first step's own command missing.
+`walkthrough` exits `0` for **any** verdict, a stall included, a step that
+produced nothing included, and a step that wrote outside its declared
+`roots` included — none of those three is an inability to look. It exits `2`
+only when the flow itself could not be entered: a step declaring no
+expectation at all, its shared box already occupied, the very first step's
+own command missing, or a driven step that changed the **subject** rather
+than its own box (`kind=step-escaped-the-box`).
 
 `reading-diff` exits `0` for **either** verdict — agreement or divergence —
 and `2` only when it could not look: something other than exactly two
@@ -528,6 +740,29 @@ result. It exits `2` only when it could not look: an occupied box, a control
 that never proved the producer reads its copy, a restore that did not
 reproduce its pre-variation bytes, or a drive that wrote outside its own box.
 None of those four is a finding; each is an inability to look.
+
+`inversion` exits `0` for **any** verdict, a not-adjudicable finding
+included, and `2` only for an inability to look: no `mutations` block, an
+absent or ambiguous guarded fact, a mutation that only flips a comparison
+operator, a write that did not change the file's bytes, an observing run
+that was not green before the first mutation, a restore that did not
+reproduce its pre-mutation bytes, or a drive that wrote outside its
+declared file. None of those seven is a finding; each is an inability to
+look.
+
+`exits` exits `0` for **any** state's outcome -- `judgement`, `unstated`,
+and all five of `published-and-ran`, `published-but-not-executable`,
+`published-but-unparseable`, and `published-but-timed-out` -- and `2` only
+for an inability to look: no `states` block, its box already occupied, or a
+published act reaching the real subject (`kind=exit-escaped-the-box`). None
+of `unstated` or any admission-gate outcome is an inability to look; each is
+a reported fact about the state.
+
+`enumeration-reach` exits `0` for **any** classification, including
+`unreachable-for-this-language`, and `2` only for an inability to look: no
+`checks` block, a check naming no site, or a named check not found in its
+own site. Nothing here mutates the subject; there is no box, no copy, and
+no escape gate, because nothing here writes at all.
 
 ## The shipped files
 
@@ -549,6 +784,9 @@ the same change.
 | `references/probes/skill-audit.reading-a.json` | the first supplied reading of the worked `reading-diff` invocation |
 | `references/probes/skill-audit.reading-b.json` | the second supplied reading of the worked `reading-diff` invocation |
 | `references/probes/skill-audit.sensitivity.json` | the self-probe recipe for `sensitivity` |
+| `references/probes/skill-audit.self-guarded-facts.json` | the self-probe recipe for `inversion` |
+| `references/probes/skill-audit.exits.json` | the self-probe recipe for `exits` |
+| `references/probes/skill-audit.enumeration-reach.json` | the self-probe recipe for `enumeration-reach`, pointed at two of this file's own suite's checks |
 | `references/probes/remote-execution.accepted-operations.json` | `remote-execution`'s top-level `roster` recipe — pre-existing gap, committed without this row |
 | `references/probes/remote-execution.smoke-subcommands.json` | `remote-execution`'s nested `smoke record` `roster` recipe |
 | `references/probes/proposal-implementation.accepted-operations.json` | `proposal-implementation`'s `roster` recipe — same finding, over 2045 lines |
@@ -573,6 +811,7 @@ landed" and "its row landed" can outlive one commit undetected.
 | The extraction matched nothing | Exit `2`. Never an empty code side |
 | A recipe claims a table's scope | Check the quoted heading against disk before honouring the claim |
 | A set is restated by hand in more than one place | Report every restatement under `duplicated`, even when they all agree |
+| A recipe's `restatementSearch` declares fewer paths than `duplicated` needs to fire | Emit `restatement-search-cannot-fire`; a search that cannot reach two matching sites must say so, not report an empty `duplicated` indistinguishable from a search that ran and found nothing |
 | A finding's only evidence is prose on both sides | Mark it `read-only`, report it as a candidate, declare neither side wrong |
 | Enumeration found no consumer at all | Mark it `not adjudicable`; put it in its own section; name build-or-delete |
 | A finding's remedy is a single-line deletion | Report it. Make no edit |
@@ -611,6 +850,28 @@ landed" and "its row landed" can outlive one commit undetected.
 | A sensitivity drive writes outside its own box | Exit `2` as `build-escaped-the-box`; never reported as a finding |
 | A declared value is `unchanged` for every varied input | `not adjudicable`, never `artefact wrong`; the finding states the observation and the tested range, never a motive |
 | More declared inputs exist than the sensitivity cap | Vary the first four, sorted; name the rest in `## Unchecked` with the true total |
+| An inversion recipe declares no `mutations` block | Exit `2`; never reported as zero guarded facts |
+| An inversion guarded fact's observing run is not green before any mutation | Exit `2`, `kind=baseline-not-green`; no file is mutated and no finding is emitted |
+| An inversion guarded fact's literal is absent from its declared line | Exit `2`, `kind=fact-absent`; halt before any write |
+| An inversion guarded fact's literal appears more than once on its declared line | Exit `2`, `kind=fact-ambiguous`; neither occurrence is substituted |
+| An inversion guarded fact's replacement only inverts a comparison operator | Exit `2`, `kind=operator-flip`; the value itself must change |
+| An inversion guarded fact's write leaves the file's bytes unchanged | Exit `2`, `kind=no-op-write`; the observing run never executes |
+| An inversion guarded fact's restore does not reproduce its pre-mutation bytes | Exit `2`, `kind=sensitivity-restore-failed`; the sweep halts, and the next fact is never mutated |
+| An inversion drive writes outside its declared file | Exit `2` as `build-escaped-the-box`; never reported as a finding |
+| More guarded facts exist than the inversion cap | Drive the first eight, sorted; name the rest individually in `## Unchecked` |
+| An `exits` recipe declares no `states` block | Exit `2`; never reported as zero states |
+| An `exits` box already holds files | Exit `2` naming the path; never adopt a non-empty box |
+| A reported state names no published act, and declares itself a human judgement | Report `judgement`; never a finding, never a published command |
+| A reported state names no published act, and declares nothing | Report `unstated`, a finding, with the driveable range that was searched |
+| A published act splits empty, or carries a shell metacharacter | Report `published-but-unparseable`; never passed to `shell=True` |
+| A published act's `argv[0]` resolves under neither `--subject`, `--repo-root`, nor the recipe's declared interpreters | Report `published-but-unparseable`; refused before any process starts |
+| A published act's binary does not exist | Report `published-but-not-executable` |
+| A published act hangs past `exits`' own `--timeout` | Report `published-but-timed-out` |
+| A published act reaches the real subject | Exit `2` as `exit-escaped-the-box`; never reported as a finding |
+| An `enumeration-reach` recipe declares no `checks` block | Exit `2`; never reported as zero checks |
+| A declared check's site does not end `.py`, or does not parse as Python | Report `unreachable-for-this-language`; never guessed at |
+| A declared check's own iteration source is computed from the subject | Report `derived`; never a finding |
+| A declared check's own iteration source is a literal collection, a namespace walk, or a filtered namespace walk | Report both the check's own claim and the bounded kind, side by side |
 
 ## Handoff
 

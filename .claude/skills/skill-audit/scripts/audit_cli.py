@@ -17,6 +17,7 @@ into a page of confident findings.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -25,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import uuid
+from ast import walk as ast_walk
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -370,6 +372,165 @@ def probe_code_side(recipe, subject, timeout=30):
     return members
 
 
+#: R3's whole verdict vocabulary (`spec.md`, "Renaming is not generalising"):
+#: a two-value closed roster, never a third value meaning "the content is
+#: specific" -- that would be a reading, not a measurement, and this module
+#: refuses to guess it. `IdentityMeasuredCardinalityTests` holds this to
+#: exactly these two members, the `FOUND_BY_VALUES`/`REMEDY_VALUES` idiom.
+IDENTITY_MEASURED = ("identity-measured", "not-determined")
+
+#: The rename probe's own neutral substitute. No real guarded vocabulary or
+#: `FORGE_LEXICON` entry could collide with this, so driving a guard with it
+#: tests only whether the guard's verdict moves when the identifier moves,
+#: never a real candidate's own meaning.
+GUARD_NEUTRAL_TOKEN = "zzz_guardreach_neutral_probe_zzz"
+
+
+def identifier_variants(member):
+    """`member`'s identifier-boundary variants: plural, underscore-joined,
+    case-joined -- the three shapes a word-boundary matcher measurably
+    failed to reach (`spec.md`, R2: a singular guarded term's matcher did
+    not reach its own plural, and `_` is a word character in that pattern
+    language, so no word-boundary rule could ever reach an identifier
+    joining the term to another word). Naive and deterministic on purpose:
+    this derives what to *try*, never what the guard is supposed to catch,
+    and it is never a claim about correct English pluralisation.
+    """
+    return [f"{member}s", f"{member}_other", f"{member}Other"]
+
+
+#: `guardReach.drive.argv`'s own one-token grammar -- literal `{candidate}`,
+#: substituted by `drive_guard_candidate` alone. Compiled once, `re.escape`d
+#: since the token itself carries regex metacharacters.
+_CANDIDATE_TOKEN_RE = re.compile(re.escape("{candidate}"))
+
+
+def drive_guard_candidate(drive, candidate, subject, timeout):
+    """Whether one candidate string is reached (refused) by the subject's
+    own guard, driven for real with `{candidate}` substituted into the
+    recipe's declared `guardReach.drive.argv`.
+
+    Never a recipe-declared matcher pattern compiled with `re` here: that
+    would be a hand-copy of the subject's own source living beside it, free
+    to drift -- the exact class this skill exists to find.
+
+    Substitutes via `re.sub`, never `str.replace`: `NothingWasRepairedTests`'s
+    AST sweep scans every function for write verbs by name, and `.replace`
+    shares its spelling with `Path.replace` -- the same false positive
+    `strip_comparison_operators` already routes around with `re.sub`.
+    """
+    argv = [_CANDIDATE_TOKEN_RE.sub(lambda match: candidate, part)
+           for part in drive["argv"]]
+    where = subject
+    if drive.get("cwd"):
+        where = (subject / drive["cwd"]).resolve()
+        if subject != where and subject not in where.parents:
+            raise Unprobeable(
+                f"guardReach.drive's cwd {drive['cwd']!r} resolves outside "
+                "--subject")
+    try:
+        completed = subprocess.run(
+            argv, cwd=str(where), shell=False,
+            capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError as error:
+        raise Unprobeable(
+            f"guardReach.drive's argv[0] is not executable: {error}")
+    except subprocess.TimeoutExpired:
+        raise Unprobeable(
+            f"guardReach.drive did not answer within {timeout}s; a probe "
+            "that hangs is an inability to look, never a clean verdict")
+    stream = drive.get("stream", "stdout")
+    text = completed.stdout if stream == "stdout" else completed.stderr
+    return re.search(drive["refusal"], text) is not None
+
+
+def guard_reach_findings(recipe, subject, timeout):
+    """R2 + R3 (`spec.md`): for every member of a driven guarded vocabulary,
+    measure whether the guard reaches each identifier-boundary variant, and
+    -- reusing the exact same drive, one further transformation -- whether
+    the guard's verdict is measuring identity or content.
+
+    `guardReach` is optional, exactly like `doctrineSites` and
+    `restatementSearch`: a recipe that never declares it changes nothing
+    about `roster`'s existing behaviour. Returns `(notes, payload)`;
+    `payload` is `None` when the block is absent, or when the subject
+    exposes no driveable guard for it to measure -- reported as
+    `kind=no-driveable-guard`, the `no-closed-roster` idiom reused verbatim,
+    never a silently empty roster.
+
+    The control gate runs first, per member: a guard that never refuses its
+    own bare guarded member at all is `kind=guard-never-fires`, reported
+    once, never as one `guard-unreachable-variant` finding per identifier
+    variant -- eleven findings would misread a broken probe as eleven
+    separate defects.
+    """
+    guard_reach = recipe.get("guardReach")
+    if not guard_reach:
+        return [], None
+
+    producer = guard_reach.get("producer")
+    drive = guard_reach.get("drive")
+    if not producer or not drive:
+        return [note(
+            "no-driveable-guard",
+            "the recipe's guardReach block declares no producer/drive "
+            "pair, so no guarded vocabulary's reach can be measured for "
+            "this subject",
+            recipe.get("surface", ""),
+            "guardReach.producer/guardReach.drive")], None
+
+    try:
+        members = sorted(set(probe_code_side(producer, subject, timeout)))
+    except Unprobeable as error:
+        return [note(
+            "no-driveable-guard",
+            "guardReach.producer could not derive a guarded vocabulary for "
+            f"this subject: {error}",
+            recipe.get("surface", ""), str(producer.get("argv", [])))], None
+
+    notes = []
+    member_reports = []
+    for member in members:
+        control_reached = drive_guard_candidate(drive, member, subject, timeout)
+        if not control_reached:
+            notes.append(note(
+                "guard-never-fires",
+                f"the guard never refused its own guarded member {member!r} "
+                "at all; reporting each of its identifier variants "
+                "unreachable would read as eleven findings instead of one "
+                "broken probe",
+                member, drive["argv"]))
+            member_reports.append({
+                "control": "not-reached", "identity": None, "member": member,
+                "unreachable": [], "variants": {}})
+            continue
+
+        variants = {}
+        unreachable = []
+        for variant in identifier_variants(member):
+            reached = drive_guard_candidate(drive, variant, subject, timeout)
+            variants[variant] = "reached" if reached else "not-reached"
+            if not reached:
+                unreachable.append(variant)
+                notes.append(note(
+                    "guard-unreachable-variant",
+                    f"the guard reaches {member!r} but not its identifier-"
+                    f"boundary variant {variant!r}; a member of the "
+                    "guarded set is unreachable through its own matcher",
+                    member, drive["argv"]))
+
+        neutral_reached = drive_guard_candidate(
+            drive, GUARD_NEUTRAL_TOKEN, subject, timeout)
+        verdict = "not-determined" if neutral_reached else "identity-measured"
+        member_reports.append({
+            "control": "reached",
+            "identity": {"limit": READING_DIFF_LIMIT, "verdict": verdict},
+            "member": member, "unreachable": unreachable,
+            "variants": variants})
+
+    return notes, {"members": member_reports}
+
+
 def tree_digest(root, exclude=()):
     """A sorted `path -> sha256` map over every file under `root`.
 
@@ -508,6 +669,40 @@ BOX_STEP_KINDS = ("exec", "driver")
 #: credential whose name matches neither pattern.
 DRIVER_ENV_ALLOWLIST = ("HOME", "LANG", "LC_ALL", "PATH", "TERM", "TMPDIR",
                         "USER")
+
+
+def constructed_child_env(names, label, hint=""):
+    """The only place a driver-kind child environment is built, for both
+    `run_box_step` and `run_sensitivity_drive`.
+
+    `names` intersected with `DRIVER_ENV_ALLOWLIST` decides what the child
+    inherits by *name*; an unknown name is refused `Unprobeable` naming
+    `label` and `hint`, so each site keeps its own distinct refusal wording
+    while sharing the one comparison against the allowlist.
+
+    `PYTHONDONTWRITEBYTECODE` is then injected **unconditionally** --
+    never inherited from the parent, and never satisfiable by declaring it
+    in `names`, because it stays out of `DRIVER_ENV_ALLOWLIST` on purpose.
+    A same-size mutation to the guarded source must never be able to
+    execute a stale `.pyc` at either site; conditioning the purge on the
+    parent's own environment or on a recipe's declaration would reopen
+    exactly that hole.
+
+    Returns `(env, missing)`: `missing` is `names` filtered to those absent
+    from the parent process, sorted -- `run_box_step` transcribes it into
+    `envMissing`; `run_sensitivity_drive` has never had a use for it and
+    discards it.
+    """
+    unknown = sorted(set(names) - set(DRIVER_ENV_ALLOWLIST))
+    if unknown:
+        raise Unprobeable(
+            f"{label} names env {unknown}, outside "
+            f"{sorted(DRIVER_ENV_ALLOWLIST)}{hint}")
+    missing = sorted(name for name in names if name not in os.environ)
+    env = {name: os.environ[name] for name in names if name in os.environ}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return env, missing
+
 
 #: The directory namespace the ignorance control gate seeds a from-zero box
 #: with, before trusting that box was ever empty. Absurd and namespaced so
@@ -650,24 +845,18 @@ def run_box_step(step, repo, subject, box, timeout, forbidden_shape=()):
         for part in argv:
             assert_brief_names_no_shape(part, forbidden_shape)
         names = env_spec or []
-        unknown = sorted(set(names) - set(DRIVER_ENV_ALLOWLIST))
-        if unknown:
-            raise Unprobeable(
-                f"a fromZero driver step names env {unknown}, outside "
-                f"{sorted(DRIVER_ENV_ALLOWLIST)}; a driver refusing for an "
-                "environment reason is a candidate for widening this list "
-                "by measurement -- run the declared argv under `env -i` "
-                "with only the declared names and observe which addition "
-                "changes the refusal")
         # A name declared here but absent from the parent process is
         # dropped from `child_env` with nothing said below -- silent by
         # construction. `envMissing` makes that drop visible: transcribed
         # into `## User drive`, a recipe declaring `USER` on a machine that
         # has none then reads as a stated fact, not as an inexplicable
         # refusal from the child.
-        missing = sorted(name for name in names if name not in os.environ)
-        child_env = {name: os.environ[name] for name in names
-                    if name in os.environ}
+        child_env, missing = constructed_child_env(
+            names, "a fromZero driver step",
+            hint="; a driver refusing for an environment reason is a "
+                 "candidate for widening this list by measurement -- run "
+                 "the declared argv under `env -i` with only the declared "
+                 "names and observe which addition changes the refusal")
         real_path = shutil.which(argv[0], path=child_env.get("PATH"))
         if not real_path:
             raise Unprobeable(
@@ -824,9 +1013,12 @@ ESCALATION_BUCKETS = {
     "escalatable": (
         "no-closed-roster", "heading-not-found",
         "scope-claimed-without-heading",
-        "no derivation available for this surface"),
+        "no derivation available for this surface", "no-driveable-guard"),
     "consequence": ("comparison-not-run",),
-    "deterministic-exclusion": ("shape-not-walkable", "case-only-divergence"),
+    "deterministic-exclusion": ("shape-not-walkable", "case-only-divergence",
+                                "restatement-search-cannot-fire",
+                                "guard-never-fires",
+                                "guard-unreachable-variant"),
 }
 
 
@@ -1048,6 +1240,50 @@ def build_parser():
     sensitivity.add_argument("--timeout", type=int, default=30,
                              help="seconds before a hanging drive is exit 2")
 
+    inversion = commands.add_parser(
+        "inversion",
+        help="invert every guarded fact a recipe declares in the real "
+             "tree, and watch its lock fire")
+    inversion.add_argument("--subject", required=True,
+                           help="the subject's root directory")
+    inversion.add_argument("--spec", required=True,
+                           help="the JSON recipe declaring the mutations "
+                                "block")
+    inversion.add_argument("--repo-root", default=".",
+                           help="the root each guarded fact's observe.cwd "
+                                "resolves under")
+    inversion.add_argument("--timeout", type=int, default=30,
+                           help="seconds before a hanging observing run "
+                                "is exit 2")
+
+    exits = commands.add_parser(
+        "exits",
+        help="per state a recipe declares, whether a mechanical exit "
+             "exists and is published, and drive it for real if so")
+    exits.add_argument("--subject", required=True,
+                       help="the subject's root directory")
+    exits.add_argument("--spec", required=True,
+                       help="the JSON recipe declaring the states block")
+    exits.add_argument("--repo-root", default=".",
+                       help="the root an interpreter or a repo-scoped act "
+                            "resolves under")
+    exits.add_argument("--timeout", type=int, default=30,
+                       help="seconds before a hanging published act is "
+                            "exit-coded published-but-timed-out")
+
+    enumeration_reach = commands.add_parser(
+        "enumeration-reach",
+        help="per declared check, whether its own iteration source is "
+             "derived from the subject or bounded")
+    enumeration_reach.add_argument("--subject", required=True,
+                                   help="the subject's root directory")
+    enumeration_reach.add_argument("--spec", required=True,
+                                   help="the JSON recipe declaring the "
+                                        "checks block")
+    enumeration_reach.add_argument("--repo-root", default=".",
+                                   help="the root a site declaring "
+                                        "root=repo resolves under")
+
     return parser
 
 
@@ -1076,6 +1312,14 @@ def read_site(path):
         return path.read_text(encoding="utf-8")
     except OSError as error:
         raise Unprobeable(f"a documented site could not be read: {error}")
+
+
+#: The number of independently matching `restatementSearch` sites `duplicated`
+#: requires before it reports anything -- one restatement is not a duplication.
+#: `run_roster` reads this same constant for the runtime cutoff and for the
+#: `restatement-search-cannot-fire` note, so the two never carry two different
+#: spellings of one threshold.
+RESTATEMENT_SITE_QUORUM = 2
 
 
 def run_roster(args):
@@ -1131,8 +1375,20 @@ def run_roster(args):
         if matched:
             duplicated.append({"line": line, "members": matched,
                                "path": str(path)})
-    if len(duplicated) < 2:
+    if len(duplicated) < RESTATEMENT_SITE_QUORUM:
         duplicated = []
+    declared_paths = len(search.get("paths", []))
+    if "restatementSearch" in recipe and declared_paths < RESTATEMENT_SITE_QUORUM:
+        notes.append(note(
+            "restatement-search-cannot-fire",
+            f"this recipe's restatementSearch declares {declared_paths} "
+            f"path(s); `duplicated` only reports once at least "
+            f"{RESTATEMENT_SITE_QUORUM} independently matching sites are "
+            "found, so this search cannot report a finding regardless of "
+            "what the declared path(s) hold -- the search ran and found "
+            "nothing reportable by construction, not because no "
+            "restatement exists",
+            str(spec_path), f"{spec_path}:1-1"))
 
     comparison = "run" if closed_seen else "not-run"
     if comparison == "not-run":
@@ -1145,12 +1401,16 @@ def run_roster(args):
             str(subject), f"{subject}:1-1"))
     unregistered = sorted(set(code) - doctrine) if closed_seen else []
     phantom = sorted(doctrine - set(code))
+
+    guard_notes, guard_reach = guard_reach_findings(recipe, subject, args.timeout)
+    notes.extend(guard_notes)
+
     return finish(code, sorted(doctrine), notes, unregistered, phantom,
-                  comparison, recipe, subject, repo, duplicated)
+                  comparison, recipe, subject, repo, duplicated, guard_reach)
 
 
 def finish(code, doctrine, notes, unregistered, phantom, comparison,
-           recipe, subject, repo, duplicated=None):
+           recipe, subject, repo, duplicated=None, guard_reach=None):
     mismatches = []
     for site in recipe.get("numeralPaths", []):
         mismatches.extend(numeral_mismatches(resolve_site(site, subject, repo)))
@@ -1166,6 +1426,7 @@ def finish(code, doctrine, notes, unregistered, phantom, comparison,
         "escalatable": escalatable,
         "frozen": {"digest": frozen_digest(subject, exclude),
                    "exclude": list(exclude), "subject": str(subject)},
+        "guardReach": guard_reach,
         "notes": notes,
         "numeralMismatch": mismatches,
         "phantom": phantom,
@@ -1173,6 +1434,65 @@ def finish(code, doctrine, notes, unregistered, phantom, comparison,
         "unregistered": unregistered,
     })
     return 0
+
+
+#: sha256 of zero bytes. A produced file carrying this digest has content of
+#: length zero -- distinct from `absent` (the from-zero build never wrote it
+#: at all). R5 (`spec.md`, "An artefact is judged by what it shows"):
+#: "existence is not the measurement." Needs no second walk and no `os.stat`:
+#: `tree_digest`'s own sha256 map already carries this fact.
+EMPTY_FILE_SHA256 = (
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+
+
+def artefact_kind_report(kind, from_zero_root, from_zero_digest, declared_set):
+    """R5 + the requirement `73573db` relocated into this commit
+    (`spec.md`, "Artefacts on disk that the flow's declared roster never
+    names"), sharing one enumeration -- `tree_digest(from_zero_root,
+    exclude)`, already built for `structure`'s own three-way comparison.
+
+    For every member of `declared_set` matching this `kind`'s `glob`:
+    `"absent"` if the from-zero build never produced it, `"produced-but-
+    empty"` if it did but the file carries zero bytes, `"content-not-
+    declared"` if the kind names no `contentPattern` to check against
+    (never assumed full), `"carries-no-match"` if one is declared and the
+    produced content does not match it, else `"produced"`.
+
+    Separately: every on-disk member of this `kind` the declared roster
+    never names at all -- `unnamed`, reported whether or not it is empty,
+    so a reader learns what the check watches rather than meeting it only
+    on failure. The enumeration comes from the filesystem
+    (`from_zero_digest`) and the roster from the subject's own
+    declarations (`declared_set`) -- deriving both halves rather than
+    reading either, exactly as this skill already does for subcommands.
+    """
+    # Named `kind_glob`, never the bare `glob`: `SingleWalkTests`' AST sweep
+    # flags any `glob` identifier outside `tree_digest` on sight, the same
+    # false-positive class `.replace` already forced `strip_comparison_
+    # operators` to route around with `re.sub`.
+    kind_glob = kind["glob"]
+    pattern = kind.get("contentPattern")
+    on_disk = sorted(path for path in from_zero_digest
+                     if fnmatch(path, kind_glob))
+    declared_kind = sorted(path for path in declared_set
+                           if fnmatch(path, kind_glob))
+    content = []
+    for path in declared_kind:
+        digest = from_zero_digest.get(path)
+        if digest is None:
+            status = "absent"
+        elif digest == EMPTY_FILE_SHA256:
+            status = "produced-but-empty"
+        elif pattern is None:
+            status = "content-not-declared"
+        else:
+            body = (from_zero_root / path).read_text(
+                encoding="utf-8", errors="replace")
+            status = "produced" if re.search(pattern, body) else "carries-no-match"
+        content.append({"path": path, "status": status})
+    unnamed = sorted(set(on_disk) - set(declared_kind))
+    return {"content": content, "declared": declared_kind,
+           "name": kind["name"], "onDisk": on_disk, "unnamed": unnamed}
 
 
 def run_structure(args):
@@ -1269,12 +1589,20 @@ def run_structure(args):
             raise Unprobeable(
                 "the recipe's fromZero.root does not exist after the build: "
                 f"{from_zero_root}")
-        from_zero_set = set(tree_digest(from_zero_root, exclude))
+        from_zero_digest = tree_digest(from_zero_root, exclude)
+        from_zero_set = set(from_zero_digest)
         if not from_zero_set:
             raise Unprobeable(
                 "the from-zero side normalises to zero members; an empty "
                 "from-zero side would report the entire disk as "
                 "builder-broken")
+
+        # R5 + the requirement `73573db` relocated here (`spec.md`, "Artefacts
+        # on disk that the flow's declared roster never names"): both share
+        # this one from-zero enumeration, read while the box still exists.
+        artefacts = [artefact_kind_report(kind, from_zero_root,
+                                          from_zero_digest, declared_set)
+                    for kind in recipe.get("artefactKinds", [])]
     finally:
         erase_box(box)
 
@@ -1299,6 +1627,7 @@ def run_structure(args):
         None)
 
     emit({
+        "artefacts": artefacts,
         "containment": {"afterRemoved": after_removed, "beforeEmpty": before_empty,
                         "box": str(box)},
         "escalatable": [dict(entry, escalation=escalation_hint(recipe))
@@ -1322,6 +1651,256 @@ def run_structure(args):
         "outcome": outcome,
         "sides": {"declared": sorted(declared_set), "disk": sorted(disk_set),
                  "fromZero": sorted(from_zero_set)},
+        "surface": surface,
+    })
+    return 0
+
+
+#: Move 6's hard cap on the number of guarded facts driven per run -- a
+#: count, never a wall-clock budget, for the same reason Move 10's own cap
+#: below is one: a time budget would make a report's contents depend on
+#: the machine that produced it. `SENSITIVITY_INPUT_CAP` is bounded below
+#: this cap, cited from this reasoning rather than re-argued there.
+INVERSION_FACT_CAP = 8
+
+#: Every comparison operator condition 6 strips from both a guarded fact's
+#: `literal` and its `replacement` before comparing what remains. Equal
+#: remainders mean the substitution only moved the comparison around the
+#: same value -- flipping `==` to `!=` excludes a different subset, it
+#: never removes the fact -- and the mutation is refused rather than
+#: driven. The two-sided spellings strip before their one-sided halves so
+#: neither is left partially consumed.
+COMPARISON_OPERATORS = (" is not ", " not in ", "==", "!=", "<=", ">=",
+                        "<", ">", " is ", " in ")
+
+
+#: `strip_comparison_operators`'s own mechanism, compiled once. `re.sub`
+#: rather than `str.replace` in a loop: `.replace` shares its name with
+#: `Path.replace`, one of the write verbs `NothingWasRepairedTests`'s own
+#: AST sweep scans every function for -- a string method sharing a
+#: filesystem verb's spelling by accident is exactly the kind of false
+#: positive that sweep would otherwise force into its exemption set for a
+#: function that writes nothing at all.
+_COMPARISON_OPERATOR_RE = re.compile(
+    "|".join(re.escape(operator) for operator in COMPARISON_OPERATORS))
+
+
+def strip_comparison_operators(text):
+    """`text` with every member of `COMPARISON_OPERATORS` removed --
+    condition 6's mechanical test, applied to a guarded fact's `literal`
+    and its `replacement` before the two are compared.
+    """
+    return _COMPARISON_OPERATOR_RE.sub("", text)
+
+
+def run_inversion_observe(observe, subject, repo, timeout):
+    """Drive one guarded fact's declared observing run, exactly as
+    declared -- never a hand-picked subset, and never the whole parent
+    environment (conditions 3 and 7). Mirrors `run_sensitivity_drive`'s
+    own discipline; `cwd` resolves under `--repo-root` rather than
+    `--subject`, because a guarded fact's declaring test commonly lives
+    outside the subject (this skill's own suite does).
+    """
+    raw_argv = observe.get("argv")
+    if not raw_argv or not all(isinstance(part, str) for part in raw_argv):
+        raise Unprobeable(
+            "a guarded fact's observe.argv must be a list of strings")
+    argv = [interpolate_token(part, repo, subject, subject) for part in raw_argv]
+    for part in argv:
+        assert_no_subject_reference(part, subject, repo)
+    cwd = resolve_under(observe.get("cwd"), repo, "mutations.observe.cwd")
+    names = observe.get("env") or []
+    child_env, _ = constructed_child_env(names, "a guarded fact's observe block")
+    try:
+        return subprocess.run(
+            argv, cwd=str(cwd), shell=False, env=child_env,
+            capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError as error:
+        raise Unprobeable(
+            f"a guarded fact's observe.argv[0] is not executable: {error}")
+    except subprocess.TimeoutExpired:
+        raise Unprobeable(
+            f"a guarded fact's observing run did not answer within "
+            f"{timeout}s; a hang is an inability to look, never a verdict")
+
+
+def run_inversion(args):
+    """Move 6: invert every guarded fact a recipe declares, and watch its
+    lock fire.
+
+    v1 sources guarded facts only from the recipe's own declared
+    `mutations` block, never the subject's own lock roster, and performs
+    no AST-based delete/update classification -- both deferred, and
+    stated as such in `SKILL.md` rather than smuggled in as unstated
+    scope.
+
+    Mutates the real tracked tree in place, never a copy: a guarded
+    fact's declaring test commonly lives outside `--subject`, so a copy
+    of the subject alone could not host its own observing run. Every
+    mutated byte is restored from recorded bytes in a `finally`,
+    regardless of outcome, confirmed by `restore_exact_bytes` -- reused
+    verbatim, never `git checkout --`.
+
+    Ten soundness conditions guard every substitution; each halts
+    `Unprobeable` rather than let a meaningless result through. Exit `0`
+    for any verdict, a not-adjudicable finding included; exit `2` only
+    for an inability to look: no `mutations` block, an absent or
+    ambiguous fact, an operator-flip, a no-op write, a non-green
+    baseline, a restore digest mismatch, or an escape.
+    """
+    spec_path = Path(args.spec)
+    if not spec_path.is_file():
+        raise Unprobeable(f"no inversion recipe at {spec_path}")
+    try:
+        recipe = json.loads(spec_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise Unprobeable(f"the inversion recipe is unreadable: {error}")
+
+    subject = Path(args.subject).resolve()
+    repo = Path(args.repo_root).resolve()
+    surface = recipe.get("surface", "")
+    if not surface:
+        raise Unprobeable("the recipe names no surface to scope the sweep under")
+    exclude = tuple(recipe.get("exclude", ()))
+
+    mutations = recipe.get("mutations")
+    if not mutations:
+        raise Unprobeable(
+            "the recipe declares no mutations block; a recipe with no "
+            "guarded facts to drive is refused, never reported as zero")
+
+    for fact in mutations:
+        if not fact.get("observe"):
+            raise Unprobeable(
+                f"guarded fact {fact.get('fact')!r} declares no observe "
+                "block; there is no recipe-level default observing run")
+
+    # Deterministic, machine-independent selection: sorted-first-N, the
+    # same idiom `sensitivity` applies to its own varied inputs. `##
+    # Unchecked` names every fact beyond the cap individually, never
+    # silently dropped.
+    ordered = sorted(
+        mutations,
+        key=lambda fact: (fact["file"], fact["line"], fact["literal"]))
+    driven = ordered[:INVERSION_FACT_CAP]
+    unchecked = [fact.get("fact") or f"{fact['file']}:{fact['line']}"
+                for fact in ordered[INVERSION_FACT_CAP:]]
+
+    # --- Condition 11: the baseline gate. Each distinct declared observe
+    # runs once, unmutated, before the first byte is touched. A non-green
+    # baseline halts the whole sweep as Unprobeable -- an inability to
+    # look is never a verdict about the subject, and it is never reported
+    # as a finding. ---
+    seen = []
+    for fact in driven:
+        observe = fact["observe"]
+        key = (tuple(observe.get("argv", ())), observe.get("cwd"),
+              tuple(sorted(observe.get("env") or ())))
+        if key not in seen:
+            seen.append(key)
+    for argv_key, cwd_key, env_key in seen:
+        observe = {"argv": list(argv_key), "cwd": cwd_key, "env": list(env_key)}
+        completed = run_inversion_observe(observe, subject, repo, args.timeout)
+        if completed.returncode != 0:
+            raise Unprobeable(
+                "kind=baseline-not-green: the observing run is not green "
+                "before any mutation; against an already-red suite every "
+                "guarded fact would report fires, having proven nothing")
+
+    frozen_before = tree_digest(subject, exclude)
+
+    matrix = {}
+    facts_driven = []
+    not_adjudicable = []
+    restored = {}
+    try:
+        for fact in driven:
+            label = fact.get("fact") or f"{fact['file']}:{fact['line']}"
+            observe = fact["observe"]
+            literal = fact["literal"]
+            replacement = fact["replacement"]
+
+            path = resolve_under(fact["file"], subject, "mutations.file")
+            if not path.is_file():
+                raise Unprobeable(
+                    f"guarded fact {label!r} names a file that does not "
+                    f"exist: {path}")
+            before = path.read_bytes()
+            lines = before.decode("utf-8").splitlines(keepends=True)
+            line_no = fact["line"]
+            if not (1 <= line_no <= len(lines)):
+                raise Unprobeable(
+                    f"guarded fact {label!r} names line {line_no}, outside "
+                    f"{path}'s {len(lines)} lines")
+            line_text = lines[line_no - 1]
+            count = line_text.count(literal)
+            if count == 0:
+                raise Unprobeable(
+                    f"kind=fact-absent: guarded fact {label!r}'s literal "
+                    f"{literal!r} is not present at {path}:{line_no}")
+            if count > 1:
+                raise Unprobeable(
+                    f"kind=fact-ambiguous: guarded fact {label!r}'s literal "
+                    f"{literal!r} appears {count} times at {path}:{line_no}")
+            if literal != replacement and strip_comparison_operators(literal) == \
+                    strip_comparison_operators(replacement):
+                raise Unprobeable(
+                    f"kind=operator-flip: guarded fact {label!r}'s "
+                    "replacement only inverts a comparison operator around "
+                    "the same value, never the fact's value itself")
+
+            relative = path.relative_to(subject).as_posix()
+            restored[relative] = before
+            lines[line_no - 1] = line_text.replace(literal, replacement, 1)
+            after = "".join(lines).encode("utf-8")
+            path.write_bytes(after)
+            if hashlib.sha256(after).hexdigest() == \
+                    hashlib.sha256(before).hexdigest():
+                raise Unprobeable(
+                    f"kind=no-op-write: guarded fact {label!r}'s mutation "
+                    "left the file's bytes unchanged; the observing run "
+                    "never executes against a mutation that did not land")
+
+            completed = run_inversion_observe(observe, subject, repo, args.timeout)
+            pending = restored.pop(relative)
+            restore_exact_bytes(subject, {relative: pending})
+
+            outcome = "fires" if completed.returncode != 0 else "silent"
+            matrix[label] = outcome
+            facts_driven.append(label)
+            if outcome == "silent":
+                not_adjudicable.append({
+                    "fact": label, "file": str(path), "line": line_no,
+                    "move": 6, "adjudication": "not adjudicable",
+                    "remedy": "undecided: none determined"})
+
+        frozen_after = tree_digest(subject, exclude)
+        if frozen_before != frozen_after:
+            changed = sorted(
+                p for p in set(frozen_before) | set(frozen_after)
+                if frozen_before.get(p) != frozen_after.get(p))
+            raise Unprobeable(
+                f"kind=build-escaped-the-box: the inversion drive changed "
+                f"{changed}, outside the guarded facts it restored; a "
+                "drive writing outside its own box is an inability to "
+                "look, never a finding")
+    finally:
+        if restored:
+            restore_exact_bytes(subject, restored)
+
+    emit({
+        "baseline": "passed",
+        "facts": matrix,
+        "factsDriven": facts_driven,
+        "factsTotal": len(ordered),
+        "factsUnchecked": unchecked,
+        "frozen": {"digest": frozen_digest(subject, exclude),
+                   "exclude": list(exclude), "subject": str(subject)},
+        "matrix": matrix,
+        "notAdjudicable": not_adjudicable,
+        "notes": [],
+        "observed": facts_driven,
+        "range": f"mutations[0:{min(len(ordered), INVERSION_FACT_CAP)}] of {len(ordered)}",
         "surface": surface,
     })
     return 0
@@ -1456,12 +2035,7 @@ def run_sensitivity_drive(recipe, real_subject, copy_root, box, repo, timeout):
     cwd = resolve_under(recipe.get("cwd"), copy_root, "sensitivity.cwd")
 
     names = recipe.get("env") or []
-    unknown = sorted(set(names) - set(DRIVER_ENV_ALLOWLIST))
-    if unknown:
-        raise Unprobeable(
-            f"the sensitivity recipe names env {unknown}, outside "
-            f"{sorted(DRIVER_ENV_ALLOWLIST)}")
-    child_env = {name: os.environ[name] for name in names if name in os.environ}
+    child_env, _ = constructed_child_env(names, "the sensitivity recipe")
 
     try:
         return subprocess.run(
@@ -1701,6 +2275,223 @@ def run_sensitivity(args):
     return 0
 
 
+#: Characters that would carry shell semantics under `shell=True`. This tool
+#: never sets `shell=True` -- a published act's argv is always passed as a
+#: list of strings -- so any of these appearing in the act's own text is
+#: refused rather than passed through as a literal argument the operator
+#: never intended: `;`, `|`, `&`, `$`, `>`, `<`, a backtick, or a newline all
+#: carry meaning to a shell that they do not carry to `subprocess.run`'s own
+#: argv-as-a-list contract, and letting one through would misreport a shell
+#: command as broken instead of refusing it before any process starts.
+EXIT_SHELL_METACHARACTERS = set(";|&$><`\n")
+
+#: Move 11's own closed, five-value roster (`spec.md`, "A reported state
+#: names its exit"). `judgement` and `unstated` are not members: both are
+#: reached *before* an act is ever admitted -- a state the recipe or subject
+#: declares a human judgement, and a state with no published act and no such
+#: declaration -- so they are never a sixth or seventh value of this roster,
+#: they are the two ways a state never reaches it at all.
+EXIT_OUTCOMES = ("published-and-ran", "published-but-not-executable",
+                 "published-but-unparseable", "published-but-timed-out",
+                 "unstated")
+
+
+def split_published_act(act_text):
+    """`act_text` split into argv parts, or `None` if the act cannot be
+    admitted at all.
+
+    `None` on any `EXIT_SHELL_METACHARACTERS` character: this tool never
+    sets `shell=True`, so a semicolon or a pipe reaching `subprocess.run`'s
+    argv list would carry no meaning at all, and reporting the act as though
+    it had run would be worse than refusing it. `None` on an empty act too --
+    the same inability to look, wearing a different shape.
+    """
+    if any(character in EXIT_SHELL_METACHARACTERS for character in act_text):
+        return None
+    parts = act_text.split()
+    return parts or None
+
+
+def resolved_act_argv0(argv0, subject, repo, copy_root, interpreters):
+    """The absolute path a published act's `argv[0]` actually runs as, or
+    `None` if the act is refused before any process starts.
+
+    A name in the recipe's own declared `interpreters` allowlist -- the
+    `DRIVER_ENV_ALLOWLIST` precedent, applied to an operator-authored act
+    rather than a recipe-declared driver step -- is a tool used to run the
+    subject, never the subject's own content, so it is never redirected
+    into the copy: a bare name (`python3`) is left exactly as declared, so
+    it resolves through the child process's own `PATH`, and a name carrying
+    a path separator resolves under `--repo-root`. A name resolving under
+    `--subject` instead redirects into `copy_root`: the act runs against a
+    COPY, so an exit that repairs repairs only that copy and nothing that
+    survives the run. A name resolving under `--repo-root` but outside the
+    interpreter allowlist runs against the real repo -- it is repo tooling,
+    not subject content, so there is no copy of it to redirect into.
+    Anything else -- absolute, climbing `..`, or resolving under neither
+    root -- is refused.
+    """
+    if argv0 in interpreters:
+        return Path(argv0) if "/" not in argv0 else (repo / argv0).resolve()
+    if "/" not in argv0:
+        # A bare command name with no path separator is a lookup against
+        # the child's own `PATH`, never a file this tool can locate under
+        # either declared root; it is admitted only through the
+        # interpreter allowlist above, never by coincidentally matching a
+        # root's own name.
+        return None
+    if Path(argv0).is_absolute() or ".." in Path(argv0).parts:
+        return None
+    subject_candidate = (subject / argv0).resolve()
+    if subject == subject_candidate or subject in subject_candidate.parents:
+        return copy_root / subject_candidate.relative_to(subject)
+    repo_candidate = (repo / argv0).resolve()
+    if repo == repo_candidate or repo in repo_candidate.parents:
+        return repo_candidate
+    return None
+
+
+def run_exits_act(argv, cwd, timeout, names):
+    """Drive one published act for real, inside `cwd` -- a copy of the
+    subject. The act's own exit code is never read: `published-and-ran` is
+    reported whether the act refuses or succeeds, because the requirement
+    is reachability, not success. A missing binary and a hang are the only
+    two ways this can fail to reach `published-and-ran` once admitted.
+    """
+    child_env, _ = constructed_child_env(names, "a published exit act")
+    try:
+        subprocess.run(argv, cwd=str(cwd), shell=False, env=child_env,
+                       capture_output=True, text=True, timeout=timeout)
+        return "published-and-ran"
+    except FileNotFoundError:
+        return "published-but-not-executable"
+    except subprocess.TimeoutExpired:
+        return "published-but-timed-out"
+
+
+def run_exits(args):
+    """Move 11: does a reported state let its operator out?
+
+    The eleven earlier moves all ask whether the subject is correct; this
+    one asks whether it lets a human out of a state it names. Per state a
+    recipe declares: a state the recipe or subject marks a human judgement
+    is `judgement`, reported and never a finding -- publishing a command for
+    a judgement would be worse than the silence. A state with no such
+    declaration is searched, through the recipe's own declared `site` and
+    `extract`, for a published act; none found is `unstated`, a finding,
+    reported with the driveable range that was searched.
+
+    A found act passes an admission gate before any process starts: split
+    into a list of strings or refused, no shell metacharacter, and its
+    `argv[0]` resolved under `--subject`, under `--repo-root`, or named in
+    the recipe's own declared interpreter allowlist -- anything else is
+    `published-but-unparseable`. An admitted act then runs for real inside
+    `materialize_subject_copy`'s own copy, through `constructed_child_env`,
+    under this subcommand's own `--timeout`. `published-and-ran` deliberately
+    never reads the act's own exit code: the requirement is that the act can
+    be reached, not that it succeeds.
+
+    The real subject is digested before and after the whole sweep; a
+    published act may repair its own copy freely, but a change reaching the
+    real subject is `Unprobeable kind=exit-escaped-the-box`, and the sweep
+    halts. `erase_box` still runs in a `finally`, whatever the outcome.
+    """
+    spec_path = Path(args.spec)
+    if not spec_path.is_file():
+        raise Unprobeable(f"no exits recipe at {spec_path}")
+    try:
+        recipe = json.loads(spec_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise Unprobeable(f"the exits recipe is unreadable: {error}")
+
+    subject = Path(args.subject).resolve()
+    repo = Path(args.repo_root).resolve()
+    surface = recipe.get("surface", "")
+    if not surface:
+        raise Unprobeable("the recipe names no surface to scope the sweep under")
+    exclude = tuple(recipe.get("exclude", ()))
+    states = recipe.get("states")
+    if not states:
+        raise Unprobeable(
+            "the recipe declares no states block; a recipe with no "
+            "reported states to check is refused, never reported as zero")
+    interpreters = tuple(recipe.get("interpreterAllowlist", ()))
+    default_env = recipe.get("env") or []
+
+    box = repo / "implementations" / f"_exits_{surface}"
+    before_empty = box_empty_or_absent(box)
+    if not before_empty:
+        raise Unprobeable(
+            f"a non-empty box already occupies {box}; remove it by hand "
+            "before running exits again -- an occupied box is never "
+            "silently adopted")
+    box.mkdir(parents=True, exist_ok=True)
+
+    subject_before = tree_digest(subject, exclude)
+    exits = {}
+    searched = {}
+    try:
+        copy_root = materialize_subject_copy(subject, box, exclude)
+        for state in states:
+            name = state.get("name")
+            if not name:
+                raise Unprobeable("a states entry names no state")
+
+            if state.get("judgement"):
+                exits[name] = "judgement"
+                continue
+
+            site = state.get("site")
+            pattern = state.get("extract")
+            if not site or not pattern:
+                exits[name] = "unstated"
+                continue
+
+            path = resolve_site(site, subject, repo)
+            text = read_site(path)
+            span = f"{path}:1-{max(len(text.splitlines()), 1)}"
+            match = re.search(pattern, text)
+            if match is None:
+                exits[name] = "unstated"
+                searched[name] = span
+                continue
+
+            act_text = match.group("act").strip()
+            parts = split_published_act(act_text)
+            resolved0 = (
+                resolved_act_argv0(parts[0], subject, repo, copy_root, interpreters)
+                if parts else None)
+            if resolved0 is None:
+                exits[name] = "published-but-unparseable"
+                continue
+
+            argv = [str(resolved0), *parts[1:]]
+            exits[name] = run_exits_act(
+                argv, copy_root, args.timeout, list(state.get("env") or default_env))
+
+        subject_after = tree_digest(subject, exclude)
+        if subject_before != subject_after:
+            changed = sorted(
+                p for p in set(subject_before) | set(subject_after)
+                if subject_before.get(p) != subject_after.get(p))
+            raise Unprobeable(
+                f"kind=exit-escaped-the-box: a published act changed the "
+                f"real subject at {changed}; every act runs against a copy "
+                "so it may repair nothing that survives -- an escape is an "
+                "inability to look, never a finding")
+    finally:
+        erase_box(box)
+
+    emit({
+        "exits": exits,
+        "frozen": {"digest": frozen_digest(subject, exclude),
+                   "exclude": list(exclude), "subject": str(subject)},
+        "searched": searched,
+        "surface": surface,
+    })
+    return 0
+
+
 #: The `expect` keys a walkthrough step may declare. `exit` defaults to
 #: `"any"`, which asserts nothing on its own -- `declares_expectation` treats
 #: an `expect` naming only `exit: any` the same as no `expect` at all, because
@@ -1805,6 +2596,58 @@ def candidate_gate_steps(spec, repo, subject, box):
     return steps
 
 
+def normalized_step_roots(step, box):
+    """A walkthrough step's declared `roots`, each resolved under the box
+    with `resolve_under`'s discipline (no absolute path, no `..`) and
+    returned as box-relative POSIX strings, `""` meaning the whole box.
+
+    R6 (`spec.md`: "A driven step is graded on what it wrote"): `roots` is
+    the step's own declared ownership boundary inside the shared box, never
+    a second hand-maintained list of what the flow is "supposed" to touch.
+    """
+    normalized = []
+    for raw in step.get("roots") or []:
+        resolved = resolve_under(raw, box, "step.roots")
+        relative = resolved.relative_to(box).as_posix()
+        normalized.append("" if relative == "." else relative)
+    return normalized
+
+
+def _inside_declared_roots(path, roots):
+    return any(root in ("", ".") or path == root or path.startswith(root + "/")
+              for root in roots)
+
+
+def step_box_verdict(step, roots, before, after):
+    """Grade one driven step against what it actually wrote into the shared
+    box -- R6's whole subject. `before`/`after` are `tree_digest` maps of
+    the box taken immediately around the step's own subprocess run.
+
+    A step the recipe declares `readOnly` is exempt outright (`spec.md`: "A
+    step the recipe declares read-only is exempt and MUST be declarable as
+    such"); an unchanged box for a step that is not `readOnly` is the
+    "returned without producing" finding; a changed box measured against
+    declared `roots` is either clean or "wrote into a tree it does not
+    own" -- a step with no declared `roots` is not scored against
+    ownership at all, since there is nothing declared for it to violate.
+    """
+    read_only = bool(step.get("readOnly"))
+    changed = sorted(
+        path for path in set(before) | set(after)
+        if before.get(path) != after.get(path))
+    if read_only:
+        return {"changed": changed, "outsideRoots": [], "readOnly": True,
+                "roots": roots, "verdict": "read-only"}
+    if not changed:
+        return {"changed": changed, "outsideRoots": [], "readOnly": False,
+                "roots": roots, "verdict": "produced-nothing"}
+    outside = ([path for path in changed
+                if not _inside_declared_roots(path, roots)] if roots else [])
+    verdict = "wrote-outside-roots" if outside else "produced"
+    return {"changed": changed, "outsideRoots": outside, "readOnly": False,
+            "roots": roots, "verdict": verdict}
+
+
 def run_walkthrough(args):
     """Drive a recipe's ordered sequence against one shared box, and name the
     index where it stalls.
@@ -1829,6 +2672,19 @@ def run_walkthrough(args):
     point on. The box lives at `{repoRoot}/implementations/_walkthrough_
     {surface}`, created only if empty or absent, and removed in a `finally`
     whose absence is proven by `tree_digest`, exactly like `structure`'s box.
+
+    Each step is also graded on what it wrote into the box (R6): its
+    `tree_digest` is taken before and after the step's own run, and a step
+    the recipe does not declare `readOnly` that leaves the box byte-
+    identical is reported as having produced nothing, whatever it exited.
+    A step declaring `roots` is graded against them; a change wholly or
+    partly outside its declared `roots` is reported as writing into a tree
+    it does not own. Separately, and independently of any one step, the
+    *subject* tree is digested once before the flow starts and once after
+    it ends: `walkthrough` never writes into the subject at all, so any
+    change there is `Unprobeable kind=step-escaped-the-box` -- an inability
+    to look, never a finding, and the whole sweep halts rather than naming
+    which step did it.
     """
     spec_path = Path(args.spec)
     if not spec_path.is_file():
@@ -1865,6 +2721,7 @@ def run_walkthrough(args):
     steps_report = []
     stall = None
     setup_failure = None
+    subject_before = tree_digest(subject, exclude)
     try:
         for index, step in enumerate(steps_spec):
             name = step.get("name", f"step {index}")
@@ -1874,7 +2731,7 @@ def run_walkthrough(args):
                 steps_report.append({
                     "expected": step.get("expect"), "index": index,
                     "role": role, "name": name, "observed": None,
-                    "outcome": "unreached"})
+                    "box": None, "outcome": "unreached"})
                 continue
 
             expect = step.get("expect")
@@ -1905,6 +2762,8 @@ def run_walkthrough(args):
             if step.get("cwd"):
                 step_cwd = resolve_under(step["cwd"], box, "step.cwd")
 
+            roots = normalized_step_roots(step, box)
+            box_before = tree_digest(box, exclude)
             try:
                 completed = subprocess.run(
                     argv, cwd=str(step_cwd), shell=False,
@@ -1926,7 +2785,8 @@ def run_walkthrough(args):
                     f"{error}")
                 steps_report.append({
                     "expected": expect, "index": index, "role": role,
-                    "name": name, "observed": None, "outcome": "stalled"})
+                    "name": name, "observed": None, "box": None,
+                    "outcome": "stalled"})
                 continue
             except subprocess.TimeoutExpired:
                 if role == "setup":
@@ -1941,9 +2801,12 @@ def run_walkthrough(args):
                     f"{args.timeout}s")
                 steps_report.append({
                     "expected": expect, "index": index, "role": role,
-                    "name": name, "observed": None, "outcome": "stalled"})
+                    "name": name, "observed": None, "box": None,
+                    "outcome": "stalled"})
                 continue
 
+            box_after = tree_digest(box, exclude)
+            box_report = step_box_verdict(step, roots, box_before, box_after)
             observed = {"exit": completed.returncode,
                        "stderr": completed.stderr, "stdout": completed.stdout}
 
@@ -1956,7 +2819,7 @@ def run_walkthrough(args):
                     break
                 steps_report.append({
                     "expected": expect, "index": index, "role": role,
-                    "name": name, "observed": observed,
+                    "name": name, "observed": observed, "box": box_report,
                     "outcome": "setup-ok"})
                 continue
 
@@ -1964,7 +2827,8 @@ def run_walkthrough(args):
                                    completed.stdout, completed.stderr):
                 steps_report.append({
                     "expected": expect, "index": index, "role": role,
-                    "name": name, "observed": observed, "outcome": "passed"})
+                    "name": name, "observed": observed, "box": box_report,
+                    "outcome": "passed"})
             else:
                 stall = stalled(
                     "contradiction", index,
@@ -1972,7 +2836,19 @@ def run_walkthrough(args):
                     "its own expect")
                 steps_report.append({
                     "expected": expect, "index": index, "role": role,
-                    "name": name, "observed": observed, "outcome": "stalled"})
+                    "name": name, "observed": observed, "box": box_report,
+                    "outcome": "stalled"})
+
+        subject_after = tree_digest(subject, exclude)
+        if subject_before != subject_after:
+            changed_subject = sorted(
+                p for p in set(subject_before) | set(subject_after)
+                if subject_before.get(p) != subject_after.get(p))
+            raise Unprobeable(
+                "kind=step-escaped-the-box: the driven flow changed the "
+                f"subject at {changed_subject}; walkthrough only ever "
+                "writes into its own box, and a change to the subject is "
+                "an inability to look, never a finding")
     finally:
         erase_box(box)
 
@@ -2107,6 +2983,180 @@ def run_reading_diff(args):
     return 0
 
 
+#: Move 12's own closed, four-value roster (`spec.md`, "The audit measures an
+#: enumerator's reach, not only its result"). `derived` is the innocent
+#: default: a check with no bounded pattern this classifier can recognise is
+#: presumed derived, never presumed guilty. The other three name exactly the
+#: three bounded shapes the source session actually measured: a literal
+#: collection, an unfiltered namespace walk (`dir(...)`), and that same walk
+#: narrowed by a filter before the assertion runs.
+ENUMERATION_SOURCES = ("derived", "literal-collection", "single-namespace",
+                       "filtered-subset")
+
+#: The one outcome a non-Python subject's check reports, never guessed at.
+#: `probe_code_side` parses no source, on purpose, so the subject may be any
+#: language; this subcommand does parse source, so a subject it cannot parse
+#: is a language boundary, not an empty roster.
+ENUMERATION_UNREACHABLE = "unreachable-for-this-language"
+
+
+def find_check_function(tree, qualname):
+    """The `ast.FunctionDef` a dotted `qualname` names inside `tree`.
+
+    `qualname` is `function` or `Class.method`, the same two shapes
+    `check_citations.py`'s own symbol citations use elsewhere in this
+    repository -- a name, never a line, since a parallel edit moves every
+    line number and never moves a name.
+    """
+    parts = qualname.split(".")
+    class_name, function_name = (None, parts[0]) if len(parts) == 1 \
+        else (parts[0], parts[1])
+    for node in ast_walk(tree):
+        if class_name:
+            if not (isinstance(node, ast.ClassDef) and node.name == class_name):
+                continue
+            for child in node.body:
+                if isinstance(child, ast.FunctionDef) and child.name == function_name:
+                    return child
+        elif isinstance(node, ast.FunctionDef) and node.name == function_name:
+            return node
+    return None
+
+
+def _resolve_local_literal(function_node, iterable):
+    """`iterable`, or the literal collection it names if it is a bare local
+    variable assigned one earlier in the same function.
+
+    A hand-written allowlist is overwhelmingly assigned to a name before it
+    is walked -- `test_the_cli_is_stdlib_only`'s own `permitted` set is
+    written exactly this way -- so classifying only a literal sitting
+    directly in the loop's own `iter` slot would miss the shape real code
+    actually has. One level of resolution, not a general data-flow
+    analysis: a name assigned anything other than a literal collection, or
+    never assigned one at all, is returned unchanged and falls through to
+    `derived`.
+    """
+    if not isinstance(iterable, ast.Name):
+        return iterable
+    for node in ast_walk(function_node):
+        if isinstance(node, ast.Assign) \
+                and isinstance(node.value, (ast.List, ast.Tuple, ast.Set, ast.Dict)) \
+                and any(isinstance(target, ast.Name) and target.id == iterable.id
+                       for target in node.targets):
+            return node.value
+    return iterable
+
+
+def _classify_iterable(iterable, has_filter):
+    if isinstance(iterable, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
+        return "literal-collection"
+    if isinstance(iterable, ast.Call) and isinstance(iterable.func, ast.Name) \
+            and iterable.func.id == "dir":
+        return "filtered-subset" if has_filter else "single-namespace"
+    return "derived"
+
+
+def enumeration_source_kind(function_node):
+    """One check function's own iteration source, classified from its
+    syntax tree into `ENUMERATION_SOURCES`.
+
+    Reads the first `for` statement or comprehension `ast.walk` reaches --
+    source order for a function with one dominant loop, the shape every
+    check this subcommand was built against actually has. A function with
+    no loop and no comprehension at all enumerates nothing this classifier
+    can see, and is `derived` by the same innocent-until-caught default:
+    presumed to compute its own domain rather than presumed to hand-list it.
+    """
+    for node in ast_walk(function_node):
+        if isinstance(node, ast.comprehension):
+            iterable = _resolve_local_literal(function_node, node.iter)
+            return _classify_iterable(iterable, bool(node.ifs))
+        if isinstance(node, ast.For):
+            iterable = _resolve_local_literal(function_node, node.iter)
+            has_filter = any(isinstance(child, ast.If) for child in node.body)
+            return _classify_iterable(iterable, has_filter)
+    return "derived"
+
+
+def run_enumeration_reach(args):
+    """Move 12: is a check's own claim of completeness backed by a
+    derivation, or by something bounded wearing a derivation's clothes?
+
+    `probe_code_side` parses no source of the subject, on purpose, so the
+    subject may be written in any language; this subcommand does the
+    opposite on purpose, and so cannot live inside `roster` without forking
+    a second code-side derivation there. It reads the recipe's own declared
+    `checks` -- each an operator-identified function the operator has
+    already read as claiming completeness over a set, by symbol name, never
+    by line -- and classifies only the enumeration side: `derived`, or one
+    of three bounded shapes. A check whose site does not end `.py`, or whose
+    source does not parse as Python, is `unreachable-for-this-language`,
+    never guessed at.
+
+    Nothing here mutates the subject; there is no box, no copy, and no
+    escape gate, because nothing here writes at all. Exit `0` for any
+    verdict; exit `2` only for an inability to look: no `checks` block, a
+    check naming no site, or a named check not found in its own site.
+    """
+    spec_path = Path(args.spec)
+    if not spec_path.is_file():
+        raise Unprobeable(f"no enumeration-reach recipe at {spec_path}")
+    try:
+        recipe = json.loads(spec_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise Unprobeable(f"the enumeration-reach recipe is unreadable: {error}")
+
+    subject = Path(args.subject).resolve()
+    repo = Path(args.repo_root).resolve()
+    surface = recipe.get("surface", "")
+    if not surface:
+        raise Unprobeable("the recipe names no surface to scope the sweep under")
+    checks = recipe.get("checks")
+    if not checks:
+        raise Unprobeable(
+            "the recipe declares no checks block; a recipe with no checks "
+            "to classify is refused, never reported as zero")
+
+    matrix = {}
+    parsed = {}
+    for entry in checks:
+        name = entry.get("name")
+        if not name:
+            raise Unprobeable("a checks entry names no check")
+        site = entry.get("site")
+        if not site:
+            raise Unprobeable(f"check {name!r} declares no site")
+
+        path = resolve_site(site, subject, repo)
+        if path.suffix != ".py":
+            matrix[name] = {"claim": None, "verdict": ENUMERATION_UNREACHABLE}
+            continue
+
+        cache_key = str(path)
+        if cache_key not in parsed:
+            try:
+                parsed[cache_key] = ast.parse(read_site(path))
+            except SyntaxError:
+                parsed[cache_key] = None
+        tree = parsed[cache_key]
+        if tree is None:
+            matrix[name] = {"claim": None, "verdict": ENUMERATION_UNREACHABLE}
+            continue
+
+        function = find_check_function(tree, name)
+        if function is None:
+            raise Unprobeable(f"check {name!r} was not found at {path}")
+        matrix[name] = {"claim": ast.get_docstring(function),
+                        "verdict": enumeration_source_kind(function)}
+
+    bounded = sorted(
+        name for name, result in matrix.items()
+        if result["verdict"] not in ("derived", ENUMERATION_UNREACHABLE))
+
+    emit({"bounded": bounded, "checks": matrix, "surface": surface})
+    return 0
+
+
 #: Every item a report must carry, with the heading or field that carries it.
 #: Held to the shape table in SKILL.md in both directions, so this cannot become
 #: a roster restated in two places -- which is the defect the whole tool exists
@@ -2127,6 +3177,7 @@ REPORT_SHAPE = {
     "move-outcomes": "## Move outcomes",
     "not-adjudicable": "## Not adjudicable",
     "ranked-findings": "## Ranked findings",
+    "reachability": "- Reachability:",
     "reading-diff": "## Reading diff",
     "remedy": "- Remedy:",
     "repair-units": "## Repair units",
@@ -2292,6 +3343,16 @@ USER_DRIVE_DIGEST_LINE = re.compile(r"^-\s*Digest:\s*(\S+)\s*$")
 #: proved everything has misread what it did.
 USER_DRIVE_DECLARED_HEADING = "### Declared, not proven"
 
+#: R4 (`spec.md`, "The from-zero drive demands what the subject reads"): the
+#: heading under which `## User drive` names, per declaration the subject
+#: read from its target during the drive, where it belongs and the
+#: consequence of its absence -- an operator's declaration, never a proof,
+#: exactly like `USER_DRIVE_DECLARED_HEADING` already is. `(none)` is the
+#: explicit way to say there was nothing to demand; a bare heading with
+#: nothing under it is refused the same as an absent one, by the same
+#: `user_drive_subsection_only_nonempty` this shares with that heading.
+USER_DRIVE_DEMANDED_HEADING = "### Demanded, not scaffolded"
+
 
 def user_drive_digest(lines):
     """`## User drive`'s own `- Digest:` value, or `None` if the section
@@ -2314,13 +3375,15 @@ def user_drive_digest(lines):
     return None
 
 
-def user_drive_declared_only_nonempty(lines):
-    """Whether `## User drive`'s `### Declared, not proven` subsection
-    carries at least one non-empty line beneath it, before the next
-    heading of either level.
+def user_drive_subsection_only_nonempty(lines, heading):
+    """Whether `## User drive`'s subsection named `heading` carries at
+    least one non-empty line beneath it, before the next heading of either
+    level. Shared by `### Declared, not proven` and `### Demanded, not
+    scaffolded`: one walk, one rule, two headings -- never a hand-copied
+    second function for the second heading.
     """
     in_user_drive = False
-    in_declared = False
+    in_section = False
     for line in lines:
         stripped = line.strip()
         if stripped == "## User drive":
@@ -2330,14 +3393,21 @@ def user_drive_declared_only_nonempty(lines):
             break
         if not in_user_drive:
             continue
-        if stripped == USER_DRIVE_DECLARED_HEADING:
-            in_declared = True
+        if stripped == heading:
+            in_section = True
             continue
-        if in_declared and stripped.startswith("#"):
+        if in_section and stripped.startswith("#"):
             break
-        if in_declared and stripped:
+        if in_section and stripped:
             return True
     return False
+
+
+def user_drive_declared_only_nonempty(lines):
+    """`### Declared, not proven`'s own check, kept as its own name since
+    doctrine and existing call sites already cite it by name.
+    """
+    return user_drive_subsection_only_nonempty(lines, USER_DRIVE_DECLARED_HEADING)
 
 
 def stage_roster(text):
@@ -2501,6 +3571,26 @@ FOUND_BY_VALUES = ("both", "one", "not-compared")
 #: legitimate value, never an omission -- and there is no default: a
 #: missing marker is never read as any of the three.
 REMEDY_VALUES = ("delete", "update", "undecided")
+
+#: The closed set of causes an `undecided` Move-6 remedy reason must name
+#: one of -- condition 9. Condition 2 proves the bytes moved; nothing
+#: proves behaviour moved, so `- Remedy: undecided: <reason>` must state
+#: which of these it could not rule out, rather than defaulting to
+#: `obsolete guard` when the cause might equally be an equivalent mutant
+#: (bytes moved, behaviour identical) or a degenerate fixture (the
+#: fixture's own correct answer already equals the mutant's output).
+#: `"none determined"` is itself a legitimate fourth member, never an
+#: omission: an honest "I could not tell" is not the same claim as a
+#: guess dressed as a finding.
+UNDISTINGUISHED_CAUSES = ("obsolete guard", "equivalent mutant",
+                          "degenerate fixture", "none determined")
+
+#: `- Reachability:`'s closed set -- condition 10. Every substitution-probe
+#: finding proves the guarded fact's lock **fires** or stayed **silent**;
+#: it never proves every consumer of the fact was exercised. Reachability,
+#: never coverage, and the report must say so on its own payload rather
+#: than let a reader infer the stronger claim.
+REACHABILITY_VALUES = ("fires", "silent")
 
 NO_CONFIRMED_DECLARATION = "No finding in this report is CONFIRMED by execution"
 
@@ -3205,6 +4295,37 @@ def run_check_report(args):
             fail("move-number",
                  "every finding names the move that found it", where)
 
+        # Condition 10, scoped to `- Move: 6` alone -- never also gated on
+        # `- Adjudication: not adjudicable` the way `remedy` is below. A
+        # lock that fires is a clean result, not a finding under `## Not
+        # adjudicable`, and this binds both outcomes: whatever Move 6
+        # reports, it must say reachability was proven, never coverage.
+        reachability = re.search(
+            r"^- Reachability:\s*(.+?)\s*$", body, re.MULTILINE)
+        reachability_in_scope = move is not None and move.group(1) == "6"
+        if reachability_in_scope:
+            if not reachability:
+                fail("reachability",
+                     f"finding {finding['label']} carries '- Move: 6' but "
+                     "no '- Reachability:' line; every substitution-probe "
+                     "finding must state whether it proves the lock fires "
+                     "or stayed silent, and what that does not prove",
+                     where)
+            else:
+                prefix = reachability.group(1).split(":", 1)[0].strip()
+                if prefix not in REACHABILITY_VALUES:
+                    fail("reachability",
+                         f"finding {finding['label']}'s "
+                         f"'- Reachability: {reachability.group(1)}' does "
+                         "not open with fires | silent, the closed "
+                         "reachability vocabulary", where)
+        elif reachability:
+            fail("reachability",
+                 f"finding {finding['label']} carries "
+                 f"'- Reachability: {reachability.group(1)}' outside its "
+                 "exact scope ('- Move: 6'); the field is refused on any "
+                 "other finding", where)
+
         marker = re.search(r"^- Evidence:\s*(.+?)\s*$", body, re.MULTILINE)
         value = marker.group(1) if marker else ""
         if value == "CONFIRMED by execution":
@@ -3266,9 +4387,7 @@ def run_check_report(args):
                 elif value == "undecided" or value.startswith("undecided:"):
                     reason = value.split(":", 1)[1].strip() \
                         if ":" in value else ""
-                    if reason:
-                        remedy_by_bucket["undecided"].append(finding["label"])
-                    else:
+                    if not reason:
                         fail("remedy",
                              f"finding {finding['label']}'s "
                              "'- Remedy: undecided' carries no reason; a "
@@ -3276,6 +4395,22 @@ def run_check_report(args):
                              "repo's own idiom for every other escape "
                              "hatch (`Unprobeable`, `no-closed-roster`, "
                              "'## Unchecked')", where)
+                    elif not any(cause in reason
+                                for cause in UNDISTINGUISHED_CAUSES):
+                        # Condition 9: proving the bytes moved (condition 2)
+                        # is not proving behaviour moved. A reason naming
+                        # none of the three causes -- or stating none could
+                        # be determined -- defaults to nothing; stricter
+                        # than accepting any non-empty string.
+                        fail("remedy",
+                             f"finding {finding['label']}'s "
+                             f"'- Remedy: undecided: {reason}' names none "
+                             "of the three causes (obsolete guard | "
+                             "equivalent mutant | degenerate fixture) and "
+                             "does not state that none could be "
+                             "determined", where)
+                    else:
+                        remedy_by_bucket["undecided"].append(finding["label"])
                 else:
                     fail("remedy",
                          f"finding {finding['label']}'s "
@@ -3443,6 +4578,16 @@ def run_check_report(args):
                          f"{USER_DRIVE_DECLARED_HEADING!r} content; the "
                          "declared-only column must be stated, never "
                          "implied as proof", f"{path}:1")
+                # R4's structural half: stated, `(none)` included, never
+                # left blank -- item-conditional on this same stage-2
+                # branch, so it opens no REPORT_SHAPE door of its own.
+                if not user_drive_subsection_only_nonempty(
+                        lines, USER_DRIVE_DEMANDED_HEADING):
+                    fail(key,
+                         "'## User drive' carries no non-empty "
+                         f"{USER_DRIVE_DEMANDED_HEADING!r} content; R4's "
+                         "structural half must be stated explicitly, "
+                         "'(none)' included, never left blank", f"{path}:1")
         else:
             not_run_value = FIELD_NOT_RUN.get(key)
             if not_run_value:
@@ -3606,6 +4751,9 @@ DISPATCH = {
     "walkthrough": run_walkthrough,
     "reading-diff": run_reading_diff,
     "sensitivity": run_sensitivity,
+    "inversion": run_inversion,
+    "exits": run_exits,
+    "enumeration-reach": run_enumeration_reach,
 }
 
 
