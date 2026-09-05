@@ -598,7 +598,7 @@ Two independent findings, reported separately:
   in `--revision`; `invariantsWithoutTest` are claims declared in code with no
   test enforcing them. Both need the user's decision before you touch anything.
 
-Ten more are reported and none of them is a finding, which is exactly why
+Eleven more are reported and none of them is a finding, which is exactly why
 they were easy to leave undocumented:
 
 - **`coupling`** — which notebook cells reach into the target's internals instead
@@ -662,7 +662,40 @@ they were easy to leave undocumented:
   run, is asked nothing here either — the same restraint every other
   optional field in this file already keeps. It **never gates** — an
   unanswered optional field is a legitimate resting state, not a defect;
-  this only makes the option visible.
+  this only makes the option visible. It carries every unanswered optional
+  field MINUS the ones `undeclaredBlocking` reports below: a field the
+  target's own sequence is waiting on is not optional in any sense this
+  word carries, and leaving it in a list called `undeclaredOptional` is
+  what let one be read as "unanswered, fine" four ordinals before the flow
+  died on it.
+- **`undeclaredBlocking`** — the other half of that absence, and the half
+  `undeclaredOptional` cannot honestly hold: an undeclared optional field a
+  witness in the target's OWN declared sequence cannot be measured without,
+  so what its absence costs is a declared step rather than a reading. Each
+  entry carries `section`, `field`, `evidence` (the key that field produces),
+  `blockedBy` (every sequence item measured through it, with its witness),
+  `blockedSteps` (every declared step whose `advances` ordinal sits above the
+  earliest of them), the `consequence` — the field's own composed into a
+  sentence naming the ordinals and the steps — and an `exit`. **The set is
+  derived, never listed.** Each roster entry states only what it feeds, and
+  blocking is the join against the sequence: an item whose `measuredBy` head
+  is that key. The head and never the whole string is what keeps the two
+  halves of a section apart — `search.currentWhen` and
+  `distribution.currentWhen` are corroborators, never a head, so they narrow
+  a reading and stay above — and it sorts the record kinds for free, since a
+  named `@record:level <name>` is measured through its own `__records__`
+  entry while the two-state `@record` beside it is measured through
+  `search.recordFound`. `[]` when the target declares no ordered flow, when
+  no unanswered field's key is named by any item, and when every such item
+  sits at or above the furthest ordinal any step advances — the same rule
+  `unfinishableFlow` keeps, read off `cmd_step`, which refuses only on items
+  strictly below the ordinal a step advances. It **never gates**: the
+  refusal it reports ahead of is unchanged. Its `exit` is a **question and
+  never a command**, because the one act that clears it is an edit to the
+  target's own benchmark declaration and the forge authors no target
+  declaration — so what you get is the question and the directly runnable
+  `discuss` command that opens it, exactly as the `POSITION_SHARDS_
+  UNDECLARED` refusal already publishes one.
 - **`undeclaredLadder`** — the ordered rung ladder `__levels__` names, in
   the case where it names none: `declaration`, the `path` of the file that
   would carry it, and the exact `consequence` of leaving it empty. That
