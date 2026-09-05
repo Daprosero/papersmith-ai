@@ -423,27 +423,80 @@ blocked recipe work rather than requiring a decision between it.
       (3119→3285); updated `skill-audit.self-guarded-facts.json`, not the
       test.
 
-### Commit B3 — R5+R4 (forecast 500–700)
+### Commit B3 — R5+R4 (forecast 650–950) — **DONE**, 117 lines in
+      `audit_cli.py` + 14 locks + doctrine, `.venv` Python 2535 Ran OK
+      (skipped=3, +12 from 2523), npm 386 pass (unchanged)
 
-- [ ] B3.1 RED: a produced artefact of zero length (`EMPTY_FILE_SHA256`
+> **Measured gap in this checklist, reported rather than silently
+> resolved.** This commit's own bullets (B3.1–B3.7, as originally written)
+> never operationalised the relocated requirement the brief's own text
+> re-attaches to B3 — `spec.md`'s "Artefacts on disk that the flow's
+> declared roster never names" (relocated here by `73573db`, sharing R5's
+> enumeration). Counting only the bullets below, Change B totals exactly
+> "15 RED / 8 GREEN" as the brief states, which is internally consistent
+> but means that relocation was never turned into a task. Implemented
+> anyway, per the brief's explicit instruction and `spec.md`'s own
+> placement note (not inventing a placement — reading the one already on
+> record), as `artefact_kind_report`'s `unnamed` half, sharing
+> `run_structure`'s from-zero `tree_digest` with R5's own `content` half.
+> Flagged for the owner rather than smuggled in silently.
+
+- [x] B3.1 RED: a produced artefact of zero length (`EMPTY_FILE_SHA256`
       constant) reports `produced-but-empty`, distinct from `absent`.
-- [ ] B3.2 RED: an artefact kind with a recipe-declared `contentPattern`
+      Mutation-proven: disabling the `digest == EMPTY_FILE_SHA256` branch
+      reddened exactly this lock; restored via `cp`, sha256-confirmed.
+- [x] B3.2 RED: an artefact kind with a recipe-declared `contentPattern`
       that the produced content does not match reports `carries-no-match`.
-- [ ] B3.3 RED: an artefact kind with **no** declared `contentPattern`
-      reports `content-not-declared`, never assumed full.
-- [ ] B3.4 RED: `### Demanded, not scaffolded` under `## User drive` is
+      Mutation-proven: hardcoding the branch to always `"produced"`
+      reddened exactly this lock while the sibling "pattern matches"
+      lock stayed green; restored via `cp`, sha256-confirmed.
+- [x] B3.3 RED: an artefact kind with **no** declared `contentPattern`
+      reports `content-not-declared`, never assumed full. Mutation-proven:
+      assuming `"produced"` when no pattern is declared reddened exactly
+      this lock; restored via `cp`, sha256-confirmed.
+- [x] B3.4 RED: `### Demanded, not scaffolded` under `## User drive` is
       required non-empty (or explicit `(none)`), enforced by the same
-      pattern as `user_drive_declared_only_nonempty`
-      (`audit_cli.py:2317`) — reuse, not reimplementation.
-- [ ] B3.5 GREEN: `structure`'s `produced`/`produced-but-empty`/`absent`
-      roster from the already-built `tree_digest(from_zero_root, exclude)`;
-      add `EMPTY_FILE_SHA256` constant.
-- [ ] B3.6 GREEN: add `### Demanded, not scaffolded` enforcement in
-      `run_check_report`, item-conditional (no `REPORT_SHAPE` key, no door
-      opened, no `example-report.md` re-sign needed).
-- [ ] B3.7 GREEN: `SKILL.md` states R4's structural-only scope explicitly —
+      pattern as `user_drive_declared_only_nonempty` — generalised into
+      shared `user_drive_subsection_only_nonempty(lines, heading)` rather
+      than a hand-copied second function. **Also required, discovered by
+      running the full suite**: the shared `_with_stage_two_agreed` test
+      fixture (feeding seven existing `StageOutcomesTests`) needed the new
+      heading + `(none)` added, or every one of its dependents would have
+      broken — legitimate fixture maintenance (the `REMEDY_REPORT_BODY`
+      precedent from a2), not a record edited to pass. Mutation-proven:
+      disabling the new check reddened both dedicated locks (missing
+      heading, empty section) while the accepted/`(none)` locks stayed
+      green; restored via `cp`, sha256-confirmed.
+- [x] B3.5 GREEN: `structure`'s `produced`/`produced-but-empty`/`absent`/
+      `carries-no-match`/`content-not-declared` roster from the
+      already-built `tree_digest(from_zero_root, exclude)`, captured once
+      and shared with R5's own relocated sibling below; added
+      `EMPTY_FILE_SHA256`. **Also required, discovered by running the full
+      suite**: a local variable named `glob` tripped `SingleWalkTests`'
+      AST sweep (the same false-positive class `.replace`/`Path.replace`
+      already forced a workaround for) — renamed to `kind_glob`, not the
+      test.
+- [x] B3.6 GREEN: added `### Demanded, not scaffolded` enforcement in
+      `run_check_report`, item-conditional on the existing `user-drive`
+      branch (no `REPORT_SHAPE` key, no door opened; confirmed
+      `example-report.md` needs no re-sign, since it never declares stage 2
+      `ran`).
+- [x] B3.7 GREEN: `SKILL.md` states R4's structural-only scope explicitly —
       an operator declaration, never a proof — and records the derived
-      stronger form as deferred with its own name.
+      stronger form as deferred, named **the scaffolded-refusal drive**.
+      Also documented R5 + the relocated requirement under "## The stages"
+      and widened `structure`'s subcommands-table row (`artefacts` emit).
+      **Also required, re-derived rather than trusted**: inserting code
+      above `REPORT_SCHEMA_VERSION` shifted its line a sixth time
+      (3285→3372); updated `skill-audit.self-guarded-facts.json`, not the
+      test.
+- [x] B3.8 (not originally numbered, the relocated requirement's own RED):
+      an on-disk artefact of a declared kind that the flow's own declared
+      roster never names is reported under `unnamed`, whether or not the
+      list is empty, distinct from a named artefact that failed content
+      grading. Mutation-proven: inverting the set-difference direction
+      (`declared - onDisk` instead of `onDisk - declared`) reddened exactly
+      this lock; restored via `cp`, sha256-confirmed.
 
 ---
 

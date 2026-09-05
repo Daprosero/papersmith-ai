@@ -4494,16 +4494,20 @@ class StructureBoxMixin(BoxMixin):
                 f"(root / {relative!r}).write_text({content!r}, encoding='utf-8')")
         return self.write(scripts, "build.py", "\n".join(lines) + "\n")
 
-    def make_recipe(self, subject, surface, steps, exclude=()):
-        spec = subject / "structure.json"
-        spec.write_text(json.dumps({
+    def make_recipe(self, subject, surface, steps, exclude=(),
+                    artefact_kinds=None):
+        fields = {
             "surface": run_scoped(surface),
             "declared": {"path": "STRUCTURE.md", "table": "| Path | Holds |",
                         "column": 0},
             "disk": {"root": "content"},
             "fromZero": {"root": "build", "steps": steps},
             "exclude": list(exclude),
-        }, indent=2), encoding="utf-8")
+        }
+        if artefact_kinds is not None:
+            fields["artefactKinds"] = artefact_kinds
+        spec = subject / "structure.json"
+        spec.write_text(json.dumps(fields, indent=2), encoding="utf-8")
         return spec
 
 
@@ -4563,6 +4567,136 @@ class StructureOutcomeIntegrationTests(StructureBoxMixin, unittest.TestCase):
         self.assertEqual(payload["outcome"], "agree")
         self.assertTrue(payload["containment"]["afterRemoved"])
         self.assertTrue(payload["containment"]["beforeEmpty"])
+
+
+class ArtefactKindTests(StructureBoxMixin, unittest.TestCase):
+    """R5 (`spec.md`, "An artefact is judged by what it shows") plus the
+    requirement `73573db` relocated beside it ("Artefacts on disk that the
+    flow's declared roster never names"). Both share one enumeration --
+    `tree_digest(from_zero_root, exclude)`, already built for `structure`'s
+    own three-way comparison -- so the pair costs one from-zero drive, not
+    two.
+    """
+
+    def _run(self, name, declared, from_zero_files, artefact_kinds,
+             disk_files=None):
+        surface = f"artefact_{name}"
+        self.structure_box(surface)
+        subject = self.make_subject(
+            name, declared, disk_files if disk_files is not None else
+            {path: "x" for path in declared})
+        script = self.build_script(subject, from_zero_files)
+        steps = [["python3", str(script), "{box}/build"]]
+        spec = self.make_recipe(subject, surface, steps,
+                                artefact_kinds=artefact_kinds)
+        return structure_json(spec, subject, repo=FORGE)
+
+    def test_a_produced_artefact_of_zero_length_is_produced_but_empty(self):
+        result, payload = self._run(
+            "zero_length",
+            declared=["notebooks/a.ipynb"],
+            from_zero_files={"notebooks/a.ipynb": ""},
+            artefact_kinds=[{"name": "notebook", "glob": "notebooks/*.ipynb"}])
+        self.assertEqual(result.returncode, 0, payload)
+        content = payload["artefacts"][0]["content"]
+        self.assertEqual(
+            content, [{"path": "notebooks/a.ipynb",
+                      "status": "produced-but-empty"}])
+
+    def test_an_absent_declared_artefact_is_named_absent_not_empty(self):
+        result, payload = self._run(
+            "absent",
+            declared=["notebooks/a.ipynb", "notebooks/never-built.ipynb"],
+            from_zero_files={"notebooks/a.ipynb": "some real content"},
+            artefact_kinds=[{"name": "notebook", "glob": "notebooks/*.ipynb"}])
+        self.assertEqual(result.returncode, 0, payload)
+        statuses = {row["path"]: row["status"]
+                   for row in payload["artefacts"][0]["content"]}
+        self.assertEqual(statuses["notebooks/never-built.ipynb"], "absent")
+        self.assertNotEqual(statuses["notebooks/a.ipynb"], "absent")
+
+    def test_content_not_matching_a_declared_pattern_carries_no_match(self):
+        result, payload = self._run(
+            "no_match",
+            declared=["notebooks/a.ipynb"],
+            from_zero_files={"notebooks/a.ipynb": "no signal in here"},
+            artefact_kinds=[{"name": "notebook", "glob": "notebooks/*.ipynb",
+                            "contentPattern": "EXECUTED"}])
+        self.assertEqual(result.returncode, 0, payload)
+        content = payload["artefacts"][0]["content"]
+        self.assertEqual(
+            content, [{"path": "notebooks/a.ipynb",
+                      "status": "carries-no-match"}])
+
+    def test_a_declared_pattern_that_matches_is_produced(self):
+        result, payload = self._run(
+            "matches",
+            declared=["notebooks/a.ipynb"],
+            from_zero_files={"notebooks/a.ipynb": "cell EXECUTED here"},
+            artefact_kinds=[{"name": "notebook", "glob": "notebooks/*.ipynb",
+                            "contentPattern": "EXECUTED"}])
+        self.assertEqual(result.returncode, 0, payload)
+        content = payload["artefacts"][0]["content"]
+        self.assertEqual(
+            content, [{"path": "notebooks/a.ipynb", "status": "produced"}])
+
+    def test_a_kind_with_no_content_pattern_is_never_assumed_full(self):
+        result, payload = self._run(
+            "no_pattern_declared",
+            declared=["notebooks/a.ipynb"],
+            from_zero_files={"notebooks/a.ipynb": "real content, unchecked"},
+            artefact_kinds=[{"name": "notebook", "glob": "notebooks/*.ipynb"}])
+        self.assertEqual(result.returncode, 0, payload)
+        content = payload["artefacts"][0]["content"]
+        self.assertEqual(
+            content, [{"path": "notebooks/a.ipynb",
+                      "status": "content-not-declared"}])
+        self.assertNotEqual(
+            content[0]["status"], "produced",
+            "no declared contentPattern must never be read as 'full'")
+
+    def test_an_on_disk_artefact_the_declared_roster_never_names_is_unnamed(self):
+        result, payload = self._run(
+            "unnamed",
+            declared=["notebooks/a.ipynb"],
+            from_zero_files={"notebooks/a.ipynb": "declared and produced",
+                            "notebooks/extra.ipynb": "nobody named this one"},
+            artefact_kinds=[{"name": "notebook", "glob": "notebooks/*.ipynb"}])
+        self.assertEqual(result.returncode, 0, payload)
+        artefact = payload["artefacts"][0]
+        self.assertEqual(artefact["unnamed"], ["notebooks/extra.ipynb"])
+        self.assertEqual(sorted(artefact["onDisk"]),
+                         ["notebooks/a.ipynb", "notebooks/extra.ipynb"])
+        self.assertNotIn(
+            "notebooks/extra.ipynb",
+            [row["path"] for row in artefact["content"]],
+            "an unnamed artefact is a separate list, distinct from a "
+            "named artefact that failed")
+
+    def test_a_complete_roster_still_states_what_it_covered(self):
+        result, payload = self._run(
+            "complete",
+            declared=["notebooks/a.ipynb"],
+            from_zero_files={"notebooks/a.ipynb": "declared and produced"},
+            artefact_kinds=[{"name": "notebook", "glob": "notebooks/*.ipynb"}])
+        self.assertEqual(result.returncode, 0, payload)
+        artefact = payload["artefacts"][0]
+        self.assertEqual(
+            artefact["unnamed"], [],
+            "an empty remainder is still reported, not omitted")
+        self.assertIn("unnamed", artefact)
+
+    def test_no_artefact_kinds_declared_yields_an_empty_list_not_an_error(self):
+        result, payload = self._run(
+            "none_declared", declared=["a.txt"],
+            from_zero_files={"a.txt": "x"}, artefact_kinds=[])
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["artefacts"], [])
+
+    def test_empty_file_sha256_is_the_real_digest_of_zero_bytes(self):
+        cli = audit_cli_module()
+        self.assertEqual(cli.EMPTY_FILE_SHA256,
+                         hashlib.sha256(b"").hexdigest())
 
 
 class StructureBoxLifecycleTests(StructureBoxMixin, unittest.TestCase):
@@ -6621,6 +6755,8 @@ class StageOutcomesTests(BoxMixin, unittest.TestCase):
             "- Whether the model behind argv[0] already knew this "
             "subject's shape from training data is not measured here, "
             "stated as an assumption.\n\n"
+            f"{cli.USER_DRIVE_DEMANDED_HEADING}\n\n"
+            "(none)\n\n"
             "## Ranked findings", 1)
         for stage_id, outcome in (post_drive_overrides or {}).items():
             needle = f"- Stage: {stage_id}: {VALID_REPORT_STAGE_OVERRIDES[stage_id]}\n"
@@ -6739,6 +6875,50 @@ class StageOutcomesTests(BoxMixin, unittest.TestCase):
         result, payload = self.check(broken, name="user-drive-no-declared-heading.md")
         self.assertEqual(result.returncode, 1, payload)
         self.assertIn("user-drive", [v["item"] for v in payload["violations"]])
+
+    def test_user_drive_missing_demanded_heading_is_rejected(self):
+        """R4 (`spec.md`): `### Demanded, not scaffolded` is required
+        exactly like `### Declared, not proven` -- same pattern, reused via
+        `user_drive_subsection_only_nonempty`, not a second hand-copied
+        function for the second heading.
+        """
+        cli = audit_cli_module()
+        text = self._with_stage_two_agreed(VALID_REPORT)
+        broken = text.replace(f"{cli.USER_DRIVE_DEMANDED_HEADING}\n\n", "", 1)
+        self.assertNotEqual(broken, text, "the graft must land")
+        result, payload = self.check(broken, name="user-drive-no-demanded-heading.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "user-drive"]
+        self.assertTrue(
+            any("Demanded" in v["detail"] for v in violations),
+            f"a missing 'Demanded, not scaffolded' heading must be "
+            f"rejected: {violations}")
+
+    def test_user_drive_empty_demanded_section_is_rejected(self):
+        cli = audit_cli_module()
+        text = self._with_stage_two_agreed(VALID_REPORT)
+        broken = text.replace(f"{cli.USER_DRIVE_DEMANDED_HEADING}\n\n(none)\n\n",
+                              f"{cli.USER_DRIVE_DEMANDED_HEADING}\n\n", 1)
+        self.assertNotEqual(broken, text, "the graft must land")
+        result, payload = self.check(broken, name="user-drive-empty-demanded.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "user-drive"]
+        self.assertTrue(
+            any("Demanded" in v["detail"] for v in violations),
+            f"an empty 'Demanded, not scaffolded' section must be "
+            f"rejected, '(none)' is the explicit accepted way to say "
+            f"there was nothing to demand: {violations}")
+
+    def test_user_drive_demanded_none_is_accepted(self):
+        """[LOCK] `(none)` is the explicit, accepted, non-empty answer --
+        already exercised by the shared `_with_stage_two_agreed` baseline,
+        asserted here by name so the acceptance is not merely incidental.
+        """
+        text = self._with_stage_two_agreed(VALID_REPORT)
+        cli = audit_cli_module()
+        self.assertIn(f"{cli.USER_DRIVE_DEMANDED_HEADING}\n\n(none)\n\n", text)
+        result, payload = self.check(text, name="user-drive-demanded-none.md")
+        self.assertEqual(result.returncode, 0, payload)
 
     def test_stage_model_total_sums_a_synthetic_table(self):
         cli = audit_cli_module()

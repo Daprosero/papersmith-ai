@@ -1406,6 +1406,65 @@ def finish(code, doctrine, notes, unregistered, phantom, comparison,
     return 0
 
 
+#: sha256 of zero bytes. A produced file carrying this digest has content of
+#: length zero -- distinct from `absent` (the from-zero build never wrote it
+#: at all). R5 (`spec.md`, "An artefact is judged by what it shows"):
+#: "existence is not the measurement." Needs no second walk and no `os.stat`:
+#: `tree_digest`'s own sha256 map already carries this fact.
+EMPTY_FILE_SHA256 = (
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+
+
+def artefact_kind_report(kind, from_zero_root, from_zero_digest, declared_set):
+    """R5 + the requirement `73573db` relocated into this commit
+    (`spec.md`, "Artefacts on disk that the flow's declared roster never
+    names"), sharing one enumeration -- `tree_digest(from_zero_root,
+    exclude)`, already built for `structure`'s own three-way comparison.
+
+    For every member of `declared_set` matching this `kind`'s `glob`:
+    `"absent"` if the from-zero build never produced it, `"produced-but-
+    empty"` if it did but the file carries zero bytes, `"content-not-
+    declared"` if the kind names no `contentPattern` to check against
+    (never assumed full), `"carries-no-match"` if one is declared and the
+    produced content does not match it, else `"produced"`.
+
+    Separately: every on-disk member of this `kind` the declared roster
+    never names at all -- `unnamed`, reported whether or not it is empty,
+    so a reader learns what the check watches rather than meeting it only
+    on failure. The enumeration comes from the filesystem
+    (`from_zero_digest`) and the roster from the subject's own
+    declarations (`declared_set`) -- deriving both halves rather than
+    reading either, exactly as this skill already does for subcommands.
+    """
+    # Named `kind_glob`, never the bare `glob`: `SingleWalkTests`' AST sweep
+    # flags any `glob` identifier outside `tree_digest` on sight, the same
+    # false-positive class `.replace` already forced `strip_comparison_
+    # operators` to route around with `re.sub`.
+    kind_glob = kind["glob"]
+    pattern = kind.get("contentPattern")
+    on_disk = sorted(path for path in from_zero_digest
+                     if fnmatch(path, kind_glob))
+    declared_kind = sorted(path for path in declared_set
+                           if fnmatch(path, kind_glob))
+    content = []
+    for path in declared_kind:
+        digest = from_zero_digest.get(path)
+        if digest is None:
+            status = "absent"
+        elif digest == EMPTY_FILE_SHA256:
+            status = "produced-but-empty"
+        elif pattern is None:
+            status = "content-not-declared"
+        else:
+            body = (from_zero_root / path).read_text(
+                encoding="utf-8", errors="replace")
+            status = "produced" if re.search(pattern, body) else "carries-no-match"
+        content.append({"path": path, "status": status})
+    unnamed = sorted(set(on_disk) - set(declared_kind))
+    return {"content": content, "declared": declared_kind,
+           "name": kind["name"], "onDisk": on_disk, "unnamed": unnamed}
+
+
 def run_structure(args):
     """Derive declared, on-disk, and from-zero, and adjudicate arithmetically.
 
@@ -1500,12 +1559,20 @@ def run_structure(args):
             raise Unprobeable(
                 "the recipe's fromZero.root does not exist after the build: "
                 f"{from_zero_root}")
-        from_zero_set = set(tree_digest(from_zero_root, exclude))
+        from_zero_digest = tree_digest(from_zero_root, exclude)
+        from_zero_set = set(from_zero_digest)
         if not from_zero_set:
             raise Unprobeable(
                 "the from-zero side normalises to zero members; an empty "
                 "from-zero side would report the entire disk as "
                 "builder-broken")
+
+        # R5 + the requirement `73573db` relocated here (`spec.md`, "Artefacts
+        # on disk that the flow's declared roster never names"): both share
+        # this one from-zero enumeration, read while the box still exists.
+        artefacts = [artefact_kind_report(kind, from_zero_root,
+                                          from_zero_digest, declared_set)
+                    for kind in recipe.get("artefactKinds", [])]
     finally:
         erase_box(box)
 
@@ -1530,6 +1597,7 @@ def run_structure(args):
         None)
 
     emit({
+        "artefacts": artefacts,
         "containment": {"afterRemoved": after_removed, "beforeEmpty": before_empty,
                         "box": str(box)},
         "escalatable": [dict(entry, escalation=escalation_hint(recipe))
@@ -2854,6 +2922,16 @@ USER_DRIVE_DIGEST_LINE = re.compile(r"^-\s*Digest:\s*(\S+)\s*$")
 #: proved everything has misread what it did.
 USER_DRIVE_DECLARED_HEADING = "### Declared, not proven"
 
+#: R4 (`spec.md`, "The from-zero drive demands what the subject reads"): the
+#: heading under which `## User drive` names, per declaration the subject
+#: read from its target during the drive, where it belongs and the
+#: consequence of its absence -- an operator's declaration, never a proof,
+#: exactly like `USER_DRIVE_DECLARED_HEADING` already is. `(none)` is the
+#: explicit way to say there was nothing to demand; a bare heading with
+#: nothing under it is refused the same as an absent one, by the same
+#: `user_drive_subsection_only_nonempty` this shares with that heading.
+USER_DRIVE_DEMANDED_HEADING = "### Demanded, not scaffolded"
+
 
 def user_drive_digest(lines):
     """`## User drive`'s own `- Digest:` value, or `None` if the section
@@ -2876,13 +2954,15 @@ def user_drive_digest(lines):
     return None
 
 
-def user_drive_declared_only_nonempty(lines):
-    """Whether `## User drive`'s `### Declared, not proven` subsection
-    carries at least one non-empty line beneath it, before the next
-    heading of either level.
+def user_drive_subsection_only_nonempty(lines, heading):
+    """Whether `## User drive`'s subsection named `heading` carries at
+    least one non-empty line beneath it, before the next heading of either
+    level. Shared by `### Declared, not proven` and `### Demanded, not
+    scaffolded`: one walk, one rule, two headings -- never a hand-copied
+    second function for the second heading.
     """
     in_user_drive = False
-    in_declared = False
+    in_section = False
     for line in lines:
         stripped = line.strip()
         if stripped == "## User drive":
@@ -2892,14 +2972,21 @@ def user_drive_declared_only_nonempty(lines):
             break
         if not in_user_drive:
             continue
-        if stripped == USER_DRIVE_DECLARED_HEADING:
-            in_declared = True
+        if stripped == heading:
+            in_section = True
             continue
-        if in_declared and stripped.startswith("#"):
+        if in_section and stripped.startswith("#"):
             break
-        if in_declared and stripped:
+        if in_section and stripped:
             return True
     return False
+
+
+def user_drive_declared_only_nonempty(lines):
+    """`### Declared, not proven`'s own check, kept as its own name since
+    doctrine and existing call sites already cite it by name.
+    """
+    return user_drive_subsection_only_nonempty(lines, USER_DRIVE_DECLARED_HEADING)
 
 
 def stage_roster(text):
@@ -4070,6 +4157,16 @@ def run_check_report(args):
                          f"{USER_DRIVE_DECLARED_HEADING!r} content; the "
                          "declared-only column must be stated, never "
                          "implied as proof", f"{path}:1")
+                # R4's structural half: stated, `(none)` included, never
+                # left blank -- item-conditional on this same stage-2
+                # branch, so it opens no REPORT_SHAPE door of its own.
+                if not user_drive_subsection_only_nonempty(
+                        lines, USER_DRIVE_DEMANDED_HEADING):
+                    fail(key,
+                         "'## User drive' carries no non-empty "
+                         f"{USER_DRIVE_DEMANDED_HEADING!r} content; R4's "
+                         "structural half must be stated explicitly, "
+                         "'(none)' included, never left blank", f"{path}:1")
         else:
             not_run_value = FIELD_NOT_RUN.get(key)
             if not_run_value:

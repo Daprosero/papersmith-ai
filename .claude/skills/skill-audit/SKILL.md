@@ -362,6 +362,47 @@ entry claiming `- Rung: probe` must name a move whose own row there reads
 `ran`. Declaring a probe was the answer and then skipping the move it names
 is refused, structurally.
 
+### `### Demanded, not scaffolded`: an operator's declaration, never a proof
+
+Stage 2 drives the subject from ignorance and measures that the drive ran.
+It does not measure whether everything the subject **reads** from its own
+target during that drive is **demanded** when the target is built from
+nothing -- a from-zero scaffold silently missing a declaration the subject
+reads is invisible to every other move. `## User drive`'s
+`### Demanded, not scaffolded` subsection states this by hand: per
+declaration the subject reads from its target, the declaration itself,
+where it belongs, and the consequence of its absence. `(none)` is the
+explicit way to say there was nothing to demand; a bare heading is refused
+the same as an absent one, exactly like `### Declared, not proven` already
+is.
+
+This is the structural half only, and stays one on purpose. The stronger,
+derived form -- scaffold into an empty box, drive the subject against that
+box, and collect what it refuses for -- is out of reach for the same reason
+`structure`'s own from-zero driver already states in this file:
+`subprocess.run()` is this tool's only authority over an external driver,
+and it holds none over what happens on either side of that call. That
+stronger form is recorded here as **the scaffolded-refusal drive**, deferred
+rather than built, and rather than smuggled into a recipe that cannot
+express it.
+
+### An artefact is judged by what it shows, and by what nobody named
+
+Only a real drive produces artefacts, so this attaches to stage 2's own
+from-zero build, not to a static check. `structure`'s optional
+`artefactKinds` recipe block names a kind by its `glob`; per declared
+member of that kind, the payload reports `produced`, `produced-but-empty`
+(a file the build wrote carrying zero bytes -- existence is not the
+measurement), `absent` (the build never wrote it at all), `carries-no-match`
+(the kind declares a `contentPattern` and the produced content does not
+match it), or `content-not-declared` (no pattern is declared, so the
+content is never assumed full). Separately, and sharing the same
+`tree_digest(from_zero_root, exclude)` enumeration: every on-disk member of
+that kind the declared roster never names at all, reported as `unnamed`
+whether or not the list is empty -- a flow validates only what it names, so
+an artefact nobody named is otherwise never checked at all, and the report
+would still read complete.
+
 ### The binding ruling: an audit never reports without driving
 
 Stage 2 accepts exactly one skip reason:
@@ -544,7 +585,7 @@ and `- Self-digest:` exists to make editing one visible.
 | `disputed-severity` | `## Disputed severity`, bare heading; when non-empty, exactly two `- Position:` lines per dispute, each citing `file:line`, recorded verbatim, with no ranking | The heading is absent, or a dispute's positions are unpaired, or a position carries no citation |
 | `stage-outcomes` | `## Stage outcomes`, one row per stage named in the stages table above, each `ran` or `skipped: <reason>` | A stage has no row, or a `skipped` row carries no reason |
 | `undecidable` | `## Undecidable`, bare heading, demanded when stage 1 is `ran`; when non-empty, each entry names `- Kind:`, `- Rung:` (`probe` or `readers`), and, when the rung is `probe`, `- Probe: <move>` | The heading is absent while stage 1's row reads `ran`, or a `probe` rung names a move whose own `## Move outcomes` row is not `ran` |
-| `user-drive` | `## User drive`, demanded when stage 2 is `ran`; the driver's `argv`, `argv[0]`'s resolved path, its `cwd`, the env names passed, any declared-but-absent env name (`envMissing`), the ignorance control gate's outcome, the box digest before and after -- `run_structure`'s own `ignorance` block, transcribed rather than narrated -- a `- Digest:` line agreeing with `## Frozen`'s, and a non-empty `### Declared, not proven` subsection stating what the drive did not prove: training-data exposure, contact between drives, "genuinely ignorant" versus "was not shown the file", and that the comparison's resolution is bounded by the brief the operator wrote | Absent while stage 2's row reads `ran`; the `- Digest:` line is absent or disagrees with `## Frozen`; or `### Declared, not proven` is absent or carries nothing, because a drive claiming to have proven everything has misread what it did |
+| `user-drive` | `## User drive`, demanded when stage 2 is `ran`; the driver's `argv`, `argv[0]`'s resolved path, its `cwd`, the env names passed, any declared-but-absent env name (`envMissing`), the ignorance control gate's outcome, the box digest before and after -- `run_structure`'s own `ignorance` block, transcribed rather than narrated -- a `- Digest:` line agreeing with `## Frozen`'s, a non-empty `### Declared, not proven` subsection stating what the drive did not prove: training-data exposure, contact between drives, "genuinely ignorant" versus "was not shown the file", and that the comparison's resolution is bounded by the brief the operator wrote; and a non-empty `### Demanded, not scaffolded` subsection, per declaration the subject read from its target during the drive, naming the declaration, where it belongs, and the consequence of its absence -- `(none)` is the explicit way to say there was nothing to demand | Absent while stage 2's row reads `ran`; the `- Digest:` line is absent or disagrees with `## Frozen`; `### Declared, not proven` is absent or carries nothing, because a drive claiming to have proven everything has misread what it did; or `### Demanded, not scaffolded` is absent or carries nothing, left blank rather than stated `(none)` |
 | `reading-diff` | `## Reading diff`, demanded when stage 3 is `ran` | Absent while stage 3's row reads `ran` |
 | `drives` | `## Drives`, demanded when stage 4 is `ran`; no finding may attribute itself to the skill-less drive while naming the subject as its own target | Absent while stage 4's row reads `ran`, or a finding commits that category error |
 | `not-adjudicable` | `## Not adjudicable`, bare heading; when non-empty, each entry names the absent half, its `- Evidence:`, and the `## Repair units` unit it belongs to; when at least one entry carries `- Move: 6`, the section opens with `- Delete:`, `- Update:`, `- Undecided:`, naming each in-scope finding by label, `(none)` for an empty bucket -- the same conditionally-required idiom `NO_CONFIRMED_DECLARATION` already uses for a line demanded only when a condition holds | The heading is absent, or a finding whose `- Adjudication:` reads `not adjudicable` sits under `## Ranked findings` instead; the three rosters are missing while a Move-6 not-adjudicable finding exists, present with no such finding, or a label is omitted, duplicated, or listed under the wrong bucket |
@@ -577,7 +618,7 @@ carries no vocabulary of its own beyond that one heading.
 | --- | --- | --- |
 | `roster` | Code side by driving the subject as a process; documented side by parsing a table; a guarded vocabulary's reach and identity-versus-content, optionally, by driving its own declared guard | `code`, `doctrine`, `unregistered`, `phantom`, `duplicated`, `numeralMismatch`, `notes`, `guardReach` |
 | `check-report` | The report shape above, from a report file | `violations` |
-| `structure` | Declared side by parsing a structure table; on-disk side by walking `--subject`; from-zero side by walking a recipe-built scaffold inside an empty box | `sides`, `outcome`, `onlyIn`, `missingFrom`, `notes`, `containment` |
+| `structure` | Declared side by parsing a structure table; on-disk side by walking `--subject`; from-zero side by walking a recipe-built scaffold inside an empty box; per optional declared `artefactKind`, what the from-zero build produced and which on-disk members its declared roster never names | `sides`, `outcome`, `onlyIn`, `missingFrom`, `notes`, `containment`, `artefacts` |
 | `walkthrough` | An ordered recipe of steps, each run for real against one shared box, each held to its own declared expectation | `steps`, `stall`, `unreached`, `containment` |
 | `reading-diff` | Two supplied readings of one prose surface, given directly rather than derived | `agreement`, `shared`, `onlyIn`, `comparison`, `candidates`, `limit`, `frozen` |
 | `sensitivity` | A copy of the subject, a producer driven once per varied declared input, and the declared results site re-read after each drive | `control`, `matrix`, `notAdjudicable`, `inputsVaried`, `inputsUnchecked`, `inputsTotal`, `notes`, `containment` |
