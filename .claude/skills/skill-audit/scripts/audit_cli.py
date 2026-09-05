@@ -854,7 +854,8 @@ ESCALATION_BUCKETS = {
         "scope-claimed-without-heading",
         "no derivation available for this surface"),
     "consequence": ("comparison-not-run",),
-    "deterministic-exclusion": ("shape-not-walkable", "case-only-divergence"),
+    "deterministic-exclusion": ("shape-not-walkable", "case-only-divergence",
+                                "restatement-search-cannot-fire"),
 }
 
 
@@ -1122,6 +1123,14 @@ def read_site(path):
         raise Unprobeable(f"a documented site could not be read: {error}")
 
 
+#: The number of independently matching `restatementSearch` sites `duplicated`
+#: requires before it reports anything -- one restatement is not a duplication.
+#: `run_roster` reads this same constant for the runtime cutoff and for the
+#: `restatement-search-cannot-fire` note, so the two never carry two different
+#: spellings of one threshold.
+RESTATEMENT_SITE_QUORUM = 2
+
+
 def run_roster(args):
     """Derive both halves of one closed surface and report the difference.
 
@@ -1175,8 +1184,20 @@ def run_roster(args):
         if matched:
             duplicated.append({"line": line, "members": matched,
                                "path": str(path)})
-    if len(duplicated) < 2:
+    if len(duplicated) < RESTATEMENT_SITE_QUORUM:
         duplicated = []
+    declared_paths = len(search.get("paths", []))
+    if "restatementSearch" in recipe and declared_paths < RESTATEMENT_SITE_QUORUM:
+        notes.append(note(
+            "restatement-search-cannot-fire",
+            f"this recipe's restatementSearch declares {declared_paths} "
+            f"path(s); `duplicated` only reports once at least "
+            f"{RESTATEMENT_SITE_QUORUM} independently matching sites are "
+            "found, so this search cannot report a finding regardless of "
+            "what the declared path(s) hold -- the search ran and found "
+            "nothing reportable by construction, not because no "
+            "restatement exists",
+            str(spec_path), f"{spec_path}:1-1"))
 
     comparison = "run" if closed_seen else "not-run"
     if comparison == "not-run":

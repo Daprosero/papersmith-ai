@@ -1409,6 +1409,98 @@ class DuplicatedTests(unittest.TestCase):
             "one of them is still reported")
 
 
+class RestatementSearchCannotFireTests(BoxMixin, unittest.TestCase):
+    """`duplicated` needs at least two independently matching sites before it
+    reports anything -- one restatement is not a duplication. Two shipped
+    recipes (`remote-execution.accepted-operations.json`,
+    `skill-audit.subcommands.json`) declare exactly one `restatementSearch`
+    path, so the mechanism can never produce a `duplicated` finding for them
+    regardless of what that one path holds. A run must say so, on every run,
+    following the `comparison-not-run` precedent immediately below it in this
+    same function -- never a silent, indistinguishable-from-a-real-search
+    empty result.
+
+    The weaker guard this class specifically refuses to let pass: a lock that
+    only proves "a note fires when `paths` is empty" would still be green
+    against a recipe declaring exactly one path -- the actual shipped shape.
+    Every test here uses a genuinely matching, non-empty path so that guard
+    could never be mistaken for this one.
+    """
+
+    def _recipe(self, box, paths):
+        argv = self.echo_probe(box, ["ALPHA", "BETA"])
+        return self.recipe(
+            box, surface="s", probe="refusal", argv=argv, cwd=".",
+            stream="stdout", exit=1,
+            extract=r"is not one of (?P<roster>.+)$", split=", ",
+            doctrineSites=[],
+            restatementSearch={"quorum": 2, "paths": paths})
+
+    def test_one_declared_path_cannot_reach_the_quorum(self):
+        box = self.make_box("restate_one")
+        self.write(box, "RESTATE.md", "ALPHA and BETA are both named here.\n")
+        spec = self._recipe(box, [{"path": "RESTATE.md"}])
+        _, payload = roster_json(spec, box)
+        kinds = [n["kind"] for n in payload["notes"]]
+        self.assertIn(
+            "restatement-search-cannot-fire", kinds,
+            f"a one-path restatementSearch can never reach the quorum of "
+            f"two matching sites, and must say so: {payload['notes']}")
+        self.assertEqual(
+            payload["duplicated"], [],
+            "one matching site is not a duplication")
+
+    def test_two_declared_paths_that_both_match_do_not_fire_the_note(self):
+        box = self.make_box("restate_two")
+        self.write(box, "RESTATE1.md", "ALPHA and BETA are both named here.\n")
+        self.write(box, "RESTATE2.md", "ALPHA and BETA, named again here.\n")
+        spec = self._recipe(
+            box, [{"path": "RESTATE1.md"}, {"path": "RESTATE2.md"}])
+        _, payload = roster_json(spec, box)
+        kinds = [n["kind"] for n in payload["notes"]]
+        self.assertNotIn(
+            "restatement-search-cannot-fire", kinds,
+            f"two independently matching sites reach the quorum and must "
+            f"not be reported as structurally incapable: {payload['notes']}")
+        self.assertEqual(len(payload["duplicated"]), 2)
+
+    def test_no_restatement_search_declared_emits_no_note(self):
+        box = self.make_box("restate_absent")
+        argv = self.echo_probe(box, ["ALPHA", "BETA"])
+        spec = self.recipe(
+            box, surface="s", probe="refusal", argv=argv, cwd=".",
+            stream="stdout", exit=1,
+            extract=r"is not one of (?P<roster>.+)$", split=", ",
+            doctrineSites=[])
+        _, payload = roster_json(spec, box)
+        kinds = [n["kind"] for n in payload["notes"]]
+        self.assertNotIn(
+            "restatement-search-cannot-fire", kinds,
+            "a recipe that declares no restatementSearch at all has not "
+            "shipped a check that cannot fire; it has shipped no check")
+
+    def test_the_threshold_is_one_named_constant_never_a_second_literal(self):
+        source = function_source(CLI, "run_roster")
+        self.assertGreaterEqual(
+            source.count("RESTATEMENT_SITE_QUORUM"), 2,
+            "the runtime cutoff and the note's own message must both read "
+            "the same named constant, never a second hand-spelled literal "
+            f"`2`: {source!r}")
+        self.assertNotIn(
+            "len(duplicated) < 2", source,
+            "the runtime cutoff must read RESTATEMENT_SITE_QUORUM, never "
+            "the bare literal it replaced")
+
+    def test_restatement_search_cannot_fire_is_classified_deterministic_exclusion(self):
+        cli = audit_cli_module()
+        self.assertIn(
+            "restatement-search-cannot-fire",
+            cli.ESCALATION_BUCKETS["deterministic-exclusion"],
+            "there is no prose behind a too-short path list to escalate a "
+            "reader towards; this is a structural fact about the recipe, "
+            "not a surface an escalatable reading could still resolve")
+
+
 class NumeralCheckTests(BoxMixin, unittest.TestCase):
     """A numeral above a list, held to the list.
 

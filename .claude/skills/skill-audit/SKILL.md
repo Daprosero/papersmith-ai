@@ -625,6 +625,7 @@ landed" and "its row landed" can outlive one commit undetected.
 | The extraction matched nothing | Exit `2`. Never an empty code side |
 | A recipe claims a table's scope | Check the quoted heading against disk before honouring the claim |
 | A set is restated by hand in more than one place | Report every restatement under `duplicated`, even when they all agree |
+| A recipe's `restatementSearch` declares fewer paths than `duplicated` needs to fire | Emit `restatement-search-cannot-fire`; a search that cannot reach two matching sites must say so, not report an empty `duplicated` indistinguishable from a search that ran and found nothing |
 | A finding's only evidence is prose on both sides | Mark it `read-only`, report it as a candidate, declare neither side wrong |
 | Enumeration found no consumer at all | Mark it `not adjudicable`; put it in its own section; name build-or-delete |
 | A finding's remedy is a single-line deletion | Report it. Make no edit |

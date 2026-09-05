@@ -81,118 +81,221 @@ mergeable and revertable on its own) rather than a single oversized PR.
 
 ## Change A — `skill-audit-move6-substitution-probe` (this folder, scope unchanged)
 
-### Commit 0 — `a-driven-child-purges-its-own-bytecode` (forecast 150–195)
+### Commit 0 — `a-driven-child-purges-its-own-bytecode` (forecast 150–195) — **DONE**, commit `08428f1`, 210 lines
 
-- [ ] 0.1 RED: lock asserting `run_box_step`'s driver-kind child env carries
+- [x] 0.1 RED: lock asserting `run_box_step`'s driver-kind child env carries
       `PYTHONDONTWRITEBYTECODE=1` even when absent from the parent env
       (`tests/test_skill_audit.py`, new `ChildEnvTests`).
-- [ ] 0.2 RED: lock asserting `run_sensitivity_drive`'s child env carries the
+- [x] 0.2 RED: lock asserting `run_sensitivity_drive`'s child env carries the
       same purge, independent of whether `run_box_step` ran in the process.
-- [ ] 0.3 RED: lock asserting a `driver` step declaring
+- [x] 0.3 RED: lock asserting a `driver` step declaring
       `PYTHONDONTWRITEBYTECODE` in `env` is still refused `Unprobeable`
-      (name stays out of `DRIVER_ENV_ALLOWLIST`).
-- [ ] 0.4 RED: AST class-sweep lock proving no third `os.environ[...]`
+      (name stays out of `DRIVER_ENV_ALLOWLIST`). Measured: this one already
+      held against unmodified code (pre-existing behavior, not new); kept as
+      a regression guard.
+- [x] 0.4 RED: AST class-sweep lock proving no third `os.environ[...]`
       child-env comprehension exists outside `constructed_child_env`.
-- [ ] 0.5 GREEN: add `constructed_child_env(names, label)` to
+- [x] 0.5 GREEN: add `constructed_child_env(names, label, hint="")` to
       `scripts/audit_cli.py`; wire both call sites in `run_box_step` and
       `run_sensitivity_drive` to it, dropping their duplicated dict-comps.
-- [ ] 0.6 GREEN: `SKILL.md` allowlist doctrine paragraph states the name is
+- [x] 0.6 GREEN: `SKILL.md` allowlist doctrine paragraph states the name is
       injected, never inherited, never recipe-declarable; one `How the moves
       fail` row added.
-- [ ] 0.7 Mutation-reachability proof: mutate the injection line, confirm
-      0.1/0.2 go red for the stated reason, then restore via `cp` backup.
+- [x] 0.7 Mutation-reachability proof: mutated the injection line, confirmed
+      0.1/0.2 go red for the stated reason, then restored via `cp` backup.
 
-### Commit a1 — the `inversion` mechanism (forecast 760–950)
+### Commit a1 — the `inversion` mechanism (forecast 760–950) — **DONE**, commit `b288981`, 880 lines
 
-- [ ] a1.1 RED: baseline gate — a red-before-mutation subject refuses the
+- [x] a1.1 RED: baseline gate — a red-before-mutation subject refuses the
       whole sweep `kind=baseline-not-green`, no fact mutated, no finding
       emitted (spec condition 11, both scenarios).
-- [ ] a1.2 RED: condition 1 — absent literal at `(file, line)` halts
+- [x] a1.2 RED: condition 1 — absent literal at `(file, line)` halts
       `Unprobeable` before any write.
-- [ ] a1.3 RED: condition 2 — a no-op write (`sha256(before)==sha256(after)`)
+- [x] a1.3 RED: condition 2 — a no-op write (`sha256(before)==sha256(after)`)
       halts before the observing run ever executes.
-- [ ] a1.4 RED: condition 3 — a same-length mutation still executes fresh
+- [x] a1.4 RED: condition 3 — a same-length mutation still executes fresh
       source, never a cached `.pyc` (depends on commit 0's helper).
-- [ ] a1.5 RED: condition 4 — literal present 0 times → `fact-absent`;
+- [x] a1.5 RED: condition 4 — literal present 0 times → `fact-absent`;
       present ≥2 times on the declared line → `fact-ambiguous`; neither
       substitutes.
-- [ ] a1.6 RED: condition 5 — restore via `restore_exact_bytes` confirmed by
+- [x] a1.6 RED: condition 5 — restore via `restore_exact_bytes` confirmed by
       sha256; a digest mismatch halts the sweep and the next fact is
-      untouched. Separately lock that `git checkout --` is never invoked by
-      this subcommand (grep-on-source lock).
-- [ ] a1.7 RED: condition 6 — `COMPARISON_OPERATORS` stripped from
+      untouched. Separately locked that `git checkout --` is never invoked by
+      this subcommand (grep-on-source lock, exact `ast.Constant` match).
+- [x] a1.7 RED: condition 6 — `COMPARISON_OPERATORS` stripped from
       `literal`/`replacement`; equal remainders refuse `kind=operator-flip`.
-- [ ] a1.8 RED: condition 7 — the declared `observe.argv`/harness runs, never
+      **Bug found by this exact RED test**: identical literal/replacement was
+      misclassified as `operator-flip` instead of falling through to
+      `no-op-write`; fixed with a `literal != replacement` guard.
+- [x] a1.8 RED: condition 7 — the declared `observe.argv`/harness runs, never
       a hand-picked subset; a repo with two suites runs both, separately.
-- [ ] a1.9 RED: condition 8 — a green mutation emits a `## Not adjudicable`
+- [x] a1.9 RED: condition 8 — a green mutation emits a `## Not adjudicable`
       finding with `- Move: 6`, `- Adjudication: not adjudicable`, and
       `- Remedy: undecided: <reason>` — never silently accepted.
-- [ ] a1.10 RED: cap/overflow — a 10-fact recipe drives exactly 8, names the
+- [x] a1.10 RED: cap/overflow — a 10-fact recipe drives exactly 8, names the
       remaining 2 individually under `## Unchecked`.
-- [ ] a1.11 RED: exit-code contract — all-obsolete drive exits `0`; a
+- [x] a1.11 RED: exit-code contract — all-obsolete drive exits `0`; a
       restore-digest mismatch on any one fact exits `2`.
-- [ ] a1.12 RED: a recipe with no `mutations` block refuses, naming the
+- [x] a1.12 RED: a recipe with no `mutations` block refuses, naming the
       missing block, never reporting zero facts.
-- [ ] a1.13 RED: `build-escaped-the-box` — a drive writing outside the
+- [x] a1.13 RED: `build-escaped-the-box` — a drive writing outside the
       declared file exits `2`, sweep halts.
-- [ ] a1.14 GREEN: implement `run_inversion` + fact resolution/write/observe/
-      restore helpers in `scripts/audit_cli.py`; wire `build_parser` +
-      `DISPATCH` for the `inversion` subcommand.
-- [ ] a1.15 GREEN: same commit — subcommands-table row, exit-codes
+- [x] a1.14 GREEN: implemented `run_inversion` + `run_inversion_observe` +
+      `strip_comparison_operators` in `scripts/audit_cli.py`; wired
+      `build_parser` + `DISPATCH` for the `inversion` subcommand.
+- [x] a1.15 GREEN: same commit — subcommands-table row, exit-codes
       paragraph, shipped-files row for the new self-probe recipe, one worked
       `references/usage.md` invocation, moves-table row 6 `Ships as` moved
       off `doctrine`, Decision Gates rows, Move 6 detail rewritten to v1's
       actual scope (sources facts only from `mutations`, no AST classifier,
-      emits only `undecided: <reason>`).
-- [ ] a1.16 GREEN: add `references/probes/skill-audit.self-guarded-facts.json`
-      per the `mutations` grammar (resolve under `--subject`, no absolute
-      path, no `..`; 1-based `line`).
-- [ ] a1.17 Verify: `roster` self-probe against `SKILL.md`'s shipped-files
-      table shows no `unregistered` for the new recipe row.
+      emits only `undecided: <reason>`). The flat "obsolete guard" sentence
+      was deliberately left untouched here — that correction is a2's job.
+      Also required, discovered while running the full suite (not scoped to
+      this feature): adding `run_inversion` to `NothingWasRepairedTests`'s
+      box-lifecycle exemption with its own byte-identity proof test, and
+      updating a pre-existing hardcoded subcommand list in
+      `SelfAuditSubcommandRosterTests`.
+- [x] a1.16 GREEN: added `references/probes/skill-audit.self-guarded-facts.json`
+      per the `mutations` grammar, guarding `REPORT_SCHEMA_VERSION` against
+      the real `SchemaVersionDerivationTests`. Its `line` field is brittle —
+      shifted twice (2983→2992→3013) as code was inserted above it during
+      this same commit and again during a2; re-derive before any future edit
+      that adds code above `REPORT_SCHEMA_VERSION`.
+- [x] a1.17 Verify: measured that `roster` against the shipped `structure.json`
+      recipe does **not** actually check the shipped-files table (it returns
+      `"no derivation available for this surface"`, vacuously empty
+      `unregistered`/`phantom`) — a wording gap in this task, reported back.
+      Verified manually instead via `audit_cli.markdown_table_rows` +
+      `rglob` directly: zero `unregistered`, zero `phantom`.
 
-### Commit a2 — the report side (forecast 165–245)
+### Commit a2 — the report side (forecast 165–245) — **DONE**, commit `8da9383`, 318 lines
 
-- [ ] a2.1 RED: condition 9 — a not-adjudicable Move-6 reason naming none of
+- [x] a2.1 RED: condition 9 — a not-adjudicable Move-6 reason naming none of
       `UNDISTINGUISHED_CAUSES` (`"obsolete guard"`, `"equivalent mutant"`,
       `"degenerate fixture"`, `"none determined"`) fails `check-report`,
       stricter than today's any-non-empty-string acceptance.
-- [ ] a2.2 RED: condition 10 — a report with a red Move-6 finding and no
+- [x] a2.2 RED: condition 10 — a report with a red Move-6 finding and no
       reachability-vs-coverage statement fails `check-report`.
-- [ ] a2.3 RED: doctrine-agreement lock — every `UNDISTINGUISHED_CAUSES`
+- [x] a2.3 RED: doctrine-agreement lock — every `UNDISTINGUISHED_CAUSES`
       member appears verbatim in `SKILL.md`'s `remedy` row (the
       `stage_model_total` idiom).
-- [ ] a2.4 RED: `ReportSchemaSelfDescriptionTests`-style lock binding the new
+- [x] a2.4 RED: `ReportSchemaSelfDescriptionTests`-style lock binding the new
       `reachability` `REPORT_SHAPE` key to its `SKILL.md` row, both
-      directions.
-- [ ] a2.5 GREEN: implement the condition-9 cause check inside the existing
+      directions (plus reuse of the existing generic bidirectional test,
+      which covers this automatically).
+- [x] a2.5 GREEN: implemented the condition-9 cause check inside the existing
       `undecided:` branch and the condition-10 `- Reachability: fires|silent:
-      <what this does not prove>` per-finding field in `run_check_report`.
-- [ ] a2.6 GREEN: add the `reachability` key to `REPORT_SHAPE` with its
+      <what this does not prove>` per-finding field in `run_check_report`,
+      scoped to `- Move: 6` alone (never also gated on adjudication).
+- [x] a2.6 GREEN: added the `reachability` key to `REPORT_SHAPE` with its
       `SKILL.md` row, same commit.
-- [ ] a2.7 GREEN: add a Move-6 not-adjudicable finding to
+- [x] a2.7 GREEN: added a Move-6 not-adjudicable finding (F3) to
       `references/example-report.md` carrying a named cause and the
-      reachability statement; recompute and update `- Self-digest:` in this
-      same commit (`HistoricalReportRecordTests` stays untouched — this file
-      is not the pinned one).
-- [ ] a2.8 Verify: `check-report` validates `references/example-report.md`
-      without further edits at read time.
+      reachability statement; recomputed `- Self-digest:` via
+      `audit_cli.report_self_digest()` directly (`HistoricalReportRecordTests`
+      untouched — different, pinned file). **Also required**, discovered by
+      running the full suite: two pre-existing shared fixtures
+      (`REMEDY_REPORT_BODY`, `REMEDY_REPORT_ONE_BUCKET_BODY`) needed
+      `- Reachability:` lines added and one `undecided` reason corrected to
+      name a real cause, or the new conditions would have broken them.
+- [x] a2.8 Verify: `check-report` validates `references/example-report.md`
+      without further edits at read time — confirmed, `{"violations": []}`.
 
-### Commit b — `the-defects-already-within-reach` (forecast 215–275, no code)
+### Commit b — `a-check-that-cannot-fire-says-so` (forecast 215–275, superseded) — **DONE**
 
-- [ ] b.1 RED: `roster` recipe reaching the thrice-spelled constant via
-      `restatement_of`/`duplicated`, *conditional* on a driveable producer
-      whose refusal message emits the closed set. If none exists, the RED
-      target is the `no-closed-roster` finding itself, not a silent skip.
-- [ ] b.2 RED: `walkthrough` recipe naming, in documented order, the step
-      whose expectation is sunk by an earlier step's own correct-in-isolation
-      check, including the two-decisions-combine-to-a-false-refusal case.
-- [ ] b.3 RED: `structure` from-zero recipe proving a declared requirement is
-      never demanded of a repository built from nothing.
-- [ ] b.4 GREEN: author/widen the three `references/probes/*.json` recipes
-      only; add their shipped-files rows in the same commit. No edit to
-      `scripts/audit_cli.py`.
-- [ ] b.5 Verify: `roster`/`walkthrough`/`structure` self-probes stay clean
-      against the widened recipes; `unregistered`/`phantom` remain empty.
+The three recipe-widening recipes originally specced here were each measured
+away rather than written: one target was already fixed earlier in this same
+session (b.2), one would have manufactured a false-positive `duplicated`
+finding against legitimate per-command documentation (b.1's first half), and
+the third would have built a new probe rather than widened a shipped one,
+contrary to this change's own cheaper-than-building rationale (b.3). Writing
+any of them would have been theatre. What b.1's investigation found instead,
+while it was blocked, was real and load-bearing for this skill's own subject:
+**`skill-audit` ships a check that cannot fire.**
+
+- [x] b.1 (superseded) RED/GREEN, **the real defect**: `run_roster`'s
+      `restatementSearch` mechanism requires `len(duplicated) >= 2`
+      independently matching sites before `duplicated` reports anything —
+      correctly, since one restatement is not a duplication
+      (`audit_cli.py`, was `if len(duplicated) < 2: duplicated = []`). Two
+      shipped recipes declare exactly **one** `restatementSearch` path —
+      `references/probes/remote-execution.accepted-operations.json`
+      (quorum 4, one path: `SKILL.md`) and
+      `references/probes/skill-audit.subcommands.json` (quorum 2, one
+      path: `SKILL.md`) — so both are structurally incapable of ever
+      producing a `duplicated` finding, regardless of what that one path
+      holds. A third, `proposal-deliberation.accepted-operations.json`,
+      declares three paths and can fire (confirmed:
+      `DuplicatedTests` already exercises it green). Nothing said so on a
+      run of either dead recipe; a green run read exactly like a run that
+      searched and found nothing.
+- [x] b.1a GREEN: added `RESTATEMENT_SITE_QUORUM = 2` as the single source
+      for the runtime cutoff (`len(duplicated) < RESTATEMENT_SITE_QUORUM`)
+      and the new note's own message, so the two never carry two spellings
+      of one threshold — the exact defect class this repository has now
+      been bitten by three times. Added a `restatement-search-cannot-fire`
+      note, following the `comparison-not-run` precedent immediately below
+      it in the same function: reported, never a refusal, naming the
+      recipe's declared path count and the count the mechanism requires.
+      Classified under `ESCALATION_BUCKETS["deterministic-exclusion"]` —
+      there is no prose behind a too-short path list for a reader to
+      escalate towards; it is a structural fact about the recipe's own
+      declaration. **Consequence, measured**: inserting this code above
+      `REPORT_SCHEMA_VERSION` shifted its line a third time (3013→3034,
+      after a1/a2's own 2983→2992→3013) — a1.16's own documented
+      brittleness fired exactly as predicted, caught by
+      `NothingWasRepairedTests`/`UsageReferenceTests` going red on the
+      first full-suite run, and fixed by re-deriving
+      `skill-audit.self-guarded-facts.json`'s declared `line`, not by
+      editing either test.
+- [x] b.1b GREEN: `SKILL.md`'s Decision Gates table gains one row, in the
+      register of the surrounding rows, immediately after "A set is
+      restated by hand in more than one place": the row for what happens
+      when the search cannot reach two matching sites at all.
+- [x] b.1c RED, mutation-reachability proof: five new locks in
+      `RestatementSearchCannotFireTests`. The discriminating one
+      (`test_one_declared_path_cannot_reach_the_quorum`) uses a
+      **non-empty** one-path fixture — the actual shipped shape — so a
+      weaker guard proving only "a note fires when `paths` is empty" could
+      not pass in its place; mutating the emission condition from
+      `declared_paths < RESTATEMENT_SITE_QUORUM` to `declared_paths == 0`
+      left exactly that one lock red while the rest of the suite (and the
+      other four new locks) stayed green, confirmed by `git diff --stat`
+      before and after, and restored by `cp` from a scratch backup,
+      confirmed byte-identical by sha256, never `git checkout --`.
+- [x] b.1d Verify: whether either dead recipe gains a real second path was
+      measured, not assumed, for both. `remote-execution` has no
+      `references/` directory at all and no other file restating its nine
+      commands by hand within a bounded search — left alone.
+      `skill-audit`'s own `tests/test_skill_audit.py` (resolvable via
+      `resolve_site`'s `root: "repo"`, since the test file sits at the
+      repository root) does contain a genuine hand-copied literal list of
+      all seven subcommand names in
+      `SelfAuditSubcommandRosterTests.test_the_subcommand_roster_reports_three_sets_and_no_boolean`
+      — but measured against `restatement_of`'s crude "member is a
+      substring of some line" matching, every one of those seven names
+      already occurs 14–163 times throughout that ~5,700-line file as
+      ordinary skill-audit vocabulary (`roster` alone: 163 times, first
+      hit at line 3, nowhere near the genuine list at line 1139). Adding
+      this file as a second path would report `duplicated` at a false
+      line, for an incidental vocabulary-collision reason rather than
+      because the genuine restatement was found — manufacturing a
+      misleading positive of exactly the shape this skill exists to
+      refuse, extending the caution b.1's own blocked investigation
+      already established for a sibling skill's `usage.md`. Both recipes
+      left unchanged; the note is the honest output for both.
+- [x] b.2 (superseded, unchanged from the original investigation):
+      `proposal-implementation`'s `position`/`gate`/`close` false
+      `POSITION_UNBACKED` refusal is already fixed as
+      `POSITION_SHARDS_UNDECLARED`; a `walkthrough` recipe reaching for it
+      would prove nothing against current `SKILL.md`.
+- [x] b.3 (superseded, unchanged): no `structure` recipe exists yet for
+      either sibling subject; building one is building a new probe, not
+      widening a shipped one, contrary to this commit's own rationale.
+
+**Owner input no longer needed for this commit.** The original three-way
+choice this section asked for is moot: b.1's real finding replaced the
+blocked recipe work rather than requiring a decision between it.
 
 ---
 
