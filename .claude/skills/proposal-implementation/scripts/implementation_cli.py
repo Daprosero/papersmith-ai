@@ -8391,6 +8391,97 @@ def _reconcile_discovered_witnesses(target: Path, name: str, args: argparse.Name
     return witnesses
 
 
+def position_reinstall_payload(sequence: list[dict]) -> list[dict]:
+    """The exact `--sequence` array that reinstalls the sequence a report has
+    just described: same items, same order, same text, same witness, and no
+    mark at all.
+
+    Every field comes out of the report's own `sequence` entries, which is the
+    whole point -- the engine emitted them in the same payload that names the
+    finding, so nothing here is re-read from disk and nothing is invented. The
+    mark is deliberately absent rather than blanked: `--sequence` installs
+    every item at `[ ]` on its own (`cmd_position`'s install branch), and the
+    marks are then re-derived against evidence inside that same call, so a
+    reinstall clears exactly the assertions nothing measured and restores every
+    mark that anything does.
+
+    `twostate` is carried explicitly rather than left to the install branch's
+    default: the default is `True`, so a leveled witness whose flag was dropped
+    here would come back two-state and grade against a rung ladder it no longer
+    declares it belongs to.
+    """
+    return [{"text": item["text"],
+             "witness": {"kind": item["witness"]["kind"],
+                        "operand": item["witness"].get("operand"),
+                        "twostate": bool(item["witness"].get("twostate", True))}}
+            for item in sequence]
+
+
+def _position_reinstall_command(args, sequence: list[dict]) -> str:
+    """One shell line that reinstalls `sequence` and re-derives it, payload
+    included.
+
+    **The payload travels inside the command, and that is the requirement.**
+    `position --sequence -` reads stdin, so a published command that stopped at
+    the flag would hand the reader a hole to fill by hand -- which is exactly
+    the improvisation the incident on record consisted of: reading `SKILL.md`,
+    grepping the suite for a worked example, and rebuilding the array out of
+    `position`'s own printed output. `printf '%s'` writes the array this
+    function already holds and pipes it in, so the line runs unedited.
+
+    `printf` rather than a heredoc or `echo`: the format string is the literal
+    `%s` and the JSON is an argument, so a `%` or a backslash inside an item's
+    text is data on every shell rather than a directive on some of them. Both
+    halves are `shlex.quote`d by the same discipline `_cli_command` keeps.
+
+    **`--shards` is carried through when the caller gave one, and this is not
+    decoration.** A reinstall re-derives every mark from evidence, and evidence
+    for an `@shard` witness is only there when the shard directory is. Dropping
+    the flag would publish a command that clears a mark this very invocation
+    could measure -- a published act that destroys a reading it was handed.
+    """
+    payload = json.dumps(position_reinstall_payload(sequence),
+                        ensure_ascii=False, sort_keys=True)
+    extra: list[str] = []
+    shards = getattr(args, "shards", None)
+    if shards:
+        extra += ["--shards", str(shards)]
+    return (f"printf '%s' {shlex.quote(payload)} | "
+            + _refusal_position_command(args, *extra, "--sequence", "-",
+                                        "--replace"))
+
+
+def position_finding_resolution(args, sequence: list[dict]) -> dict | None:
+    """The act that clears an unbacked tick, published beside the finding that
+    names one -- `WORK_STATE`'s own rule (`_WORK_STATE_RESOLUTIONS`), carried
+    one surface out from refusals to findings.
+
+    **Only `unbacked` reaches here, and the omission is the measurement.** A
+    contradicted mark IS corrected by the refresh that reported it: `derive`
+    runs before the write loop, so a `disagrees` entry in the returned
+    `sequence` describes a mark this very call has already rewritten, and
+    publishing an act for it would prescribe work that is done. An unmeasured
+    item is `continue`d over and its mark survives untouched -- which is
+    honest for a blank box and a standing false claim for a ticked one, and
+    that ticked one is what `unbacked` names.
+
+    **A command, not a question, and it takes nothing away from the restraint
+    that was right.** `position` still refuses to rewrite a mark it could not
+    measure; nothing about the refresh changes. What the reinstall does is a
+    different act with a different meaning -- it withdraws an assertion rather
+    than deciding one -- and it is the act the engine may name without
+    guessing, because a mark nothing measured is not a reading the block is
+    entitled to carry however the operator came by it.
+
+    `None` when nothing is unbacked: a resolution published over a report with
+    no finding in it is an act nobody needs to run, and the reader learns to
+    skip the key.
+    """
+    if not any(item.get("unbacked") for item in sequence):
+        return None
+    return _refusal_command(_position_reinstall_command(args, sequence))
+
+
 def cmd_position(args: argparse.Namespace) -> dict:
     """The only writer into `<Name>/AGREED.md`'s position section.
 
@@ -8590,6 +8681,12 @@ def cmd_position(args: argparse.Namespace) -> dict:
             "command": "position", "target": str(target), "name": name,
             "status": "absent", "holder": None, "wrote": [], "left": [],
             "unmeasured": [], "unbacked": [], "sequence": [],
+            # Uniform key set on every branch, `position_state`'s own rule one
+            # function over: a reader that checks `resolve` must not have to
+            # know which branch answered. Nothing is unbacked in a block that
+            # is not there, so it is `None` here by the same derivation as
+            # everywhere else rather than by a special case.
+            "resolve": position_finding_resolution(args, []),
             "revision": args.revision,
             "revisionSha256": revision_sha256, "targetLevel": None,
         }
@@ -8727,6 +8824,7 @@ def cmd_position(args: argparse.Namespace) -> dict:
             "holder": str(target_path.relative_to(target)),
             "wrote": [], "left": left, "unmeasured": unmeasured,
             "unbacked": unbacked,
+            "resolve": position_finding_resolution(args, sequence),
             "sequence": sequence, "revision": existing_block["revision"],
             "revisionSha256": existing_block["revisionSha256"],
             "targetLevel": target_level,
@@ -8757,6 +8855,7 @@ def cmd_position(args: argparse.Namespace) -> dict:
         "status": "written", "holder": str(target_path.relative_to(target)),
         "wrote": wrote, "left": left, "unmeasured": unmeasured,
         "unbacked": unbacked,
+        "resolve": position_finding_resolution(args, sequence),
         "sequence": sequence, "revision": args.revision,
         "revisionSha256": revision_sha256, "targetLevel": target_level,
     }

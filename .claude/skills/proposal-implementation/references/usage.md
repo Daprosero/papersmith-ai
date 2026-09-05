@@ -613,10 +613,16 @@ they were easy to leave undocumented:
 - **`position`** — the execution sequence's derived state, read from
   `<Name>/AGREED.md`'s own position section. Every mark is measured, never
   asserted: `sequence` lists each step's disk mark beside what the evidence
-  actually says, `disagreements` names a mark contradicted by measurement, and
+  actually says, `disagreements` names a mark contradicted by measurement,
+  `unbacked` names a mark that is ticked with nothing measured behind it (an
+  assertion, not a reading), and
   `unmeasured` names a witness this invocation could not check at all (most
   commonly `@shard` without `--shards`). It **never gates** — read it before
-  telling a human a step is done.
+  telling a human a step is done. A `disagreements` entry is cleared by a
+  `position` refresh, which rewrites a contradicted mark on the spot; an
+  `unbacked` one is not, because that same refresh deliberately never rewrites
+  a mark it could not measure. Run `position` there and read the `resolve` it
+  prints — see "`unbacked`, and the `resolve` that clears it" below.
 - **`agreements.witness`** — a nested reading of every checklist item's
   optional trailing `` `test_<id>` `` token (`settle --witness` is the only
   command that ever writes one). Three states, never collapsed into one
@@ -805,6 +811,38 @@ did not happen. `"absent"` means there is no block yet — install one first.
 whichever write mode this call uses — a bare refresh included. Without it,
 `@shard` reads `unmeasured` (never `False`): the shard may well have
 arrived, this invocation simply was not told where to look.
+
+### `unbacked`, and the `resolve` that clears it
+
+`unbacked` lists every ordinal whose box is ticked and whose witness this run
+could not measure — an assertion, not a reading, and the one thing a refresh
+leaves exactly where it found it. That restraint is deliberate: a mark rewritten
+from evidence nobody could read would be a guess, and a derived mark that
+sometimes guesses is not worth reading. So the refresh reports the tick and
+changes nothing.
+
+Which leaves the question of how to get out, and the answer is a **reinstall**:
+`--sequence - --replace` installs every item blank and re-derives the whole
+sequence inside that same call, so every mark anything can measure comes
+straight back and only the assertions go. The array that command reads from
+stdin is the sequence the report just printed — so `position` builds it and
+publishes the whole thing:
+
+```json
+{ "status": "written", "unbacked": [3],
+  "resolve": { "kind": "command",
+               "command": "printf '%s' '[{\"text\": \"...\", \"witness\": {...}}]' | ... position ... --sequence - --replace" } }
+```
+
+`resolve` is on every branch and is `null` when nothing is unbacked. The
+command runs unedited: the payload is inside it, and the `--shards` this
+invocation was given is carried into it, so the reinstall measures exactly what
+the report measured rather than blanking a tick this run had just earned.
+
+`verify` and `probe` report `position.unbacked` and publish no command for it.
+A `position` write is stamped with the caller's own `--session`, neither of
+those two commands carries one, and an identity the engine made up is worse in
+the ledger than an extra step here: run `position` and read its `resolve`.
 
 ### `--target-level` — the rung this pass is aiming at
 
