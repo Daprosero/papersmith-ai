@@ -504,66 +504,66 @@ blocked recipe work rather than requiring a decision between it.
 
 ### Commit C1 — R7: `exits` (forecast 720–980)
 
-- [ ] C1.1 RED: `published-and-ran` — a well-formed act runs and its exit
+- [x] C1.1 RED: `published-and-ran` — a well-formed act runs and its exit
       code is **not read** (reachability, not success); a lock proves this
       by asserting a *refusing* act still reports `published-and-ran`.
-- [ ] C1.2 RED: at least one lock **executes** a published act end-to-end
+- [x] C1.2 RED: at least one lock **executes** a published act end-to-end
       (not merely asserting a "carries a resolve key" field) — the
       guard-a-weaker-guard-survives requirement for this move specifically.
-- [ ] C1.3 RED: admission gate — a shell-metacharacter act →
+- [x] C1.3 RED: admission gate — a shell-metacharacter act →
       `published-but-unparseable`, never passed to `shell=True`.
-- [ ] C1.4 RED: `argv[0]` outside `--subject`/`--repo-root` and outside the
+- [x] C1.4 RED: `argv[0]` outside `--subject`/`--repo-root` and outside the
       recipe's declared interpreter allowlist → refused before any process
       starts.
-- [ ] C1.5 RED: a missing binary → `published-but-not-executable`
+- [x] C1.5 RED: a missing binary → `published-but-not-executable`
       (`FileNotFoundError`); a hanging act → `published-but-timed-out`
       (per-act timeout).
-- [ ] C1.6 RED: no published act, recipe/subject declares it a human
+- [x] C1.6 RED: no published act, recipe/subject declares it a human
       judgement → `judgement`, reported, **not** a finding.
-- [ ] C1.7 RED: no published act, nothing declared → `unstated`, a finding,
+- [x] C1.7 RED: no published act, nothing declared → `unstated`, a finding,
       with the driveable range searched.
-- [ ] C1.8 RED: real-subject `tree_digest` before/after mismatch →
+- [x] C1.8 RED: real-subject `tree_digest` before/after mismatch →
       `Unprobeable kind=exit-escaped-the-box`, sweep halts; `erase_box` still
       runs in `finally`.
-- [ ] C1.9 GREEN: implement `run_exits`, the five-value closed roster, the
+- [x] C1.9 GREEN: implement `run_exits`, the five-value closed roster, the
       admission gate, `materialize_subject_copy` (reused verbatim) for the
       act's own run, `constructed_child_env` (commit 0's helper) for its
       environment, `build_parser` + `DISPATCH`.
-- [ ] C1.10 GREEN: same commit — moves-table row 11, subcommands row,
+- [x] C1.10 GREEN: same commit — moves-table row 11, subcommands row,
       exit-codes paragraph, shipped-files row, one `usage.md` invocation,
       `references/example-report.md` re-signature (an exit finding is an
       ordinary ranked finding carrying `- Move: 11`, adds **zero**
       `REPORT_SHAPE` keys — confirm `ReportSchemaSelfDescriptionTests` stays
       untouched).
-- [ ] C1.11 GREEN: doctrine states the stated-out-of-reach item explicitly —
+- [x] C1.11 GREEN: doctrine states the stated-out-of-reach item explicitly —
       the audit does not guess at an unpublished exit's identity; it reports
       `unstated` plus the searched range.
 
 ### Commit C2 — R1: enumeration-reach subcommand (forecast 700–960)
 
-- [ ] C2.1 RED: a check whose stated claim is universal and whose
+- [x] C2.1 RED: a check whose stated claim is universal and whose
       enumeration source is a literal collection is reported with both facts
       side by side.
-- [ ] C2.2 RED: a check whose enumeration source is computed from the
+- [x] C2.2 RED: a check whose enumeration source is computed from the
       subject is reported `derived`, not a finding.
-- [ ] C2.3 RED: `single-namespace` and `filtered-subset` each classified
+- [x] C2.3 RED: `single-namespace` and `filtered-subset` each classified
       correctly from a fixture AST (four-value closed roster:
       `derived`, `literal-collection`, `single-namespace`,
       `filtered-subset`).
-- [ ] C2.4 RED: a non-Python subject's checks report
+- [x] C2.4 RED: a non-Python subject's checks report
       `unreachable-for-this-language`, never guessed.
-- [ ] C2.5 RED: AST-sweep lock proving this new subcommand does not fork a
+- [x] C2.5 RED: AST-sweep lock proving this new subcommand does not fork a
       second code-side derivation inside `run_roster` (R1 stays out of
       `roster` entirely, per the design's own rejection of that placement).
-- [ ] C2.6 GREEN: add `ast` to the import line (confirm still absent first);
+- [x] C2.6 GREEN: add `ast` to the import line (confirm still absent first);
       implement the new subcommand parsing the subject's own check source
       (`tests/test_skill_audit.py` sits at the repo root — reuse
       `resolve_site`'s `root: "repo"`, no new path grammar) and classifying
       each check's iteration source.
-- [ ] C2.7 GREEN: same commit — moves-table row 12, subcommands row,
+- [x] C2.7 GREEN: same commit — moves-table row 12, subcommands row,
       exit-codes paragraph, shipped-files row, `usage.md` invocation,
       `references/example-report.md` re-signature.
-- [ ] C2.8 GREEN: doctrine states the Python-only ceiling and the
+- [x] C2.8 GREEN: doctrine states the Python-only ceiling and the
       language-independence argument for why R1 could not live in `roster`.
 
 ---
