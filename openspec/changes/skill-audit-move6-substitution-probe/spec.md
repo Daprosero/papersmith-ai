@@ -319,10 +319,16 @@ statement, so the shipped example remains valid input to the widened
 > scope table and success-criteria line. Named here for spec completeness;
 > reported back as a proposal gap.
 
-### Requirement: No new code in this change
+### Requirement: No new code in this change (NARROWED)
 
-This change MUST NOT alter `scripts/audit_cli.py` or any other shipped
-code. Every finding it reaches MUST be reachable purely through new or
+> **Measured false as originally written.** Two requirements inside this same
+> capability -- per-step digests and filesystem-versus-roster enumeration --
+> cannot be reached through recipe grammar alone, so they move to
+> `audit-scope-hardening` where they are implemented as code. What remains
+> here is recipe-only, and its forecast holds only for what remains.
+
+The recipe-only part of this change MUST NOT alter `scripts/audit_cli.py`
+or any other shipped code. Every finding it reaches MUST be reachable purely through new or
 widened `references/probes/*.json` recipes against the shipped subcommand
 grammar.
 
@@ -378,7 +384,15 @@ built from nothing.
 - WHEN `structure`'s from-zero comparison runs
 - THEN the undemanded declaration surfaces as a finding
 
-### Requirement: A driven step that reports success while producing nothing is a finding
+### Requirement: A driven step that reports success while producing nothing is a finding (SUPERSEDED)
+
+> **Superseded by `audit-scope-hardening`'s "A driven step is graded on what
+> it wrote", which is a strict superset.** Kept so the duplication is visible
+> rather than silently deleted; the later requirement is the one to implement,
+> and it corrects this one's target: `walkthrough` runs every step with its
+> cwd inside the box, so digesting the SUBJECT tree fires on every step of
+> every flow. The box is what is digested; a change to the subject is an
+> escape, which `walkthrough` gates nowhere today.
 
 Added after a live run: an operator drove a six-step flow, every step
 reported success, and the flow was declared complete while three of the
@@ -453,7 +467,7 @@ either, as this skill already does for subcommands.
 
 ## Capability: audit-scope-hardening (Change c — Modified)
 
-Six requirements added after a four-day session in which this repository's
+Seven requirements added after a four-day session in which this repository's
 other skill was repaired eleven times. Each attaches to a move or stage that
 already ships; only the last introduces a surface the eleven moves do not
 cover. Every incident cited is measured, not hypothetical.
