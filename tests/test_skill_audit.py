@@ -1020,6 +1020,169 @@ class RosterExitCodeTests(BoxMixin, unittest.TestCase):
         self.assertEqual((looked.returncode, blind.returncode), (0, 2))
 
 
+class GuardReachTests(BoxMixin, unittest.TestCase):
+    """R2 + R3, `the-audit-grades-what-a-step-wrote`: a guarded vocabulary is
+    a closed set, so it is Move 0's subject. `roster`'s `guardReach` block
+    derives the guarded members from a driven producer, derives each
+    member's identifier-boundary variants, and drives the subject's own
+    guard for real to measure which variants it reaches -- and, reusing the
+    same drive, whether its verdict is measuring identity or content.
+    `guardReach` is optional, exactly like `doctrineSites`: a recipe that
+    never declares it changes nothing about `roster`'s existing behaviour.
+    """
+
+    def _primary_recipe(self, box, guard_reach=None):
+        primary_argv = self.echo_probe(box, ["X"], name="primary.py")
+        fields = dict(
+            surface="s", probe="refusal", argv=primary_argv, cwd=".",
+            stream="stdout", exit=1,
+            extract=r"is not one of (?P<roster>.+)$", split=", ")
+        if guard_reach is not None:
+            fields["guardReach"] = guard_reach
+        return self.recipe(box, **fields)
+
+    def _producer(self, box, members, name="members.py"):
+        return {
+            "argv": self.echo_probe(box, members, name=name), "cwd": ".",
+            "stream": "stdout", "exit": 1,
+            "extract": r"is not one of (?P<roster>.+)$", "split": ", "}
+
+    def _word_boundary_guard(self, box, member, name="guard.py"):
+        """A guard whose matcher is exactly the measured real bug: a plain
+        word-boundary pattern over the bare member, which cannot reach any
+        identifier-boundary variant at all (`spec.md`'s own measured case,
+        R2) but does reach the bare member itself.
+        """
+        self.write(box, name,
+                  "import re, sys\n"
+                  f"PATTERN = re.compile(r'\\b{member}\\b')\n"
+                  "if PATTERN.search(sys.argv[1]):\n"
+                  "    print('REFUSED')\n"
+                  "    sys.exit(1)\n"
+                  "sys.exit(0)\n")
+        return {"argv": ["python3", name, "{candidate}"], "cwd": ".",
+               "stream": "stdout", "refusal": "REFUSED"}
+
+    def _never_refuses_guard(self, box, name="never.py"):
+        self.write(box, name, "import sys\nsys.exit(0)\n")
+        return {"argv": ["python3", name, "{candidate}"], "cwd": ".",
+               "stream": "stdout", "refusal": "REFUSED"}
+
+    def _always_refuses_guard(self, box, name="always.py"):
+        self.write(box, name,
+                  "import sys\nprint('REFUSED')\nsys.exit(1)\n")
+        return {"argv": ["python3", name, "{candidate}"], "cwd": ".",
+               "stream": "stdout", "refusal": "REFUSED"}
+
+    def test_no_guardreach_block_declared_changes_nothing(self):
+        box = self.make_box("no_guardreach")
+        spec = self._primary_recipe(box)
+        result, payload = roster_json(spec, box)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertIsNone(payload["guardReach"])
+        self.assertEqual(
+            [n["kind"] for n in payload["notes"]
+             if n["kind"] in ("no-driveable-guard", "guard-never-fires",
+                              "guard-unreachable-variant")], [],
+            "a recipe that never declares guardReach must gain no new note "
+            "kind -- optional, exactly like doctrineSites")
+
+    def test_a_guard_that_never_fires_reports_one_control_finding(self):
+        box = self.make_box("guard_never_fires")
+        spec = self._primary_recipe(box, {
+            "producer": self._producer(box, ["credential"]),
+            "drive": self._never_refuses_guard(box)})
+        result, payload = roster_json(spec, box)
+        self.assertEqual(result.returncode, 0, payload)
+        kinds = [n["kind"] for n in payload["notes"]]
+        self.assertEqual(kinds.count("guard-never-fires"), 1)
+        self.assertNotIn(
+            "guard-unreachable-variant", kinds,
+            "a guard that never fires reports one control finding, never "
+            "one per identifier variant")
+        member_report = payload["guardReach"]["members"][0]
+        self.assertEqual(member_report["member"], "credential")
+        self.assertEqual(member_report["control"], "not-reached")
+        self.assertEqual(member_report["unreachable"], [])
+        self.assertIsNone(member_report["identity"])
+
+    def test_an_unreachable_identifier_variant_is_named(self):
+        box = self.make_box("guard_unreachable_variant")
+        spec = self._primary_recipe(box, {
+            "producer": self._producer(box, ["credential"]),
+            "drive": self._word_boundary_guard(box, "credential")})
+        result, payload = roster_json(spec, box)
+        self.assertEqual(result.returncode, 0, payload)
+        member_report = payload["guardReach"]["members"][0]
+        self.assertEqual(member_report["control"], "reached")
+        self.assertEqual(
+            sorted(member_report["unreachable"]),
+            sorted(["credentials", "credential_other", "credentialOther"]),
+            "a plain word-boundary matcher cannot reach any of the three "
+            "identifier-boundary variants of its own guarded member")
+        unreachable_notes = [n for n in payload["notes"]
+                             if n["kind"] == "guard-unreachable-variant"]
+        self.assertEqual(len(unreachable_notes), 3)
+
+    def test_no_driveable_guard_is_a_finding_never_an_empty_roster(self):
+        box = self.make_box("no_driveable_guard")
+        producer = self._producer(box, ["credential"])
+        producer["extract"] = r"this pattern matches nothing at all (?P<roster>.+)$"
+        spec = self._primary_recipe(box, {
+            "producer": producer,
+            "drive": self._word_boundary_guard(box, "credential")})
+        result, payload = roster_json(spec, box)
+        self.assertEqual(
+            result.returncode, 0,
+            f"an undriveable guard is a finding, never an inability to "
+            f"look: {payload}")
+        self.assertIsNone(payload["guardReach"])
+        kinds = [n["kind"] for n in payload["notes"]]
+        self.assertEqual(kinds.count("no-driveable-guard"), 1)
+
+    def test_r3_identity_measured_when_the_neutral_token_is_not_reached(self):
+        box = self.make_box("identity_measured")
+        spec = self._primary_recipe(box, {
+            "producer": self._producer(box, ["credential"]),
+            "drive": self._word_boundary_guard(box, "credential")})
+        result, payload = roster_json(spec, box)
+        self.assertEqual(result.returncode, 0, payload)
+        identity = payload["guardReach"]["members"][0]["identity"]
+        self.assertEqual(identity["verdict"], "identity-measured")
+        self.assertEqual(
+            identity["limit"], audit_cli_module().READING_DIFF_LIMIT,
+            "R3's payload carries the permanent stated limit regardless of "
+            "verdict")
+
+    def test_r3_not_determined_when_the_neutral_token_is_still_reached(self):
+        box = self.make_box("identity_not_determined")
+        spec = self._primary_recipe(box, {
+            "producer": self._producer(box, ["credential"]),
+            "drive": self._always_refuses_guard(box)})
+        result, payload = roster_json(spec, box)
+        self.assertEqual(result.returncode, 0, payload)
+        identity = payload["guardReach"]["members"][0]["identity"]
+        self.assertEqual(identity["verdict"], "not-determined")
+        self.assertEqual(identity["limit"], audit_cli_module().READING_DIFF_LIMIT)
+
+    def test_identifier_variants_derives_plural_underscore_and_case(self):
+        cli = audit_cli_module()
+        self.assertEqual(
+            cli.identifier_variants("credential"),
+            ["credentials", "credential_other", "credentialOther"])
+
+    def test_identity_measured_is_a_closed_two_value_roster(self):
+        cli = audit_cli_module()
+        self.assertEqual(
+            cli.IDENTITY_MEASURED, ("identity-measured", "not-determined"))
+        self.assertEqual(
+            len(cli.IDENTITY_MEASURED), 2,
+            "R3 stops at two facts -- identity was measured, or it was "
+            "not -- a third value would let a rename-insensitive guard's "
+            "verdict be read as a claim about content, which R3 refuses "
+            "to make")
+
+
 class RefusalProbeTests(unittest.TestCase):
     """Move 2, against the live subject on disk.
 

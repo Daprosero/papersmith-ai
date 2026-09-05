@@ -101,6 +101,35 @@ every enumeration produced by reading as a **candidate** until something
 executes. Move 0 also compares any unhedged numeral in the subject's prose
 against the enumeration that immediately follows it.
 
+A guarded vocabulary is a closed set too, so its **reach** is Move 0's
+subject as well, via `roster`'s optional `guardReach` recipe block. For every
+member the block's own driven `producer` derives, `identifier_variants`
+derives that member's plural, underscore-joined, and case-joined forms --
+never a claim about correct English pluralisation, only a probe for shapes a
+word-boundary matcher can measurably fail to reach, since `_` is itself a
+word character in that pattern language. The guard is then driven for real
+with each form, never matched against a recipe-declared pattern compiled
+with `re`, which would be a hand-copy of the subject's own source living
+beside it, free to drift. A control runs first: the bare guarded member
+itself MUST be reached, or the finding is `kind=guard-never-fires` once, not
+one `kind=guard-unreachable-variant` per identifier form. A subject exposing
+no driveable guard for a declared `guardReach` block is `kind=no-driveable-
+guard`, the `no-closed-roster` idiom reused verbatim -- reported, never a
+silently empty roster.
+
+The same drive answers a second, narrower question: whether the guard's
+verdict is measuring identity or content. Substitute the guarded member with
+a neutral token nothing could collide with and drive the guard again; if it
+now passes, the guard's verdict moved when the identifier moved and the
+content did not, and the result is `identity-measured`. If it still refuses,
+the probe could not determine that, and the result is `not-determined` --
+`IDENTITY_MEASURED` is a closed two-value roster with no third value ever
+meaning "the content is specific," because that would be a reading, not a
+measurement. Every such payload also carries the `READING_DIFF_LIMIT`
+sentence, regardless of verdict: a rename-insensitive guard proves its own
+matcher tests identity, and proves nothing whatever about whether the
+content behind it is still specific.
+
 ### Move 1, in detail
 
 Construct what the documentation says the producer should emit, from the
@@ -546,7 +575,7 @@ carries no vocabulary of its own beyond that one heading.
 
 | Subcommand | Derives | Emits |
 | --- | --- | --- |
-| `roster` | Code side by driving the subject as a process; documented side by parsing a table | `code`, `doctrine`, `unregistered`, `phantom`, `duplicated`, `numeralMismatch`, `notes` |
+| `roster` | Code side by driving the subject as a process; documented side by parsing a table; a guarded vocabulary's reach and identity-versus-content, optionally, by driving its own declared guard | `code`, `doctrine`, `unregistered`, `phantom`, `duplicated`, `numeralMismatch`, `notes`, `guardReach` |
 | `check-report` | The report shape above, from a report file | `violations` |
 | `structure` | Declared side by parsing a structure table; on-disk side by walking `--subject`; from-zero side by walking a recipe-built scaffold inside an empty box | `sides`, `outcome`, `onlyIn`, `missingFrom`, `notes`, `containment` |
 | `walkthrough` | An ordered recipe of steps, each run for real against one shared box, each held to its own declared expectation | `steps`, `stall`, `unreached`, `containment` |

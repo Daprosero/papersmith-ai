@@ -360,31 +360,68 @@ blocked recipe work rather than requiring a decision between it.
       shifted its line a fourth time (3034→3119); re-derived and updated
       `skill-audit.self-guarded-facts.json`, not the test.
 
-### Commit B2 — R2+R3 (forecast 520–680)
+### Commit B2 — R2+R3 (forecast 520–680) — **DONE**, 174 lines in
+      `audit_cli.py` + 8 locks + doctrine, `.venv` Python 2523 Ran OK
+      (skipped=3, +8 from 2515), npm 386 pass (unchanged)
 
-- [ ] B2.1 RED: control gate — a guard that never fires reports
+- [x] B2.1 RED: control gate — a guard that never fires reports
       `kind=guard-never-fires`, not eleven unreachable-variant findings.
-- [ ] B2.2 RED: `identifier_variants` derives plural/underscore-joined/
+      Mutation-proven: replacing `if not control_reached:` with `if
+      False:` (control check disabled entirely) reddened exactly this
+      lock (0 `guard-never-fires` notes instead of 1); restored via `cp`,
+      sha256-confirmed.
+- [x] B2.2 RED: `identifier_variants` derives plural/underscore-joined/
       case-joined forms for a guarded member; a variant the guard's matcher
-      cannot reach is named.
-- [ ] B2.3 RED: no driveable guard on the subject → `kind=no-driveable-guard`
-      with the searched range, never an empty roster.
-- [ ] B2.4 RED (R3): rename probe — substitute the guarded member with a
+      cannot reach is named. Mutation-proven: dropping the underscore-joined
+      form from `identifier_variants`'s return reddened both the pure-
+      function lock and the unreachable-variant integration lock
+      independently; restored via `cp`, sha256-confirmed.
+- [x] B2.3 RED: no driveable guard on the subject → `kind=no-driveable-guard`
+      with the searched range, never an empty roster. Scoped as opt-in
+      (fires only when a recipe declares `guardReach` but its `producer`
+      cannot derive a vocabulary), exactly like `doctrineSites`/
+      `restatementSearch`'s own optionality — a recipe that never declares
+      `guardReach` gains zero new notes, confirmed by a dedicated lock and
+      by the unchanged 2523-count full-suite run (no existing fixture
+      regressed). Mutation-proven: removing the `try/except Unprobeable`
+      around the producer probe reddened exactly this lock (the whole
+      `roster` call crashed to exit 2 instead of reporting a finding);
+      restored via `cp`, sha256-confirmed.
+- [x] B2.4 RED (R3): rename probe — substitute the guarded member with a
       neutral token, leave every other byte alone, re-drive; result is one of
       exactly two values in `IDENTITY_MEASURED = ("identity-measured",
-      "not-determined")`.
-- [ ] B2.5 RED: cardinality lock on `IDENTITY_MEASURED` (exactly two
-      members, no third value ever emitted).
-- [ ] B2.6 RED: every R3 payload carries the permanent stated limit
-      (`READING_DIFF_LIMIT` precedent) regardless of verdict.
-- [ ] B2.7 GREEN: implement `guardReach` recipe block +
-      `identifier_variants` (pure function) + the control-gate drive inside
-      `roster`, reusing `probe_code_side` for the guarded-member producer
-      side only (no new source parsing).
-- [ ] B2.8 GREEN: implement the R3 rename-probe drive in `roster`, same
-      loop, second transformation; add the carried-limit constant.
-- [ ] B2.9 GREEN: `SKILL.md` Move 0 detail states both new checks and the
-      identity-vs-content limit sentence.
+      "not-determined")`. Both values exercised by two independent fixtures.
+      Mutation-proven: inverting the verdict's ternary reddened both
+      fixtures independently; restored via `cp`, sha256-confirmed.
+- [x] B2.5 RED: cardinality lock on `IDENTITY_MEASURED` (exactly two
+      members, no third value ever emitted), the `ADJUDICATIONS`/
+      `len(cli.CONSTANT)` idiom. Mutation-proven: adding a third value
+      reddened exactly this lock; restored via `cp`, sha256-confirmed.
+- [x] B2.6 RED: every R3 payload carries the permanent stated limit
+      (`READING_DIFF_LIMIT` precedent) regardless of verdict. Mutation-
+      proven: replacing the carried constant with `None` reddened both
+      verdict fixtures independently; restored via `cp`, sha256-confirmed.
+- [x] B2.7 GREEN: implemented `guardReach` recipe block (`producer`/`drive`),
+      `identifier_variants` (pure function), `drive_guard_candidate`, and
+      the control-gate drive inside `run_roster`/`guard_reach_findings`,
+      reusing `probe_code_side` verbatim for the guarded-member producer
+      side only (no new source parsing, no new stdlib import). **Also
+      required, discovered by running the full suite**:
+      `drive_guard_candidate`'s `{candidate}` substitution used
+      `str.replace`, which `NothingWasRepairedTests`'s AST write-verb sweep
+      flagged (shares a name with `Path.replace`) — fixed with a compiled
+      `re.sub`, the exact `strip_comparison_operators` precedent already in
+      this file for the same false-positive class.
+- [x] B2.8 GREEN: implemented the R3 rename-probe drive in `guard_reach_
+      findings`, same loop, second transformation (`GUARD_NEUTRAL_TOKEN`);
+      added the carried-limit field.
+- [x] B2.9 GREEN: `SKILL.md` Move 0 detail states both new checks and the
+      identity-vs-content limit sentence; `roster`'s subcommands-table row
+      states the new optional derivation and lists `guardReach` in Emits.
+      **Also required, re-derived rather than trusted**: inserting code
+      above `REPORT_SCHEMA_VERSION` shifted its line a fifth time
+      (3119→3285); updated `skill-audit.self-guarded-facts.json`, not the
+      test.
 
 ### Commit B3 — R5+R4 (forecast 500–700)
 

@@ -370,6 +370,165 @@ def probe_code_side(recipe, subject, timeout=30):
     return members
 
 
+#: R3's whole verdict vocabulary (`spec.md`, "Renaming is not generalising"):
+#: a two-value closed roster, never a third value meaning "the content is
+#: specific" -- that would be a reading, not a measurement, and this module
+#: refuses to guess it. `IdentityMeasuredCardinalityTests` holds this to
+#: exactly these two members, the `FOUND_BY_VALUES`/`REMEDY_VALUES` idiom.
+IDENTITY_MEASURED = ("identity-measured", "not-determined")
+
+#: The rename probe's own neutral substitute. No real guarded vocabulary or
+#: `FORGE_LEXICON` entry could collide with this, so driving a guard with it
+#: tests only whether the guard's verdict moves when the identifier moves,
+#: never a real candidate's own meaning.
+GUARD_NEUTRAL_TOKEN = "zzz_guardreach_neutral_probe_zzz"
+
+
+def identifier_variants(member):
+    """`member`'s identifier-boundary variants: plural, underscore-joined,
+    case-joined -- the three shapes a word-boundary matcher measurably
+    failed to reach (`spec.md`, R2: a singular guarded term's matcher did
+    not reach its own plural, and `_` is a word character in that pattern
+    language, so no word-boundary rule could ever reach an identifier
+    joining the term to another word). Naive and deterministic on purpose:
+    this derives what to *try*, never what the guard is supposed to catch,
+    and it is never a claim about correct English pluralisation.
+    """
+    return [f"{member}s", f"{member}_other", f"{member}Other"]
+
+
+#: `guardReach.drive.argv`'s own one-token grammar -- literal `{candidate}`,
+#: substituted by `drive_guard_candidate` alone. Compiled once, `re.escape`d
+#: since the token itself carries regex metacharacters.
+_CANDIDATE_TOKEN_RE = re.compile(re.escape("{candidate}"))
+
+
+def drive_guard_candidate(drive, candidate, subject, timeout):
+    """Whether one candidate string is reached (refused) by the subject's
+    own guard, driven for real with `{candidate}` substituted into the
+    recipe's declared `guardReach.drive.argv`.
+
+    Never a recipe-declared matcher pattern compiled with `re` here: that
+    would be a hand-copy of the subject's own source living beside it, free
+    to drift -- the exact class this skill exists to find.
+
+    Substitutes via `re.sub`, never `str.replace`: `NothingWasRepairedTests`'s
+    AST sweep scans every function for write verbs by name, and `.replace`
+    shares its spelling with `Path.replace` -- the same false positive
+    `strip_comparison_operators` already routes around with `re.sub`.
+    """
+    argv = [_CANDIDATE_TOKEN_RE.sub(lambda match: candidate, part)
+           for part in drive["argv"]]
+    where = subject
+    if drive.get("cwd"):
+        where = (subject / drive["cwd"]).resolve()
+        if subject != where and subject not in where.parents:
+            raise Unprobeable(
+                f"guardReach.drive's cwd {drive['cwd']!r} resolves outside "
+                "--subject")
+    try:
+        completed = subprocess.run(
+            argv, cwd=str(where), shell=False,
+            capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError as error:
+        raise Unprobeable(
+            f"guardReach.drive's argv[0] is not executable: {error}")
+    except subprocess.TimeoutExpired:
+        raise Unprobeable(
+            f"guardReach.drive did not answer within {timeout}s; a probe "
+            "that hangs is an inability to look, never a clean verdict")
+    stream = drive.get("stream", "stdout")
+    text = completed.stdout if stream == "stdout" else completed.stderr
+    return re.search(drive["refusal"], text) is not None
+
+
+def guard_reach_findings(recipe, subject, timeout):
+    """R2 + R3 (`spec.md`): for every member of a driven guarded vocabulary,
+    measure whether the guard reaches each identifier-boundary variant, and
+    -- reusing the exact same drive, one further transformation -- whether
+    the guard's verdict is measuring identity or content.
+
+    `guardReach` is optional, exactly like `doctrineSites` and
+    `restatementSearch`: a recipe that never declares it changes nothing
+    about `roster`'s existing behaviour. Returns `(notes, payload)`;
+    `payload` is `None` when the block is absent, or when the subject
+    exposes no driveable guard for it to measure -- reported as
+    `kind=no-driveable-guard`, the `no-closed-roster` idiom reused verbatim,
+    never a silently empty roster.
+
+    The control gate runs first, per member: a guard that never refuses its
+    own bare guarded member at all is `kind=guard-never-fires`, reported
+    once, never as one `guard-unreachable-variant` finding per identifier
+    variant -- eleven findings would misread a broken probe as eleven
+    separate defects.
+    """
+    guard_reach = recipe.get("guardReach")
+    if not guard_reach:
+        return [], None
+
+    producer = guard_reach.get("producer")
+    drive = guard_reach.get("drive")
+    if not producer or not drive:
+        return [note(
+            "no-driveable-guard",
+            "the recipe's guardReach block declares no producer/drive "
+            "pair, so no guarded vocabulary's reach can be measured for "
+            "this subject",
+            recipe.get("surface", ""),
+            "guardReach.producer/guardReach.drive")], None
+
+    try:
+        members = sorted(set(probe_code_side(producer, subject, timeout)))
+    except Unprobeable as error:
+        return [note(
+            "no-driveable-guard",
+            "guardReach.producer could not derive a guarded vocabulary for "
+            f"this subject: {error}",
+            recipe.get("surface", ""), str(producer.get("argv", [])))], None
+
+    notes = []
+    member_reports = []
+    for member in members:
+        control_reached = drive_guard_candidate(drive, member, subject, timeout)
+        if not control_reached:
+            notes.append(note(
+                "guard-never-fires",
+                f"the guard never refused its own guarded member {member!r} "
+                "at all; reporting each of its identifier variants "
+                "unreachable would read as eleven findings instead of one "
+                "broken probe",
+                member, drive["argv"]))
+            member_reports.append({
+                "control": "not-reached", "identity": None, "member": member,
+                "unreachable": [], "variants": {}})
+            continue
+
+        variants = {}
+        unreachable = []
+        for variant in identifier_variants(member):
+            reached = drive_guard_candidate(drive, variant, subject, timeout)
+            variants[variant] = "reached" if reached else "not-reached"
+            if not reached:
+                unreachable.append(variant)
+                notes.append(note(
+                    "guard-unreachable-variant",
+                    f"the guard reaches {member!r} but not its identifier-"
+                    f"boundary variant {variant!r}; a member of the "
+                    "guarded set is unreachable through its own matcher",
+                    member, drive["argv"]))
+
+        neutral_reached = drive_guard_candidate(
+            drive, GUARD_NEUTRAL_TOKEN, subject, timeout)
+        verdict = "not-determined" if neutral_reached else "identity-measured"
+        member_reports.append({
+            "control": "reached",
+            "identity": {"limit": READING_DIFF_LIMIT, "verdict": verdict},
+            "member": member, "unreachable": unreachable,
+            "variants": variants})
+
+    return notes, {"members": member_reports}
+
+
 def tree_digest(root, exclude=()):
     """A sorted `path -> sha256` map over every file under `root`.
 
@@ -852,10 +1011,12 @@ ESCALATION_BUCKETS = {
     "escalatable": (
         "no-closed-roster", "heading-not-found",
         "scope-claimed-without-heading",
-        "no derivation available for this surface"),
+        "no derivation available for this surface", "no-driveable-guard"),
     "consequence": ("comparison-not-run",),
     "deterministic-exclusion": ("shape-not-walkable", "case-only-divergence",
-                                "restatement-search-cannot-fire"),
+                                "restatement-search-cannot-fire",
+                                "guard-never-fires",
+                                "guard-unreachable-variant"),
 }
 
 
@@ -1210,12 +1371,16 @@ def run_roster(args):
             str(subject), f"{subject}:1-1"))
     unregistered = sorted(set(code) - doctrine) if closed_seen else []
     phantom = sorted(doctrine - set(code))
+
+    guard_notes, guard_reach = guard_reach_findings(recipe, subject, args.timeout)
+    notes.extend(guard_notes)
+
     return finish(code, sorted(doctrine), notes, unregistered, phantom,
-                  comparison, recipe, subject, repo, duplicated)
+                  comparison, recipe, subject, repo, duplicated, guard_reach)
 
 
 def finish(code, doctrine, notes, unregistered, phantom, comparison,
-           recipe, subject, repo, duplicated=None):
+           recipe, subject, repo, duplicated=None, guard_reach=None):
     mismatches = []
     for site in recipe.get("numeralPaths", []):
         mismatches.extend(numeral_mismatches(resolve_site(site, subject, repo)))
@@ -1231,6 +1396,7 @@ def finish(code, doctrine, notes, unregistered, phantom, comparison,
         "escalatable": escalatable,
         "frozen": {"digest": frozen_digest(subject, exclude),
                    "exclude": list(exclude), "subject": str(subject)},
+        "guardReach": guard_reach,
         "notes": notes,
         "numeralMismatch": mismatches,
         "phantom": phantom,
