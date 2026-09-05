@@ -76,7 +76,7 @@ move, in order; the numbering is the order.
 | 3. Fake every external boundary and assert on what crossed it, never dial it | `doctrine` | `tests/test_skill_audit.py` |
 | 4. Read an installed dependency as text; importing a service client authenticates it | `doctrine` | `tests/test_skill_audit.py` |
 | 5. Probe live only with consent, read-only, and scope the result to the environment | `doctrine` | `tests/test_skill_audit.py` |
-| 6. Invert every lock the audit leans on, and watch it fire | `doctrine` | `tests/test_skill_audit.py` |
+| 6. Invert every lock the audit leans on, and watch it fire | `inversion` | `tests/test_skill_audit.py` |
 | 7. Compare per-harness test counts before and after; a count that did not rise is a finding | `doctrine` | `tests/test_skill_audit.py` |
 | 8. Drive the whole documented flow in order, against one real shared box, and name the first step that breaks its own declared expectation | `walkthrough` | `tests/test_skill_audit.py` |
 | 9. Compare two supplied readings of one prose surface by mechanical diff, and never let the comparison close | `reading-diff` | `tests/test_skill_audit.py` |
@@ -147,20 +147,27 @@ paragraph exists to keep shut.
 
 ### Move 6, in detail
 
-Invert every lock the audit leans on, and watch it fire. The mutation sweep is
-bounded, not exhaustive: a **guarded fact** is the `(file, line, literal)`
-triple a named test asserts on, derived from the subject's own declared lock
-roster where one exists, otherwise from the probe recipe's declared
-`mutations` block -- never listed by hand. Facts the sweep did not reach are
-named in `## Unchecked`, never silently dropped.
+Invert every lock the audit leans on, and watch it fire, through the
+`inversion` subcommand. The mutation sweep is bounded, not exhaustive: a
+**guarded fact** is the `(file, line, literal)` triple a named test asserts
+on, sourced **only** from the invoking probe recipe's own declared
+`mutations` block -- never listed by hand, and never derived from the
+subject's own lock roster in v1. Facts the sweep did not reach are named in
+`## Unchecked`, never silently dropped.
+
+The observing run each guarded fact declares is driven once, unmutated,
+before the first byte is touched: a subject whose observing run is already
+red is refused `Unprobeable` `kind=baseline-not-green`, with no file mutated
+and no finding emitted -- against an already-red suite, every guarded fact
+would report `fires`, having proven nothing.
 
 One subprocess test-run per guarded fact, serial, each restored before the
-next. **Hard cap: eight guarded facts per run**, plus the per-step timeout
-`run_box_step` already applies; overflow lands in `## Unchecked`. A
-wall-clock budget was considered and rejected: it would make a report's
-contents depend on the machine that produced it, so two runs of the same
-audit on different machines could disagree about what was checked -- the
-same class of defect as "green by accident of the machine." A count cap
+next. **Hard cap: eight guarded facts per run**, plus this subcommand's own
+`--timeout`, applied to each observing run; overflow lands in `##
+Unchecked`. A wall-clock budget was considered and rejected: it would make a
+report's contents depend on the machine that produced it, so two runs of the
+same audit on different machines could disagree about what was checked --
+the same class of defect as "green by accident of the machine." A count cap
 is deterministic and travels with the report.
 
 Restore discipline, inherited from the table below: `sha256` before, write
@@ -177,17 +184,18 @@ rest of that verdict's findings. Its own remedy is a three-way verdict,
 never build-or-delete: `- Remedy: delete` when the guarded fact no longer
 exists; `- Remedy: update` when the fact exists but moved, or the test
 measures it wrongly; `- Remedy: undecided: <reason>` when the split itself
-cannot be made. The distinguishing procedure: when the guarded fact names a
-Python symbol, existence-checking by AST -- the approach `check_citations.py`'s
-`symbols_in`/`repo_symbols` already takes, scoped to `--subject`'s own tree,
-never imported or vendored -- decides delete-versus-update mechanically. When
-the guarded fact is not a named symbol (a config literal, an error string, a
-count), the split is a semantic judgment this tool cannot make, and
-`undecided` with a stated reason is the honest report. **The auditor still
-never deletes a test.** It reports, in the three rosters at the top of
-`## Not adjudicable`, and the finding still gets its own `## Repair units`
-row with a changed-line forecast, so the next change picks it up as a work
-item.
+cannot be made. **v1 ships no delete-versus-update classifier.** A prior
+draft of this doctrine named `check_citations.py`'s `symbols_in`/
+`repo_symbols` as the precedent for deciding that split by AST existence-
+checking; that tool **does not exist in this repository**, so v1 cannot
+reuse it and does not imitate it either. Every v1 not-adjudicable finding
+therefore carries `- Remedy: undecided: <reason>` only -- `delete` and
+`update` remain in the validator's own accepted vocabulary, for a
+human-authored report, but v1's own emitter never produces either until a
+later change ships that classifier. **The auditor still never deletes a
+test.** It reports, in the three rosters at the top of `## Not adjudicable`,
+and the finding still gets its own `## Repair units` row with a
+changed-line forecast, so the next change picks it up as a work item.
 
 ### Move 8, in detail
 
@@ -509,6 +517,7 @@ carries no vocabulary of its own beyond that one heading.
 | `walkthrough` | An ordered recipe of steps, each run for real against one shared box, each held to its own declared expectation | `steps`, `stall`, `unreached`, `containment` |
 | `reading-diff` | Two supplied readings of one prose surface, given directly rather than derived | `agreement`, `shared`, `onlyIn`, `comparison`, `candidates`, `limit`, `frozen` |
 | `sensitivity` | A copy of the subject, a producer driven once per varied declared input, and the declared results site re-read after each drive | `control`, `matrix`, `notAdjudicable`, `inputsVaried`, `inputsUnchecked`, `inputsTotal`, `notes`, `containment` |
+| `inversion` | The real subject in place, one guarded fact substituted at a time from the recipe's own declared `mutations` block, its declared observing run driven before and after | `baseline`, `matrix`, `factsDriven`, `factsUnchecked`, `factsTotal`, `notAdjudicable`, `observed`, `frozen`, `notes` |
 
 `roster` exits `0` for **any** verdict, findings included, and `2` when the
 probe could not be driven or the extraction matched nothing. Inability to look
@@ -544,6 +553,15 @@ that never proved the producer reads its copy, a restore that did not
 reproduce its pre-variation bytes, or a drive that wrote outside its own box.
 None of those four is a finding; each is an inability to look.
 
+`inversion` exits `0` for **any** verdict, a not-adjudicable finding
+included, and `2` only for an inability to look: no `mutations` block, an
+absent or ambiguous guarded fact, a mutation that only flips a comparison
+operator, a write that did not change the file's bytes, an observing run
+that was not green before the first mutation, a restore that did not
+reproduce its pre-mutation bytes, or a drive that wrote outside its
+declared file. None of those seven is a finding; each is an inability to
+look.
+
 ## The shipped files
 
 This skill's own `structure` recipe (`references/probes/skill-audit.structure.json`)
@@ -564,6 +582,7 @@ the same change.
 | `references/probes/skill-audit.reading-a.json` | the first supplied reading of the worked `reading-diff` invocation |
 | `references/probes/skill-audit.reading-b.json` | the second supplied reading of the worked `reading-diff` invocation |
 | `references/probes/skill-audit.sensitivity.json` | the self-probe recipe for `sensitivity` |
+| `references/probes/skill-audit.self-guarded-facts.json` | the self-probe recipe for `inversion` |
 | `references/probes/remote-execution.accepted-operations.json` | `remote-execution`'s top-level `roster` recipe — pre-existing gap, committed without this row |
 | `references/probes/remote-execution.smoke-subcommands.json` | `remote-execution`'s nested `smoke record` `roster` recipe |
 | `references/probes/proposal-implementation.accepted-operations.json` | `proposal-implementation`'s `roster` recipe — same finding, over 2045 lines |
@@ -626,6 +645,15 @@ landed" and "its row landed" can outlive one commit undetected.
 | A sensitivity drive writes outside its own box | Exit `2` as `build-escaped-the-box`; never reported as a finding |
 | A declared value is `unchanged` for every varied input | `not adjudicable`, never `artefact wrong`; the finding states the observation and the tested range, never a motive |
 | More declared inputs exist than the sensitivity cap | Vary the first four, sorted; name the rest in `## Unchecked` with the true total |
+| An inversion recipe declares no `mutations` block | Exit `2`; never reported as zero guarded facts |
+| An inversion guarded fact's observing run is not green before any mutation | Exit `2`, `kind=baseline-not-green`; no file is mutated and no finding is emitted |
+| An inversion guarded fact's literal is absent from its declared line | Exit `2`, `kind=fact-absent`; halt before any write |
+| An inversion guarded fact's literal appears more than once on its declared line | Exit `2`, `kind=fact-ambiguous`; neither occurrence is substituted |
+| An inversion guarded fact's replacement only inverts a comparison operator | Exit `2`, `kind=operator-flip`; the value itself must change |
+| An inversion guarded fact's write leaves the file's bytes unchanged | Exit `2`, `kind=no-op-write`; the observing run never executes |
+| An inversion guarded fact's restore does not reproduce its pre-mutation bytes | Exit `2`, `kind=sensitivity-restore-failed`; the sweep halts, and the next fact is never mutated |
+| An inversion drive writes outside its declared file | Exit `2` as `build-escaped-the-box`; never reported as a finding |
+| More guarded facts exist than the inversion cap | Drive the first eight, sorted; name the rest individually in `## Unchecked` |
 
 ## Handoff
 

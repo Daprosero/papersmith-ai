@@ -1136,8 +1136,8 @@ class SelfAuditSubcommandRosterTests(unittest.TestCase):
         self.assertEqual(payload["unregistered"], [])
         self.assertEqual(payload["phantom"], [])
         self.assertEqual(sorted(payload["code"]),
-                         ["check-report", "reading-diff", "roster",
-                          "sensitivity", "structure", "walkthrough"])
+                         ["check-report", "inversion", "reading-diff",
+                          "roster", "sensitivity", "structure", "walkthrough"])
 
     def test_the_roster_comes_from_argparse_and_not_from_a_list(self):
         _, payload = roster_json(SELF_SPEC, SKILL_ROOT)
@@ -3628,6 +3628,34 @@ class NothingWasRepairedTests(unittest.TestCase):
             f"walkthrough left {borrowed.name} behind; the box it borrows "
             "must be gone afterwards")
 
+    def test_an_inversion_run_leaves_the_subject_byte_identical(self):
+        """The exemption in the lock below, held by bytes instead of by
+        prose. `inversion` is the one subcommand that mutates the real
+        subject at all, on purpose -- Move 6's whole mechanism. This
+        drives the real shipped self-probe against the real subject and
+        answers the only way it can be answered: by comparing the tree to
+        itself after every byte was restored.
+        """
+        before = tree_digest(SKILL_ROOT)
+        self.assertIn(
+            "scripts/audit_cli.py", before,
+            "the walk did not see the subject's own script, so a tree "
+            "that compares equal afterwards would prove nothing")
+        result, payload = inversion_json(
+            PROBES / "skill-audit.self-guarded-facts.json", SKILL_ROOT,
+            repo=FORGE)
+        after = tree_digest(SKILL_ROOT)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            sorted(set(before) - set(after)), [], "a file was removed")
+        self.assertEqual(
+            sorted(set(after) - set(before)), [], "a file was added")
+        self.assertEqual(
+            [q for q in before if before[q] != after.get(q)], [],
+            "inversion left a byte changed under the audited subject "
+            "after restoring; the audit reports and repairs nothing, so "
+            "any difference here is a defect in the audit")
+
     def test_the_auditor_names_no_write_into_the_audited_subject(self):
         """`roster` and `check-report` write nothing, anywhere, and still don't.
 
@@ -3654,12 +3682,23 @@ class NothingWasRepairedTests(unittest.TestCase):
         Move 10 perturbs), never into the subject, and
         `test_a_sensitivity_run_leaves_the_subject_untouched` below is
         what actually proves that, by bytes.
+
+        `run_inversion` joined the exemption with Move 6, on different
+        terms from every entry above it: it is the one function in this
+        skill that mutates the real subject **on purpose**, never a copy
+        or a box, because a guarded fact's declaring test commonly lives
+        outside `--subject` and no copy could host its own observing run.
+        Every mutated byte is restored before this function returns,
+        confirmed by `restore_exact_bytes` (already exempted above) inside
+        a `finally` that runs regardless of outcome, and
+        `test_an_inversion_run_leaves_the_subject_byte_identical` below is
+        what actually proves that, by bytes.
         """
         box_lifecycle_exemption = {
             "run_structure", "run_walkthrough", "erase_box",
             "run_box_step", "ignorance_control_gate", "run_sensitivity",
             "materialize_subject_copy", "vary_by_absence",
-            "restore_exact_bytes"}
+            "restore_exact_bytes", "run_inversion"}
         for path in sorted(SKILL_ROOT.rglob("*")):
             if not path.is_file() or path.suffix != ".py":
                 continue
@@ -6898,3 +6937,448 @@ class ChildEnvConstructionSweepTests(unittest.TestCase):
             offenders, [],
             "a second os.environ[...] child-env comprehension exists "
             f"outside constructed_child_env: {offenders}")
+
+
+# ==========================================================================
+# Commit a1 -- the `inversion` mechanism: invert every guarded fact a
+# recipe declares in the real tree, and watch its lock fire. Ten soundness
+# conditions; every RED lock below is named against the spec condition it
+# proves, never a placeholder.
+# ==========================================================================
+
+def inversion_json(spec, subject, repo=FORGE, extra=()):
+    """Drive `inversion` as a process and parse what it wrote to stdout."""
+    result = run_cli("inversion", "--subject", str(subject),
+                     "--spec", str(spec), "--repo-root", str(repo), *extra)
+    try:
+        return result, json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise AssertionError(
+            f"inversion exited {result.returncode} without JSON on "
+            f"stdout.\nstdout={result.stdout!r}\nstderr={result.stderr!r}")
+
+
+class InversionBoxMixin(BoxMixin):
+    """Fixtures for `inversion`: a subject holding one guarded source file
+    and one or more observing scripts, all real files driven as a real
+    process. `inversion` mutates the real tree in place, never a copy, so
+    there is no box-lifecycle machinery to manage here.
+    """
+
+    #: Discriminating: exits 0 only while the guarded value still reads
+    #: 10 -- a mutation the guard is meant to catch reads red through it.
+    DISCRIMINATING_OBSERVER = (
+        "import guarded, sys\n"
+        "sys.exit(0 if guarded.THRESHOLD == 10 else 1)\n")
+
+    #: Obsolete: exits 0 regardless of the guarded value -- half of the
+    #: load-bearing inversion proof, the shape conditions 8/9 exist for.
+    OBSOLETE_OBSERVER = "import guarded\n"
+
+    def make_inversion_subject(self, name, files):
+        """`files` is `{relative: content}`. Every fixture below writes
+        its own guarded source and observer(s) explicitly, so a reader
+        never has to cross-reference a shared default to know what a
+        given test actually drives.
+        """
+        subject = self.make_box(name)
+        for relative, content in files.items():
+            self.write(subject, relative, content)
+        return subject
+
+    def make_inversion_recipe(self, subject, surface, mutations, repo=FORGE,
+                              exclude=(), default_observer="test_guarded.py"):
+        cwd = subject.relative_to(repo).as_posix()
+        for fact in mutations:
+            fact.setdefault("observe", {
+                "argv": ["python3", default_observer], "cwd": cwd,
+                "env": ["PATH"]})
+        spec = subject / "inversion.json"
+        spec.write_text(json.dumps({
+            "surface": run_scoped(surface),
+            "exclude": list(exclude),
+            "mutations": mutations,
+        }, indent=2), encoding="utf-8")
+        return spec
+
+    def guarded_fact(self, fact="the threshold guarded.py holds",
+                     file="guarded.py", line=1, literal="THRESHOLD = 10",
+                     replacement="THRESHOLD = 99", observe=None):
+        entry = {"fact": fact, "file": file, "line": line,
+                 "literal": literal, "replacement": replacement}
+        if observe is not None:
+            entry["observe"] = observe
+        return entry
+
+
+class InversionBaselineGateTests(InversionBoxMixin, unittest.TestCase):
+    """Spec condition 11: the observing run is proven green before any
+    mutation. Added by the design phase: without it, an already-red suite
+    would report every guarded fact `fires`, having proven nothing.
+    """
+
+    def test_a_red_baseline_refuses_the_sweep_before_any_mutation(self):
+        subject = self.make_inversion_subject("baseline_red", {
+            "guarded.py": "THRESHOLD = 999\n",
+            "test_guarded.py": self.DISCRIMINATING_OBSERVER,
+        })
+        recipe = self.make_inversion_recipe(subject, "baseline_red", [
+            self.guarded_fact(fact="fact one", literal="THRESHOLD = 999",
+                              replacement="THRESHOLD = 1"),
+            self.guarded_fact(fact="fact two", literal="THRESHOLD = 999",
+                              replacement="THRESHOLD = 2"),
+        ])
+        before = (subject / "guarded.py").read_bytes()
+        result, payload = inversion_json(recipe, subject)
+        after = (subject / "guarded.py").read_bytes()
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("baseline-not-green", payload["error"])
+        self.assertEqual(
+            before, after,
+            "a red baseline must halt before any byte is written")
+
+
+class InversionFactResolutionTests(InversionBoxMixin, unittest.TestCase):
+    """Conditions 1 and 4: presence proven before mutation, and a guarded
+    fact resolves to exactly one match on its declared line.
+    """
+
+    def test_an_absent_literal_halts_before_any_write(self):
+        subject = self.make_inversion_subject("fact_absent", {
+            "guarded.py": "THRESHOLD = 10\n",
+            "test_guarded.py": self.DISCRIMINATING_OBSERVER,
+        })
+        recipe = self.make_inversion_recipe(subject, "fact_absent", [
+            self.guarded_fact(literal="THRESHOLD = 20",
+                              replacement="THRESHOLD = 30")])
+        before = (subject / "guarded.py").read_bytes()
+        result, payload = inversion_json(recipe, subject)
+        after = (subject / "guarded.py").read_bytes()
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("fact-absent", payload["error"])
+        self.assertEqual(before, after)
+
+    def test_a_literal_repeated_on_its_declared_line_halts_ambiguous(self):
+        # The literal appears twice on line 1 -- once as the real
+        # assignment, once inside a trailing comment -- scoped to the
+        # declared line, never the whole file.
+        subject = self.make_inversion_subject("fact_ambiguous", {
+            "guarded.py": "THRESHOLD = 10  # THRESHOLD = 10\n",
+            "test_guarded.py": self.DISCRIMINATING_OBSERVER,
+        })
+        recipe = self.make_inversion_recipe(subject, "fact_ambiguous", [
+            self.guarded_fact(literal="THRESHOLD = 10",
+                              replacement="THRESHOLD = 99")])
+        before = (subject / "guarded.py").read_bytes()
+        result, payload = inversion_json(recipe, subject)
+        after = (subject / "guarded.py").read_bytes()
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("fact-ambiguous", payload["error"])
+        self.assertEqual(
+            before, after, "neither occurrence may be substituted")
+
+
+class InversionNoOpWriteTests(InversionBoxMixin, unittest.TestCase):
+    """Condition 2: the post-write digest must differ from the pre-write
+    digest, asserted before the observing run -- proven by counting real
+    invocations, never by inspecting a constructed dict.
+    """
+
+    MARKING_OBSERVER = (
+        "import pathlib, sys\n"
+        "log = pathlib.Path('invocations.log')\n"
+        "log.write_text((log.read_text() if log.exists() else '') + 'x\\n')\n"
+        "import guarded\n"
+        "sys.exit(0 if guarded.THRESHOLD == 10 else 1)\n")
+
+    def test_a_write_that_did_not_change_the_bytes_halts_before_observing(self):
+        subject = self.make_inversion_subject("no_op_write", {
+            "guarded.py": "THRESHOLD = 10\n",
+            "test_guarded.py": self.MARKING_OBSERVER,
+        })
+        recipe = self.make_inversion_recipe(subject, "no_op_write", [
+            self.guarded_fact(literal="THRESHOLD = 10",
+                              replacement="THRESHOLD = 10")])
+        result, payload = inversion_json(recipe, subject)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("no-op-write", payload["error"])
+        invocations = (subject / "invocations.log").read_text().splitlines()
+        self.assertEqual(
+            len(invocations), 1,
+            "only the baseline drive may have run; the no-op fact's own "
+            "observing run must never execute")
+
+
+class InversionSameLengthMutationTests(InversionBoxMixin, unittest.TestCase):
+    """Condition 3: bytecode is purged unconditionally for every
+    substitution drive (Change 0's helper), so a same-byte-length
+    mutation still executes fresh source, never a cached `.pyc`.
+    """
+
+    def test_a_same_length_mutation_fires_and_leaves_no_bytecode_cache(self):
+        subject = self.make_inversion_subject("same_length", {
+            "guarded.py": "THRESHOLD = 10\n",
+            "test_guarded.py": self.DISCRIMINATING_OBSERVER,
+        })
+        recipe = self.make_inversion_recipe(subject, "same_length", [
+            # Same byte length: "10" -> "20", two characters each.
+            self.guarded_fact(literal="THRESHOLD = 10",
+                              replacement="THRESHOLD = 20")])
+        result, payload = inversion_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(list(payload["matrix"].values()), ["fires"])
+        self.assertFalse(
+            (subject / "__pycache__").exists(),
+            "no constructed child environment in this sweep may leave a "
+            "bytecode cache behind; its presence is exactly the "
+            "staleness trap condition 3 exists to keep shut")
+
+
+class InversionRestoreTests(InversionBoxMixin, unittest.TestCase):
+    """Condition 5: restoration is confirmed by sha256, never `git
+    checkout --`. Restore discipline reused verbatim from
+    `restore_exact_bytes`, including its stated `kind=sensitivity-
+    restore-failed` message -- renaming it would edit a function this
+    change requires kept byte-identical.
+    """
+
+    def test_a_restore_mismatch_halts_the_sweep_and_the_next_fact_is_untouched(self):
+        # The observer recreates the mutated file as a directory, but
+        # only once the mutated value is actually observed -- never
+        # during the baseline's own unmutated call -- exactly
+        # `SensitivityRestoreTests`'s idiom, applied after the fact.
+        observer = (
+            "import pathlib, sys\n"
+            "import guarded\n"
+            "if guarded.THRESHOLD != 10:\n"
+            "    pathlib.Path('guarded.py').unlink()\n"
+            "    pathlib.Path('guarded.py').mkdir()\n"
+            "sys.exit(0)\n")
+        subject = self.make_inversion_subject("restore_mismatch", {
+            "guarded.py": "THRESHOLD = 10\n",
+            "test_guarded.py": observer,
+            "guarded2.py": "OTHER = 1\n",
+            "test_guarded2.py": ("import guarded2, sys\n"
+                                 "sys.exit(0 if guarded2.OTHER == 1 else 1)\n"),
+        })
+        cwd = subject.relative_to(FORGE).as_posix()
+        recipe = self.make_inversion_recipe(subject, "restore_mismatch", [
+            self.guarded_fact(
+                fact="the one that breaks restore", file="guarded.py",
+                literal="THRESHOLD = 10", replacement="THRESHOLD = 99",
+                observe={"argv": ["python3", "test_guarded.py"],
+                        "cwd": cwd, "env": ["PATH"]}),
+            self.guarded_fact(
+                fact="the one that must never be reached", file="guarded2.py",
+                literal="OTHER = 1", replacement="OTHER = 2",
+                observe={"argv": ["python3", "test_guarded2.py"],
+                        "cwd": cwd, "env": ["PATH"]}),
+        ])
+        result, payload = inversion_json(recipe, subject)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("sensitivity-restore-failed", payload["error"])
+        self.assertEqual(
+            (subject / "guarded2.py").read_bytes(), b"OTHER = 1\n",
+            "the sweep must halt before the second fact is ever mutated")
+
+    def test_git_checkout_is_never_invoked_by_this_subcommand(self):
+        """Grep-on-source lock: `git checkout --` restores from the index
+        and silently discards unrelated work; this subcommand's whole
+        restore discipline exists to never need it. An exact-value match
+        against a bare `ast.Constant`, never a substring search, so this
+        stays true of the running code rather than of a docstring that
+        happens to mention the word while forbidding it.
+        """
+        tree = ast.parse(CLI.read_text(encoding="utf-8"))
+        offenders = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and node.value == "checkout"]
+        self.assertEqual(
+            offenders, [],
+            "a literal \"checkout\" string constant exists in "
+            "audit_cli.py -- restore must go through restore_exact_bytes, "
+            "never git checkout")
+
+
+class InversionOperatorFlipTests(InversionBoxMixin, unittest.TestCase):
+    """Condition 6: the mutation must invert the value the guard asserts,
+    never the comparison operator around it -- flipping `==` to `!=`
+    excludes a different subset, it never removes the fact.
+    """
+
+    def test_flipping_the_operator_instead_of_the_value_is_refused(self):
+        subject = self.make_inversion_subject("operator_flip", {
+            "guarded.py": "def check(x):\n    return x == 10\n",
+            "test_guarded.py": ("import guarded, sys\n"
+                                "sys.exit(0 if guarded.check(10) else 1)\n"),
+        })
+        recipe = self.make_inversion_recipe(subject, "operator_flip", [
+            self.guarded_fact(line=2, literal="x == 10",
+                              replacement="x != 10")])
+        before = (subject / "guarded.py").read_bytes()
+        result, payload = inversion_json(recipe, subject)
+        after = (subject / "guarded.py").read_bytes()
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("operator-flip", payload["error"])
+        self.assertEqual(before, after)
+
+
+class InversionObserveFidelityTests(InversionBoxMixin, unittest.TestCase):
+    """Condition 7: the observing run is the one the guarded fact itself
+    declares -- never a hand-picked subset -- and a subject with more
+    than one declared suite runs each fact's own suite separately.
+    """
+
+    def test_each_facts_own_declared_suite_runs_and_not_the_others(self):
+        subject = self.make_inversion_subject("two_suites", {
+            "guarded_a.py": "THRESHOLD_A = 10\n",
+            "observer_a.py": ("import pathlib, guarded_a, sys\n"
+                              "pathlib.Path('ran_a.txt').write_text('x')\n"
+                              "sys.exit(0 if guarded_a.THRESHOLD_A == 10 "
+                              "else 1)\n"),
+            "guarded_b.py": "THRESHOLD_B = 20\n",
+            "observer_b.py": ("import pathlib, guarded_b, sys\n"
+                              "pathlib.Path('ran_b.txt').write_text('x')\n"
+                              "sys.exit(0 if guarded_b.THRESHOLD_B == 20 "
+                              "else 1)\n"),
+        })
+        cwd = subject.relative_to(FORGE).as_posix()
+        recipe = self.make_inversion_recipe(subject, "two_suites", [
+            self.guarded_fact(
+                fact="fact a", file="guarded_a.py",
+                literal="THRESHOLD_A = 10", replacement="THRESHOLD_A = 99",
+                observe={"argv": ["python3", "observer_a.py"],
+                        "cwd": cwd, "env": ["PATH"]}),
+            self.guarded_fact(
+                fact="fact b", file="guarded_b.py",
+                literal="THRESHOLD_B = 20", replacement="THRESHOLD_B = 88",
+                observe={"argv": ["python3", "observer_b.py"],
+                        "cwd": cwd, "env": ["PATH"]}),
+        ])
+        result, payload = inversion_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertTrue((subject / "ran_a.txt").is_file(),
+                        "fact a's own declared observer must have run")
+        self.assertTrue((subject / "ran_b.txt").is_file(),
+                        "fact b's own declared observer must have run")
+        self.assertEqual(payload["matrix"]["fact a"], "fires")
+        self.assertEqual(payload["matrix"]["fact b"], "fires")
+
+
+class InversionNotAdjudicableTests(InversionBoxMixin, unittest.TestCase):
+    """Condition 8: a green mutation is reported, never silently
+    accepted -- surfaced in the payload's own `notAdjudicable` roster,
+    carrying the Move-6 finding fields a report author transcribes
+    verbatim into `## Not adjudicable`.
+    """
+
+    def test_a_green_mutation_is_reported_not_adjudicable(self):
+        subject = self.make_inversion_subject("obsolete_guard", {
+            "guarded.py": "THRESHOLD = 10\n",
+            "test_guarded.py": self.OBSOLETE_OBSERVER,
+        })
+        recipe = self.make_inversion_recipe(subject, "obsolete_guard", [
+            self.guarded_fact(literal="THRESHOLD = 10",
+                              replacement="THRESHOLD = 99")])
+        result, payload = inversion_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(len(payload["notAdjudicable"]), 1)
+        entry = payload["notAdjudicable"][0]
+        self.assertEqual(entry["move"], 6)
+        self.assertEqual(entry["adjudication"], "not adjudicable")
+        self.assertTrue(entry["remedy"].startswith("undecided:"))
+
+
+class InversionCapOverflowTests(InversionBoxMixin, unittest.TestCase):
+    """The sweep is capped at 8, and overflow is named individually under
+    `## Unchecked`, never silently dropped."""
+
+    def test_ten_declared_facts_yield_eight_driven_and_two_named(self):
+        files = {"guarded.py": "\n".join(
+            f"VALUE_{index} = {index}" for index in range(10)) + "\n"}
+        for index in range(10):
+            files[f"observer_{index}.py"] = (
+                f"import guarded, sys\n"
+                f"sys.exit(0 if guarded.VALUE_{index} == {index} else 1)\n")
+        subject = self.make_inversion_subject("cap_overflow", files)
+        cwd = subject.relative_to(FORGE).as_posix()
+        fact_names = [f"value {index}" for index in range(10)]
+        mutations = [
+            self.guarded_fact(
+                fact=fact_names[index], line=index + 1,
+                literal=f"VALUE_{index} = {index}",
+                replacement=f"VALUE_{index} = {index + 1000}",
+                observe={"argv": ["python3", f"observer_{index}.py"],
+                        "cwd": cwd, "env": ["PATH"]})
+            for index in range(10)]
+        recipe = self.make_inversion_recipe(subject, "cap_overflow", mutations)
+        result, payload = inversion_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["factsTotal"], 10)
+        self.assertEqual(len(payload["factsDriven"]), 8)
+        self.assertEqual(sorted(payload["factsUnchecked"]),
+                         sorted(fact_names[8:10]))
+
+
+class InversionExitCodeContractTests(InversionBoxMixin, unittest.TestCase):
+    """Exit `0` for any verdict, a not-adjudicable finding included; exit
+    `2` only for an inability to look. The restore-mismatch half of this
+    contract is proven by `InversionRestoreTests`.
+    """
+
+    def test_an_all_obsolete_drive_exits_zero(self):
+        subject = self.make_inversion_subject("all_obsolete", {
+            "guarded.py": "A = 1\nB = 2\n",
+            "test_guarded.py": "import guarded\n",
+        })
+        recipe = self.make_inversion_recipe(subject, "all_obsolete", [
+            self.guarded_fact(fact="a", line=1, literal="A = 1",
+                              replacement="A = 99"),
+            self.guarded_fact(fact="b", line=2, literal="B = 2",
+                              replacement="B = 88"),
+        ])
+        result, payload = inversion_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(len(payload["notAdjudicable"]), 2)
+
+
+class InversionMissingMutationsBlockTests(InversionBoxMixin, unittest.TestCase):
+    """A recipe with no declared `mutations` block refuses, naming the
+    missing block, never reporting zero guarded facts."""
+
+    def test_a_recipe_with_no_mutations_block_refuses_naming_it(self):
+        subject = self.make_inversion_subject(
+            "no_mutations", {"guarded.py": "A = 1\n"})
+        spec = subject / "inversion.json"
+        spec.write_text(
+            json.dumps({"surface": run_scoped("no_mutations")}),
+            encoding="utf-8")
+        result, payload = inversion_json(spec, subject)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("mutations", payload["error"])
+
+
+class InversionEscapeTests(InversionBoxMixin, unittest.TestCase):
+    """A drive writing outside its declared file exits `2`, and the sweep
+    halts -- `kind=build-escaped-the-box`, the same ruling `structure` and
+    `sensitivity` already carry."""
+
+    def test_a_drive_writing_outside_its_declared_file_halts(self):
+        # The extra write only happens once the mutated value is actually
+        # observed -- never during the baseline's own unmutated call.
+        observer = (
+            "import pathlib, sys\n"
+            "import guarded\n"
+            "if guarded.THRESHOLD != 10:\n"
+            "    pathlib.Path('extra.txt').write_text('unaccounted')\n"
+            "sys.exit(0)\n")
+        subject = self.make_inversion_subject("escape", {
+            "guarded.py": "THRESHOLD = 10\n",
+            "test_guarded.py": observer,
+        })
+        recipe = self.make_inversion_recipe(subject, "escape", [
+            self.guarded_fact(literal="THRESHOLD = 10",
+                              replacement="THRESHOLD = 99")])
+        result, payload = inversion_json(recipe, subject)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("build-escaped-the-box", payload["error"])

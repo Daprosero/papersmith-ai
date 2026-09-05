@@ -1076,6 +1076,22 @@ def build_parser():
     sensitivity.add_argument("--timeout", type=int, default=30,
                              help="seconds before a hanging drive is exit 2")
 
+    inversion = commands.add_parser(
+        "inversion",
+        help="invert every guarded fact a recipe declares in the real "
+             "tree, and watch its lock fire")
+    inversion.add_argument("--subject", required=True,
+                           help="the subject's root directory")
+    inversion.add_argument("--spec", required=True,
+                           help="the JSON recipe declaring the mutations "
+                                "block")
+    inversion.add_argument("--repo-root", default=".",
+                           help="the root each guarded fact's observe.cwd "
+                                "resolves under")
+    inversion.add_argument("--timeout", type=int, default=30,
+                           help="seconds before a hanging observing run "
+                                "is exit 2")
+
     return parser
 
 
@@ -1350,6 +1366,256 @@ def run_structure(args):
         "outcome": outcome,
         "sides": {"declared": sorted(declared_set), "disk": sorted(disk_set),
                  "fromZero": sorted(from_zero_set)},
+        "surface": surface,
+    })
+    return 0
+
+
+#: Move 6's hard cap on the number of guarded facts driven per run -- a
+#: count, never a wall-clock budget, for the same reason Move 10's own cap
+#: below is one: a time budget would make a report's contents depend on
+#: the machine that produced it. `SENSITIVITY_INPUT_CAP` is bounded below
+#: this cap, cited from this reasoning rather than re-argued there.
+INVERSION_FACT_CAP = 8
+
+#: Every comparison operator condition 6 strips from both a guarded fact's
+#: `literal` and its `replacement` before comparing what remains. Equal
+#: remainders mean the substitution only moved the comparison around the
+#: same value -- flipping `==` to `!=` excludes a different subset, it
+#: never removes the fact -- and the mutation is refused rather than
+#: driven. The two-sided spellings strip before their one-sided halves so
+#: neither is left partially consumed.
+COMPARISON_OPERATORS = (" is not ", " not in ", "==", "!=", "<=", ">=",
+                        "<", ">", " is ", " in ")
+
+
+#: `strip_comparison_operators`'s own mechanism, compiled once. `re.sub`
+#: rather than `str.replace` in a loop: `.replace` shares its name with
+#: `Path.replace`, one of the write verbs `NothingWasRepairedTests`'s own
+#: AST sweep scans every function for -- a string method sharing a
+#: filesystem verb's spelling by accident is exactly the kind of false
+#: positive that sweep would otherwise force into its exemption set for a
+#: function that writes nothing at all.
+_COMPARISON_OPERATOR_RE = re.compile(
+    "|".join(re.escape(operator) for operator in COMPARISON_OPERATORS))
+
+
+def strip_comparison_operators(text):
+    """`text` with every member of `COMPARISON_OPERATORS` removed --
+    condition 6's mechanical test, applied to a guarded fact's `literal`
+    and its `replacement` before the two are compared.
+    """
+    return _COMPARISON_OPERATOR_RE.sub("", text)
+
+
+def run_inversion_observe(observe, subject, repo, timeout):
+    """Drive one guarded fact's declared observing run, exactly as
+    declared -- never a hand-picked subset, and never the whole parent
+    environment (conditions 3 and 7). Mirrors `run_sensitivity_drive`'s
+    own discipline; `cwd` resolves under `--repo-root` rather than
+    `--subject`, because a guarded fact's declaring test commonly lives
+    outside the subject (this skill's own suite does).
+    """
+    raw_argv = observe.get("argv")
+    if not raw_argv or not all(isinstance(part, str) for part in raw_argv):
+        raise Unprobeable(
+            "a guarded fact's observe.argv must be a list of strings")
+    argv = [interpolate_token(part, repo, subject, subject) for part in raw_argv]
+    for part in argv:
+        assert_no_subject_reference(part, subject, repo)
+    cwd = resolve_under(observe.get("cwd"), repo, "mutations.observe.cwd")
+    names = observe.get("env") or []
+    child_env, _ = constructed_child_env(names, "a guarded fact's observe block")
+    try:
+        return subprocess.run(
+            argv, cwd=str(cwd), shell=False, env=child_env,
+            capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError as error:
+        raise Unprobeable(
+            f"a guarded fact's observe.argv[0] is not executable: {error}")
+    except subprocess.TimeoutExpired:
+        raise Unprobeable(
+            f"a guarded fact's observing run did not answer within "
+            f"{timeout}s; a hang is an inability to look, never a verdict")
+
+
+def run_inversion(args):
+    """Move 6: invert every guarded fact a recipe declares, and watch its
+    lock fire.
+
+    v1 sources guarded facts only from the recipe's own declared
+    `mutations` block, never the subject's own lock roster, and performs
+    no AST-based delete/update classification -- both deferred, and
+    stated as such in `SKILL.md` rather than smuggled in as unstated
+    scope.
+
+    Mutates the real tracked tree in place, never a copy: a guarded
+    fact's declaring test commonly lives outside `--subject`, so a copy
+    of the subject alone could not host its own observing run. Every
+    mutated byte is restored from recorded bytes in a `finally`,
+    regardless of outcome, confirmed by `restore_exact_bytes` -- reused
+    verbatim, never `git checkout --`.
+
+    Ten soundness conditions guard every substitution; each halts
+    `Unprobeable` rather than let a meaningless result through. Exit `0`
+    for any verdict, a not-adjudicable finding included; exit `2` only
+    for an inability to look: no `mutations` block, an absent or
+    ambiguous fact, an operator-flip, a no-op write, a non-green
+    baseline, a restore digest mismatch, or an escape.
+    """
+    spec_path = Path(args.spec)
+    if not spec_path.is_file():
+        raise Unprobeable(f"no inversion recipe at {spec_path}")
+    try:
+        recipe = json.loads(spec_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise Unprobeable(f"the inversion recipe is unreadable: {error}")
+
+    subject = Path(args.subject).resolve()
+    repo = Path(args.repo_root).resolve()
+    surface = recipe.get("surface", "")
+    if not surface:
+        raise Unprobeable("the recipe names no surface to scope the sweep under")
+    exclude = tuple(recipe.get("exclude", ()))
+
+    mutations = recipe.get("mutations")
+    if not mutations:
+        raise Unprobeable(
+            "the recipe declares no mutations block; a recipe with no "
+            "guarded facts to drive is refused, never reported as zero")
+
+    for fact in mutations:
+        if not fact.get("observe"):
+            raise Unprobeable(
+                f"guarded fact {fact.get('fact')!r} declares no observe "
+                "block; there is no recipe-level default observing run")
+
+    # Deterministic, machine-independent selection: sorted-first-N, the
+    # same idiom `sensitivity` applies to its own varied inputs. `##
+    # Unchecked` names every fact beyond the cap individually, never
+    # silently dropped.
+    ordered = sorted(
+        mutations,
+        key=lambda fact: (fact["file"], fact["line"], fact["literal"]))
+    driven = ordered[:INVERSION_FACT_CAP]
+    unchecked = [fact.get("fact") or f"{fact['file']}:{fact['line']}"
+                for fact in ordered[INVERSION_FACT_CAP:]]
+
+    # --- Condition 11: the baseline gate. Each distinct declared observe
+    # runs once, unmutated, before the first byte is touched. A non-green
+    # baseline halts the whole sweep as Unprobeable -- an inability to
+    # look is never a verdict about the subject, and it is never reported
+    # as a finding. ---
+    seen = []
+    for fact in driven:
+        observe = fact["observe"]
+        key = (tuple(observe.get("argv", ())), observe.get("cwd"),
+              tuple(sorted(observe.get("env") or ())))
+        if key not in seen:
+            seen.append(key)
+    for argv_key, cwd_key, env_key in seen:
+        observe = {"argv": list(argv_key), "cwd": cwd_key, "env": list(env_key)}
+        completed = run_inversion_observe(observe, subject, repo, args.timeout)
+        if completed.returncode != 0:
+            raise Unprobeable(
+                "kind=baseline-not-green: the observing run is not green "
+                "before any mutation; against an already-red suite every "
+                "guarded fact would report fires, having proven nothing")
+
+    frozen_before = tree_digest(subject, exclude)
+
+    matrix = {}
+    facts_driven = []
+    not_adjudicable = []
+    restored = {}
+    try:
+        for fact in driven:
+            label = fact.get("fact") or f"{fact['file']}:{fact['line']}"
+            observe = fact["observe"]
+            literal = fact["literal"]
+            replacement = fact["replacement"]
+
+            path = resolve_under(fact["file"], subject, "mutations.file")
+            if not path.is_file():
+                raise Unprobeable(
+                    f"guarded fact {label!r} names a file that does not "
+                    f"exist: {path}")
+            before = path.read_bytes()
+            lines = before.decode("utf-8").splitlines(keepends=True)
+            line_no = fact["line"]
+            if not (1 <= line_no <= len(lines)):
+                raise Unprobeable(
+                    f"guarded fact {label!r} names line {line_no}, outside "
+                    f"{path}'s {len(lines)} lines")
+            line_text = lines[line_no - 1]
+            count = line_text.count(literal)
+            if count == 0:
+                raise Unprobeable(
+                    f"kind=fact-absent: guarded fact {label!r}'s literal "
+                    f"{literal!r} is not present at {path}:{line_no}")
+            if count > 1:
+                raise Unprobeable(
+                    f"kind=fact-ambiguous: guarded fact {label!r}'s literal "
+                    f"{literal!r} appears {count} times at {path}:{line_no}")
+            if literal != replacement and strip_comparison_operators(literal) == \
+                    strip_comparison_operators(replacement):
+                raise Unprobeable(
+                    f"kind=operator-flip: guarded fact {label!r}'s "
+                    "replacement only inverts a comparison operator around "
+                    "the same value, never the fact's value itself")
+
+            relative = path.relative_to(subject).as_posix()
+            restored[relative] = before
+            lines[line_no - 1] = line_text.replace(literal, replacement, 1)
+            after = "".join(lines).encode("utf-8")
+            path.write_bytes(after)
+            if hashlib.sha256(after).hexdigest() == \
+                    hashlib.sha256(before).hexdigest():
+                raise Unprobeable(
+                    f"kind=no-op-write: guarded fact {label!r}'s mutation "
+                    "left the file's bytes unchanged; the observing run "
+                    "never executes against a mutation that did not land")
+
+            completed = run_inversion_observe(observe, subject, repo, args.timeout)
+            pending = restored.pop(relative)
+            restore_exact_bytes(subject, {relative: pending})
+
+            outcome = "fires" if completed.returncode != 0 else "silent"
+            matrix[label] = outcome
+            facts_driven.append(label)
+            if outcome == "silent":
+                not_adjudicable.append({
+                    "fact": label, "file": str(path), "line": line_no,
+                    "move": 6, "adjudication": "not adjudicable",
+                    "remedy": "undecided: none determined"})
+
+        frozen_after = tree_digest(subject, exclude)
+        if frozen_before != frozen_after:
+            changed = sorted(
+                p for p in set(frozen_before) | set(frozen_after)
+                if frozen_before.get(p) != frozen_after.get(p))
+            raise Unprobeable(
+                f"kind=build-escaped-the-box: the inversion drive changed "
+                f"{changed}, outside the guarded facts it restored; a "
+                "drive writing outside its own box is an inability to "
+                "look, never a finding")
+    finally:
+        if restored:
+            restore_exact_bytes(subject, restored)
+
+    emit({
+        "baseline": "passed",
+        "facts": matrix,
+        "factsDriven": facts_driven,
+        "factsTotal": len(ordered),
+        "factsUnchecked": unchecked,
+        "frozen": {"digest": frozen_digest(subject, exclude),
+                   "exclude": list(exclude), "subject": str(subject)},
+        "matrix": matrix,
+        "notAdjudicable": not_adjudicable,
+        "notes": [],
+        "observed": facts_driven,
+        "range": f"mutations[0:{min(len(ordered), INVERSION_FACT_CAP)}] of {len(ordered)}",
         "surface": surface,
     })
     return 0
@@ -3629,6 +3895,7 @@ DISPATCH = {
     "walkthrough": run_walkthrough,
     "reading-diff": run_reading_diff,
     "sensitivity": run_sensitivity,
+    "inversion": run_inversion,
 }
 
 
