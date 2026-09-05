@@ -24937,6 +24937,274 @@ class UnbackedPositionSurfaceTests(unittest.TestCase):
         self.assertEqual(leftover, [], leftover)
 
 
+class UnbackedPositionExitPublicationTests(unittest.TestCase):
+    """The finding publishes the act that clears it, payload included.
+
+    The incident. A product tree was emptied so the flow could be walked from
+    the top, and the agreement document's marks were not emptied with it: one
+    item contradicted its own measurement and four more stood ticked over
+    nothing measurable at all. `position` reported every one of them correctly
+    and published nothing, so the operator read `SKILL.md`, grepped this suite
+    for a worked `--sequence` example, and rebuilt the array by hand out of
+    `position`'s own printed output -- which is precisely the improvisation the
+    skill exists to make unnecessary.
+
+    **The bar the weaker lock does not clear.** A test asserting that the
+    report carries some `resolve` key passes an exit nobody can run: the whole
+    difficulty here is that `position --sequence -` reads stdin, so a published
+    command that stopped at the flag would be a command with a hole in it. So
+    the central test below RUNS the published string through a shell, unedited,
+    and asserts the finding is gone afterwards.
+
+    **And it does not weaken the restraint that was right.** The refresh still
+    never rewrites a mark it could not measure -- `UnbackedPositionSurfaceTests.
+    test_position_reports_the_tick_its_own_refresh_cannot_correct` is the lock
+    on that, and it stands. What changed is that the report now says how to get
+    out.
+    """
+
+    PROPOSAL_REVISION = "r1.md"
+    PROPOSAL_TEXT = "## 1\nprose\n"
+    PROPOSAL_SHA256 = hashlib.sha256(PROPOSAL_TEXT.encode("utf-8")).hexdigest()
+
+    #: An apostrophe on purpose. The payload travels inside a shell command,
+    #: and a naive single-quote wrapping of the JSON dies on exactly this
+    #: character -- the failure `_cli_command`'s own `shlex.quote` discipline
+    #: exists to prevent, brought to the one publication point that embeds a
+    #: whole document rather than a flag value.
+    ITEM_TEXT = "Collect the campaign's own shard."
+
+    def _proposals(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / self.PROPOSAL_REVISION).write_text(self.PROPOSAL_TEXT,
+                                                   encoding="utf-8")
+        return root
+
+    def _box(self, suffix, items, *, levels=None):
+        box = FORGE / "implementations" / f"_unbacked_exit_{suffix}_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "src/Method_Benchmark", "Method", "tests"):
+            (box / directory).mkdir(parents=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        declaration = "__benchmark__ = {'revision': 'r1.md'}\n"
+        if levels is not None:
+            declaration += f"__levels__ = {levels!r}\n"
+        (box / "src/Method_Benchmark/__init__.py").write_text(
+            declaration, encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        header = {"revision": self.PROPOSAL_REVISION,
+                  "revisionSha256": self.PROPOSAL_SHA256,
+                  "derivedAt": "2026-08-27T00:00:00Z", "session": "s1",
+                  "target": (levels[-1] if levels else "final")}
+        (box / "Method" / "AGREED.md").write_text(
+            impl_position.render(header, items), encoding="utf-8")
+        return box
+
+    def _shard_item(self, mark, operand="s0", ordinal=1):
+        return {"ordinal": ordinal, "mark": mark, "text": self.ITEM_TEXT,
+                "witness": {"kind": "shard", "operand": operand}}
+
+    def run_cli(self, *args, proposals=None):
+        env = dict(os.environ)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        if proposals is not None:
+            env["IMPLEMENTATION_PROPOSALS"] = str(proposals)
+        return subprocess.run([sys.executable, str(CLI), *args],
+                              capture_output=True, text=True, cwd=FORGE, env=env)
+
+    def run_published(self, command, proposals):
+        """The published string, through a shell, exactly as printed."""
+        env = dict(os.environ)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["IMPLEMENTATION_PROPOSALS"] = str(proposals)
+        # `stdin` is closed on purpose. `position --sequence -` reads stdin, so
+        # a command published WITHOUT its payload would quietly borrow whatever
+        # the test runner's own stdin happened to be -- and a published exit
+        # that only works because the caller had something to feed it is the
+        # hole this class exists about. Closed, an unpiped command reads EOF
+        # and refuses, which is the honest failure.
+        return subprocess.run(command, shell=True, capture_output=True,
+                              text=True, cwd=FORGE, env=env,
+                              stdin=subprocess.DEVNULL)
+
+    def refresh(self, box, proposals, *extra):
+        proc = self.run_cli("position", "--target", str(box), "--name", "Method",
+                            "--revision", self.PROPOSAL_REVISION,
+                            "--session", "s1", *extra, proposals=proposals)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return json.loads(proc.stdout)
+
+    def test_the_unbacked_report_publishes_a_command_carrying_its_own_payload(self):
+        """The shape, before the behaviour: an act, and the array it consumes
+        inside it. `--sequence -` with nothing piped into it is the hole this
+        whole class exists about."""
+        proposals = self._proposals()
+        report = self.refresh(self._box("shape", [self._shard_item("x")]),
+                              proposals)
+        self.assertEqual(report["unbacked"], [1])
+        self.assertEqual(report["resolve"]["kind"], "command")
+        command = report["resolve"]["command"]
+        self.assertIn("--sequence - --replace", command)
+        # The payload, not a placeholder: the array is recovered from the
+        # string the way a shell would recover it, so this reads what actually
+        # reaches `--sequence` rather than what the substring happens to spell
+        # -- the apostrophe in `ITEM_TEXT` is escaped in the raw string and a
+        # naive `assertIn` on it fails against a command that is perfectly
+        # correct.
+        piped = command[:command.index(" | ")]
+        argv = shlex.split(piped)
+        self.assertEqual(argv[:2], ["printf", "%s"])
+        self.assertEqual(json.loads(argv[2]), [
+            {"text": self.ITEM_TEXT,
+             "witness": {"kind": "shard", "operand": "s0", "twostate": True}}])
+
+    def test_the_published_command_runs_unedited_and_the_finding_clears(self):
+        """The lock the weaker one cannot pass. A `resolve` key that names a
+        command with no payload behind it passes every assertion above and
+        fails here, because here the string is actually run."""
+        proposals = self._proposals()
+        box = self._box("runs", [self._shard_item("x")])
+        report = self.refresh(box, proposals)
+        self.assertEqual(report["unbacked"], [1])
+
+        ran = self.run_published(report["resolve"]["command"], proposals)
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        after = json.loads(ran.stdout)
+
+        self.assertEqual(after["unbacked"], [])
+        self.assertEqual(after["sequence"][0]["mark"], " ")
+        # Nothing else about the item moved: a reinstall that lost the text or
+        # the witness would have "cleared" the finding by destroying the item.
+        self.assertEqual(after["sequence"][0]["text"], self.ITEM_TEXT)
+        self.assertEqual(after["sequence"][0]["witness"]["kind"], "shard")
+        self.assertEqual(after["sequence"][0]["witness"]["operand"], "s0")
+        # And the report that comes back publishes nothing, because there is
+        # nothing left to clear.
+        self.assertIsNone(after["resolve"])
+
+    def test_a_report_with_no_unbacked_tick_publishes_nothing(self):
+        """The pole. An act published over a report with no finding in it
+        teaches a reader to ignore the key."""
+        proposals = self._proposals()
+        report = self.refresh(self._box("blank", [self._shard_item(" ")]),
+                              proposals)
+        self.assertEqual(report["unbacked"], [])
+        self.assertIsNone(report["resolve"])
+
+    def test_every_branch_of_the_command_carries_the_key(self):
+        """The uniform-key-set rule `position_state` already documents, held to
+        `cmd_position`'s own three returns: a key that appears on some branches
+        and not others vanishes for exactly the callers that took the early
+        ones."""
+        # `returned_keys` raises unless every dict return agrees, so reading it
+        # at all is the branch-agreement half; the membership below is the key.
+        self.assertIn("resolve", returned_keys(CLI, "cmd_position"))
+
+    def test_an_absent_block_answers_the_key_rather_than_omitting_it(self):
+        proposals = self._proposals()
+        box = FORGE / "implementations" / f"_unbacked_exit_absent_{os.getpid()}"
+        self.addCleanup(shutil.rmtree, box, ignore_errors=True)
+        for directory in ("src/Method", "Method"):
+            (box / directory).mkdir(parents=True)
+        (box / "src/Method/__init__.py").write_text("", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(box)], check=True,
+                       capture_output=True)
+        report = self.refresh(box, proposals)
+        self.assertEqual(report["status"], "absent")
+        self.assertIsNone(report["resolve"])
+
+    def test_the_act_carries_the_shard_directory_the_report_measured(self):
+        """The hazard a payload alone does not close, run rather than read.
+
+        A reinstall re-derives every mark, so an act published without the
+        `--shards` this invocation was given would blank a tick this very
+        invocation had just measured -- a published command that destroys a
+        reading. Two items: one measured true from an arrived shard, one ticked
+        over a notebook nothing reports on. Clearing the second must leave the
+        first exactly where the evidence put it.
+        """
+        proposals = self._proposals()
+        shards = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, shards, ignore_errors=True)
+        (shards / "s0").mkdir()
+        (shards / "s0" / "shard.json").write_text("{}", encoding="utf-8")
+
+        box = self._box("shards", [
+            self._shard_item(" "),
+            {"ordinal": 2, "mark": "x", "text": "Execute the probe.",
+             "witness": {"kind": "notebook", "operand": "Notebooks/absent.ipynb"}},
+        ])
+        report = self.refresh(box, proposals, "--shards", str(shards))
+        self.assertEqual(report["sequence"][0]["mark"], "x")
+        self.assertEqual(report["unbacked"], [2])
+        self.assertIn(f"--shards {shlex.quote(str(shards))}",
+                      report["resolve"]["command"])
+
+        ran = self.run_published(report["resolve"]["command"], proposals)
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        after = json.loads(ran.stdout)
+        self.assertEqual(after["unbacked"], [])
+        self.assertEqual(after["sequence"][0]["mark"], "x")
+        self.assertEqual(after["sequence"][1]["mark"], " ")
+
+    def test_a_leveled_witness_stays_leveled_across_the_reinstall(self):
+        """`--sequence`'s own default is two-state, so a payload that dropped
+        `twostate` would publish an act that quietly retires an item from the
+        rung ladder while claiming only to clear a mark."""
+        proposals = self._proposals()
+        box = self._box("leveled", [
+            {"ordinal": 1, "mark": "x", "text": self.ITEM_TEXT,
+             "witness": {"kind": "shard", "operand": "s0", "twostate": False}},
+        ], levels=["pilot"])
+        report = self.refresh(box, proposals)
+        self.assertEqual(report["unbacked"], [1])
+        self.assertFalse(report["sequence"][0]["twostate"])
+
+        ran = self.run_published(report["resolve"]["command"], proposals)
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        after = json.loads(ran.stdout)
+        self.assertEqual(after["unbacked"], [])
+        self.assertFalse(after["sequence"][0]["twostate"])
+        self.assertFalse(after["sequence"][0]["witness"]["twostate"])
+
+    def test_the_payload_builder_reads_the_report_and_invents_nothing(self):
+        """The unit under the two end-to-end runs above: every field of the
+        array comes out of the sequence the report already printed."""
+        payload = impl.position_reinstall_payload([
+            {"ordinal": 1, "mark": "x", "text": "First.",
+             "witness": {"kind": "record", "operand": "grid", "twostate": True}},
+            {"ordinal": 2, "mark": " ", "text": "Second.",
+             "witness": {"kind": "notebook", "operand": None, "twostate": False}},
+        ])
+        self.assertEqual(payload, [
+            {"text": "First.",
+             "witness": {"kind": "record", "operand": "grid", "twostate": True}},
+            {"text": "Second.",
+             "witness": {"kind": "notebook", "operand": None, "twostate": False}},
+        ])
+        # No mark travels: `--sequence` installs every item blank and the same
+        # call re-derives it, which is the whole mechanism.
+        self.assertNotIn("mark", payload[0])
+
+    def test_the_doctrine_names_the_exit_it_now_publishes(self):
+        """A published act a reader meets for the first time in a terminal is
+        an act nobody designed for."""
+        skill = SKILL_MD.read_text(encoding="utf-8")
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        self.assertIn("`position.unbacked`", skill)
+        self.assertIn("--sequence - --replace", skill)
+        self.assertIn("`unbacked`", usage)
+        self.assertIn("`resolve`", usage)
+
+    def test_the_toy_targets_left_nothing_behind(self):
+        self._box("cleanup", [self._shard_item(" ")])
+        self.doCleanups()
+        leftover = list((FORGE / "implementations").glob("_unbacked_exit_*"))
+        self.assertEqual(leftover, [], leftover)
+
+
 class NotebookInterpreterTests(unittest.TestCase):
     """The isolation rule was the one rule nothing could check.
 
