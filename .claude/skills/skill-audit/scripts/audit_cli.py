@@ -1254,6 +1254,21 @@ def build_parser():
                            help="seconds before a hanging observing run "
                                 "is exit 2")
 
+    exits = commands.add_parser(
+        "exits",
+        help="per state a recipe declares, whether a mechanical exit "
+             "exists and is published, and drive it for real if so")
+    exits.add_argument("--subject", required=True,
+                       help="the subject's root directory")
+    exits.add_argument("--spec", required=True,
+                       help="the JSON recipe declaring the states block")
+    exits.add_argument("--repo-root", default=".",
+                       help="the root an interpreter or a repo-scoped act "
+                            "resolves under")
+    exits.add_argument("--timeout", type=int, default=30,
+                       help="seconds before a hanging published act is "
+                            "exit-coded published-but-timed-out")
+
     return parser
 
 
@@ -2240,6 +2255,223 @@ def run_sensitivity(args):
         "notAdjudicable": not_adjudicable,
         "notes": [],
         "range": SENSITIVITY_VARIATION_RANGE,
+        "surface": surface,
+    })
+    return 0
+
+
+#: Characters that would carry shell semantics under `shell=True`. This tool
+#: never sets `shell=True` -- a published act's argv is always passed as a
+#: list of strings -- so any of these appearing in the act's own text is
+#: refused rather than passed through as a literal argument the operator
+#: never intended: `;`, `|`, `&`, `$`, `>`, `<`, a backtick, or a newline all
+#: carry meaning to a shell that they do not carry to `subprocess.run`'s own
+#: argv-as-a-list contract, and letting one through would misreport a shell
+#: command as broken instead of refusing it before any process starts.
+EXIT_SHELL_METACHARACTERS = set(";|&$><`\n")
+
+#: Move 11's own closed, five-value roster (`spec.md`, "A reported state
+#: names its exit"). `judgement` and `unstated` are not members: both are
+#: reached *before* an act is ever admitted -- a state the recipe or subject
+#: declares a human judgement, and a state with no published act and no such
+#: declaration -- so they are never a sixth or seventh value of this roster,
+#: they are the two ways a state never reaches it at all.
+EXIT_OUTCOMES = ("published-and-ran", "published-but-not-executable",
+                 "published-but-unparseable", "published-but-timed-out",
+                 "unstated")
+
+
+def split_published_act(act_text):
+    """`act_text` split into argv parts, or `None` if the act cannot be
+    admitted at all.
+
+    `None` on any `EXIT_SHELL_METACHARACTERS` character: this tool never
+    sets `shell=True`, so a semicolon or a pipe reaching `subprocess.run`'s
+    argv list would carry no meaning at all, and reporting the act as though
+    it had run would be worse than refusing it. `None` on an empty act too --
+    the same inability to look, wearing a different shape.
+    """
+    if any(character in EXIT_SHELL_METACHARACTERS for character in act_text):
+        return None
+    parts = act_text.split()
+    return parts or None
+
+
+def resolved_act_argv0(argv0, subject, repo, copy_root, interpreters):
+    """The absolute path a published act's `argv[0]` actually runs as, or
+    `None` if the act is refused before any process starts.
+
+    A name in the recipe's own declared `interpreters` allowlist -- the
+    `DRIVER_ENV_ALLOWLIST` precedent, applied to an operator-authored act
+    rather than a recipe-declared driver step -- is a tool used to run the
+    subject, never the subject's own content, so it is never redirected
+    into the copy: a bare name (`python3`) is left exactly as declared, so
+    it resolves through the child process's own `PATH`, and a name carrying
+    a path separator resolves under `--repo-root`. A name resolving under
+    `--subject` instead redirects into `copy_root`: the act runs against a
+    COPY, so an exit that repairs repairs only that copy and nothing that
+    survives the run. A name resolving under `--repo-root` but outside the
+    interpreter allowlist runs against the real repo -- it is repo tooling,
+    not subject content, so there is no copy of it to redirect into.
+    Anything else -- absolute, climbing `..`, or resolving under neither
+    root -- is refused.
+    """
+    if argv0 in interpreters:
+        return Path(argv0) if "/" not in argv0 else (repo / argv0).resolve()
+    if "/" not in argv0:
+        # A bare command name with no path separator is a lookup against
+        # the child's own `PATH`, never a file this tool can locate under
+        # either declared root; it is admitted only through the
+        # interpreter allowlist above, never by coincidentally matching a
+        # root's own name.
+        return None
+    if Path(argv0).is_absolute() or ".." in Path(argv0).parts:
+        return None
+    subject_candidate = (subject / argv0).resolve()
+    if subject == subject_candidate or subject in subject_candidate.parents:
+        return copy_root / subject_candidate.relative_to(subject)
+    repo_candidate = (repo / argv0).resolve()
+    if repo == repo_candidate or repo in repo_candidate.parents:
+        return repo_candidate
+    return None
+
+
+def run_exits_act(argv, cwd, timeout, names):
+    """Drive one published act for real, inside `cwd` -- a copy of the
+    subject. The act's own exit code is never read: `published-and-ran` is
+    reported whether the act refuses or succeeds, because the requirement
+    is reachability, not success. A missing binary and a hang are the only
+    two ways this can fail to reach `published-and-ran` once admitted.
+    """
+    child_env, _ = constructed_child_env(names, "a published exit act")
+    try:
+        subprocess.run(argv, cwd=str(cwd), shell=False, env=child_env,
+                       capture_output=True, text=True, timeout=timeout)
+        return "published-and-ran"
+    except FileNotFoundError:
+        return "published-but-not-executable"
+    except subprocess.TimeoutExpired:
+        return "published-but-timed-out"
+
+
+def run_exits(args):
+    """Move 11: does a reported state let its operator out?
+
+    The eleven earlier moves all ask whether the subject is correct; this
+    one asks whether it lets a human out of a state it names. Per state a
+    recipe declares: a state the recipe or subject marks a human judgement
+    is `judgement`, reported and never a finding -- publishing a command for
+    a judgement would be worse than the silence. A state with no such
+    declaration is searched, through the recipe's own declared `site` and
+    `extract`, for a published act; none found is `unstated`, a finding,
+    reported with the driveable range that was searched.
+
+    A found act passes an admission gate before any process starts: split
+    into a list of strings or refused, no shell metacharacter, and its
+    `argv[0]` resolved under `--subject`, under `--repo-root`, or named in
+    the recipe's own declared interpreter allowlist -- anything else is
+    `published-but-unparseable`. An admitted act then runs for real inside
+    `materialize_subject_copy`'s own copy, through `constructed_child_env`,
+    under this subcommand's own `--timeout`. `published-and-ran` deliberately
+    never reads the act's own exit code: the requirement is that the act can
+    be reached, not that it succeeds.
+
+    The real subject is digested before and after the whole sweep; a
+    published act may repair its own copy freely, but a change reaching the
+    real subject is `Unprobeable kind=exit-escaped-the-box`, and the sweep
+    halts. `erase_box` still runs in a `finally`, whatever the outcome.
+    """
+    spec_path = Path(args.spec)
+    if not spec_path.is_file():
+        raise Unprobeable(f"no exits recipe at {spec_path}")
+    try:
+        recipe = json.loads(spec_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise Unprobeable(f"the exits recipe is unreadable: {error}")
+
+    subject = Path(args.subject).resolve()
+    repo = Path(args.repo_root).resolve()
+    surface = recipe.get("surface", "")
+    if not surface:
+        raise Unprobeable("the recipe names no surface to scope the sweep under")
+    exclude = tuple(recipe.get("exclude", ()))
+    states = recipe.get("states")
+    if not states:
+        raise Unprobeable(
+            "the recipe declares no states block; a recipe with no "
+            "reported states to check is refused, never reported as zero")
+    interpreters = tuple(recipe.get("interpreterAllowlist", ()))
+    default_env = recipe.get("env") or []
+
+    box = repo / "implementations" / f"_exits_{surface}"
+    before_empty = box_empty_or_absent(box)
+    if not before_empty:
+        raise Unprobeable(
+            f"a non-empty box already occupies {box}; remove it by hand "
+            "before running exits again -- an occupied box is never "
+            "silently adopted")
+    box.mkdir(parents=True, exist_ok=True)
+
+    subject_before = tree_digest(subject, exclude)
+    exits = {}
+    searched = {}
+    try:
+        copy_root = materialize_subject_copy(subject, box, exclude)
+        for state in states:
+            name = state.get("name")
+            if not name:
+                raise Unprobeable("a states entry names no state")
+
+            if state.get("judgement"):
+                exits[name] = "judgement"
+                continue
+
+            site = state.get("site")
+            pattern = state.get("extract")
+            if not site or not pattern:
+                exits[name] = "unstated"
+                continue
+
+            path = resolve_site(site, subject, repo)
+            text = read_site(path)
+            span = f"{path}:1-{max(len(text.splitlines()), 1)}"
+            match = re.search(pattern, text)
+            if match is None:
+                exits[name] = "unstated"
+                searched[name] = span
+                continue
+
+            act_text = match.group("act").strip()
+            parts = split_published_act(act_text)
+            resolved0 = (
+                resolved_act_argv0(parts[0], subject, repo, copy_root, interpreters)
+                if parts else None)
+            if resolved0 is None:
+                exits[name] = "published-but-unparseable"
+                continue
+
+            argv = [str(resolved0), *parts[1:]]
+            exits[name] = run_exits_act(
+                argv, copy_root, args.timeout, list(state.get("env") or default_env))
+
+        subject_after = tree_digest(subject, exclude)
+        if subject_before != subject_after:
+            changed = sorted(
+                p for p in set(subject_before) | set(subject_after)
+                if subject_before.get(p) != subject_after.get(p))
+            raise Unprobeable(
+                f"kind=exit-escaped-the-box: a published act changed the "
+                f"real subject at {changed}; every act runs against a copy "
+                "so it may repair nothing that survives -- an escape is an "
+                "inability to look, never a finding")
+    finally:
+        erase_box(box)
+
+    emit({
+        "exits": exits,
+        "frozen": {"digest": frozen_digest(subject, exclude),
+                   "exclude": list(exclude), "subject": str(subject)},
+        "searched": searched,
         "surface": surface,
     })
     return 0
@@ -4331,6 +4563,7 @@ DISPATCH = {
     "reading-diff": run_reading_diff,
     "sensitivity": run_sensitivity,
     "inversion": run_inversion,
+    "exits": run_exits,
 }
 
 

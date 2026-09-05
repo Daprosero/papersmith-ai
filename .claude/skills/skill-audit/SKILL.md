@@ -81,6 +81,7 @@ move, in order; the numbering is the order.
 | 8. Drive the whole documented flow in order, against one real shared box, and name the first step that breaks its own declared expectation | `walkthrough` | `tests/test_skill_audit.py` |
 | 9. Compare two supplied readings of one prose surface by mechanical diff, and never let the comparison close | `reading-diff` | `tests/test_skill_audit.py` |
 | 10. Vary a declared input a result claims to depend on, and ask whether the declared output moves | `sensitivity` | `tests/test_skill_audit.py` |
+| 11. Per reported state, whether a mechanical exit exists and whether it is published, and drive it for real if so | `exits` | `tests/test_skill_audit.py` |
 | Read every artifact's opening paragraphs against its own frontmatter and its own shipped files | `doctrine` | no lock — irreducibly textual, and carried anyway |
 
 The last row has no code and no lock, and says so. Prose contradicting prose
@@ -322,6 +323,50 @@ that produced it. Restore discipline is inherited from Move 6 verbatim:
 `sha256` before, remove, drive, write the exact bytes back, `sha256`
 again, assert equality -- never `git checkout --`, which has no target
 here at all, since the copy is not tracked by git.
+
+### Move 11, in detail
+
+The ten earlier moves all ask whether the subject is correct. None asks
+whether the subject lets its operator out. Measured on a sibling skill: of
+51 reported keys naming a state a human must act on, eight had a mechanical
+exit and none published it -- getting out of one required reading the
+skill's own documentation, finding a payload's shape by grepping its test
+suite, and rebuilding an input by hand.
+
+Per state a recipe declares: a state the recipe or subject marks a human
+judgement is `judgement`, reported and never a finding -- publishing a
+command for a judgement would be worse than the silence. A state with no
+such declaration is searched, through the recipe's own declared `site` and
+`extract`, for a published act; none found is `unstated`, a finding,
+reported with the driveable range that was searched. The audit does not
+guess at an unpublished exit's identity: locating one would mean searching
+the subject's surface for an act that would clear a named state, and any
+name-similarity heuristic is a guess this skill refuses everywhere else.
+
+A found act passes an admission gate before any process starts: split into
+a list of strings, refused if that split is empty; refused if it carries a
+shell metacharacter (`;`, `|`, `&`, `$`, `>`, `<`, a backtick, or a
+newline), because this tool never sets `shell=True` and passing one through
+literally would misreport a shell command as broken; and its `argv[0]`
+resolved under `--subject`, under `--repo-root`, or named in the recipe's
+own declared interpreter allowlist -- the `DRIVER_ENV_ALLOWLIST` precedent,
+applied to an operator-authored act. Anything else is
+`published-but-unparseable`.
+
+An admitted act then runs for real, inside `materialize_subject_copy`'s own
+copy so an exit that repairs repairs only that copy, through
+`constructed_child_env` for its environment and this subcommand's own
+`--timeout`. **`published-and-ran` deliberately does not read the act's own
+exit code** -- the requirement is that the act can be reached, not that it
+succeeds; an act that runs and refuses has been published and can be run,
+and judging whether its refusal was correct is a different question this
+probe does not ask. A missing binary is `published-but-not-executable`; a
+hang is `published-but-timed-out`.
+
+The real subject is digested before and after the whole sweep, exactly like
+every other box-owning move: a change reaching it is
+`Unprobeable kind=exit-escaped-the-box`, the sweep halts, and `erase_box`
+still runs in a `finally`.
 
 ## The stages
 
@@ -623,6 +668,7 @@ carries no vocabulary of its own beyond that one heading.
 | `reading-diff` | Two supplied readings of one prose surface, given directly rather than derived | `agreement`, `shared`, `onlyIn`, `comparison`, `candidates`, `limit`, `frozen` |
 | `sensitivity` | A copy of the subject, a producer driven once per varied declared input, and the declared results site re-read after each drive | `control`, `matrix`, `notAdjudicable`, `inputsVaried`, `inputsUnchecked`, `inputsTotal`, `notes`, `containment` |
 | `inversion` | The real subject in place, one guarded fact substituted at a time from the recipe's own declared `mutations` block, its declared observing run driven before and after | `baseline`, `matrix`, `factsDriven`, `factsUnchecked`, `factsTotal`, `notAdjudicable`, `observed`, `frozen`, `notes` |
+| `exits` | Per state a recipe declares, a human-judgement declaration, a published act extracted from the subject's own text, or neither; an admitted act driven for real inside a copy | `exits`, `searched`, `frozen` |
 
 `roster` exits `0` for **any** verdict, findings included, and `2` when the
 probe could not be driven or the extraction matched nothing. Inability to look
@@ -670,6 +716,14 @@ reproduce its pre-mutation bytes, or a drive that wrote outside its
 declared file. None of those seven is a finding; each is an inability to
 look.
 
+`exits` exits `0` for **any** state's outcome -- `judgement`, `unstated`,
+and all five of `published-and-ran`, `published-but-not-executable`,
+`published-but-unparseable`, and `published-but-timed-out` -- and `2` only
+for an inability to look: no `states` block, its box already occupied, or a
+published act reaching the real subject (`kind=exit-escaped-the-box`). None
+of `unstated` or any admission-gate outcome is an inability to look; each is
+a reported fact about the state.
+
 ## The shipped files
 
 This skill's own `structure` recipe (`references/probes/skill-audit.structure.json`)
@@ -691,6 +745,7 @@ the same change.
 | `references/probes/skill-audit.reading-b.json` | the second supplied reading of the worked `reading-diff` invocation |
 | `references/probes/skill-audit.sensitivity.json` | the self-probe recipe for `sensitivity` |
 | `references/probes/skill-audit.self-guarded-facts.json` | the self-probe recipe for `inversion` |
+| `references/probes/skill-audit.exits.json` | the self-probe recipe for `exits` |
 | `references/probes/remote-execution.accepted-operations.json` | `remote-execution`'s top-level `roster` recipe — pre-existing gap, committed without this row |
 | `references/probes/remote-execution.smoke-subcommands.json` | `remote-execution`'s nested `smoke record` `roster` recipe |
 | `references/probes/proposal-implementation.accepted-operations.json` | `proposal-implementation`'s `roster` recipe — same finding, over 2045 lines |
@@ -763,6 +818,15 @@ landed" and "its row landed" can outlive one commit undetected.
 | An inversion guarded fact's restore does not reproduce its pre-mutation bytes | Exit `2`, `kind=sensitivity-restore-failed`; the sweep halts, and the next fact is never mutated |
 | An inversion drive writes outside its declared file | Exit `2` as `build-escaped-the-box`; never reported as a finding |
 | More guarded facts exist than the inversion cap | Drive the first eight, sorted; name the rest individually in `## Unchecked` |
+| An `exits` recipe declares no `states` block | Exit `2`; never reported as zero states |
+| An `exits` box already holds files | Exit `2` naming the path; never adopt a non-empty box |
+| A reported state names no published act, and declares itself a human judgement | Report `judgement`; never a finding, never a published command |
+| A reported state names no published act, and declares nothing | Report `unstated`, a finding, with the driveable range that was searched |
+| A published act splits empty, or carries a shell metacharacter | Report `published-but-unparseable`; never passed to `shell=True` |
+| A published act's `argv[0]` resolves under neither `--subject`, `--repo-root`, nor the recipe's declared interpreters | Report `published-but-unparseable`; refused before any process starts |
+| A published act's binary does not exist | Report `published-but-not-executable` |
+| A published act hangs past `exits`' own `--timeout` | Report `published-but-timed-out` |
+| A published act reaches the real subject | Exit `2` as `exit-escaped-the-box`; never reported as a finding |
 
 ## Handoff
 

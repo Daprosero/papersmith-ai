@@ -134,10 +134,27 @@ disagrees with `SKILL.md`'s own stated schema version, so
 `SchemaVersionDerivationTests` goes red exactly as declared, and the byte
 mutation is restored before this invocation exits.
 
+## `exits` against the auditor's own doctrine
+
+Two states declared against `SKILL.md`'s own Decision Gates table: whether
+an occupied from-zero box's own documented remedy ("remove it by hand") is
+ever published as a runnable act, and the build-or-delete judgement every
+not-adjudicable finding carries.
+
+```
+$ python3 .claude/skills/skill-audit/scripts/audit_cli.py exits --subject .claude/skills/skill-audit --spec .claude/skills/skill-audit/references/probes/skill-audit.exits.json --repo-root .
+```
+
+Exit `0`. `exits` names the occupied-box remedy `"unstated"` -- the doctrine
+states a mechanical remedy in prose and never publishes it as a runnable
+act, which is a real, if minor, gap in this skill's own documentation -- and
+the build-or-delete decision `"judgement"`, correctly reported and not a
+finding.
+
 ## Exit codes, in one place
 
-| Exit | `roster` | `check-report` | `structure` | `walkthrough` | `reading-diff` | `sensitivity` | `inversion` |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `0` | it looked, and this is the verdict | the report is valid | it looked, and this is the outcome | it looked, `stall` included | it compared, agreement or divergence | it looked, `not adjudicable` findings included | it looked, `not adjudicable` findings included |
-| `1` | not used | the report is invalid | not used | not used | not used | not used | not used |
-| `2` | it could not look | the report could not be read | a side could not be derived, the box was not empty, or the build escaped it | a step declared no expectation, the box was not empty, the flow was never entered, a `kind: "setup"` step failed (`"setup-failed"`), or the recipe declared no `"gate"` step at all | not exactly two `--reading` flags, or a reading file could not be read or named an empty `members` list | no declared computed values, an occupied box, a stalled control, a restore mismatch, or an escape | no `mutations` block, an absent/ambiguous fact, an operator-flip, a no-op write, a non-green baseline, a restore mismatch, or an escape |
+| Exit | `roster` | `check-report` | `structure` | `walkthrough` | `reading-diff` | `sensitivity` | `inversion` | `exits` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `0` | it looked, and this is the verdict | the report is valid | it looked, and this is the outcome | it looked, `stall` included | it compared, agreement or divergence | it looked, `not adjudicable` findings included | it looked, `not adjudicable` findings included | it looked, every state's outcome included |
+| `1` | not used | the report is invalid | not used | not used | not used | not used | not used | not used |
+| `2` | it could not look | the report could not be read | a side could not be derived, the box was not empty, or the build escaped it | a step declared no expectation, the box was not empty, the flow was never entered, a `kind: "setup"` step failed (`"setup-failed"`), or the recipe declared no `"gate"` step at all | not exactly two `--reading` flags, or a reading file could not be read or named an empty `members` list | no declared computed values, an occupied box, a stalled control, a restore mismatch, or an escape | no `mutations` block, an absent/ambiguous fact, an operator-flip, a no-op write, a non-green baseline, a restore mismatch, or an escape | no `states` block, an occupied box, or an act escaping to the real subject |

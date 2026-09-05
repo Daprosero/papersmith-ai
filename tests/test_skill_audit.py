@@ -532,8 +532,8 @@ class MovesTableTests(unittest.TestCase):
             (numbered if match else textual).append(
                 int(match.group(1)) if match else row)
         self.assertEqual(
-            sorted(numbered), list(range(0, 11)),
-            "the table must carry exactly one row per move 0 through 10, with no "
+            sorted(numbered), list(range(0, 12)),
+            "the table must carry exactly one row per move 0 through 11, with no "
             f"gap and no repeat; found {sorted(numbered)}")
         self.assertEqual(
             len(textual), 1,
@@ -1299,7 +1299,7 @@ class SelfAuditSubcommandRosterTests(unittest.TestCase):
         self.assertEqual(payload["unregistered"], [])
         self.assertEqual(payload["phantom"], [])
         self.assertEqual(sorted(payload["code"]),
-                         ["check-report", "inversion", "reading-diff",
+                         ["check-report", "exits", "inversion", "reading-diff",
                           "roster", "sensitivity", "structure", "walkthrough"])
 
     def test_the_roster_comes_from_argparse_and_not_from_a_list(self):
@@ -3916,6 +3916,33 @@ class NothingWasRepairedTests(unittest.TestCase):
             "after restoring; the audit reports and repairs nothing, so "
             "any difference here is a defect in the audit")
 
+    def test_an_exits_run_leaves_the_subject_byte_identical(self):
+        """The exemption in the lock below, held by bytes instead of by
+        prose. `exits` is the newest subcommand to touch a box at all --
+        `materialize_subject_copy`'s own copy, exactly like `sensitivity` --
+        and never the real subject. This drives the real shipped self-probe
+        against the real subject and answers the only way it can be
+        answered: by comparing the tree to itself.
+        """
+        before = tree_digest(SKILL_ROOT)
+        self.assertIn(
+            "scripts/audit_cli.py", before,
+            "the walk did not see the subject's own script, so a tree that "
+            "compares equal afterwards would prove nothing")
+        result, payload = exits_json(
+            PROBES / "skill-audit.exits.json", SKILL_ROOT, repo=FORGE)
+        after = tree_digest(SKILL_ROOT)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            sorted(set(before) - set(after)), [], "a file was removed")
+        self.assertEqual(
+            sorted(set(after) - set(before)), [], "a file was added")
+        self.assertEqual(
+            [q for q in before if before[q] != after.get(q)], [],
+            "exits changed a file under the audited subject; the audit "
+            "reports and repairs nothing, so any difference here is a "
+            "defect in the audit")
+
     def test_the_auditor_names_no_write_into_the_audited_subject(self):
         """`roster` and `check-report` write nothing, anywhere, and still don't.
 
@@ -3958,7 +3985,7 @@ class NothingWasRepairedTests(unittest.TestCase):
             "run_structure", "run_walkthrough", "erase_box",
             "run_box_step", "ignorance_control_gate", "run_sensitivity",
             "materialize_subject_copy", "vary_by_absence",
-            "restore_exact_bytes", "run_inversion"}
+            "restore_exact_bytes", "run_inversion", "run_exits"}
         for path in sorted(SKILL_ROOT.rglob("*")):
             if not path.is_file() or path.suffix != ".py":
                 continue
@@ -8170,3 +8197,270 @@ class ReachabilityReportShapeTests(unittest.TestCase):
         self.assertEqual(len(tables), 1, "one report-shape table, exactly")
         items = {row[0].strip("`") for row in tables[0]}
         self.assertIn("reachability", items)
+
+
+# ==========================================================================
+# Move 11 -- `exits`: none of the eleven earlier moves asks whether a
+# reported state lets its operator out. Per state: a human judgement is
+# `judgement`, reported and never a finding; no such declaration and no
+# published act is `unstated`, a finding; a published act is admitted
+# (never `shell=True`) and driven for real, inside a copy, and its own exit
+# code is never read -- reachability, not success.
+# ==========================================================================
+
+def exits_json(spec, subject, repo=FORGE, extra=()):
+    """Drive `exits` as a process and parse what it wrote to stdout."""
+    result = run_cli("exits", "--subject", str(subject), "--spec", str(spec),
+                     "--repo-root", str(repo), *extra)
+    try:
+        return result, json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise AssertionError(
+            f"exits exited {result.returncode} without JSON on stdout.\n"
+            f"stdout={result.stdout!r}\nstderr={result.stderr!r}")
+
+
+#: One state per fenced act, extracted the same way in every fixture below:
+#: a `## <NAME>` heading, a blank line, then a fenced `$ <act>` block. Real
+#: prose shape, not a contrived delimiter -- the same fence `references/
+#: usage.md`'s own worked invocations already use.
+def _one_act_state(name, extract_heading=None):
+    heading = extract_heading or name
+    return {
+        "name": name,
+        "site": {"root": "subject", "path": "DOC.md"},
+        "extract": rf"## {re.escape(heading)}\n\n```\n\$ (?P<act>.+)\n```",
+    }
+
+
+class ExitsBoxMixin(BoxMixin):
+    """Fixtures for `exits`: a subject holding a doctrine file naming
+    states, plus whatever real scripts its published acts point at.
+    """
+
+    def make_exits_subject(self, name, files):
+        subject = self.make_box(name)
+        for relative, content in files.items():
+            self.write(subject, relative, content)
+        return subject
+
+    def make_exits_recipe(self, subject, surface, states,
+                          interpreters=("python3",), env=("HOME", "PATH"),
+                          exclude=()):
+        spec = subject / "exits.json"
+        spec.write_text(json.dumps({
+            "surface": run_scoped(surface),
+            "exclude": list(exclude),
+            "interpreterAllowlist": list(interpreters),
+            "env": list(env),
+            "states": states,
+        }, indent=2), encoding="utf-8")
+        return spec
+
+    def exits_box(self, surface):
+        box = BOXES / f"_exits_{run_scoped(surface)}"
+        self.addCleanup(self._erase_exits_box, box)
+        return box
+
+    def _erase_exits_box(self, box):
+        if not box.exists():
+            return
+        for path in sorted(box.rglob("*"), reverse=True):
+            path.rmdir() if path.is_dir() else path.unlink()
+        box.rmdir()
+
+
+class ExitsPublishedAndRanTests(ExitsBoxMixin, unittest.TestCase):
+    """A published act's own exit code is never read -- reachability, not
+    success. C1.1/C1.2: at least one lock here drives the act for real,
+    beating the weaker guard that would pass an act merely "carrying a
+    resolve key" with a hole in it.
+    """
+
+    def test_a_refusing_act_still_reports_published_and_ran(self):
+        subject = self.make_exits_subject("published_refuses", {
+            "DOC.md": "## STATE_ONE\n\n```\n$ python3 refuse.py\n```\n",
+            "refuse.py": "import sys\nsys.exit(1)\n",
+        })
+        recipe = self.make_exits_recipe(
+            subject, "published_refuses", [_one_act_state("STATE_ONE")])
+        result, payload = exits_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            payload["exits"]["STATE_ONE"], "published-and-ran",
+            "a refusing act was still published and is reachable; the exit "
+            "code the act itself returns is never read")
+
+    def test_a_lock_executes_the_published_act_end_to_end(self):
+        """The weaker guard this beats: a lock asserting only that the
+        finding 'carries a resolve key' would pass an act with a hole in
+        it. This drives the act for real and reads its side effect off
+        disk, outside both the subject and the box, so `erase_box` cannot
+        make the proof disappear along with the copy.
+        """
+        subject = self.make_exits_subject("published_executes", {
+            "act.py": "import sys\nopen(sys.argv[1], 'w').write('ran')\n",
+        })
+        with tempfile.TemporaryDirectory(prefix="skill_audit_exits_") as tmp:
+            marker = Path(tmp) / "ran.txt"
+            self.write(subject, "DOC.md",
+                      f"## STATE_EXEC\n\n```\n$ python3 act.py {marker}\n```\n")
+            recipe = self.make_exits_recipe(
+                subject, "published_executes", [_one_act_state("STATE_EXEC")])
+            self.assertFalse(marker.exists(), "the marker must not pre-exist")
+            result, payload = exits_json(recipe, subject)
+            self.assertEqual(result.returncode, 0, payload)
+            self.assertEqual(payload["exits"]["STATE_EXEC"], "published-and-ran")
+            self.assertTrue(
+                marker.exists(),
+                "the act was never actually driven; a lock only checking "
+                "the payload's shape would not have caught this")
+            self.assertEqual(marker.read_text(encoding="utf-8"), "ran")
+
+
+class ExitsAdmissionGateTests(ExitsBoxMixin, unittest.TestCase):
+    """C1.3/C1.4: the admission gate runs before any process starts."""
+
+    def test_a_shell_metacharacter_act_is_published_but_unparseable(self):
+        subject = self.make_exits_subject("admission_metachar", {
+            "DOC.md": "## STATE_METACHAR\n\n```\n$ python3 fix.py; rm -rf /\n```\n",
+        })
+        recipe = self.make_exits_recipe(
+            subject, "admission_metachar", [_one_act_state("STATE_METACHAR")])
+        result, payload = exits_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            payload["exits"]["STATE_METACHAR"], "published-but-unparseable",
+            "a shell metacharacter must never reach shell=False's argv as a "
+            "literal token pretending to be a separate command")
+
+    def test_an_argv0_outside_every_admitted_root_is_published_but_unparseable(self):
+        subject = self.make_exits_subject("admission_argv0", {
+            "DOC.md": "## STATE_OUTSIDE\n\n```\n$ curl https://example.invalid/x\n```\n",
+        })
+        recipe = self.make_exits_recipe(
+            subject, "admission_argv0", [_one_act_state("STATE_OUTSIDE")],
+            interpreters=("python3",))
+        result, payload = exits_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            payload["exits"]["STATE_OUTSIDE"], "published-but-unparseable",
+            "curl resolves under neither --subject nor --repo-root and is "
+            "outside the declared interpreter allowlist; refused before "
+            "any process starts")
+
+
+class ExitsExecutionOutcomeTests(ExitsBoxMixin, unittest.TestCase):
+    """C1.5: a missing binary and a hang are distinct, both post-admission,
+    outcomes."""
+
+    def test_a_missing_binary_is_published_but_not_executable(self):
+        subject = self.make_exits_subject("missing_binary", {
+            "DOC.md": ("## STATE_MISSING\n\n```\n"
+                      "$ definitely-not-a-real-interpreter-xyz fix.py\n```\n"),
+        })
+        recipe = self.make_exits_recipe(
+            subject, "missing_binary", [_one_act_state("STATE_MISSING")],
+            interpreters=("definitely-not-a-real-interpreter-xyz",))
+        result, payload = exits_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            payload["exits"]["STATE_MISSING"], "published-but-not-executable")
+
+    def test_a_hanging_act_is_published_but_timed_out(self):
+        subject = self.make_exits_subject("hanging_act", {
+            "hang.py": "import time\ntime.sleep(30)\n",
+            "DOC.md": "## STATE_HANG\n\n```\n$ python3 hang.py\n```\n",
+        })
+        recipe = self.make_exits_recipe(
+            subject, "hanging_act", [_one_act_state("STATE_HANG")])
+        result, payload = exits_json(
+            recipe, subject, extra=("--timeout", "1"))
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(
+            payload["exits"]["STATE_HANG"], "published-but-timed-out")
+
+
+class ExitsJudgementTests(ExitsBoxMixin, unittest.TestCase):
+    """C1.6: a state declared a human judgement is reported, never a
+    finding."""
+
+    def test_a_declared_human_judgement_is_reported_and_is_not_a_finding(self):
+        subject = self.make_exits_subject("judgement_state", {})
+        recipe = self.make_exits_recipe(
+            subject, "judgement_state",
+            [{"name": "STATE_JUDGEMENT", "judgement": True}])
+        result, payload = exits_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["exits"]["STATE_JUDGEMENT"], "judgement")
+        self.assertNotIn("STATE_JUDGEMENT", payload["searched"])
+
+
+class ExitsUnstatedTests(ExitsBoxMixin, unittest.TestCase):
+    """C1.7: no published act and nothing declared names the driveable
+    range that was searched."""
+
+    def test_no_published_act_is_unstated_with_the_searched_range(self):
+        subject = self.make_exits_subject("unstated_state", {
+            "DOC.md": "## STATE_SILENT\n\nThis state exists. Resolve it by hand.\n",
+        })
+        recipe = self.make_exits_recipe(
+            subject, "unstated_state", [_one_act_state("STATE_SILENT")])
+        result, payload = exits_json(recipe, subject)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["exits"]["STATE_SILENT"], "unstated")
+        self.assertRegex(
+            payload["searched"]["STATE_SILENT"], r".+:\d+-\d+$",
+            "the result must name the range that was searched")
+
+
+class ExitsEscapeGateTests(ExitsBoxMixin, unittest.TestCase):
+    """C1.8: a published act reaching the real subject halts the sweep as
+    an inability to look, and the box is still erased."""
+
+    def test_a_real_subject_digest_mismatch_halts_the_sweep_and_erases_the_box(self):
+        subject = self.make_exits_subject("escape_state", {})
+        real_target = subject / "canary.txt"
+        real_target.write_text("untouched\n", encoding="utf-8")
+        self.write(subject, "escape.py",
+                  f"open({str(real_target)!r}, 'w').write('escaped')\n")
+        self.write(subject, "DOC.md",
+                  "## STATE_ESCAPE\n\n```\n$ python3 escape.py\n```\n")
+        recipe = self.make_exits_recipe(
+            subject, "escape_state", [_one_act_state("STATE_ESCAPE")])
+        box = self.exits_box("escape_state")
+        result, payload = exits_json(recipe, subject)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn("exit-escaped-the-box", payload["error"])
+        self.assertFalse(
+            box.exists(), "erase_box must still run in `finally`")
+
+
+class ExitsOutcomeCardinalityTests(unittest.TestCase):
+    """The five-value closed roster, held by count -- the `IDENTITY_MEASURED`
+    idiom -- so a sixth value never lands unnoticed."""
+
+    def test_exactly_five_outcomes(self):
+        cli = audit_cli_module()
+        self.assertEqual(len(cli.EXIT_OUTCOMES), 5)
+        self.assertEqual(
+            set(cli.EXIT_OUTCOMES),
+            {"published-and-ran", "published-but-not-executable",
+             "published-but-unparseable", "published-but-timed-out",
+             "unstated"})
+
+
+class ExitsBoxLifecycleTests(ExitsBoxMixin, unittest.TestCase):
+    """A `exits` box is never silently adopted, matching every other
+    box-owning subcommand's own discipline."""
+
+    def test_an_occupied_box_is_refused(self):
+        subject = self.make_exits_subject("occupied", {})
+        recipe = self.make_exits_recipe(
+            subject, "occupied", [{"name": "S", "judgement": True}])
+        box = self.exits_box("occupied")
+        box.mkdir(parents=True, exist_ok=True)
+        (box / "leftover.txt").write_text("stale\n", encoding="utf-8")
+        result, payload = exits_json(recipe, subject)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertIn(str(box), payload["error"])
