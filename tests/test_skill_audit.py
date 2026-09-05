@@ -2191,6 +2191,7 @@ REMEDY_REPORT_BODY = f"""# Audit: a subject, three remedy verdicts
 - Doctrine side: `SKILL.md:99`
 - Detail: the guarded fact no longer exists anywhere in the running code.
 - Remedy: delete
+- Reachability: silent: this proves the mutation stayed silent, never that every consumer of the fact was exercised
 
 ### F3. A guarded fact that moved
 
@@ -2203,6 +2204,7 @@ REMEDY_REPORT_BODY = f"""# Audit: a subject, three remedy verdicts
 - Doctrine side: `SKILL.md:99`
 - Detail: the guarded fact exists, but at a different site than the test measures.
 - Remedy: update
+- Reachability: silent: this proves the mutation stayed silent, never that every consumer of the fact was exercised
 
 ### F4. A guarded fact this tool cannot classify
 
@@ -2214,7 +2216,8 @@ REMEDY_REPORT_BODY = f"""# Audit: a subject, three remedy verdicts
 - Code side: `engine/ambiguous.ts:7`
 - Doctrine side: `SKILL.md:99`
 - Detail: the guarded fact is a config literal, not a named symbol.
-- Remedy: undecided: the guarded fact is a config literal, not a named symbol
+- Remedy: undecided: none determined -- the guarded fact is a config literal, not a named symbol
+- Reachability: silent: this proves the mutation stayed silent, never that every consumer of the fact was exercised
 
 ## Undecidable
 
@@ -2301,8 +2304,8 @@ class RemedyVerdictTests(BoxMixin, unittest.TestCase):
 
     def test_bare_undecided_with_no_reason_is_rejected(self):
         broken = REMEDY_REPORT.replace(
-            "- Remedy: undecided: the guarded fact is a config literal, "
-            "not a named symbol\n",
+            "- Remedy: undecided: none determined -- the guarded fact is "
+            "a config literal, not a named symbol\n",
             "- Remedy: undecided\n", 1)
         self.assertNotEqual(broken, REMEDY_REPORT, "the graft must land")
         result, payload = self.check(broken, name="remedy-bare-undecided.md")
@@ -2393,6 +2396,7 @@ REMEDY_REPORT_ONE_BUCKET_BODY = f"""# Audit: a subject, two remedy verdicts
 - Doctrine side: `SKILL.md:99`
 - Detail: the guarded fact no longer exists anywhere in the running code.
 - Remedy: delete
+- Reachability: silent: this proves the mutation stayed silent, never that every consumer of the fact was exercised
 
 ### F3. A guarded fact that moved
 
@@ -2405,6 +2409,7 @@ REMEDY_REPORT_ONE_BUCKET_BODY = f"""# Audit: a subject, two remedy verdicts
 - Doctrine side: `SKILL.md:99`
 - Detail: the guarded fact exists, but at a different site than the test measures.
 - Remedy: update
+- Reachability: silent: this proves the mutation stayed silent, never that every consumer of the fact was exercised
 
 ## Undecidable
 
@@ -7382,3 +7387,174 @@ class InversionEscapeTests(InversionBoxMixin, unittest.TestCase):
         result, payload = inversion_json(recipe, subject)
         self.assertEqual(result.returncode, 2, payload)
         self.assertIn("build-escaped-the-box", payload["error"])
+
+
+# ==========================================================================
+# Commit a2 -- the report side: conditions 9 and 10 in `check-report`, the
+# `reachability` REPORT_SHAPE key, and `example-report.md`'s re-signature.
+# ==========================================================================
+
+class UndistinguishedCauseTests(BoxMixin, unittest.TestCase):
+    """Condition 9: an `undecided` Move-6 remedy reason must name one of
+    the three causes -- obsolete guard, equivalent mutant, degenerate
+    fixture -- or state that none could be determined. Stricter than
+    accepting any non-empty string.
+    """
+
+    def check(self, text, name="report.md"):
+        box = getattr(self, "_box", None) or self.make_box("undistinguished")
+        self._box = box
+        path = self.write(box, name, resign(text))
+        result = run_cli("check-report", str(path))
+        return result, json.loads(result.stdout)
+
+    def test_a_reason_naming_no_cause_is_rejected(self):
+        broken = REMEDY_REPORT.replace(
+            "- Remedy: undecided: none determined -- the guarded fact is "
+            "a config literal, not a named symbol\n",
+            "- Remedy: undecided: it is complicated\n", 1)
+        self.assertNotEqual(broken, REMEDY_REPORT, "the graft must land")
+        result, payload = self.check(broken, name="no-cause.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"] if v["item"] == "remedy"]
+        self.assertTrue(
+            any("F4" in v["detail"] for v in violations),
+            f"a reason naming none of the three causes must be rejected "
+            f"and must name F4: {violations}")
+
+    def test_each_undistinguished_cause_alone_is_accepted(self):
+        cli = audit_cli_module()
+        for cause in cli.UNDISTINGUISHED_CAUSES:
+            with self.subTest(cause=cause):
+                broken = REMEDY_REPORT.replace(
+                    "- Remedy: undecided: none determined -- the guarded "
+                    "fact is a config literal, not a named symbol\n",
+                    f"- Remedy: undecided: {cause}\n", 1)
+                self.assertNotEqual(
+                    broken, REMEDY_REPORT, "the graft must land")
+                result, payload = self.check(
+                    broken, name=f"cause-{cause.replace(' ', '-')}.md")
+                self.assertEqual(result.returncode, 0, payload)
+
+
+class ReachabilityStatementTests(BoxMixin, unittest.TestCase):
+    """Condition 10: every substitution-probe finding, whatever its
+    verdict, states reachability rather than coverage. Scope is
+    `- Move: 6` alone, never also gated on `not adjudicable` -- a lock
+    that fires is a clean result, not a finding under `## Not
+    adjudicable`, and this binds both outcomes.
+    """
+
+    def check(self, text, name="report.md"):
+        box = getattr(self, "_box", None) or self.make_box("reachability")
+        self._box = box
+        path = self.write(box, name, resign(text))
+        result = run_cli("check-report", str(path))
+        return result, json.loads(result.stdout)
+
+    def test_a_move_six_finding_with_no_reachability_line_is_rejected(self):
+        broken = VALID_REPORT.replace(
+            "### F1. A set restated in more places than it is derived\n\n"
+            "- Move: 0\n", "### F1. A set restated in more places than it "
+            "is derived\n\n- Move: 6\n", 1)
+        self.assertNotEqual(broken, VALID_REPORT, "the graft must land")
+        result, payload = self.check(broken, name="no-reachability.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "reachability"]
+        self.assertTrue(
+            any("F1" in v["detail"] for v in violations),
+            f"a Move-6 finding with no '- Reachability:' line must be "
+            f"rejected and must name F1: {violations}")
+
+    def test_a_reachability_value_outside_the_vocabulary_is_rejected(self):
+        broken = REMEDY_REPORT.replace(
+            "- Reachability: silent: this proves the mutation stayed "
+            "silent, never that every consumer of the fact was "
+            "exercised\n",
+            "- Reachability: maybe\n", 1)
+        self.assertNotEqual(broken, REMEDY_REPORT, "the graft must land")
+        result, payload = self.check(broken, name="bad-reachability.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "reachability"]
+        self.assertTrue(
+            any("F2" in v["detail"] for v in violations),
+            f"a reachability value outside fires|silent must be rejected "
+            f"and must name F2: {violations}")
+
+    def test_reachability_present_outside_move_six_is_rejected(self):
+        broken = VALID_REPORT.replace(
+            "- Adjudication: doctrine wrong\n",
+            "- Adjudication: doctrine wrong\n"
+            "- Reachability: fires: x\n", 1)
+        self.assertNotEqual(broken, VALID_REPORT, "the graft must land")
+        result, payload = self.check(
+            broken, name="reachability-out-of-scope.md")
+        self.assertEqual(result.returncode, 1, payload)
+        violations = [v for v in payload["violations"]
+                     if v["item"] == "reachability"]
+        self.assertTrue(
+            any("F1" in v["detail"] for v in violations),
+            f"a Reachability line outside Move 6 must be rejected and "
+            f"must name F1: {violations}")
+
+    def test_reachability_holds_regardless_of_adjudication(self):
+        """The scope is `- Move: 6` alone, not `Move 6 + not
+        adjudicable`: a Move-6 finding whose adjudication is `doctrine
+        wrong` still needs its own '- Reachability:' line, and carrying
+        one there is accepted rather than refused.
+        """
+        broken = VALID_REPORT.replace(
+            "### F1. A set restated in more places than it is derived\n\n"
+            "- Move: 0\n", "### F1. A set restated in more places than it "
+            "is derived\n\n- Move: 6\n", 1)
+        broken = broken.replace(
+            "- Adjudication: doctrine wrong\n",
+            "- Adjudication: doctrine wrong\n"
+            "- Reachability: fires: this proves the lock fires, never "
+            "that every consumer of the fact was exercised\n", 1)
+        self.assertNotEqual(broken, VALID_REPORT, "the graft must land")
+        result, payload = self.check(broken, name="move-six-fires.md")
+        self.assertEqual(result.returncode, 0, payload)
+
+
+class UndistinguishedCauseDoctrineAgreementTests(unittest.TestCase):
+    """Every `UNDISTINGUISHED_CAUSES` member appears verbatim in
+    `SKILL.md`'s `remedy` row -- the `stage_model_total` idiom, never a
+    second hand-written roster held beside the constant it describes.
+    """
+
+    def test_every_cause_appears_verbatim_in_the_remedy_row(self):
+        cli = audit_cli_module()
+        tables = markdown_table_rows(doctrine_text(), REPORT_HEADER)
+        self.assertEqual(len(tables), 1, "one report-shape table, exactly")
+        remedy_rows = [row for row in tables[0]
+                      if row[0].strip("`") == "remedy"]
+        self.assertEqual(len(remedy_rows), 1, "exactly one `remedy` row")
+        row_text = " ".join(remedy_rows[0])
+        for cause in cli.UNDISTINGUISHED_CAUSES:
+            with self.subTest(cause=cause):
+                self.assertIn(
+                    cause, row_text,
+                    f"{cause!r} does not appear verbatim in the `remedy` "
+                    "row")
+
+
+class ReachabilityReportShapeTests(unittest.TestCase):
+    """The `reachability` `REPORT_SHAPE` key and its `SKILL.md` row, bound
+    both directions. `ReportSchemaSelfDescriptionTests`'s own generic
+    sweep already covers any key once it is added on both sides; this is
+    the explicit, named lock for this one.
+    """
+
+    def test_reachability_is_a_report_shape_key(self):
+        cli = audit_cli_module()
+        self.assertEqual(
+            cli.REPORT_SHAPE["reachability"], "- Reachability:")
+
+    def test_reachability_has_a_documented_row(self):
+        tables = markdown_table_rows(doctrine_text(), REPORT_HEADER)
+        self.assertEqual(len(tables), 1, "one report-shape table, exactly")
+        items = {row[0].strip("`") for row in tables[0]}
+        self.assertIn("reachability", items)

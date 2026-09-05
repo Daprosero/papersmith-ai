@@ -178,13 +178,22 @@ sweep must not keep mutating. Invert the effect the guard asserts, not the
 comparison around it: flipping `==` to `!=` only changes which subset is
 excluded and yields a different wrong answer, never the absence of the fact.
 
-A guarded fact whose mutation leaves the suite green is an obsolete guard:
-adjudicated `not adjudicable`, sitting under `## Not adjudicable` with the
-rest of that verdict's findings. Its own remedy is a three-way verdict,
-never build-or-delete: `- Remedy: delete` when the guarded fact no longer
-exists; `- Remedy: update` when the fact exists but moved, or the test
-measures it wrongly; `- Remedy: undecided: <reason>` when the split itself
-cannot be made. **v1 ships no delete-versus-update classifier.** A prior
+A guarded fact whose mutation leaves the suite green is **not** simply an
+obsolete guard: condition 2 proves the bytes moved, and nothing proves
+behaviour moved along with them. The cause may equally be an **equivalent
+mutant** (the bytes changed, the behaviour did not) or a **degenerate
+fixture** (the fixture's own correct answer already equals the mutant's
+output) -- both measured defects from the source session, not hypothetical.
+Every such finding is adjudicated `not adjudicable`, sitting under `##
+Not adjudicable` with the rest of that verdict's findings, and its own
+remedy is a three-way verdict, never build-or-delete: `- Remedy: delete`
+when the guarded fact no longer exists; `- Remedy: update` when the fact
+exists but moved, or the test measures it wrongly; `- Remedy: undecided:
+<reason>` when the split itself cannot be made, and that reason MUST name
+one of `obsolete guard`, `equivalent mutant`, or `degenerate fixture`, or
+state that none could be determined -- defaulting to `obsolete guard`
+when the cause is undistinguished is the exact overclaim this paragraph
+now refuses. **v1 ships no delete-versus-update classifier.** A prior
 draft of this doctrine named `check_citations.py`'s `symbols_in`/
 `repo_symbols` as the precedent for deciding that split by AST existence-
 checking; that tool **does not exist in this repository**, so v1 cannot
@@ -196,6 +205,14 @@ later change ships that classifier. **The auditor still never deletes a
 test.** It reports, in the three rosters at the top of `## Not adjudicable`,
 and the finding still gets its own `## Repair units` row with a
 changed-line forecast, so the next change picks it up as a work item.
+
+Every Move-6 finding, whatever its verdict, also carries `- Reachability:
+fires: <what this does not prove>` or `- Reachability: silent: <what this
+does not prove>`. A red mutation proves the guarded fact's lock **fires**;
+it never proves every consumer of that fact was exercised, which needs
+Move 0's own enumeration over every field a producer emits, not a single
+substitution. Stating reachability rather than coverage is what keeps a
+passing inversion sweep from being read as a stronger claim than it is.
 
 ### Move 8, in detail
 
@@ -485,7 +502,8 @@ and `- Self-digest:` exists to make editing one visible.
 | `reading-diff` | `## Reading diff`, demanded when stage 3 is `ran` | Absent while stage 3's row reads `ran` |
 | `drives` | `## Drives`, demanded when stage 4 is `ran`; no finding may attribute itself to the skill-less drive while naming the subject as its own target | Absent while stage 4's row reads `ran`, or a finding commits that category error |
 | `not-adjudicable` | `## Not adjudicable`, bare heading; when non-empty, each entry names the absent half, its `- Evidence:`, and the `## Repair units` unit it belongs to; when at least one entry carries `- Move: 6`, the section opens with `- Delete:`, `- Update:`, `- Undecided:`, naming each in-scope finding by label, `(none)` for an empty bucket -- the same conditionally-required idiom `NO_CONFIRMED_DECLARATION` already uses for a line demanded only when a condition holds | The heading is absent, or a finding whose `- Adjudication:` reads `not adjudicable` sits under `## Ranked findings` instead; the three rosters are missing while a Move-6 not-adjudicable finding exists, present with no such finding, or a label is omitted, duplicated, or listed under the wrong bucket |
-| `remedy` | Per finding with `- Move: 6` and `- Adjudication: not adjudicable`, `- Remedy:` one of `delete`, `update`, or `undecided: <reason>` | The field is absent in that exact scope; carries a value outside the vocabulary; a bare `undecided` with no reason; or is present on any finding outside that exact scope |
+| `remedy` | Per finding with `- Move: 6` and `- Adjudication: not adjudicable`, `- Remedy:` one of `delete`, `update`, or `undecided: <reason>`, where an `undecided` reason names one of `obsolete guard`, `equivalent mutant`, `degenerate fixture`, or states `none determined` | The field is absent in that exact scope; carries a value outside the vocabulary; a bare `undecided` with no reason; an `undecided` reason naming none of the four; or is present on any finding outside that exact scope |
+| `reachability` | Per finding with `- Move: 6`, `- Reachability: fires: <what this does not prove>` or `- Reachability: silent: <what this does not prove>` -- proves the guarded fact's lock fires (or stayed silent), never that every consumer of the fact was exercised | The field is absent on a Move-6 finding; carries a value outside `fires`/`silent`; or is present on any finding outside that exact scope |
 | `computed-value-provenance` | `## Computed-value provenance`, bare heading, unconditional -- like `## Not adjudicable` and `## Disputed severity`, demanded whether or not Move 10 ran; when Move 10 ran, transcribes `sensitivity`'s own emitted payload: the producer, the control outcome, the inputs varied and the total declared, the range swept, and the full matrix -- published even when no cell crosses the finding threshold | The heading is absent |
 
 Every `check-report` run additionally reports `"supersession"`, a closed

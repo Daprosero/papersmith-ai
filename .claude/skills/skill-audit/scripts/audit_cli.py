@@ -2416,6 +2416,7 @@ REPORT_SHAPE = {
     "move-outcomes": "## Move outcomes",
     "not-adjudicable": "## Not adjudicable",
     "ranked-findings": "## Ranked findings",
+    "reachability": "- Reachability:",
     "reading-diff": "## Reading diff",
     "remedy": "- Remedy:",
     "repair-units": "## Repair units",
@@ -2790,6 +2791,26 @@ FOUND_BY_VALUES = ("both", "one", "not-compared")
 #: legitimate value, never an omission -- and there is no default: a
 #: missing marker is never read as any of the three.
 REMEDY_VALUES = ("delete", "update", "undecided")
+
+#: The closed set of causes an `undecided` Move-6 remedy reason must name
+#: one of -- condition 9. Condition 2 proves the bytes moved; nothing
+#: proves behaviour moved, so `- Remedy: undecided: <reason>` must state
+#: which of these it could not rule out, rather than defaulting to
+#: `obsolete guard` when the cause might equally be an equivalent mutant
+#: (bytes moved, behaviour identical) or a degenerate fixture (the
+#: fixture's own correct answer already equals the mutant's output).
+#: `"none determined"` is itself a legitimate fourth member, never an
+#: omission: an honest "I could not tell" is not the same claim as a
+#: guess dressed as a finding.
+UNDISTINGUISHED_CAUSES = ("obsolete guard", "equivalent mutant",
+                          "degenerate fixture", "none determined")
+
+#: `- Reachability:`'s closed set -- condition 10. Every substitution-probe
+#: finding proves the guarded fact's lock **fires** or stayed **silent**;
+#: it never proves every consumer of the fact was exercised. Reachability,
+#: never coverage, and the report must say so on its own payload rather
+#: than let a reader infer the stronger claim.
+REACHABILITY_VALUES = ("fires", "silent")
 
 NO_CONFIRMED_DECLARATION = "No finding in this report is CONFIRMED by execution"
 
@@ -3494,6 +3515,37 @@ def run_check_report(args):
             fail("move-number",
                  "every finding names the move that found it", where)
 
+        # Condition 10, scoped to `- Move: 6` alone -- never also gated on
+        # `- Adjudication: not adjudicable` the way `remedy` is below. A
+        # lock that fires is a clean result, not a finding under `## Not
+        # adjudicable`, and this binds both outcomes: whatever Move 6
+        # reports, it must say reachability was proven, never coverage.
+        reachability = re.search(
+            r"^- Reachability:\s*(.+?)\s*$", body, re.MULTILINE)
+        reachability_in_scope = move is not None and move.group(1) == "6"
+        if reachability_in_scope:
+            if not reachability:
+                fail("reachability",
+                     f"finding {finding['label']} carries '- Move: 6' but "
+                     "no '- Reachability:' line; every substitution-probe "
+                     "finding must state whether it proves the lock fires "
+                     "or stayed silent, and what that does not prove",
+                     where)
+            else:
+                prefix = reachability.group(1).split(":", 1)[0].strip()
+                if prefix not in REACHABILITY_VALUES:
+                    fail("reachability",
+                         f"finding {finding['label']}'s "
+                         f"'- Reachability: {reachability.group(1)}' does "
+                         "not open with fires | silent, the closed "
+                         "reachability vocabulary", where)
+        elif reachability:
+            fail("reachability",
+                 f"finding {finding['label']} carries "
+                 f"'- Reachability: {reachability.group(1)}' outside its "
+                 "exact scope ('- Move: 6'); the field is refused on any "
+                 "other finding", where)
+
         marker = re.search(r"^- Evidence:\s*(.+?)\s*$", body, re.MULTILINE)
         value = marker.group(1) if marker else ""
         if value == "CONFIRMED by execution":
@@ -3555,9 +3607,7 @@ def run_check_report(args):
                 elif value == "undecided" or value.startswith("undecided:"):
                     reason = value.split(":", 1)[1].strip() \
                         if ":" in value else ""
-                    if reason:
-                        remedy_by_bucket["undecided"].append(finding["label"])
-                    else:
+                    if not reason:
                         fail("remedy",
                              f"finding {finding['label']}'s "
                              "'- Remedy: undecided' carries no reason; a "
@@ -3565,6 +3615,22 @@ def run_check_report(args):
                              "repo's own idiom for every other escape "
                              "hatch (`Unprobeable`, `no-closed-roster`, "
                              "'## Unchecked')", where)
+                    elif not any(cause in reason
+                                for cause in UNDISTINGUISHED_CAUSES):
+                        # Condition 9: proving the bytes moved (condition 2)
+                        # is not proving behaviour moved. A reason naming
+                        # none of the three causes -- or stating none could
+                        # be determined -- defaults to nothing; stricter
+                        # than accepting any non-empty string.
+                        fail("remedy",
+                             f"finding {finding['label']}'s "
+                             f"'- Remedy: undecided: {reason}' names none "
+                             "of the three causes (obsolete guard | "
+                             "equivalent mutant | degenerate fixture) and "
+                             "does not state that none could be "
+                             "determined", where)
+                    else:
+                        remedy_by_bucket["undecided"].append(finding["label"])
                 else:
                     fail("remedy",
                          f"finding {finding['label']}'s "
