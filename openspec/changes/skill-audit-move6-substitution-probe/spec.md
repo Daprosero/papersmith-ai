@@ -319,10 +319,16 @@ statement, so the shipped example remains valid input to the widened
 > scope table and success-criteria line. Named here for spec completeness;
 > reported back as a proposal gap.
 
-### Requirement: No new code in this change
+### Requirement: No new code in this change (NARROWED)
 
-This change MUST NOT alter `scripts/audit_cli.py` or any other shipped
-code. Every finding it reaches MUST be reachable purely through new or
+> **Measured false as originally written.** Two requirements inside this same
+> capability -- per-step digests and filesystem-versus-roster enumeration --
+> cannot be reached through recipe grammar alone, so they move to
+> `audit-scope-hardening` where they are implemented as code. What remains
+> here is recipe-only, and its forecast holds only for what remains.
+
+The recipe-only part of this change MUST NOT alter `scripts/audit_cli.py`
+or any other shipped code. Every finding it reaches MUST be reachable purely through new or
 widened `references/probes/*.json` recipes against the shipped subcommand
 grammar.
 
@@ -378,7 +384,15 @@ built from nothing.
 - WHEN `structure`'s from-zero comparison runs
 - THEN the undemanded declaration surfaces as a finding
 
-### Requirement: A driven step that reports success while producing nothing is a finding
+### Requirement: A driven step that reports success while producing nothing is a finding (SUPERSEDED)
+
+> **Superseded by `audit-scope-hardening`'s "A driven step is graded on what
+> it wrote", which is a strict superset.** Kept so the duplication is visible
+> rather than silently deleted; the later requirement is the one to implement,
+> and it corrects this one's target: `walkthrough` runs every step with its
+> cwd inside the box, so digesting the SUBJECT tree fires on every step of
+> every flow. The box is what is digested; a change to the subject is an
+> escape, which `walkthrough` gates nowhere today.
 
 Added after a live run: an operator drove a six-step flow, every step
 reported success, and the flow was declared complete while three of the
@@ -448,3 +462,200 @@ either, as this skill already does for subcommands.
 - GIVEN every artefact of the declared kind is named by the flow
 - WHEN the audit runs
 - THEN the report states the enumeration and the roster matched, with counts
+
+---
+
+## Capability: audit-scope-hardening (Change c — Modified)
+
+Seven requirements added after a four-day session in which this repository's
+other skill was repaired eleven times. Each attaches to a move or stage that
+already ships; only the last introduces a surface the eleven moves do not
+cover. Every incident cited is measured, not hypothetical.
+
+### Requirement: The audit measures an enumerator's reach, not only its result (Move 0)
+
+Move 0 enumerates a closed surface from both sides. That is correct and is
+not what failed. What failed four times in one session is that **one side was
+enumerated more narrowly than the claim the check asserted**, in checks whose
+own names and docstrings said they derived:
+
+- an enumerator of refusal codes walked one function-name prefix inside one
+  file, so 42 codes raised in helper modules were invisible to it — and the
+  roster built from it was reported as complete;
+- a check documented as *"enumerated from the signature and not from a
+  hand-written list"* iterated one module's namespace and skipped any function
+  without a particular parameter, missing nine writers;
+- a helper collecting "the notebooks the steps run" collected any string
+  literal with that suffix anywhere in the file, so a mutation that replaced
+  the call while leaving the literal in place survived it;
+- a check asserting "the notebooks the steps name exist" hand-listed four
+  names and lagged reality by two.
+
+`roster` MUST report, for any check the subject declares as complete over a
+set, whether that check's iteration source is derived or bounded — a literal
+collection, a single module's namespace, or a subset filtered before the
+assertion. A check whose stated claim is universal and whose enumeration is
+bounded MUST be reported with both facts side by side.
+
+**A check that says it derives and enumerates by hand is worse than no check**,
+because nobody looks at it again. That is the whole finding.
+
+#### Scenario: A universal claim over a bounded enumeration is reported
+
+- GIVEN a check whose name or docstring states a claim over every member of a
+  set
+- AND whose iteration source is a literal collection
+- WHEN `roster` audits the subject
+- THEN both the stated claim and the bounded enumeration are reported together
+
+#### Scenario: A derived enumeration is reported as derived
+
+- GIVEN a check whose iteration source is computed from the subject
+- WHEN `roster` audits the subject
+- THEN it is reported as derived and is not a finding
+
+### Requirement: A guard is reachable for every member of the set it guards (Move 0)
+
+A guarded vocabulary is a closed set, so it is Move 0's subject. Measured on a
+shipped guard: its matcher was a word-boundary pattern, and
+
+- the pattern for a singular term did not match that term's plural, leaving a
+  live leak in an asset the skill ships to every new repository;
+- the underscore is a word character in that pattern language, so **no**
+  word-boundary rule could ever reach an identifier joining the guarded term to
+  another word.
+
+For every member of a guarded set, `roster` MUST derive that member's
+identifier-boundary variants — plural, underscore-joined, case-joined — and
+report any variant the guard's own matcher cannot reach. A guard that cannot
+reach a member of the set it guards is the finding.
+
+#### Scenario: An unreachable variant is named
+
+- GIVEN a guarded term whose matcher is a word-boundary pattern
+- WHEN the audit derives that term's underscore-joined variant
+- THEN the variant is reported as unreachable by that guard
+
+### Requirement: Renaming is not generalising (Move 0)
+
+The same session renamed 853 occurrences of a leaked vocabulary and the
+occurrences were still specific to one subject afterwards: the identifiers had
+changed and the content had not. A guard satisfied by a rename measures
+spelling, not leakage.
+
+Where a guard's subject is content rather than identity, the audit MUST report
+that the guard's matcher tests identity — so a reader learns which of the two
+was measured. It MUST NOT attempt to adjudicate whether content is specific;
+that is a reading, and a check that guessed would spend its credibility on the
+wrong ones.
+
+#### Scenario: An identity matcher over a content claim is reported
+
+- GIVEN a guard whose declared subject is content
+- AND whose matcher tests identifiers
+- WHEN the audit runs
+- THEN it reports that identity was measured and content was not
+
+### Requirement: The from-zero drive demands what the subject reads (Stage 2)
+
+Stage 2 drives the subject from ignorance. It measures that the drive runs. It
+does not measure whether everything the subject **reads** from its own target
+is **demanded** when that target is built from nothing.
+
+Measured: a skill read ten declarations from every repository it drove, and its
+scaffolding path demanded none of them. A repository built from zero was
+therefore silently missing all ten, and two defects that those declarations
+would have caught went undetected until a human compared digests by hand.
+
+During the stage-2 drive the audit MUST record every declaration the subject
+reads from its target, subtract those the subject's own from-zero path demands,
+and report the remainder — naming, per item, the declaration, where it belongs,
+and the consequence of its absence. The remainder MUST be reported whether or
+not it is empty.
+
+#### Scenario: A read-but-never-demanded declaration is named
+
+- GIVEN a subject that reads a declaration from its target during the drive
+- AND whose scaffolding path never demands it
+- WHEN stage 2 completes
+- THEN that declaration is reported with its location and its consequence
+
+### Requirement: An artefact is judged by what it shows (Stage 2)
+
+Only a real drive produces artefacts, so this attaches to stage 2 and not to a
+static check.
+
+Measured: a flow reported a run complete while three of its seven rendered
+artefacts had never executed — twenty-two units of content producing nothing.
+Every declared check passed. It was found because a human opened the files.
+
+After the stage-2 drive the audit MUST enumerate the artefacts the drive
+produced and report, per artefact, whether it carries content — an executed
+artefact whose units produced no output, or a produced file of zero length, is
+reported as produced-but-empty. Existence is not the measurement.
+
+#### Scenario: A produced artefact with no content is reported
+
+- GIVEN a drive that produces a rendered artefact whose units carry no output
+- WHEN stage 2 reports
+- THEN that artefact is reported as produced-but-empty, distinctly from absent
+
+### Requirement: A driven step is graded on what it wrote (Move 8)
+
+`walkthrough` drives a documented flow in order and names the first step whose
+expectation breaks. A step that reports success while writing nothing, or while
+writing into another step's tree, breaks no stated expectation and is not named.
+
+Both were measured in one session, both reported success, both passed every
+check, and both were caught only by a digest comparison written by hand in a
+throwaway script.
+
+`walkthrough` MUST take a digest of the subject tree before and after each
+driven step and report, per step, whether anything changed and whether the
+change fell inside the roots that step declares. A step the recipe declares
+read-only is exempt and MUST be declarable as such; a step with no such
+declaration defaults to producing.
+
+#### Scenario: A step that returned having written nothing is named
+
+- GIVEN a driven step that reports success
+- AND the subject tree digest is unchanged across it
+- AND the recipe does not declare that step read-only
+- THEN the step is reported as having produced nothing
+
+#### Scenario: A step that wrote outside its declared roots is named
+
+- GIVEN a driven step that declares its output roots
+- AND writes only outside them
+- THEN the step is reported as having written into a tree it does not own
+
+### Requirement: A reported state names its exit (new surface)
+
+The eleven moves all ask whether the subject is correct. None asks whether the
+subject lets its operator out.
+
+Measured on a sibling skill: of 51 reported keys naming a state a human must
+act on, 8 had a mechanical exit and none published it; the rest correctly
+publish none, because their exit is a human authoring act. Getting out of one
+of the eight required reading the skill's own documentation, finding a payload
+shape by grepping its test suite, and rebuilding an input by hand.
+
+The audit MUST report, per state the subject names, whether a mechanical exit
+exists and whether it is published. A state whose exit is a human judgement
+MUST be reported as such and is not a finding — publishing a command for a
+judgement would be worse than the silence.
+
+**A published exit that cannot be run is not an exit.** Where the audit
+verifies publication, it MUST verify by executing the published act, not by
+asserting a field is present.
+
+#### Scenario: An unpublished mechanical exit is a finding
+
+- GIVEN a reported state with a mechanical exit the subject does not publish
+- WHEN the audit runs
+- THEN it is reported, and the exit it found is named
+
+#### Scenario: A judgement-only state is not a finding
+
+- GIVEN a reported state whose only exit is a human authoring act
+- THEN it is reported as such and produces no finding

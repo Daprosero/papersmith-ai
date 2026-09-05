@@ -23648,7 +23648,8 @@ class UndeclaredOptionalDeclarationTests(unittest.TestCase):
         self.assertEqual(len(entries), 1, entries)
         self.assertEqual(entries[0]["section"], "search")
         self.assertEqual(entries[0]["field"], "currentWhen")
-        self.assertEqual(entries[0]["consequence"], impl.SEARCH_OPTIONAL["currentWhen"])
+        self.assertEqual(entries[0]["consequence"],
+                         impl.SEARCH_OPTIONAL["currentWhen"]["consequence"])
 
     def test_an_answered_currentWhen_is_never_reported(self):
         declared = {**self.SEARCH_DECLARED, "currentWhen": "evidence.codeDigest"}
@@ -23673,7 +23674,8 @@ class UndeclaredOptionalDeclarationTests(unittest.TestCase):
         for entry in entries:
             self.assertEqual(entry["section"], "distribution")
             self.assertEqual(
-                entry["consequence"], impl.DISTRIBUTION_OPTIONAL[entry["field"]])
+                entry["consequence"],
+                impl.DISTRIBUTION_OPTIONAL[entry["field"]]["consequence"])
 
     def test_a_target_with_no_split_run_is_asked_nothing(self):
         search = impl.search_state({}, [])
@@ -23705,7 +23707,8 @@ class UndeclaredOptionalDeclarationTests(unittest.TestCase):
         self.assertEqual(fields, ["currentWhen", "record"])
         entry = next(e for e in entries if e["field"] == "record")
         self.assertEqual(entry["section"], "search")
-        self.assertEqual(entry["consequence"], impl.SEARCH_OPTIONAL["record"])
+        self.assertEqual(entry["consequence"],
+                         impl.SEARCH_OPTIONAL["record"]["consequence"])
 
     def test_an_answered_record_is_never_reported(self):
         """The other pole: `SEARCH_DECLARED` above already answers it, and a
@@ -23732,7 +23735,7 @@ class UndeclaredOptionalDeclarationTests(unittest.TestCase):
         of an absence, never the absence itself. Four readers hang off this
         one key and each is named, because a reader who has never traced
         `recordFound` learns nothing from "no record is declared"."""
-        consequence = impl.SEARCH_OPTIONAL["record"]
+        consequence = impl.SEARCH_OPTIONAL["record"]["consequence"]
         self.assertIn("recordFound", consequence)
         self.assertIn("POSITION_UNBACKED", consequence)
         self.assertIn("attainedLevel", consequence)
@@ -23801,6 +23804,356 @@ class UndeclaredOptionalDeclarationTests(unittest.TestCase):
         `VerifyStatusRosterTests` -- the identical defect this test exists
         to keep from recurring."""
         self.assertIn("undeclaredOptional", returned_keys(CLI, "cmd_verify"))
+
+
+class UndeclaredBlockingDeclarationTests(unittest.TestCase):
+    """The half `undeclaredOptional` could not honestly hold.
+
+    **The measured incident.** An operator drove a declared six-step flow.
+    Step 5 refused `STEP_SEQUENCE_NOT_REACHED` because the fourth sequence
+    item was blank; that item carried a `@shard` witness, measuring one needs
+    `distribution.shardsRoot`, the target never declared it, and so the
+    witness read `unmeasured` -- not `false` -- and the mark could never be
+    set from evidence. The flow was dead at step 5 permanently. `verify` HAD
+    reported the field, with an accurate consequence, under a key named
+    `undeclaredOptional`; the operator read "optional field unanswered",
+    moved on, and met the deadlock four ordinals and forty minutes later.
+
+    **Why "carries a consequence" is not the check.** Every one of the four
+    optional fields carries an accurate consequence string, including the two
+    whose absence costs a reading and nothing else. A test that asserts a
+    consequence is present passes on a field still bucketed as optional and
+    would have passed on the day of the incident, which is the whole reason
+    these tests discriminate load-bearing from merely-narrowing instead.
+    """
+
+    SEARCH_DECLARED = {
+        "what": "the free scalar", "requiredScale": {"epochs": 1},
+        "role": "valid", "tieRule": "the smaller one wins",
+        "record": "Results/chosen.json", "currentWhen": "evidence.codeDigest",
+    }
+    DISTRIBUTION_DECLARED = {
+        "axis": "seed", "poolable": [], "perEnvironment": [], "perRun": [],
+        "identicalAcrossShards": [],
+    }
+    STEPS = {
+        "stepOne": {"module": "m", "function": "one", "advances": 1},
+        "stepTwo": {"module": "m", "function": "two", "advances": 2},
+        "stepThree": {"module": "m", "function": "three", "advances": 3},
+    }
+
+    def sequence(self, witnesses, evidence=None):
+        """`position_state`'s own sequence shape, with every `measuredBy`
+        DERIVED by `impl_position.derive` rather than written down here.
+
+        A hand-written `measuredBy` would make every test below assert
+        against the string this suite chose, not against the one the engine
+        publishes -- and the join under test is exactly that string.
+        """
+        items = [{"ordinal": index + 1, "mark": " ", "text": f"item {index + 1}",
+                  "witness": {"kind": kind, "operand": operand,
+                              "twostate": twostate}}
+                 for index, (kind, operand, twostate) in enumerate(witnesses)]
+        derived = impl_position.derive(items, dict(evidence or {}))
+        return [{"ordinal": item["ordinal"], "mark": item["mark"],
+                 "witness": item["witness"], "derived": result["derived"],
+                 "satisfied": result["satisfied"],
+                 "measuredBy": result["measuredBy"]}
+                for item, result in zip(items, derived)]
+
+    def state(self, search=None, distribution=None):
+        return (impl.search_state({"search": search} if search else {}, []),
+                impl.distribution_state(
+                    {"distribution": distribution} if distribution else {}, {}))
+
+    def blocking(self, sequence, search=None, distribution=None, steps=None):
+        search_state, distribution_state = self.state(search, distribution)
+        entries = impl.blocking_undeclared_state(
+            Path("/nowhere"), "Method", search_state, distribution_state,
+            sequence, self.STEPS if steps is None else steps)
+        optional = impl.undeclared_optional_state(
+            search_state, distribution_state, entries)
+        return entries, optional
+
+    # --- the rosters state a fact about themselves, never a verdict -------
+
+    def test_every_optional_entry_carries_both_facts_and_neither_is_defaulted(self):
+        """A field added to either roster with half an answer would default
+        straight back into the bucket labelled optional, which is the defect."""
+        for section, roster in (("search", impl.SEARCH_OPTIONAL),
+                                ("distribution", impl.DISTRIBUTION_OPTIONAL)):
+            for field, facts in roster.items():
+                with self.subTest(field=f"{section}.{field}"):
+                    self.assertEqual(sorted(facts),
+                                     sorted(impl.OPTIONAL_FIELD_FACTS))
+                    for fact in impl.OPTIONAL_FIELD_FACTS:
+                        self.assertIsInstance(facts[fact], str)
+                        self.assertTrue(facts[fact].strip(), fact)
+
+    def test_every_declared_evidence_key_is_one_the_engine_actually_publishes(self):
+        """The roster states which evidence key each field PRODUCES, and a key
+        nothing publishes is a join that silently never matches -- a field
+        that reads load-bearing to a human and blocks nothing here forever.
+
+        Derived: every `measuredBy` head `impl_position` can emit, collected
+        by driving its own derivation over every witness kind in both
+        grammars, rather than a second copy of the strings under test."""
+        published = set()
+        for kind in sorted(impl_position.WITNESS_KINDS):
+            for twostate in (True, False):
+                if not twostate and kind not in ("record", "shard",
+                                                 "notebook", "rehearsal"):
+                    continue
+                for operand in (None, "anOperand"):
+                    for current in ({}, {"shardsCurrent": [],
+                                         "search": {"recordFound": True,
+                                                    "recordCurrent": True}}):
+                        for item in self.sequence(
+                                [(kind, operand, twostate)],
+                                {"levels": ["floor", "top"], **current}):
+                            published.update(item["measuredBy"].split("+"))
+        for section, roster in (("search", impl.SEARCH_OPTIONAL),
+                                ("distribution", impl.DISTRIBUTION_OPTIONAL)):
+            for field, facts in roster.items():
+                with self.subTest(field=f"{section}.{field}"):
+                    self.assertIn(facts["evidence"], published)
+
+    # --- load-bearing, and the merely-narrowing field beside it -----------
+
+    def test_a_witness_the_flow_waits_on_leaves_the_bucket_labelled_optional(self):
+        """The incident, reproduced from declarations alone.
+
+        The contrast is the point: `distribution.currentWhen` is undeclared
+        in the identical run, carries a consequence of identical honesty, and
+        stays exactly where it was -- so a check reading "an entry with a
+        consequence exists" cannot tell the two apart, and this one can."""
+        sequence = self.sequence(
+            [("notebook", "verification.ipynb", True),
+             ("shard", "shard-01", True),
+             ("step", "stepThree", True)])
+        entries, optional = self.blocking(
+            sequence, self.SEARCH_DECLARED, self.DISTRIBUTION_DECLARED)
+
+        self.assertEqual([(e["section"], e["field"]) for e in entries],
+                         [("distribution", "shardsRoot")])
+        self.assertEqual([(e["section"], e["field"]) for e in optional],
+                         [("distribution", "currentWhen")])
+        # Both fields carry a consequence, which is exactly why a check that
+        # asks only for one would have passed on the day of the incident.
+        for field in ("shardsRoot", "currentWhen"):
+            self.assertTrue(
+                impl.DISTRIBUTION_OPTIONAL[field]["consequence"].strip())
+
+    def test_a_corroborator_field_never_blocks_however_the_sequence_is_shaped(self):
+        """`distribution.currentWhen` produces a corroborator, never a head:
+        an arrived shard is still measured without it, only trusted on less.
+        The same sequence that reports `shardsRoot` reports nothing for it."""
+        sequence = self.sequence([("shard", "shard-01", True)])
+        entries, optional = self.blocking(
+            sequence, self.SEARCH_DECLARED,
+            {**self.DISTRIBUTION_DECLARED, "shardsRoot": "Shards"})
+        self.assertEqual(entries, [])
+        self.assertEqual([e["field"] for e in optional], ["currentWhen"])
+
+    def test_the_head_still_matches_when_the_witness_carries_a_corroborator(self):
+        """The half of the head rule that is reachable through `verify`, and
+        the one that rules exact whole-string equality out.
+
+        `verify --shards <dir>` on a target that declares
+        `distribution.currentWhen` and NOT `shardsRoot` derives
+        `shardsCurrent`, so its shard items publish
+        `distribution.shardsArrived+shardsCurrent` -- and `shardsRoot` is
+        still the field standing between that witness and every command with
+        no `--shards` flag of its own. Compared whole, the string would not
+        equal the token and the report would go silent on exactly the target
+        that is furthest along."""
+        sequence = self.sequence(
+            [("shard", "shard-01", True), ("step", "stepThree", True)],
+            {"shardsArrived": ["shard-01"], "shardsCurrent": ["shard-01"]})
+        self.assertEqual(sequence[0]["measuredBy"],
+                         "distribution.shardsArrived+shardsCurrent")
+        entries, optional = self.blocking(
+            sequence, self.SEARCH_DECLARED,
+            {**self.DISTRIBUTION_DECLARED, "currentWhen": "evidence.digest"})
+        self.assertEqual([(e["section"], e["field"]) for e in entries],
+                         [("distribution", "shardsRoot")])
+        self.assertEqual(optional, [])
+
+    def test_a_corroborator_token_is_never_read_as_the_thing_measured_through(self):
+        """The other half of the head rule, tested as a rule rather than
+        through a route.
+
+        No caller in this file assembles the state below -- `shardsCurrent`
+        is derived only from a DECLARED `distribution.currentWhen`, so an
+        undeclared one can produce no item carrying that token today. The
+        rule is still what the matching says, and stating it here is what
+        keeps a later deriver -- one that published a corroborator its own
+        field did not pay for -- from turning `currentWhen` into a field the
+        report tells an operator their flow is dead without."""
+        sequence = [{"ordinal": 1, "mark": " ",
+                     "witness": {"kind": "shard", "operand": "shard-01",
+                                 "twostate": True},
+                     "measuredBy": "distribution.shardsArrived+shardsCurrent"}]
+        entries, _ = self.blocking(
+            sequence, self.SEARCH_DECLARED,
+            {**self.DISTRIBUTION_DECLARED, "shardsRoot": "Shards"})
+        self.assertEqual(entries, [])
+
+    def test_a_named_leveled_record_is_not_blocked_by_the_searchs_own_record(self):
+        """The operand distinction, and it costs no special case: a
+        `@record:level <name>` witness is measured through its own
+        `__records__` entry, so `search.record` is not what stands between it
+        and a measurement -- while the two-state `@record` beside it is."""
+        undeclared = {k: v for k, v in self.SEARCH_DECLARED.items()
+                      if k != "record"}
+        named, _ = self.blocking(
+            self.sequence([("record", "chosen", False)],
+                          {"levels": ["floor", "top"]}),
+            undeclared)
+        self.assertEqual(named, [])
+
+        bare, _ = self.blocking(
+            self.sequence([("record", None, True)]), undeclared)
+        self.assertEqual([(e["section"], e["field"]) for e in bare],
+                         [("search", "record")])
+
+    # --- where it bites ---------------------------------------------------
+
+    def test_the_report_names_every_declared_step_waiting_behind_the_item(self):
+        sequence = self.sequence(
+            [("notebook", "verification.ipynb", True),
+             ("shard", "shard-01", True),
+             ("step", "stepThree", True)])
+        entries, _ = self.blocking(
+            sequence, self.SEARCH_DECLARED, self.DISTRIBUTION_DECLARED)
+        entry = entries[0]
+        self.assertEqual([row["ordinal"] for row in entry["blockedBy"]], [2])
+        self.assertEqual(entry["blockedBy"][0]["witness"]["kind"], "shard")
+        self.assertEqual(entry["blockedSteps"],
+                         [{"step": "stepThree", "advances": 3}])
+        self.assertEqual(entry["evidence"],
+                         impl.DISTRIBUTION_OPTIONAL["shardsRoot"]["evidence"])
+
+    def test_an_item_at_or_above_the_furthest_advance_stops_no_declared_step(self):
+        """`cmd_step` refuses on items strictly below the ordinal a step
+        advances, so an unmeasurable item nothing waits behind leaves the
+        flow walkable -- an unfinished POSITION, which `position` already
+        reports, and not a blocked one."""
+        sequence = self.sequence(
+            [("notebook", "verification.ipynb", True),
+             ("step", "stepTwo", True),
+             ("shard", "shard-01", True)])
+        entries, optional = self.blocking(
+            sequence, self.SEARCH_DECLARED, self.DISTRIBUTION_DECLARED)
+        self.assertEqual(entries, [])
+        self.assertEqual(sorted(e["field"] for e in optional),
+                         ["currentWhen", "shardsRoot"])
+
+    def test_a_target_that_declares_no_ordered_flow_keeps_the_optional_entry(self):
+        """There is no step to name, so there is no claim to make -- and the
+        absence is still reported, with its consequence, where it was."""
+        sequence = self.sequence([("shard", "shard-01", True)])
+        entries, optional = self.blocking(
+            sequence, self.SEARCH_DECLARED, self.DISTRIBUTION_DECLARED,
+            steps={})
+        self.assertEqual(entries, [])
+        self.assertIn("shardsRoot", [e["field"] for e in optional])
+
+    def test_the_consequence_composes_the_fields_own_rather_than_restating_it(self):
+        sequence = self.sequence(
+            [("notebook", "verification.ipynb", True),
+             ("shard", "shard-01", True),
+             ("step", "stepThree", True)])
+        entries, _ = self.blocking(
+            sequence, self.SEARCH_DECLARED, self.DISTRIBUTION_DECLARED)
+        consequence = entries[0]["consequence"]
+        self.assertIn(
+            impl.DISTRIBUTION_OPTIONAL["shardsRoot"]["consequence"], consequence)
+        self.assertIn("ordinal 2", consequence)
+        self.assertIn("stepThree", consequence)
+        self.assertIn("STEP_SEQUENCE_NOT_REACHED", consequence)
+
+    # --- the exit ---------------------------------------------------------
+
+    def test_the_exit_is_a_question_whose_discuss_command_runs_unedited(self):
+        """A work state publishes an act that runs unedited, and the honest
+        act here is a question: the one thing that clears this is an edit to
+        the target's own benchmark declaration, and the forge authors no
+        target declaration. `_refusal_question`'s own shape, the one the
+        `except Refused` chokepoint already publishes for
+        `POSITION_SHARDS_UNDECLARED`."""
+        sequence = self.sequence(
+            [("notebook", "verification.ipynb", True),
+             ("shard", "shard-01", True),
+             ("step", "stepThree", True)])
+        entries, _ = self.blocking(
+            sequence, self.SEARCH_DECLARED, self.DISTRIBUTION_DECLARED)
+        exit_act = entries[0]["exit"]
+        self.assertEqual(exit_act["kind"], "question")
+        self.assertTrue(exit_act["question"].endswith("and why?"),
+                        exit_act["question"])
+        self.assertIn("stepThree", exit_act["question"])
+
+        parts = shlex.split(exit_act["command"])
+        self.assertEqual(parts[parts.index("--about") + 1], "shard shard-01")
+        self.assertIn("discuss", parts)
+        self.assertEqual(parts[parts.index("--question") + 1],
+                         exit_act["question"])
+        self.assertNotIn("--answer", parts,
+                         "a published question that answers itself is not one")
+
+    def test_the_exit_never_publishes_a_command_that_edits_a_declaration(self):
+        """The forge writes no target declaration, and a published command
+        that did would be it deciding a repository's own vocabulary. Only
+        `discuss` is ever published from here."""
+        sequence = self.sequence(
+            [("notebook", "verification.ipynb", True),
+             ("shard", "shard-01", True),
+             ("step", "stepThree", True)])
+        entries, _ = self.blocking(
+            sequence, self.SEARCH_DECLARED, self.DISTRIBUTION_DECLARED)
+        parts = shlex.split(entries[0]["exit"]["command"])
+        subcommand = parts[parts.index(str(CLI)) + 1]
+        self.assertEqual(subcommand, "discuss")
+
+    # --- placement and doctrine -------------------------------------------
+
+    def test_undeclaredBlocking_is_a_top_level_verify_key(self):
+        """`returned_keys` reads dict-literal keys at the top level of a
+        function's own return, so a key nested anywhere ships invisible to
+        `VerifyStatusRosterTests` -- the identical constraint that decided
+        `undeclaredOptional`'s own placement."""
+        self.assertIn("undeclaredBlocking", returned_keys(CLI, "cmd_verify"))
+        self.assertNotIn("undeclaredBlocking", returned_keys(CLI, "cmd_probe"))
+
+    def test_both_documents_tell_a_reader_the_key_exists(self):
+        """A status that reached the JSON is worth nothing to a reader never
+        told it exists -- `toDiscuss`'s and `undeclaredOptional`'s own
+        documentation doctrine, one key over."""
+        self.assertIn("`undeclaredBlocking`",
+                      SKILL_MD.read_text(encoding="utf-8"))
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("## Reading `verify`"):]
+        section = section[:section.index("\n## ", 1)]
+        self.assertIn("`undeclaredBlocking`", section)
+
+    def test_no_load_bearing_roster_is_written_down_anywhere(self):
+        """The constraint that shaped the whole design, held to the source:
+        a literal set of "the load-bearing fields" is the reported defect one
+        indirection away -- it answers today's four and goes stale the first
+        time a witness kind changes what it reads. The set is derived from
+        the sequence, so the function that derives it must read the rosters
+        generically and name no field of either one."""
+        source = ast.parse(CLI.read_text(encoding="utf-8"))
+        derived = next(node for node in ast.walk(source)
+                       if isinstance(node, ast.FunctionDef)
+                       and node.name == "blocking_undeclared_state")
+        body = ast.get_source_segment(
+            CLI.read_text(encoding="utf-8"), derived)
+        body = body[body.index('"""', body.index('"""') + 3) + 3:]
+        for field in (*impl.SEARCH_OPTIONAL, *impl.DISTRIBUTION_OPTIONAL):
+            self.assertNotIn(f'"{field}"', body, field)
+            self.assertNotIn(f"'{field}'", body, field)
 
 
 class NoTestClassShadowsAnotherTests(unittest.TestCase):
@@ -25689,11 +26042,12 @@ _ENGLISH_COUNTS = {
     # Output Contract row count after `undeclaredRecords` joined it
     # (the-pilot-proves-the-science, slice B).
     7: "Seven", 8: "Eight",
-    9: "Nine", 10: "Ten", 17: "Seventeen", 18: "Eighteen", 19: "Nineteen",
+    9: "Nine", 10: "Ten", 11: "Eleven",
+    17: "Seventeen", 18: "Eighteen", 19: "Nineteen",
     # `Twenty-one` is `verify`'s status count once `undeclaredProduces` joined
     # it -- the per-step half of the same "reported, never demanded" family
     # `undeclaredLadder` and `undeclaredRecords` already sit in.
-    20: "Twenty", 21: "Twenty-one",
+    20: "Twenty", 21: "Twenty-one", 22: "Twenty-two",
     26: "Twenty-six", 27: "Twenty-seven", 28: "Twenty-eight",
     29: "Twenty-nine", 30: "Thirty", 31: "Thirty-one", 32: "Thirty-two",
     33: "Thirty-three", 34: "Thirty-four", 35: "Thirty-five",

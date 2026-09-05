@@ -551,14 +551,37 @@ SEARCH_DECLARATION = {
 }
 
 
+#: The two facts every entry of `SEARCH_OPTIONAL`/`DISTRIBUTION_OPTIONAL`
+#: carries, spelled once so a field added to either roster cannot ship with
+#: half an answer. Both are required and neither is defaulted: a missing
+#: `evidence` silently defaulted to "feeds nothing" would put the next
+#: load-bearing field straight back into the bucket labelled optional, which
+#: is the exact defect `blocking_undeclared_state` exists to close.
+OPTIONAL_FIELD_FACTS = ("consequence", "evidence")
+
+
 #: What a search MAY say about itself, and is never asked to -- held apart
 #: from `SEARCH_DECLARATION` above for the identical reason
 #: `DISTRIBUTION_OPTIONAL` is held apart from `DISTRIBUTION_DECLARATION`: the
 #: required set is what goes `missing` when unanswered, and a key added
 #: there would declare every existing target incomplete for a question
 #: nobody had asked it yet.
+#:
+#: Each entry carries two facts, `OPTIONAL_FIELD_FACTS`. `consequence` is what
+#: the absence costs, written out. `evidence` is the token this field PRODUCES
+#: in an item's `measuredBy` -- the exact spelling `impl_position`'s own
+#: derivers publish when they consult it, either as the head of that string or
+#: as one of the `+`-joined corroborators after it -- and it is a plain
+#: statement of what the field feeds, never a judgement about whether the field
+#: matters. Which absences actually block is derived from the target's own
+#: declared sequence (`blocking_undeclared_state`), never listed here: a roster
+#: of "the load-bearing ones" is the same defect one indirection over, and it
+#: goes stale the first time a witness kind changes what it reads.
 SEARCH_OPTIONAL = {
-    "record": "the path, relative to the product folder, of the artefact this "
+    "record": {
+     "evidence": "search.recordFound",
+     "consequence":
+              "the path, relative to the product folder, of the artefact this "
               "search writes -- the one key `search_state` reads before any "
               "of the required four, and the only one whose absence is "
               "silent rather than reported. Undeclared, `search.recordFound` "
@@ -573,8 +596,11 @@ SEARCH_OPTIONAL = {
               "they may already have run. The forge never guesses the "
               "filename: a default here would make it answer a question the "
               "target never asked, and `undeclaredRecords` would then report "
-              "the real artefact as unaccounted for beside the invented one",
-    "currentWhen": "a dotted path into the record's own file naming where it "
+              "the real artefact as unaccounted for beside the invented one"},
+    "currentWhen": {
+     "evidence": "recordCurrent",
+     "consequence":
+                   "a dotted path into the record's own file naming where it "
                    "wrote down the identity of the code that produced it -- "
                    "`distribution.currentWhen`'s own idiom, one level up "
                    "from a shard. Arrival says the record's file exists, "
@@ -582,7 +608,7 @@ SEARCH_OPTIONAL = {
                    "record is trusted on the strength of being present. "
                    "The forge never guesses the field: the repository "
                    "names it and the forge only compares the value there "
-                   "against the digest of the code as it stands",
+                   "against the digest of the code as it stands"},
 }
 
 
@@ -919,8 +945,14 @@ DISTRIBUTION_DECLARATION = {
 #: Optional, and still schema: a value of the wrong shape is `malformed`
 #: here exactly as it is above, because a target that DID answer deserves to
 #: be told its answer is unreadable rather than have it quietly ignored.
+#:
+#: `OPTIONAL_FIELD_FACTS` per entry, the identical pair `SEARCH_OPTIONAL`
+#: carries and for the identical reason -- see that roster's own comment.
 DISTRIBUTION_OPTIONAL = {
-    "currentWhen": "a dotted path into a shard's own stamp naming where that "
+    "currentWhen": {
+     "evidence": "shardsCurrent",
+     "consequence":
+                   "a dotted path into a shard's own stamp naming where that "
                    "shard recorded the identity of the code that produced it. "
                    "Arrival says a shard folder exists, never which code wrote "
                    "it, so without this a returned shard is trusted on the "
@@ -928,15 +960,18 @@ DISTRIBUTION_OPTIONAL = {
                    "field: the repository names it and the forge only compares "
                    "the value there against the digest of the code as it "
                    "stands, the same division `identicalAcrossShards` already "
-                   "keeps",
-    "shardsRoot": "where a split campaign's returned shards land, so that a "
+                   "keeps"},
+    "shardsRoot": {
+     "evidence": "distribution.shardsArrived",
+     "consequence":
+                  "where a split campaign's returned shards land, so that a "
                   "command with no `--shards` flag of its own -- `gate`, "
                   "`close`, `discuss`, `probe` -- measures a `@shard` witness "
                   "against the same directory `position`/`verify`'s own "
                   "`--shards` would, rather than reading it as unmeasured "
                   "forever. The forge never invents this directory: the "
                   "repository names it once and every reader compares against "
-                  "the identical answer",
+                  "the identical answer"},
 }
 
 
@@ -1430,9 +1465,50 @@ def named_records_state(target: Path, name: str, records: dict, digest: str) -> 
     return state
 
 
-def undeclared_optional_state(search: dict, distribution: dict) -> list[dict]:
+def _optional_sections(search: dict, distribution: dict) -> tuple:
+    """The two optional rosters beside the section state each one belongs to,
+    in one expression rather than two loop bodies.
+
+    `undeclared_optional_state` and `blocking_undeclared_state` walk the
+    identical pairs and must never disagree about which sections exist or what
+    "declared" means for one -- two spellings of that walk is how a field ends
+    up reported by both, or by neither.
+    """
+    return (("search", search, SEARCH_OPTIONAL),
+            ("distribution", distribution, DISTRIBUTION_OPTIONAL))
+
+
+def _unanswered_optional(section_state: dict, roster: dict) -> list[tuple]:
+    """`(field, facts)` for every roster key a DECLARED block left unanswered.
+
+    Empty for a block that was never declared at all: `search["declared"]`/
+    `distribution["declared"]` are empty exactly when the contract carried no
+    such block, and a target with nothing to answer is asked nothing.
+    """
+    declared = section_state.get("declared")
+    if not declared:
+        return []
+    return [(field, facts) for field, facts in roster.items()
+            if field not in declared]
+
+
+def undeclared_optional_state(search: dict, distribution: dict,
+                              blocking: list[dict] | None = None) -> list[dict]:
     """Every optional key a DECLARED `search` or `distribution` block left
-    unanswered, named beside the exact consequence its absence carries.
+    unanswered, named beside the exact consequence its absence carries --
+    minus the ones `blocking_undeclared_state` has already reported, which
+    are not optional in any sense the word carries here.
+
+    **Why the blocking ones are moved out rather than flagged inside.** The
+    defect this parameter closes was measured on a live flow: a target left
+    `distribution.shardsRoot` undeclared, `verify` named it here with an
+    accurate consequence, and the operator read "optional field unanswered",
+    moved on, and met a permanent `STEP_SEQUENCE_NOT_REACHED` four ordinals
+    and forty minutes later with the cause three screens back. A flag inside
+    a list this key names `undeclaredOptional` would have been read the same
+    way, because the bucket is what a reader takes the entry's weight from.
+    So a field whose absence leaves a witness in the target's OWN declared
+    sequence permanently unmeasurable leaves this list entirely.
 
     `SEARCH_OPTIONAL`/`DISTRIBUTION_OPTIONAL` are scanned for shape only,
     never presence, at `search_state`/`distribution_state` themselves --
@@ -1455,18 +1531,195 @@ def undeclared_optional_state(search: dict, distribution: dict) -> list[dict]:
     nothing to answer would be the forge deciding for the target -- the
     one thing this whole file refuses to do.
     """
+    moved = {(entry["section"], entry["field"]) for entry in (blocking or [])}
     entries: list[dict] = []
-    if search.get("declared"):
-        for field, consequence in SEARCH_OPTIONAL.items():
-            if field not in search["declared"]:
-                entries.append({"section": "search", "field": field,
-                                "consequence": consequence})
-    if distribution.get("declared"):
-        for field, consequence in DISTRIBUTION_OPTIONAL.items():
-            if field not in distribution["declared"]:
-                entries.append({"section": "distribution", "field": field,
-                                "consequence": consequence})
+    for section, state, roster in _optional_sections(search, distribution):
+        for field, facts in _unanswered_optional(state, roster):
+            if (section, field) in moved:
+                continue
+            entries.append({"section": section, "field": field,
+                            "consequence": facts["consequence"]})
     return entries
+
+
+#: What an undeclared field costs when the target's OWN sequence is waiting on
+#: it, written out rather than labelled -- `LADDER_UNDECLARED_CONSEQUENCE`'s
+#: doctrine, and `FLOW_UNFINISHABLE_CONSEQUENCE`'s reason for being a format
+#: string rather than a constant: "an item cannot be measured" is advice, the
+#: ordinals beside the steps waiting on them is a decision somebody can take.
+#: The field's own `consequence` is composed in rather than restated, so the
+#: two can never drift into two accounts of one absence.
+BLOCKING_UNDECLARED_CONSEQUENCE = (
+    "`{section}.{field}` is undeclared, and this target's own sequence is "
+    "waiting on it. Item{plural} at ordinal {ordinals} {carry} a witness "
+    "measured through {evidence}, which nothing can answer until that field "
+    "is declared -- so {they} read `unmeasured` rather than `false`, on every "
+    "run, forever. An unmeasured item is never ticked from evidence, and "
+    "`step` refuses `STEP_SEQUENCE_NOT_REACHED` for {steps} -- every declared "
+    "step whose own `advances` ordinal sits above {first} -- on every call. "
+    "Nothing later in the flow runs, so the sequence items those steps would "
+    "have produced evidence for stay blank too. This is said here, before the "
+    "first step runs, because every fact it rests on was declared before the "
+    "first step ran: the measured incident that put it here cost an operator "
+    "four steps and forty minutes of a live run to reach the same sentence. "
+    "What the field itself buys, in full: {consequence}."
+)
+
+
+def blocking_undeclared_state(target: Path, name: str, search: dict,
+                              distribution: dict, sequence: list[dict],
+                              steps: dict) -> list[dict]:
+    """Every undeclared optional field a witness in the target's OWN declared
+    sequence cannot be measured without, beside the declared steps it stops.
+
+    `unfinishable_flow_state`'s shape, placement and restraint (design D8),
+    one class over: that one reports an ordered flow two PRESENT declarations
+    make unwalkable, this one a flow an ABSENT declaration does.
+
+    **The predicate is derived from the sequence, never listed.** A roster of
+    "the load-bearing optional fields" would be the reported defect one
+    indirection away -- it answers today's four fields and goes stale the
+    first time a witness kind changes what it reads, exactly as a hand-listed
+    anything on this surface already has. What each roster entry states is a
+    plain fact about itself: `evidence`, the token the field PRODUCES inside
+    an item's `measuredBy`, spelled exactly as `impl_position`'s own derivers
+    publish it. Blocking is then the join: an item whose `measuredBy` HEAD is
+    that token is an item this field stands between the flow and.
+
+    **The head, and never the whole string or any token in it.** `measuredBy`
+    is `<head>` or `<head>+<corroborator>` --
+    `search.recordFound+recordCurrent`, `distribution.shardsArrived+
+    shardsCurrent`. The head is what a witness is measured THROUGH; a
+    corroborator only decides how far that answer is trusted. Comparing the
+    whole string would go silent on the target furthest along, and that is
+    reachable rather than theoretical: `verify --shards <dir>` on a target
+    declaring `distribution.currentWhen` and not `shardsRoot` publishes the
+    joined form for every shard item, while `shardsRoot` is still what stands
+    between that witness and every command carrying no `--shards` flag.
+
+    **What keeps the corroborator fields out today is not the head rule.**
+    Measured, rather than assumed: `shardsCurrent` is derived only from a
+    DECLARED `distribution.currentWhen` and `recordCurrent` only from a
+    declared `search.currentWhen`, so while either field is unanswered no
+    item can carry its token at all, and it matches nothing however this
+    compared. The head rule is what states the intent anyway -- a
+    corroborator is not what a witness is measured through -- so the day a
+    deriver publishes one its own field did not pay for, an absence that
+    narrows a reading still does not get reported as a dead flow. The same rule sorts the record
+    kinds for free: a leveled `@record:level <name>` witness is measured
+    through `records[<name>].recordFound`, its own `__records__` entry, so an
+    undeclared `search.record` does not block it -- while the two-state
+    `@record` and the operand-less `@record:level` beside it, both measured
+    through `search.recordFound`, are blocked and reported.
+
+    **A step is affected when it must WAIT behind such an item**, and an item
+    at or above the furthest ordinal any step advances blocks no step at all
+    -- `unfinishable_flow_state`'s own rule, read off `cmd_step`, which
+    refuses on items strictly below the ordinal a step advances. A target
+    that declares no ordered flow is reported nothing here: there is no step
+    to name, and the absence is still named in `undeclaredOptional` with its
+    consequence, which is the honest reading of a field that costs a reading
+    rather than a flow.
+
+    **The marks are deliberately not read**, and neither is anything on
+    disk: `unfinishable_flow_state`'s own restraint, for its own reason. A
+    diagnosis a false tick can switch off is worse than no diagnosis. The
+    `measuredBy` this reads is published by the derivation itself, never by a
+    mark, and for a field the target left undeclared it is invocation-
+    independent -- an undeclared `search.record` leaves `recordFound` `None`
+    on every branch there is, and a shard witness names its key before any
+    directory is consulted at all.
+
+    **This asks a target for nothing new.** Every input is one the forge
+    already reads and the kit already ships: the two optional rosters, the
+    `__steps__` entries' own `advances` ordinals, and the position sequence
+    the target already writes. Nothing here adds a declaration a from-zero
+    repository would have to be built to carry, which is why there is no kit
+    change beside it -- the whole finding is a join over declarations that
+    were all present before the first step ran.
+
+    **The exit is a question and never a command**, and that is measured
+    rather than preferred. The one act that clears this is an edit to the
+    target's own benchmark declaration, and the forge authors no target
+    declaration anywhere in this file -- `undeclared_ladder_state`,
+    `undeclared_records_state` and `unfinishable_flow_state` each say so in
+    their own words. So there is no command to publish that would run
+    unedited, and inventing one would be the forge deciding a repository's
+    vocabulary for it. What IS published is `_refusal_question`'s own shape,
+    the identical one the `except Refused` chokepoint publishes for
+    `POSITION_SHARDS_UNDECLARED`: the question, and the directly runnable
+    `discuss` command that opens it.
+    """
+    flow = _flow_steps(steps)
+    if not flow:
+        return []
+    furthest = max(advances for _, advances in flow)
+    entries: list[dict] = []
+    for section, state, roster in _optional_sections(search, distribution):
+        for field, facts in _unanswered_optional(state, roster):
+            evidence = facts["evidence"]
+            blocking = [item for item in sequence
+                        if isinstance(item.get("ordinal"), int)
+                        and item["ordinal"] < furthest
+                        and str(item.get("measuredBy") or "").split("+")[0]
+                        == evidence]
+            if not blocking:
+                continue
+            # The earliest one bounds the flow -- `cmd_step` refuses on the
+            # first unticked item below the ordinal -- but every one is named,
+            # so a reader who repairs the first is not sent back for the next.
+            first = min(item["ordinal"] for item in blocking)
+            blocked = [{"step": step_name, "advances": advances}
+                       for step_name, advances in flow if advances > first]
+            ordinals = ", ".join(str(item["ordinal"]) for item in blocking)
+            question = (
+                f"item(s) {ordinals} in this target's own position sequence "
+                f"carry a witness measured through {evidence}, and "
+                f"`{section}.{field}` is undeclared, so that measurement can "
+                f"never be answered and "
+                f"{', '.join(row['step'] for row in blocked)} can never be "
+                f"reached; declare `{section}.{field}` in the benchmark "
+                "package now, or say how the flow finishes without it, and "
+                "why?")
+            entries.append({
+                "section": section,
+                "field": field,
+                "evidence": evidence,
+                "blockedBy": [{"ordinal": item["ordinal"],
+                               "witness": dict(item["witness"])}
+                              for item in blocking],
+                "blockedSteps": blocked,
+                "consequence": BLOCKING_UNDECLARED_CONSEQUENCE.format(
+                    section=section, field=field, evidence=evidence,
+                    plural="s" if len(blocking) > 1 else "",
+                    carry="carry" if len(blocking) > 1 else "carries",
+                    they="they" if len(blocking) > 1 else "it",
+                    ordinals=ordinals, first=first,
+                    steps=", ".join(row["step"] for row in blocked),
+                    consequence=facts["consequence"]),
+                "exit": {
+                    "kind": "question",
+                    "question": question,
+                    "command": _discuss_command(
+                        target, name,
+                        about=_blocking_about(blocking), question=question),
+                },
+            })
+    return entries
+
+
+def _blocking_about(blocking: list[dict]) -> str:
+    """The `--about <kind> [operand]` spelling for the earliest blocked item's
+    own witness, so the question this opens is addressed to the thing that
+    cannot be measured rather than to the bare `record` bucket every other
+    publication point falls back to.
+
+    `_about_arg`'s own form, reused rather than respelled. The earliest item
+    is chosen for the reason the consequence names it first: it is the one
+    `cmd_step` actually refuses on.
+    """
+    earliest = min(blocking, key=lambda item: item["ordinal"])
+    return _about_arg(earliest.get("witness") or {})
 
 
 #: What a repository gives up by leaving `__levels__` empty, written out
@@ -12718,6 +12971,15 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     # taking `levels` as an argument.
     declared_steps = resolve_steps_declaration(target, name)
 
+    # Computed before the return literal rather than inside it, because
+    # `undeclaredOptional` is this list SUBTRACTED from the unanswered ones:
+    # two calls in two slots would have each key deciding independently what
+    # the other holds, and a field reported by both is exactly the reading
+    # this change exists to stop.
+    blocking_undeclared = blocking_undeclared_state(
+        target, name, search, distribution, position["sequence"],
+        declared_steps)
+
     return {
         "command": "verify",
         "target": str(target),
@@ -12826,8 +13088,19 @@ def cmd_verify(args: argparse.Namespace) -> dict:
         # top-level, never nested under `search`/`distribution`, or the
         # entry ships invisible to the same roster test. See
         # `undeclared_optional_state`'s own docstring for why this is
-        # reported and never demanded.
-        "undeclaredOptional": undeclared_optional_state(search, distribution),
+        # reported and never demanded -- and why the blocking ones below are
+        # moved OUT of it rather than flagged inside it.
+        "undeclaredOptional": undeclared_optional_state(
+            search, distribution, blocking_undeclared),
+        # The other half of the same absence, and the half `undeclaredOptional`
+        # cannot honestly hold: a field the target's own declared sequence is
+        # waiting on, so its absence stops a declared step rather than
+        # narrowing a reading. Top-level for the identical `returned_keys`
+        # constraint, and computed BEFORE the key above because that key is
+        # what it is subtracted from. See `blocking_undeclared_state`'s own
+        # docstring for why the set is derived from the sequence and never
+        # listed, and why its exit is a question rather than a command.
+        "undeclaredBlocking": blocking_undeclared,
         # The same gap, one declaration over: `__levels__` is the one thing
         # the forge offers that nothing ever asks a target for, and an empty
         # one takes the whole rung discipline out of reach silently. Its own
