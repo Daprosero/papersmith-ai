@@ -2115,6 +2115,58 @@ def candidate_gate_steps(spec, repo, subject, box):
     return steps
 
 
+def normalized_step_roots(step, box):
+    """A walkthrough step's declared `roots`, each resolved under the box
+    with `resolve_under`'s discipline (no absolute path, no `..`) and
+    returned as box-relative POSIX strings, `""` meaning the whole box.
+
+    R6 (`spec.md`: "A driven step is graded on what it wrote"): `roots` is
+    the step's own declared ownership boundary inside the shared box, never
+    a second hand-maintained list of what the flow is "supposed" to touch.
+    """
+    normalized = []
+    for raw in step.get("roots") or []:
+        resolved = resolve_under(raw, box, "step.roots")
+        relative = resolved.relative_to(box).as_posix()
+        normalized.append("" if relative == "." else relative)
+    return normalized
+
+
+def _inside_declared_roots(path, roots):
+    return any(root in ("", ".") or path == root or path.startswith(root + "/")
+              for root in roots)
+
+
+def step_box_verdict(step, roots, before, after):
+    """Grade one driven step against what it actually wrote into the shared
+    box -- R6's whole subject. `before`/`after` are `tree_digest` maps of
+    the box taken immediately around the step's own subprocess run.
+
+    A step the recipe declares `readOnly` is exempt outright (`spec.md`: "A
+    step the recipe declares read-only is exempt and MUST be declarable as
+    such"); an unchanged box for a step that is not `readOnly` is the
+    "returned without producing" finding; a changed box measured against
+    declared `roots` is either clean or "wrote into a tree it does not
+    own" -- a step with no declared `roots` is not scored against
+    ownership at all, since there is nothing declared for it to violate.
+    """
+    read_only = bool(step.get("readOnly"))
+    changed = sorted(
+        path for path in set(before) | set(after)
+        if before.get(path) != after.get(path))
+    if read_only:
+        return {"changed": changed, "outsideRoots": [], "readOnly": True,
+                "roots": roots, "verdict": "read-only"}
+    if not changed:
+        return {"changed": changed, "outsideRoots": [], "readOnly": False,
+                "roots": roots, "verdict": "produced-nothing"}
+    outside = ([path for path in changed
+                if not _inside_declared_roots(path, roots)] if roots else [])
+    verdict = "wrote-outside-roots" if outside else "produced"
+    return {"changed": changed, "outsideRoots": outside, "readOnly": False,
+            "roots": roots, "verdict": verdict}
+
+
 def run_walkthrough(args):
     """Drive a recipe's ordered sequence against one shared box, and name the
     index where it stalls.
@@ -2139,6 +2191,19 @@ def run_walkthrough(args):
     point on. The box lives at `{repoRoot}/implementations/_walkthrough_
     {surface}`, created only if empty or absent, and removed in a `finally`
     whose absence is proven by `tree_digest`, exactly like `structure`'s box.
+
+    Each step is also graded on what it wrote into the box (R6): its
+    `tree_digest` is taken before and after the step's own run, and a step
+    the recipe does not declare `readOnly` that leaves the box byte-
+    identical is reported as having produced nothing, whatever it exited.
+    A step declaring `roots` is graded against them; a change wholly or
+    partly outside its declared `roots` is reported as writing into a tree
+    it does not own. Separately, and independently of any one step, the
+    *subject* tree is digested once before the flow starts and once after
+    it ends: `walkthrough` never writes into the subject at all, so any
+    change there is `Unprobeable kind=step-escaped-the-box` -- an inability
+    to look, never a finding, and the whole sweep halts rather than naming
+    which step did it.
     """
     spec_path = Path(args.spec)
     if not spec_path.is_file():
@@ -2175,6 +2240,7 @@ def run_walkthrough(args):
     steps_report = []
     stall = None
     setup_failure = None
+    subject_before = tree_digest(subject, exclude)
     try:
         for index, step in enumerate(steps_spec):
             name = step.get("name", f"step {index}")
@@ -2184,7 +2250,7 @@ def run_walkthrough(args):
                 steps_report.append({
                     "expected": step.get("expect"), "index": index,
                     "role": role, "name": name, "observed": None,
-                    "outcome": "unreached"})
+                    "box": None, "outcome": "unreached"})
                 continue
 
             expect = step.get("expect")
@@ -2215,6 +2281,8 @@ def run_walkthrough(args):
             if step.get("cwd"):
                 step_cwd = resolve_under(step["cwd"], box, "step.cwd")
 
+            roots = normalized_step_roots(step, box)
+            box_before = tree_digest(box, exclude)
             try:
                 completed = subprocess.run(
                     argv, cwd=str(step_cwd), shell=False,
@@ -2236,7 +2304,8 @@ def run_walkthrough(args):
                     f"{error}")
                 steps_report.append({
                     "expected": expect, "index": index, "role": role,
-                    "name": name, "observed": None, "outcome": "stalled"})
+                    "name": name, "observed": None, "box": None,
+                    "outcome": "stalled"})
                 continue
             except subprocess.TimeoutExpired:
                 if role == "setup":
@@ -2251,9 +2320,12 @@ def run_walkthrough(args):
                     f"{args.timeout}s")
                 steps_report.append({
                     "expected": expect, "index": index, "role": role,
-                    "name": name, "observed": None, "outcome": "stalled"})
+                    "name": name, "observed": None, "box": None,
+                    "outcome": "stalled"})
                 continue
 
+            box_after = tree_digest(box, exclude)
+            box_report = step_box_verdict(step, roots, box_before, box_after)
             observed = {"exit": completed.returncode,
                        "stderr": completed.stderr, "stdout": completed.stdout}
 
@@ -2266,7 +2338,7 @@ def run_walkthrough(args):
                     break
                 steps_report.append({
                     "expected": expect, "index": index, "role": role,
-                    "name": name, "observed": observed,
+                    "name": name, "observed": observed, "box": box_report,
                     "outcome": "setup-ok"})
                 continue
 
@@ -2274,7 +2346,8 @@ def run_walkthrough(args):
                                    completed.stdout, completed.stderr):
                 steps_report.append({
                     "expected": expect, "index": index, "role": role,
-                    "name": name, "observed": observed, "outcome": "passed"})
+                    "name": name, "observed": observed, "box": box_report,
+                    "outcome": "passed"})
             else:
                 stall = stalled(
                     "contradiction", index,
@@ -2282,7 +2355,19 @@ def run_walkthrough(args):
                     "its own expect")
                 steps_report.append({
                     "expected": expect, "index": index, "role": role,
-                    "name": name, "observed": observed, "outcome": "stalled"})
+                    "name": name, "observed": observed, "box": box_report,
+                    "outcome": "stalled"})
+
+        subject_after = tree_digest(subject, exclude)
+        if subject_before != subject_after:
+            changed_subject = sorted(
+                p for p in set(subject_before) | set(subject_after)
+                if subject_before.get(p) != subject_after.get(p))
+            raise Unprobeable(
+                "kind=step-escaped-the-box: the driven flow changed the "
+                f"subject at {changed_subject}; walkthrough only ever "
+                "writes into its own box, and a change to the subject is "
+                "an inability to look, never a finding")
     finally:
         erase_box(box)
 

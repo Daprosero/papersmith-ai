@@ -5351,6 +5351,183 @@ class WalkthroughStepRoleTests(WalkthroughBoxMixin, unittest.TestCase):
         self.assertEqual(payload["gates"], {"declared": 1, "passed": 0})
 
 
+class WalkthroughDigestTests(WalkthroughBoxMixin, unittest.TestCase):
+    """R6, `the-audit-grades-what-a-step-wrote`: a driven step is graded on
+    what it wrote into the shared box, never on its own reported success.
+    A step declared `readOnly` is exempt; a step with no such declaration
+    defaults to producing, and an unchanged box is the finding. Separately,
+    any change to the *subject* -- never the box -- is an escape this
+    mechanism gates, which `walkthrough` had no reach over at all before.
+    """
+
+    def test_a_step_that_returns_zero_and_writes_nothing_is_named(self):
+        surface = "wrote_nothing"
+        self.walkthrough_box(surface)
+        subject = self.make_box("wrote_nothing_subject")
+        steps = [{"argv": ["python3", "-c", "pass"], "expect": {"exit": 0},
+                  "name": "claims success, writes nothing"}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["steps"][0]["outcome"], "passed")
+        self.assertEqual(payload["steps"][0]["box"]["verdict"],
+                         "produced-nothing")
+        self.assertEqual(payload["steps"][0]["box"]["changed"], [])
+
+    def test_a_step_that_writes_nothing_against_an_already_nonempty_box_is_still_named(self):
+        """Discriminates against a weaker guard that only fires when the box
+        is empty on both sides -- the shipped shape has prior steps leave
+        content behind, and a later step that adds nothing must still be
+        graded against its own before/after, not against emptiness.
+        """
+        surface = "wrote_nothing_nonempty"
+        self.walkthrough_box(surface)
+        subject = self.make_box("wrote_nothing_nonempty_subject")
+        steps = [
+            {"argv": ["python3", "-c",
+                     "open('marker.txt', 'w').write('hello')"],
+             "expect": {"exit": 0}, "name": "leaves the box non-empty"},
+            {"argv": ["python3", "-c", "pass"], "expect": {"exit": 0},
+             "name": "claims success, adds nothing to an already-full box"},
+        ]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["steps"][0]["box"]["verdict"], "produced")
+        self.assertEqual(payload["steps"][1]["box"]["verdict"],
+                         "produced-nothing",
+                         "an unchanged non-empty box is still nothing "
+                         "produced by THIS step")
+
+    def test_a_step_that_writes_entirely_inside_its_declared_roots_is_clean(self):
+        surface = "wrote_inside_roots"
+        self.walkthrough_box(surface)
+        subject = self.make_box("wrote_inside_roots_subject")
+        steps = [{
+            "argv": ["python3", "-c",
+                     "import os\n"
+                     "os.makedirs('out', exist_ok=True)\n"
+                     "open('out/product.txt', 'w').write('made')\n"],
+            "expect": {"exit": 0}, "name": "writes only where it declared",
+            "roots": ["out"]}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        box_report = payload["steps"][0]["box"]
+        self.assertEqual(box_report["verdict"], "produced")
+        self.assertEqual(box_report["changed"], ["out/product.txt"])
+        self.assertEqual(box_report["outsideRoots"], [])
+
+    def test_a_step_that_writes_outside_its_declared_roots_is_named(self):
+        surface = "wrote_outside_roots"
+        self.walkthrough_box(surface)
+        subject = self.make_box("wrote_outside_roots_subject")
+        steps = [{
+            "argv": ["python3", "-c",
+                     "open('stray.txt', 'w').write('escaped its roots')\n"],
+            "expect": {"exit": 0}, "name": "declares one root, writes another",
+            "roots": ["allowed"]}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        box_report = payload["steps"][0]["box"]
+        self.assertEqual(box_report["verdict"], "wrote-outside-roots")
+        self.assertEqual(box_report["outsideRoots"], ["stray.txt"])
+
+    def test_a_step_that_writes_partly_outside_its_declared_roots_is_named(self):
+        """Discriminates against a weaker guard that only fires when EVERY
+        changed path is outside the declared roots -- 'wholly outside' and
+        'partly outside' are the same finding, per spec.md's own wording.
+        """
+        surface = "wrote_partly_outside_roots"
+        self.walkthrough_box(surface)
+        subject = self.make_box("wrote_partly_outside_roots_subject")
+        steps = [{
+            "argv": ["python3", "-c",
+                     "import os\n"
+                     "os.makedirs('allowed', exist_ok=True)\n"
+                     "open('allowed/ok.txt', 'w').write('fine')\n"
+                     "open('stray.txt', 'w').write('escaped')\n"],
+            "expect": {"exit": 0}, "name": "writes both inside and outside",
+            "roots": ["allowed"]}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        box_report = payload["steps"][0]["box"]
+        self.assertEqual(box_report["verdict"], "wrote-outside-roots")
+        self.assertEqual(box_report["outsideRoots"], ["stray.txt"])
+        self.assertEqual(sorted(box_report["changed"]),
+                         ["allowed/ok.txt", "stray.txt"])
+
+    def test_a_read_only_step_that_writes_nothing_is_not_a_finding(self):
+        surface = "read_only_clean"
+        self.walkthrough_box(surface)
+        subject = self.make_box("read_only_clean_subject")
+        steps = [{"argv": ["python3", "-c", "pass"], "expect": {"exit": 0},
+                  "name": "declared read-only", "readOnly": True}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["steps"][0]["box"]["verdict"], "read-only")
+
+    def test_a_read_only_step_is_exempt_even_if_it_writes_something(self):
+        """`readOnly` is exempt outright, not exempt-only-when-unchanged.
+        Discriminates against a weaker guard that checks emptiness first and
+        only consults `readOnly` as a tiebreaker on the unchanged branch."""
+        surface = "read_only_but_wrote"
+        self.walkthrough_box(surface)
+        subject = self.make_box("read_only_but_wrote_subject")
+        steps = [{
+            "argv": ["python3", "-c", "open('side.txt', 'w').write('oops')"],
+            "expect": {"exit": 0},
+            "name": "declared read-only, writes anyway", "readOnly": True}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertEqual(payload["steps"][0]["box"]["verdict"], "read-only")
+
+    def test_a_step_that_writes_into_the_subject_is_unprobeable(self):
+        """The gap `structure` already closed and `walkthrough` had not:
+        a change to the *subject*, not the box, is an escape, never a
+        finding, and the whole sweep halts rather than naming which step.
+        """
+        surface = "escaped_the_box"
+        self.walkthrough_box(surface)
+        subject = self.make_box("escaped_the_box_subject")
+        steps = [{
+            "argv": ["python3", "-c",
+                     "open(r'{subject}/escaped.txt', 'w').write('boom')\n"],
+            "expect": {"exit": 0}, "name": "reaches out of its own box"}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertEqual(payload["status"], "unprobeable")
+        self.assertIn("kind=step-escaped-the-box", payload["error"])
+        self.assertIn("escaped.txt", payload["error"])
+
+    def test_a_step_that_modifies_an_existing_subject_file_in_place_is_unprobeable(self):
+        """Discriminates against a weaker guard comparing only the *set* of
+        subject paths (or their count) rather than the full `tree_digest`
+        value map -- an in-place content change adds no path and removes
+        none, so a set/length comparison alone would miss it entirely.
+        """
+        surface = "escaped_in_place"
+        self.walkthrough_box(surface)
+        subject = self.make_box("escaped_in_place_subject")
+        (subject / "existing.txt").write_text("original", encoding="utf-8")
+        steps = [{
+            "argv": ["python3", "-c",
+                     "open(r'{subject}/existing.txt', 'w')"
+                     ".write('mutated in place')\n"],
+            "expect": {"exit": 0}, "name": "rewrites a file already there"}]
+        spec = self.make_recipe(subject, surface, steps)
+        result, payload = walkthrough_json(spec, subject, repo=FORGE)
+        self.assertEqual(result.returncode, 2, payload)
+        self.assertEqual(payload["status"], "unprobeable")
+        self.assertIn("kind=step-escaped-the-box", payload["error"])
+        self.assertIn("existing.txt", payload["error"])
+
+
 # ==========================================================================
 # `the-audit-that-escalates-what-it-cannot-decide`, Slice 3 -- every note
 # kind classified by a totality-checked partition, and an escalatable kind

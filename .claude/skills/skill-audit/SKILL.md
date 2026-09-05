@@ -226,6 +226,23 @@ or after that index is `unreached`, and the report carries it under
 `## Unchecked`, never under clean. A step declaring no expectation at all is
 refused before it runs: a gate that asserts nothing is not a gate.
 
+A step that reports success is not a step that produced. `walkthrough` takes
+a digest of the shared **box** -- never the subject -- before and after each
+driven step, and grades what actually changed against that one step's own
+declarations: a step not declared `readOnly` that leaves the box
+byte-identical is reported as having produced nothing, whatever it exited; a
+step declaring `roots` is measured against them, and a change wholly or
+partly outside its declared `roots` is reported as writing into a tree it
+does not own; a step declared `readOnly` is exempt outright. The digest
+covers the box, not the subject, because every step already runs with its
+`cwd` inside the box -- digesting the subject would fire on every step of
+every correct flow. Separately, and independently of any one step's own
+grading, the subject tree is digested once before the whole flow and once
+after: `walkthrough` never writes into the subject at all, so any change
+there halts the sweep `Unprobeable kind=step-escaped-the-box` -- an
+inability to look, never a finding, the same reach `structure`'s own
+from-zero build already had and `walkthrough` did not.
+
 ### Move 9, in detail
 
 Every earlier move derives at least one side of a comparison from a real
@@ -552,10 +569,13 @@ from-zero box is not empty and so cannot be adopted, or when the from-zero
 build wrote outside its own box. None of those three is a finding; each is an
 inability to look.
 
-`walkthrough` exits `0` for **any** verdict, a stall included — a stall is a
-finding on its own, never an inability to look. It exits `2` only when the
-flow itself could not be entered: a step declaring no expectation at all, its
-shared box already occupied, or the very first step's own command missing.
+`walkthrough` exits `0` for **any** verdict, a stall included, a step that
+produced nothing included, and a step that wrote outside its declared
+`roots` included — none of those three is an inability to look. It exits `2`
+only when the flow itself could not be entered: a step declaring no
+expectation at all, its shared box already occupied, the very first step's
+own command missing, or a driven step that changed the **subject** rather
+than its own box (`kind=step-escaped-the-box`).
 
 `reading-diff` exits `0` for **either** verdict — agreement or divergence —
 and `2` only when it could not look: something other than exactly two

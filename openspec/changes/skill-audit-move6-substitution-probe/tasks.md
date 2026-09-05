@@ -301,25 +301,64 @@ blocked recipe work rather than requiring a decision between it.
 
 ## Change B — `the-audit-grades-what-a-step-wrote` (new SDD change, owner-approved)
 
-### Commit B1 — R6 (forecast 370–500)
+### Commit B1 — R6 (forecast 370–500) — **DONE**, 91 lines in `audit_cli.py`
+      + 9 locks + doctrine, `.venv` Python 2515 Ran OK (skipped=3, +9 from
+      2506), npm 386 pass (unchanged)
 
-- [ ] B1.1 RED: box digest unchanged across a non-`readOnly` step → finding
-      "step returned without producing".
-- [ ] B1.2 RED: box digest changed entirely inside declared `roots` → clean,
+- [x] B1.1 RED: box digest unchanged across a non-`readOnly` step → finding
+      "step returned without producing". Strengthened with a second,
+      discriminating fixture against an already-non-empty box (a weaker
+      guard checking only "box empty on both sides" passes a fresh-box
+      fixture but not a reused one) — mutation-proven: changing
+      `step_box_verdict`'s `if not changed:` to `if not before and not
+      after:` reddened exactly `test_a_step_that_writes_nothing_against_an_
+      already_nonempty_box_is_still_named` and nothing else; restored via
+      `cp`, sha256-confirmed byte-identical.
+- [x] B1.2 RED: box digest changed entirely inside declared `roots` → clean,
       counts still reported.
-- [ ] B1.3 RED: box digest changed partly/wholly outside declared `roots` →
-      finding "wrote into a tree it does not own".
-- [ ] B1.4 RED: box digest unchanged, step declared `readOnly` → no finding.
-- [ ] B1.5 RED: **subject** digest changed across any step →
+- [x] B1.3 RED: box digest changed partly/wholly outside declared `roots` →
+      finding "wrote into a tree it does not own". Strengthened with a
+      partial-escape fixture (writes both inside and outside one declared
+      root) — mutation-proven: changing the outside-roots condition to
+      require `len(outside) == len(changed)` (wholly-outside only) reddened
+      exactly the partial-escape lock, leaving the wholly-outside lock
+      green; restored via `cp`, sha256-confirmed.
+- [x] B1.4 RED: box digest unchanged, step declared `readOnly` → no finding.
+      Strengthened with a fixture where the `readOnly` step writes anyway —
+      mutation-proven: changing the exemption to `if read_only and not
+      changed:` (exempt only when also unchanged) reddened exactly that
+      lock; restored via `cp`, sha256-confirmed.
+- [x] B1.5 RED: **subject** digest changed across any step →
       `Unprobeable kind=step-escaped-the-box`, sweep halts (the gap
-      `structure` already has at `audit_cli.py:1258-1266` and `walkthrough`
-      does not).
-- [ ] B1.6 GREEN: add per-step `tree_digest(box)` before/after and the
-      subject-level escape gate to `run_walkthrough`; add `roots`/`readOnly`
-      recipe fields. Reuse `tree_digest` verbatim (`SingleWalkTests` stays
-      green with no edit).
-- [ ] B1.7 GREEN: `SKILL.md` Move 8 detail states the box-not-subject
-      digest scope and the new escape gate; subcommand doc updated.
+      `structure` already has and `walkthrough` did not — re-derived at
+      `run_structure`'s `subject_before`/`subject_after` pair, not trusted
+      by line number). Strengthened with an in-place content-rewrite
+      fixture (same path, changed bytes, no path added or removed) —
+      mutation-proven: weakening the comparison from
+      `subject_before != subject_after` to `set(subject_before) !=
+      set(subject_after)` reddened exactly that lock while the
+      new-file-escape lock stayed green; restored via `cp`,
+      sha256-confirmed.
+- [x] B1.6 GREEN: added `normalized_step_roots`, `_inside_declared_roots`,
+      `step_box_verdict`, per-step `tree_digest(box)` before/after, and the
+      subject-level escape gate (`subject_before`/`subject_after` around
+      the whole step loop, mirroring `run_structure`'s own pattern) to
+      `run_walkthrough`; added `roots`/`readOnly` recipe fields. Reused
+      `tree_digest`/`resolve_under` verbatim — `SingleWalkTests` stays green
+      with no edit, confirmed.
+- [x] B1.7 GREEN: `SKILL.md` Move 8 detail states the box-not-subject
+      digest scope, the `roots`/`readOnly` grading, and the new escape gate;
+      the `walkthrough` exit-code paragraph names `kind=step-escaped-the-box`
+      as its fourth exit-`2` reason. Also added `readOnly: true` to the
+      three explicit steps of the shipped `skill-audit.first-run.json`
+      self-probe recipe (all read-only `check-report`/`roster` invocations,
+      dogfooding the new field) — `roster` self-probe confirmed
+      `unregistered: []`, `phantom: []` afterward; `check-report` against
+      `example-report.md` confirmed `{"violations": []}` unchanged.
+      **Also required, discovered by re-deriving rather than trusting the
+      design's stale line**: inserting code above `REPORT_SCHEMA_VERSION`
+      shifted its line a fourth time (3034→3119); re-derived and updated
+      `skill-audit.self-guarded-facts.json`, not the test.
 
 ### Commit B2 — R2+R3 (forecast 520–680)
 
