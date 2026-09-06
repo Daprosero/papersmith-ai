@@ -469,8 +469,8 @@ exactly what stops a launcher from being able to claim it implements anything.
 | `probe` reports `nextStep: "declare-first"` | The benchmark has no `src/<Package>_Benchmark/` at all, or has one whose every block is still at its scaffolded empty value: report before offering a run built on a declaration that has not happened |
 | `probe` reports `nextStep: "poll-first"` | A submission is already out to a remote worker with no result back yet: report before offering another run |
 | `probe` reports `nextStep: "search-first"` | A declared search's record is absent from disk: the run has no chosen configuration yet, report before offering it |
-| `probe` reports `nextStep: "pilot-first"` | The ordered flow the target declared has steps that have not finished at pilot — `pilotCompleteness.incomplete` names them: report those, and never the declared scale, because nothing has been produced yet for anybody to read |
-| `probe` reports `nextStep: "pilot-decisions"` | The flow finished at pilot and each of its steps now owes its own decision about how the full run carries it: publish the per-step questions, read `remoteExecution.necessity` beside them, and decide one step at a time |
+| `probe` reports `nextStep: "pilot-first"` | The flow the target declared has steps that have not finished at pilot — `pilotCompleteness.incomplete` names them, ordinal-carrying and ordinal-less alike: report those, and never the declared scale, because nothing has been produced yet for anybody to read |
+| `probe` reports `nextStep: "pilot-decisions"` | The flow finished at pilot and each of its steps now owes its own decision about how the full run carries it: publish the per-step questions, read `remoteExecution.necessity` beside them, and decide one step at a time. Show `report.liveFindings` first when it names anything — those decisions are taken over artefacts that carry live findings, and the acknowledgement holds this rung until it is answered |
 | `probe` reports a job with `smokeReady: false` | A job folder exists that no rehearsal has ever passed on its pinned commit: read it before offering a campaign, because a rehearsal finds cheaply what the long run would find expensively |
 | `probe` reports a job whose `staleness` is `drift` | The repository moved past the commit that job is pinned to: regenerate the job, or say plainly that the run measures the older code, before offering a campaign |
 | `probe` reports `remoteExecution: "drift"` | The ledger and the service no longer agree, or a stale result arrived: run `remote_cli reconcile` before reading anything else out of that ledger. Waiting fixes nothing |
@@ -1351,28 +1351,68 @@ fresh one.
 
 ### `nextStep: "pilot-first"` — the declared flow has not finished at pilot
 
-**The pilot is a gate, not a step.** A target may declare an ordered flow: every
-`__steps__` entry that carries an `advances` ordinal is one of its steps, and the
-ordinal is the order. This rung fires while any of those steps has not finished,
-and it withholds the offer of the declared scale until they all have.
+**The pilot is a gate, not a step.** A target may declare a flow: **every**
+`__steps__` entry is one of its steps, and an `advances` ordinal says where a
+step goes in the order rather than whether it counts. This rung fires while any
+of those steps has not finished, and it withholds the offer of the declared
+scale until they all have.
+
+**Every declared step, never the ordered subset**, and that is a measured
+correction rather than a preference. The rung read only the entries carrying an
+ordinal. On a real repository four of ten declared steps carried none: all four
+were invisible to the gate, none of them had ever run, two of their notebooks
+held zero executed cells — and `probe` answered `pilot-decisions`, offering the
+remote worker over a flow six tenths walked. A step written into `__steps__` is
+a step the target means to run. The ordinal orders the ones that claim a
+position; the ordinal-less ones are reported after them, in name order, and are
+owed exactly as much.
 
 Two facts are asked of each step, and only two. It has to have **run and
 returned** — the same `@step` reading the position grammar already performs, so a
 run recorded against a suite that has since moved reads as unmeasured rather than
-as a pass. And when its own sequence item names a notebook, that notebook has to
-be **executed against these sources** — `status: "executed"` and `sourcesMatch:
-true` together, the same `@notebook` reading. Existence proves nothing: a file
-copied into place and an executed report are indistinguishable until the
-execution counts are read.
+as a pass. And every notebook it owes has to be **executed against these
+sources** — `status: "executed"` and `sourcesMatch: true` together, the same
+`@notebook` reading. Existence proves nothing: a file copied into place and an
+executed report are indistinguishable until the execution counts are read.
 
-**How the notebook a step owes is known, and why nothing new is declared for
+**How the notebooks a step owes are known, and why nothing new is declared for
 it.** Nothing here reads the target's own Python to find which file a step
-executes; it does not have to. `advances` is the target saying which position
-item a step produces evidence for, and that item already names its own witness.
-So the notebook is the operand of the item at that step's ordinal, whenever that
-item's witness names one — a link the target already writes, in the vocabulary it
-already uses. A second declaration beside it would be one more thing that can
-disagree with the first.
+executes; it does not have to, and there are two links to read instead. The
+first is the step's own `produces` roots — the output roots `step` already
+measures a run's write scope against — where a root under `Notebooks/` is the
+target naming a notebook that step renders. That half needs no ordinal, which is
+exactly why an ordinal-less step can be asked the notebook question at all. The
+second is unchanged: `advances` says which position item a step produces evidence
+for, and the operand of the item at that ordinal is a notebook when that item's
+witness names one. Both are kept, because dropping the second would lose a check
+every target that declares notebook witnesses and no `produces` has today, and a
+predicate standing in front of the expensive door may only ever widen. Neither is
+a new declaration: a repository built from zero is asked for nothing it is not
+asked for already.
+
+**A step that declares no `produces` is unmeasurable here, never failed.** It is
+named in `pilotCompleteness.unmeasurable`, beside the `note` that says what the
+absence costs, and its own run still decides whether it is complete — the same
+reported-never-demanded shape `verify`'s `undeclaredProduces` already uses. The
+two lists ask a reader for opposite things: `incomplete` asks for a run,
+`unmeasurable` asks for a declaration. Folding them together would either fail a
+legitimate step for a declaration it never had to make, or — the direction that
+actually costs something — let *nobody could look* pass for *nothing was wrong*.
+
+**Whether the pilot opened a notebook at all is said per step, zero included, and
+it is a report rather than a rung.** Every row carries `notebookCount`, and
+`pilotCompleteness.withoutNotebook` names the steps whose set came back empty,
+beside its own `withoutNotebookNote`. Nothing is refused on it: a target may
+legitimately keep its computation in a library and render nothing of its own, so
+such a step's verdict is exactly what it was and the flow reaches the same rung it
+always did. It is reported because until it was, the fact was invisible — a step
+that renders no notebook and a step whose notebook nobody opened read identically
+off every other key — and that invisibility is how four declared steps in ten, and
+the notebooks they own, fell out of a pilot with nobody told. The count is on every
+row and not only on the zeroes, the same reason `priorWork` reports what did *not*
+change: a report met for the first time on the run where it matters is a report
+nobody has learnt to read. It is a different absence from `unmeasurable` — that one
+is a step nobody could look at, this one a step there was nothing to open.
 
 **An item whose witness is not a notebook adds nothing to its step**, and that
 restraint is what keeps this rung reachable. A record must meet its own declared
@@ -1383,7 +1423,10 @@ the evidence it is withholding permission to go and get.
 **A target that declares no ordered flow reaches none of this.** `status:
 "undeclared"` means the rule does not apply, and the ladder answers precisely
 what it answered before this rung existed. A repository that never opted into an
-ordering is not an unfinished one.
+ordering is not an unfinished one — and that condition is deliberately *not*
+widened with the rest: it asks whether ANY entry carries an ordinal, because a
+repository with no ordering at all has opted into nothing. What the widening
+changes is which steps count once a flow exists.
 
 **Why it sits after `poll-first` and before `search-first`.** A submission
 already out keeps its place: an answer on its way outranks anything this
@@ -1425,6 +1468,38 @@ look for the same decision.
 **Never-asked is not decided.** A step whose question nobody has asked appears in
 no open bucket either, so the pass reads which texts were ANSWERED rather than
 which are open. Reading the absence as agreement is silence taken for consent.
+
+**A report in drift is named here, and holds the pass until it is
+acknowledged.** These decisions are taken over the artefacts a human reads, so
+a pass that stays silent about the state of those artefacts is telling the
+operator the document is fine. `report.liveFindings` names the findings that are
+about this code — a finding stamped `fromStaleNotebook` describes a run the
+repository has already moved past and is not one — and while any of them stands
+unacknowledged this rung keeps the answer, publishing the acknowledgement
+BEFORE the per-step questions. Measured: on a real repository the report was in
+drift with five kinds of finding about the notebooks the pilot had just
+produced, and the ladder walked into this pass anyway; `report-first` sits below
+it and would have said the same thing after the decisions were already taken.
+
+It is an acknowledgement and **not a wall**. A report at pilot is legitimately in
+drift — a section whose run has not happened renders an absence — and for some
+findings the repair *is* the full run, so a hard gate would refuse the pass that
+authorizes the run in order to fix the report the run is what fixes. The exit is
+the operator's own and is the one the question already offers: repair the report
+now, or record why the decisions are taken over it as it stands. Nothing new
+records that answer either — `discuss` buckets it by exact text like every other
+question in this pass, and a finding appearing or clearing re-opens it, because
+that is a change of state and not a moving count.
+
+**And which steps the pilot opened no notebook for is named in the same
+sentence.** Naming where the outputs are and staying silent about the steps that
+rendered none tells an operator they are looking at the whole flow when they are
+looking at part of it — six paths named out of ten declared steps, on the
+repository this was measured on — and this is the last rung before the decisions
+that put a step on a remote worker, whose own artefact may be one of the notebooks
+nothing ever executed. The sentence names them and the pass carries on; nothing is
+refused, and a target that deliberately computes in a library reads its own design
+back rather than a finding.
 
 **Which steps need a worker is not answered here.** `remoteExecution.necessity`
 classifies job folders — must-remote, local-sufficient, or optional with the
@@ -1694,13 +1769,28 @@ behind it is right:
   at the report — a conclusion that cannot come out wrong is measuring nothing, for
   exactly the reason an assertion that cannot fail proves nothing.
 - **A cell that shows nothing showed nothing.** Every check above reads the code a
-  cell contains. Two failures live only in what it *emitted*, and both survive
-  every reading of the source: a measurement computed and never displayed, and a
-  figure that came out as a *description of a figure*. The second hides best —
+  cell contains. Three failures live only in what it *emitted*, and all three
+  survive every reading of the source: a measurement computed and never displayed,
+  a figure that came out as a *description of a figure*, and a rendering that came
+  out as a *sentence*. The second hides well —
   displaying a figure object where the runtime never registered an image formatter
   emits a line of text like `<Figure size 640x480>`. The cell ran, raised nothing,
   produced an output, and anything reading `execution_count` and the error list
   calls it green. `verify` reports these as `unrendered` and `describedNotShown`.
+
+  The third hides best of all, and it was measured rather than argued: in one real
+  report, of 57 rendered outputs 6 carried a table and 21 explained why they had
+  nothing to show. Each of those cells called a declared rendering, ran clean,
+  emitted markdown, states its aim and carries a conclusion — so every check above
+  stays quiet and the reader is told the document is fine. `verify` reports it as
+  `statedNotShown`, and it is judged by the **structure** of what the cell emitted
+  — a mime the runtime rendered as something other than prose, a markdown table's
+  rule, a measurement, rows of values — and never by what the words say. Matching
+  sentences would write one repository's prose, in one language, into a forge that
+  is not allowed to know whose repository it is, and would go quiet on the next
+  one. It is reported and never refused: a rendering legitimately has nothing to
+  show before the run that fills it, and what is wrong today is only that the
+  absence is invisible. Named and counted, the reader judges.
 - **A term's share, not just its magnitude.** A term correctly implemented and
   multiplied by something tiny produces a column of near-zeros that reads like a
   result, and the numerator alone cannot tell *the term commanded nothing* from
@@ -2102,6 +2192,17 @@ A campaign that takes a day to run has to be wrong cheaply first. The pilot is n
 rehearsal of the campaign — it *is* the campaign, at a scale small enough to be wrong
 in ten minutes.
 
+**What a pilot is, said plainly, because everything below assumes it.** The pilot is
+the declared flow walked with the declared notebooks, at whatever reduced scale the
+target declares, so that the artefacts that will later be sent have been executed and
+read first. Both halves are the definition. A run at a small scale that never opened
+the notebooks is not a pilot of the thing that gets sent: it validates one path while
+the artefact somebody will hand to a worker — or hand to a reader — is the other, and
+nobody finds out until the expensive run comes back wrong. Measured, on a real
+repository: of ten declared steps six executed a notebook and four computed by calling
+the library directly, and the notebooks those four own, one of them the very file a
+remote worker would have been given, were never executed by the flow at all.
+
 - **Two knobs separate the pilot from the full run, and nothing else does.** Every
   number that defines the experiment lives in one configuration; the pilot is that
   configuration with the repetition count and the length lowered. If the pilot is a
@@ -2299,7 +2400,7 @@ is a fact nobody reads:
 | `nextStep` | The one thing to do next | This is the answer, not a fact feeding it |
 | `notebook` | Where the pilot notebook is, or `null` | Reported whatever it says |
 | `position` | The execution sequence's derived state, read from `<Name>/AGREED.md`'s own position section. `probe` takes no `--shards`, so every `@shard` witness reports `unmeasured` here, never a false "did not arrive" | **Never** — a derived fact, reported so a human can decide about it |
-| `pilotCompleteness` | Whether the ordered flow the target declared has actually finished at pilot, step by step: `status` (`undeclared` when no `__steps__` entry carries an `advances` ordinal), one row per step naming its ordinal, whether it ran and returned, the notebook its own sequence item names and whether that notebook is executed against these sources, and `incomplete` — the steps still short, in declared order | Yes — an unfinished flow is `pilot-first`, and a finished one whose steps have not each been decided is `pilot-decisions` |
+| `pilotCompleteness` | Whether the flow the target declared has actually finished at pilot, step by step: `status` (`undeclared` when no `__steps__` entry carries an `advances` ordinal at all), one row per **declared** step — ordinal-carrying ones first and in that order, the rest after in name order — naming its `advances` (`null` where it declares none), whether it `ran` and returned, the `notebooks` it owes and whether all of them are executed against these sources (`notebooksCurrent`), how many the pilot opens for it (`notebookCount`, on every row and zero included), and `producesDeclared`; plus `incomplete` — the steps still short — `unmeasurable` beside it, the steps whose output nobody could look at because they declare no `produces` roots, and `withoutNotebook`, the steps the pilot walked without opening a notebook at all, each list with its own note | Yes — an unfinished flow is `pilot-first`, and a finished one whose steps have not each been decided is `pilot-decisions` |
 | `walk` | Where this repository stands in its own declared flow, step by step: `status` (`undeclared`/`notStarted`/`walking`/`walked`), the declared `levels` and `topRung`, one row per declared step (`walk` — `notWalked`, `unfinished` (a `started` ledger event with no terminal partner, a run that was killed) or `walked` — plus `lastOutcome`, `lastAt`, the `rung` its position item grades at, `atTopRung`, and the output roots it `renders`), and one row per result-rendering artefact in the product tree, each inheriting the state of the step that renders it (`renderedBy`, `walk`, `rung`, `witnessed`). An artefact no declared step renders reads `outsideTheWalk` — a description of that artefact, not an accusation about it. Every input is already held: the ledger's step events, the position sequence and its rungs, and each step's own `produces` roots; **no target declaration is introduced** | **Never** — a walk report answers *where am I*, not *what is broken*. Nothing in it is a finding: a step nobody has walked is a state, a flow that has not started is where every repository begins, and reporting either as a defect would greet an operator with noise on their first clean run |
 | `remoteExecution` | The ledger's fold, plus the job folders that exist on disk right now | Yes — a submission already out is `poll-first` |
 | `report` | Whether the document a human reads agrees with the run | Yes — a document in drift is `report-first` |
