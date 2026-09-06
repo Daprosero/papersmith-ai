@@ -3275,6 +3275,34 @@ def cmd_probe(args) -> dict:
     pilot_undecided = [
         row["step"] for row in pilot["steps"]
         if _pilot_decision_question(target, name, row["step"]) not in answered]
+    # What the report the operator reads carries right now, and whether anybody
+    # has been shown it. Measured, and the defect that named this: on a real
+    # repository `report.status` was `drift` carrying five kinds of finding
+    # about the very notebooks the pilot had just produced, and this ladder
+    # answered `pilot-decisions` anyway -- the pass whose per-step questions
+    # decide which steps go to a remote worker, taken over artefacts nobody had
+    # been told were in drift. Running without errors is not the same as being
+    # right: the flow has to SHOW what was agreed, or nobody -- neither the
+    # owner nor the operator -- can validate it.
+    #
+    # `liveFindings` and not `status != "ok"`: `incomplete` is a reading that
+    # could not be taken (no interpreter) and already has its own rung, and a
+    # finding stamped `fromStaleNotebook` describes a run this repository has
+    # already moved past. Neither is a live finding about these artefacts.
+    #
+    # An acknowledgement and NOT a wall. The rung is held by a question with an
+    # answer -- repair the report, or record why the decisions are taken over
+    # it as it stands -- so the exit exists and is the operator's own. A hard
+    # gate here could not be cleared at all: a report at pilot is legitimately
+    # in drift (a section whose run has not happened renders an absence), the
+    # repair for some findings is the full run itself, and the ladder would
+    # refuse the pass that authorizes the run to fix the report that the run
+    # is what fixes. This repository has that deadlock on record one rung over
+    # (`FLOW_UNFINISHABLE_CONSEQUENCE`), and it is not built a second time.
+    report_findings = list(report.get("liveFindings") or [])
+    report_unacknowledged = bool(report_findings) and (
+        _report_findings_question(target, name, report_findings)
+        not in answered)
     if next_step in ("benchmark", "piloted") and resolved["status"] in (
             "absent", "undeclared"):
         next_step = "declare-first"
@@ -3330,8 +3358,16 @@ def cmd_probe(args) -> dict:
     # decision per step. `discuss` already buckets by exact question text, so
     # N steps are N independently-retiring buckets with no second approval
     # surface built beside it.
+    #
+    # An unacknowledged report holds the same rung, rather than a rung of its
+    # own: what it stands in front of is exactly what the per-step pass stands
+    # in front of, and a second rung asking the same question one step later
+    # would be two answers for one state. `report-first` below is unchanged and
+    # still fires on any report that is not `ok`; this only says, before the
+    # decisions are taken, what that rung would otherwise say after them.
     elif next_step in ("benchmark", "piloted") and (
-            pilot["status"] == "complete" and pilot_undecided):
+            pilot["status"] == "complete"
+            and (pilot_undecided or report_unacknowledged)):
         next_step = "pilot-decisions"
     elif next_step in ("benchmark", "piloted") and (
             search["recordFound"] is False
@@ -3405,7 +3441,13 @@ def cmd_probe(args) -> dict:
          # this consumer back one indirection behind the widened answer.
          "notebooks": list(dict.fromkeys(
              notebook for row in pilot["steps"]
-             for notebook in row["notebooks"]))})
+             for notebook in row["notebooks"])),
+         # What those notebooks carry, and whether any step is still
+         # undecided -- threaded through for the reason every other fact
+         # here is: a second read could disagree with the branch that
+         # published it.
+         "reportFindings": report_findings,
+         "undecided": pilot_undecided})
     # `toDiscuss` carries the question-shaped publications only -- a command
     # this flow can name completely is not a question anybody answers, and
     # putting one in a discussion list would open a bucket nothing retires.
@@ -3422,6 +3464,13 @@ def cmd_probe(args) -> dict:
     # longer than its `resolve`, and the roster's `publish` shape (one dict)
     # is why the per-step half lives here rather than inside it.
     if next_step == "pilot-decisions":
+        # Before the per-step decisions and never after them: the findings are
+        # about the artefacts each of those decisions is taken over, and a
+        # reader meets the state of the evidence before they are asked to act
+        # on it.
+        if report_unacknowledged:
+            to_discuss += [_report_findings_entry(target, name,
+                                                  report_findings)]
         to_discuss += [_pilot_decision_entry(target, name, step)
                        for step in pilot_undecided]
     return {
@@ -5381,6 +5430,23 @@ def report_state(target: Path, name: str, package: str) -> dict:
             if isinstance(row, dict) and row.get("notebook") in stale:
                 row["fromStaleNotebook"] = True
 
+    # Which findings describe the code as it stands, rather than a run already
+    # superseded. Derived here, at the one place `findings` exists and directly
+    # after the stamp that separates the two, so a check added later joins this
+    # answer without anybody having to remember it -- the same reason the stamp
+    # above is written here rather than at each site.
+    #
+    # A row that names no notebook is live by construction: it was read off the
+    # declaration or off the record, and neither goes stale with a notebook. So
+    # the test is the ABSENCE of the stale mark and never the presence of a
+    # fresh one, which is what keeps the string-valued findings
+    # (`undeclared`, `componentsNotRecorded`) in the answer instead of silently
+    # dropping every finding that carries no dict.
+    live_findings = sorted(
+        key for key, rows in findings.items()
+        if any(not (isinstance(row, dict) and row.get("fromStaleNotebook"))
+               for row in rows))
+
     clean = all(not value for value in findings.values())
     status = "ok" if clean else "drift"
     if live.get("status") != "ok":
@@ -5388,6 +5454,16 @@ def report_state(target: Path, name: str, package: str) -> dict:
         # looked for, and saying `ok` would report their absence as their answer.
         status = "incomplete" if clean else "drift"
     return {"status": status,
+            # Which findings are about THIS code, named rather than counted.
+            # `status` says the document does not agree with the run it
+            # describes and stops there; a consumer that has to tell a reader
+            # what the artefacts carry needs the names, and deriving them a
+            # second time somewhere else is how two commands come to disagree
+            # about one report. Deliberately absent from the `absent` /
+            # `undeclared` return above, exactly as `declared` is: there are no
+            # findings there because nothing could be looked for, and an
+            # empty list would say the opposite.
+            "liveFindings": live_findings,
             "live": live.get("status"),
             "liveDetail": live.get("detail"),
             # Which module `writtenSelections` was actually derived from, and
@@ -9789,6 +9865,38 @@ def _pilot_decision_entry(target: Path, name: str, step: str) -> dict:
     return {key: value for key, value in entry.items() if key != "kind"}
 
 
+def _report_findings_question(target: Path, name: str,
+                              findings: list[str]) -> str:
+    """The exact text of the report acknowledgement, and the only construction
+    of it -- `_pilot_decision_question`'s own rule, for the same reason: this
+    string IS the bucket key (`_discussion_buckets` buckets by exact trimmed
+    text), so a second spelling anywhere would open a second, never-retiring
+    bucket for something somebody already acknowledged.
+
+    Derived from the target, the name and the FINDING NAMES alone. Never a
+    count of rows: rows move as a notebook is re-run while the fact the
+    operator is being shown -- that the document does not yet agree with the
+    run -- has not changed, and embedding one would re-ask on every call (the
+    stability rule `_piloted_discuss_entry` documents). The names themselves
+    are not that: a finding appearing or clearing IS a change of state, and
+    re-asking then is the point.
+    """
+    return (f"{name} (target {target}) has finished its declared flow at "
+            f"pilot, and the report those steps rendered carries live "
+            f"findings ({', '.join(findings)}) -- the artefacts every per-step "
+            f"decision is taken over, and the ones anybody validating this "
+            f"work has to read; " + NEXT_STEP_REPAIR_CHOICE)
+
+
+def _report_findings_entry(target: Path, name: str,
+                           findings: list[str]) -> dict:
+    """The acknowledgement, in the shape `toDiscuss` already carries --
+    `_pilot_decision_entry`'s own composition, one question over."""
+    entry = _next_step_question_entry(
+        target, name, _report_findings_question(target, name, findings))
+    return {key: value for key, value in entry.items() if key != "kind"}
+
+
 def _pilot_decisions_publication(target: Path, name: str, facts: dict) -> dict:
     """`pilot-decisions` -- the pass itself, published beside the per-step
     questions `cmd_probe` appends to `toDiscuss`.
@@ -9803,17 +9911,34 @@ def _pilot_decisions_publication(target: Path, name: str, facts: dict) -> dict:
     Where the outputs are is named here rather than left to the reader, since
     reading them is the act this question is waiting on. The paths are the
     target's own declared operands, read out of its own sequence.
+
+    **And what those outputs carry, when the report block has something to
+    say about them.** Naming the file and staying silent about the findings in
+    it sends the operator to read an artefact and tells them nothing about the
+    state it is in -- and this rung is the last one before the decisions that
+    put a step on a remote worker. `reportFindings` is `report.liveFindings`,
+    threaded through by `cmd_probe` rather than recomputed, the same discipline
+    `declarationStatus` states.
+
+    **Each half appears only when it has something to say.** The rung
+    fires on an unacknowledged report as well as on undecided steps, so a pass
+    whose steps are all decided would otherwise say "each step owes its own
+    decision ... published beside this one" with nothing published beside it.
     """
     notebooks = list(facts.get("notebooks") or [])
     where = (" its outputs are at " + ", ".join(notebooks) + "; "
              if notebooks else " ")
+    findings = list(facts.get("reportFindings") or [])
+    carries = (f"those outputs carry live findings ({', '.join(findings)}), "
+               "which nobody can validate this work without seeing; "
+               if findings else "")
+    owed = ("the flow now returns to its first step: each step owes its own "
+            "decision about how the full run carries it, and those questions "
+            "are published beside this one; " if facts.get("undecided") else "")
     return _next_step_question_entry(
         target, name,
         f"{name} (target {target}) has finished every step of its declared "
-        f"flow at pilot and{where}"
-        "the flow now returns to its first step: each step owes its own "
-        "decision about how the full run carries it, and those questions are "
-        "published beside this one; " + NEXT_STEP_REPAIR_CHOICE)
+        f"flow at pilot and{where}" + carries + owed + NEXT_STEP_REPAIR_CHOICE)
 
 
 #: Every value `cmd_probe`'s ladder can assign to `next_step`, and what each

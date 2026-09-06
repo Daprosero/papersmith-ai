@@ -470,7 +470,7 @@ exactly what stops a launcher from being able to claim it implements anything.
 | `probe` reports `nextStep: "poll-first"` | A submission is already out to a remote worker with no result back yet: report before offering another run |
 | `probe` reports `nextStep: "search-first"` | A declared search's record is absent from disk: the run has no chosen configuration yet, report before offering it |
 | `probe` reports `nextStep: "pilot-first"` | The flow the target declared has steps that have not finished at pilot — `pilotCompleteness.incomplete` names them, ordinal-carrying and ordinal-less alike: report those, and never the declared scale, because nothing has been produced yet for anybody to read |
-| `probe` reports `nextStep: "pilot-decisions"` | The flow finished at pilot and each of its steps now owes its own decision about how the full run carries it: publish the per-step questions, read `remoteExecution.necessity` beside them, and decide one step at a time |
+| `probe` reports `nextStep: "pilot-decisions"` | The flow finished at pilot and each of its steps now owes its own decision about how the full run carries it: publish the per-step questions, read `remoteExecution.necessity` beside them, and decide one step at a time. Show `report.liveFindings` first when it names anything — those decisions are taken over artefacts that carry live findings, and the acknowledgement holds this rung until it is answered |
 | `probe` reports a job with `smokeReady: false` | A job folder exists that no rehearsal has ever passed on its pinned commit: read it before offering a campaign, because a rehearsal finds cheaply what the long run would find expensively |
 | `probe` reports a job whose `staleness` is `drift` | The repository moved past the commit that job is pinned to: regenerate the job, or say plainly that the run measures the older code, before offering a campaign |
 | `probe` reports `remoteExecution: "drift"` | The ledger and the service no longer agree, or a stale result arrived: run `remote_cli reconcile` before reading anything else out of that ledger. Waiting fixes nothing |
@@ -1453,6 +1453,28 @@ look for the same decision.
 **Never-asked is not decided.** A step whose question nobody has asked appears in
 no open bucket either, so the pass reads which texts were ANSWERED rather than
 which are open. Reading the absence as agreement is silence taken for consent.
+
+**A report in drift is named here, and holds the pass until it is
+acknowledged.** These decisions are taken over the artefacts a human reads, so
+a pass that stays silent about the state of those artefacts is telling the
+operator the document is fine. `report.liveFindings` names the findings that are
+about this code — a finding stamped `fromStaleNotebook` describes a run the
+repository has already moved past and is not one — and while any of them stands
+unacknowledged this rung keeps the answer, publishing the acknowledgement
+BEFORE the per-step questions. Measured: on a real repository the report was in
+drift with five kinds of finding about the notebooks the pilot had just
+produced, and the ladder walked into this pass anyway; `report-first` sits below
+it and would have said the same thing after the decisions were already taken.
+
+It is an acknowledgement and **not a wall**. A report at pilot is legitimately in
+drift — a section whose run has not happened renders an absence — and for some
+findings the repair *is* the full run, so a hard gate would refuse the pass that
+authorizes the run in order to fix the report the run is what fixes. The exit is
+the operator's own and is the one the question already offers: repair the report
+now, or record why the decisions are taken over it as it stands. Nothing new
+records that answer either — `discuss` buckets it by exact text like every other
+question in this pass, and a finding appearing or clearing re-opens it, because
+that is a change of state and not a moving count.
 
 **Which steps need a worker is not answered here.** `remoteExecution.necessity`
 classifies job folders — must-remote, local-sufficient, or optional with the

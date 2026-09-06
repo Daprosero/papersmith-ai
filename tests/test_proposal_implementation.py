@@ -28247,6 +28247,210 @@ class PilotGatesTheDeclaredScaleTests(unittest.TestCase):
             list((FORGE / "implementations").glob("_pilotgate_cleanup_*")), [])
 
 
+class ReportDriftHoldsTheDecisionPassTests(unittest.TestCase):
+    """The flow may not walk past a report in drift into the pass that decides
+    which steps go to a remote worker.
+
+    Measured on the live repository: `report.status` was `drift`, carrying
+    `describedNotShown`, `unconcluded`, `unaimed`, `restated` and `duplicated`
+    findings about the very notebooks the pilot had just produced, and `probe`
+    answered `pilot-decisions` anyway. The per-step questions of that pass ask
+    how the full run carries each step -- remotely or locally -- and they were
+    being asked over artefacts nobody had been told were in drift. `report-first`
+    exists and sits BELOW that pass, so it says the same thing after the
+    decisions have already been taken.
+
+    **An acknowledgement, never a wall, and that is the decision this class
+    records.** A hard gate here could not be cleared: a report at pilot is
+    legitimately in drift -- a section whose run has not happened renders an
+    absence -- and for several findings the repair IS the full run, so the
+    ladder would refuse the pass that authorizes the run in order to fix the
+    report the run is what fixes. This repository has that deadlock on record
+    (`FLOW_UNFINISHABLE_CONSEQUENCE`, a witness no pilot could ever satisfy
+    standing in front of the same door), and `test_acknowledging_the_findings_
+    lets_the_ladder_go_on` is what keeps this from being a second one.
+
+    The precedent followed is `pilot_completeness_state`'s own: a condition
+    computed from evidence the target already publishes, read by the ladder,
+    holding one rung until a question with a real answer retires it. No new
+    declaration is introduced -- `report.liveFindings` is derived where the
+    findings are, and `probe` already reads the report block.
+    """
+
+    #: The target `ProbeReportedFactsRosterTests` builds already reaches the
+    #: run offer with `report.status == "ok"`, which is exactly the pole this
+    #: class needs: what moves the ladder here is one cell's OUTPUT, and
+    #: nothing else about the repository.
+    DECLARATION = ProbeReportedFactsRosterTests.DECLARATION
+    WIRING = ProbeReportedFactsRosterTests.WIRING
+    TABLES = ProbeReportedFactsRosterTests.TABLES
+
+    STEPS = ("__steps__ = {\n"
+             "    'first': {'module': 'Method_Benchmark.steps',\n"
+             "              'function': 'a', 'advances': 1},\n"
+             "}\n")
+
+    SEQUENCE = ("- [ ] 1. The first step's evidence. "
+                "`@notebook Notebooks/report.ipynb`\n")
+
+    FRAME = _cell("markdown", "What is measured: the scale. Higher wins.")
+    AIM = _cell("code", "print(tables.aim(record))",
+                outputs=[_stream("{'scale': 0.5}\n")])
+
+    #: The rendering, in the two states the whole class turns on. Same cell,
+    #: same declared calls, same conclusion after it, same aim before it: only
+    #: what it EMITTED differs, so the ladder has to move on the evidence or
+    #: not at all.
+    SAID_NOTHING = _shown("text/markdown",
+                          "No results for this section yet.")
+    SHOWED_A_TABLE = _shown("text/markdown",
+                            "| dimension | baseline | new |\n"
+                            "| --- | --- | --- |\n"
+                            "| scale | 0.412 | 0.874 |\n")
+
+    def build(self, suffix, *, output, ran=("first",), digest=None):
+        box, _ = ProbeReportedFactsRosterTests.build_target(self, suffix)
+        init = box / "src/Method_Benchmark/__init__.py"
+        init.write_text(self.DECLARATION + self.STEPS, encoding="utf-8")
+        # Written after every file under `src/`, so the stamp is the digest of
+        # the sources as they finally stand.
+        stamped = digest or impl.source_digest(box, impl.package_name("Method"))
+        notebooks = box / "Method" / "Notebooks"
+        notebooks.mkdir(parents=True)
+        (notebooks / "report.ipynb").write_text(json.dumps({
+            "cells": [
+                self.FRAME, self.AIM,
+                _cell("code", "display(tables.render(record))\n"
+                              "display(tables.conclude(record))",
+                      outputs=[output]),
+                _cell("code", "print(stamp())",
+                      outputs=[_stream(f"{impl.DIGEST_MARKER} {stamped}\n")]),
+            ],
+            "metadata": {}, "nbformat": 4, "nbformat_minor": 5,
+        }), encoding="utf-8")
+        (box / "Method/AGREED.md").write_text(
+            "<!-- position revision=r01.md sha256=" + "a" * 64
+            + " derivedAt=2026-08-27T00:00:00Z session=s0 target=pilot -->\n"
+            + self.SEQUENCE + "<!-- /position -->\n", encoding="utf-8")
+        ledger = box / "Method" / ".implementation" / "position.jsonl"
+        ledger.parent.mkdir(parents=True)
+        live = impl.suite_digest(box)
+        with ledger.open("w", encoding="utf-8") as handle:
+            for step in ran:
+                handle.write(json.dumps({
+                    "kind": "step", "step": step, "outcome": "returned",
+                    "suiteDigest": live, "at": "2026-08-27T00:00:00Z"}) + "\n")
+        return box
+
+    def probe(self, box):
+        return ProbeReportedFactsRosterTests.probe(self, box)
+
+    def answer(self, box, entry):
+        """The entry's own published `discuss` command with an answer appended
+        -- the operator's act, never a hand-written ledger line."""
+        proc = subprocess.run(
+            [*shlex.split(entry["command"]), "--answer", "a decision"],
+            capture_output=True, text=True, cwd=tempfile.gettempdir())
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_the_pass_that_decides_the_remote_worker_names_the_live_findings(self):
+        """The measured defect. The pilot has finished, the report carries a
+        live finding about the notebook that pilot produced, and the pass that
+        asks how the full run carries each step is the next thing the operator
+        meets. It may not be silent about the state of the artefacts every one
+        of those decisions is taken over."""
+        box = self.build("named", output=self.SAID_NOTHING)
+        probe = self.probe(box)
+        self.assertEqual(probe["pilotCompleteness"]["status"], "complete")
+        self.assertEqual(probe["report"]["status"], "drift")
+        self.assertEqual(probe["report"]["liveFindings"], ["statedNotShown"])
+        self.assertEqual(probe["nextStep"], "pilot-decisions")
+        self.assertIn("statedNotShown", probe["resolve"]["question"])
+        asked = [entry["question"] for entry in probe["toDiscuss"]]
+        self.assertEqual(len(asked), 3, asked)
+        # The acknowledgement before the per-step decisions, never after: a
+        # reader meets the state of the evidence before being asked to act.
+        self.assertIn("statedNotShown", asked[1])
+        self.assertIn("'first'", asked[2])
+
+    def test_every_step_decided_no_longer_walks_past_a_report_in_drift(self):
+        """The core of it, and the weaker guard it beats is the ladder as it
+        stood: `pilot-decisions` fired on undecided steps alone, so answering
+        the last one dropped straight through to the rungs that spend machine
+        time -- with the report still in drift and nobody told."""
+        box = self.build("decided", output=self.SAID_NOTHING)
+        first = self.probe(box)
+        for entry in first["toDiscuss"][2:]:
+            self.answer(box, entry)
+        second = self.probe(box)
+        self.assertEqual(second["nextStep"], "pilot-decisions")
+        asked = [entry["question"] for entry in second["toDiscuss"]]
+        self.assertEqual(len(asked), 2, asked)
+        self.assertIn("statedNotShown", asked[1])
+        # One answer retires one bucket: the step's decision is not asked
+        # again, and the acknowledgement was never retired by it.
+        self.assertNotIn("'first'", asked[1])
+
+    def test_acknowledging_the_findings_lets_the_ladder_go_on(self):
+        """The pole that keeps this from being a wall. A gate nobody can clear
+        is worse than no gate, and this repository has that failure on record.
+        The exit is the operator's own and is the one the published question
+        already offers: repair the report, or record why the decisions are
+        taken over it as it stands."""
+        box = self.build("cleared", output=self.SAID_NOTHING)
+        for entry in self.probe(box)["toDiscuss"][1:]:
+            self.answer(box, entry)
+        final = self.probe(box)
+        self.assertNotEqual(final["nextStep"], "pilot-decisions")
+        # `report-first` is unchanged and still says the report does not agree
+        # with the run it describes -- it simply no longer says it for the
+        # first time after the decisions have already been taken.
+        self.assertEqual(final["nextStep"], "report-first")
+
+    def test_a_clean_report_never_opens_the_acknowledgement(self):
+        """The other pole, and without it the finding above would be a ban on
+        finishing a pilot rather than a gate. The same repository, the same
+        flow, the same cell calling the same declared rendering -- and this one
+        rendered its table."""
+        box = self.build("clean", output=self.SHOWED_A_TABLE)
+        probe = self.probe(box)
+        self.assertEqual(probe["report"]["status"], "ok")
+        self.assertEqual(probe["report"]["liveFindings"], [])
+        self.assertEqual(probe["nextStep"], "pilot-decisions")
+        asked = [entry["question"] for entry in probe["toDiscuss"]]
+        self.assertEqual(len(asked), 2, asked)
+        self.assertNotIn("live findings", asked[0])
+        for entry in probe["toDiscuss"][1:]:
+            self.answer(box, entry)
+        self.assertEqual(self.probe(box)["nextStep"], "benchmark")
+
+    def test_the_acknowledgement_is_never_asked_before_the_pilot_finishes(self):
+        """A report in drift is the ordinary state of a repository that has
+        not run its flow yet, and asking about it there would put a question in
+        front of somebody who has produced nothing to answer it with. The rung
+        that owns that state already exists and keeps it."""
+        box = self.build("unrun", output=self.SAID_NOTHING, ran=())
+        probe = self.probe(box)
+        self.assertEqual(probe["report"]["liveFindings"], ["statedNotShown"])
+        self.assertEqual(probe["nextStep"], "pilot-first")
+        for entry in probe["toDiscuss"]:
+            self.assertNotIn("statedNotShown", entry["question"])
+
+    def test_a_finding_from_a_stale_notebook_is_not_live(self):
+        """`liveFindings` is not `findings`. A notebook executed against other
+        sources describes a run this repository has already moved past, and the
+        same run already reports that two keys away -- holding the pass on it
+        would ask the operator to acknowledge a defect that may not exist any
+        more."""
+        box = self.build("stale", output=self.SAID_NOTHING, digest="0" * 64)
+        probe = self.probe(box)
+        report = probe["report"]
+        self.assertEqual(len(report["statedNotShown"]), 1,
+                         report["statedNotShown"])
+        self.assertIs(report["statedNotShown"][0]["fromStaleNotebook"], True)
+        self.assertEqual(report["liveFindings"], [])
+
+
 class PilotPublicationProseTests(unittest.TestCase):
     """The two published sentences, read as a reader meets them.
 
