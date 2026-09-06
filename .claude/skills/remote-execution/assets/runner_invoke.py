@@ -77,6 +77,22 @@ DEFAULT_KERNEL_NAME = "python3"
 
 SRC_DIRNAME = "src"
 
+# The handoff this cell owes the kernel it starts, beside the `PYTHONPATH`
+# it already sets. Two names, forge-owned and deliberately generic — they
+# are the contract between a runner and the notebook it starts, never a
+# name borrowed from one repository — and mirrored, byte for byte, by
+# `assets/notebook_repo_root.py`, the cell on the reading side. A forge
+# test binds the two spellings together the way one already binds
+# `CLONE_DIRNAME` to cell 0's.
+#
+# Why both, and never just the root: a directory handed over is still a
+# directory nobody proved. The commit travels beside it so the reading
+# cell can check the checkout it was pointed at rather than trust it, and
+# a job that runs the wrong commit RUNS — it returns numbers shaped
+# exactly like the right ones.
+CLONE_ROOT_ENV = "FORGE_CLONE_ROOT"
+CLONE_COMMIT_ENV = "FORGE_CLONE_COMMIT"
+
 
 def kernel_python_path(clone_root: str | Path, existing: str | None) -> str:
     """`PYTHONPATH` for the kernel a notebook executes in — the clone's own
@@ -99,6 +115,36 @@ def kernel_python_path(clone_root: str | Path, existing: str | None) -> str:
     if existing:
         return clone_src + os.pathsep + existing
     return clone_src
+
+
+def kernel_environment(
+    clone_root: str | Path,
+    commit: str,
+    existing: Mapping[str, str] | None = None,
+) -> dict:
+    """Everything the kernel receives from this cell, composed in one place.
+
+    Three variables, and this function is the only thing that decides them:
+    the `PYTHONPATH` that makes the pinned code importable, and the two that
+    tell the notebook WHERE the pinned code is and WHICH commit it is. The
+    single composition point is the point — a second place that exported
+    either of these would be a second place that decides which tree a
+    notebook runs against, and the whole reason this handoff exists is that
+    a notebook left to work that out on its own resolves a directory that
+    exists on any worker and fails much later, naming a package rather than
+    a root.
+
+    `existing` is the environment being extended, so `PYTHONPATH` is
+    prepended to rather than replaced; the two forge-owned names are set
+    outright, because the only thing that could already be carrying them is
+    an earlier runner and this one's clone is the one that counts.
+    """
+    existing = {} if existing is None else existing
+    return {
+        "PYTHONPATH": kernel_python_path(clone_root, existing.get("PYTHONPATH")),
+        CLONE_ROOT_ENV: str(Path(clone_root).resolve()),
+        CLONE_COMMIT_ENV: str(commit),
+    }
 
 
 def block_kind(block: Mapping[str, Any]) -> str:
@@ -214,6 +260,7 @@ def execute_notebook(
     block: Mapping[str, Any],
     base_dir: str | Path | None = None,
     *,
+    commit: Any = None,
     client_factory: Callable[..., Any] = _default_notebook_client,
 ) -> dict:
     """Execute the declared notebook — the notebook half of cell 1.
@@ -227,8 +274,21 @@ def execute_notebook(
     returns, so an executed notebook written there needs nothing added
     anywhere else in this skill to arrive.
 
-    Three things this refuses rather than works around:
+    The kernel is started with `kernel_environment()`'s three variables:
+    the clone's `src` first on `PYTHONPATH`, and the clone's directory and
+    the pinned commit under the two forge-owned names the notebook's own
+    first cell reads. That handoff is why `commit` is a parameter of this
+    function at all — it comes from `run-config.json` by way of
+    `invoke()`, and it is the only thing that lets the notebook check the
+    checkout it is pointed at instead of trusting it.
 
+    Four things this refuses rather than works around:
+
+    - a run with no commit to hand over. This is the metered path; a
+      notebook started without the pin is a notebook that has to work the
+      repository out for itself, and the answer it works out is a
+      directory that exists on any worker. Refused BEFORE the kernel
+      starts, because a job that runs the wrong commit works;
     - a notebook path that escapes the clone, or is not a file inside it
       (cell 0 already proves this for a declared notebook, and this cell
       proves it again because it is the cell that opens the file);
@@ -243,6 +303,15 @@ def execute_notebook(
     `client_factory` exists only so the forge suite can drive this
     function without a kernel; the default is the real one.
     """
+    if not isinstance(commit, str) or not commit.strip():
+        raise InvokeError(
+            f"cannot start a notebook kernel: the pinned commit is {commit!r}, "
+            f"so neither {CLONE_ROOT_ENV} nor {CLONE_COMMIT_ENV} can be handed "
+            "over as a pair. Half a handoff is refused on the reading side too; "
+            "a notebook left to locate the repository on its own resolves a "
+            "directory that exists on any worker and fails much later, naming a "
+            "package rather than a root"
+        )
     base = Path(base_dir) if base_dir is not None else Path.cwd()
     name = block["notebook"]
     clone_root = (base / CLONE_DIRNAME).resolve()
@@ -282,15 +351,17 @@ def execute_notebook(
             f"(--environment-requirement): {exc}"
         ) from exc
 
-    saved_python_path = os.environ.get("PYTHONPATH")
-    os.environ["PYTHONPATH"] = kernel_python_path(clone_root, saved_python_path)
+    handoff = kernel_environment(clone_root, commit, os.environ)
+    saved = {variable: os.environ.get(variable) for variable in handoff}
+    os.environ.update(handoff)
     try:
         client.execute()
     finally:
-        if saved_python_path is None:
-            os.environ.pop("PYTHONPATH", None)
-        else:
-            os.environ["PYTHONPATH"] = saved_python_path
+        for variable, previous in saved.items():
+            if previous is None:
+                os.environ.pop(variable, None)
+            else:
+                os.environ[variable] = previous
         # Written on the failure path too, and that is the point: a
         # notebook that died halfway is the only record of WHERE it died,
         # and losing it means paying the quota again to find out.
@@ -320,10 +391,20 @@ def invoke(
     decides, and it refuses a block that is neither or both — this
     function has no default branch, because the only default available
     costs the same quota as the right answer.
+
+    `run_config["commit"]` is read here and handed down rather than looked
+    up again lower: this is where the config is, and a pin re-read
+    somewhere else would be a second place that decides which commit a
+    notebook runs against. Read with `.get()` and never `[...]` — a
+    missing pin becomes `execute_notebook()`'s own refusal, which says
+    what could not be handed over, instead of a `KeyError` that says only
+    that a dictionary was missing a key.
     """
     block = select_block(run_config)
     if block_kind(block) == "notebook":
-        return execute_notebook(block, base_dir, client_factory=client_factory)
+        return execute_notebook(block, base_dir,
+                                commit=run_config.get("commit"),
+                                client_factory=client_factory)
     func = resolve_callable(block, import_module=import_module)
     kwargs = dict(block.get("kwargs") or {})
     return func(**kwargs)

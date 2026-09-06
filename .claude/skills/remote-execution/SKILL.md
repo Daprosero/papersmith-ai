@@ -830,6 +830,43 @@ executable — no test in this suite reaches the network or a real account).
     a separate process that inherits none of it, so without this a
     notebook importing the target's own package dies with
     `ModuleNotFoundError` on a worker whose clone is sitting right there.
+  - **The handoff, and the third asset that reads it.** The kernel is
+    started with `kernel_environment()`'s three variables, and that
+    function is the ONE place any of them is decided: `PYTHONPATH` as
+    above, plus `FORGE_CLONE_ROOT` (the clone directory) and
+    `FORGE_CLONE_COMMIT` (the pinned commit). The names are forge-owned
+    and deliberately generic — this is the contract between a runner and
+    the notebook it starts, never a name borrowed from one repository.
+    `assets/notebook_repo_root.py` is the reading side: the FIRST code
+    cell of every notebook a job may run, owned here and copied byte for
+    byte into `proposal-implementation`'s kit, where a forge test binds
+    the two copies. It answers one question — where is the repository this
+    notebook runs against — and every later cell reads what it binds.
+    Measured, and the reason both halves exist: these notebooks locate
+    their repository two directories above the working directory, which is
+    right on a person's own machine and wrong here, because the kernel's
+    working directory is the RUNNER's own and the clone sits one level
+    inside it. Two directories up then names a directory that EXISTS on
+    any worker — the insert succeeds, the wrong tree goes on the path, and
+    the run dies later with a missing module naming a package, never the
+    wrong root.
+    - **Both variables, or neither.** Absent means LOCAL and the cell
+      behaves exactly as it always has, checking nothing. One present
+      without the other REFUSES: that is an environment somebody built and
+      got half right, which is the one case a fallback cannot tell apart
+      from a laptop. Cell 1 refuses the same shape from the other side — a
+      notebook run with no pin to hand over never starts a kernel at all.
+    - **The commit is checked, not trusted.** A root handed over is still
+      a directory nobody proved, so the cell reads the checkout's own
+      `HEAD` (out of `.git` directly — no subprocess, so no git binary has
+      to be on a worker's PATH and no checker of these notebooks has cause
+      to skip the cell every later cell depends on) and refuses a
+      mismatch. This is the path that spends metered quota and a job that
+      runs the wrong commit RUNS: it returns numbers shaped exactly like
+      the right ones. The runner clones and the notebook receives,
+      deliberately — a notebook that cloned would be a SECOND place
+      deciding which commit runs, outside the one function that checks the
+      pin before anything irreversible happens.
 
   **Accelerator contract: declare an architecture list, compare against
   what is installed, refuse only after the evidence is on disk.** A real
