@@ -43,7 +43,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from forge_vocabulary import (  # noqa: E402  (path set above)
     FORGE_SERVICE_VOCABULARY, FORGE_TARGET_DOMAIN_WORDS,
     FORGE_TARGET_PROPER_NOUNS, FORGE_VOCABULARY_FLOOR, DEFINITION_MODULE,
-    leak_pattern, leaks_in, scannable_suite_text, suite_modules)
+    SKILLS_ROOT, is_scannable_text, leak_pattern, leaks_in,
+    repository_ignored, scannable_suite_text, shipped_documents, suite_modules)
 
 SKILL_ROOT = CLI.parent.parent
 KIT = SKILL_ROOT / "assets" / "kit"
@@ -5977,6 +5978,97 @@ class ForgeVocabularyDefinitionTests(unittest.TestCase):
             f"{self.DEFINITION.name}, so the two can drift apart: {offenders}")
 
 
+#: Where a word on the floor is carried legitimately, and by whose argument.
+#:
+#: The floor is scanned on every file the forge ships. That reach is what this
+#: change bought, and the first thing it bought was a measurement: ten shipped
+#: files across three skills carry a floor word, and every one of them carries
+#: it for a reason that predates this guard. So they are ADMITTED here, one
+#: `path -> {word: reason}` entry at a time, and never by widening or narrowing
+#: the floor itself -- a word on the floor is a leak somebody already found, and
+#: what is in question is the surface, not the membership.
+#:
+#: **Why an admission and not a smaller scan.** Scoping the floor away from
+#: whole skills would leave a real leak into any of their other files unseen.
+#: This is per file AND per word: `ledger.py` may say the service's name in a
+#: comment about the seam and still fails on a target's product name, and a new
+#: file under `remote-execution/` that names the service is red until somebody
+#: writes the sentence saying why. `FORGE_LEXICON`'s own mechanism, one axis
+#: over.
+#:
+#: **Two tests hold it from both sides.** One fails on a hit nobody admitted;
+#: the other fails on an admission whose file no longer carries the word, so an
+#: entry cannot outlive the argument that bought it.
+FORGE_FLOOR_SURFACE_ADMISSIONS: dict[str, dict[str, str]] = {
+    "kaggle-accounts/SKILL.md": {
+        "kaggle": "this skill's entire subject is one hosted service's "
+                  "accounts, named in its own directory name and its doctrine's "
+                  "first sentence; a skill about a service that could not say "
+                  "which service is a skill nobody can use",
+    },
+    "kaggle-accounts/scripts/accounts_cli.py": {
+        "kaggle": "the only script of the skill above, reading and validating "
+                  "that one service's credentials; the word is the subject, "
+                  "not a loan from any research project",
+    },
+    "kaggle-accounts/store/.gitignore": {
+        "kaggle": "one comment saying what the ignored directory holds, in the "
+                  "file that keeps those credentials out of the history",
+    },
+    "proposal-deliberation/profile.ts": {
+        "creda": "the DECLARED domain profile, whose whole job is naming the "
+                 "domain the neutral engine beside it must never know. The "
+                 "forge's own vocabulary module already carves the same "
+                 "exemption for the Node fixtures derived from this file, on "
+                 "exactly this reasoning; the engine itself is scanned and "
+                 "stays clean",
+    },
+    "remote-execution/SKILL.md": {
+        "kaggle": "the doctrine that designates the single adapter allowed to "
+                  "name a service has to name the service it designates, or "
+                  "the designation says nothing",
+        "t4": "the same doctrine, naming the accelerator that adapter can "
+              "request, for the same reason",
+        "transfer": "git's own word for what a fetch moves over the network, "
+                    "in the paragraph about a probe whose budget a real "
+                    "transfer exceeded; ordinary English, named by no target",
+    },
+    "remote-execution/scripts/adapters/kaggle.py": {
+        "kaggle": "the one file in this forge its own doctrine designates as "
+                  "allowed to name a service, which is the seam that keeps "
+                  "every other module service-agnostic",
+        "t4": "the accelerator that adapter requests by name, in the one file "
+              "permitted to know the service offers it",
+        "ceiling": "ordinary English in a comment refusing to assert a bound "
+                   "as a universal per-account or per-service ceiling",
+        "transfer": "ordinary English for a bulk network transfer whose size "
+                    "the remote job decides, which is why its timeout is not "
+                    "the control channel's",
+    },
+    "remote-execution/scripts/adapters/kaggle_driver.py": {
+        "kaggle": "the one file permitted to import that service's own client "
+                  "library, named in the sentence explaining why the library "
+                  "is reached directly rather than through its CLI",
+        "t4": "the accelerator name handed to that client, in the same file "
+              "for the same reason",
+    },
+    "remote-execution/scripts/hooks/refuse_offpath_push.py": {
+        "kaggle": "one sentence pointing at the designated adapter by path, "
+                  "which is how a reader of this hook learns where the seam is",
+    },
+    "remote-execution/scripts/jobfolder.py": {
+        "transfer": "git's own word for what a fetch moves, used throughout "
+                    "the reasoning about a pin probe whose budget a real "
+                    "transfer exceeded; ordinary English, named by no target",
+    },
+    "remote-execution/scripts/ledger.py": {
+        "kaggle": "comments naming the shape of an identity-stable backend by "
+                  "the one example this forge ships an adapter for, in the "
+                  "module that must work for every backend",
+    },
+}
+
+
 class ReportFirstSectionProseTests(unittest.TestCase):
     """The `report-first` section's own examples must stay generic: this is a
     forge for papers, not for one benchmark.
@@ -5992,41 +6084,40 @@ class ReportFirstSectionProseTests(unittest.TestCase):
     SECTION_RE = re.compile(
         r'### `nextStep: "report-first"`.*?(?=\n### |\n## |\Z)', re.DOTALL)
 
-    #: Directories a checkout accumulates and nobody writes prose into.
-    CACHES = ("__pycache__", ".pytest_cache", ".ipynb_checkpoints")
-    #: Suffixes that are not text, so scanning them for words says nothing.
-    BINARY_SUFFIXES = (".pyc", ".pyo", ".png", ".jpg", ".jpeg", ".gif", ".pdf",
-                       ".pth", ".npz", ".npy", ".zip", ".ico")
+    #: What the guarded surface is measured against, and what a hit is reported
+    #: relative to. `SKILL_ROOT` is still this skill's own -- the `report-first`
+    #: section lives in one file -- but the SCAN reaches every skill, so a hit
+    #: has to be named by the path a reader can open.
+    SCAN_ROOT = SKILLS_ROOT
+
+    def scan_root(self, root=None):
+        return self.SCAN_ROOT if root is None else Path(root)
 
     def guarded_documents(self, root=None):
-        """Every surface of the forge a target's vocabulary could leak into.
+        """Every surface of the forge a target's vocabulary could leak into --
+        every shipped file of EVERY skill, derived rather than enumerated.
 
-        `SKILL.md` is what an agent reads, but it is not the only thing a
-        target copies: `references/usage.md` is the worked walkthrough, and
-        `assets/` is the kit a scaffold is literally made of. A leak in a
-        template ships into every repository materialized from it.
+        **What this used to be, and the class it left open.** It reached this
+        one skill's `SKILL.md`, `references/usage.md`, `assets/` and `scripts/`:
+        four names written down here, under one root. Measured the day it was
+        widened, that was twenty-two files of the hundred and twenty-nine the
+        forge ships, and six of its seven skills were scanned by this rule not
+        at all. A shipped asset added under a second skill was outside it, and
+        the repair at the time was to name that one file in that skill's own
+        suite by hand -- the instance closed, the class left open, and the next
+        shipped file falls out of the guard exactly as the last one did.
 
-        `scripts/` is here for a different reason. Nothing copies it, but it is
-        the forge's own code, it is read by anyone extending the skill, and it
-        is edited by every change that touches the checker or the materializer —
-        including this one. A guard whose surface stops at the documents leaves
-        the surface that changes most often unscanned.
+        A directory tuple and a suffix tuple are the same defect wearing two
+        shapes: each holds only what somebody has already met. So neither
+        survives. `shipped_documents` walks whatever is there, drops what the
+        repository itself declares it does not ship, and drops what does not
+        decode as text -- both answers derived, and both stated where the
+        derivation lives rather than restated here.
 
         `root` is overridable so the rule can be proven against a tree built for
         the purpose rather than only against a checkout that happens to be clean.
         """
-        base = self.SKILL_ROOT if root is None else Path(root)
-        documents = [base / "SKILL.md", base / "references" / "usage.md"]
-        for directory in ("assets", "scripts"):
-            for path in sorted((base / directory).rglob("*")):
-                if not path.is_file():
-                    continue
-                if any(part in self.CACHES for part in path.parts):
-                    continue
-                if path.suffix.lower() in self.BINARY_SUFFIXES:
-                    continue
-                documents.append(path)
-        return [path for path in documents if path.is_file()]
+        return shipped_documents(self.scan_root(root) if root is not None else None)
 
     def scannable_text(self, document: Path) -> str:
         """The document, minus the one place a service name is a fact.
@@ -6085,14 +6176,81 @@ class ReportFirstSectionProseTests(unittest.TestCase):
 
         Widened from `SKILL.md` alone to the usage reference and the kit,
         because those are the surfaces a target copies from verbatim and
-        neither had ever been scanned.
+        neither had ever been scanned. Widened again to every shipped file of
+        every skill -- see `guarded_documents` for the class that widening
+        closes, and `FORGE_FLOOR_SURFACE_ADMISSIONS` for what it found.
         """
         for document in self.guarded_documents():
-            with self.subTest(document=str(document.relative_to(self.SKILL_ROOT))):
-                hits = leaks_in(self.scannable_text(document))
+            place = str(document.relative_to(self.scan_root()))
+            with self.subTest(document=place):
+                admitted = set(FORGE_FLOOR_SURFACE_ADMISSIONS.get(place, {}))
+                hits = [word for word in leaks_in(self.scannable_text(document))
+                        if word not in admitted]
                 self.assertEqual(
                     hits, [],
                     f"{hits} is some target's vocabulary, not the forge's")
+
+    def test_every_admission_is_a_word_that_file_still_carries(self):
+        """The other direction, and the half that makes the admissions a
+        measurement instead of an allowlist.
+
+        An admission that no longer fires is a sentence nobody has to defend:
+        it stops describing the file it names, and the next reader takes it for
+        a live argument. Every entry has to be earned on every run, so the day
+        `adapters/kaggle.py` stops naming a hosted service the entry saying it
+        may goes red rather than quietly outliving its reason.
+        """
+        scanned = {str(document.relative_to(self.scan_root())): document
+                   for document in self.guarded_documents()}
+        stale = {}
+        for place, admissions in FORGE_FLOOR_SURFACE_ADMISSIONS.items():
+            document = scanned.get(place)
+            if document is None:
+                stale[place] = "no such shipped file"
+                continue
+            hits = set(leaks_in(self.scannable_text(document)))
+            unused = sorted(set(admissions) - hits)
+            if unused:
+                stale[place] = unused
+        self.assertEqual(
+            stale, {},
+            "an admission names a word its file no longer carries, so it is "
+            "an exemption nobody is defending any more")
+
+    def test_every_admission_costs_an_argument(self):
+        """`FORGE_LEXICON`'s own mechanism, one axis over: a word is admitted
+        on a surface by a sentence a reviewer can disagree with, never by a
+        path appearing in a tuple."""
+        thin = {f"{place}:{word}": reason
+                for place, admissions in FORGE_FLOOR_SURFACE_ADMISSIONS.items()
+                for word, reason in admissions.items()
+                if len(reason.split()) < 4}
+        self.assertEqual(
+            thin, {},
+            "an admission has to say why that file may carry that word")
+
+    def test_the_guard_scans_every_skill_this_forge_ships(self):
+        """The class the old surface left open, measured rather than argued.
+
+        The rule reached one skill: its own. Six of the seven this forge ships
+        were outside it entirely, which is how a shipped asset added under
+        `remote-execution/assets/` was never seen by this guard at all -- and
+        why the repair at the time could only be to name that one file in that
+        skill's own suite by hand.
+
+        Reachable red by construction: it was red until `guarded_documents`
+        stopped naming its own root. Read off the directory rather than
+        asserted against a list of skill names, so a skill added tomorrow is
+        covered without this test being edited.
+        """
+        skills = sorted(directory.name for directory in SKILLS_ROOT.iterdir()
+                        if directory.is_dir())
+        self.assertTrue(skills, "the forge ships no skills, which cannot be")
+        scanned = {str(path.relative_to(self.scan_root())).split("/")[0]
+                   for path in self.guarded_documents()}
+        self.assertEqual(
+            sorted(set(skills) - scanned), [],
+            "these skills ship files this guard never looks at")
 
     def test_the_guard_scans_the_scripts_this_forge_ships(self):
         """The surface that changes most often was the one never scanned.
@@ -6101,14 +6259,17 @@ class ReportFirstSectionProseTests(unittest.TestCase):
         wrong test: it is the forge's own code, read by anyone extending the
         skill and edited by every change that touches the checker or the
         materializer. It had exactly one leak when it was first scanned.
+
+        Asked of every skill's `scripts/` now, not only this one's, and the
+        roster of skills is read off the directory rather than written here.
         """
-        scanned = {str(path.relative_to(self.SKILL_ROOT))
+        scanned = {str(path.relative_to(self.scan_root()))
                    for path in self.guarded_documents()}
-        expected = {str(path.relative_to(self.SKILL_ROOT))
-                    for path in sorted((self.SKILL_ROOT / "scripts").rglob("*"))
-                    if path.is_file()
-                    and not any(part in self.CACHES for part in path.parts)
-                    and path.suffix.lower() not in self.BINARY_SUFFIXES}
+        expected = {str(path.relative_to(self.scan_root()))
+                    for skill in sorted(SKILLS_ROOT.iterdir())
+                    if skill.is_dir()
+                    for path in sorted((skill / "scripts").rglob("*"))
+                    if path.is_file() and is_scannable_text(path)}
         self.assertTrue(expected, "the forge ships no scripts, which cannot be")
         self.assertEqual(sorted(expected - scanned), [])
 
@@ -6118,6 +6279,133 @@ class ReportFirstSectionProseTests(unittest.TestCase):
     #: fixture that respelled a target's word could only be let through by line
     #: number — a list that goes stale on the next edit above it.
     PLANTED = FORGE_VOCABULARY_FLOOR[0]
+
+    def scratch_skills(self):
+        """A skills root with two skills in it, built for the purpose.
+
+        Two and not one, for the reason every planted-leak fixture in this file
+        gives: a rule that reported every file it looked at would be
+        indistinguishable from a rule that reported the file that leaks. Two
+        skills specifically, because the class this guard left open was that
+        the SECOND skill was never looked at at all.
+
+        A real repository, `git init`-ed, because the surface derivation asks
+        git which paths this repository declares it does not ship, and a tree
+        with no history would answer that question by not being asked it.
+        """
+        base = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        subprocess.run(["git", "init", "-q", str(base)], check=True,
+                       capture_output=True)
+        (base / ".gitignore").write_text("vendor/\n", encoding="utf-8")
+        for skill in ("skill-one", "skill-two"):
+            (base / skill / "scripts").mkdir(parents=True)
+            (base / skill / "SKILL.md").write_text(
+                "Generic doctrine.\n", encoding="utf-8")
+            (base / skill / "scripts" / "clean.py").write_text(
+                "VALUE = 1\n", encoding="utf-8")
+        return base
+
+    def hits_under(self, base):
+        """What the floor scan reports over `base`, keyed by path."""
+        caught = {}
+        for document in self.guarded_documents(base):
+            found = leaks_in(self.scannable_text(document))
+            if found:
+                caught[str(document.relative_to(base))] = found
+        return caught
+
+    def test_a_leak_into_a_second_skill_is_caught(self):
+        """The class this change closes, and the weaker guard it beats.
+
+        The rule reached one skill: the one whose suite it lives in. A shipped
+        asset added under a second skill was outside it entirely, and the
+        repair at the time was to name that one file in that skill's own suite
+        by hand -- the instance closed, the class untouched, and the next
+        shipped file falls out of the guard exactly as the last one did.
+
+        The weaker guard is the rule as it stood: scan `SKILL.md`,
+        `references/usage.md`, `assets/` and `scripts/` under ONE root. It is
+        green on this tree -- there is no leak under `skill-one` -- and it is
+        green for a reason that has nothing to do with the file that leaks.
+        """
+        base = self.scratch_skills()
+        (base / "skill-two" / "scripts" / "leaky.py").write_text(
+            f"# reached only by the {self.PLANTED}\nVALUE = 2\n",
+            encoding="utf-8")
+
+        self.assertEqual(
+            self.hits_under(base),
+            {"skill-two/scripts/leaky.py": [self.PLANTED]},
+            "a leak in the second skill was not seen, so the guard is still "
+            "scanning the skill it happens to live beside")
+
+    def test_a_leak_in_a_directory_no_list_names_is_caught(self):
+        """The other half of the same class: not only the second SKILL, but
+        the directory nobody enumerated.
+
+        The rule named four places -- `SKILL.md`, `references/usage.md`,
+        `assets/`, `scripts/`. This forge already ships shipped code under
+        `hooks/` and a shipped file under `store/`, and neither was on that
+        list. The weaker guard, named: any rule holding a tuple of directory
+        names is green here, because `paddock-yard` is not in its tuple and
+        never could be.
+        """
+        base = self.scratch_skills()
+        (base / "skill-two" / "paddock-yard").mkdir()
+        (base / "skill-two" / "paddock-yard" / "shipped.py").write_text(
+            f"# reached only by the {self.PLANTED}\nVALUE = 3\n",
+            encoding="utf-8")
+
+        self.assertEqual(
+            self.hits_under(base),
+            {"skill-two/paddock-yard/shipped.py": [self.PLANTED]})
+
+    def test_a_path_the_repository_declares_it_does_not_ship_is_not_scanned(self):
+        """The drop is derived from the repository's own declaration, never
+        from a tuple of cache names here.
+
+        The weaker guard is the tuple this rule used to carry:
+        `__pycache__`, `.pytest_cache`, `.ipynb_checkpoints`. It has no
+        `vendor/` in it and never will, so a vendored dependency's own
+        vocabulary would be scanned as though the forge had written it -- and
+        one skill of this forge really does carry a `.venv/`, fifty-five
+        megabytes of somebody else's words, that no such tuple ever named.
+        """
+        base = self.scratch_skills()
+        vendored = base / "skill-two" / "vendor"
+        vendored.mkdir()
+        (vendored / "third_party.py").write_text(
+            f"# the {self.PLANTED} is somebody else's word here\n",
+            encoding="utf-8")
+
+        self.assertEqual(self.hits_under(base), {})
+        self.assertNotIn(
+            vendored / "third_party.py", self.guarded_documents(base),
+            "a path this repository declares it does not ship was scanned")
+
+    def test_a_file_that_is_not_text_is_dropped_by_decoding_not_by_suffix(self):
+        """A suffix list holds only the extensions somebody has already met.
+
+        The weaker guard is the tuple this rule used to carry: `.pyc`, `.png`,
+        `.pdf` and nine more. It drops a file called `weights.pyc` and keeps a
+        file called `weights.py` that happens to hold bytes no decoder can
+        read -- so the first such file reaches every rule as replacement
+        characters, and a word regex run over that is a verdict nobody can
+        act on. Decoding decides instead, and the fixture is deliberately
+        named with a suffix the old tuple would have KEPT.
+        """
+        base = self.scratch_skills()
+        opaque = base / "skill-two" / "scripts" / "weights.py"
+        opaque.write_bytes(b"# \xff\xfe\x00 not decodable\n")
+        readable = base / "skill-two" / "scripts" / "clean.py"
+
+        documents = self.guarded_documents(base)
+        self.assertIn(readable, documents)
+        self.assertNotIn(
+            opaque, documents,
+            "a file no decoder can read was handed to a word regex, which is "
+            "a suffix tuple deciding what text is")
 
     def caught_in_a_forge_shaped_tree(self, comment):
         """Build the forge's shape, plant `comment` in one script of two, and
@@ -10898,19 +11186,43 @@ FORGE_LEXICON: dict[str, str] = {
                  "invented module in the usage reference's worked walkthrough",
     "attention": "ordinary English about what a report spends of its reader, "
                  "used in three places that describe writing rather than code",
+    "bags": "the plural of the same canonical illustration one entry above: "
+            "the kit explains a metric that predicts per instance against one "
+            "that predicts per bag, and the plural is how it counts them. A "
+            "word-boundary rule reads the two spellings as two words, so "
+            "admitting the singular alone admitted nothing",
     "bag": "the canonical illustration of two incomparable statistical units, "
            "one predicting per instance and the other per bag, which the kit "
            "needs in order to explain when a metric is not applicable",
+    "campaign": "the forge's own word for a full-spread submission: "
+                "`remote_cli submit --unit` runs one, `propose` publishes one, "
+                "and `gate` authorizes one. Named by this forge years before "
+                "any repository put it on a notebook",
+    "conditional": "ordinary English for a step or a block that applies only "
+                   "under a stated condition, used in two skills' doctrine "
+                   "about which report items are conditional on which stage",
+    "contamination": "the auditor's own word for a box that was not empty "
+                     "before a drive wrote into it, in the one function that "
+                     "proves the detector can see it",
     "benchmark": "the central noun of this whole skill: the kit ships "
                  "benchmark.py and every target declares a benchmark package",
     "confidence": "ordinary English about how sure a reading is, used in the "
                   "usage reference's prose and in no code path at all",
     "config": "a universal name for the module that holds settings, shipped by "
               "the kit itself and used by every scaffold this forge writes",
+    "diagnostic": "ordinary English for a fact reported to explain and never "
+                  "to gate, used at three refusal codes that say exactly that "
+                  "of themselves",
     "digest": "the forge's own kit module report_digest.py, which reduces a "
               "report to the numbers a verification can be run against",
     "domain": "an ENVIRONMENT_HINTS entry beside dataset, task and corpus: "
               "generic vocabulary for where data comes from, named by no target",
+    "generator": "the name every pseudo-random source in Python already "
+                 "wears -- `torch.Generator`, `numpy.random.Generator` -- and "
+                 "the kit's own seeded-sampling helper takes one by that name",
+    "global": "the Python statement, and ordinary English for state shared "
+              "across a process, used where two modules explain why they "
+              "refuse to keep any",
     "figures": "one of the two module names rule A allows a worked example to "
                "draw from, because the kit's own declaration already uses it",
     "harness": "probe returns a harnessStatus key and the doctrine says the "
@@ -10924,6 +11236,10 @@ FORGE_LEXICON: dict[str, str] = {
                "note in the kit's benchmark module",
     "local": "ordinary English for a remedy or a path that stays on this "
              "machine, used throughout the doctrine and the checker",
+    "noise": "ordinary English for what a measurement carries besides its "
+             "signal: the kit's own sentence about why one seed is not a "
+             "result, and the doctrine paragraph about a verdict that names a "
+             "winner on every row",
     "models": "generic machine-learning vocabulary and the name of this "
               "repository's own checkpoint directory, which no target owns",
     "objective": "the forge's declared report vocabulary for what a run is "
@@ -10939,6 +11255,17 @@ FORGE_LEXICON: dict[str, str] = {
     "record": "the forge's own evidence vocabulary: `@record` is one of the "
               "four witness kinds `impl_position` recognizes, and the report "
               "contract has declared `records` since before any target did",
+    "results": "the forge's own product category: `PRODUCT_DIRS` scaffolds a "
+               "`Results/` directory into every repository this skill builds, "
+               "and the probe payload has carried a `results` key since before "
+               "any target rendered one",
+    "search": "the forge's own declaration block and its rung: a target "
+              "declares `__benchmark__['search']`, `probe` answers "
+              "`search-first`, and the scale a search declares is what the "
+              "cost forecast is projected from",
+    "sweep": "the forge's own kit module `tests/sweep.py` and the admissibility "
+             "vocabulary around it, shipped into every repository this skill "
+             "scaffolds before any of them names a notebook",
     "report": "the central noun of the report contract this skill exists to "
               "check, appearing in doctrine on nearly every page",
     "steps": "the forge's own declaration surface and its command: a target "
@@ -10954,6 +11281,9 @@ FORGE_LEXICON: dict[str, str] = {
             "a sum the report contract already names generically",
     "training": "ordinary English and generic machine-learning vocabulary: the "
                 "harness owns training and measuring and nothing else",
+    "verification": "the forge's own kit notebook `nb/verification.ipynb`, "
+                   "copied into every repository this skill scaffolds, and the "
+                   "word the whole flow's last act is called by",
     "verdict": "the forge's own kit module verdict.py and the noun the whole "
                "flow ends on, named by the skill long before any target",
     "wiring": "the forge's own vocabulary for how a benchmark reaches prior "
@@ -11047,13 +11377,13 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
     """
 
     SKILL_ROOT = ReportFirstSectionProseTests.SKILL_ROOT
-    CACHES = ReportFirstSectionProseTests.CACHES
-    BINARY_SUFFIXES = ReportFirstSectionProseTests.BINARY_SUFFIXES
+    SCAN_ROOT = ReportFirstSectionProseTests.SCAN_ROOT
 
     # One definition of the guarded surface, borrowed rather than restated: a
     # second spelling of "what the forge ships" is how the two go out of step.
     guarded_documents = ReportFirstSectionProseTests.guarded_documents
     scannable_text = ReportFirstSectionProseTests.scannable_text
+    scan_root = ReportFirstSectionProseTests.scan_root
 
     TARGETS = FORGE / "implementations"
 
@@ -11067,12 +11397,65 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
     def split(self, name):
         return [part.lower() for part in self.WORD_SPLIT_RE.split(name) if part]
 
+    #: The forge's own product layout, read from the code that declares it
+    #: rather than respelled here. Which directory a repository keeps its
+    #: notebooks in is a fact this forge DECIDES and writes into every target
+    #: it scaffolds, so the guard can ask for it by name without knowing any
+    #: repository: rename the constant and this walk follows it.
+    NOTEBOOK_CATEGORY = impl.PRODUCT_NOTEBOOKS
+    PRODUCT_CATEGORIES = impl.PRODUCT_DIRS
+
+    def names_in(self, directory):
+        """Every basename `directory` holds, minus what the repository that
+        owns it declares it does not ship.
+
+        No suffix filter anywhere in here. `glob("*.py")` was the reason a
+        target's NOTEBOOK names were invisible to this rule: a module stem
+        counted and a notebook stem did not, so a real repository's notebook
+        name copied into the kit as an example passed every rule this file
+        has. What a file is called is what a file is called, whatever it ends
+        in.
+
+        Dot-prefixed names are skipped, the same rule the target walk already
+        applies to directories: `.gitkeep`, `.gitattributes` and their
+        neighbours are the tooling's placeholders, not names a repository
+        chose for its science, and deriving a denylist from them would object
+        to the forge for words the forge and git wrote there.
+        """
+        if not directory.is_dir():
+            return set()
+        entries = [entry for entry in sorted(directory.iterdir())
+                   if not entry.name.startswith(".")]
+        ignored = repository_ignored(entries, directory)
+        return {word for entry in entries if entry not in ignored
+                for word in self.split(entry.stem if entry.is_file()
+                                       else entry.name)}
+
     def target_words(self, root=None):
         """Every word the targets on disk own, and the targets they came from.
 
-        Names only: directory, package and module basenames. No file under
-        `implementations/` is opened, which is what keeps this read-only and
-        keeps the cost proportional.
+        Names only: directory, package, module and NOTEBOOK basenames. No file
+        under `implementations/` is opened, which is what keeps this read-only
+        and keeps the cost proportional.
+
+        **The measured hole the notebooks fill.** This walked `src/<package>`
+        and matched `*.py`, so a repository's modules were vocabulary and its
+        notebooks were not -- and a notebook name is exactly the kind of name a
+        worked example borrows, because an example of a report is an example of
+        something a notebook rendered. Measured when the walk was widened: the
+        target on disk owned nine notebook-derived words this rule had never
+        seen.
+
+        **Scoped to the product's notebook category, never to the whole tree.**
+        Measured, both ways, before this was written: walking every path a
+        repository carries derives eighty-seven words -- `and`, `runs`,
+        `readme`, `gitignore`, `tools` -- and reports a hundred and four of the
+        forge's own files as leaks, which is a guard nobody can keep. What a
+        repository OWNS is its source identity and the artefacts it renders,
+        and the forge already decides where the second of those lives
+        (`PRODUCT_NOTEBOOKS`), so the walk asks for that directory by a
+        constant it reads out of its own code rather than by a name written
+        here.
 
         Directories beginning with `_` are skipped because that is where this
         suite builds its own throwaway targets; deriving the denylist from them
@@ -11088,15 +11471,23 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
                 continue
             targets.append(target.name)
             words.update(self.split(target.name))
-            source = target / "src"
-            if not source.is_dir():
-                continue
-            for package in sorted(source.iterdir()):
-                if not package.is_dir() or package.name in self.CACHES:
+            for package in sorted((target / "src").iterdir()
+                                  if (target / "src").is_dir() else []):
+                if not package.is_dir() or package.name.startswith("."):
                     continue
                 words.update(self.split(package.name))
-                for module in sorted(package.glob("*.py")):
-                    words.update(self.split(module.stem))
+                words.update(self.names_in(package))
+            # A product tree is any directory of the target holding one of the
+            # categories this forge scaffolds -- `detect_product_dir`'s own
+            # test, read the same way, so a repository whose product folder is
+            # named after itself needs no second declaration for this rule.
+            for product in sorted(target.iterdir()):
+                if not product.is_dir() or product.name.startswith((".", "_")):
+                    continue
+                if not any((product / category).is_dir()
+                           for category in self.PRODUCT_CATEGORIES):
+                    continue
+                words.update(self.names_in(product / self.NOTEBOOK_CATEGORY))
         return {word for word in words if len(word) >= self.MINIMUM_WORD}, targets
 
     def derived_denylist(self, root=None):
@@ -11112,7 +11503,15 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
             self.skipTest(
                 "no repository under implementations/, so rule B has no "
                 "vocabulary to derive and this is silence rather than a pass")
-        return sorted(words - set(FORGE_LEXICON))
+        # The floor comes out here, and this is the one place the two rules
+        # are told apart. Rule C scans `FORGE_VOCABULARY_FLOOR` over the same
+        # surface and carries its own per-file admissions for the ten shipped
+        # files that legitimately hold one; leaving those words in this list
+        # too would report each of them twice, under two exemption mechanisms,
+        # and whichever rule ran first would decide which argument a reader
+        # met. Nothing is lost: a floor word is guarded, by the rule that owns
+        # it.
+        return sorted(words - set(FORGE_LEXICON) - set(FORGE_VOCABULARY_FLOOR))
 
     def leaks(self, denylist, root=None):
         found = {}
@@ -11121,8 +11520,7 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
             hits = [word for word in denylist
                     if re.search(rf"\b{re.escape(word)}\b", text)]
             if hits:
-                base = self.SKILL_ROOT if root is None else Path(root)
-                found[str(document.relative_to(base))] = hits
+                found[str(document.relative_to(self.scan_root(root)))] = hits
         return found
 
     def test_rule_b_finds_no_target_vocabulary_in_the_forge(self):
@@ -11161,7 +11559,7 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
 
     def example_names(self, root=None):
         """Every dotted name a worked report example spells, with its place."""
-        base = self.SKILL_ROOT if root is None else Path(root)
+        base = self.scan_root(root)
         found = []
         for document in self.guarded_documents(root):
             text = document.read_text(encoding="utf-8", errors="replace")
@@ -11209,11 +11607,22 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
         """
         base = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, base, ignore_errors=True)
-        package = base / "Nimbus_Benchmark" / "src" / "nimbus_benchmark"
+        target = base / "Nimbus_Benchmark"
+        package = target / "src" / "nimbus_benchmark"
         package.mkdir(parents=True)
         (package / "__init__.py").write_text("", encoding="utf-8")
         (package / "config.py").write_text("VALUE = 1\n", encoding="utf-8")
         (package / "paddock.py").write_text("VALUE = 2\n", encoding="utf-8")
+        # A product tree with the two categories that make it one, so the
+        # notebook half of the walk has somewhere to look. `Nimbus/` is the
+        # product folder; `stirrup` is a second invented word, owned by a
+        # NOTEBOOK and by nothing else in this tree, so a hit on it is
+        # attributable to the notebook walk and to no other half of it.
+        notebooks = target / "Nimbus" / self.NOTEBOOK_CATEGORY
+        notebooks.mkdir(parents=True)
+        (target / "Nimbus" / "Results").mkdir()
+        (notebooks / "stirrup.ipynb").write_text("{}\n", encoding="utf-8")
+        (notebooks / ".gitkeep").write_text("", encoding="utf-8")
         return base
 
     def test_rule_b_names_the_file_and_the_word_a_planted_leak_is_in(self):
@@ -11238,7 +11647,7 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
 
         denylist = self.derived_denylist(self.scratch_targets())
         self.assertEqual(
-            denylist, ["nimbus", "paddock"],
+            denylist, ["nimbus", "paddock", "stirrup"],
             "the denylist is every word the target owns minus the lexicon, so "
             "`benchmark`, `config` and `init` are subtracted and these are left")
 
@@ -11252,6 +11661,100 @@ class ForgeVocabularyDerivedGuardTests(unittest.TestCase):
             self.leaks(denylist, forge), {"scripts/leaky.py": ["paddock"]},
             "rule B has to name the file and the word, because a guard that "
             "reports only that something is wrong repairs nothing")
+
+    def test_a_notebook_name_is_vocabulary_the_way_a_module_name_is(self):
+        """The hole this walk was widened to close, owned at both ends.
+
+        The derivation read `src/<package>/*.py` and stopped, so a repository's
+        MODULE names were vocabulary and its NOTEBOOK names were not -- and a
+        notebook name is exactly the kind of name a worked example borrows,
+        because an example of a report is an example of something a notebook
+        rendered. Measured on the real target the day this was widened: nine
+        words the rule had never seen, all of them notebook-derived.
+
+        The weaker guard, named: the walk as it stood. `stirrup` is owned by a
+        notebook and by nothing else in this tree -- no directory, no package,
+        no module carries it -- so a rule matching `*.py` under `src/` derives
+        a denylist without it and reports this leak as clean.
+        """
+        targets = self.scratch_targets()
+        words, _ = self.target_words(targets)
+        self.assertIn(
+            "stirrup", words,
+            "a notebook's name is not vocabulary, so a rule matching module "
+            "suffixes is still standing in for one reading names")
+
+        forge = self.scratch_forge()
+        (forge / "scripts" / "leaky.py").write_text(
+            "# copied out of the stirrup notebook\nVALUE = 1\n",
+            encoding="utf-8")
+        (forge / "scripts" / "clean.py").write_text(
+            "VALUE = 2\n", encoding="utf-8")
+        self.assertEqual(
+            self.leaks(self.derived_denylist(targets), forge),
+            {"scripts/leaky.py": ["stirrup"]},
+            "the notebook half has to name the file and the word, exactly as "
+            "the module half already does")
+
+    def test_a_tooling_placeholder_is_not_a_repository_s_vocabulary(self):
+        """`.gitkeep` beside the notebooks is git's word, not the target's.
+
+        Dot-prefixed names are skipped, which is the rule the target walk
+        already applied to directories carried down to the files inside them.
+        Without it the denylist grows `gitkeep`, `gitignore` and
+        `gitattributes` -- and then objects to the forge for words git and the
+        forge itself wrote into the repository, which is a guard accusing its
+        own author.
+        """
+        words, _ = self.target_words(self.scratch_targets())
+        self.assertNotIn("gitkeep", words)
+        self.assertIn("stirrup", words,
+                      "the fixture stopped carrying a notebook at all, so "
+                      "this test is no longer about anything")
+
+    def test_the_walk_reads_the_product_s_notebooks_and_not_the_whole_tree(self):
+        """Scoped, and the measurement that decided the scope.
+
+        Walking every path a repository carries was tried and measured before
+        this was written: eighty-seven derived words -- `and`, `runs`,
+        `readme`, `gitignore`, `tools` -- and a hundred and four of the forge's
+        own shipped files reported as leaks. That is not a stricter guard, it
+        is an unusable one, and the words it adds are incidental filenames
+        rather than anything a repository can be said to OWN.
+
+        So the walk asks for the category this forge itself scaffolds, by the
+        constant that declares it. A file elsewhere in the target is not
+        vocabulary, and this is that boundary held rather than assumed.
+        """
+        targets = self.scratch_targets()
+        stray = targets / "Nimbus_Benchmark" / "haybarn.md"
+        stray.write_text("notes\n", encoding="utf-8")
+        deep = targets / "Nimbus_Benchmark" / "Nimbus" / "Results" / "furlong.json"
+        deep.write_text("{}\n", encoding="utf-8")
+
+        words, _ = self.target_words(targets)
+
+        self.assertIn("stirrup", words)
+        self.assertNotIn("haybarn", words)
+        self.assertNotIn("furlong", words)
+
+    def test_the_notebook_category_is_read_from_the_forge_not_written_here(self):
+        """Which directory a repository keeps its notebooks in is a fact this
+        forge DECIDES and scaffolds into every target it builds, so the walk
+        reads it off the code that declares it.
+
+        Spelled here instead, the guard would go silently quiet the day the
+        constant moved: it would look in a directory nothing writes to, find
+        nothing, and report a clean derivation -- the failure shape this file
+        objects to everywhere else.
+        """
+        self.assertEqual(self.NOTEBOOK_CATEGORY, impl.PRODUCT_NOTEBOOKS)
+        self.assertIn(self.NOTEBOOK_CATEGORY, self.PRODUCT_CATEGORIES)
+        source = inspect.getsource(type(self).target_words)
+        self.assertNotIn(
+            f'"{impl.PRODUCT_NOTEBOOKS}"', source,
+            "the notebook directory is spelled in the walk as well as "
+            "declared by the forge, so the two can drift apart")
 
     def test_rule_a_names_the_file_a_planted_example_leak_is_in(self):
         base = self.scratch_forge()

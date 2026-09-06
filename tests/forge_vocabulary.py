@@ -17,6 +17,14 @@ comment has demanded a single spelling since the day it was written. Putting it
 in either suite would make one skill's test file the owner of a fact that
 belongs to neither.
 
+The derivations beside the constant answer the other half of the same question.
+The floor says WHICH words may not be borrowed; `shipped_documents` says WHERE
+borrowing them is forbidden — every file every skill ships, walked rather than
+enumerated. That half lived inside one skill's suite and reached only that one
+skill's four named directories, which is how six of seven skills went unscanned
+and how a shipped asset under a second skill could only be guarded by naming it
+by hand in a third file. Both halves belong to the forge, so both live here.
+
 This module is deliberately not named `test_*.py`. The configured gate
 discovers suites by that pattern (`tests/test_forge_gate.py`), so a definition
 module here is importable by every suite without becoming one.
@@ -24,6 +32,7 @@ module here is importable by every suite without becoming one.
 
 import ast
 import re
+import subprocess
 from pathlib import Path
 
 #: Words a hosted SERVICE owns: the service itself, and the hardware it rents.
@@ -33,6 +42,15 @@ from pathlib import Path
 #: legitimately — measured, hundreds of times in one file. Guarded on every
 #: surface the forge SHIPS; exempt under `tests/`, where guarding it would mean
 #: exempting the file that most needs the word, which is not a guard.
+#:
+#: "Every surface the forge ships" was a claim nothing checked until the scan
+#: reached past one skill. It found nine shipped files carrying one of these
+#: two, and every one of them carries it as its subject rather than as a loan:
+#: the designated adapter, the driver beside it, the doctrine that designates
+#: them, and a whole skill about that service's accounts. They are admitted one
+#: file and one word at a time, with the argument written down, in the suite
+#: that runs the scan — never by narrowing this tuple, which holds leaks
+#: somebody already found.
 FORGE_SERVICE_VOCABULARY = ("kaggle", "t4")
 
 #: A target's SCIENCE words: quantities one research project's method names.
@@ -49,6 +67,14 @@ FORGE_SERVICE_VOCABULARY = ("kaggle", "t4")
 #: its own modules. Exempt under `tests/`, and the exemption is measured there
 #: rather than assumed, so the day the number goes to zero somebody can
 #: reconsider.
+#:
+#: The same measurement, taken on the shipped side once the scan reached every
+#: skill: "cheap and already paid" is true of the skill that ships the kit and
+#: false one directory over. Three shipped files of the remote-execution skill
+#: use git's own word for what a fetch moves over the network, and one uses
+#: ordinary English for a bound it explicitly refuses to assert universally.
+#: Those four are admitted with their arguments beside them, per file and per
+#: word; nothing here is narrowed.
 FORGE_TARGET_DOMAIN_WORDS = ("ceiling", "ramp", "transfer", "latent")
 
 #: A target's PROPER NOUNS: the names one research project's products wear.
@@ -57,6 +83,13 @@ FORGE_TARGET_DOMAIN_WORDS = ("ceiling", "ramp", "transfer", "latent")
 #: the forge writes, `tests/` included. This is the half that makes the split
 #: worth having: the whole suite tree was left unscanned because ONE word in
 #: ONE file needed an exemption, and these went unscanned with it.
+#:
+#: One shipped file carries one of these, and it is the one place in this forge
+#: whose job is to: the DECLARED domain profile the neutral deliberation engine
+#: is handed. This module already carves the same exemption for the Node
+#: fixtures derived from that file, on exactly this reasoning. The engine
+#: beside it is scanned and stays clean, which is the whole point of the
+#: profile existing.
 FORGE_TARGET_PROPER_NOUNS = ("creda", "milcreda")
 
 #: Words a target owns that the forge is forbidden to borrow — the floor the
@@ -75,6 +108,99 @@ FORGE_VOCABULARY_FLOOR = (FORGE_SERVICE_VOCABULARY
 #: This module, and the directory it shares with the suites.
 DEFINITION_MODULE = Path(__file__).resolve()
 SUITE_ROOT = DEFINITION_MODULE.parent
+
+#: The forge itself, and the directory every skill it ships lives in.
+FORGE_ROOT = SUITE_ROOT.parent
+SKILLS_ROOT = FORGE_ROOT / ".claude" / "skills"
+
+
+def repository_ignored(paths, root) -> set:
+    """Which of `paths` this repository itself declares it does not ship.
+
+    Asked of git rather than answered by a list of directory names here, and
+    that is the whole point of this function existing at all. Every guard that
+    walked a shipped surface before this one carried its own tuple of caches to
+    skip — `__pycache__`, `.pytest_cache`, `.ipynb_checkpoints` — and every such
+    tuple is a list somebody has to remember to extend. The repository already
+    states which paths are not part of it, in the one file whose whole job is
+    saying so, and `.venv/` (55 megabytes of somebody else's vocabulary sitting
+    under one skill) is on it while none of the hand-written tuples had it.
+
+    A tree that is not inside a repository declares nothing ignored, which is
+    the honest answer rather than an error: the scratch trees these guards are
+    proven against are built in a temporary directory with no history, and
+    "nothing here is ignored" is exactly true of them. Any non-zero exit with
+    no output reads that way — `check-ignore` exits 1 when nothing matched and
+    128 outside a work tree, and both mean the same thing to a caller asking
+    which paths to drop.
+    """
+    paths = list(paths)
+    if not paths:
+        return set()
+    try:
+        completed = subprocess.run(
+            ["git", "check-ignore", "--stdin", "-z"],
+            input="\0".join(str(path) for path in paths),
+            cwd=str(root), capture_output=True, text=True, check=False)
+    except OSError:
+        return set()
+    return {Path(line) for line in completed.stdout.split("\0") if line}
+
+
+def is_scannable_text(path: Path) -> bool:
+    """Whether a word can be read out of `path` at all.
+
+    Decided by decoding the file, never by its suffix. A suffix list is the
+    same defect as a cache-directory list one shape over: it holds only the
+    extensions somebody has already met, so the first `.parquet`, `.woff` or
+    `.tar.gz` a skill ships is scanned as though it were prose and reported as
+    a leak — or, in the direction that actually costs something, the first
+    text extension nobody listed is silently never scanned at all.
+
+    A file that does not decode as UTF-8 carries no words this guard can be
+    wrong about, so it is dropped. A file that cannot be opened is dropped for
+    the same reason and not raised on: this is a surface derivation, and a
+    guard that crashed on a broken symlink would take every other rule down
+    with it.
+    """
+    try:
+        path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError):
+        return False
+    return True
+
+
+def shipped_documents(root=None) -> list:
+    """Every file the forge SHIPS, across every skill — the surface a target's
+    vocabulary can leak onto.
+
+    Derived on both axes and enumerated on neither. The directories are
+    whatever `root` holds, walked whole, so a skill that grows an `assets/`,
+    a `hooks/`, a `store/` or a directory nobody has thought of yet is scanned
+    the day it appears. What is dropped is dropped by the repository's own
+    declaration (`repository_ignored`) or by not being text at all
+    (`is_scannable_text`) — never by a tuple of names.
+
+    **The measured defect this closes.** The guard that scans for a target's
+    vocabulary reached ONE skill's `SKILL.md`, `references/usage.md`, `assets/`
+    and `scripts/`. Measured the day this was written: twenty-two files of the
+    hundred and twenty-nine the forge ships, one skill of seven. Six skills
+    were unscanned entirely, and when a change added a
+    shipped asset under a second skill the repair was to add that one file to
+    that skill's own suite by hand: the instance closed and the class left
+    open, which is the same list-of-names defect this function refuses to have.
+
+    `root` is overridable so every rule standing on this can be proven against
+    a tree built for the purpose rather than only against a checkout that
+    happens to be clean today.
+    """
+    base = SKILLS_ROOT if root is None else Path(root)
+    if not base.is_dir():
+        return []
+    candidates = [path for path in sorted(base.rglob("*")) if path.is_file()]
+    ignored = repository_ignored(candidates, base)
+    return [path for path in candidates
+            if path not in ignored and is_scannable_text(path)]
 
 
 def suite_modules() -> list:
