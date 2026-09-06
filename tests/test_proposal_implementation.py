@@ -2208,6 +2208,151 @@ class CouplingSurfacingTests(unittest.TestCase):
             json.dumps({"cells": cells, "metadata": {}, "nbformat": 4,
                         "nbformat_minor": 5}), encoding="utf-8")
 
+    def test_a_notebook_that_cannot_stamp_is_named_before_it_ever_runs(self):
+        """The seal is a witness's only source, so its absence is a from-zero demand.
+
+        `@notebook` ticks against `sourcesMatch is True`, and only the seal cell
+        writes that field. A notebook without it reads `None` -- not measured,
+        and `None` never becomes true. So the step runs perfectly, the report
+        comes back `executed`, and its ordinal can never be ticked.
+
+        `unstamped` already named this, and named it too late: it is computed
+        for notebooks that have already RUN, so the first time anyone learns is
+        after paying for the run. Measured on a real walk: 548 seconds of sweep,
+        then a refusal that reads as if the step had failed.
+
+        `sealed` is static. It answers the same question off the source alone,
+        before a kernel starts, which is what makes it a demand the kit can make
+        of a repository built from zero rather than a post-mortem.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "src" / "Method_Benchmark").mkdir(parents=True)
+            (root / "src" / "Method_Benchmark" / "__init__.py").write_text(
+                "", encoding="utf-8")
+            celda = lambda src: {"cell_type": "code", "source": [src],
+                                 "execution_count": None, "outputs": [],
+                                 "metadata": {}}
+            self._write_notebook(root, [celda("print('sin sello')")],
+                                 notebook_name="Mudo.ipynb")
+            self._write_notebook(
+                root, [celda("from Method_Benchmark import report_digest\n"
+                             "print(report_digest.stamp())")],
+                notebook_name="Sellado.ipynb")
+            state = impl.notebooks_state(root, "Method", "Method")
+
+        por_nombre = {Path(r["notebook"]).name: r for r in state["reports"]}
+        self.assertIs(por_nombre["Sellado.ipynb"]["sealed"], True)
+        self.assertIs(por_nombre["Mudo.ipynb"]["sealed"], False)
+        # Y ninguno de los dos corrió: es exactamente el punto.
+        self.assertEqual([r["status"] for r in state["reports"]],
+                         ["stale", "stale"])
+        self.assertEqual(
+            [Path(n).name for n in state["unsealed"]], ["Mudo.ipynb"],
+            "un cuaderno que no puede sellar tiene que nombrarse sin haber corrido")
+
+    def test_an_item_whose_notebook_cannot_seal_is_named_unmeasurable(self):
+        """The refusal has to name the cause, not the symptom.
+
+        Without this the sequence reports the ordinal as simply not ticked, and
+        that reads as "the step has not run yet" -- so the operator runs it,
+        pays for it, watches it finish clean, and gets the identical message.
+        Measured: a 548-second sweep run to completion twice against an ordinal
+        that could not be ticked either time.
+
+        `unmeasurable` separates the two states the bare mark conflates: not
+        done, and cannot be done. It is not a new judgement about the run; it is
+        the one fact the witness needs and cannot get.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            product = root / "Method"
+            product.mkdir(parents=True)
+            cuerpo = ("- [ ] 1. Its notebook is current. `@notebook "
+                      "Notebooks/Mudo.ipynb`\n")
+            (product / "AGREED.md").write_text(
+                "<!-- position revision=r1.md sha256=" + "a" * 64 +
+                " derivedAt=2026-08-27T00:00:00Z session=s0 target=final -->\n"
+                + cuerpo + "<!-- /position -->\n", encoding="utf-8")
+            evidencia = {"notebooks": {"reports": [
+                {"notebook": "Method/Notebooks/Mudo.ipynb", "status": "executed",
+                 "sourcesMatch": None, "sealed": False}]}}
+            estado = impl.position_state(root, "Method", evidencia, None, None)
+
+        self.assertEqual(
+            [(i["ordinal"], Path(i["notebook"]).name) for i in estado["unmeasurable"]],
+            [(1, "Mudo.ipynb")],
+            "un ítem cuyo cuaderno no puede sellar tiene que decirse así")
+        # Y sigue sin tildarse: esto NO afloja la secuencia, sólo la explica.
+        self.assertFalse(estado["sequence"][0]["satisfied"])
+
+    def test_the_sequence_refusal_names_the_seal_instead_of_sending_you_to_rerun(self):
+        """The message is the whole remedy here, because the state is invisible.
+
+        "item 4 is not yet ticked" is true and useless: the operator's only
+        reading of it is that item 4 has not run, so they run it. It runs. The
+        message comes back identical. Nothing in it distinguishes a rung that is
+        pending from one that is unreachable, and the difference is the entire
+        problem.
+
+        So the refusal carries the reason and the fix. Same code, same refusal
+        --- nothing is allowed through --- but it names the seal.
+        """
+        position = {"sequence": [
+            {"ordinal": 4, "mark": " "}, {"ordinal": 5, "mark": " "}],
+            "unmeasurable": [{
+                "ordinal": 4, "notebook": "Method/Notebooks/Mudo.ipynb",
+                "measuredBy": "notebooks.reports[Mudo.ipynb].sourcesMatch",
+                "reason": "the notebook carries no seal cell",
+                "resolve": "add the kit's seal"}]}
+
+        # `noise-report` avanza el 5 y lo bloquea el 4: el bloqueante es
+        # estrictamente anterior, igual que `earlier_open` en el rechazo.
+        detalle = impl.sequence_block_detail(position, 5)
+        self.assertIn("Mudo.ipynb", detalle)
+        self.assertIn("seal", detalle)
+
+        # Y un ítem que simplemente no corrió no inventa una causa.
+        position["unmeasurable"] = []
+        self.assertEqual(impl.sequence_block_detail(position, 5), "")
+
+    def test_the_refusal_site_actually_calls_the_detail(self):
+        """The helper being right buys nothing if the refusal never calls it.
+
+        Its own test builds the dict by hand, so deleting the call at the
+        refusal site leaves every other test in this file green while the
+        operator gets the bare message back. That is the shape of a rule
+        nothing calls, and it is worth one test that reads the call.
+
+        Found by mutation: removing `+ sequence_block_detail(...)` from the
+        refusal cost nothing until this existed.
+        """
+        arbol = ast.parse(CLI.read_text(encoding="utf-8"))
+        sitios = [
+            nodo for nodo in ast.walk(arbol)
+            if isinstance(nodo, ast.Call)
+            and getattr(nodo.func, "id", "") == "Refused"
+            and nodo.args
+            and getattr(nodo.args[0], "value", None) == "STEP_SEQUENCE_NOT_REACHED"]
+        self.assertEqual(len(sitios), 1, "el rechazo se levanta en otro lugar")
+        fuente = ast.unparse(sitios[0])
+        self.assertIn("sequence_block_detail", fuente,
+                      "el rechazo no llama al detalle, así que vuelve a decir "
+                      "sólo que el ítem no está tildado")
+
+    def test_the_accepted_seal_spellings_come_from_the_kit_asset(self):
+        """Derived, so the kit and the check cannot drift apart.
+
+        Writing `"report_digest"` here would be a second spelling of a name the
+        kit already owns, and the day the asset is renamed the check would go
+        quietly green on every notebook -- the failure mode this whole change
+        exists to close, one level up.
+        """
+        asset = (impl.SKILL_ROOT / "assets" / "kit" / "nb" / "report_digest.py")
+        self.assertTrue(asset.is_file(), "the kit no longer ships the seal")
+        self.assertIn(asset.stem, impl.seal_spellings())
+        self.assertIn(impl.DIGEST_MARKER, impl.seal_spellings())
+
     def test_notebooks_state_surfaces_a_coupling_per_notebook(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

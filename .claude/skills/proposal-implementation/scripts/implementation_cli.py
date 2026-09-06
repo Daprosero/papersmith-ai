@@ -403,6 +403,31 @@ def agreements_state(target: Path, name: str) -> dict:
     }
 
 
+def sequence_block_detail(position: dict, advances: int) -> str:
+    """What to add to a sequence refusal when the blocking item can never tick.
+
+    Empty for the ordinary case, and that is deliberate: most blocked ordinals
+    really are just pending, and a refusal that always volunteered a cause would
+    teach the reader to skim past the one time it has one.
+
+    When an earlier item's witness names a notebook with no seal, the bare
+    refusal is true and actively misleading --- "item 4 is not yet ticked" reads
+    as "run item 4", so it gets run, it succeeds, and the identical message comes
+    back. Measured: two full sweeps against an ordinal that could not move
+    either time. The message is the only place that difference can live, because
+    nothing else the operator sees distinguishes the two states.
+    """
+    bloqueantes = [entry for entry in position.get("unmeasurable") or []
+                   if entry["ordinal"] < advances]
+    if not bloqueantes:
+        return ""
+    return "\n" + "\n".join(
+        f"  item {entry['ordinal']} can never be ticked: {entry['reason']}.\n"
+        f"    notebook: {entry['notebook']}\n"
+        f"    fix:      {entry['resolve']}"
+        for entry in bloqueantes)
+
+
 def position_state(target: Path, name: str, evidence: dict,
                    revision: str | None, source: str | None) -> dict:
     """The execution sequence's current state, read from `<Name>/AGREED.md`.
@@ -487,6 +512,7 @@ def position_state(target: Path, name: str, evidence: dict,
     last_close = next((e for e in reversed(events) if e.get("kind") == "close"), None)
 
     sequence, disagreements, unmeasured, unbacked = [], [], [], []
+    unmeasurable = []
     for item, result in zip(items, derived):
         entry = {
             "ordinal": item["ordinal"], "mark": item["mark"],
@@ -508,6 +534,33 @@ def position_state(target: Path, name: str, evidence: dict,
         # reader looking for the second must not have to know the first.
         if result["unbacked"]:
             unbacked.append(entry)
+
+        # No es "todavía no", es "nunca": el testigo de cuaderno se tilda contra
+        # `sourcesMatch`, que sólo escribe el sello. Un cuaderno sin la celda del
+        # sello deja ese campo en `None` para siempre, así que el paso puede
+        # correr impecable las veces que sea y el ítem no se mueve. La marca
+        # pelada confunde los dos estados y manda a correr de nuevo lo que ya
+        # corrió bien; esto los separa, sin aflojar la secuencia.
+        if item["witness"]["kind"].startswith("notebook"):
+            operando = item["witness"]["operand"] or ""
+            informe = next(
+                (r for r in (evidence.get("notebooks") or {}).get("reports", [])
+                 if r.get("notebook") == operando
+                 or r.get("notebook", "").endswith(f"/{operando}")), None)
+            if informe is not None and informe.get("sealed") is False:
+                unmeasurable.append({
+                    "ordinal": item["ordinal"],
+                    "notebook": informe["notebook"],
+                    "measuredBy": result["measuredBy"],
+                    "reason": (
+                        "the notebook carries no seal cell, so `sourcesMatch` "
+                        "is never written and this witness can never be "
+                        "measured -- the step running is not the problem"),
+                    "resolve": (
+                        f"add the kit's seal to {informe['notebook']}: a final "
+                        f"cell that prints `{KIT_SEAL.stem}.stamp()`, then run "
+                        "the step once more so the report records it"),
+                })
 
     # The same staleness rule `admissibility_record` already applies (line
     # 4815-4821): a revision's *content* hash, not its name, is what a header
@@ -533,6 +586,9 @@ def position_state(target: Path, name: str, evidence: dict,
         "boundTo": bound_to, "sequence": sequence,
         "disagreements": disagreements, "unmeasured": unmeasured,
         "unbacked": unbacked,
+        # Los ítems que no pueden tildarse jamás, distinguidos de los que
+        # simplemente no corrieron todavía. Ver el bloque que lo llena.
+        "unmeasurable": unmeasurable,
         "lastGate": last_gate, "lastClose": last_close,
         "targetLevel": block["target"],
         # Derived from the same `evidence` the marks above were, and pointedly
@@ -4121,8 +4177,7 @@ def scaffold_kit_source(destination: str, name: str) -> Path | None:
     mapping = {
         f"src/{package}_Benchmark/__init__.py":
             SKILL_ROOT / "assets" / "kit" / "src_benchmark" / "__init__.py",
-        f"src/{package}_Benchmark/report_digest.py":
-            SKILL_ROOT / "assets" / "kit" / "nb" / "report_digest.py",
+        f"src/{package}_Benchmark/{KIT_SEAL.name}": KIT_SEAL,
         "tests/test_smoke.py": SKILL_ROOT / "assets" / "kit" / "tests" / "test_smoke.py",
         "tests/findings.py": SKILL_ROOT / "assets" / "kit" / "tests" / "findings.py",
         "tests/conftest.py": SKILL_ROOT / "assets" / "kit" / "tests" / "conftest.py",
@@ -4588,6 +4643,10 @@ def trivial_assertions(tests_dir: Path) -> list[str]:
 #: it ran against, and a report that ran once and was never re-run stays green while
 #: the code moves out from under it.
 DIGEST_MARKER = "SOURCES-SHA256"
+
+#: The kit asset that produces the seal. One spelling, so `seal_spellings()`
+#: and the scaffold that installs it cannot name two different files.
+KIT_SEAL = SKILL_ROOT / "assets" / "kit" / "nb" / "report_digest.py"
 
 
 #: What the benchmark package declares instead of `__provenance__`. It implements no
@@ -6639,6 +6698,45 @@ def notebook_coupling(path: Path, contract: dict) -> dict:
     return {"coupled": bool(couplings), "couplings": couplings}
 
 
+def seal_spellings() -> tuple[str, ...]:
+    """What a notebook must name for its seal to be reachable, taken from the kit.
+
+    Derived and never written here. The kit ships one module that produces the
+    seal, so its own filename is the name a notebook imports, and `DIGEST_MARKER`
+    is the string the seal prints and `notebook_execution` reads back. Spelling
+    either one a second time in this file would be a copy that goes stale the day
+    the asset is renamed --- and it would go stale GREEN, marking every notebook
+    sealed, which is the exact failure this check exists to close.
+    """
+    return (KIT_SEAL.stem, DIGEST_MARKER)
+
+
+def notebook_seals(notebook: dict) -> bool:
+    """Whether this notebook's own source can produce the seal at all.
+
+    Static, and that is the whole point. `unstamped` answers the same question
+    from OUTPUTS, so it can only answer it about a notebook that already ran ---
+    and a `@notebook` witness ticks against `sourcesMatch`, which only the seal
+    writes. Put together, a notebook without the seal cell runs perfectly, comes
+    back `executed`, and its ordinal can never be ticked; the first anyone hears
+    of it is a refusal after the run was paid for.
+
+    Measured on a real walk: four of ten notebooks carried no seal, four ordinals
+    of the sequence were unreachable from the moment they were declared, and the
+    walk stopped after 548 seconds of sweep with a message that read as if the
+    step had failed. It had not; it was the witness that could never be measured.
+
+    Reading the SOURCE answers it before a kernel starts, which is what makes it
+    a demand that can be made of a repository built from zero rather than a
+    post-mortem of one that already spent the time.
+    """
+    fuentes = "\n".join(
+        "".join(cell.get("source") or [])
+        for cell in (notebook.get("cells") or [])
+        if isinstance(cell, dict) and cell.get("cell_type") == "code")
+    return any(spelling in fuentes for spelling in seal_spellings())
+
+
 def notebooks_state(target: Path, name: str, package: str) -> dict:
     """Every notebook of the product, and whether its evidence is still current.
 
@@ -6688,6 +6786,10 @@ def notebooks_state(target: Path, name: str, package: str) -> dict:
         # The boundary travels WITH the status, where a reader meets it,
         # rather than in a docstring they will not open.
         state["digestScope"] = DIGEST_SCOPE
+        # Estático, y antes de que corra nada: `unstamped` mira las SALIDAS y por
+        # eso sólo puede hablar de un cuaderno que ya corrió. Éste mira la fuente.
+        state["sealed"] = notebook_seals(json.loads(
+            notebook.read_text(encoding="utf-8")))
         reports.append(state)
     return {
         "sourcesDigest": current,
@@ -6711,6 +6813,11 @@ def notebooks_state(target: Path, name: str, package: str) -> dict:
         # failure as a green suite whose red was never reachable.
         "unstamped": [r["notebook"] for r in reports
                       if r["status"] == "executed" and r["sourcesMatch"] is None],
+        # La mitad que se puede exigir DESDE CERO. `unstamped` de arriba es su
+        # post-mortem: dice lo mismo, después de pagar la corrida. Un cuaderno
+        # acá no puede sellar, así que cualquier testigo que lo nombre es un
+        # ítem que jamás se tilda por bien que corra el paso.
+        "unsealed": [r["notebook"] for r in reports if not r["sealed"]],
         "status": "ok" if reports and all(
             r["status"] == "executed" and r["sourcesMatch"] for r in reports) else "drift",
     }
@@ -13389,7 +13496,8 @@ def cmd_step(args: argparse.Namespace) -> dict:
                 "STEP_SEQUENCE_NOT_REACHED",
                 f"item {min(earlier_open)} in the sequence is not yet ticked; "
                 f"{args.step!r} advances item {advances} and cannot run ahead "
-                "of it -- a step that skips a rung is refused.")
+                "of it -- a step that skips a rung is refused."
+                + sequence_block_detail(position, advances))
 
     # The other optional sub-key, read exactly the way `advances` is: absent
     # runs unmeasured (see `PRODUCES_UNDECLARED_CONSEQUENCE`), and PRESENT is
