@@ -5677,7 +5677,14 @@ class RemoteExecutionJobsSectionTests(unittest.TestCase):
         for job in state["jobs"]:
             self.assertEqual(
                 set(job.keys()),
-                {"job", "product", "staleness", "accelerator", "localBudget"})
+                # `notebook` joined the row when `probe` learned to ask
+                # whether the notebook a job would run is one the pilot
+                # walked (`JobNotebookPilotJoinTests`). It is read out of the
+                # same open `run-config.json` the two fields beside it are,
+                # and it is `None` for both jobs here, which declare the
+                # callable shape -- the shape stays one whatever the answer.
+                {"job", "product", "staleness", "accelerator", "localBudget",
+                 "notebook"})
 
     def test_services_is_a_count_never_a_name(self):
         """Mirrors `test_the_section_names_no_service` above, over the
@@ -12152,6 +12159,440 @@ class ProbeReportedFactsRosterTests(unittest.TestCase):
         section = usage[usage.index("## Reading `probe`"):]
         section = section[:section.index("\n## ", 1)]
         self.assertIn("`toDiscuss`", section)
+
+class JobNotebookPilotJoinTests(unittest.TestCase):
+    """The join nothing checked: is the notebook a job would run one the
+    pilot actually walked?
+
+    Both halves shipped before this class existed and nothing compared them.
+    A job's `run` block can name a notebook and the worker runs that exact
+    file out of the sparse clone at the pinned commit; `pilotCompleteness`
+    already knows which notebooks the declared flow opened. Between them sat
+    the only question that decides whether a campaign is worth its quota, and
+    no key answered it -- so a repository could show a complete pilot beside a
+    job pointing at a notebook that pilot never touched, and every key read
+    clean.
+
+    **Reported, never refused**, and the tests hold that as hard as they hold
+    the join itself: this sits in front of the expensive door, and a refusal
+    there an operator cannot clear corners them where every alternative costs
+    money.
+
+    The `pilot` operand is never hand-written. Every case below builds it by
+    calling `impl.pilot_completeness_state` for real, because a fixture that
+    spelled that shape by hand would go on passing the day the producer
+    renamed a key -- the join would be reading `None` and this class would be
+    green about a comparison that never happened.
+    """
+
+    #: The declared flow the fixtures below share: one step that renders one
+    #: notebook, declared through `produces` exactly as a target declares it.
+    STEPS = {"draw": {"module": "Method_Benchmark.draw", "function": "main",
+                      "advances": 1, "produces": ["Notebooks/pilot.ipynb"]}}
+
+    def walked_pilot(self, notebook="Method/Notebooks/pilot.ipynb"):
+        """A real `pilot_completeness_state` return whose flow walked
+        `notebook`, built through the producer rather than spelled here.
+
+        The evidence shape is the one `notebooks_state` stamps: a report path
+        relative to the TARGET, whose leading product segment `_pilot_notebooks`
+        drops. Handing this function the target-relative spelling and reading
+        the product-relative one back out is itself the proof that the two
+        vocabularies are what this class says they are.
+        """
+        pilot = impl.pilot_completeness_state(
+            self.STEPS, [],
+            {"notebooks": {"reports": [{"notebook": notebook,
+                                        "status": "executed",
+                                        "sourcesMatch": True}]},
+             "stepVerdicts": {}})
+        self.assertEqual(
+            [row["notebooks"] for row in pilot["steps"]],
+            [["Notebooks/pilot.ipynb"]],
+            "the producer no longer reports the notebook this class joins "
+            "against, so every case below would be comparing against nothing")
+        return pilot
+
+    def empty_pilot(self):
+        """A real return for a target that declared no flow at all."""
+        pilot = impl.pilot_completeness_state({}, [], {})
+        self.assertEqual(pilot["status"], "undeclared")
+        return pilot
+
+    @staticmethod
+    def job(name="job", product="Method", notebook=None):
+        """One row in the shape `remote_execution_jobs_state` builds."""
+        return {"job": name, "product": product, "notebook": notebook,
+                "staleness": {"status": "fresh"}, "accelerator": None,
+                "localBudget": None}
+
+    # --- the three states ---------------------------------------------------
+
+    def test_a_job_running_a_notebook_the_pilot_walked_reads_piloted(self):
+        """The state a weaker guard never reaches.
+
+        A class that only ever asserted the mismatch case would stay green
+        with the vocabulary join deleted outright -- compare the job's
+        repository-relative path against the pilot's product-relative set and
+        every job reads `unpiloted`, mismatches included. So the passing
+        direction is asserted first, and it is asserted with the exact
+        `pilotRelative` the join computed, not merely with the verdict.
+        """
+        state = impl.job_notebook_pilot_state(
+            [self.job(notebook="Method/Notebooks/pilot.ipynb")],
+            self.walked_pilot())
+
+        self.assertEqual(state["status"], "ok")
+        self.assertEqual(state["unpiloted"], [])
+        self.assertEqual(state["walked"], ["Notebooks/pilot.ipynb"])
+        self.assertEqual(state["jobs"], [{
+            "job": "job", "notebook": "Method/Notebooks/pilot.ipynb",
+            "pilotRelative": "Notebooks/pilot.ipynb", "status": "piloted"}])
+
+    def test_a_job_running_a_notebook_the_pilot_never_opened_reads_unpiloted(self):
+        """The measured defect, made a red: a complete-looking flow beside a
+        job pointing somewhere the flow never went."""
+        state = impl.job_notebook_pilot_state(
+            [self.job(notebook="Method/Notebooks/other.ipynb")],
+            self.walked_pilot())
+
+        self.assertEqual(state["status"], "unpiloted")
+        self.assertEqual(state["unpiloted"], ["job"])
+        self.assertEqual(state["jobs"], [{
+            "job": "job", "notebook": "Method/Notebooks/other.ipynb",
+            "pilotRelative": "Notebooks/other.ipynb", "status": "unpiloted"}])
+
+    def test_a_job_declaring_no_notebook_reads_not_applicable(self):
+        """A function-shaped job carries nothing to compare, and that is a
+        different fact from a comparison that came out wrong.
+
+        Folded together the two are indistinguishable off the payload, which
+        is the reading this state exists to stop: a legitimate callable job
+        would be accused of a mismatch it cannot have, in front of the one
+        door where a refusal costs the operator money to clear.
+        """
+        state = impl.job_notebook_pilot_state(
+            [self.job()], self.walked_pilot())
+
+        self.assertEqual(state["status"], "ok")
+        self.assertEqual(state["unpiloted"], [])
+        self.assertEqual(state["jobs"], [{
+            "job": "job", "notebook": None, "pilotRelative": None,
+            "status": "not-applicable"}])
+
+    def test_the_three_states_carry_one_shape(self):
+        """Every row carries all four keys whichever answer it got.
+
+        A payload whose shape varies with its verdict makes each consumer test
+        for a key before reading it, and the one that forgets reads `None` and
+        calls it "not applicable" -- which is precisely the conflation the
+        third state exists to prevent.
+        """
+        state = impl.job_notebook_pilot_state(
+            [self.job("piloted", notebook="Method/Notebooks/pilot.ipynb"),
+             self.job("mismatched", notebook="Method/Notebooks/other.ipynb"),
+             self.job("callable")],
+            self.walked_pilot())
+
+        self.assertEqual([row["status"] for row in state["jobs"]],
+                         ["piloted", "unpiloted", "not-applicable"])
+        shapes = {tuple(sorted(row)) for row in state["jobs"]}
+        self.assertEqual(
+            shapes,
+            {("job", "notebook", "pilotRelative", "status")},
+            "a row's key set changes with its answer, so a reader has to know "
+            "the verdict before they can read the row that carries it")
+
+    def test_every_reported_status_is_one_the_roster_names(self):
+        """The roster is the closed set, so a fourth answer invented at a
+        branch has somewhere to go red."""
+        state = impl.job_notebook_pilot_state(
+            [self.job("a", notebook="Method/Notebooks/pilot.ipynb"),
+             self.job("b", notebook="Method/Notebooks/other.ipynb"),
+             self.job("c")],
+            self.walked_pilot())
+
+        self.assertEqual(
+            sorted({row["status"] for row in state["jobs"]}),
+            sorted(impl.JOB_NOTEBOOK_PILOT_STATUSES))
+
+    # --- the vocabulary join ------------------------------------------------
+
+    def test_the_product_prefix_is_stripped_segment_wise_never_by_prefix(self):
+        """The mutation this join has to survive, and the weaker guard it
+        beats.
+
+        A job's `run.notebook` is repository-relative; the pilot's notebooks
+        are product-relative. Stripping the product with
+        `notebook.startswith(product)` passes every case where the two names
+        differ -- including the passing case above -- and then reports
+        `Method_Benchmark/Notebooks/pilot.ipynb` as a notebook the product
+        `Method` piloted, because after a prefix strip its tail is
+        byte-identical to the walked one. That is a FALSE `piloted` in front
+        of the expensive door: the operator is told the artefact was executed
+        and read here, and it was not.
+
+        A guard testing only `Method/Notebooks/pilot.ipynb` survives that
+        mutation intact. This one does not.
+        """
+        self.assertEqual(
+            impl._product_relative_notebook(
+                "Method_Benchmark/Notebooks/pilot.ipynb", "Method"),
+            None,
+            "a product named `Method` swallowed a path under "
+            "`Method_Benchmark/`, so a prefix comparison is standing in for "
+            "a segment-wise one")
+        self.assertEqual(
+            impl._product_relative_notebook(
+                "Method/Notebooks/pilot.ipynb", "Method"),
+            "Notebooks/pilot.ipynb")
+
+    def test_a_sibling_product_s_notebook_is_never_read_as_piloted(self):
+        """The same mutation, read at the verdict rather than at the helper --
+        because the helper is where it is fixed and the payload is where it is
+        believed."""
+        state = impl.job_notebook_pilot_state(
+            [self.job(notebook="Method_Benchmark/Notebooks/pilot.ipynb")],
+            self.walked_pilot())
+
+        self.assertEqual(state["jobs"][0]["status"], "unpiloted")
+        self.assertIsNone(state["jobs"][0]["pilotRelative"])
+        self.assertEqual(state["unpiloted"], ["job"])
+
+    def test_a_path_the_pilot_s_vocabulary_cannot_express_is_never_a_match(self):
+        """`pilotRelative: null` is not a pass. A notebook sitting outside the
+        product, or a job naming no product at all, is a file nothing here has
+        run -- and reading an untranslatable path as "close enough" would be a
+        silent `piloted` on exactly the case nobody checked.
+        """
+        outside = impl.job_notebook_pilot_state(
+            [self.job(notebook="Notebooks/pilot.ipynb")], self.walked_pilot())
+        self.assertEqual(outside["jobs"][0],
+                         {"job": "job", "notebook": "Notebooks/pilot.ipynb",
+                          "pilotRelative": None, "status": "unpiloted"})
+
+        unnamed = impl.job_notebook_pilot_state(
+            [self.job(product=None, notebook="Method/Notebooks/pilot.ipynb")],
+            self.walked_pilot())
+        self.assertEqual(unnamed["jobs"][0]["status"], "unpiloted")
+
+    def test_a_flow_that_declared_nothing_leaves_every_notebook_job_unpiloted(self):
+        """A target with no `__steps__` walked nothing, so a job that names a
+        notebook names one nothing here ran. Silence would be the other
+        reading, and it is the one that costs quota.
+        """
+        state = impl.job_notebook_pilot_state(
+            [self.job(notebook="Method/Notebooks/pilot.ipynb"), self.job("two")],
+            self.empty_pilot())
+
+        self.assertEqual(state["walked"], [])
+        self.assertEqual(state["unpiloted"], ["job"])
+        self.assertEqual([row["status"] for row in state["jobs"]],
+                         ["unpiloted", "not-applicable"])
+
+    def test_no_job_at_all_is_ok_and_still_carries_every_key(self):
+        state = impl.job_notebook_pilot_state([], self.walked_pilot())
+        self.assertEqual(
+            sorted(state),
+            ["jobs", "note", "status", "unpiloted", "walked"])
+        self.assertEqual(state["status"], "ok")
+        self.assertEqual(state["jobs"], [])
+
+    # --- what it reads out of the other skill, and what it does not ---------
+
+    def test_the_normal_run_s_notebook_is_read_and_the_rehearsal_s_is_not(self):
+        """`declared_notebooks()` in `remote-execution` unions `run.notebook`
+        with `run.smoke.notebook`, which is right for the question it answers
+        (which files must arrive in the checkout) and wrong for this one.
+
+        Reading through it would report a rehearsal's artefact as the thing a
+        campaign sends. The weaker guard -- asserting only that a notebook
+        comes back for a normal run block -- survives that substitution
+        completely.
+        """
+        config = {"run": {"notebook": "Method/Notebooks/pilot.ipynb",
+                          "smoke": {"notebook": "Method/Notebooks/smoke.ipynb"}}}
+        self.assertEqual(impl._run_block_notebook(config),
+                         "Method/Notebooks/pilot.ipynb")
+
+        rehearsal_only = {"run": {"module": "Method_Benchmark.wiring",
+                                  "function": "main",
+                                  "smoke": {"notebook": "Method/Notebooks/smoke.ipynb"}}}
+        self.assertIsNone(
+            impl._run_block_notebook(rehearsal_only),
+            "a job whose only notebook is its rehearsal's was reported as "
+            "running one, so a smoke artefact is standing in for the "
+            "campaign's")
+
+    def test_a_malformed_run_block_reports_nothing_and_refuses_nothing(self):
+        """This is a reporting path. `jobfolder.validate_run_config()` already
+        refuses a malformed block at the one place it guards an act, and
+        raising again here would turn a read-only report into a second gate on
+        somebody else's rule.
+        """
+        for config in ({}, {"run": None}, {"run": []}, {"run": {}},
+                       {"run": {"notebook": ""}}, {"run": {"notebook": 7}},
+                       {"run": {"notebook": "   "}}):
+            with self.subTest(config=config):
+                self.assertIsNone(impl._run_block_notebook(config))
+
+    def test_the_remote_execution_run_block_roster_still_names_the_notebook_shape(self):
+        """The join is only meaningful while the other skill still admits a
+        notebook-shaped run at all. Read off that skill's own roster rather
+        than asserted here, so the day it stops this class says why instead of
+        going quietly green on a state nothing can produce.
+        """
+        jobfolder = FORGE / ".claude/skills/remote-execution/scripts/jobfolder.py"
+        source = jobfolder.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        kinds = None
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "RUN_BLOCK_KINDS"
+                    for t in node.targets):
+                kinds = [element.value for element in node.value.elts]
+        self.assertEqual(
+            sorted(kinds or []), ["callable", "notebook"],
+            "the run block no longer offers exactly the two shapes this join "
+            "reads, so `not-applicable` and `unpiloted` no longer partition "
+            "what a job can declare")
+
+    # --- the payload, driven through the real command -----------------------
+
+    # One definition of "a target the ladder answers `benchmark` for",
+    # borrowed rather than restated -- the idiom this file already uses for
+    # `guarded_documents`. A second copy of that fixture would drift from the
+    # one whose reachability is already proven, and a target answering some
+    # other rung would never reach the branch this class is about.
+    DECLARATION = ProbeReportedFactsRosterTests.DECLARATION
+    WIRING = ProbeReportedFactsRosterTests.WIRING
+    TABLES = ProbeReportedFactsRosterTests.TABLES
+    build_target = ProbeReportedFactsRosterTests.build_target
+    probe = ProbeReportedFactsRosterTests.probe
+
+    def write_notebook_job(self, box, commit, notebook):
+        job_dir = box / "tools" / "service" / "notebook-job"
+        job_dir.mkdir(parents=True)
+        (job_dir / "run-config.json").write_text(json.dumps({
+            "schemaVersion": 1,
+            "product": "Method",
+            "service": "service",
+            "jobName": "notebook-job",
+            "commit": commit,
+            "repo": {"url": "https://example.invalid/toy.git", "ref": "main"},
+            "clonePaths": ["src", "Method/Notebooks"],
+            "run": {"notebook": notebook},
+            "runnerTemplate": {},
+        }), encoding="utf-8")
+
+    def test_probe_publishes_the_join_over_a_real_job_folder(self):
+        """The key is wired, driven end to end.
+
+        Every case above is a pure-function call, and all of them stay green
+        if `cmd_probe` never puts the answer in its payload at all -- the
+        weaker guard, named. This runs the real command over a real job folder
+        and reads the verdict back out of the JSON an operator sees.
+
+        The fixture is borrowed from `ProbeReportedFactsRosterTests`, which
+        already reaches the run offer with every earlier rung satisfied: a
+        target that answered some other rung would never exercise the branch
+        this class is about.
+        """
+        box, head = self.build_target("nbjoin")
+        self.write_notebook_job(box, head, "Method/Notebooks/never_run.ipynb")
+
+        payload = self.probe(box)["remoteExecution"]
+
+        self.assertEqual(
+            [job["notebook"] for job in payload["jobs"]],
+            ["Method/Notebooks/never_run.ipynb"],
+            "the job row no longer carries the notebook its run block "
+            "declares, so the join has nothing to read")
+        self.assertEqual(payload["notebookPilot"]["status"], "unpiloted")
+        self.assertEqual(payload["notebookPilot"]["unpiloted"], ["notebook-job"])
+        self.assertEqual(payload["notebookPilot"]["jobs"], [{
+            "job": "notebook-job",
+            "notebook": "Method/Notebooks/never_run.ipynb",
+            "pilotRelative": "Notebooks/never_run.ipynb",
+            "status": "unpiloted"}])
+
+    def test_the_join_refuses_nothing_and_moves_no_rung(self):
+        """The posture, made behavioural.
+
+        A sentence saying the ladder does not branch on this is a sentence
+        anybody can contradict with four lines and nothing going red. This is
+        the test such a change has to break: a job pointing at a notebook the
+        pilot never opened, and the ladder still answering exactly what it
+        answered before the job folder existed.
+        """
+        box, head = self.build_target("nbgate")
+        before = self.probe(box)
+        self.write_notebook_job(box, head, "Method/Notebooks/never_run.ipynb")
+        after = self.probe(box)
+
+        self.assertEqual(before["nextStep"], "benchmark")
+        self.assertEqual(after["nextStep"], "benchmark",
+                         "an unpiloted notebook moved the ladder, so a report "
+                         "became a gate in front of the expensive door")
+        self.assertEqual(after["remoteExecution"]["notebookPilot"]["status"],
+                         "unpiloted",
+                         "the fixture stopped producing an unpiloted job, so "
+                         "this test is no longer about anything")
+
+    def test_a_job_folder_whose_config_cannot_be_read_carries_the_key_anyway(self):
+        """The unreadable row is a row, and its shape is the same one.
+
+        `probe`'s output is read by a human, and a row missing the key reads
+        as "nothing wrong" when the truth is that this job's configuration
+        could not be parsed at all -- the identical argument the `unreadable`
+        staleness verdict beside it already makes.
+        """
+        box, _ = self.build_target("nbunread")
+        job_dir = box / "tools" / "service" / "broken"
+        job_dir.mkdir(parents=True)
+        (job_dir / "run-config.json").write_text("{ not json", encoding="utf-8")
+
+        payload = self.probe(box)["remoteExecution"]
+
+        self.assertEqual([job["staleness"]["status"] for job in payload["jobs"]],
+                         ["unreadable"])
+        self.assertEqual([job["notebook"] for job in payload["jobs"]], [None])
+        self.assertEqual(payload["notebookPilot"]["jobs"], [{
+            "job": "broken", "notebook": None, "pilotRelative": None,
+            "status": "not-applicable"}])
+
+    # --- doctrine -----------------------------------------------------------
+
+    def test_the_payload_says_what_it_is(self):
+        """`WALK_NOTE`'s own doctrine: a report met only when something is
+        wrong is a report nobody has learnt to read by the time it matters."""
+        state = impl.job_notebook_pilot_state([], self.empty_pilot())
+        self.assertEqual(state["note"], impl.JOB_NOTEBOOK_PILOT_NOTE)
+        for status in impl.JOB_NOTEBOOK_PILOT_STATUSES:
+            self.assertIn(status, impl.JOB_NOTEBOOK_PILOT_NOTE,
+                          f"the note names no answer called {status!r}")
+
+    def test_the_decision_gates_send_a_reader_to_an_unpiloted_job(self):
+        """A fact reported beside an offer to run is only read if something
+        tells the reader to read it."""
+        rows = markdown_table_rows(
+            SKILL_MD.read_text(encoding="utf-8"),
+            ProbeReportedFactsRosterTests.GATES_TABLE_HEADER)
+        self.assertEqual(len(rows), 1, "the Decision Gates table moved")
+        situations = "\n".join(row[0] for row in rows[0])
+        self.assertIn("notebookPilot", situations,
+                      "no gate row tells a reader to read a job whose "
+                      "notebook the pilot never opened before offering a "
+                      "campaign")
+
+    def test_the_usage_reference_tells_a_reader_what_to_do_about_it(self):
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("## Reading `probe`"):]
+        section = section[:section.index("\n## ", 1)]
+        self.assertIn("`notebookPilot`", section)
+        for status in impl.JOB_NOTEBOOK_PILOT_STATUSES:
+            self.assertIn(status, section,
+                          f"the reference never names the {status!r} answer")
 
 
 def dict_literal_keys(source: Path, name: str) -> list[str]:

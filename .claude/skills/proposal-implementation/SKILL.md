@@ -473,6 +473,7 @@ exactly what stops a launcher from being able to claim it implements anything.
 | `probe` reports `nextStep: "pilot-decisions"` | The flow finished at pilot and each of its steps now owes its own decision about how the full run carries it: publish the per-step questions, read `remoteExecution.necessity` beside them, and decide one step at a time. Show `report.liveFindings` first when it names anything — those decisions are taken over artefacts that carry live findings, and the acknowledgement holds this rung until it is answered |
 | `probe` reports a job with `smokeReady: false` | A job folder exists that no rehearsal has ever passed on its pinned commit: read it before offering a campaign, because a rehearsal finds cheaply what the long run would find expensively |
 | `probe` reports a job whose `staleness` is `drift` | The repository moved past the commit that job is pinned to: regenerate the job, or say plainly that the run measures the older code, before offering a campaign |
+| `probe` reports a job in `remoteExecution.notebookPilot.unpiloted` | That job would run a notebook this pilot never opened, so the artefact about to cost machine time has not been executed and read here first: name the notebook and say so before offering a campaign. Nothing refuses it — a repository may generate a job before it pilots, or send a different notebook on purpose — but a campaign offered without saying it is a campaign offered on an untested file |
 | `probe` reports `remoteExecution: "drift"` | The ledger and the service no longer agree, or a stale result arrived: run `remote_cli reconcile` before reading anything else out of that ledger. Waiting fixes nothing |
 | `probe` reports `remoteExecution: "unreliable"` | A line of the ledger could not be read, so nothing about what is out there is trustworthy: run `remote_cli reconcile` and report what it finds before offering a run |
 | `verify`/`probe` report `position: "stale"` | The section's header is bound to a revision whose bytes no longer match: run `position` again to rebind it before trusting any tick on it |
@@ -2468,7 +2469,7 @@ worker and what came back. These three say what exists on disk right now:
 
 | Job fact | What it reports | Gates? |
 | --- | --- | --- |
-| `jobs` | Every generated job folder found under `tools/`, each with its product and its own `staleness` verdict | **Never** — reported beside the answer, read before a campaign |
+| `jobs` | Every generated job folder found under `tools/`, each with its product, its own `staleness` verdict, and the `notebook` its run block declares (`null` for the callable shape, and for a config that could not be read at all) | **Never** — reported beside the answer, read before a campaign |
 | `services` | How many services those folders are spread across, as a count | **Never** — a count, so that no service is ever named here |
 | `smokeReady` | Per job, whether a rehearsal has already passed on the commit that job is pinned to | **Never** — for the reason below |
 
@@ -2486,6 +2487,51 @@ So both are reported, and the Decision Gates table is what sends a reader to
 them. If the fact ever grew a per-job link to the campaign about to be offered —
 tying an unrehearsed job to *this* run rather than to the repository in general —
 the difference becomes expressible and this position should be revisited.
+
+### Is the notebook this job would run one the pilot walked?
+
+`remoteExecution.notebookPilot` answers exactly that, and until it existed
+nothing did. Both halves were already on the page: a job's run block can name a
+notebook, and the worker runs that exact file out of the sparse clone at the
+pinned commit; `pilotCompleteness` already knows which notebooks the declared
+flow opened. Nobody compared them, so a repository could show a complete pilot
+beside a job pointing at a notebook that pilot never touched, and every key read
+clean.
+
+Three answers, one shape:
+
+| `status` | What it means |
+| --- | --- |
+| `piloted` | The pilot walked this exact notebook. The file about to cost machine time has been executed and read here first |
+| `unpiloted` | It did not — or the job's path is not one the pilot's vocabulary can express at all, which is the same answer for the same reason: nothing here has run that file |
+| `not-applicable` | This job declares the callable shape and names no notebook, so there is nothing to compare. A first-class answer, never a blank |
+
+Every row carries `job`, `notebook`, `pilotRelative` and `status` in all three
+states. A payload whose shape changes with its answer makes each reader test for
+a key before reading it, and the one that forgets reads `null` and calls it
+"not applicable".
+
+**It reports and it refuses nothing.** This sits in front of the expensive
+door, and a refusal there an operator cannot clear corners them at the one point
+where every alternative costs money. A repository may generate a job before it
+pilots, or pilot through one notebook and send another deliberately. What must
+never happen is that nobody is told — so the Decision Gates row above sends a
+reader to `unpiloted` before a campaign is offered, and the answer is computed on
+every run rather than only on the run where it turns out to matter.
+
+**The two vocabularies are joined, never assumed equal.** A job's
+`run.notebook` is repository-relative, because the remote-execution skill
+resolves it against the clone; the pilot's notebooks are product-relative. The
+job's path is restated in the pilot's vocabulary segment-wise, and `pilotRelative`
+reports the result so a reader can see what was actually compared. `null` there
+is not a match: a path the pilot's vocabulary cannot express is not a notebook
+the pilot walked.
+
+**Nothing in `remote-execution` is read differently or changed for this.** The
+notebook comes out of the same open `run-config.json` this command already reads
+each job's staleness from — `run.notebook` alone, never that skill's own
+`declared_notebooks()`, whose union with `run.smoke` answers a different
+question and would report a rehearsal's artefact as the thing a campaign sends.
 
 ### The rehearsal is the agent's to run
 

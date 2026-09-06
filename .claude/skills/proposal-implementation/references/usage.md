@@ -1549,6 +1549,22 @@ oversight: the fact as computed cannot tell a repository that is not ready apart
 from one that never sends work anywhere. `SKILL.md`'s Output Contract carries the
 argument and states what would change it.
 
+**`notebookPilot` is the third, and it is a join rather than a fact.**
+`remoteExecution.notebookPilot` asks, per generated job, whether the notebook
+that job would run is one the pilot actually walked. It reads no disk of its
+own: the job's `run.notebook` comes out of the same `run-config.json` its
+`staleness` came from, and the walked set is `pilotCompleteness`'s own. Three
+answers and one shape — `piloted`, `unpiloted`, `not-applicable` — with every
+row carrying `job`, `notebook`, `pilotRelative` and `status` whichever answer it
+got. `unpiloted` means the pilot never opened that file, or that the job's path
+is not one the pilot's vocabulary can express; `not-applicable` means the job
+declares the callable shape and names no notebook, which is a different fact
+from a comparison that came out wrong and is reported as one. `status` is `"ok"`
+or `"unpiloted"` for the whole set, `unpiloted` names the jobs, and `walked`
+names every notebook the pilot opened, so a mismatch can be read without
+re-deriving either side. It gates nothing: read it before offering a campaign,
+and say plainly which notebook is about to be run untested.
+
 **`pilotCompleteness` is a rung, and two of them.** It answers whether the flow
 the target declared has actually finished at pilot: `status: "undeclared"` when
 no `__steps__` entry carries an `advances` ordinal at all (the rule does not

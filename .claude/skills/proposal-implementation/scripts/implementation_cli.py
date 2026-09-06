@@ -3671,6 +3671,16 @@ def cmd_probe(args) -> dict:
             **remote,
             **jobs,
             "necessity": necessity,
+            # The join nothing checked: whether the notebook each job would
+            # run is one the pilot actually walked. Both operands are already
+            # held by this command and are threaded in rather than recomputed
+            # -- `jobs["jobs"]` carries each job's own declared notebook, read
+            # out of the same `run-config.json` its staleness came from, and
+            # `pilot` carries every notebook the declared flow opened. A
+            # second read of either here could disagree with the branch above
+            # that published it. Reports and refuses nothing; see
+            # `JOB_NOTEBOOK_PILOT_NOTE`.
+            "notebookPilot": job_notebook_pilot_state(jobs["jobs"], pilot),
         },
         "nextStep": next_step,
         # What to do about that answer, published by the engine rather than
@@ -7636,6 +7646,166 @@ def _proposal_digest(events: list, campaign: dict) -> str | None:
     return None
 
 
+def _run_block_notebook(run_config: dict) -> str | None:
+    """The notebook a job's NORMAL run declares, or `None`.
+
+    A plain mapping read over a shape the `remote-execution` skill owns, and
+    deliberately not a call into that skill's own `declared_notebooks()`: that
+    function unions `run.notebook` with `run.smoke`'s, which is right for the
+    question IT answers (*which notebooks must arrive in the checkout*) and
+    wrong for this one (*which notebook would this job run*). Folding a
+    rehearsal's artefact in here would report a smoke notebook as the thing a
+    campaign sends. Nothing in that skill is reached or changed by this.
+
+    Every non-string and every blank reads as `None` -- the same "declares
+    nothing knowable" this file gives a config it could not open. This is a
+    reporting path: `jobfolder.validate_run_config()` already refuses a
+    malformed block at the one place it guards an act, and refusing again here
+    would turn a read-only report into a second gate on somebody else's rule.
+    """
+    run_block = (run_config or {}).get("run")
+    if not isinstance(run_block, dict):
+        return None
+    notebook = run_block.get("notebook")
+    return notebook if isinstance(notebook, str) and notebook.strip() else None
+
+
+def _product_relative_notebook(notebook: str | None,
+                               product: str | None) -> str | None:
+    """A job's repository-relative notebook path, restated in the vocabulary
+    the pilot speaks, or `None` when it cannot be.
+
+    The two halves of this join name the same file in two different
+    vocabularies, and neither one is wrong. A job's `run.notebook` is
+    REPOSITORY-relative: the remote-execution skill resolves it against the
+    clone (`git cat-file -e <commit>:<notebook>`), so it carries the product
+    segment. `_pilot_notebooks` speaks PRODUCT-relative (`Notebooks/<file>`),
+    the same tail `impl_position._derive_notebook` matches on. Comparing the
+    two as written would report every job as unpiloted, which is the failure
+    mode a join has to be built not to have.
+
+    Segment-wise and never `str.startswith`, for `_owns`' own reason: a
+    product named `Method` must not swallow a path under `Method_Benchmark/`.
+
+    `None` when the job names no product, when the notebook does not sit under
+    it, or when there is nothing to translate. `None` is never read as a match:
+    a path this vocabulary cannot even express is certainly not one the pilot
+    walked, and saying so is the honest answer rather than a silent pass.
+    """
+    if not isinstance(notebook, str) or not notebook.strip():
+        return None
+    if not isinstance(product, str) or not product.strip():
+        return None
+    parts = [part for part in notebook.split("/") if part]
+    product_parts = [part for part in product.split("/") if part]
+    if len(parts) <= len(product_parts):
+        return None
+    if parts[:len(product_parts)] != product_parts:
+        return None
+    return "/".join(parts[len(product_parts):])
+
+
+#: The three answers this join can give, named once rather than respelled at
+#: each site that branches on one. `not-applicable` is a member and not an
+#: absence: a job declaring the callable shape carries no notebook to compare,
+#: and reporting that as `unpiloted` would accuse a legitimate job of a
+#: mismatch it cannot have.
+JOB_NOTEBOOK_PILOT_STATUSES = ("piloted", "unpiloted", "not-applicable")
+
+#: What the notebook/pilot join is, said in the payload rather than left to a
+#: reader to infer from three status words -- `WALK_NOTE`'s own doctrine.
+#:
+#: **The measured gap this closes.** Both halves already existed and nothing
+#: compared them. A job's run block can name a notebook and the worker runs
+#: that exact file from the pinned clone; `pilot_completeness_state` knows
+#: which notebooks the declared flow actually walked. Between them sat the
+#: only question that decides whether a campaign is worth its quota -- *is the
+#: artefact about to be sent one that has been executed and read here first* --
+#: and no key answered it, so an operator could read a complete pilot beside a
+#: job pointing at a notebook that pilot never opened, and nothing said a word.
+#:
+#: **Reported, never gating, and that is the whole posture.** This sits in
+#: front of the expensive door, and a refusal there that an operator cannot
+#: clear corners them at exactly the point where the alternatives all cost
+#: money. A repository may legitimately generate a job before it pilots, or
+#: pilot through one notebook and send another on purpose. What must never
+#: happen is that nobody is told.
+#:
+#: **`not-applicable` is a first-class answer, not a blank.** A job declaring
+#: the callable shape names no notebook at all -- `run_block_kind()` in the
+#: remote-execution skill admits exactly one of the two shapes -- so there is
+#: nothing to compare, and that is a different fact from a comparison that
+#: came out wrong. Off a payload that reported only mismatches the two read
+#: identically, which is the reading this key exists to stop.
+JOB_NOTEBOOK_PILOT_NOTE = (
+    "whether the notebook each generated job would run is one the pilot "
+    "actually walked. A pilot is the declared flow walked with the declared "
+    "notebooks, so that the artefact later sent to a worker has been executed "
+    "and read before anybody commits machine time to it -- and a job pointing "
+    "at a notebook that pilot never opened spends that time on a file nothing "
+    "here has ever run. Three answers, and the shape is the same in all "
+    "three: `piloted` (the pilot walked this exact notebook), `unpiloted` (it "
+    "did not, or the job's path is not one the pilot's vocabulary can even "
+    "express), and `not-applicable` (this job declares the callable shape and "
+    "names no notebook, so there is nothing to compare). Nothing here refuses "
+    "anything: a repository may generate a job before it pilots, or pilot one "
+    "notebook and send another deliberately. It is named because the "
+    "alternative reading is silence.")
+
+
+def job_notebook_pilot_state(jobs: list[dict], pilot: dict) -> dict:
+    """Whether the notebook each job would run is one the pilot walked --
+    `{"status", "jobs", "unpiloted", "walked", "note"}`, and never a refusal.
+
+    Pure: both operands are already computed by the caller and threaded in --
+    `remote_execution_jobs_state()`'s own `jobs` list and
+    `pilot_completeness_state()`'s own return. No filesystem walk, no second
+    `JOBFOLDER.read()`, no re-derivation of either half. Two reads of one fact
+    inside one command is how the two come to disagree, which is the restraint
+    `classify_remote_necessity` already keeps one key over.
+
+    `walked` is the union of every notebook every step's row names, in sorted
+    order and de-duplicated: two steps may render into one root, and the
+    question here is set membership, never which step got there first.
+
+    `status` is `"ok"` when no job is `unpiloted` and `"unpiloted"` when one
+    is. It gates nothing -- see `JOB_NOTEBOOK_PILOT_NOTE` -- and it is a
+    headline rather than a verdict, so a reader who scans one key still meets
+    the fact.
+
+    Every row carries all four of `job`, `notebook`, `pilotRelative` and
+    `status`, in every one of the three states. A payload whose shape varies
+    with its answer makes each consumer test for a key before reading it, and
+    the one that forgets reads `None`.
+    """
+    walked = sorted({notebook
+                     for row in (pilot or {}).get("steps") or []
+                     if isinstance(row, dict)
+                     for notebook in row.get("notebooks") or []
+                     if isinstance(notebook, str)})
+    rows = []
+    for job in jobs or []:
+        raw = job.get("notebook")
+        # Re-normalized here rather than trusted, because this function is
+        # pure and its `jobs` operand is whatever a caller hands it: a test,
+        # a future second producer, or the loop above. `None` and a blank
+        # string are the same absence and must not read as two.
+        notebook = raw if isinstance(raw, str) and raw.strip() else None
+        relative = _product_relative_notebook(notebook, job.get("product"))
+        if notebook is None:
+            status = "not-applicable"
+        elif relative is not None and relative in walked:
+            status = "piloted"
+        else:
+            status = "unpiloted"
+        rows.append({"job": job.get("job"), "notebook": notebook,
+                     "pilotRelative": relative, "status": status})
+    unpiloted = [row["job"] for row in rows if row["status"] == "unpiloted"]
+    return {"status": "unpiloted" if unpiloted else "ok",
+            "jobs": rows, "unpiloted": unpiloted, "walked": walked,
+            "note": JOB_NOTEBOOK_PILOT_NOTE}
+
+
 def remote_execution_jobs_state(target: Path) -> dict:
     """`probe`'s own job-folder fact (design #744 section 9): what job
     folders exist on disk right now, reported alongside
@@ -7723,6 +7893,13 @@ def remote_execution_jobs_state(target: Path) -> dict:
                 "staleness": {"status": "unreadable", "reason": str(exc)},
                 "accelerator": None,
                 "localBudget": None,
+                # Spelled on this row too, and never omitted from it: a row
+                # whose SHAPE varies with state makes every consumer test for
+                # the key before reading it, and the one that forgets reads
+                # `None` and calls it "declares no notebook". A config nobody
+                # could read declares nothing knowable, which is what `None`
+                # says here -- and `staleness` beside it already says why.
+                "notebook": None,
             })
             continue
 
@@ -7740,6 +7917,20 @@ def remote_execution_jobs_state(target: Path) -> dict:
             "staleness": dict(job_folder.staleness),
             "accelerator": run_config.get("accelerator"),
             "localBudget": run_config.get("localBudget"),
+            # What this job would RUN, when what it runs is a notebook --
+            # read out of the same open `run_config`, exactly as the two
+            # fields above it are, and never a second `JOBFOLDER.read()`.
+            # `None` for a job declaring the callable shape, which is the
+            # majority: `run_block_kind()` in the remote-execution skill
+            # admits exactly one of the two and refuses a block carrying
+            # both, so an absent `notebook` here is that skill's own answer
+            # rather than a guess taken here. Read as a plain mapping
+            # lookup and never through that skill's `declared_notebooks()`:
+            # this is the job's NORMAL run, and folding `run.smoke`'s
+            # notebook in beside it would report a rehearsal's artefact as
+            # the thing a campaign sends. Nothing in the other skill is
+            # reached, read differently, or changed by this.
+            "notebook": _run_block_notebook(run_config),
         })
 
         if not isinstance(product, str) or not product:
