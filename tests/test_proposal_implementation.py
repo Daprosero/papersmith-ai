@@ -5471,7 +5471,12 @@ class RemoteExecutionLedgerSectionTests(unittest.TestCase):
         # The whole of verify, not just the new key: this is the case every
         # existing target is in today, so it is the one that must never crash it.
         self.assertEqual(result["command"], "verify")
-        self.assertEqual(result["remoteExecution"], {"status": "absent"})
+        # `resolve` is spelled on the absent return too, and never omitted
+        # from it: a payload whose shape varies with its state makes every
+        # consumer test for the key before reading it. `None` is what "there
+        # is nothing to do about this" looks like here.
+        self.assertEqual(result["remoteExecution"],
+                         {"status": "absent", "resolve": None})
 
     def test_absent_when_the_skill_is_present_but_nothing_was_ever_sent(self):
         """Absence of data reads the same as absence of the capability: an
@@ -5482,7 +5487,7 @@ class RemoteExecutionLedgerSectionTests(unittest.TestCase):
             target = Path(raw)
             self._minimal_source(target)
             state = impl.remote_execution_state(target, "Method", "Method")
-            self.assertEqual(state, {"status": "absent"})
+            self.assertEqual(state, {"status": "absent", "resolve": None})
 
     def test_drift_when_a_pending_submission_s_source_has_moved(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -13097,6 +13102,374 @@ class JobNotebookPilotJoinTests(unittest.TestCase):
             self.assertIn(status, section,
                           f"the reference never names the {status!r} answer")
 
+class ReportedStateExitTests(unittest.TestCase):
+    """A reported state that names work names the way out of it, in the
+    payload, not only in a doctrine table somebody has to go and find.
+
+    The refusal side of this engine has been held to that for a while: every
+    `WORK_STATE` code passes one `except Refused` chokepoint and comes back
+    carrying either the command that clears it or the question that decides
+    it. The REPORTED side had exactly one such publication --
+    `position_finding_resolution`, whose whole payload rides inside the
+    command it publishes -- and everything else named its exit in prose.
+
+    Five of those states are closed here, across the two commands that report
+    them: the remote-execution ledger's `drift` and `unreliable`, reported by
+    both `verify` and `probe` from one function, and `structure`'s three gap
+    keys, reported by `verify`.
+
+    **All five publish a question rather than a command, and the reason is
+    measured rather than preferred.** The acts exist -- `remote_cli reconcile`
+    and `materialize --stage` -- and in each case an argument they require is
+    a value this engine must not supply: a worker id and a backend name are a
+    service account's username and a service's name, which this section is
+    forbidden to print; an approved plan and a seed are a human's approval and
+    a scientific parameter. A command published with those blank would not
+    run, and prose at least does not claim to. So what is published is the
+    question, and the `discuss` command that opens it -- which does run, and
+    every test below proves it by running it rather than by reading a key.
+    """
+
+    DECLARATION = ProbeReportedFactsRosterTests.DECLARATION
+    WIRING = ProbeReportedFactsRosterTests.WIRING
+    TABLES = ProbeReportedFactsRosterTests.TABLES
+    build_target = ProbeReportedFactsRosterTests.build_target
+    probe = ProbeReportedFactsRosterTests.probe
+    _write_ledger = RemoteExecutionLedgerSectionTests._write_ledger
+    _minimal_source = RemoteExecutionLedgerSectionTests._minimal_source
+
+    def verify(self, box):
+        proc = subprocess.run(
+            [sys.executable, str(CLI), "verify", "--target", str(box),
+             "--name", "Method", "--revision", "r01.md"],
+            capture_output=True, text=True, cwd=FORGE)
+        return json.loads(proc.stdout or "{}")
+
+    def run_published(self, entry):
+        """Execute the published act and hand back what it printed.
+
+        The whole point of this class. A test that asserts a `resolve` key is
+        present passes an exit with a hole in it -- a command missing a
+        required flag, a question whose text never reached the process, a
+        quoting bug that turns one argument into three. Every one of those
+        survives a key check and none survives this.
+        """
+        proc = subprocess.run(shlex.split(entry["command"]),
+                              capture_output=True, text=True,
+                              cwd=tempfile.gettempdir())
+        self.assertEqual(proc.returncode, 0,
+                         f"the published act does not run: "
+                         f"{entry['command']}\n{proc.stdout}{proc.stderr}")
+        return json.loads(proc.stdout or "{}")
+
+    def drifted_ledger_box(self, suffix):
+        """A target whose ledger reports `drift`: one pending submission whose
+        source has moved out from under it.
+
+        Built on the same fixture the roster class already reaches the run
+        offer with, rather than on a bare directory, because the published act
+        is executed here: `discuss` writes into a repository and refuses
+        `NOT_A_GIT_REPO` without one, so a fixture that skipped `git init`
+        would report a published exit as broken for a reason that has nothing
+        to do with what it publishes.
+        """
+        box, _ = self.build_target(f"exit{suffix}")
+        self._minimal_source(box)
+        self._write_ledger(box, "Method", [json.dumps({
+            "kind": "submitted", "ts": "2026-08-17T00:00:00Z",
+            "entrypoint": "Method/Notebooks/verification.ipynb",
+            "sourceDigest": "0" * 64, "submissionId": "s1",
+            "worker": "svc-account-name-42",
+            "requestedCapacity": 1, "grantedCapacity": 1,
+        })])
+        return box
+
+    # --- the ledger's two work states ---------------------------------------
+
+    def test_a_drifted_ledger_publishes_an_exit_that_runs(self):
+        """The state, its published act, and the act executed.
+
+        `drift` has told a reader to run `remote_cli reconcile` in the
+        Decision Gates table since the state existed, and published nothing at
+        all beside the fact itself. The weaker guard this beats, named: a test
+        asserting `state["resolve"] is not None`. It passes on a question
+        whose `discuss` command drops `--about` and refuses on its own advice,
+        which is the exact shape a published exit fails at silently.
+        """
+        box = self.drifted_ledger_box("drift")
+        state = impl.remote_execution_state(box, "Method", "Method")
+
+        self.assertEqual(state["status"], "drift")
+        self.assertEqual(state["resolve"]["kind"], "question")
+        self.assertEqual(state["resolve"]["question"],
+                         impl.REMOTE_EXECUTION_DRIFT_QUESTION)
+        self.assertEqual(self.run_published(state["resolve"])["asked"],
+                         state["resolve"]["question"])
+
+    def test_an_unreadable_ledger_publishes_an_exit_that_runs(self):
+        """`unreliable` is a different fact from `drift` and asks for the same
+        act for a different reason, so it publishes its own sentence rather
+        than sharing one: a reader who cannot tell which state they are in
+        cannot report which one they answered.
+        """
+        box = self.drifted_ledger_box("unreliable")
+        self._write_ledger(box, "Method", ["{ this is not json"])
+        state = impl.remote_execution_state(box, "Method", "Method")
+
+        self.assertEqual(state["status"], "unreliable")
+        self.assertEqual(state["resolve"]["question"],
+                         impl.REMOTE_EXECUTION_UNRELIABLE_QUESTION)
+        self.assertNotEqual(impl.REMOTE_EXECUTION_UNRELIABLE_QUESTION,
+                            impl.REMOTE_EXECUTION_DRIFT_QUESTION)
+        self.assertEqual(self.run_published(state["resolve"])["asked"],
+                         state["resolve"]["question"])
+
+    def test_the_published_exit_names_no_worker_and_no_service(self):
+        """The reason this exit is a question and not a command, held as a
+        red rather than left in a comment.
+
+        The obvious repair for a state naming its exit in prose is to publish
+        the command -- and `reconcile` requires `--worker` and `--backend`,
+        so the obvious repair prints a service account's username and a
+        service's name into the one section whose stated rule is that it
+        never does. `workers` is a count for exactly that reason. This is the
+        test that change has to break.
+        """
+        box = self.drifted_ledger_box("noleak")
+        state = impl.remote_execution_state(box, "Method", "Method")
+
+        dumped = json.dumps(state)
+        self.assertNotIn("svc-account-name-42", dumped,
+                         "the published exit prints the worker id the "
+                         "section beside it reports only as a count")
+        self.assertEqual(
+            leaks_in(dumped, FORGE_SERVICE_VOCABULARY), [],
+            "the published exit names a service, which is the one thing this "
+            "section says it never does")
+
+    def test_a_ledger_with_nothing_to_settle_publishes_nothing(self):
+        """`None`, and the key present anyway.
+
+        `position_finding_resolution`'s own rule: an act published over a
+        report with no finding in it is work nobody has to do, and a reader
+        who meets one learns to skip the key. The key itself never varies --
+        a payload whose SHAPE changes with its state makes every consumer test
+        for the key before reading it.
+        """
+        box = self.drifted_ledger_box("clean")
+        live = impl.source_digest(box, "Method")
+        self._write_ledger(box, "Method", [json.dumps({
+            "kind": "submitted", "ts": "2026-08-17T00:00:00Z",
+            "entrypoint": "Method/Notebooks/verification.ipynb",
+            "sourceDigest": live, "submissionId": "s1", "worker": "w1",
+            "requestedCapacity": 1, "grantedCapacity": 1,
+        }), json.dumps({
+            "kind": "returned", "ts": "2026-08-17T00:10:00Z",
+            "submissionId": "s1", "artifactPath": "out/s1",
+            "observedConcurrency": 1,
+        })])
+        state = impl.remote_execution_state(box, "Method", "Method")
+
+        self.assertEqual(state["status"], "ok")
+        self.assertIsNone(state["resolve"])
+
+        with tempfile.TemporaryDirectory() as raw:
+            absent = impl.remote_execution_state(Path(raw), "Method", "Method")
+        self.assertEqual(absent, {"status": "absent", "resolve": None},
+                         "the absent return carries a different shape from "
+                         "every other one, so a reader has to know the state "
+                         "before they can read the key")
+
+    def test_every_ledger_status_is_classified_as_work_or_as_no_work(self):
+        """The roster is closed against the code that assigns the statuses,
+        not against a list restated here.
+
+        `GATING_REFUSALS`' own shape, one surface out: a third work state
+        added to the fold has somewhere to be classified, and this goes red
+        until somebody does it -- rather than the state reaching a reader with
+        no exit and nothing saying so.
+        """
+        tree = ast.parse(textwrap.dedent(
+            inspect.getsource(impl.remote_execution_state)))
+        assigned = {node.value.value
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.Assign)
+                    and isinstance(node.value, ast.Constant)
+                    and isinstance(node.value.value, str)
+                    and any(isinstance(t, ast.Name) and t.id == "status"
+                            for t in node.targets)}
+        self.assertNotEqual(assigned, set(), "nothing was scanned")
+        self.assertEqual(
+            sorted(set(impl.REMOTE_EXECUTION_WORK_STATES) - assigned), [],
+            "the roster classifies a status this function never assigns")
+        self.assertEqual(
+            sorted(assigned - set(impl.REMOTE_EXECUTION_WORK_STATES)),
+            ["ok", "pending"],
+            "a status this function can assign is neither a classified work "
+            "state nor one of the two that name no work")
+
+    def test_both_commands_that_report_the_ledger_carry_its_exit(self):
+        """One function, two callers, and the exit reaches both -- which is
+        why it lives in the function rather than in either command.
+
+        Half of the states this change closes are the same two states reported
+        twice. A publication added at one call site would leave the other
+        naming its exit in prose, and nothing would say which.
+        """
+        box = self.drifted_ledger_box("bothcmds")
+        for command, payload in (("verify", self.verify(box)),
+                                 ("probe", self.probe(box))):
+            with self.subTest(command=command):
+                resolve = payload["remoteExecution"]["resolve"]
+                self.assertEqual(payload["remoteExecution"]["status"], "drift")
+                self.assertEqual(resolve["question"],
+                                 impl.REMOTE_EXECUTION_DRIFT_QUESTION)
+                self.assertEqual(self.run_published(resolve)["asked"],
+                                 resolve["question"])
+
+    # --- structure's three gap keys -----------------------------------------
+
+    def test_each_structure_gap_publishes_an_exit_that_runs(self):
+        """Three states, three acts, and each executed.
+
+        A repository missing kit destinations was told, in prose, that
+        `materialize --stage` writes them. Which stage answers which key was a
+        mapping a reader had to hold in their head, and the argument it cannot
+        be handed ready-to-run was nowhere at all.
+        """
+        box, _ = self.build_target("exitgaps")
+        structure = self.verify(box)["structure"]
+
+        published = {}
+        for entry in structure["resolve"]:
+            stage = [stage for _, stage, _ in impl.STRUCTURE_GAP_STAGES
+                     if f"--stage {stage}" in entry["question"]]
+            self.assertEqual(len(stage), 1, entry["question"])
+            published[stage[0]] = entry
+
+        owed = [stage for key, stage, _ in impl.STRUCTURE_GAP_STAGES
+                if structure[key]]
+        self.assertNotEqual(owed, [],
+                            "the fixture owes no kit destination at all, so "
+                            "this test is no longer about anything")
+        self.assertEqual(sorted(published), sorted(owed),
+                         "a gap key names files and publishes no act, or an "
+                         "act is published for a gap that names nothing")
+        for stage, entry in published.items():
+            with self.subTest(stage=stage):
+                self.assertEqual(self.run_published(entry)["asked"],
+                                 entry["question"])
+
+    def test_a_published_stage_names_the_exact_destinations_its_key_reports(self):
+        """The act and the fact are computed once and read twice.
+
+        A published exit that named a different set from the key it answers
+        would be runnable and still wrong -- and that is the failure a reader
+        cannot catch, because both halves look authoritative.
+        """
+        box, _ = self.build_target("exitnames")
+        structure = self.verify(box)["structure"]
+        by_stage = {stage: key for key, stage, _ in impl.STRUCTURE_GAP_STAGES}
+
+        for entry in structure["resolve"]:
+            stage = next(stage for stage in by_stage
+                         if f"--stage {stage}" in entry["question"])
+            with self.subTest(stage=stage):
+                self.assertIn(str(structure[by_stage[stage]]),
+                              entry["question"])
+
+    def test_a_fully_materialized_repository_publishes_no_stage(self):
+        """`[]`, and the key present anyway -- the list shape says "nothing
+        owed" in exactly the shape a full one says what is."""
+        self.assertEqual(
+            impl.structure_gap_resolutions(
+                Path("/nowhere"), "Method",
+                {"scaffoldGaps": [], "objectGaps": [], "harnessGaps": []}),
+            [])
+
+    def test_every_gap_key_the_roster_names_is_one_verify_reports(self):
+        """Held against the command's own payload, so a renamed key is a red
+        here rather than a published act nothing ever reaches."""
+        box, _ = self.build_target("exitroster")
+        structure = self.verify(box)["structure"]
+        self.assertEqual(
+            sorted(key for key, _, _ in impl.STRUCTURE_GAP_STAGES
+                   if key not in structure), [])
+
+    def test_every_stage_the_roster_names_is_one_materialize_accepts(self):
+        """The other direction: a stage this file publishes and `materialize`
+        does not accept is an exit that refuses on its own advice.
+
+        Read off `cmd_materialize`'s own dispatch rather than from a list
+        restated here, and executed rather than parsed -- the published act
+        names `--stage <stage>`, and the value has to be one the command
+        answers.
+        """
+        box, _ = self.build_target("exitstages")
+        for _, stage, _ in impl.STRUCTURE_GAP_STAGES:
+            with self.subTest(stage=stage):
+                proc = subprocess.run(
+                    [sys.executable, str(CLI), "materialize",
+                     "--target", str(box), "--name", "Method",
+                     "--stage", stage],
+                    capture_output=True, text=True, cwd=FORGE)
+                self.assertNotEqual(proc.returncode, 0,
+                                    "materialize wrote without a plan")
+                self.assertIn(
+                    "PLAN_REQUIRED", proc.stdout + proc.stderr,
+                    f"--stage {stage} is refused for a reason other than the "
+                    "missing approval, so this stage is not one materialize "
+                    "answers at all")
+
+    # --- the shape both halves share ----------------------------------------
+
+    def test_the_decision_gates_send_a_reader_to_both_published_exits(self):
+        """A published exit is only read if something tells a reader it is
+        there. The Decision Gates table is where this skill says what to do
+        about a state, so that is where both belong -- and the row has to name
+        the KEY, because `resolve` is what a reader looks for in the JSON.
+        """
+        rows = markdown_table_rows(
+            SKILL_MD.read_text(encoding="utf-8"),
+            ProbeReportedFactsRosterTests.GATES_TABLE_HEADER)
+        self.assertEqual(len(rows), 1, "the Decision Gates table moved")
+        table = "\n".join(f"{row[0]} {row[1]}" for row in rows[0])
+        self.assertIn("`remoteExecution.resolve`", table,
+                      "no gate row tells a reader the ledger's two work "
+                      "states publish their own exit")
+        self.assertIn("`structure.resolve`", table,
+                      "no gate row tells a reader a kit gap publishes the "
+                      "stage that fills it")
+
+    def test_the_usage_reference_tells_a_reader_what_the_exits_are(self):
+        usage = USAGE_MD.read_text(encoding="utf-8")
+        section = usage[usage.index("## Reading `probe`"):]
+        section = section[:section.index("\n## ", 1)]
+        for key in ("`remoteExecution.resolve`", "`structure.resolve`"):
+            self.assertIn(key, section)
+
+    def test_every_published_exit_carries_the_one_publication_shape(self):
+        """`{kind, question, command}`, the identical shape the refusal
+        chokepoint publishes. A reader who has learnt one has learnt them all,
+        and a second shape here would be a second thing to learn for no
+        reason."""
+        box = self.drifted_ledger_box("shape")
+        ledger = impl.remote_execution_state(box, "Method", "Method")["resolve"]
+        gaps = impl.structure_gap_resolutions(
+            Path("/nowhere"), "Method",
+            {"scaffoldGaps": ["src/x.py"], "objectGaps": [],
+             "harnessGaps": ["tests/y.py"]})
+
+        self.assertEqual(len(gaps), 2)
+        for entry in [ledger, *gaps]:
+            with self.subTest(entry=entry["question"][:40]):
+                self.assertEqual(sorted(entry),
+                                 ["command", "kind", "question"])
+                self.assertEqual(entry["kind"], "question")
+                self.assertEqual(
+                    published_flags(entry["command"])[:1], ["discuss"],
+                    "a published exit is not a `discuss` invocation, so the "
+                    "one shape this engine publishes has two spellings")
 
 def dict_literal_keys(source: Path, name: str) -> list[str]:
     """The string keys of a module-level dict assigned to `name`.

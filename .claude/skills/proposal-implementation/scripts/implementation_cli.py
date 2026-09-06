@@ -3949,6 +3949,79 @@ def scaffold_destinations(name: str) -> list[str]:
             f"{name}/Notebooks/verification.ipynb"]
 
 
+#: Which `materialize --stage` answers which `structure` gap key, and whether
+#: that stage needs a `--seed`. One roster, read by the publisher below, so a
+#: fourth stage added to `materialize` has one place to be classified in rather
+#: than three sites to remember. `(gap key, stage, needs a seed)`.
+STRUCTURE_GAP_STAGES = (
+    ("scaffoldGaps", "scaffold", True),
+    ("objectGaps", "objects", True),
+    ("harnessGaps", "harness", False),
+)
+
+#: Why a `structure` gap publishes a QUESTION and not the command that fills
+#: it, stated once for all three.
+#:
+#: **The act exists and this file owns it.** `materialize --stage <stage>`
+#: writes exactly the destinations the gap key names, out of this skill's own
+#: kit. Nothing about it is another skill's.
+#:
+#: **Two of its arguments are a human's, by design.** `--plan` is the approval
+#: gate: `materialize --stage` refuses `PLAN_REQUIRED` without an approved plan
+#: and `PLAN_STALE` when the repository moved since approval, and the plan's
+#: CONTENT is derivable here (`build_plan` is a pure function of the
+#: repository) exactly as the position reinstall's payload is. Publishing a
+#: command that generated its own approval and handed it to the gate would make
+#: the gate tautological -- an act that clears the check by answering it, which
+#: is the one thing a published exit must never be. `--seed` is worse: it is
+#: the number the scaffolded experiment draws from, and a skill that picked one
+#: for a repository would be choosing a scientific parameter on the operator's
+#: behalf.
+#:
+#: So the exit published is the question, it NAMES the command and the exact
+#: destinations, and it says which two answers are the human's. Its `discuss`
+#: command runs unedited.
+STRUCTURE_GAP_RESOLUTION_LIMIT = (
+    "is the act that writes them, out of this skill's own kit. It is not "
+    "published ready to run and that is deliberate: `--plan` is an approval a "
+    "human gives, and a command that generated its own approval would answer "
+    "the gate instead of passing it")
+
+
+def structure_gap_resolutions(target: Path, name: str,
+                              gaps: dict) -> list[dict]:
+    """One published exit per `structure` gap key that names anything --
+    `[]` when the repository is fully materialized.
+
+    A list, and always a list, because these are three independent states with
+    three independent acts: a repository can owe its harness and owe nothing
+    else. One `resolve` slot would make a reader ask which of the three it was
+    about, and an empty list says "nothing owed" in the same shape a full one
+    says what is.
+
+    `gaps` is the mapping this command already computed, threaded in rather
+    than recomputed: two reads of one fact inside one command is how the
+    published act comes to name destinations the reported key does not.
+    """
+    published = []
+    for key, stage, needs_seed in STRUCTURE_GAP_STAGES:
+        missing = gaps.get(key) or []
+        if not missing:
+            continue
+        seed = (", and `--seed` is the number the scaffolded experiment draws "
+                "from, which no skill may choose for a repository"
+                if needs_seed else "")
+        published.append(_reported_state_question(
+            target, name, about="record",
+            question=(
+                f"these destinations this skill's own kit ships are absent "
+                f"from the repository: {missing}. `materialize --stage "
+                f"{stage}` {STRUCTURE_GAP_RESOLUTION_LIMIT}{seed}. Run `plan`, "
+                f"get it approved, and materialize the stage -- or record why "
+                f"these files stay absent, and why?")))
+    return published
+
+
 def scaffold_gaps(target: Path, name: str) -> list[str]:
     gaps = [w for w in scaffold_destinations(name) if not (target / w).exists()]
     if pytest_anchor_missing(target):
@@ -7423,6 +7496,102 @@ def _load_remote_execution_ledger():
     return module
 
 
+def _reported_state_question(target: Path, name: str, *, about: str,
+                             question: str) -> dict:
+    """A published exit for a REPORTED state -- the question a human answers,
+    and the `discuss` command that opens it.
+
+    `_refusal_question`'s exact shape, one surface out. That one is read at the
+    `except Refused` chokepoint and builds itself from the refused call's own
+    `args`; a reported state has no refusal and no `args`, so it is handed the
+    pair it already holds. Both produce `{kind, question, command}`, because a
+    reader who has learnt one publication shape has learnt them all, and a
+    second shape here would be a second thing to learn for no reason.
+
+    The command runs unedited. That is the whole requirement and it is the one
+    a published exit fails at silently: `discuss` needs only the target, the
+    name, a bucket and the question text, all four of which every caller here
+    holds, and every one is `shlex.quote`d by `_discuss_command`.
+    """
+    return {"kind": "question", "question": question,
+            "command": _discuss_command(target, name, about=about,
+                                        question=question)}
+
+
+#: Why the ledger's two work states publish a QUESTION and not the command
+#: that clears them, stated once rather than argued twice below.
+#:
+#: **The act exists and is mechanical.** `remote_cli reconcile` is what settles
+#: a ledger in drift or one this check could not fully read; the Decision Gates
+#: table has said so in prose since the state existed.
+#:
+#: **This file may not spell it.** `reconcile` requires four flags. Two are
+#: derivable here -- `--target` and `--entrypoint`, both already in this
+#: payload. The other two are values this skill is forbidden to print, and the
+#: prohibition is not incidental to this key, it IS this key's own rule:
+#: `workers` is reported as a COUNT precisely because a worker id is a service
+#: account's username, and `--backend` is the name a concrete adapter was
+#: registered under, which is a service name outright. A command published with
+#: either filled in would break the one sentence this section exists to keep;
+#: published with them blank it would not run, which is worse than prose,
+#: because prose does not claim to be runnable.
+#:
+#: So the exit published is the question, and the question NAMES the command,
+#: names the two values only the operator can supply, and says why. That is a
+#: published exit of the second kind -- and its `discuss` command runs unedited,
+#: which is the half a reader can actually execute.
+REMOTE_EXECUTION_RESOLUTION_LIMIT = (
+    "`remote_cli reconcile` is the act that settles this, and this skill "
+    "cannot hand it over ready to run: it requires `--worker` and `--backend`, "
+    "and both are values this section is forbidden to print -- a worker id is "
+    "a service account's username, which is why `workers` here is a count, and "
+    "a backend name is a service name. Run it for the account and the backend "
+    "this repository submits through")
+
+REMOTE_EXECUTION_DRIFT_QUESTION = (
+    "this repository's remote-execution ledger and the service no longer "
+    "agree, or a result arrived for a submission the source has already moved "
+    "past. Nothing read out of that ledger is trustworthy until it is settled, "
+    "and waiting does not settle it. "
+    + REMOTE_EXECUTION_RESOLUTION_LIMIT +
+    ", and report what it finds before anything is offered on the strength of "
+    "this ledger -- or record why a run is being taken against a ledger nobody "
+    "reconciled, and why?")
+
+REMOTE_EXECUTION_UNRELIABLE_QUESTION = (
+    "a line of this repository's remote-execution ledger could not be read at "
+    "all, so nothing it says about what is out there is trustworthy -- not what "
+    "is still pending, not what came back, not how many. "
+    + REMOTE_EXECUTION_RESOLUTION_LIMIT +
+    ", and report what it finds before offering any run -- or record why an "
+    "unreadable ledger is being read past, and why?")
+
+#: The ledger states that name work somebody has to do, and the question each
+#: publishes. A closed roster rather than an `if` chain, so a third work state
+#: added to the fold has a place to be classified into and a test that fails
+#: until it is -- `GATING_REFUSALS`' own shape, one surface out.
+REMOTE_EXECUTION_WORK_STATES = {
+    "drift": REMOTE_EXECUTION_DRIFT_QUESTION,
+    "unreliable": REMOTE_EXECUTION_UNRELIABLE_QUESTION,
+}
+
+
+def remote_execution_resolution(target: Path, name: str,
+                                status: str) -> dict | None:
+    """What clears `status`, or `None` where there is nothing to clear.
+
+    `None` for `ok`, `pending` and `absent`, and that is not an omission:
+    `position_finding_resolution`'s own rule, that a resolution published over
+    a report with no finding in it is an act nobody needs to run, and the
+    reader who meets one learns to skip the key.
+    """
+    question = REMOTE_EXECUTION_WORK_STATES.get(status)
+    if question is None:
+        return None
+    return _reported_state_question(target, name, about="record",
+                                    question=question)
+
+
 def remote_execution_state(target: Path, name: str, package: str) -> dict:
     """What went out to a remote worker, what came back, and what changed since.
 
@@ -7451,12 +7620,16 @@ def remote_execution_state(target: Path, name: str, package: str) -> dict:
     sentence — "No service is named here, and none should be" — the moment
     somebody ran this command.
     """
+    # `resolve` is spelled on the absent returns too, and never omitted from
+    # them: a payload whose SHAPE varies with its state makes every consumer
+    # test for the key before reading it, and the one that forgets reads
+    # `None` and cannot tell "nothing to do" from "this key is not here".
     if not REMOTE_EXECUTION_LEDGER_SCRIPT.is_file():
-        return {"status": "absent"}
+        return {"status": "absent", "resolve": None}
 
     ledger_path = target / name / ".remote-execution" / "ledger.jsonl"
     if not ledger_path.is_file():
-        return {"status": "absent"}
+        return {"status": "absent", "resolve": None}
 
     ledger = _load_remote_execution_ledger()
     lines = ledger_path.read_text(encoding="utf-8").splitlines()
@@ -7496,6 +7669,14 @@ def remote_execution_state(target: Path, name: str, package: str) -> dict:
         "quarantined": quarantined,
         "unreadableLines": state.unreadable_lines,
         "workers": workers,
+        # What to do about `status`, published by the engine rather than left
+        # in a doctrine table for whoever is reading to find. `None` for every
+        # state that names no work. See `remote_execution_resolution` and
+        # `REMOTE_EXECUTION_RESOLUTION_LIMIT`: the act is `remote_cli
+        # reconcile`, and two of its four required flags are values this
+        # section may not print, so what is published is the question that
+        # names them -- whose own `discuss` command runs unedited.
+        "resolve": remote_execution_resolution(target, name, status),
     }
 
 
@@ -13524,6 +13705,13 @@ def cmd_verify(args: argparse.Namespace) -> dict:
     scaffold_recorded = scaffold_structure_gaps(target, name)
     object_recorded = object_structure_gaps(target, name)
     harness_recorded = harness_structure_gaps(target, name)
+    # Computed once, here, and read twice below: by the three reported keys
+    # and by the acts published beside them. Two calls in two slots would let
+    # a published `materialize` name destinations the key it answers does not,
+    # which is the one way an exit can be runnable and still wrong.
+    structure_gaps = {"scaffoldGaps": scaffold_gaps(target, name),
+                      "objectGaps": object_gaps(target, name),
+                      "harnessGaps": harness_gaps(target, name)}
     structure_ok = (not missing_dirs and not stray and not stale_refs
                     and not unparsable
                     and not scaffold_gaps(target, name)
@@ -13852,15 +14040,23 @@ def cmd_verify(args: argparse.Namespace) -> dict:
             "strayModules": stray,
             "unparsableTests": unparsable,
             "staleReferences": stale_refs,
-            "scaffoldGaps": scaffold_gaps(target, name),
+            "scaffoldGaps": structure_gaps["scaffoldGaps"],
             "scaffoldDrift": scaffold_recorded["drift"],
             "unrecordedScaffold": scaffold_recorded["unrecorded"],
-            "objectGaps": object_gaps(target, name),
+            "objectGaps": structure_gaps["objectGaps"],
             "objectDrift": object_recorded["drift"],
             "unrecordedObjects": object_recorded["unrecorded"],
-            "harnessGaps": harness_gaps(target, name),
+            "harnessGaps": structure_gaps["harnessGaps"],
             "harnessDrift": harness_recorded["drift"],
             "unrecordedHarness": harness_recorded["unrecorded"],
+            # What to do about the three gap keys above, published by the
+            # engine rather than left in a doctrine paragraph for whoever is
+            # reading to find. One entry per key that names anything, `[]`
+            # when nothing is owed. See `structure_gap_resolutions`: the act
+            # is `materialize --stage`, and two of its arguments are a
+            # human's by design, so what is published is the question that
+            # names them -- whose own `discuss` command runs unedited.
+            "resolve": structure_gap_resolutions(target, name, structure_gaps),
         },
         "priorWork": prior_work_state(target, package_name(name)),
         "agreements": agreements_state(target, name),
